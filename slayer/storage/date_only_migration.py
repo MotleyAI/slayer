@@ -44,6 +44,11 @@ def _same(a: Any, b: Any) -> bool:
     return isinstance(b, str) and _named(a, [b]) is not None
 
 
+def _reaches(*, target: Any, model: Any, universe: Iterable[str]) -> bool:
+    """Whether the model reference ``target`` resolves to ``model`` among ``universe``'s names."""
+    return isinstance(model, str) and _named(target, universe) == model
+
+
 def stored_type(*, key: Any, columns: Any) -> str | None:
     """The stored ``type`` of the column named ``key`` when it is a valid ``DataType``."""
     if not isinstance(columns, list):
@@ -123,9 +128,9 @@ class StoredModels(BaseModel):
         """The stored type of the column ``parts`` names from ``host``, walking stored joins plus ``extensions``; a path
         may end at the spine but not continue past it."""
         current = host
-        quals, leaf = list(parts[:-1]), parts[-1]
-        if quals and _same(quals[0], current.get("name")):
-            quals = quals[1:]
+        quals, leaf = self._past_host(quals=list(parts[:-1]), host=host), parts[-1]
+        if quals is None:
+            return None
         for i, hop in enumerate(quals):
             if i > 0 and self._is_spine(current):
                 return None
@@ -135,19 +140,35 @@ class StoredModels(BaseModel):
             current = peer
         return stored_type(key=leaf, columns=extended(key="columns", model=current, extensions=extensions))
 
+    def _past_host(self, *, quals: list[str], host: dict) -> list[str] | None:
+        """``quals`` read from their head as the engine reads it: a stage's (untypable); the spine's when spelt like it in
+        another case and no stored model has that spelling (untypable beside a stored variant); dropped when it names
+        ``host`` itself."""
+        if not quals:
+            return quals
+        head = quals[0]
+        if any(_same(head, s) for s in self.stages):
+            return None
+        if head != TIME_SPINE_MODEL and head not in self.models and _same(head, TIME_SPINE_MODEL):
+            if any(n != TIME_SPINE_MODEL and _same(n, TIME_SPINE_MODEL) for n in self.models):
+                return None
+            head = TIME_SPINE_MODEL
+        return quals[1:] if _same(head, host.get("name")) else [head, *quals[1:]]
+
     def _hop(self, *, current: dict, token: str, extensions: list[dict]) -> dict | None:
-        """The model ``token`` reaches from ``current`` by the join walker's precedence: an incident edge's name, then a
-        stage (untypable), else the model at its other end; ``None`` when nothing or several edges match."""
+        """The model ``token`` reaches from ``current`` by the join walker's precedence: an exact spelling first, then a
+        case-insensitive one, each trying an incident edge's name, then a stage (untypable), else the model at its other
+        end; ``None`` when nothing or several edges match."""
         edges = self._incident(current=current, extensions=extensions)
-        for tier in (0, 1):
-            if tier == 1 and _named(token, self.stages) is not None:
-                return None
-            try:
-                found = match_name(name=token, declared=[n for e in edges for n in (e[tier],) if n], quoted=False)
-            except AmbiguousReferenceError:
-                return None
-            if found is not None:
-                return self._peer(edges=edges, tier=tier, found=found, token=token)
+        tiers = ((0, [e[0] for e in edges if e[0]]), (None, sorted(self.stages)), (1, [e[1] for e in edges]))
+        for exact in (True, False):
+            for tier, declared in tiers:
+                try:
+                    found = match_name(name=token, declared=declared, quoted=exact)
+                except AmbiguousReferenceError:
+                    return None
+                if found is not None:
+                    return None if tier is None else self._peer(edges=edges, tier=tier, found=found, token=token)
         return None
 
     def _peer(self, *, edges: list[tuple[str | None, str]], tier: int, found: str, token: str) -> dict | None:
@@ -171,22 +192,23 @@ class StoredModels(BaseModel):
                 continue
             out.extend((j.get("name"), other.get("name"))
                        for j in extended(key="joins", model=other, extensions=extensions)
-                       if isinstance(j, dict) and _same(j.get("target_model"), name)
-                       and not any(_same(o.get("target_model"), other.get("name")) and is_exact_inverse_join(o, j)
-                                   for o in own))
+                       if isinstance(j, dict) and _reaches(target=j.get("target_model"), model=name, universe=universe)
+                       and not any(_reaches(target=o.get("target_model"), model=other.get("name"), universe=universe)
+                                   and is_exact_inverse_join(o, j) for o in own))
         edges = [(n if isinstance(n, str) else None, t) for n, t in out if isinstance(t, str)]
         if TIME_SPINE_MODEL in self.models:
             return edges
         peers = list(self.models) if self._is_spine(current) else [TIME_SPINE_MODEL]
-        return edges + [(None, p) for p in peers if not any(_same(t, p) for _, t in edges)]
+        return edges + [(None, p) for p in peers
+                        if not any(_reaches(target=t, model=p, universe=universe) for _, t in edges)]
 
 
 _typing: ContextVar[StoredModels | None] = ContextVar("slayer_date_only_typing", default=None)
 
 
 @contextmanager
-def typing_with(models: StoredModels) -> Generator[None]:
-    """Inside the block, stored operands are typed with ``models``."""
+def typing_with(models: StoredModels | None) -> Generator[None]:
+    """Inside the block, stored operands are typed with ``models``; ``None`` types none."""
     token = _typing.set(models)
     try:
         yield

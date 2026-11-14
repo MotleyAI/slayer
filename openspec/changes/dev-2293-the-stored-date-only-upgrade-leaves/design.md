@@ -18,7 +18,7 @@ Principles that apply: system §3.10 (the spine's column types come from `spine_
 - One typing universe and one host resolver for stored typing.
 
 **Non-Goals:**
-- Inferring the datasource of a memory rooted at the spine that names no datasource. Its spine operands are typed, because the spine is the same in every datasource. Its other operands stay untyped and logged, as today.
+- Inferring the datasource of a memory rooted at the spine that names no datasource, in a store with several datasources. Its spine operands are typed, because the spine is the same in every datasource. Its other operands stay untyped and logged, as today (see D7).
 - Reproducing the engine's exact spine reachability (axis edges, detached datasets, product edges) on raw dicts (see D2).
 - New document versions (see D5).
 
@@ -36,6 +36,8 @@ Principles that apply: system §3.10 (the spine's column types come from `spine_
 
 **D6. No docs change.** `docs/upgrading/2.0.md` already says stored comparisons are rewritten to the whole-day spelling and that only a column with no stored `type` is left. The spine's column has a type, so the docs already describe the fixed behaviour. (default)
 
+**D7. A store's only datasource types a memory that names none.** When a stored memory names no datasource, its source names no stored model, and the store holds exactly one datasource, the upgrade types the memory with that datasource. The engine's `spine_datasource` can pick no other. Options: keep the Non-Goal (rejected: a one-datasource store, the common case, would lose the last day for good although the engine's answer is certain); re-derive `spine_datasource`'s anchor inference on raw dicts (rejected: a second copy of the engine's anchor logic, as in D2); the sole-datasource shortcut (taken). (user; CodeRabbit review)
+
 **Codex plan review:**
 - Make reachability match the engine's axis, detached-edge and product rules: rejected (codex), for the reasons in D2. Outcomes are identical on every query the engine resolves, and a faithful copy would be a second derivation of the axis on raw dicts.
 - Never type a path that crosses the spine: folded into D2 (codex).
@@ -46,4 +48,4 @@ Principles that apply: system §3.10 (the spine's column types come from `spine_
 
 - [Broad edges type a path the engine would reject, for example `customers.time_spine.timestamp` from an axis-less, detached `customers`] → That query fails both before and after the rewrite. If the model later gains an axis, the rewritten text already means the whole day the 1.x author meant.
 - [The legacy repair now also resolves case-variant sources] → It repairs comparisons that the exact-name lookup used to skip. This matches what the engine resolves, so query results are unchanged.
-- [`StoredModels` with no datasource (a memory with no resolvable datasource) still declares the spine] → Only spine operands get typed; that is correct in every datasource.
+- [`StoredModels` with no datasource (a memory on the spine with no datasource, in a store with several datasources) still declares the spine] → Only spine operands get typed; that is correct in every datasource.

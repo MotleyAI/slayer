@@ -15,3 +15,8 @@
 - [x] 2.3 `StorageBackend._query_host` / `_stored_column_type`: resolve the source name through `StoredModels.host` with the query's stage names (design D4); verify 1.6
 - [x] 2.3a `StorageBackend._repair_source_query_filters`: run the nested-stage pass inside `migrating_document(<model name>, stored=True)`, so an unnamed stage's warning names its saved model; verify `test_sibling_stage_named_like_the_spine`
 - [x] 2.4 Run the local test scope (`la-affected-tests --base main` + `tests/test_dev2280_*`, `tests/test_stored_upgrade_*`, `tests/test_dev2269*` if present), `poetry run ruff check slayer/ tests/`, `la-typecheck`, `la-arch-check`; all green
+
+## 3. Review follow-ups (pr-review stage)
+
+- [x] 3.1 Test in `tests/test_stored_upgrade_spine_date_only.py`, "Memory on the spine in a store with one datasource": a v10 memory naming no datasource, rooted at `time_spine`, filtering `orders.ordered_at <= '2024-01-31'`; upgraded with one datasource, byte-identical with a logged warning with two; verify it fails on the current code
+- [x] 3.2 `StorageBackend._source_data_source`: when the source names no stored model and `list_datasources()` returns exactly one datasource, use it (design D7); verify 3.1

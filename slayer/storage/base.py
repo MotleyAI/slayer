@@ -1246,19 +1246,24 @@ class StorageBackend(ABC):
         if not isinstance(source, str):
             return None
         if data_source is None:
-            data_source = await self._source_data_source(source)
+            try:
+                data_source = await self._source_data_source(source)
+            except (AmbiguousModelError, AmbiguousReferenceError):
+                return None
         models = (await self._stored_models(data_source)).model_copy(update={"stages": stage_names})
         host = models.host(source)
         return (host, models) if host is not None else None
 
     async def _source_data_source(self, source: str) -> str | None:
-        """The datasource of the stored model an unquoted ``source`` names; ``None`` when none or several."""
+        """The datasource of the stored model an unquoted ``source`` names (the spine counted as a model), else the
+        store's only datasource; raises when several stored models or datasources hold it."""
         names = {n for _, n in await self._list_all_model_identities()}
-        with contextlib.suppress(AmbiguousModelError, AmbiguousReferenceError):
-            name = match_name(name=source, declared=sorted(names), quoted=False)
-            identity = await self.resolve_model_identity(name) if name is not None else None
-            return identity[0] if identity is not None else None
-        return None
+        name = match_name(name=source, declared=sorted(names | {TIME_SPINE_MODEL}), quoted=False)
+        if name not in names:
+            datasources = await self.list_datasources()
+            return datasources[0] if len(datasources) == 1 else None
+        identity = await self.resolve_model_identity(name)
+        return identity[0] if identity is not None else None
 
     async def _stored_models(self, data_source: str | None) -> StoredModels:
         """Every raw stored model dict of ``data_source``."""
@@ -1271,11 +1276,15 @@ class StorageBackend(ABC):
                 models[name] = raw
         return StoredModels(data_source=data_source, models=models)
 
-    async def _memory_typing(self, data: dict) -> StoredModels:
-        """The stored models of the datasource a stored memory's query reads."""
+    async def _memory_typing(self, data: dict) -> StoredModels | None:
+        """The stored models of the datasource a stored memory's query reads; ``None`` (nothing typed) when that
+        datasource is ambiguous."""
         data_source, source = memory_source_model(data)
         if data_source is None and source is not None:
-            data_source = await self._source_data_source(source)
+            try:
+                data_source = await self._source_data_source(source)
+            except (AmbiguousModelError, AmbiguousReferenceError):
+                return None
         return await self._stored_models(data_source)
 
     async def _dedup_exact_inverse_joins(

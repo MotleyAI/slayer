@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from slayer.core.models import DatasourceConfig
 from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL, spine_model
@@ -22,6 +23,7 @@ from tests._stored_upgrade_fixtures import (
 )
 
 PRE = {"SlayerModel": 23, "SlayerQuery": 14, "Memory": 10}
+OTHER = "warehouse"
 JAN_31_ORDER = (7, 1, "ok", "2024-01-31 10:00:00", 70.0)
 SPINE_LE = "time_spine.timestamp <= '2024-01-31'"
 SPINE_LT = "time_spine.timestamp < '2024-02-01'"
@@ -87,6 +89,26 @@ async def store(tmp_path: Path, ds: DatasourceConfig, *, backend: str, models: t
     base = [orders or orders_v10(version=PRE["SlayerModel"]), customers or customers_v10(version=PRE["SlayerModel"])]
     return await raw_store(backend=backend, base=str(tmp_path / f"store-{backend}"), datasource=ds,
                            models=[*base, *models], memories=memories)
+
+
+async def add_other_datasource(storage: StorageBackend, tmp_path: Path, *, backend: str,
+                               models: tuple[dict, ...] = ()) -> None:
+    """A second datasource, ``OTHER``, holding ``models`` written verbatim."""
+    await storage.save_datasource(DatasourceConfig.model_validate(
+        {"name": OTHER, "type": "sqlite", "database": str(tmp_path / "other.db")}))
+    seed_other(tmp_path / f"store-{backend}", backend=backend, models=models)
+
+
+def seed_other(base: Path, *, backend: str, models: tuple[dict, ...]) -> None:
+    for doc in models:
+        if backend == "yaml":
+            path = base / "models" / OTHER / f"{doc['name']}.yaml"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+        else:
+            with transaction(str(base / "store.db")) as conn:
+                conn.execute("INSERT INTO models (data_source, name, data) VALUES (?, ?, ?)",
+                             (OTHER, doc["name"], json.dumps(doc)))
 
 
 async def loaded_filters(storage: StorageBackend, name: str, *, index: int = 0) -> list[str]:
@@ -163,6 +185,26 @@ class TestSpineOperands:
         mem = await storage.get_memory("m_spine")
         assert mem.query is not None
         assert mem.query.filters == [TS_LT, SPINE_LT]
+
+    async def test_memory_on_the_spine_in_a_store_with_one_datasource(
+        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
+    ) -> None:
+        storage = await store(tmp_path, shop_ds, backend=backend,
+                              memories=(memory("m_sole", spine_stage(ORDERS_LE)),))
+        mem = await storage.get_memory("m_sole")
+        assert mem.query is not None
+        assert mem.query.filters == [ORDERS_LT]
+
+    async def test_memory_on_the_spine_with_a_variant_in_two_datasources(
+        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
+    ) -> None:
+        variant = model_doc("Time_Spine", [{"name": "timestamp", "type": "TEXT", "primary_key": True}])
+        storage = await store(tmp_path, shop_ds, backend=backend, models=(variant,),
+                              memories=(memory("m_variants", spine_stage(TS_LE)),))
+        await add_other_datasource(storage, tmp_path, backend=backend, models=({**variant, "data_source": OTHER},))
+        mem = await storage.get_memory("m_variants")
+        assert mem.query is not None
+        assert mem.query.filters == [TS_LT]
 
     async def test_extension_column_filter(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
         # Stored before extension columns were removed: the load-time conversion inlines it after this upgrade.
@@ -246,6 +288,30 @@ class TestSpineLeftAlone:
         assert mem.query is not None
         assert mem.query.filters == body["filters"]
         assert any("m_ambiguous" in t and body["filters"][0] in t for t in texts), texts
+
+    async def test_memory_on_the_spine_in_a_store_with_two_datasources(
+        self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        storage = await store(tmp_path, shop_ds, backend=backend,
+                              memories=(memory("m_two_ds", spine_stage(ORDERS_LE)),))
+        await add_other_datasource(storage, tmp_path, backend=backend)
+        with logged(caplog) as texts:
+            mem = await storage.get_memory("m_two_ds")
+        assert mem.query is not None
+        assert mem.query.filters == [ORDERS_LE]
+        assert any("m_two_ds" in t and ORDERS_LE in t for t in texts), texts
+
+    async def test_source_held_by_two_datasources(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
+                                                  caplog: pytest.LogCaptureFixture) -> None:
+        stored_spine = model_doc(TIME_SPINE_MODEL, [{"name": "timestamp", "type": "TEXT", "primary_key": True}])
+        storage = await store(tmp_path, shop_ds, backend=backend, models=(stored_spine,),
+                              memories=(memory("m_held_twice", spine_stage(TS_LE)),))
+        await add_other_datasource(storage, tmp_path, backend=backend, models=({**stored_spine, "data_source": OTHER},))
+        with logged(caplog) as texts:
+            mem = await storage.get_memory("m_held_twice")
+        assert mem.query is not None
+        assert mem.query.filters == [TS_LE]
+        assert any("m_held_twice" in t and TS_LE in t for t in texts), texts
 
     async def test_path_continuing_past_the_spine(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                                   caplog: pytest.LogCaptureFixture) -> None:
@@ -361,6 +427,46 @@ class TestStoredModels:
         host = models.host(source)
         assert host is not None
         assert models.column_type(host=host, parts=parts, extensions=[]) == expected
+
+    def test_join_to_a_stored_variant_is_not_a_join_to_the_spine(self) -> None:
+        variant = model_doc("Time_Spine", [{"name": "timestamp", "type": "TEXT"}])
+        orders = orders_v10(version=PRE["SlayerModel"], joins=[
+            {"name": "variant_link", "target_model": "Time_Spine", "join_pairs": [["ordered_at", "timestamp"]]}])
+        models = StoredModels(data_source=DS, models={"orders": orders, "Time_Spine": variant})
+        spine = models.host(TIME_SPINE_MODEL)
+        assert spine is not None
+        assert models.column_type(host=orders, parts=["time_spine", "timestamp"], extensions=[]) == SPINE_TYPE
+        assert models.column_type(host=orders, parts=["Time_Spine", "timestamp"], extensions=[]) == "TEXT"
+        assert models.column_type(host=spine, parts=["variant_link", "ordered_at"], extensions=[]) is None
+
+    @pytest.mark.parametrize(("head", "expected"), [("Time_Spine", SPINE_TYPE), ("TIME_SPINE", None)])
+    def test_head_naming_the_spine_host_beside_a_stored_variant(self, head: str, expected: str | None) -> None:
+        # The engine drops a head naming the root in any case; a respelled spine head beside a variant is ambiguous.
+        models = stored(model_doc("Time_Spine", [{"name": "timestamp", "type": "TEXT"}]))
+        spine = models.host(TIME_SPINE_MODEL)
+        assert spine is not None
+        assert models.column_type(host=spine, parts=[head, "timestamp"], extensions=[]) == expected
+
+    @pytest.mark.parametrize("stage_name", ["ORDERS", "Orders"])
+    def test_head_naming_a_stage_beats_the_host(self, stage_name: str) -> None:
+        models = stored(stages=frozenset({stage_name}))
+        orders = models.models["orders"]
+        assert models.column_type(host=orders, parts=["ORDERS", "ordered_at"], extensions=[]) is None
+
+    @pytest.mark.parametrize(("parts", "expected"), [
+        (["TIME_SPINE", "timestamp"], SPINE_TYPE),
+        (["time_spine", "timestamp"], SPINE_TYPE),
+        (["orders", "time_spine", "timestamp"], SPINE_TYPE),
+        (["orders", "TIME_SPINE", "timestamp"], "TEXT"),
+        (["orders", "Time_spine", "timestamp"], "TEXT"),
+    ])
+    def test_join_named_like_the_spine_in_another_case(self, parts: list[str], expected: str) -> None:
+        # A head is respelled to the spine first; a later hop tries exact spellings before case-insensitive ones.
+        codes = model_doc("codes", [{"name": "timestamp", "type": "TEXT"}])
+        orders = orders_v10(version=PRE["SlayerModel"], joins=[
+            {"name": "TIME_SPINE", "target_model": "codes", "join_pairs": [["status", "timestamp"]]}])
+        models = StoredModels(data_source=DS, models={"orders": orders, "codes": codes})
+        assert models.column_type(host=orders, parts=parts, extensions=[]) == expected
 
     def test_stored_join_named_like_the_spine_wins(self) -> None:
         codes = model_doc("codes", [{"name": "code", "type": "TEXT"}])
