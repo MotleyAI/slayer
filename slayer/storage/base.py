@@ -1065,7 +1065,7 @@ class StorageBackend(ABC):
             )
             await self._canonicalize_join_key_spellings(data=data, data_source=data_source)
             await self._declare_join_keys(name=name, data=data, data_source=data_source)
-            await self._repair_source_query_filters(data=data, data_source=data_source)
+            await self._repair_source_query_filters(name=name, data=data, data_source=data_source)
             data = await self._inlined_source_queries(name=name, data=data, data_source=data_source)
             # Collapse stored exact-inverse mirror pairs.
             data = await self._dedup_exact_inverse_joins(
@@ -1187,13 +1187,14 @@ class StorageBackend(ABC):
         )
         return [without_none(q.model_dump(mode="json")) for q in converted]
 
-    async def _repair_source_query_filters(self, *, data: dict, data_source: str) -> None:
+    async def _repair_source_query_filters(self, *, name: str, data: dict, data_source: str) -> None:
         queries = data.get("source_queries")
         if not isinstance(queries, list):
             return
         stage_names = frozenset(q["name"] for q in queries if isinstance(q, dict) and isinstance(q.get("name"), str))
-        for query in queries:
-            await self._repair_query_filters(query=query, data_source=data_source, stage_names=stage_names)
+        with _mig.migrating_document(name, stored=True):
+            for query in queries:
+                await self._repair_query_filters(query=query, data_source=data_source, stage_names=stage_names)
 
     async def _repair_query_filters(
         self, *, query: Any, data_source: str | None, stage_names: frozenset[str] = frozenset(),
@@ -1212,9 +1213,11 @@ class StorageBackend(ABC):
         found = [legacy_literal_sites(f) if isinstance(f, str) else None for f in filters]
         if not any(found):
             return
-        host = await self._query_host(source=query.get("source_model"), data_source=data_source, stage_names=stage_names)
-        if host is None:
+        resolved = await self._query_host(source=query.get("source_model"), data_source=data_source,
+                                          stage_names=stage_names)
+        if resolved is None:
             return
+        host, models = resolved
         extensions = query.get("extensions")
         extensions = [e for e in extensions if isinstance(e, dict)] if isinstance(extensions, list) else []
         for i, pairs in enumerate(found):
@@ -1222,42 +1225,45 @@ class StorageBackend(ABC):
                 continue
             temporal = [
                 literal for literal, column in pairs
-                if await self._stored_column_type(
-                    host=host, parts=[p.name for p in column.parts], extensions=extensions,
-                ) in (DataType.DATE.value, DataType.TIMESTAMP.value)
+                if models.column_type(host=host, parts=[p.name for p in column.parts], extensions=extensions)
+                in (DataType.DATE.value, DataType.TIMESTAMP.value)
             ]
             if temporal and whole_day_dates:
                 # A repaired legacy date is a date-only literal meant as its whole day, as stored.
-                filters[i] = upgraded_text(repaired_filter(filters[i], temporal), host=host[0], extensions=extensions,
-                                           models=await self._stored_models(host[1]), label=query.get("name"))
+                filters[i] = upgraded_text(repaired_filter(filters[i], temporal), host=host, extensions=extensions,
+                                           models=models, label=query.get("name"))
             elif temporal:
                 filters[i] = repaired_filter(filters[i], temporal)
 
     async def _query_host(
         self, *, source: Any, data_source: str | None, stage_names: frozenset[str],
-    ) -> tuple[dict, str] | None:
-        """The raw stored model a stored query reads and its datasource; ``None`` for a stage or an unresolvable source."""
+    ) -> tuple[dict, StoredModels] | None:
+        """The raw stored model (or the spine) a stored query reads, and the stored models typing it; ``None`` for a stage
+        or an unresolvable source."""
         if isinstance(source, dict) and isinstance(source.get("columns"), list):
-            return source, str(source.get("data_source") or data_source)
-        name = source
-        if not isinstance(name, str) or name in stage_names:
+            inline_ds = str(source.get("data_source") or data_source)
+            return source, (await self._stored_models(inline_ds)).model_copy(update={"stages": stage_names})
+        if not isinstance(source, str):
             return None
         if data_source is None:
             try:
-                identity = await self.resolve_model_identity(name)
-            except AmbiguousModelError:
+                data_source = await self._source_data_source(source)
+            except (AmbiguousModelError, AmbiguousReferenceError):
                 return None
-            data_source = identity[0] if identity is not None else None
-        raw = await self._cached_raw_model_dict(name=name, data_source=data_source) if data_source else None
-        return (raw, data_source) if isinstance(raw, dict) and data_source else None
+        models = (await self._stored_models(data_source)).model_copy(update={"stages": stage_names})
+        host = models.host(source)
+        return (host, models) if host is not None else None
 
-    async def _stored_column_type(
-        self, *, host: tuple[dict, str], parts: list[str], extensions: list[dict],
-    ) -> str | None:
-        """The stored type of the column ``parts`` names from ``host``, walking its stored joins plus the query's ``extensions``."""
-        current, data_source = host
-        models = await self._stored_models(data_source) if len(parts) > 1 else StoredModels()
-        return models.column_type(host=current, parts=parts, extensions=extensions)
+    async def _source_data_source(self, source: str) -> str | None:
+        """The datasource of the stored model an unquoted ``source`` names (the spine counted as a model), else the
+        store's only datasource; raises when several stored models or datasources hold it."""
+        names = {n for _, n in await self._list_all_model_identities()}
+        name = match_name(name=source, declared=sorted(names | {TIME_SPINE_MODEL}), quoted=False)
+        if name not in names:
+            datasources = await self.list_datasources()
+            return datasources[0] if len(datasources) == 1 else None
+        identity = await self.resolve_model_identity(name)
+        return identity[0] if identity is not None else None
 
     async def _stored_models(self, data_source: str | None) -> StoredModels:
         """Every raw stored model dict of ``data_source``."""
@@ -1270,16 +1276,15 @@ class StorageBackend(ABC):
                 models[name] = raw
         return StoredModels(data_source=data_source, models=models)
 
-    async def _memory_typing(self, data: dict) -> StoredModels:
-        """The stored models of the datasource a stored memory's query reads."""
-        inline_data_source, source = memory_source_model(data)
-        data_source = inline_data_source
+    async def _memory_typing(self, data: dict) -> StoredModels | None:
+        """The stored models of the datasource a stored memory's query reads; ``None`` (nothing typed) when that
+        datasource is ambiguous."""
+        data_source, source = memory_source_model(data)
         if data_source is None and source is not None:
-            names = {n for _, n in await self._list_all_model_identities()}
-            with contextlib.suppress(AmbiguousModelError, AmbiguousReferenceError):
-                name = match_name(name=source, declared=sorted(names), quoted=False)
-                identity = await self.resolve_model_identity(name) if name is not None else None
-                data_source = identity[0] if identity is not None else None
+            try:
+                data_source = await self._source_data_source(source)
+            except (AmbiguousModelError, AmbiguousReferenceError):
+                return None
         return await self._stored_models(data_source)
 
     async def _dedup_exact_inverse_joins(
