@@ -208,7 +208,7 @@ class TestLegacyAliasRewrittenOnLoad:
 class TestRewritePrecedesValidation:
     @pytest.mark.asyncio
     async def test_model_validate_sees_already_dotted_sql(
-        self, monkeypatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         with tempfile.TemporaryDirectory() as d:
             storage = await _seed_yaml(d, [

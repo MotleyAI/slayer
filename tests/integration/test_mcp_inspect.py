@@ -736,7 +736,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         assert len(kind_col.sampled_values) == 30
 
     async def test_legacy_sampled_text_preserved_in_markdown_on_profile_failure(
-        self, env, monkeypatch,
+        self, env, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """When profiling fails, the markdown ``sampled`` cell still shows the
         LEGACY persisted text: the owner returns the input column on failure,

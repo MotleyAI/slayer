@@ -123,7 +123,7 @@ class TestRoutingSurvivesReroot:
         assert attach.producer_plan.semi_join_filters, "the mixed-OR filter did not push"
 
 
-def _classifier_spy(monkeypatch) -> list:
+def _classifier_spy(monkeypatch: pytest.MonkeyPatch) -> list:
     """Record every ``_cross_model_inherited_filters`` call and its arguments (once per producer)."""
 
     calls: list = []
@@ -141,7 +141,7 @@ def _classifier_spy(monkeypatch) -> list:
 
 
 class TestClassifiedExactlyOnce:
-    def test_each_host_filter_is_classified_once_per_cte(self, monkeypatch) -> None:
+    def test_each_host_filter_is_classified_once_per_cte(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls = _classifier_spy(monkeypatch)
         _sole_attach(FILTER_REACHABLE, FILTER_HOST_LOCAL, FILTER_MIXED_OR)
         assert calls, "the inheritance pass was never called — spy is vacuous"
@@ -160,7 +160,7 @@ class TestClassifiedExactlyOnce:
             f"host filters were presented more than once: {per_filter}"
         )
 
-    def test_the_classifier_sees_the_cte_actual_root(self, monkeypatch) -> None:
+    def test_the_classifier_sees_the_cte_actual_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The inheritance pass must classify against ``target_path == ("customers",)``; the FORWARD path would misjudge reachability."""
         calls = _classifier_spy(monkeypatch)
         _sole_attach(FILTER_REACHABLE)
@@ -169,7 +169,7 @@ class TestClassifiedExactlyOnce:
         assert {call["root_model"].name for call in calls} == {"customers"}
 
     def test_the_classifier_receives_the_structural_summary(
-        self, monkeypatch,
+        self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The decision input must carry the mixed-OR filter itself, else the push tests below pass vacuously."""
         calls = _classifier_spy(monkeypatch)
@@ -295,7 +295,7 @@ class TestInternalFailuresRaise:
                 )
         assert checked == 3, "not every reroot function was checked"
 
-    def test_planner_failure_propagates_rather_than_warning(self, monkeypatch) -> None:
+    def test_planner_failure_propagates_rather_than_warning(self, monkeypatch: pytest.MonkeyPatch) -> None:
 
         boom = RuntimeError("planner exploded")
 

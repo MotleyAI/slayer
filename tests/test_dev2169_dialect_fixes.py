@@ -165,7 +165,7 @@ def test_clickhouse_cell_escapes(cell: str, expected: list[str]) -> None:
 # --------------------------------------------------------------------------- #
 # SQL Server: long JSON scalars fail loud on 2022+; split_part has no 4,000-character limit
 # --------------------------------------------------------------------------- #
-async def _tsql(monkeypatch, expr: str, version: Optional[tuple[int, ...]]) -> str:
+async def _tsql(monkeypatch: pytest.MonkeyPatch, expr: str, version: Optional[tuple[int, ...]]) -> str:
     patch_profile(monkeypatch, version=version)
     return " ".join((await emit_lib(lib_query(expr), dialect="tsql")).split())
 
@@ -173,26 +173,26 @@ async def _tsql(monkeypatch, expr: str, version: Optional[tuple[int, ...]]) -> s
 @pytest.mark.parametrize("version", [(16, 0, 0), (17, 0, 0), None])
 @pytest.mark.parametrize("expr", ["json_value(payload, '$.a.b')", "payload ->> 'ok'",
                                   "json_value(payload, '$.qty' RETURNING INT)"])
-async def test_tsql_json_value_rereads_strict(monkeypatch, expr: str, version: Any) -> None:
+async def test_tsql_json_value_rereads_strict(monkeypatch: pytest.MonkeyPatch, expr: str, version: Any) -> None:
     sql = await _tsql(monkeypatch, expr, version)
     assert "'strict $[0]." in sql, sql
     assert "JSON_PATH_EXISTS(" in sql.upper(), sql
 
 
-async def test_tsql_json_value_before_2022_stays_lax(monkeypatch) -> None:
+async def test_tsql_json_value_before_2022_stays_lax(monkeypatch: pytest.MonkeyPatch) -> None:
     sql = await _tsql(monkeypatch, "json_value(payload, '$.a.b')", (15, 0, 0))
     assert "strict" not in sql, sql
     assert "VALUE)" not in sql.upper(), sql
 
 
 @pytest.mark.parametrize("version", [(16, 0, 0), None])
-async def test_tsql_json_value_takes_a_scalar_document(monkeypatch, version: Any) -> None:
+async def test_tsql_json_value_takes_a_scalar_document(monkeypatch: pytest.MonkeyPatch, version: Any) -> None:
     sql = await _tsql(monkeypatch, "json_value(payload, '$')", version)
     assert re.search(r"ISJSON\(\s*lib\.payload\s*,\s*VALUE\s*\)", sql, re.I), sql
 
 
 @pytest.mark.parametrize("version", [(16, 0, 0), None])
-async def test_tsql_json_value_reads_the_document_wrapped(monkeypatch, version: Any) -> None:
+async def test_tsql_json_value_reads_the_document_wrapped(monkeypatch: pytest.MonkeyPatch, version: Any) -> None:
     # JSON_VALUE / JSON_QUERY refuse a scalar document even where ISJSON(…, VALUE) accepts it.
     sql = await _tsql(monkeypatch, "json_value(payload, '$')", version)
     assert "JSON_VALUE(CONCAT('[', CAST(lib.payload AS NVARCHAR(MAX)), ']'), '$[0]')" in sql, sql
@@ -200,7 +200,7 @@ async def test_tsql_json_value_reads_the_document_wrapped(monkeypatch, version: 
 
 
 @pytest.mark.parametrize("expr", ["split_part(s, '/', 2)", "split_part(s, '/', -1)", "split_part(s, tag, 3)"])
-async def test_tsql_split_part_reads_no_json(monkeypatch, expr: str) -> None:
+async def test_tsql_split_part_reads_no_json(monkeypatch: pytest.MonkeyPatch, expr: str) -> None:
     sql = await _tsql(monkeypatch, expr, None)
     assert "JSON_VALUE" not in sql.upper(), sql
     assert "CHARINDEX(" in sql.upper(), sql

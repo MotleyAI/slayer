@@ -66,7 +66,7 @@ class TestPeriodLiterals:
 
 class TestUnparseable:
     @pytest.mark.parametrize("literal", ["last fortnight", "2025/01/01"])
-    async def test_rejected_before_any_sql(self, engine, monkeypatch, literal) -> None:
+    async def test_rejected_before_any_sql(self, engine, monkeypatch: pytest.MonkeyPatch, literal) -> None:
         calls: list[str] = []
         orig = SlayerSQLClient.execute
 

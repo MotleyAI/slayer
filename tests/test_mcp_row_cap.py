@@ -28,6 +28,7 @@ from slayer.engine.query_engine import (
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+import pytest
 
 CAP = 20
 NOTICE = f"showing first {CAP} rows — more rows exist"
@@ -104,7 +105,7 @@ def _canned_response(n: int, *, warnings: list | None = None) -> SlayerResponse:
     )
 
 
-def _patch_execute(monkeypatch, *, make_response) -> None:
+def _patch_execute(monkeypatch: pytest.MonkeyPatch, *, make_response) -> None:
     """Replace engine execution with a canned-response factory."""
     async def fake_execute(self, *args: Any, **kwargs: Any) -> SlayerResponse:
         return make_response()
@@ -175,7 +176,7 @@ class TestExplicitLimitTrusted:
         _assert_untruncated(_json_payload(result), rows=5)
 
     async def test_rows_exceeding_explicit_limit_not_sliced(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The cap decision keys on caller args, never on the executed row count."""
         server = await _make_server(tmp_path)
@@ -187,7 +188,7 @@ class TestExplicitLimitTrusted:
         _assert_untruncated(_json_payload(result), rows=30)
 
     async def test_explain_with_explicit_limit_untouched(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         server = await _make_server(tmp_path)
         _patch_execute(monkeypatch, make_response=lambda: _canned_response(25))
@@ -310,7 +311,7 @@ class TestMultiStageCap:
         _assert_untruncated(_json_payload(result), rows=25)
 
     async def test_rows_exceeding_root_limit_not_sliced(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         server = await _make_server(tmp_path)
         _patch_execute(monkeypatch, make_response=lambda: _canned_response(30))
@@ -381,7 +382,7 @@ class TestNoticeRendering:
         assert "limit" in warning["hint"]
 
     async def test_coexists_with_other_warnings(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         server = await _make_server(tmp_path)
         norm = NormalizationWarning(
@@ -415,7 +416,7 @@ class TestNoticeRendering:
         assert NOTICE in comment_lines[1]
 
     async def test_markdown_notice_trails_attributes(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Field attributes render before the trailing Warnings block, so the
         notice stays last even when the response carries metadata."""
@@ -469,7 +470,7 @@ class TestAttributesMachineSafe:
         )
 
     async def test_json_payload_strict_parseable_with_attributes(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         server = await _make_server(tmp_path)
         _patch_execute(monkeypatch, make_response=self._with_attributes)
@@ -483,7 +484,7 @@ class TestAttributesMachineSafe:
         assert payload["attributes"]["measures"]["nums._count"]["label"] == "Count"
 
     async def test_csv_attributes_are_leading_comments(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         server = await _make_server(tmp_path)
         _patch_execute(monkeypatch, make_response=self._with_attributes)
@@ -506,7 +507,7 @@ class TestAttributesMachineSafe:
             "warnings": [ResponseTruncationWarning(returned_rows=CAP, hint="h")],
         })
 
-    async def _dry_run(self, tmp_path: Path, monkeypatch, fmt: str) -> str:
+    async def _dry_run(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str) -> str:
         server = await _make_server(tmp_path)
         _patch_execute(monkeypatch, make_response=self._dry_run_response)
         return await _call(server, name="query", arguments={
@@ -514,7 +515,7 @@ class TestAttributesMachineSafe:
         })
 
     async def test_dry_run_json_carries_attributes_and_population(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         payload = json.loads(await self._dry_run(tmp_path, monkeypatch, "json"))
         assert payload["sql"] == "SELECT 1"
@@ -523,7 +524,7 @@ class TestAttributesMachineSafe:
         assert payload["population_inferred"] is True
 
     async def test_dry_run_csv_carries_attributes_and_population_as_leading_comments(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         head, sql = (await self._dry_run(tmp_path, monkeypatch, "csv")).split("SQL:\n")
         comments = head.splitlines()
@@ -533,7 +534,7 @@ class TestAttributesMachineSafe:
         assert "# Measure attributes:" in comments
 
     async def test_dry_run_markdown_carries_attributes_and_population_after_the_sql(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         text = await self._dry_run(tmp_path, monkeypatch, "markdown")
         assert text.startswith("SQL:\nSELECT 1\n\n")
@@ -543,7 +544,7 @@ class TestAttributesMachineSafe:
         assert NOTICE in warnings_block
 
     async def test_json_bare_array_without_attributes_or_warnings(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """No attributes and no warnings still yields a bare array (back-compat)."""
         server = await _make_server(tmp_path)
@@ -559,7 +560,7 @@ class TestExplainDryRun:
     """Requirement: explain plans capped without a limit; dry_run never truncates."""
 
     async def test_large_explain_plan_capped(
-        self, tmp_path: Path, monkeypatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         server = await _make_server(tmp_path)
         _patch_execute(monkeypatch, make_response=lambda: _canned_response(25))

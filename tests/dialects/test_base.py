@@ -367,7 +367,7 @@ def test_backslash_escapes_strings_is_bool() -> None:
     assert isinstance(SqliteDialect().backslash_escapes_strings, bool)
 
 
-def test_backslash_escapes_derivation_guards_missing_string_escapes(monkeypatch) -> None:
+def test_backslash_escapes_derivation_guards_missing_string_escapes(monkeypatch: pytest.MonkeyPatch) -> None:
     """A reshaped tokenizer STRING_ESCAPES raises a clear RuntimeError."""
     base_mod._sqlglot_backslash_escapes.cache_clear()
     tokenizer_cls = Dialect.get_or_raise("postgres").tokenizer_class

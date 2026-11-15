@@ -39,7 +39,7 @@ def _make_args(**overrides):
 
 
 class TestDemoKeywordDispatch:
-    def test_demo_keyword_routes_to_demo_handler(self, monkeypatch):
+    def test_demo_keyword_routes_to_demo_handler(self, monkeypatch: pytest.MonkeyPatch):
         called = {}
 
         def fake_handler(*args, **kwargs):
@@ -54,7 +54,7 @@ class TestDemoKeywordDispatch:
 
         assert "args" in called, "expected demo handler to be invoked"
 
-    def test_demo_keyword_is_case_insensitive(self, monkeypatch):
+    def test_demo_keyword_is_case_insensitive(self, monkeypatch: pytest.MonkeyPatch):
         called = []
         monkeypatch.setattr(
             cli,
@@ -71,7 +71,7 @@ class TestDemoKeywordDispatch:
 
         assert len(called) == 2
 
-    def test_non_demo_connection_string_falls_through(self, monkeypatch):
+    def test_non_demo_connection_string_falls_through(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
             cli,
             "_run_datasources_create_demo",
@@ -90,7 +90,7 @@ class TestDemoKeywordDispatch:
 
 
 class TestServeMcpDemoHook:
-    def test_serve_demo_flag_calls_prepare_demo(self, monkeypatch):
+    def test_serve_demo_flag_calls_prepare_demo(self, monkeypatch: pytest.MonkeyPatch):
         calls = []
         monkeypatch.setattr(
             cli, "_prepare_demo", lambda *args, **kwargs: calls.append("prepare")
@@ -109,7 +109,7 @@ class TestServeMcpDemoHook:
 
         assert calls == ["prepare", "uvicorn:APP:h:1"]
 
-    def test_mcp_demo_flag_calls_prepare_demo(self, monkeypatch):
+    def test_mcp_demo_flag_calls_prepare_demo(self, monkeypatch: pytest.MonkeyPatch):
         calls = []
         monkeypatch.setattr(
             cli, "_prepare_demo", lambda *args, **kwargs: calls.append("prepare")
@@ -131,7 +131,7 @@ class TestServeMcpDemoHook:
 
 
 class TestJafgenCmdResolution:
-    def test_prefers_current_interpreter_when_package_importable(self, monkeypatch):
+    def test_prefers_current_interpreter_when_package_importable(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: object())
         monkeypatch.setattr(
             jaffle_shop.shutil,
@@ -146,20 +146,20 @@ class TestJafgenCmdResolution:
         assert "jafgen" in cmd[2]
         assert cmd[-1] == "3"
 
-    def test_falls_back_to_path_lookup(self, monkeypatch):
+    def test_falls_back_to_path_lookup(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: None)
         monkeypatch.setattr(jaffle_shop.shutil, "which", lambda name: "/usr/bin/jafgen")
 
         assert jaffle_shop._jafgen_cmd(2) == ["/usr/bin/jafgen", "2"]
 
-    def test_missing_everywhere_raises_install_hint(self, monkeypatch):
+    def test_missing_everywhere_raises_install_hint(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: None)
         monkeypatch.setattr(jaffle_shop.shutil, "which", lambda name: None)
 
         with pytest.raises(RuntimeError, match="pip install jafgen"):
             jaffle_shop._jafgen_cmd(1)
 
-    def test_years_clamped_to_minimum_one(self, monkeypatch):
+    def test_years_clamped_to_minimum_one(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(jaffle_shop, "find_spec", lambda name: object())
 
         assert jaffle_shop._jafgen_cmd(0)[-1] == "1"
@@ -349,7 +349,7 @@ class TestResolveDemoDbPath:
 
 
 class TestBuildJaffleShopIdempotency:
-    def test_returns_false_and_reshifts_when_db_exists(self, tmp_path, monkeypatch):
+    def test_returns_false_and_reshifts_when_db_exists(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         db = tmp_path / "jaffle_shop.duckdb"
         # An up-to-date (bundled-schema) DuckDB file, so the reuse path applies.
         conn = duckdb.connect(str(db))

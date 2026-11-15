@@ -403,7 +403,7 @@ class TestGenerateJoinsDedup:
     """FK deduplication when joins are generated from the reflected keys."""
 
     @staticmethod
-    async def _ingest(tmp_path, monkeypatch, fks: list[ReflectedForeignKey]):
+    async def _ingest(tmp_path, monkeypatch: pytest.MonkeyPatch, fks: list[ReflectedForeignKey]):
         db = str(tmp_path / "dedup.db")
         with transaction(db) as conn:
             conn.executescript(
@@ -423,7 +423,7 @@ class TestGenerateJoinsDedup:
             report = await ingestion.ingest_datasource_report_async(datasource=ds, client=client)
         return next(m for m in report.models if m.name == "orders").joins
 
-    async def test_multiple_fks_to_same_target_preserved(self, tmp_path, monkeypatch):
+    async def test_multiple_fks_to_same_target_preserved(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         """Two distinct FKs to the same target table should both produce joins."""
         joins = await self._ingest(tmp_path, monkeypatch, [_fk("buyer_id"), _fk("seller_id")])
         assert len(joins) == 2
@@ -431,7 +431,7 @@ class TestGenerateJoinsDedup:
         assert [["buyer_id", "id"]] in pairs
         assert [["seller_id", "id"]] in pairs
 
-    async def test_exact_duplicate_fk_deduplicated(self, tmp_path, monkeypatch):
+    async def test_exact_duplicate_fk_deduplicated(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         """Identical FK pair to the same target should be deduplicated."""
         joins = await self._ingest(tmp_path, monkeypatch, [_fk("buyer_id"), _fk("buyer_id")])
         assert len(joins) == 1

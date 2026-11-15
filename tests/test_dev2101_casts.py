@@ -206,7 +206,7 @@ class TestTryCastEmission:
         await emit(q(dimensions=["id", {"expression": f"TRY_CAST(code AS {target})", "name": "x"}]), dialect=dialect)
 
 
-def _patch_profile(monkeypatch, *, version: tuple[int, int] | None = None, fail: bool = False) -> list[int]:
+def _patch_profile(monkeypatch: pytest.MonkeyPatch, *, version: tuple[int, int] | None = None, fail: bool = False) -> list[int]:
     calls: list[int] = []
 
     async def fake(_self) -> ServerProfile:
@@ -235,25 +235,25 @@ class TestPostgresTryCast:
     def test_profile_parse_tolerates_no_row(self) -> None:
         assert get_dialect("postgres").parse_server_profile(base_row=None) == ServerProfile()
 
-    async def test_postgres_16_guards_with_the_native_check(self, monkeypatch) -> None:
+    async def test_postgres_16_guards_with_the_native_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_profile(monkeypatch, version=(16, 2))
         sql = await emit(TRY_Q, dialect="postgres")
         assert "PG_INPUT_IS_VALID(" in sql.upper(), sql
 
     @pytest.mark.parametrize("version", [(15, 4), None])
-    async def test_older_or_unknown_server_gets_a_plain_cast(self, monkeypatch, version) -> None:
+    async def test_older_or_unknown_server_gets_a_plain_cast(self, monkeypatch: pytest.MonkeyPatch, version) -> None:
         _patch_profile(monkeypatch, version=version)
         sql = await emit(TRY_Q, dialect="postgres")
         assert "PG_INPUT_IS_VALID(" not in sql.upper(), sql
         assert "TRY_CAST" not in sql.upper(), sql
         assert _casts(sql, dialect="postgres"), sql
 
-    async def test_failed_probe_gets_a_plain_cast(self, monkeypatch) -> None:
+    async def test_failed_probe_gets_a_plain_cast(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_profile(monkeypatch, fail=True)
         sql = await emit(TRY_Q, dialect="postgres")
         assert "PG_INPUT_IS_VALID(" not in sql.upper(), sql
 
-    async def test_profile_probed_only_for_try_cast(self, monkeypatch) -> None:
+    async def test_profile_probed_only_for_try_cast(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls = _patch_profile(monkeypatch, version=(16, 2))
         await emit(q(dimensions=["id", {"expression": "CAST(code AS INT)", "name": "x"}]), dialect="postgres")
         assert calls == []

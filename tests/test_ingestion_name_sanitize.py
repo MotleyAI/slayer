@@ -219,7 +219,7 @@ class TestCollisionPolicy:
         assert report.skipped == []
 
     async def test_outcome_is_order_independent(
-        self, workspace: Path, monkeypatch
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Reversing the scan order must not change the (distinct) result."""
         ds = _sqlite_ds(workspace, self._SCRIPT)
@@ -261,7 +261,7 @@ class TestCollisionPolicy:
         assert report.skipped == []
 
     async def test_two_dunder_names_result_is_order_independent(
-        self, workspace: Path, monkeypatch
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Both distinct models appear regardless of scan order."""
         ds = _sqlite_ds(workspace, self._TWO_DUNDER)
@@ -288,7 +288,7 @@ class TestCollisionPolicy:
 
 class TestSkipBackstop:
     async def test_unmodellable_object_is_skipped_not_fatal(
-        self, workspace: Path, monkeypatch
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Anything that fails per-object construction is skipped, run intact."""
         ds = _sqlite_ds(
@@ -315,7 +315,7 @@ class TestSkipBackstop:
         assert "bad_one" in _skipped_names(report)
 
     async def test_fk_introspection_failure_does_not_abort_the_run(
-        self, workspace: Path, monkeypatch
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """FK introspection runs before the per-object backstop, and some dialects raise on views."""
         ds = _sqlite_ds(
@@ -341,7 +341,7 @@ class TestSkipBackstop:
 
 class TestIdleRelease:
     async def test_release_failure_does_not_mask_the_real_error(
-        self, workspace: Path, monkeypatch
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A raising idle release in the finally must not mask the in-flight error."""
         ds = _sqlite_ds(
@@ -382,7 +382,7 @@ class TestIdleRelease:
         assert released, "the idle release must still be attempted"
 
     async def test_release_failure_does_not_fail_a_successful_ingest(
-        self, workspace: Path, monkeypatch
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """With no in-flight error, a raising idle release must not fail the ingest."""
         ds = _sqlite_ds(

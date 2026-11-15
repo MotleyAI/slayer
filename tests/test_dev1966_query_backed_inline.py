@@ -103,7 +103,7 @@ class TestParity:
             columns=["clients.tier", "clients.r"],
             rows=[{"clients.tier": t, "clients.r": v} for t, v in AMOUNT_BY_TIER.items()])
 
-    async def test_a_model_consumed_twice(self, engine: SlayerQueryEngine, monkeypatch) -> None:
+    async def test_a_model_consumed_twice(self, engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> None:
         planned: List[Any] = []
         real = query_engine_module.plan_stages
 

@@ -2254,7 +2254,7 @@ class TestEditModelDatasourceMoveSafety:
         )
 
     async def test_move_save_failure_preserves_source(
-        self, mcp_server, storage: YAMLStorage, monkeypatch
+        self, mcp_server, storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         for n in ("db_a", "db_b"):
             await storage.save_datasource(DatasourceConfig(
@@ -2533,7 +2533,7 @@ class TestInspectModelRequiredVariables:
 class TestRunByNamePlanFlagsMCP:
     """``query(query="qb", dry_run=True)`` returns SQL without executing."""
     async def test_dry_run_run_by_name_returns_sql_without_executing(
-        self, mcp_server, storage: YAMLStorage, monkeypatch
+        self, mcp_server, storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
@@ -2775,7 +2775,7 @@ class TestDatasources:
         assert "replaced" in result
 
     async def test_create_auto_ingest_imports_dataset_description(
-        self, mcp_server, storage: YAMLStorage, tmp_path, monkeypatch
+        self, mcp_server, storage: YAMLStorage, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         db_path = str(tmp_path / "live.db")
         with transaction(db_path) as conn:

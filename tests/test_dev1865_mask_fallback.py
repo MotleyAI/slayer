@@ -31,7 +31,7 @@ def _rows(resp):
 
 @pytest.mark.parametrize("backend", ["sqlite", "duckdb"])
 async def test_forced_fallback_matches_the_having_lowering(
-    backend, monkeypatch,
+    backend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request = type("R", (), {"param": backend})()
     async for engine in make_exec_engine(request):

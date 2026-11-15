@@ -680,7 +680,7 @@ async def test_search_no_refresh_when_engine_is_none(
 
 @pytest.mark.asyncio
 async def test_search_stale_text_preserved_when_profile_raises(
-    stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
+    stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If the profiling query raises, the search hit falls back to
     the original (stale) rendered text. No crash. Storage stays untouched.
@@ -739,7 +739,7 @@ async def test_search_stale_text_preserved_when_profile_raises(
 
 @pytest.mark.asyncio
 async def test_search_numeric_column_hit_is_refreshed(
-    stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
+    stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A genuinely-unsampled NUMERIC column hit is back-filled by the search
     refresh path (min/max range), matching ``inspect``'s behavior."""
@@ -778,7 +778,7 @@ async def test_search_numeric_column_hit_is_refreshed(
 
 @pytest.mark.asyncio
 async def test_search_per_model_serialization_concurrent_hits(
-    stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
+    stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Codex finding #2: storage.update_column_sampled does a model-level
     read-modify-write. Two stale-column hits on the SAME model must NOT
@@ -874,7 +874,7 @@ async def test_search_per_model_serialization_concurrent_hits(
 
 @pytest.mark.asyncio
 async def test_search_cross_model_concurrency_is_allowed(
-    stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch,
+    stale_setup: tuple[StorageBackend, SlayerQueryEngine], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Codex round-3 finding #4: per the plan, refresh serializes within a
     ``(data_source, model_name)`` group AND parallelizes across groups via

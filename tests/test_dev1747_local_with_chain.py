@@ -79,7 +79,7 @@ async def _sql(query: SlayerQuery, *, dialect: str = "postgres") -> str:
     )
 
 
-def _assembler_spy(monkeypatch) -> list:
+def _assembler_spy(monkeypatch: pytest.MonkeyPatch) -> list:
     """Record the ``CteEntry`` list handed to ``assemble_with_chain``.
 
     Patched as BOUND in ``slayer.sql.generator`` (which does ``from … import
@@ -155,7 +155,7 @@ class TestNoTextRoundTrip:
         )
 
     async def test_chain_bodies_reach_the_assembler_as_ast(
-        self, monkeypatch,
+        self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The positive half. Every entry the chain hands the assembler must
         already be a ``exp.Select`` — a string body would mean the renderer
@@ -172,7 +172,7 @@ class TestNoTextRoundTrip:
                 f"{type(entry.query).__name__}, not exp.Select"
             )
 
-    async def test_chain_declares_its_dependencies(self, monkeypatch) -> None:
+    async def test_chain_declares_its_dependencies(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """D8's substantive change. Emitting in the right order is not the
         contract — DECLARING the dependency is, because the current code gets
         the order right by reading ``ctes[-1][0]`` positionally, which is

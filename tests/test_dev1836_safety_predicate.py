@@ -25,6 +25,7 @@ from tests._dev1836_fixtures import (
     segments_model,
 )
 from slayer.engine.cardinality import join_safety
+import pytest
 
 
 def _models_by_name() -> dict[str, SlayerModel]:
@@ -231,7 +232,7 @@ class TestMayInlineSeam:
         assert may_inline_crossing_inputs([("customers",)]) is False
         assert may_inline_crossing_inputs([]) is False
 
-    def test_the_seam_is_load_bearing(self, monkeypatch) -> None:
+    def test_the_seam_is_load_bearing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Flipping the seam must change the verdict — otherwise it is
         decorative. With it
         returning ``True`` a crossing-input local aggregate stays inline

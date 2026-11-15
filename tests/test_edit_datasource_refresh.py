@@ -33,7 +33,7 @@ async def _call(mcp_server, *, name: str, arguments: dict) -> str:
 
 @pytest.mark.asyncio
 async def test_edit_datasource_calls_refresh_datasource_with_new_description(
-    yaml_storage: YAMLStorage, monkeypatch,
+    yaml_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pin the refresh-on-edit contract: ``SearchService.refresh_datasource``
     must be called with the post-edit description so the persisted
@@ -89,7 +89,7 @@ async def test_edit_datasource_calls_refresh_datasource_with_new_description(
 
 @pytest.mark.asyncio
 async def test_edit_datasource_refresh_failure_is_best_effort(
-    yaml_storage: YAMLStorage, monkeypatch,
+    yaml_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Round-7 (CodeRabbit): when ``refresh_datasource`` raises after the
     save commits, the tool reports partial success rather than failing
@@ -125,7 +125,7 @@ async def test_edit_datasource_refresh_failure_is_best_effort(
 
 @pytest.mark.asyncio
 async def test_edit_datasource_no_refresh_when_description_unchanged(
-    yaml_storage: YAMLStorage, monkeypatch,
+    yaml_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The refresh is a no-op when description didn't actually change —
     saves a litellm round-trip on inert edits."""
@@ -158,7 +158,7 @@ async def test_edit_datasource_no_refresh_when_description_unchanged(
 
 @pytest.mark.asyncio
 async def test_edit_datasource_unknown_no_refresh(
-    yaml_storage: YAMLStorage, monkeypatch,
+    yaml_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Editing a missing datasource returns a friendly error AND does
     not trigger any refresh call (otherwise we'd embed nothing under

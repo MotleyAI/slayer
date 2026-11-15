@@ -269,7 +269,7 @@ class TestUnanalysableText:
     def test_is_a_slayer_error(self) -> None:
         assert issubclass(UnanalyzableAggregationParameterError, SlayerError)
 
-    async def test_no_sql_reaches_the_database(self, engine, monkeypatch) -> None:
+    async def test_no_sql_reaches_the_database(self, engine, monkeypatch: pytest.MonkeyPatch) -> None:
         sent = execution_spy(monkeypatch)
         query = orders_q(measures=[{"formula": "wbad_agg(amount)", "name": "w"}])
         with pytest.raises(UnanalyzableAggregationParameterError):

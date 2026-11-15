@@ -67,7 +67,7 @@ def _canon(rows: list[dict]) -> list[tuple]:
                                 for k, v in r.items())) for r in rows), key=repr)
 
 
-def _data_calls(monkeypatch) -> list[str]:
+def _data_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
     orig = SlayerSQLClient.execute
 
@@ -613,7 +613,7 @@ class TestTenancyAndCache:
         }
 
     @pytest.mark.parametrize("backend", BACKENDS)
-    async def test_cache_hit_within_the_bucket_miss_after_rollover(self, backend, monkeypatch) -> None:
+    async def test_cache_hit_within_the_bucket_miss_after_rollover(self, backend, monkeypatch: pytest.MonkeyPatch) -> None:
         calls = _data_calls(monkeypatch)
         clock = PinnedClock(D(2025, 3, 2, 12))
         query = spine_query(measures=TWO_FACTS, date_range=["2025-01-01", None])

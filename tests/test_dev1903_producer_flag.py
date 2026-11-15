@@ -179,7 +179,7 @@ class TestTwoEnvironmentTypes:
             elaborated_mod.ElaboratedProducer(query=query, **inputs)  # pyright: ignore[reportArgumentType]
 
 
-def _count_top_only(monkeypatch) -> dict:
+def _count_top_only(monkeypatch: pytest.MonkeyPatch) -> dict:
     calls = {"dispose": 0, "total_routing": 0}
     dispose, total = stages.dispose_population_filters, stages._assert_total_routing
 
@@ -200,7 +200,7 @@ class TestEverySiteStatesItsPopulation:
     """The cross-model producer re-roots its own filters; every other site inherits."""
 
     @pytest.fixture
-    def populations(self, monkeypatch) -> list:
+    def populations(self, monkeypatch: pytest.MonkeyPatch) -> list:
         seen: list = []
         real = stages.compile_synthesized
 
@@ -285,7 +285,7 @@ class TestTopOnlySteps:
         assert outer_partition(plan_as_producer(query=query, bundle=_sales_bundle())) \
             is not None
 
-    def test_non_root_authored_stage_is_top_level(self, monkeypatch):
+    def test_non_root_authored_stage_is_top_level(self, monkeypatch: pytest.MonkeyPatch):
         """Every authored DAG stage disposes and checks routing exactly once; its own
         producer does neither."""
         calls = _count_top_only(monkeypatch)
@@ -309,13 +309,13 @@ class TestTopOnlySteps:
             bundle=_customers_bundle()), id="late-wrap"),
         pytest.param(lambda: _monthly_plan("time_shift(sum(amount), -1)"), id="shifted"),
     ])
-    def test_late_producers_never_run_top_only_steps(self, monkeypatch, plan):
+    def test_late_producers_never_run_top_only_steps(self, monkeypatch: pytest.MonkeyPatch, plan):
         calls = _count_top_only(monkeypatch)
         pq = plan()
         assert pq.regroup_attach_plans
         assert calls == {"dispose": 1, "total_routing": 1}
 
-    def test_total_routing(self, monkeypatch):
+    def test_total_routing(self, monkeypatch: pytest.MonkeyPatch):
         """Blinded discovery raises at the top; a producer holds the root inline."""
         monkeypatch.setattr(stages, "discover_roots", lambda *_a, **_k: [])
         query = dev1836_q(dimensions=["status", "channel"], measures=[

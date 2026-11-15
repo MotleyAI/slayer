@@ -69,7 +69,7 @@ def _seed_orders_db_at(db_path) -> None:
         cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", rows)
 
 
-async def _engine_with(*models: SlayerModel) -> tuple:
+async def _engine_with(*models: SlayerModel) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """Build a real SQLite datasource + YAML storage with the given models
     saved. Returns (engine, tmpdir_handle); caller keeps the tmpdir alive.
     """
@@ -790,8 +790,10 @@ class TestInspectShowsTemplate:
         )
         engine, tmp = await _engine_with(model)
         try:
+            stored = await engine.storage.get_model("floored")
+            assert stored is not None
             out = await render_model_inspection(
-                model=await engine.storage.get_model("floored"),
+                model=stored,
                 storage=engine.storage,
                 engine=None,
                 show_sql=True,
@@ -1095,6 +1097,7 @@ class TestModelImmutabilityAcrossExecutes:
                 await engine.execute(missing_var_q)
             # The stored model is untouched — reloading shows the template.
             reloaded = await engine.storage.get_model("orders")
+            assert reloaded is not None
             assert reloaded.filters == ["region = '{region}'"]
         finally:
             tmp.cleanup()

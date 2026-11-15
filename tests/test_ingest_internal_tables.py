@@ -351,7 +351,7 @@ class TestSqlitePrefixOnAnotherEngine:
 
 class TestSkipAndHideAreDisjoint:
     def test_construction_failure_reports_skipped_only(
-        self, workspace: Path, monkeypatch
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A per-object build failure lands in `skipped`, not `hidden_internals` — no model was produced to hide."""
         real = ing._build_one_model
@@ -888,7 +888,7 @@ def _async_return(value):
     return _call
 
 
-def _patch_ingest(monkeypatch, result, captured: dict | None = None) -> None:
+def _patch_ingest(monkeypatch: pytest.MonkeyPatch, result, captured: dict | None = None) -> None:
     async def _fake(**kwargs):
         if captured is not None:
             captured.update(kwargs)
@@ -909,7 +909,7 @@ def _patch_ingest(monkeypatch, result, captured: dict | None = None) -> None:
 
 class TestCliExitCodes:
     def test_hidden_internals_alone_exit_zero(
-        self, workspace: Path, monkeypatch, capsys
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
         """Hiding is the intended outcome with nothing for the user to fix, so it exits 0 unlike a skip."""
         _patch_ingest(monkeypatch, _result_with_hidden())
@@ -919,7 +919,7 @@ class TestCliExitCodes:
         assert "Hidden (2)" in out
 
     def test_skipped_alongside_hidden_still_exits_one(
-        self, workspace: Path, monkeypatch
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _patch_ingest(
             monkeypatch,
@@ -938,7 +938,7 @@ class TestCliExitCodes:
 
 class TestCliFlagThreading:
     def test_flag_defaults_to_false(
-        self, workspace: Path, monkeypatch
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         captured: dict = {}
         _patch_ingest(monkeypatch, _result_with_hidden(), captured)
@@ -946,7 +946,7 @@ class TestCliFlagThreading:
         assert captured["surface_internals"] is False
 
     def test_flag_reaches_the_engine(
-        self, workspace: Path, monkeypatch
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         captured: dict = {}
         _patch_ingest(monkeypatch, _result_with_hidden(), captured)
@@ -958,7 +958,7 @@ class TestParserWiring:
     """The parser is built inline in ``main()``, so drive it through ``main()`` with a stubbed handler."""
 
     @staticmethod
-    def _capture(monkeypatch, argv: list[str], handler: str) -> SimpleNamespace:
+    def _capture(monkeypatch: pytest.MonkeyPatch, argv: list[str], handler: str) -> SimpleNamespace:
         captured: dict[str, SimpleNamespace] = {}
 
         def _stub(args, *_rest, **_kwargs):
@@ -970,13 +970,13 @@ class TestParserWiring:
         main()
         return captured["args"]
 
-    def test_ingest_defaults_the_flag_off(self, monkeypatch) -> None:
+    def test_ingest_defaults_the_flag_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
         args = self._capture(
             monkeypatch, ["ingest", "--datasource", "ds"], "_run_ingest"
         )
         assert args.surface_internals is False
 
-    def test_ingest_accepts_the_flag(self, monkeypatch) -> None:
+    def test_ingest_accepts_the_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
         args = self._capture(
             monkeypatch,
             ["ingest", "--datasource", "ds", "--surface-internals"],
@@ -984,7 +984,7 @@ class TestParserWiring:
         )
         assert args.surface_internals is True
 
-    def test_datasources_create_accepts_the_flag(self, monkeypatch) -> None:
+    def test_datasources_create_accepts_the_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
         args = self._capture(
             monkeypatch,
             [
@@ -1083,7 +1083,7 @@ class TestRest:
             is True
         )
 
-    def test_route_forwards_the_flag(self, workspace: Path, monkeypatch) -> None:
+    def test_route_forwards_the_flag(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The route actually forwards the flag, not just accepts it on `IngestRequest`."""
         captured: dict = {}
 
@@ -1103,7 +1103,7 @@ class TestRest:
         assert captured["surface_internals"] is True
 
     def test_route_defaults_the_flag_off(
-        self, workspace: Path, monkeypatch
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         captured: dict = {}
 

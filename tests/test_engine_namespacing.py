@@ -62,7 +62,7 @@ def _ds(name: str) -> DatasourceConfig:
     return DatasourceConfig(name=name, type="sqlite", database=":memory:")
 
 
-async def _engine_with(*models: SlayerModel, datasources: list[str]) -> tuple:
+async def _engine_with(*models: SlayerModel, datasources: list[str]) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
     for n in datasources:

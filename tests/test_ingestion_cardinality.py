@@ -125,7 +125,7 @@ def _create_schema(db_path: str) -> None:
         )
 
 
-async def _setup(workspace: Path) -> tuple:
+async def _setup(workspace: Path) -> tuple[YAMLStorage, DatasourceConfig, str]:
     db_path = str(workspace / "live.db")
     _create_schema(db_path)
     storage = YAMLStorage(base_dir=str(workspace / "storage"))
@@ -252,12 +252,14 @@ class TestStructuralCardinality:
     async def test_fk_join_defaults_many_to_one(self, workspace: Path) -> None:
         storage, _, _ = await _setup(workspace)
         orders = await storage.get_model("orders", data_source="ds")
+        assert orders is not None
         j = _join_to(orders, "customers")[0]
         assert j.cardinality is JoinCardinality.MANY_TO_ONE
 
     async def test_pk_source_fk_join_is_one_to_one(self, workspace: Path) -> None:
         storage, _, _ = await _setup(workspace)
         profiles = await storage.get_model("user_profiles", data_source="ds")
+        assert profiles is not None
         j = _join_to(profiles, "customers")[0]
         # user_profiles.customer_id is the PK (source unique) and customers.id is
         # the PK (target unique) => one_to_one.
@@ -266,6 +268,7 @@ class TestStructuralCardinality:
     async def test_composite_fk_join_many_to_one(self, workspace: Path) -> None:
         storage, _, _ = await _setup(workspace)
         mem = await storage.get_model("memberships", data_source="ds")
+        assert mem is not None
         j = _join_to(mem, "org_units")[0]
         assert j.cardinality is JoinCardinality.MANY_TO_ONE
 
@@ -276,6 +279,7 @@ class TestStructuralCardinality:
         # customers PK => both sides unique => one_to_one.
         storage, _, _ = await _setup(workspace)
         accounts = await storage.get_model("accounts", data_source="ds")
+        assert accounts is not None
         j = _join_to(accounts, "customers")[0]
         assert j.cardinality is JoinCardinality.ONE_TO_ONE
 
@@ -289,12 +293,14 @@ class TestColumnUnique:
     async def test_unique_constraint_sets_unique_flag(self, workspace: Path) -> None:
         storage, _, _ = await _setup(workspace)
         customers = await storage.get_model("customers", data_source="ds")
+        assert customers is not None
         email = next(c for c in customers.columns if c.name == "email")
         assert email.unique is True
 
     async def test_non_unique_column_stays_false(self, workspace: Path) -> None:
         storage, _, _ = await _setup(workspace)
         customers = await storage.get_model("customers", data_source="ds")
+        assert customers is not None
         region = next(c for c in customers.columns if c.name == "region")
         assert region.unique is False
 
@@ -303,6 +309,7 @@ class TestColumnUnique:
     ) -> None:
         storage, _, _ = await _setup(workspace)
         customers = await storage.get_model("customers", data_source="ds")
+        assert customers is not None
         id_col = next(c for c in customers.columns if c.name == "id")
         assert id_col.primary_key is True
         # primary_key is the canonical marker — unique is NOT redundantly stamped.

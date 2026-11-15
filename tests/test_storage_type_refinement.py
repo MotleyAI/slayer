@@ -374,7 +374,7 @@ class TestYamlStorageRefinementOnLoad:
             await storage.get_model("items", data_source="live")
 
     async def test_unreachable_datasource_propagates_through_get_model(
-        self, sqlite_with_int_double_text, monkeypatch
+        self, sqlite_with_int_double_text, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """If introspection fails during first-load refinement, the error
         propagates out of get_model — the v4 model isn't silently kept at

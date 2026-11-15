@@ -386,7 +386,7 @@ class TestPlanStructure:
 
 
 class TestPlanTimeInvariant:
-    def test_an_inline_kernel_requiring_aggregate_trips_the_plan_assertion(self, monkeypatch) -> None:
+    def test_an_inline_kernel_requiring_aggregate_trips_the_plan_assertion(self, monkeypatch: pytest.MonkeyPatch) -> None:
         real = stages._producer_nesting_rule
 
         def inline_last_roots(*args, **kwargs):

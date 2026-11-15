@@ -12,6 +12,7 @@ from contextlib import contextmanager
 
 from slayer.cli import main as cli_main
 from slayer.storage.yaml_storage import YAMLStorage
+import pytest
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "cube_project")
 
@@ -59,7 +60,7 @@ def test_import_cube_writes_models_and_report(tmp_path):
     assert report["model_count"] >= 3
 
 
-def test_import_cube_survives_save_failure(tmp_path, monkeypatch, capsys):
+def test_import_cube_survives_save_failure(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys):
     # A save_model failure on one model must not abort the run — the report is
     # still written ("report, don't crash"), the failure is categorized
     # SAVE_FAILED (not the misleading PARSE_ERROR), and the summary reports the

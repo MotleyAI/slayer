@@ -303,7 +303,7 @@ class TestPolicyNeedsNoProbe:
         ],
         ids=["join", "anchor_only", "column"],
     )
-    async def test_policy_only_query_sends_nothing(self, tmp_path, ch_server, monkeypatch, ruleset):
+    async def test_policy_only_query_sends_nothing(self, tmp_path, ch_server, monkeypatch: pytest.MonkeyPatch, ruleset):
         fake = ch_server.start(version="25.4.1.1", readonly=1, correlated=False)
         engine = await _ch_engine(tmp_path, policy=SessionPolicy(ruleset=ruleset))
         monkeypatch.setattr(engine, "_column_present", _always_present)
@@ -376,7 +376,7 @@ class TestGeneratorAttachesTheSetting:
         sql = _generated(q(dimensions=["customers.tier"], measures=[CM]), dialect="clickhouse")
         assert _SETTING not in sql
 
-    async def test_gating_adds_no_reparse_of_the_rendered_statement(self, tmp_path, ch_server, monkeypatch):
+    async def test_gating_adds_no_reparse_of_the_rendered_statement(self, tmp_path, ch_server, monkeypatch: pytest.MonkeyPatch):
         """sql §3.1: the engine attaches nothing by re-parsing; ClickHouse parses no more than DuckDB."""
         ch_server.start(version="25.4.1.1", readonly=0)
         real = sqlglot.parse_one
@@ -401,7 +401,7 @@ class TestOtherDialects:
         sql = await gen(PUSHED, dialect="duckdb")
         assert _SETTING not in sql
 
-    async def test_non_gated_dialect_runs_no_probe(self, monkeypatch):
+    async def test_non_gated_dialect_runs_no_probe(self, monkeypatch: pytest.MonkeyPatch):
         async def boom(self):  # NOSONAR(S7503) — must stay async
             raise AssertionError("non-gated dialects need no server profile")
 

@@ -246,24 +246,24 @@ class TestSnowflakeTemporalTryCast:
 
 
 class TestPostgresVersion:
-    async def test_postgres_16_guards_malformed_text(self, monkeypatch) -> None:
+    async def test_postgres_16_guards_malformed_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
         patch_profile(monkeypatch, version=(16, 2))
         sql = await emit_lib(JSON_VALUE_Q, dialect="postgres")
         assert "PG_INPUT_IS_VALID(" in sql.upper(), sql
 
-    async def test_validity_check_reads_text(self, monkeypatch) -> None:
+    async def test_validity_check_reads_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A jsonb column declared TEXT has no implicit cast to pg_input_is_valid's text argument.
         patch_profile(monkeypatch, version=(16, 2))
         sql = await emit_lib(JSON_VALUE_Q, dialect="postgres")
         assert "PG_INPUT_IS_VALID(CAST(" in sql.upper(), sql
 
     @pytest.mark.parametrize("version", [(15, 4), None])
-    async def test_older_or_unknown_server_follows_the_cast_contract(self, monkeypatch, version) -> None:
+    async def test_older_or_unknown_server_follows_the_cast_contract(self, monkeypatch: pytest.MonkeyPatch, version) -> None:
         patch_profile(monkeypatch, version=version)
         sql = await emit_lib(JSON_VALUE_Q, dialect="postgres")
         assert "PG_INPUT_IS_VALID(" not in sql.upper(), sql
 
-    async def test_profile_probed_for_json_value(self, monkeypatch) -> None:
+    async def test_profile_probed_for_json_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls = patch_profile(monkeypatch, version=(16, 2))
         await emit_lib(lib_query("lower(word)"), dialect="postgres")
         assert calls == []

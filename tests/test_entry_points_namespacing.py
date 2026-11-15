@@ -179,7 +179,7 @@ class TestMCPModelToolsDataSourceArg:
         assert "db_a" in result
 
     async def test_inspect_model_helper_chain_scoped_to_data_source(
-        self, mcp_server, storage: StorageBackend, monkeypatch
+        self, mcp_server, storage: StorageBackend, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The helpers backing the model ``inspect`` (``_get_row_count``, sample
         profiling, the sample-data query) all run ``engine.execute`` against the model.

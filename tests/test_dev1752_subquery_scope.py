@@ -40,6 +40,7 @@ from tests.test_dev1745_mode_a_door import (
     _scope,
     _sql_of,
 )
+import pytest
 
 
 # The orders/customers/regions ScopeFrame fixtures are shared with the DEV-1745
@@ -280,7 +281,7 @@ class TestExecution:
             assert _ids(resp) == {1, 3}, resp.data
 
     async def test_correlated_subquery_passes_scope_validation(
-        self, monkeypatch,
+        self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A correlated Mode-A subquery references the outer relation — legal
         SQL that DEV-1840's correlation-aware ``assert_scope_closed`` now

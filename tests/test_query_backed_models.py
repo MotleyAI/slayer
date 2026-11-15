@@ -39,7 +39,7 @@ def _ds() -> DatasourceConfig:
     return DatasourceConfig(name="ds", type="sqlite", database=":memory:")
 
 
-async def _engine_with_orders(*extra_models: SlayerModel) -> tuple:
+async def _engine_with_orders(*extra_models: SlayerModel) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """Build a YAMLStorage with `orders` saved + any extras, and an engine.
 
     Returns (engine, tmpdir_handle). Caller must keep the tmpdir alive.
@@ -157,6 +157,7 @@ class TestVariablePrecedence:
             resp = await engine.execute(q, variables={"unrelated": 99}, dry_run=True)
             # 'r' kept its original value because the kwarg didn't override it
             # ('unrelated' is unknown and silently ignored).
+            assert resp.sql is not None
             assert "'US'" in resp.sql
         finally:
             tmp.cleanup()
@@ -195,6 +196,7 @@ class TestVariablePrecedence:
         engine, tmp = await _engine_with_orders(saved)
         try:
             resp = await engine.execute("rev_filtered", dry_run=True)
+            assert resp.sql is not None
             assert "'DEFAULT_R'" in resp.sql
         finally:
             tmp.cleanup()
@@ -213,6 +215,7 @@ class TestVariablePrecedence:
         engine, tmp = await _engine_with_orders(saved)
         try:
             resp = await engine.execute("rev_filtered", variables={"r": "US"}, dry_run=True)
+            assert resp.sql is not None
             assert "'US'" in resp.sql
             assert "DEFAULT_R" not in resp.sql
         finally:
@@ -424,7 +427,7 @@ class TestCacheRefreshOnExecute:
         """
         engine, tmp = await _engine_with_orders()
         try:
-            queries = [
+            queries: list[SlayerQuery | dict] = [
                 SlayerQuery.model_validate({
                     "name": "staged",
                     "source_model": "orders",
@@ -784,6 +787,7 @@ class TestJoinTargetIsQueryBacked:
             ))
             # Add a join from orders → rev_filtered on region.
             orders = await engine.storage.get_model("orders")
+            assert orders is not None
             orders = orders.model_copy(update={
                 "joins": [ModelJoin(
                     target_model="rev_filtered",
@@ -870,6 +874,7 @@ class TestJoinTargetIsQueryBacked:
             )
             # Add a join from orders → rev_by_region on region.
             orders = await engine.storage.get_model("orders")
+            assert orders is not None
             orders = orders.model_copy(update={
                 "joins": [ModelJoin(
                     target_model="rev_by_region",
@@ -897,7 +902,7 @@ class TestRunByNamePlanFlags:
     so REST/MCP/CLI run-by-name doesn't silently execute when plan-only was asked.
     """
 
-    async def test_dry_run_kwarg_returns_sql_without_executing(self, monkeypatch) -> None:
+    async def test_dry_run_kwarg_returns_sql_without_executing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Caller passes dry_run=True on a stored stage that has dry_run=False."""
         saved = SlayerModel(
             name="rev_by_region",
@@ -927,7 +932,7 @@ class TestRunByNamePlanFlags:
         finally:
             tmp.cleanup()
 
-    async def test_explain_kwarg_routes_through_client_explain(self, monkeypatch) -> None:
+    async def test_explain_kwarg_routes_through_client_explain(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Caller passes explain=True; engine should invoke the client's explain
         rather than executing the raw query.
         """

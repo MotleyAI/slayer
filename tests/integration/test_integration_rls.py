@@ -287,7 +287,7 @@ async def test_get_result_column_types_blocking_policy_degrades(rls_storage):
 # -- None presence re-probes (don't cache None) ------------------------------
 
 
-async def test_none_presence_reprobes_and_self_heals(rls_storage, monkeypatch):
+async def test_none_presence_reprobes_and_self_heals(rls_storage, monkeypatch: pytest.MonkeyPatch):
     """A transient introspection failure (-> None -> fail closed) is not
     cached: once introspection recovers, the next query succeeds."""
     real = SqliteDialect.reflect_columns
@@ -315,7 +315,7 @@ async def test_none_presence_reprobes_and_self_heals(rls_storage, monkeypatch):
 # -- column-presence cache ---------------------------------------------------
 
 
-async def test_column_presence_is_cached(rls_storage, monkeypatch):
+async def test_column_presence_is_cached(rls_storage, monkeypatch: pytest.MonkeyPatch):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
 
     calls = {"n": 0}
@@ -561,7 +561,7 @@ async def test_dry_run_shows_exists_wrap(rls_join_storage):
     assert "organization_uuid = 'orgA'" in flat
 
 
-def _record_profile_probes(monkeypatch) -> list[str]:
+def _record_profile_probes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     probes: list[str] = []
 
     async def record(self):  # NOSONAR(S7503) — must stay async
@@ -572,7 +572,7 @@ def _record_profile_probes(monkeypatch) -> list[str]:
     return probes
 
 
-async def test_execute_runs_no_profile_probe(rls_join_storage, monkeypatch):
+async def test_execute_runs_no_profile_probe(rls_join_storage, monkeypatch: pytest.MonkeyPatch):
     """A join policy alone never probes the server profile."""
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     probes = _record_profile_probes(monkeypatch)
@@ -582,7 +582,7 @@ async def test_execute_runs_no_profile_probe(rls_join_storage, monkeypatch):
     assert probes == []
 
 
-async def test_get_result_column_types_runs_no_profile_probe(rls_join_storage, monkeypatch):
+async def test_get_result_column_types_runs_no_profile_probe(rls_join_storage, monkeypatch: pytest.MonkeyPatch):
     engine = SlayerQueryEngine(storage=rls_join_storage, policy=_join_policy(ORG_A))
     probes = _record_profile_probes(monkeypatch)
     await engine.get_result_column_types(model_name="orders", data_source="rls_sqlite")

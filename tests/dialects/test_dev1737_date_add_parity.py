@@ -115,7 +115,7 @@ def _count(node: Expression) -> int:
 
 
 @pytest.fixture
-def spy(monkeypatch):
+def spy(monkeypatch: pytest.MonkeyPatch):
     calls: list[tuple[str, int]] = []
 
     def install(dialect: str) -> list[tuple[str, int]]:

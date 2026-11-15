@@ -44,7 +44,7 @@ def test_mixed_grain_combine_plans_under_the_assert(formula) -> None:
 
 
 @pytest.mark.parametrize("formula", [_TWO_ATTACHED, _INLINE_PLUS_ATTACHED])
-def test_assert_fires_when_elaboration_drops_broadcasts(monkeypatch, formula) -> None:
+def test_assert_fires_when_elaboration_drops_broadcasts(monkeypatch: pytest.MonkeyPatch, formula) -> None:
     real = elaborate.build_environment
 
     def stripped(**kwargs):

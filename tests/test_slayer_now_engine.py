@@ -30,7 +30,7 @@ class _FalseyClock:
         return EXPLICIT_NOW
 
 
-async def test_pinned_datetime_drives_relative_tokens(monkeypatch) -> None:
+async def test_pinned_datetime_drives_relative_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
     async with now_engine() as engine:
         got = await ids(engine, LAST_3_MONTHS)
@@ -39,7 +39,7 @@ async def test_pinned_datetime_drives_relative_tokens(monkeypatch) -> None:
     assert not {1, 5} & got
 
 
-async def test_date_only_pins_midnight(monkeypatch) -> None:
+async def test_date_only_pins_midnight(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", "2025-07-15")
     async with now_engine() as engine:
         today = await ids(engine, "ts = 'today'")
@@ -49,7 +49,7 @@ async def test_date_only_pins_midnight(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("value", [None, "", "   "], ids=["unset", "empty", "whitespace"])
-async def test_unset_or_blank_keeps_host_clock(monkeypatch, value) -> None:
+async def test_unset_or_blank_keeps_host_clock(monkeypatch: pytest.MonkeyPatch, value) -> None:
     if value is None:
         monkeypatch.delenv("SLAYER_NOW", raising=False)
     else:
@@ -67,20 +67,20 @@ async def test_unset_or_blank_keeps_host_clock(monkeypatch, value) -> None:
 
 
 @pytest.mark.parametrize("value", [PIN, "yesterday-ish", "2025-07-15T12:00:00Z"], ids=["pin", "unparseable", "aware"])
-async def test_explicit_clock_wins(monkeypatch, value) -> None:
+async def test_explicit_clock_wins(monkeypatch: pytest.MonkeyPatch, value) -> None:
     monkeypatch.setenv("SLAYER_NOW", value)
     async with now_engine(clock=lambda: EXPLICIT_NOW) as engine:
         assert await ids(engine, LAST_3_MONTHS) == EXPLICIT_WINDOW == {14}
 
 
-async def test_falsey_explicit_clock_wins(monkeypatch) -> None:
+async def test_falsey_explicit_clock_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
     async with now_engine(clock=_FalseyClock()) as engine:
         assert await ids(engine, LAST_3_MONTHS) == EXPLICIT_WINDOW
 
 
 @pytest.mark.parametrize("value", ["2025-07-15T12:00:00Z", "2025-07-15T12:00:00+02:00"], ids=["Z", "offset"])
-def test_timezone_aware_value_rejected_at_build(monkeypatch, tmp_path, value) -> None:
+def test_timezone_aware_value_rejected_at_build(monkeypatch: pytest.MonkeyPatch, tmp_path, value) -> None:
     monkeypatch.setenv("SLAYER_NOW", value)
     storage = YAMLStorage(base_dir=str(tmp_path))
     with pytest.raises(SlayerError) as exc:
@@ -91,7 +91,7 @@ def test_timezone_aware_value_rejected_at_build(monkeypatch, tmp_path, value) ->
     assert "naive" in msg.lower()
 
 
-def test_unparseable_value_rejected_at_build(monkeypatch, tmp_path) -> None:
+def test_unparseable_value_rejected_at_build(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("SLAYER_NOW", "yesterday-ish")
     storage = YAMLStorage(base_dir=str(tmp_path))
     with pytest.raises(SlayerError) as exc:
@@ -100,7 +100,7 @@ def test_unparseable_value_rejected_at_build(monkeypatch, tmp_path) -> None:
     assert "yesterday-ish" in str(exc.value)
 
 
-async def test_variable_is_read_when_the_engine_is_built(monkeypatch) -> None:
+async def test_variable_is_read_when_the_engine_is_built(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
     async with now_engine() as first:
         monkeypatch.setenv("SLAYER_NOW", "2026-01-10T09:00:00")
@@ -112,7 +112,7 @@ async def test_variable_is_read_when_the_engine_is_built(monkeypatch) -> None:
             second.close()
 
 
-async def test_whole_periods_default_upper_bound_uses_pin(monkeypatch) -> None:
+async def test_whole_periods_default_upper_bound_uses_pin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", "2025-07-15T12:30:00")
     since_may = ["ts >= '2025-05-01'"]
     async with now_engine() as engine:
@@ -130,7 +130,7 @@ def _spine_months(resp) -> set[str]:
     return {month_key(r["time_spine.timestamp"]) for r in resp.data}
 
 
-async def test_time_spine_default_upper_bound_uses_pin(monkeypatch) -> None:
+async def test_time_spine_default_upper_bound_uses_pin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
     query = SlayerQuery.model_validate({
         "measures": [{"formula": "count(ev.id)", "name": "n"}],

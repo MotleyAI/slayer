@@ -1206,7 +1206,7 @@ class TestWindowChainReuse:
 # Test 17 (revised), 38, 39, 40, 41 — call-site / contract pins.
 class TestCallSitesAndContractPins:
     async def test_get_result_column_types_renders_through_planned_stages(
-        self, orders_model: SlayerModel, tmp_path, monkeypatch,
+        self, orders_model: SlayerModel, tmp_path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``get_result_column_types`` builds its type probe once, through ``build_planned_statement``."""
         storage = YAMLStorage(base_dir=str(tmp_path))

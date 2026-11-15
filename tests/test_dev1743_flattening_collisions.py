@@ -186,7 +186,7 @@ class TestQueryBackedFlattenMessage:
 
     @pytest.mark.asyncio
     async def test_collision_fires_before_build_flat_rename_wrapper(
-        self, monkeypatch
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """FAIL-FIRST [C9]: the flatten-collision check must fire BEFORE
         ``build_flat_rename_wrapper``. We stub the wrapper to raise a sentinel;

@@ -206,7 +206,7 @@ class OfflineChecks:
     corpus: ClassVar[Corpus]
 
     @pytest.fixture(params=["yaml", "sqlite"])
-    def offline_store(self, request, tmp_path, monkeypatch) -> StorageBackend:
+    def offline_store(self, request, tmp_path, monkeypatch: pytest.MonkeyPatch) -> StorageBackend:
         return offline(self.corpus, backend=request.param, tmp=tmp_path, monkeypatch=monkeypatch)
 
     async def test_every_document_loads_without_a_connection(self, offline_store):

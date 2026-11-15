@@ -89,7 +89,7 @@ def _create_schema(db_path: str) -> None:
         )
 
 
-async def _setup(workspace: Path, *, persist_models: bool = True) -> tuple:
+async def _setup(workspace: Path, *, persist_models: bool = True) -> tuple[YAMLStorage, DatasourceConfig, str]:
     db_path = str(workspace / "live.db")
     _create_schema(db_path)
     storage = YAMLStorage(base_dir=str(workspace / "storage"))

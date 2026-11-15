@@ -135,19 +135,19 @@ class TestEmission:
         assert literals, sql
         assert not any(lit.is_string for lit in literals), sql
 
-    async def test_postgres_16_gets_the_null_on_error_form(self, monkeypatch) -> None:
+    async def test_postgres_16_gets_the_null_on_error_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
         patch_profile(monkeypatch, version=(16, 2))
         sql = await emit_lib(lib_query(filters=["num_txt > 100"]), dialect="postgres")
         assert "PG_INPUT_IS_VALID(" in sql.upper(), sql
 
     @pytest.mark.parametrize("version", [(15, 4), None])
-    async def test_older_or_unknown_postgres_gets_a_plain_cast(self, monkeypatch, version) -> None:
+    async def test_older_or_unknown_postgres_gets_a_plain_cast(self, monkeypatch: pytest.MonkeyPatch, version) -> None:
         patch_profile(monkeypatch, version=version)
         sql = await emit_lib(lib_query(filters=["num_txt > 100"]), dialect="postgres")
         assert "PG_INPUT_IS_VALID(" not in sql.upper(), sql
         assert list(_where(sql, dialect="postgres").find_all(exp.Cast)), sql
 
-    async def test_profile_probed_for_coercion(self, monkeypatch) -> None:
+    async def test_profile_probed_for_coercion(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls = patch_profile(monkeypatch, version=(16, 2))
         await emit_lib(lib_query(filters=["qty > 1"]), dialect="postgres")
         assert calls == []

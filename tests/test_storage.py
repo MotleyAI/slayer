@@ -101,7 +101,7 @@ def test_atomic_write_long_multibyte_basename(tmp_path) -> None:
     assert list(tmp_path.iterdir()) == [path]
 
 
-def test_atomic_write_dir_sync_failure_does_not_fail_write(tmp_path, monkeypatch) -> None:
+def test_atomic_write_dir_sync_failure_does_not_fail_write(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The post-replace directory sync is best-effort: a failure there (here the
     # dir-fd close) must not turn an already-installed write into a raised error.
     path = tmp_path / "model.yaml"
@@ -117,7 +117,7 @@ def test_atomic_write_dir_sync_failure_does_not_fail_write(tmp_path, monkeypatch
     assert path.read_text() == "new"
 
 
-def test_atomic_write_cleanup_error_does_not_mask_original(tmp_path, monkeypatch) -> None:
+def test_atomic_write_cleanup_error_does_not_mask_original(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "model.yaml"
     path.write_text("old")
 
@@ -135,7 +135,7 @@ def test_atomic_write_cleanup_error_does_not_mask_original(tmp_path, monkeypatch
     assert path.read_text() == "old"
 
 
-def test_atomic_write_failure_preserves_target_and_cleans_temp(tmp_path, monkeypatch) -> None:
+def test_atomic_write_failure_preserves_target_and_cleans_temp(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "model.yaml"
     path.write_text("old")
     real_fdopen = os.fdopen

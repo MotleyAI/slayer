@@ -213,7 +213,7 @@ class TestLowerings:
 
 class TestSqlServerVersion:
     @pytest.mark.parametrize("expr", ["regexp_like(code, '^a')", "code ~ '^a'"])
-    async def test_sql_server_2022_fails_closed(self, monkeypatch, expr: str) -> None:
+    async def test_sql_server_2022_fails_closed(self, monkeypatch: pytest.MonkeyPatch, expr: str) -> None:
         patch_profile(monkeypatch, version=(16, 0))
         query = lib_query(filters=[expr])
         with pytest.raises(SlayerError) as info:
@@ -221,22 +221,22 @@ class TestSqlServerVersion:
         assert "2025" in str(info.value), str(info.value)
 
     @pytest.mark.parametrize("expr", ["regexp_extract(code, 'a')", "regexp_replace(code, 'a', 'b')"])
-    async def test_every_regex_function_is_gated(self, monkeypatch, expr: str) -> None:
+    async def test_every_regex_function_is_gated(self, monkeypatch: pytest.MonkeyPatch, expr: str) -> None:
         patch_profile(monkeypatch, version=(16, 0))
         query = lib_query(expr)
         with pytest.raises(SlayerError, match="2025"):
             await emit_lib(query, dialect="tsql")
 
-    async def test_sql_server_2025_lowers_via_instr(self, monkeypatch) -> None:
+    async def test_sql_server_2025_lowers_via_instr(self, monkeypatch: pytest.MonkeyPatch) -> None:
         patch_profile(monkeypatch, version=(17, 0))
         sql = await emit_lib(lib_query(filters=["regexp_like(code, '^a')"]), dialect="tsql")
         _assert_marker(sql, "REGEXP_INSTR(", absent=("REGEXP_LIKE(",))
 
-    async def test_unknown_version_emits(self, monkeypatch) -> None:
+    async def test_unknown_version_emits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         patch_profile(monkeypatch, version=None)
         await emit_lib(lib_query(filters=["regexp_like(code, '^a')"]), dialect="tsql")
 
-    async def test_profile_probed_for_regex(self, monkeypatch) -> None:
+    async def test_profile_probed_for_regex(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls = patch_profile(monkeypatch, version=(17, 0))
         await emit_lib(lib_query(filters=["code LIKE 'a%'"]), dialect="tsql")
         assert calls == []

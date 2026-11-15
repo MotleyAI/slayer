@@ -172,7 +172,7 @@ class TestVersionGating:
         assert get_dialect("tsql").parse_server_profile(base_row=None) == ServerProfile()
 
     @pytest.mark.parametrize("function", ["greatest", "least"])
-    async def test_old_sql_server_fails_closed(self, monkeypatch, function: str) -> None:
+    async def test_old_sql_server_fails_closed(self, monkeypatch: pytest.MonkeyPatch, function: str) -> None:
         patch_profile(monkeypatch, version=(15, 0))
         query = lib_query(f"{function}(a, b)")
         with pytest.raises(SlayerError) as info:
@@ -182,16 +182,16 @@ class TestVersionGating:
         assert "2022" in msg, msg
 
     @pytest.mark.parametrize("version", [(16, 0), (17, 0), None])
-    async def test_supported_or_unknown_version_emits(self, monkeypatch, version) -> None:
+    async def test_supported_or_unknown_version_emits(self, monkeypatch: pytest.MonkeyPatch, version) -> None:
         patch_profile(monkeypatch, version=version)
         sql = await emit_lib(lib_query("greatest(a, b)"), dialect="tsql")
         assert "GREATEST(" in sql.upper(), sql
 
-    async def test_failed_probe_emits(self, monkeypatch) -> None:
+    async def test_failed_probe_emits(self, monkeypatch: pytest.MonkeyPatch) -> None:
         patch_profile(monkeypatch, fail=True)
         await emit_lib(lib_query("least(a, b)"), dialect="tsql")
 
-    async def test_profile_probed_only_when_rendering_reads_it(self, monkeypatch) -> None:
+    async def test_profile_probed_only_when_rendering_reads_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls = patch_profile(monkeypatch, version=(16, 0))
         await emit_lib(lib_query("abs(a)"), dialect="tsql")
         assert calls == []

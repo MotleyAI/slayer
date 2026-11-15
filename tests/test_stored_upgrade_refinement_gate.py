@@ -46,7 +46,7 @@ def _recording_factory(clients: list[RecordingClient]) -> Any:
 
 
 @pytest.fixture
-def no_live_access(monkeypatch) -> list[str]:
+def no_live_access(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Record (and refuse) every live refinement or engine creation."""
     calls: list[str] = []
 

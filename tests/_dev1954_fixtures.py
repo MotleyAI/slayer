@@ -143,7 +143,7 @@ def by_key(resp, dim: str, measure: str) -> dict:
     return out
 
 
-def execution_spy(monkeypatch) -> list:
+def execution_spy(monkeypatch: pytest.MonkeyPatch) -> list:
     """Record every SQL string sent to the database."""
     calls: list = []
     orig = SlayerSQLClient.execute

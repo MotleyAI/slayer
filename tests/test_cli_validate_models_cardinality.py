@@ -148,7 +148,7 @@ def test_default_output_has_no_section_headers(workspace: Path, capsys) -> None:
     assert "No drift detected." in out
 
 
-def test_default_run_never_profiles(workspace: Path, monkeypatch, capsys) -> None:
+def test_default_run_never_profiles(workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     store = _setup(workspace)
     calls: list[str] = []
 
@@ -366,7 +366,7 @@ def test_contradicts_hard_still_exits_zero(workspace: Path, capsys) -> None:
 
 
 def test_datasource_failure_in_unscoped_run_exits_one(
-    workspace: Path, monkeypatch, capsys
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     store = _setup(workspace, ds_name="ds")
     _setup(workspace, ds_name="ds2", store=store)
@@ -393,7 +393,7 @@ def test_datasource_failure_in_unscoped_run_exits_one(
 
 
 def test_every_datasource_failure_is_reported(
-    workspace: Path, monkeypatch, capsys
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     """The per-datasource loop must not short-circuit on the first failure."""
     store = _setup(workspace, ds_name="ds")
@@ -413,7 +413,7 @@ def test_every_datasource_failure_is_reported(
 
 
 def test_datasource_failure_keeps_json_parseable(
-    workspace: Path, monkeypatch, capsys
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     store = _setup(workspace, ds_name="ds")
     _setup(workspace, ds_name="ds2", store=store)
@@ -435,7 +435,7 @@ def test_datasource_failure_keeps_json_parseable(
     assert "ds2" in captured.err
 
 
-def test_drift_failure_skips_profiling(workspace: Path, monkeypatch, capsys) -> None:
+def test_drift_failure_skips_profiling(workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     store = _setup(workspace)
 
     async def _boom(self, data_source=None):
@@ -455,7 +455,7 @@ def test_drift_failure_skips_profiling(workspace: Path, monkeypatch, capsys) -> 
     assert "drift exploded" in capsys.readouterr().err
 
 
-def test_cardinality_failure_exits_one(workspace: Path, monkeypatch) -> None:
+def test_cardinality_failure_exits_one(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = _setup(workspace)
 
     async def _boom(self, **kwargs):
@@ -471,7 +471,7 @@ def test_cardinality_failure_exits_one(workspace: Path, monkeypatch) -> None:
 
 
 def test_scan_failure_reports_fully_but_exits_one(
-    workspace: Path, monkeypatch, capsys
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     """A contained scan failure is still work the command did not do."""
     store = _setup(workspace)
@@ -492,7 +492,7 @@ def test_scan_failure_reports_fully_but_exits_one(
 
 
 def test_profiling_runs_after_the_force_clean_apply(
-    workspace: Path, monkeypatch, capsys
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     store = _setup(workspace, drift_orders=True)
     order: list[str] = []

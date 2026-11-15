@@ -188,7 +188,7 @@ async def test_edit_model_model_level_change_recomputes_all_columns(
 
 @pytest.mark.asyncio
 async def test_inspect_model_writes_back_on_sampled_miss(
-    sqlite_table_setup: tuple[StorageBackend, Any], monkeypatch,
+    sqlite_table_setup: tuple[StorageBackend, Any], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     storage, db_file = sqlite_table_setup
     await storage.save_datasource(DatasourceConfig(
@@ -217,7 +217,7 @@ async def test_inspect_model_writes_back_on_sampled_miss(
 
 @pytest.mark.asyncio
 async def test_inspect_model_reads_cached_sampled_without_recompute(
-    sqlite_table_setup: tuple[StorageBackend, Any], monkeypatch,
+    sqlite_table_setup: tuple[StorageBackend, Any], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When Column.sampled is set, the model inspect uses it and runs no profiling query."""
     storage, db_file = sqlite_table_setup

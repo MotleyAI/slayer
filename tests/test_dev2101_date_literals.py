@@ -111,7 +111,7 @@ class TestTypedLiterals:
 
 
 @pytest.fixture
-def data_calls(monkeypatch) -> list[str]:
+def data_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
     orig = SlayerSQLClient.execute
 

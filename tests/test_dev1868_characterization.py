@@ -27,7 +27,7 @@ TIER = "orders.customers.tier"
 
 
 @pytest.fixture(params=["sqlite"])
-async def bypassed_engine(request, monkeypatch):
+async def bypassed_engine(request, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(stages_mod, "check_partitioned_measures",
                         lambda **kw: None, raising=False)
     async for engine in make_exec_engine(request):

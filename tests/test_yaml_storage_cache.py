@@ -31,7 +31,7 @@ def _model(*, name: str = "m", ds: str = "ds", sql_table: str = "public.t") -> S
     )
 
 
-def _install_counter(monkeypatch, obj, attr: str) -> dict:
+def _install_counter(monkeypatch: pytest.MonkeyPatch, obj, attr: str) -> dict:
     calls = {"n": 0}
     orig = getattr(obj, attr)
 
@@ -51,7 +51,7 @@ def _bump_mtime(path: str) -> None:
 # ---- models: cache hits skip work -----------------------------------------
 
 
-async def test_hit_skips_parse(storage: YAMLStorage, monkeypatch) -> None:
+async def test_hit_skips_parse(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_model(_model())
     loads = _install_counter(monkeypatch, _yaml_storage.yaml, "safe_load")
     assert await storage.get_model("m", data_source="ds") is not None
@@ -59,7 +59,7 @@ async def test_hit_skips_parse(storage: YAMLStorage, monkeypatch) -> None:
     assert loads["n"] == 1  # second get was a cache hit
 
 
-async def test_hit_skips_validate_and_migrate(storage: YAMLStorage, monkeypatch) -> None:
+async def test_hit_skips_validate_and_migrate(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     # A parse runs SlayerModel.model_validate, whose before-validator invokes the
     # migrations pass (_migrate_schema). A cache hit skips both.
     await storage.save_model(_model())
@@ -135,7 +135,7 @@ async def test_external_delete_evicts_datasource_cache(storage: YAMLStorage) -> 
     assert path not in storage._datasource_cache
 
 
-def _stat_key_raises_once(monkeypatch):
+def _stat_key_raises_once(monkeypatch: pytest.MonkeyPatch):
     """Make the next stat_key call raise FileNotFoundError (file deleted between
     the existence check and the stat), then behave normally."""
     orig = _yaml_storage.stat_key
@@ -150,7 +150,7 @@ def _stat_key_raises_once(monkeypatch):
     monkeypatch.setattr(_yaml_storage, "stat_key", flaky)
 
 
-async def test_model_delete_race_at_stat_returns_none_and_evicts(storage: YAMLStorage, monkeypatch) -> None:
+async def test_model_delete_race_at_stat_returns_none_and_evicts(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_model(_model())
     await storage.get_model("m", data_source="ds")  # populate
     path = storage._model_path("ds", "m")
@@ -160,7 +160,7 @@ async def test_model_delete_race_at_stat_returns_none_and_evicts(storage: YAMLSt
     assert path not in storage._model_cache
 
 
-async def test_datasource_delete_race_at_stat_returns_none_and_evicts(storage: YAMLStorage, monkeypatch) -> None:
+async def test_datasource_delete_race_at_stat_returns_none_and_evicts(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_datasource(DatasourceConfig(name="pg", database="a"))
     await storage.get_datasource("pg")  # populate
     path = os.path.join(storage.datasources_dir, "pg.yaml")
@@ -170,7 +170,7 @@ async def test_datasource_delete_race_at_stat_returns_none_and_evicts(storage: Y
     assert path not in storage._datasource_cache
 
 
-def _open_raises_for(monkeypatch, target_path):
+def _open_raises_for(monkeypatch: pytest.MonkeyPatch, target_path):
     """Make open(target_path) raise FileNotFoundError (file deleted between the
     stat and the open); other opens behave normally."""
     real_open = open
@@ -183,7 +183,7 @@ def _open_raises_for(monkeypatch, target_path):
     monkeypatch.setattr(_yaml_storage, "open", flaky, raising=False)
 
 
-async def test_model_delete_race_at_open_returns_none_and_evicts(storage: YAMLStorage, monkeypatch) -> None:
+async def test_model_delete_race_at_open_returns_none_and_evicts(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_model(_model())
     await storage.get_model("m", data_source="ds")  # populate
     path = storage._model_path("ds", "m")
@@ -195,7 +195,7 @@ async def test_model_delete_race_at_open_returns_none_and_evicts(storage: YAMLSt
     assert path not in storage._model_cache
 
 
-async def test_datasource_delete_race_at_open_returns_none_and_evicts(storage: YAMLStorage, monkeypatch) -> None:
+async def test_datasource_delete_race_at_open_returns_none_and_evicts(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_datasource(DatasourceConfig(name="pg", database="a"))
     await storage.get_datasource("pg")  # populate
     path = os.path.join(storage.datasources_dir, "pg.yaml")
@@ -230,7 +230,7 @@ async def test_delete_model_evicts(storage: YAMLStorage) -> None:
     assert await storage.get_model("m", data_source="ds") is None
 
 
-async def test_failed_save_evicts_before_write(storage: YAMLStorage, monkeypatch) -> None:
+async def test_failed_save_evicts_before_write(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_model(_model(sql_table="public.a"))
     await storage.get_model("m", data_source="ds")  # populate
     path = storage._model_path("ds", "m")
@@ -250,7 +250,7 @@ def _raise(*args, **kwargs):
     raise RuntimeError("io failed")
 
 
-async def test_failed_update_column_sampled_evicts(storage: YAMLStorage, monkeypatch) -> None:
+async def test_failed_update_column_sampled_evicts(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_model(_model())
     await storage.get_model("m", data_source="ds")  # populate
     path = storage._model_path("ds", "m")
@@ -264,7 +264,7 @@ async def test_failed_update_column_sampled_evicts(storage: YAMLStorage, monkeyp
     assert path not in storage._model_cache
 
 
-async def test_failed_delete_model_evicts(storage: YAMLStorage, monkeypatch) -> None:
+async def test_failed_delete_model_evicts(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_model(_model())
     await storage.get_model("m", data_source="ds")  # populate
     path = storage._model_path("ds", "m")
@@ -275,7 +275,7 @@ async def test_failed_delete_model_evicts(storage: YAMLStorage, monkeypatch) -> 
     assert path not in storage._model_cache
 
 
-async def test_failed_save_datasource_evicts(storage: YAMLStorage, monkeypatch) -> None:
+async def test_failed_save_datasource_evicts(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_datasource(DatasourceConfig(name="pg", database="a"))
     await storage.get_datasource("pg")  # populate
     path = os.path.join(storage.datasources_dir, "pg.yaml")
@@ -287,7 +287,7 @@ async def test_failed_save_datasource_evicts(storage: YAMLStorage, monkeypatch) 
     assert path not in storage._datasource_cache
 
 
-async def test_failed_delete_datasource_evicts(storage: YAMLStorage, monkeypatch) -> None:
+async def test_failed_delete_datasource_evicts(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_datasource(DatasourceConfig(name="pg", database="a"))
     await storage.get_datasource("pg")  # populate
     path = os.path.join(storage.datasources_dir, "pg.yaml")
@@ -302,7 +302,7 @@ async def test_failed_delete_datasource_evicts(storage: YAMLStorage, monkeypatch
 
 
 async def test_failed_save_after_warm_cache_serves_preserved_file(
-    storage: YAMLStorage, monkeypatch,
+    storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Failed atomic save = no file change: the evicted entry re-reads the
     preserved old content and re-admits it."""
@@ -319,7 +319,7 @@ async def test_failed_save_after_warm_cache_serves_preserved_file(
 
 
 async def test_failed_save_datasource_after_warm_cache_serves_preserved_file(
-    storage: YAMLStorage, monkeypatch,
+    storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     await storage.save_datasource(DatasourceConfig(name="pg", database="a"))
     await storage.get_datasource("pg")  # populate
@@ -388,7 +388,7 @@ async def test_migration_applied_on_first_load(storage: YAMLStorage) -> None:
     assert on_disk["version"] == _mig.CURRENT_VERSIONS["SlayerModel"]  # write-back upgraded
 
 
-async def test_migration_writeback_not_cached_then_coherent(storage: YAMLStorage, monkeypatch) -> None:
+async def test_migration_writeback_not_cached_then_coherent(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     path = _write_legacy_model(storage)
     # First load migrates + writes the file back (new mtime), so the stable-read
     # guard does NOT cache it — the just-parsed bytes no longer match the file.
@@ -403,7 +403,7 @@ async def test_migration_writeback_not_cached_then_coherent(storage: YAMLStorage
     assert loads["n"] == 0
 
 
-async def test_mid_read_external_edit_not_cached(storage: YAMLStorage, monkeypatch) -> None:
+async def test_mid_read_external_edit_not_cached(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_model(_model(sql_table="public.a"))
     path = storage._model_path("ds", "m")
     orig = _yaml_storage.yaml.safe_load
@@ -431,7 +431,7 @@ async def test_mid_read_external_edit_not_cached(storage: YAMLStorage, monkeypat
 # ---- datasources -----------------------------------------------------------
 
 
-async def test_datasource_hit_skips_parse(storage: YAMLStorage, monkeypatch) -> None:
+async def test_datasource_hit_skips_parse(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_datasource(DatasourceConfig(name="pg", type="postgres", database="db"))
     loads = _install_counter(monkeypatch, _yaml_storage.yaml, "safe_load")
     assert await storage.get_datasource("pg") is not None
@@ -469,7 +469,7 @@ async def test_datasource_external_edit_invalidates(storage: YAMLStorage) -> Non
     assert (await storage.get_datasource("pg")).database == "b"
 
 
-async def test_datasource_mid_read_external_edit_not_cached(storage: YAMLStorage, monkeypatch) -> None:
+async def test_datasource_mid_read_external_edit_not_cached(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     await storage.save_datasource(DatasourceConfig(name="pg", database="a"))
     path = os.path.join(storage.datasources_dir, "pg.yaml")
     orig = _yaml_storage.yaml.safe_load
@@ -490,7 +490,7 @@ async def test_datasource_mid_read_external_edit_not_cached(storage: YAMLStorage
     assert (await storage.get_datasource("pg")).database == "b"
 
 
-async def test_datasource_env_reresolved_on_hit(storage: YAMLStorage, monkeypatch) -> None:
+async def test_datasource_env_reresolved_on_hit(storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_DEV1816_DB", "db1")
     await storage.save_datasource(DatasourceConfig(name="pg", database="${SLAYER_DEV1816_DB}"))
     assert (await storage.get_datasource("pg")).database == "db1"
@@ -515,7 +515,7 @@ async def test_datasource_invalid_config_wrapped(storage: YAMLStorage) -> None:
 
 
 async def test_datasource_env_resolution_validationerror_wrapped(
-    storage: YAMLStorage, monkeypatch
+    storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Stored config validates unresolved; env substitution then yields an invalid
     # name ('/' is forbidden), so resolve_env_vars()'s reconstruction raises

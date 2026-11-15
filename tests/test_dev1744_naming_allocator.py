@@ -818,7 +818,7 @@ class TestProductionCallersDelegate:
         ) == expected_d
 
     def test_each_caller_actually_delegates_with_its_profile(
-        self, monkeypatch,
+        self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Spy on the naming module and assert each caller forwards with its profile."""
         key = _key(ColumnKey(path=("customers",), leaf="revenue"), "sum")

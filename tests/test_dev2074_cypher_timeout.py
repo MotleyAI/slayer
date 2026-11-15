@@ -56,7 +56,7 @@ def _limit(monkeypatch: pytest.MonkeyPatch, ms: int) -> None:
     clear_cache()
 
 
-async def test_runaway_traversal_times_out(cyclic_storage, monkeypatch) -> None:
+async def test_runaway_traversal_times_out(cyclic_storage, monkeypatch: pytest.MonkeyPatch) -> None:
     _limit(monkeypatch, 300)
     await get_filtered_ids(MODELS, cyclic_storage)  # warm the cache
     start = time.monotonic()
@@ -89,7 +89,7 @@ class _BlockingConn:
 
 
 @pytest.fixture
-def blocking_conns(monkeypatch) -> list[_BlockingConn]:
+def blocking_conns(monkeypatch: pytest.MonkeyPatch) -> list[_BlockingConn]:
     built: list[_BlockingConn] = []
     real_build = graph.build_graph
 

@@ -201,7 +201,7 @@ class TestCliHandler:
 
 
 class TestCliParserWiring:
-    def test_main_registers_subcommand(self, storage, monkeypatch, capsys) -> None:
+    def test_main_registers_subcommand(self, storage, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
         # Exercises the actual `slayer recommend-root-model` argparse wiring.
 
 
@@ -365,7 +365,7 @@ class TestRootHintSurfaces:
         payload = json.loads(capsys.readouterr().out)
         assert payload["root_model"] == "orders"
 
-    def test_cli_bad_hint_nonzero_exit(self, storage, monkeypatch, capsys) -> None:
+    def test_cli_bad_hint_nonzero_exit(self, storage, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
         monkeypatch.setattr(sys, "argv", [
             "slayer", "recommend-root-model", "orders.status", "--data-source", "mydb",
             "--root-hint", "nope", "--storage", storage.base_dir,
@@ -378,7 +378,7 @@ class TestRootHintSurfaces:
         assert len(captured.err.strip().splitlines()) == 1
         assert "Error" not in captured.out
 
-    def test_cli_parser_accepts_root_hint(self, storage, monkeypatch, capsys) -> None:
+    def test_cli_parser_accepts_root_hint(self, storage, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
 
 
         monkeypatch.setattr(sys, "argv", [

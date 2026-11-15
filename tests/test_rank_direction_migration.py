@@ -61,7 +61,7 @@ def _assert_only_direction_added(before: str, after: str) -> None:
 # --------------------------------------------------------------------------- #
 class TestStoredOnlyGate:
     @pytest.fixture
-    def probe(self, monkeypatch):
+    def probe(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(mig, "_REGISTRY", {})
         monkeypatch.setitem(mig.CURRENT_VERSIONS, "Probe", 3)
 

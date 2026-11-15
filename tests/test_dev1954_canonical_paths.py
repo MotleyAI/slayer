@@ -464,7 +464,7 @@ class TestSavedMeasures:
 
 
 class TestSpellingTwinsShareOneCachedResult:
-    async def test_one_db_execution(self, engine: SlayerQueryEngine, monkeypatch) -> None:
+    async def test_one_db_execution(self, engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> None:
         first = await engine.execute(orders_q(
             dimensions=["customers.regions.rname"], measures=["sum(amount)"]),
             cache=True)

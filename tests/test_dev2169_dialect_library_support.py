@@ -89,7 +89,7 @@ def assert_own_sql(sql: str, *, ds_type: str) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _unknown_server_version(monkeypatch) -> None:
+def _unknown_server_version(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_profile(monkeypatch, version=None)
 
 

@@ -119,7 +119,7 @@ class TestContractAttribute:
         assert isinstance(server._slayer_engine, SlayerQueryEngine)
 
     async def test_slayer_engine_is_the_object_query_uses(
-        self, workspace: Path, monkeypatch,
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The exposed attribute is identity-equal to the engine the ``query``
         tool executes on — not just some engine."""
@@ -139,7 +139,7 @@ class TestContractAttribute:
         assert captured["self"] is server._slayer_engine
 
     async def test_slayer_engine_is_the_object_query_list_uses(
-        self, workspace: Path, monkeypatch,
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The list (multi-stage) form shares the same closure engine (plan:
         one engine across query/validate_models/recommend_root_model)."""
@@ -164,7 +164,7 @@ class TestContractAttribute:
 
 class TestToolsReuseClosureEngine:
     async def test_validate_models_constructs_no_new_engine(
-        self, workspace: Path, monkeypatch,
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
@@ -179,7 +179,7 @@ class TestToolsReuseClosureEngine:
         assert isinstance(json.loads(out), list)
 
     async def test_recommend_root_model_constructs_no_new_engine(
-        self, workspace: Path, monkeypatch,
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
@@ -198,7 +198,7 @@ class TestToolsReuseClosureEngine:
 
 class TestAcloseDisposesCachedClients:
     async def test_aclose_releases_client_sync_pool_survives(
-        self, workspace: Path, monkeypatch,
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``server._slayer_engine.aclose()`` releases the cached client, leaves its sync engine intact,
         and a follow-up query returns the same rows (file-backed sqlite stands in for ``:memory:``)."""
@@ -260,7 +260,7 @@ class TestSqlModeDriftClientReachable:
     reaches it (otherwise it leaks an asyncpg pool on Postgres)."""
 
     async def test_validate_models_caches_sql_mode_client_and_aclose_disposes_it(
-        self, workspace: Path, monkeypatch,
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A ``validate_models`` call with no prior query must cache the
         ``sql``-mode drift client on the shared engine, and a subsequent

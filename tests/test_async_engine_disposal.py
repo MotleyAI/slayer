@@ -95,7 +95,7 @@ async def _reused_then(client: SlayerSQLClient, fake: MagicMock, work: Coroutine
 
 class TestAsyncEngineDisposal:
 
-    async def test_aclose_disposes_cached_async_engine(self, workspace: Path, monkeypatch) -> None:
+    async def test_aclose_disposes_cached_async_engine(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         engine, client = _engine_with_pg_client(workspace)
         fake = _fake_async_engine()
         plant_async_engine(monkeypatch, client, fake)
@@ -107,7 +107,7 @@ class TestAsyncEngineDisposal:
         assert engine._sql_clients
         plant_async_engine(monkeypatch, client, _fake_async_engine())
 
-    async def test_aclose_is_idempotent(self, workspace: Path, monkeypatch) -> None:
+    async def test_aclose_is_idempotent(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         engine, client = _engine_with_pg_client(workspace)
         fake = _fake_async_engine()
         plant_async_engine(monkeypatch, client, fake)
@@ -115,7 +115,7 @@ class TestAsyncEngineDisposal:
         await engine.aclose()
         fake.dispose.assert_awaited_once()
 
-    async def test_failed_dispose_leaves_no_stale_engine(self, workspace: Path, monkeypatch) -> None:
+    async def test_failed_dispose_leaves_no_stale_engine(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """A failed dispose can't leave a half-torn engine cached."""
         engine, client = _engine_with_pg_client(workspace)
         plant_async_engine(monkeypatch, client, _fake_async_engine(side_effect=RuntimeError("dispose failed")))
@@ -124,7 +124,7 @@ class TestAsyncEngineDisposal:
 
         plant_async_engine(monkeypatch, client, _fake_async_engine())
 
-    async def test_dispose_failure_logged_not_raised(self, workspace: Path, monkeypatch) -> None:
+    async def test_dispose_failure_logged_not_raised(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Dispose errors must not mask the real query error in ``finally``."""
         engine, client = _engine_with_pg_client(workspace)
         plant_async_engine(
@@ -132,7 +132,7 @@ class TestAsyncEngineDisposal:
         )
         await engine.aclose()  # does not raise
 
-    def test_bridge_keeps_its_loops_engine_until_close(self, workspace: Path, monkeypatch) -> None:
+    def test_bridge_keeps_its_loops_engine_until_close(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The bridge loop outlives ``run_sync``: its engine is disposed by ``close()``, not per call."""
         engine = _sqlite_engine(workspace, rows="(1.0), (2.0), (3.0)")
         client = _pg_client()
@@ -150,7 +150,7 @@ class TestAsyncEngineDisposal:
         engine.close()
         fake.dispose.assert_awaited_once()
 
-    def test_bridge_keeps_its_loops_engine_until_close_even_on_error(self, workspace: Path, monkeypatch) -> None:
+    def test_bridge_keeps_its_loops_engine_until_close_even_on_error(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         engine, client = _engine_with_pg_client(workspace)
         fake = _fake_async_engine()
         q = SlayerQuery(
@@ -163,7 +163,7 @@ class TestAsyncEngineDisposal:
         engine.close()
         fake.dispose.assert_awaited_once()
 
-    def test_repeated_bridges_share_one_engine(self, workspace: Path, monkeypatch) -> None:
+    def test_repeated_bridges_share_one_engine(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """20 bridges reuse the one engine built on the bridge loop; ``close()`` disposes it once
         (the Storyline N-block pattern)."""
         engine = _sqlite_engine(workspace, rows="(1.0)")

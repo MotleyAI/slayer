@@ -99,7 +99,7 @@ class TestTotalRoutingInvariant:
     """F9/D7 — a simulated discovery gap surfaces as an explicit planner
     error, never as a silently dropped value."""
 
-    def test_unrouted_aggregate_raises_explicit_planner_error(self, monkeypatch):
+    def test_unrouted_aggregate_raises_explicit_planner_error(self, monkeypatch: pytest.MonkeyPatch):
         """Blind the combined-producer discovery to every partitioned leaf: the
         post-discovery invariant must catch the now-undisposed aggregate."""
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
@@ -117,7 +117,7 @@ class TestTotalRoutingInvariant:
         assert "aggregat" in message or "pt" in message, message
 
     def test_blinded_cross_model_discovery_hits_the_dedicated_invariant(
-        self, monkeypatch,
+        self, monkeypatch: pytest.MonkeyPatch,
     ):
         """Task 7.1 — the D7 invariant itself, not a coincidental backstop.
         Blind the CROSS-MODEL discovery: the un-desugared cross-model aggregate
@@ -142,7 +142,7 @@ class TestTotalRoutingInvariant:
         ),
     ])
     def test_blinded_discovery_catches_filter_and_order_leaves(
-        self, monkeypatch, role_kwargs,
+        self, monkeypatch: pytest.MonkeyPatch, role_kwargs,
     ):
         """The invariant walks filters and orders too — a hidden cross-model
         leaf in either role must not survive blinded discovery."""

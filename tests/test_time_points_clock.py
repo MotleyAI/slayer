@@ -93,7 +93,7 @@ async def test_cache_never_serves_another_days_result() -> None:
     assert {r["ev.id"] for r in second.data} == ids_in(D(2026, 9, 28), D(2026, 9, 29))
 
 
-async def test_same_day_relative_query_is_served_from_cache(monkeypatch) -> None:
+async def test_same_day_relative_query_is_served_from_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
     orig = SlayerSQLClient.execute
 

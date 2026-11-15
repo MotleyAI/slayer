@@ -409,7 +409,7 @@ class TestClientDiscardsEngineOnAuthFailure:
         invalidate.assert_not_called()
         assert client._sync_engine is engine
 
-    async def test_async_engine_is_disposed_too(self, monkeypatch) -> None:
+    async def test_async_engine_is_disposed_too(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An async driver's pool is one ``invalidate_engine`` knows nothing about."""
         client = sql_client.SlayerSQLClient(
             datasource=DatasourceConfig(name="pg", type="postgres", connection_string="postgresql://u@db.invalid/d"),

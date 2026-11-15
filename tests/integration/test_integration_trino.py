@@ -1183,7 +1183,7 @@ class TestTrinoStatementTimeout:
         client.execute_sync("SELECT 2", timeout_seconds=30)
         assert _set_session_count(trino_container) == before
 
-    async def test_type_probe_is_timed(self, trino_container, monkeypatch) -> None:
+    async def test_type_probe_is_timed(self, trino_container, monkeypatch: pytest.MonkeyPatch) -> None:
         seen = _spy_run_time(monkeypatch)
         client = SlayerSQLClient(datasource=_ds_config(trino_container, "default"))
         prior = _pooled_run_time(client)
@@ -1192,7 +1192,7 @@ class TestTrinoStatementTimeout:
         assert seen == ["60s"]
         assert _pooled_run_time(client) == prior
 
-    def test_sync_type_probe_is_timed(self, trino_container, monkeypatch) -> None:
+    def test_sync_type_probe_is_timed(self, trino_container, monkeypatch: pytest.MonkeyPatch) -> None:
         seen = _spy_run_time(monkeypatch)
         client = SlayerSQLClient(datasource=_ds_config(trino_container, "default"))
         prior = _pooled_run_time(client)
@@ -1298,7 +1298,7 @@ class TestTrinoTimeSpine:
         assert rows == [[size, size, 0, size - 1]]
 
     @pytest.mark.parametrize("size", [101, 1_000, 1_234])
-    def test_integer_sequence_digits_cover_the_range(self, trino_container, monkeypatch, size: int) -> None:
+    def test_integer_sequence_digits_cover_the_range(self, trino_container, monkeypatch: pytest.MonkeyPatch, size: int) -> None:
         monkeypatch.setattr(trino_dialect_module, "_SEQUENCE_MAX", 10)  # 3+ digit factors at small sizes
         self.test_integer_sequence_spans_the_sequence_cap(trino_container, size)
 

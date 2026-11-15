@@ -169,7 +169,7 @@ class TestStructuredDeprecation:
 
 
 class TestInternalProducers:
-    async def test_profiling_emits_the_current_form(self, tmp_path, recorded, monkeypatch) -> None:
+    async def test_profiling_emits_the_current_form(self, tmp_path, recorded, monkeypatch: pytest.MonkeyPatch) -> None:
         db = str(tmp_path / "data.db")
         with transaction(db) as conn:
             conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, amount REAL, qty INTEGER)")

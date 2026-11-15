@@ -254,7 +254,7 @@ class TestGranularitiesRoundTrip:
         assert stored is not None
         assert [g["name"] for g in _granularity_dump(stored)] == list(GRANULARITY_NAMES)
 
-    def test_cli_create_demo(self, monkeypatch) -> None:
+    def test_cli_create_demo(self, monkeypatch: pytest.MonkeyPatch) -> None:
         base = tempfile.mkdtemp()
         monkeypatch.setattr(cli, "build_jaffle_shop", lambda **_: False)
         result = run_cli_in_process([

@@ -194,7 +194,7 @@ def _quietly(fn: Callable[[], Any]) -> Any:
 
 
 @pytest.mark.parametrize("ds_type", ["postgres", None, "totally_unknown", "mysql", "snowflake"])
-def test_timeout_is_set_once_per_connection(monkeypatch, run: Runner, ds_type: str | None) -> None:
+def test_timeout_is_set_once_per_connection(monkeypatch: pytest.MonkeyPatch, run: Runner, ds_type: str | None) -> None:
     rec = Recorder()
     rec.install(monkeypatch)
     results = run(_client(ds_type), [(SQL, 120)] * 3)
@@ -203,7 +203,7 @@ def test_timeout_is_set_once_per_connection(monkeypatch, run: Runner, ds_type: s
 
 
 @pytest.mark.parametrize("ds_type", ["postgres", "mysql", "snowflake"])
-def test_changed_timeout_is_reset_once(monkeypatch, run: Runner, ds_type: str) -> None:
+def test_changed_timeout_is_reset_once(monkeypatch: pytest.MonkeyPatch, run: Runner, ds_type: str) -> None:
     rec = Recorder()
     rec.install(monkeypatch)
     run(_client(ds_type), [(SQL, 120), (SQL, 30), (SQL, 30), (SQL, 120)])
@@ -213,7 +213,7 @@ def test_changed_timeout_is_reset_once(monkeypatch, run: Runner, ds_type: str) -
 
 
 @pytest.mark.parametrize("ds_type", ["postgres", "mysql", "snowflake"])
-def test_replaced_connection_resends_the_timeout(monkeypatch, run: Runner, ds_type: str) -> None:
+def test_replaced_connection_resends_the_timeout(monkeypatch: pytest.MonkeyPatch, run: Runner, ds_type: str) -> None:
     rec = Recorder()
     rec.install(monkeypatch)
     client = _client(ds_type)
@@ -229,7 +229,7 @@ def test_replaced_connection_resends_the_timeout(monkeypatch, run: Runner, ds_ty
 
 
 @pytest.mark.parametrize("ds_type", ["mysql", "snowflake"])
-def test_fail_closed_rejection_is_resent_next_call(monkeypatch, run: Runner, ds_type: str) -> None:
+def test_fail_closed_rejection_is_resent_next_call(monkeypatch: pytest.MonkeyPatch, run: Runner, ds_type: str) -> None:
     rec = Recorder()
     rec.install(monkeypatch)
     rec.link.reject = _FAIL_CLOSED
@@ -250,7 +250,7 @@ _SKIP = {"timeout_seconds": 120, "reason": "timeout_rejected"}
 
 
 @pytest.mark.parametrize("ds_type", ["postgres", None, "totally_unknown"])
-def test_rejected_best_effort_timeout_is_not_resent(monkeypatch, run: Runner, ds_type: str | None) -> None:
+def test_rejected_best_effort_timeout_is_not_resent(monkeypatch: pytest.MonkeyPatch, run: Runner, ds_type: str | None) -> None:
     rec = Recorder()
     rec.install(monkeypatch)
     rec.link.reject = _REJECTED
@@ -261,7 +261,7 @@ def test_rejected_best_effort_timeout_is_not_resent(monkeypatch, run: Runner, ds
 
 
 @pytest.mark.parametrize("ds_type", ["postgres", None])
-def test_autocommit_rejection_sends_no_rollback(monkeypatch, run: Runner, ds_type: str | None) -> None:
+def test_autocommit_rejection_sends_no_rollback(monkeypatch: pytest.MonkeyPatch, run: Runner, ds_type: str | None) -> None:
     rec = Recorder()
     rec.install(monkeypatch)
     rec.link.reject = _REJECTED
@@ -269,7 +269,7 @@ def test_autocommit_rejection_sends_no_rollback(monkeypatch, run: Runner, ds_typ
     assert ROLLBACK not in rec.log
 
 
-def test_rejection_record_follows_the_value(monkeypatch, run: Runner) -> None:
+def test_rejection_record_follows_the_value(monkeypatch: pytest.MonkeyPatch, run: Runner) -> None:
     """A rejection at 120 s says nothing about 30 s: that value is tried once."""
     rec = Recorder()
     rec.install(monkeypatch)
@@ -278,7 +278,7 @@ def test_rejection_record_follows_the_value(monkeypatch, run: Runner) -> None:
     assert rec.statements() == [_timeout_sql("postgres", 120), SQL, SQL, _timeout_sql("postgres", 30), SQL, SQL]
 
 
-def test_replaced_connection_does_not_inherit_a_rejection(monkeypatch, run: Runner) -> None:
+def test_replaced_connection_does_not_inherit_a_rejection(monkeypatch: pytest.MonkeyPatch, run: Runner) -> None:
     rec = Recorder()
     rec.install(monkeypatch)
     rec.link.reject = _REJECTED
@@ -296,14 +296,14 @@ def test_replaced_connection_does_not_inherit_a_rejection(monkeypatch, run: Runn
 # ---------------------------------------------------------------------------
 
 
-def test_pooler_sets_a_transaction_local_timeout_every_statement(monkeypatch, run: Runner) -> None:
+def test_pooler_sets_a_transaction_local_timeout_every_statement(monkeypatch: pytest.MonkeyPatch, run: Runner) -> None:
     rec = Recorder()
     rec.install(monkeypatch)
     run(_client("postgres", transaction_pooler=True), [(SQL, 120)] * 2)
     assert rec.statements() == ["SET LOCAL statement_timeout = 120000", SQL] * 2
 
 
-def test_pooler_rejection_rolls_back(monkeypatch, run: Runner) -> None:
+def test_pooler_rejection_rolls_back(monkeypatch: pytest.MonkeyPatch, run: Runner) -> None:
     rec = Recorder()
     rec.install(monkeypatch)
     rec.link.reject = _REJECTED
@@ -313,7 +313,7 @@ def test_pooler_rejection_rolls_back(monkeypatch, run: Runner) -> None:
     assert results[0].warnings == [StatementTimeoutSkippedWarning.model_validate({"datasource": "pg_ds", **_SKIP})]
 
 
-def test_a_lost_connection_during_the_timeout_is_not_a_rejection(monkeypatch, run: Runner) -> None:
+def test_a_lost_connection_during_the_timeout_is_not_a_rejection(monkeypatch: pytest.MonkeyPatch, run: Runner) -> None:
     """Best-effort covers a rejected setting, never a dead connection: the error reaches the retry."""
     rec = Recorder()
     rec.install(monkeypatch)

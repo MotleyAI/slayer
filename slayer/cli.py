@@ -2522,7 +2522,7 @@ def _datasources_list(storage, args) -> None:
     usage_reporting.observe_datasources(loaded)
 
 
-def _datasource_or_exit(storage, name: str):
+def _datasource_or_exit(storage: StorageBackend, name: str) -> DatasourceConfig:
     ds = run_sync(storage.get_datasource(name))
     if ds is None:
         _fail(f"Datasource '{name}' not found.")

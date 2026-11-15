@@ -132,7 +132,7 @@ async def test_yaml_legacy_flat_file_migrates_to_nested(tmp_path) -> None:
     assert os.path.exists(os.path.join(legacy_models_dir, "warehouse", "orders.yaml"))
 
 
-def test_yaml_migration_write_failure_preserves_flat_source(tmp_path, monkeypatch) -> None:
+def test_yaml_migration_write_failure_preserves_flat_source(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A crash mid-dump during layout migration leaves the flat source intact
     and no truncated namespaced target behind — the write is atomic."""
     base = str(tmp_path)
@@ -160,7 +160,7 @@ def test_yaml_migration_write_failure_preserves_flat_source(tmp_path, monkeypatc
     assert not os.path.exists(os.path.join(legacy_models_dir, "warehouse", "orders.yaml"))
 
 
-def test_yaml_migration_resumes_after_crash_before_source_removal(tmp_path, monkeypatch) -> None:
+def test_yaml_migration_resumes_after_crash_before_source_removal(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A crash between the atomic target write and the flat-source removal must
     not wedge storage: the next migration resumes when the target already holds
     what we would write, instead of raising the duplicate-target error."""

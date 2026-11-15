@@ -166,7 +166,7 @@ class TestClassifierSelfChecks:
     fail-closed site turns it red."""
 
     @pytest.fixture
-    def synthetic_site(self, monkeypatch) -> DeferralSite:
+    def synthetic_site(self, monkeypatch: pytest.MonkeyPatch) -> DeferralSite:
         """A registry of one scratch site, so these checks never depend on the live list."""
         site = DeferralSite(fragment="frobnication deferred", issue="DEV-9999")
         monkeypatch.setattr(sys.modules[__name__], "DEFERRAL_SITES", (site,))

@@ -74,7 +74,7 @@ def _called_process_error(stderr: str) -> subprocess.CalledProcessError:
 
 
 class TestFetchPinnedCommitRetry:
-    def test_succeeds_on_first_attempt(self, monkeypatch):
+    def test_succeeds_on_first_attempt(self, monkeypatch: pytest.MonkeyPatch):
         calls = []
         monkeypatch.setattr(
             setup_metricflow, "_git", lambda *a, **k: calls.append(a) or ""
@@ -88,7 +88,7 @@ class TestFetchPinnedCommitRetry:
         setup_metricflow._fetch_pinned_commit(Path("/tmp/x"))
         assert len(calls) == 1
 
-    def test_retries_transient_then_succeeds(self, monkeypatch):
+    def test_retries_transient_then_succeeds(self, monkeypatch: pytest.MonkeyPatch):
         attempts = {"n": 0}
 
         def flaky_git(*args, **kwargs):
@@ -107,7 +107,7 @@ class TestFetchPinnedCommitRetry:
         assert attempts["n"] == 3  # two failures + one success
         assert len(sleeps) == 2  # slept once before each retry
 
-    def test_exhausts_retries_and_raises(self, monkeypatch):
+    def test_exhausts_retries_and_raises(self, monkeypatch: pytest.MonkeyPatch):
         attempts = {"n": 0}
 
         def always_503(*args, **kwargs):
@@ -122,7 +122,7 @@ class TestFetchPinnedCommitRetry:
 
         assert attempts["n"] == setup_metricflow._FETCH_RETRIES
 
-    def test_deterministic_error_is_not_retried(self, monkeypatch):
+    def test_deterministic_error_is_not_retried(self, monkeypatch: pytest.MonkeyPatch):
         attempts = {"n": 0}
 
         def not_found(*args, **kwargs):

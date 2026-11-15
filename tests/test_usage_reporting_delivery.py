@@ -470,7 +470,7 @@ def test_two_simultaneous_senders_send_one_report(store: str, usage_reporting_en
     assert len(usage_reporting_env.capture.requests) == 1
 
 
-def test_stale_lease_taken_over_by_one_sender_only(tmp_path: Path, monkeypatch) -> None:
+def test_stale_lease_taken_over_by_one_sender_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     lease = tmp_path / "send.lease"
     now = now_utc()
     assert spool.acquire_lease(lease, now=now - datetime.timedelta(hours=1)) is not None
@@ -616,7 +616,7 @@ def _assert_stays_disabled(racer: threading.Thread) -> None:
     assert final.install_id is None
 
 
-def test_disable_during_send_rotation_is_never_undone(usage_reporting_env, monkeypatch) -> None:
+def test_disable_during_send_rotation_is_never_undone(usage_reporting_env, monkeypatch: pytest.MonkeyPatch) -> None:
     write_config(install_id=uuid.uuid4(), install_id_created=(_T0 - datetime.timedelta(days=400)).date(),
                  last_sent=_T0 - datetime.timedelta(days=2))
     racer = _disable_during_rotation(monkeypatch)
@@ -625,7 +625,7 @@ def test_disable_during_send_rotation_is_never_undone(usage_reporting_env, monke
     _assert_stays_disabled(racer)
 
 
-def test_disable_during_start_is_never_undone(usage_reporting_env, monkeypatch) -> None:
+def test_disable_during_start_is_never_undone(usage_reporting_env, monkeypatch: pytest.MonkeyPatch) -> None:
     quiet_config()
     racer = _disable_during_rotation(monkeypatch)
     usage_reporting.start()

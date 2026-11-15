@@ -55,7 +55,7 @@ def _create_schema(db_path: str) -> None:
         )
 
 
-async def _setup(workspace: Path) -> tuple:
+async def _setup(workspace: Path) -> tuple[YAMLStorage, DatasourceConfig]:
     db_path = str(workspace / "live.db")
     _create_schema(db_path)
     storage = YAMLStorage(base_dir=str(workspace / "storage"))
@@ -77,12 +77,14 @@ class TestFillsMetadataAndPersists:
 
         # Simulate legacy persisted data: join without a cardinality.
         orders = await storage.get_model("orders", data_source="ds")
+        assert orders is not None
         orders.joins[0] = _order_join(orders).model_copy(update={"cardinality": None})
         await storage.save_model(orders)
 
         await _ingest(datasource=ds, storage=storage)
 
         reloaded = await storage.get_model("orders", data_source="ds")
+        assert reloaded is not None
         # Refilled AND persisted (reloaded from storage proves the save).
         assert _order_join(reloaded).cardinality is JoinCardinality.MANY_TO_ONE
 
@@ -90,6 +92,7 @@ class TestFillsMetadataAndPersists:
         storage, ds = await _setup(workspace)
 
         customers = await storage.get_model("customers", data_source="ds")
+        assert customers is not None
         email = next(c for c in customers.columns if c.name == "email")
         idx = customers.columns.index(email)
         customers.columns[idx] = email.model_copy(update={"unique": False})
@@ -98,6 +101,7 @@ class TestFillsMetadataAndPersists:
         await _ingest(datasource=ds, storage=storage)
 
         reloaded = await storage.get_model("customers", data_source="ds")
+        assert reloaded is not None
         email = next(c for c in reloaded.columns if c.name == "email")
         assert email.unique is True
 
@@ -110,6 +114,7 @@ class TestAdditiveContract:
 
         # A deliberate user override that disagrees with the structural guess.
         orders = await storage.get_model("orders", data_source="ds")
+        assert orders is not None
         orders.joins[0] = _order_join(orders).model_copy(
             update={"cardinality": JoinCardinality.ONE_TO_ONE}
         )
@@ -118,6 +123,7 @@ class TestAdditiveContract:
         await _ingest(datasource=ds, storage=storage)
 
         reloaded = await storage.get_model("orders", data_source="ds")
+        assert reloaded is not None
         assert _order_join(reloaded).cardinality is JoinCardinality.ONE_TO_ONE
 
     async def test_reingest_does_not_downgrade_user_unique(
@@ -127,6 +133,7 @@ class TestAdditiveContract:
 
         # User marked a column unique that has no DB constraint.
         customers = await storage.get_model("customers", data_source="ds")
+        assert customers is not None
         region = next(c for c in customers.columns if c.name == "region")
         idx = customers.columns.index(region)
         customers.columns[idx] = region.model_copy(update={"unique": True})
@@ -135,6 +142,7 @@ class TestAdditiveContract:
         await _ingest(datasource=ds, storage=storage)
 
         reloaded = await storage.get_model("customers", data_source="ds")
+        assert reloaded is not None
         region = next(c for c in reloaded.columns if c.name == "region")
         assert region.unique is True
 

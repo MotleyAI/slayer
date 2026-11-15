@@ -38,7 +38,7 @@ def _column(model: SlayerModel | None, name: str) -> Column:
 
 
 @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
-async def test_the_store_holds_the_list_column_shapes(backend: str, tmp_path, monkeypatch) -> None:
+async def test_the_store_holds_the_list_column_shapes(backend: str, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     storage = offline(CORPUS, backend=backend, tmp=tmp_path, monkeypatch=monkeypatch)
     contractors = await storage.get_model("contractors", data_source="shop")
     pk = _column(contractors, "id")

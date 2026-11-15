@@ -58,7 +58,7 @@ def test_migrate_forward_version_passes_through() -> None:
     assert out["future"] is True
 
 
-def test_migrate_missing_handler_raises(monkeypatch) -> None:
+def test_migrate_missing_handler_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """If CURRENT_VERSIONS jumps ahead but no migration is registered, fail loudly."""
     # Bump past the highest registered migration to force a gap.
     target = max(mig.CURRENT_VERSIONS.values()) + 5
@@ -67,7 +67,7 @@ def test_migrate_missing_handler_raises(monkeypatch) -> None:
         mig.migrate("SlayerModel", {"version": target - 1, "name": "foo", "data_source": "ds"})
 
 
-def test_migrate_chain_runs_in_order(monkeypatch) -> None:
+def test_migrate_chain_runs_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
     """Two synthetic steps registered above the real ones run in order and stamp the version."""
     base = mig.CURRENT_VERSIONS["SlayerModel"]
     monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", base + 2)
@@ -90,7 +90,7 @@ def test_migrate_chain_runs_in_order(monkeypatch) -> None:
     assert out["step2"] is True
 
 
-def test_register_migration_rejects_duplicates(monkeypatch) -> None:
+def test_register_migration_rejects_duplicates(monkeypatch: pytest.MonkeyPatch) -> None:
     # A fake entity: a ("SlayerModel", N) slot breaks the moment N becomes a real step.
     monkeypatch.setattr(mig, "_REGISTRY", dict(mig._REGISTRY))
 
@@ -120,7 +120,7 @@ def test_slayer_model_dump_includes_version() -> None:
     assert dumped["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
 
 
-def test_slayer_model_synthetic_migration_runs_via_validator(monkeypatch) -> None:
+def test_slayer_model_synthetic_migration_runs_via_validator(monkeypatch: pytest.MonkeyPatch) -> None:
     """The before-validator walks the chain (synthetic step registered above the real ones)."""
     base = mig.CURRENT_VERSIONS["SlayerModel"]
     monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", base + 1)
@@ -223,7 +223,7 @@ def test_slayer_query_dump_includes_version() -> None:
 # --- End-to-end: any backend should benefit from migrations ---------------
 
 
-async def test_yaml_storage_migrates_legacy_model_on_load(monkeypatch) -> None:
+async def test_yaml_storage_migrates_legacy_model_on_load(monkeypatch: pytest.MonkeyPatch) -> None:
     """A hand-written YAML at a synthetic intermediate version is upgraded on load."""
     next_version = mig.CURRENT_VERSIONS["SlayerModel"] + 1
     monkeypatch.setitem(mig.CURRENT_VERSIONS, "SlayerModel", next_version)
@@ -253,7 +253,7 @@ async def test_yaml_storage_migrates_legacy_model_on_load(monkeypatch) -> None:
         assert loaded.meta == {"upgraded": True}
 
 
-async def test_sqlite_storage_migrates_legacy_model_on_load(monkeypatch) -> None:
+async def test_sqlite_storage_migrates_legacy_model_on_load(monkeypatch: pytest.MonkeyPatch) -> None:
     """Same end-to-end path, but via SQLiteStorage — proves the hook is at the
     Pydantic layer and not tied to YAML I/O."""
     next_version = mig.CURRENT_VERSIONS["SlayerModel"] + 1

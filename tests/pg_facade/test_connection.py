@@ -272,7 +272,7 @@ async def test_ssl_request_without_tls_gets_n() -> None:
     assert writer.buffer[0:1] == b"N"
 
 
-async def test_ssl_request_with_tls_gets_s(monkeypatch) -> None:
+async def test_ssl_request_with_tls_gets_s(monkeypatch: pytest.MonkeyPatch) -> None:
     reader = asyncio.StreamReader()
     reader.feed_data(_ssl_request() + _startup(user="u", database="jaffle") + _terminate())
     reader.feed_eof()

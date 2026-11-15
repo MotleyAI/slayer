@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 import slayer
 from tests.test_law_resource_ownership import _canonical, _import_bindings
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SLAYER = REPO / "slayer"
@@ -152,14 +153,14 @@ def test_tagged_sites_are_exactly_the_covered_workarounds() -> None:
     assert not wrong, "tagged sites with a removal version other than the pinned one:\n" + "\n".join(wrong)
 
 
-def _named_at(version: str, monkeypatch) -> set[tuple[str, str] | None]:
+def _named_at(version: str, monkeypatch: pytest.MonkeyPatch) -> set[tuple[str, str] | None]:
     monkeypatch.setattr(slayer, "__version__", version)
     sites = _scan()
     problems = _problems(sites, version=_package_version())
     return {_feature(s) for s in sites if any(p.startswith(f"{s.where}: ") for p in problems)}
 
 
-def test_at_the_next_major_the_tripwire_names_every_pinned_site(monkeypatch) -> None:
+def test_at_the_next_major_the_tripwire_names_every_pinned_site(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _named_at(f"{_major(_package_version()) + 1}.0.0", monkeypatch) == set(PINNED)
 
 

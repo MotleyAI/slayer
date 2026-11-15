@@ -112,7 +112,7 @@ async def inspect_setup(tmp_path) -> AsyncIterator[tuple[InspectService, object]
     yield svc, storage
 
 
-def _count_profile_calls(monkeypatch, svc: InspectService) -> list:
+def _count_profile_calls(monkeypatch: pytest.MonkeyPatch, svc: InspectService) -> list:
     """Record the profiling queries (top-values or min/max) the service's engine runs."""
     calls: list = []
     engine = svc._engine
@@ -192,7 +192,7 @@ async def test_compact_false_backfills_temporal(inspect_setup: tuple[Any, Storag
 
 
 @pytest.mark.asyncio
-async def test_compact_true_does_not_refresh(inspect_setup: tuple[Any, StorageBackend], monkeypatch) -> None:
+async def test_compact_true_does_not_refresh(inspect_setup: tuple[Any, StorageBackend], monkeypatch: pytest.MonkeyPatch) -> None:
     svc, storage = inspect_setup
     calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
@@ -208,7 +208,7 @@ async def test_compact_true_does_not_refresh(inspect_setup: tuple[Any, StorageBa
 
 @pytest.mark.asyncio
 async def test_compact_true_does_not_refresh_numeric(
-    inspect_setup: tuple[Any, StorageBackend], monkeypatch,
+    inspect_setup: tuple[Any, StorageBackend], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Numeric is back-filled on compact=False — pin that
     compact=True still does NOT profile/persist a numeric column either."""
@@ -230,7 +230,7 @@ async def test_compact_true_does_not_refresh_numeric(
 
 
 @pytest.mark.asyncio
-async def test_measure_does_not_refresh(inspect_setup, monkeypatch) -> None:
+async def test_measure_does_not_refresh(inspect_setup, monkeypatch: pytest.MonkeyPatch) -> None:
     svc, _ = inspect_setup
     calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
@@ -241,7 +241,7 @@ async def test_measure_does_not_refresh(inspect_setup, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_aggregation_does_not_refresh(inspect_setup, monkeypatch) -> None:
+async def test_aggregation_does_not_refresh(inspect_setup, monkeypatch: pytest.MonkeyPatch) -> None:
     svc, _ = inspect_setup
     calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
@@ -258,7 +258,7 @@ async def test_aggregation_does_not_refresh(inspect_setup, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_engine_none_no_refresh_attempt(inspect_setup: tuple[Any, StorageBackend], monkeypatch) -> None:
+async def test_engine_none_no_refresh_attempt(inspect_setup: tuple[Any, StorageBackend], monkeypatch: pytest.MonkeyPatch) -> None:
     _, storage = inspect_setup
     svc = InspectService(storage=storage)  # no engine
 
@@ -291,7 +291,7 @@ async def test_engine_none_no_refresh_attempt(inspect_setup: tuple[Any, StorageB
 
 @pytest.mark.asyncio
 async def test_inspect_model_passes_all_columns_in_one_call(
-    inspect_setup, monkeypatch,
+    inspect_setup, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``inspect_model`` profiles categorical AND numeric/temporal columns through one owner call."""
     svc, _ = inspect_setup
@@ -316,7 +316,7 @@ async def test_inspect_model_passes_all_columns_in_one_call(
 
 
 @pytest.mark.asyncio
-async def test_already_cached_does_not_reprofile(inspect_setup: tuple[Any, StorageBackend], monkeypatch) -> None:
+async def test_already_cached_does_not_reprofile(inspect_setup: tuple[Any, StorageBackend], monkeypatch: pytest.MonkeyPatch) -> None:
     svc, storage = inspect_setup
     # Pre-populate the structured cache so the column reads as cached.
     await storage.update_column_sampled(
@@ -377,7 +377,7 @@ async def test_batch_refreshes_both_members(inspect_setup: tuple[Any, StorageBac
 
 @pytest.mark.asyncio
 async def test_hidden_column_renders_without_refresh(
-    inspect_setup: tuple[Any, StorageBackend], monkeypatch,
+    inspect_setup: tuple[Any, StorageBackend], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     svc, storage = inspect_setup
     calls = _count_profile_calls(monkeypatch, svc)
@@ -397,7 +397,7 @@ async def test_hidden_column_renders_without_refresh(
 
 
 @pytest.mark.asyncio
-async def test_profile_failure_renders_cleanly(inspect_setup, monkeypatch) -> None:
+async def test_profile_failure_renders_cleanly(inspect_setup, monkeypatch: pytest.MonkeyPatch) -> None:
     """The refresh path runs (proving it is wired) but its query raises;
     inspect must swallow it and still return a normal column render."""
     svc, _ = inspect_setup
@@ -417,7 +417,7 @@ async def test_profile_failure_renders_cleanly(inspect_setup, monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_persist_failure_renders_cleanly(inspect_setup: tuple[Any, StorageBackend], monkeypatch) -> None:
+async def test_persist_failure_renders_cleanly(inspect_setup: tuple[Any, StorageBackend], monkeypatch: pytest.MonkeyPatch) -> None:
     """A persist failure (``update_column_sampled`` raises) is swallowed; the
     in-memory refresh still renders fresh samples this call."""
     svc, storage = inspect_setup
@@ -436,7 +436,7 @@ async def test_persist_failure_renders_cleanly(inspect_setup: tuple[Any, Storage
 
 @pytest.mark.asyncio
 async def test_persist_failure_numeric_renders_cleanly(
-    inspect_setup: tuple[Any, StorageBackend], monkeypatch,
+    inspect_setup: tuple[Any, StorageBackend], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Numeric variant of the persist-failure path:
     a persist failure on a numeric column still renders the in-memory min/max

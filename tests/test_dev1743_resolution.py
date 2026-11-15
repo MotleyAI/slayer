@@ -369,7 +369,7 @@ class TestDeepDottedChainResolves:
 # --------------------------------------------------------------------------- #
 class TestModeAValidationDialect:
     @pytest.mark.asyncio
-    async def test_save_time_mode_a_uses_datasource_dialect(self, monkeypatch) -> None:
+    async def test_save_time_mode_a_uses_datasource_dialect(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict = {}
 
         def _spy(*, sql, model, alias_path, models_by_name, dialect):

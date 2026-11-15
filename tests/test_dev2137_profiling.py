@@ -12,7 +12,7 @@ from tests._dev2120_fixtures import contractors_engine, contractors_model
 from slayer.engine.query_engine import SlayerQueryEngine
 
 
-def _record(*, engine, monkeypatch) -> list[SlayerQuery]:
+def _record(*, engine, monkeypatch: pytest.MonkeyPatch) -> list[SlayerQuery]:
     log: list[SlayerQuery] = []
     real = engine.execute
 
@@ -25,7 +25,7 @@ def _record(*, engine, monkeypatch) -> list[SlayerQuery]:
     return log
 
 
-async def _profile(engine: SlayerQueryEngine, name: str, monkeypatch, *, model: SlayerModel | None = None):
+async def _profile(engine: SlayerQueryEngine, name: str, monkeypatch: pytest.MonkeyPatch, *, model: SlayerModel | None = None):
     stored = await engine.storage.get_model((model or contractors_model()).name, data_source="test")
     assert stored is not None
     column = stored.get_column(name)
@@ -43,19 +43,19 @@ async def engine():
 
 
 class TestElements:
-    async def test_text_elements(self, engine, monkeypatch) -> None:
+    async def test_text_elements(self, engine, monkeypatch: pytest.MonkeyPatch) -> None:
         skills, outcome, log = await _profile(engine, "skills", monkeypatch)
         assert outcome.errors == []
         assert skills.sampled_values == ["go", "sql"]
         assert skills.distinct_count == 2
         assert log, "profiling ran no query"
 
-    async def test_whole_list_never_sampled(self, engine, monkeypatch) -> None:
+    async def test_whole_list_never_sampled(self, engine, monkeypatch: pytest.MonkeyPatch) -> None:
         _, _, log = await _profile(engine, "skills", monkeypatch)
         for q in log:
             assert "skills" not in [d if isinstance(d, str) else getattr(d, "name", None) for d in q.dimensions or []]
 
-    async def test_numeric_elements(self, engine, monkeypatch) -> None:
+    async def test_numeric_elements(self, engine, monkeypatch: pytest.MonkeyPatch) -> None:
         scores, outcome, _ = await _profile(engine, "scores", monkeypatch)
         assert outcome.errors == []
         assert scores.sampled == "1 .. 9"
@@ -65,7 +65,7 @@ GRIDS = ("CREATE TABLE grids (id INTEGER, grid INTEGER[][])", "INSERT INTO grids
 
 
 class TestOpaqueElements:
-    async def test_never_profiled(self, monkeypatch) -> None:
+    async def test_never_profiled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         grids = SlayerModel(name="grids", sql_table="grids", data_source="test", columns=[
             Column(name="id", type=DataType.INT, primary_key=True),
             Column(name="grid", type=DataType.ARRAY, element_type=DataType.UNKNOWN)])

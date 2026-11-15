@@ -728,7 +728,7 @@ class TestOpenAPI400Documentation:
         assert "404" in spec["paths"][path][method]["responses"]
 
     def test_post_query_run_by_name_dry_run_returns_sql_without_executing(
-        self, client: TestClient, storage: YAMLStorage, monkeypatch
+        self, client: TestClient, storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``{"name": "m", "dry_run": true}`` must populate ``sql`` in the response
         without ever calling the SQL client.

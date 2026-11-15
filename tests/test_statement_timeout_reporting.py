@@ -70,7 +70,7 @@ class TestCarrier:
 
 
 @pytest.fixture
-async def engine(tmp_path, monkeypatch) -> SlayerQueryEngine:
+async def engine(tmp_path, monkeypatch: pytest.MonkeyPatch) -> SlayerQueryEngine:
     db_path = tmp_path / "orders.sqlite"
     with transaction(db_path) as conn:
         conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, status TEXT NOT NULL)")

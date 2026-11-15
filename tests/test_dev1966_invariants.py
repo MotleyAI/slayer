@@ -99,7 +99,7 @@ def _assert_no_later_stage(planned: List[PlannedQuery]) -> None:
 
 class TestStampedBundle:
     @pytest.fixture
-    def planned(self, monkeypatch) -> List[Any]:
+    def planned(self, monkeypatch: pytest.MonkeyPatch) -> List[Any]:
         captured: List[Any] = []
         real = query_engine_module.plan_stages
 
@@ -131,7 +131,7 @@ class TestStampedBundle:
 
 class TestEmissionLaw:
     @pytest.mark.parametrize("consumer", ["source", "join_target", "stage_chain"])
-    async def test_emitted_stage_relations_are_declared(self, consumer, monkeypatch) -> None:
+    async def test_emitted_stage_relations_are_declared(self, consumer, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: List[tuple] = []
         real = SQLGenerator._emit_relation
 

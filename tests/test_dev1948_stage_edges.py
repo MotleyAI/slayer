@@ -127,7 +127,7 @@ class _Capture:
         return out
 
 
-async def _capture(engine, queries, monkeypatch) -> _Capture:
+async def _capture(engine, queries, monkeypatch: pytest.MonkeyPatch) -> _Capture:
     cap = _Capture(monkeypatch)
     await engine.execute(queries, dry_run=True)
     return cap
@@ -194,14 +194,14 @@ _READS_CASES = {
 
 class TestPlanStages:
     @pytest.mark.parametrize("case", list(_READS_CASES))
-    async def test_order_and_stage_reads(self, sqlite_engine, monkeypatch, case) -> None:
+    async def test_order_and_stage_reads(self, sqlite_engine, monkeypatch: pytest.MonkeyPatch, case) -> None:
         build, expected = _READS_CASES[case]
         cap = await _capture(sqlite_engine, build(), monkeypatch)
         canonical = [cap.display(q.name) for q in topologically_order_stages(cap.queries)[:-1]]
         assert cap.stage_names()[:-1] == canonical
         assert cap.reads() == expected
 
-    async def test_chain_order_is_supply_order_invariant(self, sqlite_engine, monkeypatch) -> None:
+    async def test_chain_order_is_supply_order_invariant(self, sqlite_engine, monkeypatch: pytest.MonkeyPatch) -> None:
         cap = await _capture(
             sqlite_engine, [stage_b(), stage_c(), stage_x(), root_over_b()], monkeypatch)
         assert cap.stage_names() == ["x", "c", "b", "<root>"]
@@ -268,7 +268,7 @@ class TestPlanStagesDirect:
 class TestDeclaredEdges:
     @pytest.mark.parametrize("case", list(_READS_CASES))
     async def test_every_entry_declares_its_statement_reads(
-        self, sqlite_engine, monkeypatch, case,
+        self, sqlite_engine, monkeypatch: pytest.MonkeyPatch, case,
     ) -> None:
         build, _ = _READS_CASES[case]
         cap = await _capture(sqlite_engine, build(), monkeypatch)
@@ -283,14 +283,14 @@ class TestDeclaredEdges:
             relation, hoisted = entries[-1], entries[:-1]
             assert {h.name for h in hoisted} <= set(relation.depends_on), (stage, relation.depends_on)
 
-    async def test_root_producer_entries_are_declared(self, sqlite_engine, monkeypatch) -> None:
+    async def test_root_producer_entries_are_declared(self, sqlite_engine, monkeypatch: pytest.MonkeyPatch) -> None:
         cap = await _capture(sqlite_engine, root_producer_list(), monkeypatch)
         root_entries = cap.segments()["<root>"]
         assert root_entries, "the root's producer CTEs are hoisted into the chain"
         assert all("c" in e.depends_on for e in root_entries)
 
     async def test_later_stage_body_reuse_declares_the_shared_producer(
-        self, sqlite_engine, monkeypatch,
+        self, sqlite_engine, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         cap = await _capture(sqlite_engine, shared_producer_list(), monkeypatch)
         segments = cap.segments()
@@ -299,7 +299,7 @@ class TestDeclaredEdges:
             s1_hoisted, segments["s2"][-1].depends_on)
 
     async def test_stage_consumer_is_popped_after_its_render(
-        self, sqlite_engine, monkeypatch,
+        self, sqlite_engine, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         cap = await _capture(sqlite_engine, pop_check_list(), monkeypatch)
         segments = cap.segments()
@@ -316,7 +316,7 @@ class TestDeclaredEdges:
 # 1.4 Dependency order is a checked precondition of the generator.
 # --------------------------------------------------------------------------- #
 class TestOrderPrecondition:
-    async def test_reader_before_its_sibling_raises(self, sqlite_engine, monkeypatch) -> None:
+    async def test_reader_before_its_sibling_raises(self, sqlite_engine, monkeypatch: pytest.MonkeyPatch) -> None:
         cap = await _capture(sqlite_engine, producer_at_sibling_list(), monkeypatch)
         x, c, s, root = cap.planned
         with pytest.raises(ValueError) as exc:

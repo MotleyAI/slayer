@@ -452,7 +452,7 @@ async def test_matched_entities_unchanged_by_compact(
 
 @pytest.mark.asyncio
 async def test_compact_plus_lazy_column_refresh_keeps_text_empty(
-    storage: StorageBackend, monkeypatch,
+    storage: StorageBackend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Codex#3 (strengthened): force the lazy column-refresh path to
     actually run (monkeypatch ensure_samples_fresh to return a
@@ -485,7 +485,7 @@ async def test_compact_plus_lazy_column_refresh_keeps_text_empty(
 
 @pytest.mark.asyncio
 async def test_verbose_plus_lazy_column_refresh_regenerates_text(
-    storage: StorageBackend, monkeypatch,
+    storage: StorageBackend, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verbose-mode regression pin: refresh DOES regenerate hit.text."""
     engine = SlayerQueryEngine(storage=storage)

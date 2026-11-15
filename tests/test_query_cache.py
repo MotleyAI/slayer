@@ -148,7 +148,7 @@ def _mutate(db_path, sql: str) -> None:
         conn.execute(sql)
 
 
-def _install_spy(monkeypatch):
+def _install_spy(monkeypatch: pytest.MonkeyPatch):
     """Record every SQL string sent through ``SlayerSQLClient.execute``."""
     calls: list[str] = []
     orig = SlayerSQLClient.execute
@@ -415,7 +415,7 @@ class TestScanSqlAndValues:
 
 
 class TestBasicCaching:
-    async def test_miss_then_hit_serves_stale_without_reexec(self, tmp_path, monkeypatch):
+    async def test_miss_then_hit_serves_stale_without_reexec(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         engine = await _build_engine(tmp_path)
         calls = _install_spy(monkeypatch)
         q = _sum_query()
@@ -474,7 +474,7 @@ class TestBasicCaching:
 
 
 class TestTtlLazyReexec:
-    async def test_ttl_lazy_reexec_on_read(self, tmp_path, monkeypatch):
+    async def test_ttl_lazy_reexec_on_read(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         clk = FakeClock()
         engine = await _build_engine(tmp_path)
         engine._cache = QueryCache(config=CacheConfig(ttl_seconds=100), clock=clk)
@@ -495,7 +495,7 @@ class TestTtlLazyReexec:
 
 
 class TestRefresh:
-    async def test_baseline_scanned_before_data_query(self, tmp_path, monkeypatch):
+    async def test_baseline_scanned_before_data_query(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         engine = await _build_engine(
             tmp_path,
             cache_config=CacheConfig(refresh_keys=[("orders", "MAX(updated_at)")]),
@@ -699,7 +699,7 @@ class TestRefresh:
 
 
 class TestMultiStageAndByName:
-    async def test_multi_stage_list_caching(self, tmp_path, monkeypatch):
+    async def test_multi_stage_list_caching(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         engine = await _build_engine(tmp_path)
         inner = SlayerQuery(
             source_model="orders",
@@ -720,7 +720,7 @@ class TestMultiStageAndByName:
         assert _data_queries(calls) == []
         assert r2.data[0]["raw.amount_sum"] == total
 
-    async def test_run_by_name_caching(self, tmp_path, monkeypatch):
+    async def test_run_by_name_caching(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         engine = await _build_engine(tmp_path)
         await engine.create_model_from_query(
             query=SlayerQuery(
@@ -792,7 +792,7 @@ class TestRefinedByName:
         )
         return engine
 
-    async def test_refined_run_caches_separately(self, tmp_path, monkeypatch):
+    async def test_refined_run_caches_separately(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         engine = await self._engine_with_saved(tmp_path)
         plain = await engine.execute("obs", cache=True)
         refined = await engine.execute("obs", refine=self.REFINE, cache=True)
@@ -857,7 +857,7 @@ class TestEvictAndManagement:
         engine.clear_cache()
         assert engine.cache_size == 0
 
-    async def test_evict_never_constructs_a_client(self, tmp_path, monkeypatch):
+    async def test_evict_never_constructs_a_client(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         engine = await _build_engine(tmp_path)
 
         class ExplodingClient:
@@ -902,7 +902,7 @@ class TestCacheConfigFrozen:
 
 
 class TestPolicyInteraction:
-    async def test_refresh_key_scan_is_policy_scoped(self, tmp_path, monkeypatch):
+    async def test_refresh_key_scan_is_policy_scoped(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         # With a forced-filter policy the refresh-key
         # baseline scan must be rewritten to the same tenant scope as the data
         # query, so a global MAX/COUNT can't mask a tenant-local change.

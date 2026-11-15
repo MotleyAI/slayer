@@ -350,13 +350,13 @@ class TestPredicateGrainPruning:
 
 
 class TestUnrenderedPublicSlotFailsClosed:
-    async def test_combined_select(self, monkeypatch):
+    async def test_combined_select(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(staged_plan, "combined_composite_slot_ids", lambda _pq: set())
         query = sales_q(dimensions=["region"], measures=[_m(f"{P} + 1")])
         with pytest.raises(ValueError, match="silently dropped"):
             await gen(query, dialect="duckdb")
 
-    async def test_transform_chain(self, monkeypatch):
+    async def test_transform_chain(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(SQLGenerator, "_unmaterialised_post_slots",
                             staticmethod(lambda _pq, _aliases: []))
         query = sales_q(dimensions=["region"], measures=[_m("rank(sum(amount), direction='desc') + 1")])

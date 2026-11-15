@@ -137,7 +137,7 @@ def test_model_and_semantic_model_ai_context(shop_engine):
     assert "osi_semantic_model" in orders.meta
 
 
-def test_db_comments_fill_gaps_curated_wins(shop_engine, monkeypatch):
+def test_db_comments_fill_gaps_curated_wins(shop_engine, monkeypatch: pytest.MonkeyPatch):
     """Introspected DB comments survive only where OSI has no curated text."""
     real = osi_converter_module.introspect_table_to_model
 
@@ -1303,7 +1303,7 @@ def test_a_cross_model_ref_to_a_list_is_a_list(staff_engine):
 
 
 @SELF_NAMED
-def test_an_unprobed_field_shadowing_a_list_keeps_its_element_type(staff_engine, monkeypatch):
+def test_an_unprobed_field_shadowing_a_list_keeps_its_element_type(staff_engine, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(LiveSource, "probe", lambda _self, _expr: None)
     cols = _staff_columns(staff_engine, source="staff",
                           fields=[OSIField(name="skills", expression=_expr("list_distinct(skills)"))])
@@ -1335,7 +1335,7 @@ def test_a_chain_of_cross_model_refs_to_a_list_is_a_list(staff_engine):
     assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)
 
 
-def test_a_cycle_of_cross_model_refs_has_no_end(monkeypatch):
+def test_a_cycle_of_cross_model_refs_has_no_end(monkeypatch: pytest.MonkeyPatch):
     model = SlayerModel(name="m", sql_table="m", data_source="testds", columns=[
         Column(name=n, sql=f"x.{n}", type=DataType.DOUBLE) for n in ("a", "b", "c")])
     nxt = {"a": "b", "b": "c", "c": "a"}

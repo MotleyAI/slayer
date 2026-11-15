@@ -228,13 +228,13 @@ def _run_cli(args: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.Ca
     return code, captured.out
 
 
-def test_cli_search_subcommand_help(monkeypatch, capsys) -> None:
+def test_cli_search_subcommand_help(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     code, out = _run_cli(["search", "--help"], monkeypatch, capsys)
     assert code == 0
     assert "search" in out.lower()
 
 
-def test_cli_datasources_refresh_samples_subcommand_help(monkeypatch, capsys) -> None:
+def test_cli_datasources_refresh_samples_subcommand_help(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     code, _ = _run_cli(["datasources", "refresh-samples", "--help"], monkeypatch, capsys)
     assert code == 0
 
@@ -260,7 +260,7 @@ def _seed_cli_storage(tmp_path) -> str:
     return storage_dir
 
 
-def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
+def test_cli_search_runs_against_storage(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     """End-to-end: storage + search subcommand."""
     storage_dir = _seed_cli_storage(tmp_path)
     code, out = _run_cli(
@@ -279,7 +279,7 @@ def test_cli_search_runs_against_storage(tmp_path, monkeypatch, capsys) -> None:
     assert "resolved_input_entities" in payload
 
 
-def test_cli_memory_recall_subcommand_removed(monkeypatch, capsys) -> None:
+def test_cli_memory_recall_subcommand_removed(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     """`slayer memory recall` is gone — argparse should reject it."""
     code, _ = _run_cli(["memory", "recall", "--help"], monkeypatch, capsys)
     assert code != 0
@@ -394,7 +394,7 @@ def test_rest_post_search_unknown_datasource_returns_400(tmp_path) -> None:
     assert res.status_code == 400
 
 
-def test_cli_search_accepts_datasource_flag(tmp_path, monkeypatch, capsys) -> None:
+def test_cli_search_accepts_datasource_flag(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     """``slayer search --datasource X`` parses cleanly."""
     storage_dir = _seed_cli_storage(tmp_path)
     code, out = _run_cli(

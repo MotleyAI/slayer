@@ -221,7 +221,7 @@ class TestMcpPrefix:
         TimeAxisError(summary="S.", location="measure 'm'"),
         UnknownReferenceError(name="x", scope_kind="model", scope_summary="orders"),
     ), ids=lambda e: type(e).__name__)
-    async def test_class_name_once(self, exc, tmp_path, monkeypatch) -> None:
+    async def test_class_name_once(self, exc, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         async def _raise(self, *, identifier):  # noqa: ARG001
             raise exc
 
@@ -231,7 +231,7 @@ class TestMcpPrefix:
         assert text == f"Error: {exc}"
         assert text.count(type(exc).__name__) == 1
 
-    async def test_plain_value_error_keeps_its_prefix(self, tmp_path, monkeypatch) -> None:
+    async def test_plain_value_error_keeps_its_prefix(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         async def _raise(self, *, identifier):  # noqa: ARG001
             raise ValueError("plain")
 

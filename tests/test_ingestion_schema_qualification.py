@@ -512,7 +512,7 @@ class TestAttachedCatalogs:
             assert model.sql_table == "shared"      # default stays bare
 
     async def test_introspect_table_schema_none_never_unions_a_bare_result(
-        self, attached_paths, monkeypatch
+        self, attached_paths, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Even when the Inspector RETURNS a bare-schema union, schema=None probes
         the qualified default and keeps only {m}."""
@@ -610,7 +610,7 @@ class TestScopeResolution:
         assert any("pg_catalog" in (s.token or "") for s in scope.skipped)
 
     async def test_all_schemas_raises_when_enumeration_fails(
-        self, basic_db, monkeypatch
+        self, basic_db, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """--all-schemas raises rather than returning a silent empty scope."""
         async with _client(_ds(basic_db)) as client:
@@ -622,7 +622,7 @@ class TestScopeResolution:
                 )
 
     async def test_default_scope_survives_enumeration_failure(
-        self, basic_db, monkeypatch
+        self, basic_db, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The implicit default request still resolves when enumeration fails."""
         async with _client(_ds(basic_db)) as client:
@@ -652,7 +652,7 @@ class TestSkippedSchemasReported:
 # ===========================================================================
 
 
-def _reversed_scan(monkeypatch):
+def _reversed_scan(monkeypatch: pytest.MonkeyPatch):
     """Reverse the per-schema discovery order to prove order-independence."""
     real = mod.list_ingestable_objects
 
@@ -681,7 +681,7 @@ class TestCollisions:
         assert "s3.reports" in _skip_labels(report)
 
     async def test_collision_winner_is_independent_of_discovery_order(
-        self, same_name_db, monkeypatch
+        self, same_name_db, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Reverse ONLY the discovery order (requested order held fixed) so a
         failure isolates to discovery nondeterminism."""
@@ -915,7 +915,7 @@ class TestCrossSchemaMergeGuard:
         assert any("reports" in s.table_name for s in result.skipped)
 
     async def test_guard_fails_closed_when_default_membership_unknown(
-        self, same_name_db, tmp_path, monkeypatch
+        self, same_name_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """If the default-schema object listing fails, membership is UNKNOWN and
         the merge is refused (never repoint on a guess)."""
@@ -1010,7 +1010,7 @@ class TestValidateModels:
         assert [e for e in to_delete if e.tool == "delete_model"]
 
     async def test_failed_schema_listing_does_not_mass_delete(
-        self, basic_db, tmp_path, monkeypatch
+        self, basic_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """CodeRabbit: if one in-scope schema fails to list, validate must NOT
         report that schema's models for deletion — a transient error would hand
@@ -1076,7 +1076,7 @@ class TestValidateModels:
         assert not [e for e in to_delete if e.tool == "delete_model"]
 
     async def test_validate_falls_back_when_enumeration_fails(
-        self, legacy_db, tmp_path, monkeypatch
+        self, legacy_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Enumeration fails, yet a pinned-schema model still gets a real drift
         verdict via the configured-schema fallback, not a silent skip."""
@@ -1105,7 +1105,7 @@ class TestValidateModels:
         assert not [e for e in to_delete if e.tool == "delete_model"]  # table resolved
 
     async def test_fallback_covers_a_non_pinned_model_schema(
-        self, legacy_db, tmp_path, monkeypatch
+        self, legacy_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Enumeration fails, but a model qualified to a NON-pinned own schema
         still resolves — the fallback scopes to the models' own schemas, so it is
@@ -1135,7 +1135,7 @@ class TestValidateModels:
         assert not [e for e in to_delete if e.tool == "delete_model"]
 
     async def test_fallback_default_stays_bare_keyed_past_catalog_token(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Fallback: a model token equal to the catalog-qualified default
         (``cat.main.x``) must not un-bare-key the default, or a bare model
@@ -1353,7 +1353,7 @@ class TestIncludeExcludeAcrossSchemas:
 # ===========================================================================
 
 
-def _run_cli(monkeypatch, argv: list[str]) -> None:
+def _run_cli(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> None:
     """Drive the real ``slayer`` CLI by argv (``main`` reads ``sys.argv``)."""
     monkeypatch.setattr("sys.argv", ["slayer", *argv])
     cli.main()
@@ -1361,7 +1361,7 @@ def _run_cli(monkeypatch, argv: list[str]) -> None:
 
 class TestSchemaNamePersistence:
     async def test_create_persists_schema_name_and_bare_ingest_uses_it(
-        self, basic_db, tmp_path, monkeypatch
+        self, basic_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """``datasources create --schema X --ingest`` persists ``schema_name``;
         a subsequent bare ``slayer ingest`` scans X (D-3 fix, D-7)."""
@@ -1381,7 +1381,7 @@ class TestSchemaNamePersistence:
         assert _sql_tables(report).get("reports") == "openfda_rest.reports"
 
     def test_all_schemas_does_not_persist_schema_name(
-        self, basic_db, tmp_path, monkeypatch
+        self, basic_db, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         store = str(tmp_path / "store")
         storage = YAMLStorage(base_dir=store)
@@ -1541,14 +1541,14 @@ class TestCliArgumentParsing:
     unknown-argument one — so the test fails for the right reason before the
     flag exists."""
 
-    def test_ingest_rejects_schema_with_all_schemas(self, monkeypatch, capsys) -> None:
+    def test_ingest_rejects_schema_with_all_schemas(self, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
         with pytest.raises(SystemExit):
             _run_cli(monkeypatch, ["ingest", "--datasource", "d",
                                    "--schema", "a", "--all-schemas"])
         assert "not allowed with" in capsys.readouterr().err
 
     def test_datasources_create_rejects_schema_with_all_schemas(
-        self, monkeypatch, capsys
+        self, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
         with pytest.raises(SystemExit):
             _run_cli(monkeypatch, ["datasources", "create", "duckdb:///x.db",

@@ -38,7 +38,7 @@ async def _sample(
     return outcome.columns[0]
 
 
-def _count_queries(*, engine: SlayerQueryEngine, monkeypatch) -> list:
+def _count_queries(*, engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> list:
     log: list = []
     real = engine.execute
 
@@ -516,7 +516,7 @@ async def test_non_overflow_at_50_boundary() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tiebreak_deterministic_at_limit_boundary(monkeypatch) -> None:
+async def test_tiebreak_deterministic_at_limit_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
     """60 values all with count=1 → top-50 by SQL-side ORDER BY value ASC.
 
     Values are inserted in REVERSE alphabetical order so that a buggy
@@ -744,7 +744,7 @@ async def test_refresh_continues_after_per_column_failure(sqlite_setup: tuple[Sl
 
 
 @pytest.mark.asyncio
-async def test_refresh_passes_all_three_kwargs_to_storage(sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch) -> None:
+async def test_refresh_passes_all_three_kwargs_to_storage(sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch) -> None:
     """The refresh path calls ``update_column_sampled`` with all three new
     kwargs — TDD pin for the API surface change."""
     engine, storage = sqlite_setup
@@ -777,7 +777,7 @@ async def test_refresh_passes_all_three_kwargs_to_storage(sqlite_setup: tuple[Sl
 
 @pytest.mark.asyncio
 async def test_ensure_fresh_returns_input_when_cache_hit(
-    sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch,
+    sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A cached categorical column short-circuits: no query, no persist, column unchanged."""
     engine, storage = sqlite_setup
@@ -833,7 +833,7 @@ async def test_ensure_fresh_categorical_miss_profiles_and_persists(
 
 @pytest.mark.asyncio
 async def test_ensure_fresh_returns_input_when_profile_raises(
-    sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch, caplog,
+    sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch, caplog,
 ) -> None:
     """A failed profile query is logged with context; nothing is persisted and the column is unchanged."""
     engine, storage = sqlite_setup
@@ -876,7 +876,7 @@ async def test_ensure_fresh_returns_input_when_profile_raises(
 
 @pytest.mark.asyncio
 async def test_ensure_fresh_swallows_persist_failure_returns_refreshed(
-    sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch, caplog,
+    sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch, caplog,
 ) -> None:
     """A persist failure is logged; the in-memory refresh is still returned."""
     engine, storage = sqlite_setup
@@ -965,7 +965,7 @@ async def test_ensure_fresh_refreshes_uncached_temporal(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_ensure_fresh_cached_numeric_short_circuits(
-    sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch,
+    sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An already-cached numeric column runs no profiling query."""
     engine, storage = sqlite_setup
@@ -983,7 +983,7 @@ async def test_ensure_fresh_cached_numeric_short_circuits(
 
 @pytest.mark.asyncio
 async def test_ensure_fresh_skips_hidden_and_primary_key(
-    sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch,
+    sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Hidden / PK columns are never profiled or persisted."""
     engine, storage = sqlite_setup
@@ -1026,7 +1026,7 @@ async def test_ensure_fresh_skips_hidden_and_primary_key(
 
 @pytest.mark.asyncio
 async def test_ensure_fresh_does_not_hard_gate_sql_mode(
-    sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch,
+    sqlite_setup: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The lazy path profiles sql-mode models too; only forced refresh is table-backed-only."""
     engine, storage = sqlite_setup

@@ -634,7 +634,7 @@ async def test_mcp_search_response_has_results_key(
 # ---------------------------------------------------------------------------
 
 
-def _run_cli(args: list[str], monkeypatch, capsys) -> tuple[int, str]:
+def _run_cli(args: list[str], monkeypatch: pytest.MonkeyPatch, capsys) -> tuple[int, str]:
     monkeypatch.setattr(sys, "argv", ["slayer"] + args)
     try:
         main()
@@ -668,13 +668,13 @@ def _seed_cli_storage(tmp_path) -> str:
     return storage_dir
 
 
-def test_cli_search_help_has_max_results_flag(monkeypatch, capsys) -> None:
+def test_cli_search_help_has_max_results_flag(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     code, out = _run_cli(["search", "--help"], monkeypatch, capsys)
     assert code == 0
     assert "--max-results" in out
 
 
-def test_cli_search_help_does_not_have_old_flags(monkeypatch, capsys) -> None:
+def test_cli_search_help_does_not_have_old_flags(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     code, out = _run_cli(["search", "--help"], monkeypatch, capsys)
     assert code == 0
     assert "--max-memories" not in out
@@ -682,7 +682,7 @@ def test_cli_search_help_does_not_have_old_flags(monkeypatch, capsys) -> None:
     assert "--max-entities" not in out
 
 
-def test_cli_search_json_output_has_results_key(tmp_path, monkeypatch, capsys) -> None:
+def test_cli_search_json_output_has_results_key(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     storage_dir = _seed_cli_storage(tmp_path)
     code, out = _run_cli(
         ["search", "--storage", storage_dir,

@@ -326,7 +326,7 @@ class TestBigQueryDriftWithSecondDataset:
         ] == [("EditModelDelete", "plain", ["ghost"])]
 
 
-async def test_default_schema_is_the_url_dataset_without_a_request(bq_dataset, monkeypatch) -> None:
+async def test_default_schema_is_the_url_dataset_without_a_request(bq_dataset, monkeypatch: pytest.MonkeyPatch) -> None:
     bq_client, dataset_id = bq_dataset
     second = f"{_PROJECT}.slayer_test_{uuid.uuid4().hex[:12]}"
     bq_client.create_dataset(bigquery.Dataset(second))
