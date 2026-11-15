@@ -88,23 +88,25 @@ async def test_access_tags_travel_in_the_extension(env) -> None:
 
 
 async def test_foreign_extension_preserved(env) -> None:
-    acme = {"vendor_name": "ACME", "data": "{\"k\": 1}"}
-    doc = flat([ds("orders", fields=[f("id", "o_orderkey"), f("amount", custom_extensions=[acme])],
+    acme = {"vendor_name": "ACME", "data": {"k": 1}}
+    doc = flat([ds("orders", fields=[f("id", "o_orderkey"), f("amount", nonportable_extensions=[acme])],
                    primary_key=["id"])])
     imported, _ = await reimport(env, doc)
-    amount = field(dataset((await export(imported)).document, "orders"), "amount")
+    exported = (await export(imported)).document
+    amount = field(dataset(exported, "orders"), "amount")
     assert amount is not None
-    assert acme in amount["custom_extensions"]
+    assert acme in amount["nonportable_extensions"]
     assert len(slayer_entries(amount)) == 1
+    validate(exported)
 
 
 async def test_malformed_foreign_extension_is_reported_and_omitted(env) -> None:
-    malformed = col("amount", meta={"osi_custom_extensions": [{"vendor_name": "ACME"}]})
+    malformed = col("amount", meta={"osi_nonportable_extensions": [{"vendor_name": "ACME"}]})
     columns = [malformed if c.name == "amount" else c for c in orders_columns()]
     result = await export_models(env, customers(), orders(columns=columns, measures=BASIC_MEASURES))
     amount = field(dataset(result.document, "orders"), "amount")
     assert amount is not None
-    assert all(e["vendor_name"] == SLAYER for e in amount.get("custom_extensions") or [])
+    assert all(e["vendor_name"] == SLAYER for e in amount.get("nonportable_extensions") or [])
     assert mentions(result, "ACME")
     validate(result.document)
 

@@ -188,12 +188,12 @@ def entities(document: dict[str, Any]) -> Iterator[dict[str, Any]]:
 
 
 def slayer_entries(entity: dict[str, Any]) -> list[dict[str, Any]]:
-    return [e for e in entity.get("custom_extensions") or [] if e["vendor_name"] == SLAYER]
+    return [e for e in entity.get("nonportable_extensions") or [] if e["vendor_name"] == SLAYER]
 
 
 def payload(entity: dict[str, Any]) -> Any:
     [entry] = slayer_entries(entity)
-    return json.loads(entry["data"])
+    return entry["data"]
 
 
 def carries(entity: dict[str, Any], value: str) -> bool:

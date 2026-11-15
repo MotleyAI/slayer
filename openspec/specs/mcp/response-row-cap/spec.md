@@ -107,7 +107,7 @@ The truncation notice SHALL state the returned row count, say that more rows exi
 
 ### Requirement: Explain plan rows capped without a limit
 
-When `query` runs with `explain=True` and no `limit`, the returned plan rows SHALL be subject to the same 20-row cap and notice. `dry_run` output (SQL only) SHALL never carry a truncation notice.
+When `query` runs with `explain=True` and no `limit`, the returned plan rows SHALL be subject to the same 20-row cap and notice. `dry_run` output SHALL never carry a truncation notice.
 
 #### Scenario: Large explain plan capped
 
@@ -117,7 +117,7 @@ When `query` runs with `explain=True` and no `limit`, the returned plan rows SHA
 #### Scenario: Dry run unaffected
 
 - WHEN `dry_run=True`
-- THEN the response contains only SQL and never a truncation notice
+- THEN the response contains the SQL and never a truncation notice
 
 ### Requirement: Multi-stage list form capped by the root stage's limit only
 

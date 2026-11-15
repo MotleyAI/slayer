@@ -328,6 +328,28 @@ def _regions(text: str) -> List[_Region]:
     return out
 
 
+class StringLiteralSpan(BaseModel):
+    """A ``'…'`` literal at ``text[start:end]`` (quotes included) and its ``value``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    start: int
+    end: int
+    value: str
+
+
+def string_literal_spans(text: str) -> List[StringLiteralSpan]:
+    """Each string literal of ``text`` in order, between code regions; none when ``text`` has an unterminated comment."""
+    try:
+        regions = _regions(text)
+    except _Problem:
+        return []
+    return [
+        StringLiteralSpan(start=r.start, end=r.end, value=text[r.start + 1:r.end - 1].replace("''", "'"))
+        for r in regions if r.kind == "string" and r.end - r.start >= 2 and text[r.end - 1] == "'"
+    ]
+
+
 def _mask_code(chunk: str) -> str:
     if "{?" in chunk or "?}" in chunk:
         raise _Problem(_OPTIONAL_BLOCKS)
@@ -420,7 +442,7 @@ def _need(element: pp.ParserElement, detail: str) -> pp.ParserElement:
     return element | _fail(detail)
 
 
-_RUN_CHAR = r"[^\x00-\x20\x7f!-/:-@\[-^`{-~\s]"
+_RUN_CHAR = r"[^\x00-\x08\x0e-\x1f\x7f!-/:-@\[-^`{-~\s]"
 _RUN = r"(?!\d)" + _RUN_CHAR + r"+"
 
 
@@ -2352,6 +2374,47 @@ def text_paths(text: str, *, root: Optional[str]) -> List[Tuple[str, ...]]:
     ]
 
 
+_RUN_RE = re.compile(_RUN)
+_RUN_CHAR_RE = re.compile(_RUN_CHAR)
+
+
+def _is_path_head(text: str, *, start: int, end: int) -> bool:
+    """The bare word ``text[start:end]`` opens a dotted path: no word or ``.`` before it, a ``.`` and a segment after."""
+    before = text[:start].rstrip()
+    after = text[end:].lstrip()
+    if (start and _RUN_CHAR_RE.match(text[start - 1])) or before.endswith(".") or not after.startswith("."):
+        return False
+    segment = after[1:].lstrip()
+    return bool(segment) and (segment[0] in '"*' or _RUN_RE.match(segment) is not None)
+
+
+def respell_path_heads(text: str, *, respell: Callable[[str], Optional[str]]) -> str:
+    """``text`` with each unquoted dotted-path head ``respell`` maps to a new spelling replaced, every other byte kept;
+    text that does not parse is returned unchanged."""
+    try:
+        parse_template(text)
+    except Exception:  # noqa: BLE001 — unparseable text is left for binding to report
+        return text
+    regions = _regions(text)
+    blanked = "".join(
+        re.sub(r"[^\n]", " ", text[r.start:r.end]) if r.kind == "comment" else text[r.start:r.end] for r in regions
+    )
+    out: List[str] = []
+    last = 0
+    for region in regions:
+        if region.kind != "code":
+            continue
+        for word in _RUN_RE.finditer(text, region.start, region.end):
+            if not _is_path_head(blanked, start=word.start(), end=word.end()):
+                continue
+            new = respell(word.group())
+            if new is None or new == word.group():
+                continue
+            out += [text[last:word.start()], new]
+            last = word.end()
+    return "".join([*out, text[last:]])
+
+
 class CallSource(BaseModel):
     """A whole-text call ``f(a, …)`` as written: its callee path (a ``{var}`` callee as written) and each
     argument's source text."""
@@ -2646,6 +2709,6 @@ __all__ = [
     "bare_literal_text", "dotted_quoting", "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling",
     "legacy_result_name_seed", "map_refs", "measure_dependency_problems", "measure_text_at_path", "onto_path",
     "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths",
-    "rewrite_colon_spans", "root_relative", "split_entity_agg_ref",
+    "rewrite_colon_spans", "root_relative", "split_entity_agg_ref", "StringLiteralSpan", "string_literal_spans",
     "text_paths", "value_text", "variable_names", "walk_parsed", "walk_parsed_refs",
 ]

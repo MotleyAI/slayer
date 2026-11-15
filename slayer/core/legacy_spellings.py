@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
@@ -75,10 +75,26 @@ def _emit(span: LegacySpan) -> DeprecatedSpellingWarning:
     return DeprecatedSpellingWarning(spelling=span.kind, written=span.written, canonical=span.twin)
 
 
-def outermost(spans: Iterable[LegacySpan]) -> List[LegacySpan]:
+class TextSpan(Protocol):
+    """A span of text to replace by its ``twin``."""
+
+    @property
+    def start(self) -> int: ...
+
+    @property
+    def end(self) -> int: ...
+
+    @property
+    def twin(self) -> str: ...
+
+
+_Span = TypeVar("_Span", bound=TextSpan)
+
+
+def outermost(spans: Iterable[_Span]) -> List[_Span]:
     """The spans no other span contains, in text order."""
     ordered = sorted(spans, key=lambda s: (s.start, -s.end))
-    out: List[LegacySpan] = []
+    out: List[_Span] = []
     for span in ordered:
         if out and span.start < out[-1].end:
             continue
@@ -86,7 +102,7 @@ def outermost(spans: Iterable[LegacySpan]) -> List[LegacySpan]:
     return out
 
 
-def rewrite_spans(text: str, spans: Iterable[LegacySpan]) -> str:
+def rewrite_spans(text: str, spans: Iterable[TextSpan]) -> str:
     """``text`` with each outermost span replaced by its twin, the rest byte-identical."""
     out: List[str] = []
     cursor = 0

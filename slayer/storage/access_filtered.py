@@ -19,7 +19,7 @@ from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
 from slayer.engine.model_reads import Identity, models_read_by, placeholder
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX, Memory
-from slayer.storage.base import StorageBackend, _find_case_colliding_id
+from slayer.storage.base import StorageBackend, _find_case_colliding_id, check_join_target_spellings
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded
 
 
@@ -202,6 +202,8 @@ class AccessFilteredStorage(StorageBackend):
         if model.access_tags != _prior_tags(model, view=view):
             raise AccessTagsEditError(model=model.name)
         if _validate:
+            names = [n for ds, n in view.identities if ds == model.data_source]
+            check_join_target_spellings(model, names=names, peers={})
             for join in model.joins:
                 if (model.data_source, join.target_model) not in view.models:
                     raise UnknownJoinTargetError(model=model.name, target=join.target_model)

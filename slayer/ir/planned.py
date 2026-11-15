@@ -28,6 +28,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import EmptyValue, SlayerModel
 from slayer.core.scope import StageSchema, StaleSpelling
+from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.ir.bound import BoundExpr, GranularityConflict, WholeListRead
 from slayer.ir.prebound import ModePolicy
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -483,6 +484,7 @@ class PlannedQuery(BaseModel):
     # ``whole_periods_only`` granularity pairs on one column that do not nest.
     granularity_conflicts: List[GranularityConflict] = Field(default_factory=list)
     whole_list_reads: List[WholeListRead] = Field(default_factory=list)
+    date_only_notices: List[DateOnlyMidnightWarning] = Field(default_factory=list)
     # Active-TD slot (None if none); time-needing transforms use it for the OVER ORDER BY.
     active_time_dimension_slot_id: Optional[SlotId] = None
     render_source_model: Optional[SlayerModel] = None

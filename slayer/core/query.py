@@ -1113,16 +1113,19 @@ def convert_legacy_root_extension(data: dict) -> tuple[dict, DeprecatedInputWarn
     return data, deprecated_input("An extension object in `source_model`", "`extensions`", removal="3.0")
 
 
-def prepare_query_input(data: dict) -> tuple[dict, DeprecatedInputWarning | None]:
-    """``data`` in the shape ``SlayerQuery``'s typed fields read (a legacy root extension converted, a versioned
-    payload migrated around a fresh ``strict``, which ``SlayerQuery`` converts), with the conversion's deprecation."""
+def prepare_query_input(data: dict) -> tuple[dict, list[DeprecatedInputWarning]]:
+    """Fresh query input with its deprecated forms converted (and a versioned payload migrated), with every
+    conversion's deprecation."""
+    payloads: list[DeprecatedInputWarning] = []
+    if _has_fresh_strict(data):
+        data, payload = _convert_strict(data)
+        payloads.append(payload)
     data, payload = convert_legacy_root_extension(data)
-    if "version" not in data:
-        return data, payload
-    if not _has_fresh_strict(data):
-        return _migrate_schema(entity="SlayerQuery", data=data), payload
-    rest = {k: v for k, v in data.items() if k != "strict"}
-    return {**_migrate_schema(entity="SlayerQuery", data=rest), "strict": data["strict"]}, payload
+    if payload is not None:
+        payloads.append(payload)
+    if "version" in data:
+        data = _migrate_schema(entity="SlayerQuery", data=data)
+    return data, payloads
 
 
 def _refuse_inline_model(value: Any) -> Any:
@@ -1289,16 +1292,9 @@ class SlayerQuery(BaseModel):
     @classmethod
     def _migrate_and_rewrite(cls, data: Any, handler: ModelWrapValidatorHandler["SlayerQuery"]) -> "SlayerQuery":
         # One validator sequences convert → migrate → functional-granularity rewrite.
-        # Fresh `strict` (no version, v4+, or a malformed version) converts with a
-        # deprecation; a stored pre-v4 one migrates silently (v3→v4).
         payloads: list[DeprecatedInputWarning] = []
         if isinstance(data, dict):
-            if _has_fresh_strict(data):
-                data, payload = _convert_strict(data)
-                payloads.append(payload)
-            data, payload = convert_legacy_root_extension(data)
-            if payload is not None:
-                payloads.append(payload)
+            data, payloads = prepare_query_input(data)
         data = _migrate_schema(entity="SlayerQuery", data=data)
         if isinstance(data, dict):
             if is_legacy_root_extension(data.get("source_model")):
@@ -1380,10 +1376,11 @@ class SlayerQuery(BaseModel):
             "- A list tags: contains(tags, 'x') or tags.value = 'x'; contains_any(tags, ['x', "
             "'y']) shares an element, contains_all(tags, ['x', 'y']) holds every one.\n"
             "- Time points: a string compared with a date/time column is a half-open period: "
-            "'2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), '2025-03-01' (the whole day), or "
+            "'2025', '2025-Q1', '2025-03', '2025-W05' (ISO week), or "
             "relative: 'today', 'last month', 'last 7 days' (excludes the current day), "
             "'year to date'. order_date >= '2025-Q1' starts at the period, <= ends with it, "
-            "order_date in '2025-Q1' is inside it.\n"
+            "order_date in '2025-Q1' is inside it. A date '2025-03-01' is its midnight; "
+            "created_at in '2025-03-01' is the whole day.\n"
             "- {variable} placeholders take literal values from variables.\n"
             'More: inspect(reference=["memory:help.time", "memory:help.joins"], '
             'entity_type="memory").'
@@ -1395,6 +1392,13 @@ class SlayerQuery(BaseModel):
     @property
     def bound_variables(self) -> dict[str, Any]:
         return self._bound_variables
+
+    # (column path, op, date, literal on the left) per comparison a date-only variable binds → the variables binding it (``apply_variables_to_query``).
+    _date_variables: dict[tuple[tuple[str, ...], str, str, bool], tuple[str, ...]] = PrivateAttr(default_factory=dict)
+
+    @property
+    def date_variables(self) -> dict[tuple[tuple[str, ...], str, str, bool], tuple[str, ...]]:
+        return self._date_variables
 
     variables: dict[str, Any] | None = Field(
         default=None,

@@ -37,9 +37,9 @@ semantic_model:
               synonyms:
                 - "revenue"
                 - "gross"
-            custom_extensions:
+            nonportable_extensions:
               - vendor_name: SNOWFLAKE
-                data: '{"unit": "usd"}'
+                data: {unit: usd}
           - name: quantity
             expression: {dialects: [{dialect: ANSI_SQL, expression: quantity}]}
           - name: ordered_at

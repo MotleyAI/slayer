@@ -60,6 +60,7 @@ from slayer.osi.converter import OsiConversionError, OsiConversionResult, OsiToS
 from slayer.osi.exporter import OsiExportError, export_osi
 from slayer.ingest_report import ConversionWarning
 from slayer.osi.parser import parse_osi_path
+from slayer.osi.yaml_writer import dump_yaml
 from slayer.pg_facade.cli import add_pg_serve_subparser
 from slayer.pg_facade.server import run_pg_serve
 from slayer.memories.help_seed import seed_help_memories
@@ -841,7 +842,7 @@ examples:
     export_osi_parser.add_argument("--out", required=True,
                                    help="Output file: JSON when it ends in .json, YAML otherwise")
     export_osi_parser.add_argument("--no-extensions", action="store_true",
-                                   help="Omit the SLAYER custom extensions (plain Ossie; SLayer-only content "
+                                   help="Omit the SLAYER non-portable extensions (plain Ossie; SLayer-only content "
                                         "is reported, not exported)")
     _add_storage_arg(export_osi_parser)
 
@@ -2386,7 +2387,7 @@ def _run_export_osi(args):
     if args.out.endswith(".json"):
         text = json.dumps(result.document, indent=2, ensure_ascii=False) + "\n"
     else:
-        text = yaml.safe_dump(result.document, sort_keys=False, allow_unicode=True)
+        text = dump_yaml(result.document)
     # The output path is an intended, user-specified CLI location.
     with open(args.out, "w", encoding="utf-8") as fh:  # NOSONAR(S8707)
         fh.write(text)

@@ -89,10 +89,10 @@ def test_flat_document_of_either_version_imports_the_same(
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING and "version" in r.getMessage().lower()]
 
 
-def test_semantic_model_custom_extensions_are_kept(db: Path) -> None:
-    ext = {"vendor_name": "acme", "data": '{"tier": "gold"}'}
-    result = convert(db=db, docs=documents({**_shop(), "custom_extensions": [ext]}))
-    assert (by_name(result)["orders"].meta or {})["osi_semantic_model"]["custom_extensions"] == [ext]
+def test_semantic_model_nonportable_extensions_are_kept(db: Path) -> None:
+    ext = {"vendor_name": "acme", "data": {"tier": "gold"}}
+    result = convert(db=db, docs=documents({**_shop(), "nonportable_extensions": [ext]}))
+    assert (by_name(result)["orders"].meta or {})["osi_semantic_model"]["nonportable_extensions"] == [ext]
 
 
 @pytest.mark.parametrize("wrapped", ["array", "object"])

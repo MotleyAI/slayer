@@ -12,7 +12,7 @@ This reads every `.yaml`/`.yml`/`.json` file in the path (a single file or a dir
 
 ## Document Shapes
 
-A current-spec document holds one semantic model at its root (`version`, `name`, `datasets`, and optionally `description`, `ai_context`, `relationships`, `metrics`, `custom_extensions`). An older document wrapping its models in `semantic_model` (an array or a single object) still imports, each wrapped model as its own semantic model. A file that mixes both shapes, holds neither (such as an Ossie ontology or ontology-mapping document), has an empty `semantic_model`, or wraps its models while declaring `0.3.0.dev0` (whose documents are flat only) is skipped with a warning; the other files still import.
+A current-spec document holds one semantic model at its root (`version`, `name`, `datasets`, and optionally `description`, `ai_context`, `relationships`, `metrics`, `nonportable_extensions`). An older document wrapping its models in `semantic_model` (an array or a single object) still imports, each wrapped model as its own semantic model. A file that mixes both shapes, holds neither (such as an Ossie ontology or ontology-mapping document), has an empty `semantic_model`, or wraps its models while declaring `0.3.0.dev0` (whose documents are flat only) is skipped with a warning; the other files still import.
 
 Spec versions `1.0`, `0.1.0`, `0.1.1`, `0.2.0.dev0` and `0.3.0.dev0` parse silently; an unknown version is warned about but still parsed.
 
@@ -28,9 +28,11 @@ Spec versions `1.0`, `0.1.0`, `0.1.1`, `0.2.0.dev0` and `0.3.0.dev0` parse silen
 | `datasets[].metrics[]` | a `ModelMeasure` on that dataset's model |
 | `metrics[]` | a `ModelMeasure` on an anchor model (see [Metrics](#metrics)) |
 | `ai_context` (instructions + synonyms) | entity `description` + `meta["osi_ai_context"]` |
-| `unique_keys` / `custom_extensions` | model/column `meta`; a single-field unique key also sets `Column.unique` |
+| `unique_keys` / `nonportable_extensions` | model/column `meta`; a single-field unique key also sets `Column.unique` |
 
-A `SLAYER` custom extension written by [`slayer export-osi`](osi_export.md) restores the SLayer structure it carries (join types and directions, measure formulas, column filters, model sources, SLayer-only columns and measures) wherever the document is unedited since export, and otherwise the Ossie content is imported and the report names the entity.
+A `SLAYER` non-portable extension written by [`slayer export-osi`](osi_export.md) restores the SLayer structure it carries (join types and directions, measure formulas, column filters, model sources, SLayer-only columns and measures) wherever the document is unedited since export, and otherwise the Ossie content is imported and the report names the entity.
+
+An extension entry whose `data` is not a JSON object (a list, a scalar, or an object holding a date, a timestamp, `.inf`/`.nan` or a non-string key) is dropped and reported; the rest of the entity imports. The legacy key `custom_extensions`, whose `data` is a JSON string (documents exported by SLayer 1.8), is still read at every level, with one informational report entry per document suggesting a re-export.
 
 ### Fields
 
@@ -63,7 +65,7 @@ An OSI metric holds a raw SQL aggregation, which SLayer converts into a formula:
 - `PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY x)` → `percentile(x, p=0.9)` (`0.5` → `median(x)`); `PERCENTILE_DISC`, and a percentile the target dialect cannot compute, is reported as unconverted
 - `STDDEV_SAMP`, `STDDEV_POP`, `VAR_SAMP`, `VAR_POP(x)` → `stddev_samp(x)` etc., `CORR`, `COVAR_SAMP`, `COVAR_POP(x, y)` → `corr(x, other=y)` etc., and `APPROX_COUNT_DISTINCT(x)` → `count_distinct_approx(x)`
 - an aggregate operand is written inline when the formula language expresses it — `SUM(quantity * amount)` → `sum(quantity * amount)`, `CASE`/`IFF`, comparisons, `AND`/`OR`/`NOT`, `IS NULL` — and otherwise becomes a hidden helper column on its single owning dataset, typed from the database
-- `agg(x) FILTER (WHERE p)` → `agg(CASE WHEN p THEN x END)` (`COUNT(*)` counts `CASE WHEN p THEN 1 END`); the predicate must be row-level and read only the aggregate's dataset, and groups are never removed
+- `agg(x) FILTER (WHERE p)` → `agg(CASE WHEN p THEN x END)`; a date string compared in `p` means what Ossie says, so `created_at <= '2024-04-10'` stops at its midnight (`COUNT(*)` counts `CASE WHEN p THEN 1 END`); the predicate must be row-level and read only the aggregate's dataset, and groups are never removed
 - `ARRAY_AGG(DISTINCT x)` → `collect(x)`, `ARRAY_CONTAINS(a, v)` and `v = ANY(a)` → `contains(a, v)`, `ARRAY_LENGTH(a)` and `CARDINALITY(a)` → `length(a)` (in a field, stored as SLayer's own SQL for the datasource), with SLayer's NULL conventions: `collect` drops NULL inputs and gives `[]` for none, `contains` is NULL for a NULL list or value and FALSE when the value is absent, and `length` counts non-NULL elements
 - a string literal keeps its `'` (written `''`) and backslash characters
 

@@ -283,7 +283,7 @@ When a measure is renamed via `name`, query filters and ORDER BY entries in the 
 | `**` | `"sum(value) ** 2"` | `POWER(SUM(value), 2)` |
 | `%` | `"sum(quantity) % 12"` | `SUM(quantity) % 12` |
 
-Parentheses work as expected: `"(sum(revenue) - sum(cost)) / count(*)"`. Division by zero is NULL on every backend.
+Parentheses work as expected: `"(sum(revenue) - sum(cost)) / count(*)"`. Division by zero is NULL on every backend, and `/` is true division even between integers (`5 / 2` is `2.5`).
 
 Precedence, tightest first: `::`, `**`, unary `-` / `+`, `*` / `/` / `%`, `+` / `-`, `||` / `->` / `->>`, comparisons (`=`, `<`, `IN`, `BETWEEN`, `LIKE`, `IS`, `~`, …), `NOT`, `AND`, `OR` — so `NOT a = b` is `NOT (a = b)` and `'a' || 'b' = 'ab'` is true.
 `**` is right-associative and binds tighter than a sign (`2 ** 3 ** 2` is 512, `-2 ** 2` is -4), and `%` takes the sign of its left operand (`-7 % 3` is -1, `7 % -3` is 1).
@@ -524,7 +524,7 @@ Any scalar function can wrap aggregates as the **top-level** form of a query mea
 {"formula": "round(sum(revenue) / count(*), 2)"}
 ```
 
-On Postgres, 2-argument `round` over a floating-point value is automatically cast to `numeric` so it executes (Postgres has no `round(double precision, integer)` overload). SQLite and DuckDB round `DOUBLE` natively.
+On Postgres, 2-argument `round` over a floating-point value is automatically cast to `numeric` so it executes (Postgres has no `round(double precision, integer)` overload). SQLite and DuckDB round `DOUBLE` natively. A DECIMAL tie rounds away from zero (`round(2.5)` is `3`, `round(-0.125, 2)` is `-0.13`); a floating-point tie is rounded as the database rounds it, since a binary value is rarely an exact tie.
 
 These are native on Postgres / DuckDB / MySQL / ClickHouse. SQLite doesn't have most of them in the standard build, so SLayer registers Python implementations on every connection (see `slayer/sql/dialects/sqlite.py`). NULL inputs always return NULL. Math-domain errors (`ln(0)`, `sqrt(-1)`, `pow(0, -1)`) propagate as `sqlite3.OperationalError` — matching Postgres's strict semantics rather than SQLite ≥3.35's silent-NULL built-in `log()`.
 

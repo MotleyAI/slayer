@@ -544,7 +544,8 @@ class ReservedModelNameError(SlayerError):
     def __init__(self, *, name: str) -> None:
         self.name = name
         super().__init__(
-            f"Model name {name!r} is reserved for the built-in time spine model; choose another name."
+            f"Model name {name!r} is reserved for the built-in time spine model 'time_spine' (model names match in "
+            f"any case); choose another name."
         )
 
 
@@ -1285,6 +1286,29 @@ class UnknownJoinTargetError(SlayerError):
             cls_name=type(self).__name__,
             summary=f"Model {model!r}: join target {target!r} is not a known model.",
         ))
+
+
+class JoinTargetCaseError(SlayerError, ValueError):
+    """A stored join target that reaches a model only by case. ``saving`` is the model whose save the peer's join
+    blocks; without it, ``model``'s own join is refused."""
+
+    def __init__(
+        self, *, model: str, join: str | None, target: str, declared: str, saving: bool = False,
+    ) -> None:
+        self.model = model
+        self.join = join
+        self.target = target
+        self.declared = declared
+        edge = f"join {join!r}" if join else f"the unnamed join to {target!r}"
+        if saving:
+            summary = (f"Model {declared!r} differs only in case from the target {target!r} of {edge} on model "
+                       f"{model!r}; a stored join target names its model exactly.")
+            suggestion = f"Respell that join's target to {declared!r} first, then save {declared!r}."
+        else:
+            summary = (f"Model {model!r}: {edge} targets {target!r}, which matches model {declared!r} only by case; "
+                       f"a stored join target names its model exactly.")
+            suggestion = f"Write the target as {declared!r}."
+        super().__init__(_format_error_message(cls_name=type(self).__name__, summary=summary, suggestion=suggestion))
 
 
 class QueryBackedCycleError(SlayerError, ValueError):

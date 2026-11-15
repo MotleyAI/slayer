@@ -552,8 +552,8 @@ Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
         )
         sql = await _generate(generator, query, orders_model)
         assert ">=" in sql
-        assert "2024-07-01" in sql
-        assert "2024-06-30" not in sql
+        assert "2024-06-30 00:00:00" in sql
+        assert "2024-07-01" not in sql
 
 
 class TestMeasureTypes:

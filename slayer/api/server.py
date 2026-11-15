@@ -76,9 +76,7 @@ class QueryRequest(BaseModel):
     # (``None`` here) keeps the v3 SlayerQuery default (``True``). Set
     # ``False`` to emit raw rows.
     distinct_dimension_values: bool | None = None
-    # How aggregates resolve query dimensions unattributable from their root
-    # (broadcast|associate|error); a deprecated `strict` flag rides extra="allow"
-    # into the payload, where SlayerQuery converts it.
+    # How aggregates resolve query dimensions unattributable from their root (broadcast|associate|error).
     to_many_handling: str | None = None
     dry_run: bool | None = None
     explain: bool | None = None
@@ -91,12 +89,11 @@ class QueryRequest(BaseModel):
     @model_validator(mode="wrap")
     @classmethod
     def _prepare_query_input(cls, data: Any, handler: ModelWrapValidatorHandler["QueryRequest"]) -> "QueryRequest":
-        payload = None
+        payloads: list[DeprecatedInputWarning] = []
         if isinstance(data, dict):
-            data, payload = prepare_query_input(data)
+            data, payloads = prepare_query_input(data)
         request = handler(data)
-        if payload is not None:
-            request._deprecated_inputs = (payload,)
+        request._deprecated_inputs = tuple(payloads)
         return request
 
     @property
@@ -407,7 +404,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             # runs the model's stored backing query, ``refine`` merged into its
             # final stage. Any other query field (even ``null``) is rejected.
             elif request.name is not None:
-                if request.model_fields_set - _RUN_BY_NAME_FIELDS or request.model_extra:
+                if request.model_fields_set - _RUN_BY_NAME_FIELDS or request.model_extra or request.deprecated_inputs:
                     raise HTTPException(
                         status_code=400,
                         detail=(

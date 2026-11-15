@@ -449,9 +449,9 @@ class TestWindowedSrcFrameBounds:
             _orders(),
         )
         src = _extract_src_body(sql)
-        assert "2025-01-01" not in src, src
+        assert "2024-12-31" not in src, src
         assert "'paid'" in src, src
-        assert "2025-01-01" in _extract_cte_body(sql, r"_base"), sql
+        assert "2024-12-31" in _extract_cte_body(sql, r"_base"), sql
 
     async def test_both_bounds_stripped_from_src_kept_on_base(self) -> None:
         sql = await _wm_sql(
@@ -466,10 +466,10 @@ class TestWindowedSrcFrameBounds:
         src = _extract_src_body(sql)
         base = _extract_cte_body(sql, r"_base")
         assert "2024-06-01" not in src, src
-        assert "2025-01-01" not in src, src
+        assert "2024-12-31" not in src, src
         assert "'paid'" in src, src
         assert "2024-06-01" in base, base
-        assert "2025-01-01" in base, base
+        assert "2024-12-31" in base, base
 
     async def test_literal_on_the_left_is_stripped_from_src(self) -> None:
         sql = await _wm_sql(
@@ -546,7 +546,7 @@ class TestWindowedSrcFrameBounds:
     async def test_period_equality_on_time_dimension_column_is_stripped_from_src(self) -> None:
         """A period ``=`` lowers to a half-open range: a frame bound like ``>=`` / ``<``."""
         sql = await _wm_sql(
-            _windowed_query(filters=["created_at == '2024-06-01'"]),
+            _windowed_query(filters=["created_at in '2024-06-01'"]),
             _orders(),
         )
         src = _extract_src_body(sql)

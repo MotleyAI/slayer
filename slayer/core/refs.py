@@ -112,6 +112,7 @@ _LEGACY_KEY_SPELLINGS: dict[type, tuple[str, _LegacyFields]] = {
     TimePointCmpKey: ("TimePointCmpKey", (
         ("op", attrgetter("op")), ("operand", attrgetter("operand")),
         ("point", attrgetter("point")), ("literal_on_left", attrgetter("literal_on_left")),
+        ("whole_day", attrgetter("whole_day")),
     )),
     InKey: ("InKey", (
         ("column", attrgetter("column")), ("values", attrgetter("values")),

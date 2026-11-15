@@ -1,7 +1,7 @@
 """Export one datasource's SLayer models as a current-spec Ossie document.
 
 Everything Ossie defines with SLayer's meaning goes out as Ossie; SLayer-only
-content travels in one ``SLAYER`` custom extension per entity; everything else
+content travels in one ``SLAYER`` non-portable extension per entity; everything else
 is reported (entity, reason, workaround), never silently dropped.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import sqlglot
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,13 +20,17 @@ from sqlglot.expressions.core import Expression
 from slayer.core.errors import SlayerError
 from slayer.core.enums import RANKED_AGGREGATIONS, DataType, JoinCardinality
 from slayer.core.join_walker import aggregation_owner, model_column_type, terminal_model, walk
+from slayer.core.time_points import parse_temporal_value
 from slayer.core.keys import (
+    MIRRORED_TIME_POINT_OP,
     AggregateKey,
+    ArithmeticKey,
     ColumnKey,
     ColumnSqlKey,
     LiteralKey,
     SqlFragmentKey,
     StarKey,
+    TimePointCmpKey,
     TransformKey,
     ValueKey,
     aggregation_source_type,
@@ -193,6 +197,20 @@ def _ossie_division(tree: Expression) -> Expression:
         if node is None and isinstance(divisor, exp.Nullif) and divisor.expression == exp.Literal.number(0):
             divisor.replace(divisor.this)
     return tree
+
+
+def _instant_comparisons(key: ValueKey) -> ValueKey:
+    """``key`` with each comparison against an instant (a bare date is its midnight) as the plain SQL comparison."""
+    key = cast(ValueKey, key.map_children(_instant_comparisons))
+    if not isinstance(key, TimePointCmpKey) or key.reads_whole_day or parse_temporal_value(key.point.strip()) is None:
+        return key
+    literal = LiteralKey(value=key.point.strip())
+    if key.literal_on_left:
+        return ArithmeticKey(op=_SQL_OP[MIRRORED_TIME_POINT_OP[key.op]], operands=(literal, key.operand))
+    return ArithmeticKey(op=_SQL_OP[key.op], operands=(key.operand, literal))
+
+
+_SQL_OP = {"=": "==", "!=": "!=", "<": "<", "<=": "<=", ">": ">", ">=": ">="}
 
 
 def _refuse_slayer_only(agg: AggregateKey) -> None:
@@ -448,24 +466,30 @@ class _Exporter:
     def _extensions(self, entity: dict[str, Any], meta: dict[str, Any], *, payload: Any, model: str,
                     ossie: Any) -> None:
         """Re-emit valid foreign extensions recorded in ``meta``, then this entity's ``SLAYER`` payload."""
+        out = self._foreign(meta.get("osi_nonportable_extensions"), owner=repr(entity["name"]), model=model)
+        if self.extensions:
+            out.append(ext.encode(payload, ossie=ossie))
+        if out:
+            entity["nonportable_extensions"] = out
+
+    def _foreign(self, entries: Any, *, owner: str, model: str | None) -> list[dict[str, Any]]:
+        """The valid foreign entries of a recorded list; the malformed ones are reported."""
         out: list[dict[str, Any]] = []
-        for raw in meta.get("osi_custom_extensions") or []:
+        if entries is None:
+            entries = []
+        for raw in entries if isinstance(entries, list) else [entries]:
             if isinstance(raw, dict) and ext.is_slayer(raw):
                 continue
-            valid = (isinstance(raw, dict) and set(raw) == {"vendor_name", "data"}
-                     and isinstance(raw["vendor_name"], str) and raw["vendor_name"].strip()
-                     and isinstance(raw["data"], str))
-            if not valid:
-                self._report(f"Custom extension {raw!r} on {entity['name']!r} is malformed (it needs exactly a "
-                             f"non-empty vendor_name and a string data); not exported.", severity="dropped",
+            entry = (ext.checked(vendor_name=raw["vendor_name"], data=raw["data"])
+                     if isinstance(raw, dict) and set(raw) == {"vendor_name", "data"} else None)
+            if entry is None:
+                self._report(f"Non-portable extension {raw!r} on {owner} is malformed (it needs exactly a "
+                             f"non-empty vendor_name and a JSON object data); not exported.", severity="dropped",
                              category="extension", suggestion="Fix or remove it in the entity's metadata.",
                              model=model)
                 continue
-            out.append({"vendor_name": raw["vendor_name"], "data": raw["data"]})
-        if self.extensions:
-            out.append(ext.encode(payload, ossie=ossie).model_dump())
-        if out:
-            entity["custom_extensions"] = out
+            out.append(entry)
+        return out
 
     # ---- keys ----
 
@@ -622,7 +646,7 @@ class _Exporter:
         portable = not any(a.agg == "count_distinct_approx" for a in aggregates)
         scoped = len(set(readers)) == 1
         try:
-            tree = self._render(ds.graph, key, scoped=scoped, portable=portable)
+            tree = self._render(ds.graph, _instant_comparisons(key), scoped=scoped, portable=portable)
         except Exception as exc:  # noqa: BLE001 — anything the shared renderer refuses stays SLayer-only
             raise _Refused(f"does not render as standard SQL ({exc})", _RESTORE) from exc
         return _Metric(home=ds.model.name, measure=measure, scope="dataset" if scoped else "model",
@@ -805,9 +829,9 @@ class _Exporter:
             document["relationships"] = [self._relationship_entity(r) for r in relationships]
         if self.model_metrics:
             document["metrics"] = self.model_metrics
-        foreign = [e for e in (semantic or {}).get("custom_extensions") or [] if not ext.is_slayer(e)]
+        foreign = self._foreign((semantic or {}).get("nonportable_extensions"), owner="the document", model=None)
         if foreign:
-            document["custom_extensions"] = foreign
+            document["nonportable_extensions"] = foreign
         return document
 
     def _dataset_entity(self, ds: _Dataset) -> dict[str, Any]:

@@ -6,9 +6,17 @@ semantic model; ``legacy`` marks a model split out of a ``semantic_model``
 wrapper by the parser.
 """
 
-from typing import Any, Optional, Union
+from typing import Any, Optional, Self, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from slayer.core.enums import DataType
 
@@ -35,13 +43,57 @@ class OSIAIContextObject(BaseModel):
 OSIAIContext = Union[str, OSIAIContextObject]
 
 
-class OSICustomExtension(BaseModel):
-    """Vendor-specific metadata as a serialized JSON string."""
+class OSINonportableExtension(BaseModel):
+    """Vendor-specific state; ``data`` is raw (checked by the importer), ``legacy`` when read from ``custom_extensions``."""
 
     model_config = ConfigDict(extra="ignore")
 
-    vendor_name: str
-    data: str
+    vendor_name: Any = None
+    data: Any = None
+    _legacy: bool = PrivateAttr(default=False)
+
+    @property
+    def legacy(self) -> bool:
+        return self._legacy
+
+    @model_validator(mode="before")
+    @classmethod
+    def _non_mapping_entry(cls, data: Any) -> Any:
+        # A non-mapping entry reaches the importer's check (and its report) instead of refusing the document.
+        return data if isinstance(data, (dict, OSINonportableExtension)) else {"data": data}
+
+
+class _Extensible(BaseModel):
+    """An entity carrying ``nonportable_extensions``; legacy ``custom_extensions`` entries are appended, marked."""
+
+    nonportable_extensions: Optional[list[OSINonportableExtension]] = None
+    _legacy_key: bool = PrivateAttr(default=False)
+
+    @property
+    def legacy_key(self) -> bool:
+        """Whether the input carried ``custom_extensions``, even an empty one."""
+        return self._legacy_key
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _read_legacy_key(cls, data: Any, handler: ModelWrapValidatorHandler[Self]) -> Self:
+        if not isinstance(data, dict) or "custom_extensions" not in data:
+            return handler(data)
+        data = dict(data)
+        legacy = data.pop("custom_extensions")
+        if legacy is None:
+            legacy = []
+        current = data.get("nonportable_extensions")
+        if current is None:
+            current = []
+        if not isinstance(legacy, list) or not isinstance(current, list):
+            raise ValueError("custom_extensions and nonportable_extensions must be lists")
+        data["nonportable_extensions"] = [*current, *legacy]
+        entity = handler(data)
+        for entry in (entity.nonportable_extensions or [])[len(current):]:
+            entry._legacy = True
+        entity._legacy_key = True
+        return entity
 
 
 class OSIDialectExpression(BaseModel):
@@ -77,7 +129,7 @@ class OSIDimension(BaseModel):
     is_time: Optional[bool] = None
 
 
-class OSIField(BaseModel):
+class OSIField(_Extensible):
     """Row-level attribute for grouping, filtering, and metric expressions."""
 
     model_config = ConfigDict(extra="ignore")
@@ -89,10 +141,9 @@ class OSIField(BaseModel):
     description: Optional[str] = None
     datatype: Optional[str] = None
     ai_context: Optional[OSIAIContext] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
-class OSIMetric(BaseModel):
+class OSIMetric(_Extensible):
     """Quantitative measure defined on business data (raw SQL aggregation)."""
 
     model_config = ConfigDict(extra="ignore")
@@ -102,10 +153,9 @@ class OSIMetric(BaseModel):
     description: Optional[str] = None
     datatype: Optional[str] = None
     ai_context: Optional[OSIAIContext] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
-class OSIDataset(BaseModel):
+class OSIDataset(_Extensible):
     """Logical dataset representing a business entity (fact or dimension table)."""
 
     model_config = ConfigDict(extra="ignore")
@@ -118,10 +168,9 @@ class OSIDataset(BaseModel):
     ai_context: Optional[OSIAIContext] = None
     fields: Optional[list[OSIField]] = None
     metrics: Optional[list[OSIMetric]] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
-class OSIRelationship(BaseModel):
+class OSIRelationship(_Extensible):
     """Foreign key relationship between datasets (``from`` = many, ``to`` = one)."""
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
@@ -132,10 +181,9 @@ class OSIRelationship(BaseModel):
     from_columns: list[str]
     to_columns: list[str]
     ai_context: Optional[OSIAIContext] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
 
 
-class OSIDocument(BaseModel):
+class OSIDocument(_Extensible):
     """One semantic model; ``legacy`` is set by the parser for wrapper-split models."""
 
     model_config = ConfigDict(extra="ignore")
@@ -147,7 +195,6 @@ class OSIDocument(BaseModel):
     datasets: list[OSIDataset]
     relationships: Optional[list[OSIRelationship]] = None
     metrics: Optional[list[OSIMetric]] = None
-    custom_extensions: Optional[list[OSICustomExtension]] = None
     legacy: bool = False
 
     @field_validator("version", mode="before")

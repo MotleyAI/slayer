@@ -103,6 +103,15 @@ def test_tpcds_example(tmp_path: Path) -> None:
         "brand_rank_in_store", "cumulative_sales", "monthly_sales_change"]
 
 
+def test_tpcds_document_extensions_stored_as_objects(tmp_path: Path) -> None:
+    result, _ = _import(tmp_path, "tpcds_semantic_model.yaml", _TPCDS_DDL)
+    expected = _document("tpcds_semantic_model.yaml")["nonportable_extensions"]
+    assert [e["vendor_name"] for e in expected] == ["SALESFORCE", "DBT"]
+    assert all(isinstance(e["data"], dict) for e in expected)
+    for model in result.models:
+        assert (model.meta or {})["osi_semantic_model"]["nonportable_extensions"] == expected, model.name
+
+
 def test_flights_semantic_model_example(tmp_path: Path) -> None:
     result, _ = _import(tmp_path, "flights.semantic_model.yaml", _FLIGHTS_DDL)
     assert {name: visible(model) for name, model in by_name(result).items()} == \

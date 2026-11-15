@@ -45,12 +45,17 @@ class TestPeriodLiterals:
         ("2025-Q1", D(2025, 1, 1), D(2025, 4, 1)),
         ("2025-03", D(2025, 3, 1), D(2025, 4, 1)),
         ("2025-W05", D(2025, 1, 27), D(2025, 2, 3)),
-        ("2025-03-15", D(2025, 3, 15), D(2025, 3, 16)),
         ("2020-W53", D(2020, 12, 28), D(2021, 1, 4)),
-        ("2024-02-29", D(2024, 2, 29), D(2024, 3, 1)),
     ])
     async def test_equality_is_half_open_range(self, engine, literal, start, end) -> None:
         assert await ids(engine, f"ts = '{literal}'") == ids_in(start, end)
+
+    @pytest.mark.parametrize(("literal", "start", "end"), [
+        ("2025-03-15", D(2025, 3, 15), D(2025, 3, 16)),
+        ("2024-02-29", D(2024, 2, 29), D(2024, 3, 1)),
+    ])
+    async def test_single_string_in_is_the_whole_day(self, engine, literal, start, end) -> None:
+        assert await ids(engine, f"ts in '{literal}'") == ids_in(start, end)
 
     @pytest.mark.parametrize("literal", ["2021-W53", "2025-02-29", "2025-13", "2025-Q5"])
     async def test_non_existent_period_rejected(self, engine, literal) -> None:
@@ -98,12 +103,16 @@ class TestComparisonTable:
     FOUR = {1, 2, 5, 6}
 
     @pytest.mark.parametrize(("filt", "expected"), [
-        ("ts <= '2024-12-31'", {1, 2, 5, 6}),
-        ("ts > '2024-01-01'", {5, 6}),
-        ("ts = '2024-01-01'", {1, 2}),
-        ("ts != '2024-01-01'", {5, 6}),
+        ("ts <= '2024-12-31'", {1, 2, 5}),
+        ("ts > '2024-01-01'", {2, 5, 6}),
+        ("ts = '2024-01-01'", {1}),
+        ("ts != '2024-01-01'", {2, 5, 6}),
+        ("ts BETWEEN '2024-01-01' AND '2024-12-31'", {1, 2, 5}),
+        ("ts NOT BETWEEN '2024-01-01' AND '2024-12-31'", {6}),
+        ("ts in '2024-12-31'", {5, 6}),
+        ("ts not in '2024-12-31'", {1, 2}),
     ])
-    async def test_date_only_bounds_cover_whole_days(self, engine, filt, expected) -> None:
+    async def test_date_only_bounds_are_midnight(self, engine, filt, expected) -> None:
         assert await ids(engine, filt) & self.FOUR == expected
 
     @pytest.mark.parametrize(("filt", "pred"), [
@@ -274,9 +283,12 @@ class TestTypingErrors:
 
 
 class TestDateOnlyTextStorage:
-    @pytest.mark.parametrize("filt", ["ts = '2025-03-01'", "ts >= '2025-03-01 00:00:00'"])
+    @pytest.mark.parametrize("filt", ["ts in '2025-03-01'", "ts >= '2025-03-01 00:00:00'"])
     async def test_date_only_text_matches_like_midnight(self, engine, filt) -> None:
         assert await ids(engine, filt, model="mixed") == {1, 2, 4, 5, 6}
+
+    async def test_date_only_equality_matches_midnight_text(self, engine) -> None:
+        assert await ids(engine, "ts = '2025-03-01'", model="mixed") == {1, 2}
 
     async def test_millisecond_resolution(self, engine) -> None:
         assert await ids(engine, "ts >= '2025-03-01 10:00:00.250'", model="mixed") == {4, 6}

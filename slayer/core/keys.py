@@ -806,13 +806,19 @@ MIRRORED_TIME_POINT_OP: Dict[TimePointOp, TimePointOp] = {"=": "=", "!=": "!=", 
 class TimePointCmpKey(_FrozenKey, frozen=True):
     """Transient ``operand <op> '<point>'`` against a time-point string, resolved away by the checker before planning.
 
-    ``op`` is operand-left; a literal-left spelling is stored mirrored with ``literal_on_left`` set.
+    ``op`` is operand-left; a literal-left spelling is stored mirrored with ``literal_on_left`` set. A date-only
+    ``point`` is its whole day under ``in`` / ``not in`` or when ``whole_day`` (a ``date_range`` bound), else midnight.
     """
 
     op: TimePointOp
     operand: "ValueKey"
     point: str
     literal_on_left: bool = False
+    whole_day: bool = False
+
+    @property
+    def reads_whole_day(self) -> bool:
+        return self.whole_day or self.op in ("in", "not in")
 
     @property
     def phase(self) -> Phase:

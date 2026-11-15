@@ -65,12 +65,16 @@ class TestTimeShift:
 
 class TestEqualityFrameStatus:
     async def test_period_equality_is_a_frame_bound(self, engine) -> None:
-        got = await monthly(engine, measures=[WINDOW, PLAIN], filters=["ts = '2024-06-01'"])
+        got = await monthly(engine, measures=[WINDOW, PLAIN], filters=["ts in '2024-06-01'"])
         unbounded = await monthly(engine, measures=[WINDOW, PLAIN])
         assert set(got) == {"2024-06"}
         # The bucket's own rows are that day's (ids 3, 4); the window still reads May (id 38).
         assert got["2024-06"]["s"] == pytest.approx(7.0)
         assert got["2024-06"]["w"] == unbounded["2024-06"]["w"]
+
+    async def test_date_only_equality_is_a_row_filter(self, engine) -> None:
+        got = await monthly(engine, measures=[WINDOW, PLAIN], filters=["ts = '2024-06-01'"])
+        assert got == {"2024-06": {"w": pytest.approx(3.0), "s": pytest.approx(3.0)}}
 
     async def test_single_string_in_is_a_frame_bound(self, engine) -> None:
         got = await monthly(engine, measures=[WINDOW], filters=["ts in '2024-06'"])

@@ -24,11 +24,6 @@ async def env(tmp_path: Path):
     return await make_env(tmp_path)
 
 
-def _set_payload(entity: dict[str, Any], data: str) -> None:
-    [entry] = slayer_entries(entity)
-    entry["data"] = data
-
-
 def _join(model: SlayerModel, target: str) -> ModelJoin:
     [join] = [j for j in model.joins if j.target_model == target]
     return join
@@ -157,7 +152,8 @@ def _newly_reported(env: Env, *, unedited: dict[str, Any], edited: dict[str, Any
 async def test_malformed_payload_is_reported_and_ignored(env) -> None:
     result = await export_models(env, customers(), orders(measures=BASIC_MEASURES, hidden=True))
     edited = copy.deepcopy(result.document)
-    _set_payload(dataset(edited, "orders"), "not json {")
+    [entry] = slayer_entries(dataset(edited, "orders"))
+    del entry["data"]["kind"]
     restored = by_name(convert_document(env, edited))["orders"]
     assert not restored.hidden
     assert {"id", "amount"} <= {c.name for c in restored.columns}
@@ -168,9 +164,7 @@ async def test_unknown_payload_version_is_reported_and_ignored(env) -> None:
     result = await export_models(env, customers(), orders(measures=BASIC_MEASURES, hidden=True))
     edited = copy.deepcopy(result.document)
     [entry] = slayer_entries(dataset(edited, "orders"))
-    data = json.loads(entry["data"])
-    data["version"] = 999
-    entry["data"] = json.dumps(data)
+    entry["data"]["version"] = 999
     assert not by_name(convert_document(env, edited))["orders"].hidden
     assert _newly_reported(env, unedited=result.document, edited=edited, name="orders")
 
@@ -182,28 +176,28 @@ async def test_payload_on_the_wrong_entity_is_reported_and_ignored(env) -> None:
     [entry] = slayer_entries(orders_ds)
     amount = field(orders_ds, "amount")
     assert amount is not None
-    amount["custom_extensions"] = [entry]
-    orders_ds["custom_extensions"] = []
+    amount["nonportable_extensions"] = [entry]
+    orders_ds["nonportable_extensions"] = []
     assert not by_name(convert_document(env, edited))["orders"].hidden
     assert _newly_reported(env, unedited=result.document, edited=edited, name="amount")
 
 
-async def test_foreign_extensions_still_stored(env) -> None:
-    acme = {"vendor_name": "ACME", "data": "{\"k\": 1}"}
-    doc = flat([ds("orders", fields=[f("id", "o_orderkey"), f("amount", custom_extensions=[acme])],
-                   primary_key=["id"], custom_extensions=[acme])])
+async def test_foreign_extension_stored_as_an_object(env) -> None:
+    acme = {"vendor_name": "ACME", "data": {"k": 1, "nested": {"flag": True}}}
+    doc = flat([ds("orders", fields=[f("id", "o_orderkey"), f("amount", nonportable_extensions=[acme])],
+                   primary_key=["id"], nonportable_extensions=[acme])])
     imported = by_name(convert_document(env, doc))["orders"]
-    assert (imported.meta or {})["osi_custom_extensions"] == [acme]
+    assert (imported.meta or {})["osi_nonportable_extensions"] == [acme]
     amount = imported.get_column("amount")
     assert amount is not None
-    assert (amount.meta or {})["osi_custom_extensions"] == [acme]
+    assert (amount.meta or {})["osi_nonportable_extensions"] == [acme]
 
 
 async def test_slayer_extensions_are_not_stored_as_foreign(env) -> None:
     result = await export_models(env, customers(), rich_orders())
     imported = by_name(convert_document(env, result.document))["orders"]
-    stored_extensions = [e for c in imported.columns for e in (c.meta or {}).get("osi_custom_extensions", [])]
-    stored_extensions += (imported.meta or {}).get("osi_custom_extensions", [])
+    stored_extensions = [e for c in imported.columns for e in (c.meta or {}).get("osi_nonportable_extensions", [])]
+    stored_extensions += (imported.meta or {}).get("osi_nonportable_extensions", [])
     assert all(e["vendor_name"] != SLAYER for e in stored_extensions)
 
 

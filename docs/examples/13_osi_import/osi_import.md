@@ -57,7 +57,7 @@ Both import [`shop.osi.yaml`](shop.osi.yaml) and check every answer against gold
 
 ## What the import produces
 
-Each OSI **dataset** becomes a SLayer model exposing its declared fields, with real column *types* from live introspection of the datasource. Each **relationship** becomes a LEFT join, and each **metric** folds into a `ModelMeasure` formula — a dataset-scoped metric on its own dataset, a model-scoped one on the model the converter picks as its anchor. OSI `ai_context` and `custom_extensions` are carried onto the SLayer entities as descriptions and `meta`, so an agent reading the model sees them.
+Each OSI **dataset** becomes a SLayer model exposing its declared fields, with real column *types* from live introspection of the datasource. Each **relationship** becomes a LEFT join, and each **metric** folds into a `ModelMeasure` formula — a dataset-scoped metric on its own dataset, a model-scoped one on the model the converter picks as its anchor. OSI `ai_context` and `nonportable_extensions` are carried onto the SLayer entities as descriptions and `meta`, so an agent reading the model sees them.
 
 ## The five queries
 
