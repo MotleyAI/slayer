@@ -17,6 +17,7 @@ from sqlglot.expressions.datatypes import DType
 from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.enums import SUB_DAY_GRANULARITIES, DataType, DatePart, TimeGranularity
+from slayer.core.granularity import bucket_type
 from slayer.core.json_path import JsonPath, json_path_text
 from slayer.core.keys import ScalarCallKey
 from slayer.core.regex_pattern import RegexPattern, RegexReplacement
@@ -476,18 +477,18 @@ class TsqlDialect(DottedAliasManglingMixin, SqlDialect):
         ]
 
     def build_date_trunc(
-        self,
-        col_expr: Expression,
-        granularity: TimeGranularity,
+        self, *, col_expr: Expression, granularity: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """``DATETRUNC`` (2022+); ``iso_week`` keeps weeks ``@@DATEFIRST``-independent."""
+        """``DATETRUNC`` (2022+), which keeps its input's type: the input is cast to the bucket's type;
+        ``iso_week`` keeps weeks ``@@DATEFIRST``-independent."""
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            return super().build_date_trunc(
-                col_expr=col_expr, granularity=granularity,
-            )
+            return super().build_date_trunc(col_expr=col_expr, granularity=granularity, operand=operand)
         gran_str = granularity.value
-        if not isinstance(col_expr, (exp.Column, exp.Cast)):
-            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
+        result = bucket_type(operand, granularity)
+        if result is not operand:
+            col_expr = self.promote_to_timestamp(col_expr)
+        elif not isinstance(col_expr, (exp.Column, exp.Cast)):
+            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build(result.value))
         tsql_gran = "iso_week" if gran_str == "week" else gran_str
         return exp.Anonymous(
             this="DATETRUNC",

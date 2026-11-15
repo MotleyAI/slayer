@@ -12,6 +12,7 @@ from slayer.core.enums import (
     SUB_DAY_GRANULARITIES,
     UNIT_MONTHS,
     UNIT_SECONDS,
+    DataType,
     GranularityParts,
     TimeGranularity,
     boundaries_nest,
@@ -92,6 +93,11 @@ def is_sub_day(g: Granularity) -> bool:
 def nests_into(fine: Granularity, coarse: Granularity) -> bool:
     """Every ``coarse`` boundary is a ``fine`` boundary (boundary containment)."""
     return boundaries_nest(fine=granularity_parts(fine), coarse=granularity_parts(coarse))
+
+
+def bucket_type(source: DataType, g: Granularity) -> DataType:
+    """A bucket's logical type: DATE for a day-or-coarser bucket of a DATE, else TIMESTAMP."""
+    return DataType.DATE if source is DataType.DATE and not is_sub_day(g) else DataType.TIMESTAMP
 
 
 def definition_error(g: CustomGranularity, *, reserved: Mapping[str, str]) -> Optional[str]:

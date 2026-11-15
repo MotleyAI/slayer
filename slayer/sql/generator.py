@@ -41,6 +41,7 @@ from slayer.core.errors import (
 )
 from slayer.core.enums import RANK_FAMILY_TRANSFORMS
 from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts
+from slayer.core.granularity import bucket_type as granularity_bucket_type
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
 from slayer.core.keys import restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.join_walker import (
@@ -110,7 +111,9 @@ from slayer.sql.render.cte_assembly import (
 from slayer.sql.render.nodes import Node, NodePhase, fusion_blockers
 from slayer.sql.render.joins import (
     AttachedValue,
+    JoinPair,
     build_grain_joinback_condition,
+    temporal_sides,
     grain_alias_column,
 )
 from slayer.sql.render.order_terms import (
@@ -140,7 +143,7 @@ from slayer.sql.render.aggregates import (
 )
 from slayer.sql.render.parse import apply_ast_rewrites, parse_expression, parse_predicate, parse_table
 from slayer.sql.sql_template import SqlTemplate, SqlTemplateError, sql_template
-from slayer.sql.render.row_expr import _literal
+from slayer.sql.render.row_expr import _literal, bucket_operand, render_bucket
 from slayer.sql.render.value_expr import (
     AliasFacilities,
     CompositeFacilities,
@@ -600,6 +603,10 @@ _BUCKET_ALIGNED_SHIFT_UNITS: dict[str, frozenset[str]] = {
     "second": frozenset({"second", "minute", "hour", "day", "week", "week_sunday",
                          "month", "quarter", "year"}),
 }
+
+
+def _no_column_type(_key: Any) -> Optional[DataType]:
+    return None
 
 
 def _shift_preserves_bucket_starts(*, bucket: Granularity, shift: Granularity) -> bool:
@@ -1121,20 +1128,37 @@ class SQLGenerator:
         )
 
     def _calendar_offset_bucket(
-        self, *, bucket_expr: Expression, periods: int, shift_granularity: Granularity,
+        self, *, bucket_expr: Expression, bucket_type: DataType, periods: int, shift_granularity: Granularity,
         bucket_granularity: Granularity,
-    ) -> Expression:
-        """The bucket ``periods`` steps of ``shift_granularity`` from ``bucket_expr``, as a ``bucket_comparand``."""
-        shifted = self._dialect.bucket_step(bucket=bucket_expr, count=int(periods), unit=shift_granularity)
-        if _shift_preserves_bucket_starts(bucket=bucket_granularity, shift=shift_granularity):
-            return shifted
-        return self._dialect.bucket_comparand(
-            self._build_date_trunc(col_expr=shifted, granularity=bucket_granularity),
+    ) -> Tuple[Expression, DataType]:
+        """The bucket ``periods`` steps of ``shift_granularity`` from ``bucket_expr`` (a ``bucket_type``), and its
+        type."""
+        base = granularity_parts(shift_granularity)[0]
+        shifted = self._dialect.bucket_step(
+            bucket=bucket_expr, count=int(periods), unit=shift_granularity, operand=bucket_type,
         )
+        shifted_type = date_add_type(bucket_type, base)
+        if _shift_preserves_bucket_starts(bucket=bucket_granularity, shift=shift_granularity):
+            return shifted, shifted_type
+        rebucketed = self._dialect.build_bucket(
+            col_expr=shifted, granularity=bucket_granularity, operand=shifted_type,
+        )
+        return rebucketed, granularity_bucket_type(shifted_type, bucket_granularity)
 
-    def _build_date_trunc(self, col_expr: Expression, granularity: Granularity) -> Expression:
-        """The bucket of ``col_expr`` at ``granularity``, through the dialect strategy."""
-        return self._dialect.build_bucket(col_expr=col_expr, granularity=granularity)
+    def _temporal_operands(
+        self, time: Expression, time_type: DataType, bound: Expression, bound_type: DataType,
+    ) -> Dict[str, Expression]:
+        """A comparison's two temporal operands as the dialect compares them."""
+        left, right = temporal_sides((time, time_type, bound, bound_type), dialect=self._dialect)
+        return {"this": left, "expression": right}
+
+    def _build_date_trunc(self, *, col_expr: Expression, key: TimeTruncKey) -> Expression:
+        """The bucket ``key`` of ``col_expr`` (its rendered source), through the dialect strategy."""
+        return render_bucket(key=key, source=col_expr, dialect=self._dialect, column_type=self._column_types())
+
+    def _bucket_type(self, key: TimeTruncKey) -> DataType:
+        """The logical type of bucket ``key`` under the active root's column types."""
+        return granularity_bucket_type(bucket_operand(key, column_type=self._column_types()), key.granularity)
 
     def _rewrite_log_aliases(self, node: Expression) -> Expression:
         """Thin delegator to the shared log-alias policy in"""
@@ -1587,7 +1611,7 @@ class SQLGenerator:
         source_relation: str,
         slots_by_id: Dict[str, Any],
         regroup_env: Optional[Dict[Any, Expression]] = None,
-        regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
+        regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str, Optional[DataType]]]]]] = None,
         reserve_bare_aliases: bool = False,
         reused_names: Sequence[str] = (),
     ) -> exp.Select:
@@ -2024,8 +2048,8 @@ class SQLGenerator:
                     grain_alias_column(alias=producer_alias, table=cte_name),
                     host_key,
                 )
-                for host_key, producer_alias in pairs
-            ])
+                for host_key, producer_alias, _ in pairs
+            ], right_types=[producer_type for _, _, producer_type in pairs])
             out.append((
                 cte_name,
                 build_grain_joinback_condition(pairs=operands, dialect=self._dialect),
@@ -2059,7 +2083,7 @@ class SQLGenerator:
         skip_cross_model_aggs: bool = False,
         skip_filter_ids: Optional[Set[str]] = None,
         regroup_env: Optional[Dict[Any, Expression]] = None,
-        regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
+        regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str, Optional[DataType]]]]]] = None,
     ):
         """Build the base SELECT (sqlglot ``Select``) for ``generate_from_planned``."""
 
@@ -2166,9 +2190,7 @@ class SQLGenerator:
                         source_relation=source_relation,
                         bundle=bundle,
                     )
-                    trunc_expr = self._build_date_trunc(
-                        col_expr=col_expr, granularity=key.granularity,
-                    )
+                    trunc_expr = self._build_date_trunc(col_expr=col_expr, key=key)
                     select_columns.append(trunc_expr.copy().as_(full_alias))
                     group_by_keys.setdefault(sid, trunc_expr)
                     _record_alias(sid, full_alias)
@@ -2350,7 +2372,7 @@ class SQLGenerator:
         full_agg_alias: str,
         base_relation: Optional[Expression] = None,
         regroup_env: Optional[Dict[Any, Expression]] = None,
-        regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
+        regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str, Optional[DataType]]]]]] = None,
     ) -> Tuple[exp.Select, List[str]]:
         """Render one duration-windowed-measure CTE."""
 
@@ -2380,7 +2402,7 @@ class SQLGenerator:
             return al[0] if al else sid
 
         src_cols: List[Expr] = []
-        grain_pairs: List[Tuple[Expression, Expression]] = []
+        grain_pairs: List[JoinPair] = []
         grain_aliases: List[str] = []
         grain_keys: Dict[str, Any] = {}
 
@@ -2406,11 +2428,9 @@ class SQLGenerator:
                 source=tslot.key.source, scope=src_scope, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
             )
-            trunc = self._build_date_trunc(col_expr=raw, granularity=tslot.key.granularity)
+            trunc = self._build_date_trunc(col_expr=raw, key=tslot.key)
             src_cols.append(trunc.as_(f"_w_td_{idx}"))
-            grain_pairs.append(
-                (_src_col(f"_w_td_{idx}"), _base_col(base_alias)),
-            )
+            grain_pairs.extend(self._keyed_pairs([(_src_col(f"_w_td_{idx}"), _base_col(base_alias), tslot.key)]))
             grain_aliases.append(base_alias)
 
         wtd_slot = slots_by_id.get(plan.window_time_dimension_slot_id)
@@ -2535,11 +2555,12 @@ class SQLGenerator:
         # exclusive upper edge.
         # Calendar parts apply one by one in written order, clamping like date_add.
         assert wtd_slot is not None
-        time_type = temporal_type(wtd_slot.key.source, column_type=src_scope.column_type)
-        operand = DataType.DATE if time_type is DataType.DATE else DataType.TIMESTAMP
+        time_type = bucket_operand(wtd_slot.key, column_type=src_scope.column_type)
+        operand = granularity_bucket_type(time_type, wtd_slot.key.granularity)
         unit, step, _ = granularity_parts(plan.window_granularity)
         bucket_end = self._date_offset(_base_col(wtd_alias), count=step, unit=unit, operand=operand)
         lower_bound, operand = bucket_end, date_add_type(operand, unit)
+        end_type = operand
         for amount, letter in plan.window_parts:
             unit = WINDOW_UNIT_GRANULARITY[letter]
             lower_bound = self._date_offset(lower_bound, count=-amount, unit=unit, operand=operand)
@@ -2555,8 +2576,8 @@ class SQLGenerator:
         )
         on_range = exp.and_(
             *([grain_condition] if grain_condition is not None else []),
-            exp.GTE(this=src_w_time, expression=lower_bound),
-            exp.LT(this=src_w_time.copy(), expression=bucket_end.copy()),
+            exp.GTE(**self._temporal_operands(src_w_time, time_type, lower_bound, operand)),
+            exp.LT(**self._temporal_operands(src_w_time.copy(), time_type, bucket_end.copy(), end_type)),
         )
 
         base_from = (
@@ -2680,7 +2701,7 @@ class SQLGenerator:
                     key=key.source, root_model=root_model, root_relation=root_relation,
                     bundle=bundle, scope=scope, cast_derived=False,
                 )
-            return self._build_date_trunc(col_expr=raw, granularity=key.granularity)
+            return self._build_date_trunc(col_expr=raw, key=key)
         if isinstance(key, ColumnKey):
             expr = self._joined_or_local_dim_expr(
                 path=key.path, leaf=key.leaf, source_model=root_model,
@@ -2786,7 +2807,7 @@ class SQLGenerator:
         host_source_relation: str,
         full_agg_alias: str,
         regroup_env: Optional[Dict[Any, Expression]] = None,
-        regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
+        regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str, Optional[DataType]]]]]] = None,
     ) -> Tuple[exp.Select, List[str]]:
         """Render one ranked (``first`` / ``last``) CTE."""
 
@@ -3345,7 +3366,7 @@ class SQLGenerator:
                 source=tslot.key.source, scope=scope, source_model=source_model,
                 source_relation=source_relation, bundle=bundle,
             )
-            _emit(tslot, self._build_date_trunc(col_expr=raw, granularity=tslot.key.granularity))
+            _emit(tslot, self._build_date_trunc(col_expr=raw, key=tslot.key))
         # ROW filters gate the visible grain; the trailing window in the _src join reaches rows before them via
         # plan.where_filter_ids (a strict subset).
         self._resolve_where_filter_joins_via_scope(
@@ -3757,8 +3778,8 @@ class SQLGenerator:
                         grain_alias_column(alias=cte_col, table=cte_name),
                         key_by_alias.get(host),
                     )
-                    for host, cte_col in joinback_pairs
-                ]),
+                    for host, cte_col, _ in joinback_pairs
+                ], right_types=[producer_type for _, _, producer_type in joinback_pairs]),
                 dialect=self._dialect,
             )
             if on_condition is None:
@@ -4080,8 +4101,8 @@ class SQLGenerator:
         ctes: List[Node] = []
         placeholder_to_cm: Dict[Any, AttachedValue] = {}
         placeholder_slot_ids: Set[str] = set()
-        joinbacks: List[Tuple[str, List[Tuple[str, str]]]] = []
-        shift_specs: List[Tuple[str, List[Tuple[Any, str]]]] = []
+        joinbacks: List[Tuple[str, List[Tuple[str, str, Optional[DataType]]]]] = []
+        shift_specs: List[Tuple[str, List[Tuple[Any, str, Optional[DataType]]]]] = []
         reused_cte_names: List[str] = []
         allocator = self._gen_allocator or self._new_allocator()
         for attach in planned_query.regroup_attach_plans:
@@ -4136,8 +4157,9 @@ class SQLGenerator:
                 if a.attach_phase == "row"
                 for sub in a.substitutions
             }
-            pairs: List[Tuple[str, str]] = []
-            shift_pairs: List[Tuple[Any, str]] = []
+            pairs: List[Tuple[str, str, Optional[DataType]]] = []
+            shift_pairs: List[Tuple[Any, str, Optional[DataType]]] = []
+            producer_types = self._producer_slot_types(attach)
             for host_key, producer_slot_id in attach.join_pairs:
                 grain_alias = col_by_sid.get(producer_slot_id)
                 host_slot = slot_by_key.get(host_key)
@@ -4153,8 +4175,9 @@ class SQLGenerator:
                 host_alias = self._full_alias_for_slot(
                     slot=host_slot, source_relation=source_relation, alias_index={},
                 )
-                pairs.append((host_alias, grain_alias))
-                shift_pairs.append((host_slot.key, grain_alias))
+                producer_type = producer_types.get(producer_slot_id)
+                pairs.append((host_alias, grain_alias, producer_type))
+                shift_pairs.append((host_slot.key, grain_alias, producer_type))
             joinbacks.append((cte_name, pairs))
             shift_specs.append((cte_name, shift_pairs))
         return (
@@ -4193,7 +4216,7 @@ class SQLGenerator:
         dedup_producers = dedup_producers or {}
         ctes: List[CteEntry] = []
         attached_env: Dict[Any, Expression] = {}
-        join_specs: List[Tuple[str, List[Tuple[Any, str]]]] = []
+        join_specs: List[Tuple[str, List[Tuple[Any, str, Optional[DataType]]]]] = []
         reused_cte_names: List[str] = []
         allocator = self._gen_allocator or self._new_allocator()
         for attach in planned_query.regroup_attach_plans:
@@ -4224,8 +4247,9 @@ class SQLGenerator:
                         cte_name=shared_cte, column_name=col_by_sid[sub.producer_slot_id],
                         empty=self._empty_value_expr(sub.empty_value),
                     ).value()
+                producer_types = self._producer_slot_types(attach)
                 join_specs.append((shared_cte, [
-                    (host_key, col_by_sid[producer_slot_id])
+                    (host_key, col_by_sid[producer_slot_id], producer_types.get(producer_slot_id))
                     for host_key, producer_slot_id in attach.join_pairs
                 ]))
                 reused_cte_names.append(shared_cte)
@@ -4294,7 +4318,7 @@ class SQLGenerator:
                     cte_name=cte_name, column_name=_flat(agg_slot),
                     empty=self._empty_value_expr(sub.empty_value),
                 ).value()
-            pairs: List[Tuple[Any, str]] = []
+            pairs: List[Tuple[Any, str, Optional[DataType]]] = []
             for host_key, producer_slot_id in attach.join_pairs:
                 grain_slot = sub_slots.get(producer_slot_id)
                 if grain_slot is None:
@@ -4302,19 +4326,50 @@ class SQLGenerator:
                         f"Regroup producer is missing grain slot "
                         f"{producer_slot_id!r}.",
                     )
-                pairs.append((host_key, _flat(grain_slot)))
+                pairs.append((host_key, _flat(grain_slot), grain_slot.type))
             join_specs.append((cte_name, pairs))
             if rendered_map is not None:
                 rendered_map[ident] = (cte_name, exposed_by_sid)
         return ctes, attached_env, join_specs, reused_cte_names
 
+    @staticmethod
+    def _producer_slot_types(attach: Any) -> Dict[str, Optional[DataType]]:
+        """Each producer slot's recorded type."""
+        plan = attach.producer_plan
+        return {
+            s.id: s.type
+            for s in (*plan.row_slots, *plan.aggregate_slots, *plan.combined_expression_slots)
+        }
+
     def _grain_key(self, expr: Expression, *, key: Any) -> Expression:
         """What grouping, partitioning and join-backs read of grain member ``key``: an element set's list key."""
         return self._dialect.build_list_key(expr.copy()) if isinstance(key, ListSetKey) else expr
 
-    def _keyed_pairs(self, pairs: Sequence[Tuple[Expression, Expression, Any]]) -> List[Tuple[Expression, Expression]]:
-        """Grain join-back operands ``(left, right, member key)``, an element set read through its list key."""
-        return [(self._grain_key(left, key=k), self._grain_key(right, key=k)) for left, right, k in pairs]
+    def _keyed_pairs(
+        self, pairs: Sequence[Tuple[Expression, Expression, Any]], *,
+        right_types: Optional[Sequence[Optional[DataType]]] = None,
+    ) -> List[JoinPair]:
+        """Grain join-back operands ``(left, right, member key)`` typed by the key (``right_types``: the right
+        side's own recorded types, where known), an element set read through its list key."""
+        out: List[JoinPair] = []
+        for i, (left, right, k) in enumerate(pairs):
+            left_type = self._key_type(k)
+            right_type = right_types[i] if right_types is not None and right_types[i] is not None else left_type
+            out.append((self._grain_key(left, key=k), left_type, self._grain_key(right, key=k), right_type))
+        return out
+
+    def _key_type(self, key: Any) -> Optional[DataType]:
+        """``key``'s type under the active root's column types."""
+        if key is None:
+            return None
+        return value_type(key, column_type=self._current_column_types() or _no_column_type)
+
+    def _column_types(self) -> ColumnTypeFn:
+        """The active root's column types; rendering a bucket outside a ``generate()`` call is a wiring bug."""
+        column_type = self._current_column_types()
+        if column_type is None:
+            raise RuntimeError("A bucket rendered outside a generate() call has no column types.")
+        return column_type
 
     def _grouped_display(self, expr: Expression, *, key: Any) -> Expression:
         """A grouped member's projection: its value, any one of its cell's where its key is another expression."""
@@ -4972,25 +5027,25 @@ class SQLGenerator:
             )
 
         # Consumer-side lookup: total even when the calendar shift is many-to-one.
-        lookup_expr = self._calendar_offset_bucket(
-            bucket_expr=grain_alias_column(alias=time_alias, table=chain_tail),
+        time_type = self._bucket_type(time_key)
+        lookup_expr, lookup_type = self._calendar_offset_bucket(
+            bucket_expr=grain_alias_column(alias=time_alias, table=chain_tail), bucket_type=time_type,
             periods=periods, shift_granularity=shift_granularity,
             bucket_granularity=time_key.granularity,
         )
         key_by_alias = {chain.available_alias_by_slot_id.get(sid): k for k, sid in chain.slot_id_by_key.items()}
         sjoin_on = build_grain_joinback_condition(
-            pairs=self._keyed_pairs([
+            pairs=[
                 (
-                    lookup_expr,
-                    self._dialect.bucket_comparand(grain_alias_column(alias=shifted, table=shifted_cte_name)),
-                    None,
-                ) if host == time_alias else (
+                    lookup_expr, lookup_type,
+                    grain_alias_column(alias=shifted, table=shifted_cte_name), time_type,
+                ) if host == time_alias else self._keyed_pairs([(
                     grain_alias_column(alias=host, table=chain_tail),
                     grain_alias_column(alias=shifted, table=shifted_cte_name),
                     key_by_alias.get(host),
-                )
+                )])[0]
                 for host, shifted in pairs
-            ]),
+            ],
             dialect=self._dialect,
         )
         source_relation = chain.source_relation
@@ -5138,16 +5193,17 @@ class SQLGenerator:
             ).from_(chain_tail),
             depends_on=[chain_tail],
         ))
+        time_type = self._bucket_type(time_key)
+        predecessor, predecessor_type = self._calendar_offset_bucket(
+            bucket_expr=exp.column(time_alias, quoted=True), bucket_type=time_type, periods=-1,
+            shift_granularity=time_key.granularity,
+            bucket_granularity=time_key.granularity,
+        )
         continues_run = exp.And(
             this=predicate.copy(),
-            expression=exp.EQ(
-                this=self._dialect.bucket_comparand(exp.column(cp_prev_alias, quoted=True)),
-                expression=self._calendar_offset_bucket(
-                    bucket_expr=exp.column(time_alias, quoted=True), periods=-1,
-                    shift_granularity=time_key.granularity,
-                    bucket_granularity=time_key.granularity,
-                ),
-            ),
+            expression=exp.EQ(**self._temporal_operands(
+                exp.column(cp_prev_alias, quoted=True), time_type, predecessor, predecessor_type,
+            )),
         )
 
         cp_reset_cte_name = cte_allocator.allocate_cte(f"cp_reset_{slot_alias}")
@@ -5439,7 +5495,7 @@ class SQLGenerator:
         base, multiple, _ = granularity_parts(factor.granularity)
         first = d.build_bucket(
             col_expr=d.build_temporal_literal(value=factor.lower, dt=DataType.TIMESTAMP),
-            granularity=factor.granularity,
+            granularity=factor.granularity, operand=DataType.TIMESTAMP,
         )
 
         def at(count: Expression) -> Expression:

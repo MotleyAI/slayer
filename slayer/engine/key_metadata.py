@@ -15,8 +15,10 @@ from slayer.core.enums import (
     classify_aggregation,
 )
 from slayer.core.format import NumberFormat
+from slayer.core.granularity import bucket_type
 from slayer.core.keys import (
     CONDITIONAL_SCALARS,
+    TEMPORAL_TYPES,
     AggregateKey,
     ColumnElementFn,
     ColumnKey,
@@ -283,7 +285,11 @@ def dimension_key_metadata(
     """
     if isinstance(key, CastKey):
         return key.data_type, None, None
-    inner = key.source if isinstance(key, (TimeTruncKey, ListSetKey)) else key
+    if isinstance(key, TimeTruncKey):
+        dt, fmt, desc = dimension_key_metadata(model=model, key=key.source, bundle=bundle)
+        temporal = dt if dt is not None and dt in TEMPORAL_TYPES else None
+        return (dt if temporal is None else bucket_type(temporal, key.granularity)), fmt, desc
+    inner = key.source if isinstance(key, ListSetKey) else key
     if not isinstance(inner, (ColumnKey, ColumnSqlKey)):
         date_type = date_scalar_type(key, column_type=_model_types(model=model, bundle=bundle))
         if date_type is not None:

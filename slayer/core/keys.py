@@ -50,7 +50,7 @@ from slayer.core.enums import (
     TimeGranularity,
 )
 from slayer.core.format import NumberFormat
-from slayer.core.granularity import CustomGranularity, Granularity
+from slayer.core.granularity import CustomGranularity, Granularity, bucket_type
 from slayer.core.time_points import parse_temporal_value
 
 
@@ -1413,7 +1413,8 @@ def temporal_type(key: object, *, column_type: ColumnTypeFn) -> Optional[DataTyp
         t = column_type(key)
         return t if t in TEMPORAL_TYPES else None
     if isinstance(key, TimeTruncKey):
-        return temporal_type(key.source, column_type=column_type)
+        source = temporal_type(key.source, column_type=column_type)
+        return None if source is None else bucket_type(source, key.granularity)
     if isinstance(key, LiteralKey):
         key = key.value
     if isinstance(key, datetime):
@@ -1651,6 +1652,42 @@ def numeric_boolean_positions(key: object, *, column_type: ColumnTypeFn) -> Froz
         return frozenset({0}) if numbers and boolean_valued(key.column, column_type=column_type) else frozenset()
     if isinstance(key, ScalarCallKey):
         return _scalar_numeric_booleans(key, column_type=column_type)
+    return frozenset()
+
+
+_TEMPORAL_PAIR_OPS = frozenset({"==", "=", "!=", "<>", "<", "<=", ">", ">=", "is distinct from", "is not distinct from"})
+
+
+def temporal_pair(key: object, *, column_type: ColumnTypeFn) -> Optional[Tuple[DataType, DataType]]:
+    """The operand types of a comparison between two non-literal temporal values, else ``None``."""
+    if not isinstance(key, ArithmeticKey) or key.op.lower() not in _TEMPORAL_PAIR_OPS or len(key.operands) != 2:
+        return None
+    if any(isinstance(o, LiteralKey) for o in key.operands):
+        return None
+    left, right = (temporal_type(o, column_type=column_type) for o in key.operands)
+    return None if left is None or right is None else (left, right)
+
+
+def mixed_nullif(key: object, *, column_type: ColumnTypeFn) -> Optional[int]:
+    """The DATE argument's position of a ``nullif`` comparing a DATE with a TIMESTAMP, else ``None``."""
+    if not isinstance(key, ScalarCallKey) or key.name != "nullif" or len(key.args) != 2:
+        return None
+    types = [temporal_type(a, column_type=column_type) for a in key.args]
+    return types.index(DataType.DATE) if set(types) == TEMPORAL_TYPES else None
+
+
+def date_promotion_positions(key: object, *, column_type: ColumnTypeFn) -> FrozenSet[int]:
+    """Child positions of ``key`` holding a DATE read as its midnight TIMESTAMP: a comparison's DATE beside a
+    TIMESTAMP, and a TIMESTAMP-typed conditional's DATE value arguments."""
+    pair = temporal_pair(key, column_type=column_type)
+    if pair is not None:
+        return frozenset({pair.index(DataType.DATE)}) if set(pair) == TEMPORAL_TYPES else frozenset()
+    if (isinstance(key, ScalarCallKey) and key.name in CONDITIONAL_SCALARS
+            and value_type(key, column_type=column_type) is DataType.TIMESTAMP):
+        return frozenset(
+            i for i in value_arg_positions(key.name, len(key.args))
+            if temporal_type(key.args[i], column_type=column_type) is DataType.DATE
+        )
     return frozenset()
 
 

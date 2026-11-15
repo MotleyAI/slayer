@@ -27,7 +27,7 @@ from slayer.core.errors import (
     ServerVersionError,
     UnsupportedServerFunctionError,
 )
-from slayer.core.granularity import CustomGranularity, Granularity, granularity_parts, nests_into
+from slayer.core.granularity import CustomGranularity, Granularity, bucket_type, granularity_parts, nests_into
 from slayer.core.json_path import JsonPath
 from slayer.core.keys import CastTypeParts, cast_type_parts
 from slayer.core.like_pattern import LikePattern
@@ -1453,33 +1453,47 @@ class SqlDialect(BaseModel):
         return exp.paren(exp.Or(this=exp.paren(both_known), expression=exp.paren(both_null)))
 
     def build_date_trunc(
-        self,
-        col_expr: Expression,
-        granularity: TimeGranularity,
+        self, *, col_expr: Expression, granularity: TimeGranularity, operand: DataType,
     ) -> Expression:
-        """``DATE_TRUNC``; other operands are cast to TIMESTAMP so Postgres picks an overload."""
+        """The ``granularity`` bucket of ``col_expr`` (an ``operand``), typed ``bucket_type(operand, granularity)``:
+        ``DATE_TRUNC`` of a TIMESTAMP, a DATE result demoted."""
         if granularity == TimeGranularity.WEEK_SUNDAY:
-            # Sunday week = Monday week of (col + 1 day), shifted back a day.
-            shifted = self.build_date_add(
-                expr=col_expr, count=exp.Literal.number(1), unit=TimeGranularity.DAY,
-                operand=DataType.TIMESTAMP,
-            )
-            monday = self.build_date_trunc(
-                col_expr=shifted, granularity=TimeGranularity.WEEK,
-            )
-            return self.build_date_add(
-                expr=monday, count=exp.Literal.number(-1), unit=TimeGranularity.DAY,
-                operand=DataType.TIMESTAMP,
-            )
+            return self._sunday_week(col_expr=col_expr, operand=operand)
         gran_str = _GRANULARITY_TO_DATE_TRUNC.get(granularity, granularity.value)
-        if not isinstance(col_expr, (exp.Column, exp.Cast)):
-            col_expr = exp.Cast(this=col_expr, to=exp.DataType.build("TIMESTAMP"))
-        return exp.DateTrunc(this=col_expr, unit=exp.Literal.string(gran_str))
+        trunc = exp.DateTrunc(this=self._timestamp_operand(col_expr), unit=exp.Literal.string(gran_str))
+        return self.demote_to_date(trunc) if bucket_type(operand, granularity) is DataType.DATE else trunc
 
-    def build_bucket(self, *, col_expr: Expression, granularity: Granularity) -> Expression:
-        """Bucket start of ``col_expr``; custom: last ``origin + k·multiple·base`` at or before it."""
+    def _sunday_week(self, *, col_expr: Expression, operand: DataType) -> Expression:
+        """The Monday week of ``col_expr + 1 day``, a day back."""
+        shifted = self.build_date_add(
+            expr=col_expr, count=exp.Literal.number(1), unit=TimeGranularity.DAY, operand=operand,
+        )
+        monday = self.build_date_trunc(col_expr=shifted, granularity=TimeGranularity.WEEK, operand=operand)
+        return self.build_date_add(
+            expr=monday, count=exp.Literal.number(-1), unit=TimeGranularity.DAY,
+            operand=bucket_type(operand, TimeGranularity.WEEK),
+        )
+
+    def _timestamp_operand(self, expr: Expression) -> Expression:
+        """``expr`` as a TIMESTAMP, an existing TIMESTAMP cast kept."""
+        if isinstance(expr, exp.Cast) and expr.to.this is exp.DataType.Type.TIMESTAMP:
+            return expr
+        return self.promote_to_timestamp(expr)
+
+    def demote_to_date(self, expr: Expression) -> Expression:
+        """A midnight TIMESTAMP as a DATE."""
+        return exp.Cast(this=expr, to=exp.DataType.build("DATE"))
+
+    def build_bucket(self, *, col_expr: Expression, granularity: Granularity, operand: DataType) -> Expression:
+        """Bucket start of ``col_expr`` (an ``operand``), typed ``bucket_type(operand, granularity)``; custom: the
+        last ``origin + k·multiple·base`` at or before it."""
         if not isinstance(granularity, CustomGranularity):
-            return self.build_date_trunc(col_expr=col_expr, granularity=granularity)
+            return self.build_date_trunc(col_expr=col_expr, granularity=granularity, operand=operand)
+        start = self._custom_bucket(col_expr=col_expr, granularity=granularity)
+        return self.demote_to_date(start) if bucket_type(operand, granularity) is DataType.DATE else start
+
+    def _custom_bucket(self, *, col_expr: Expression, granularity: CustomGranularity) -> Expression:
+        """The custom bucket start of ``col_expr`` as a TIMESTAMP."""
         base, multiple, origin = granularity_parts(granularity)
         ts = self.promote_to_timestamp(col_expr)
         anchor = self.build_temporal_literal(value=origin, dt=DataType.TIMESTAMP)
@@ -1529,10 +1543,11 @@ class SqlDialect(BaseModel):
     def attach_sequence_setting(self, statement: Expression, *, size: int) -> None:  # NOSONAR(S1172) — no-op hook default
         """Statement-level setting a generated integer sequence of ``size`` rows needs."""
 
-    def bucket_step(self, *, bucket: Expression, count: int, unit: Granularity) -> Expression:
-        """A time bucket moved by ``count`` ``unit`` steps (a custom unit steps ``multiple`` of its base)."""
+    def bucket_step(self, *, bucket: Expression, count: int, unit: Granularity, operand: DataType) -> Expression:
+        """A time bucket (an ``operand``) moved by ``count`` ``unit`` steps (a custom unit steps ``multiple`` of
+        its base)."""
         base, multiple, _ = granularity_parts(unit)
-        return self.bucket_offset(bucket=bucket, count=count * multiple, unit=base)
+        return self.bucket_offset(bucket=bucket, count=count * multiple, unit=base, operand=operand)
 
     def promote_to_timestamp(self, expr: Expression) -> Expression:
         """A DATE value as the dialect's naive timestamp (midnight)."""
@@ -1591,8 +1606,8 @@ class SqlDialect(BaseModel):
             )
         if unit in (TimeGranularity.WEEK, TimeGranularity.WEEK_SUNDAY):
             gap = self._day_gap(
-                start=self.build_date_trunc(col_expr=start.copy(), granularity=unit),
-                end=self.build_date_trunc(col_expr=end.copy(), granularity=unit),
+                start=self.build_date_trunc(col_expr=start.copy(), granularity=unit, operand=operand),
+                end=self.build_date_trunc(col_expr=end.copy(), granularity=unit, operand=operand),
             )
             return self._exact_div(gap, 7)
         if unit is TimeGranularity.DAY:
@@ -1600,8 +1615,8 @@ class SqlDialect(BaseModel):
         if operand is DataType.DATE:
             start, end = self.promote_to_timestamp(start), self.promote_to_timestamp(end)
         gap = self._second_gap(
-            start=self.build_date_trunc(col_expr=start.copy(), granularity=unit),
-            end=self.build_date_trunc(col_expr=end.copy(), granularity=unit),
+            start=self.build_date_trunc(col_expr=start.copy(), granularity=unit, operand=DataType.TIMESTAMP),
+            end=self.build_date_trunc(col_expr=end.copy(), granularity=unit, operand=DataType.TIMESTAMP),
         )
         return gap if unit is TimeGranularity.SECOND else self._exact_div(gap, _UNIT_SECONDS[unit])
 
@@ -1629,16 +1644,13 @@ class SqlDialect(BaseModel):
         """``value / divisor`` for an exact multiple, as an integer."""
         return exp.IntDiv(this=exp.Paren(this=value), expression=exp.Literal.number(divisor))
 
-    def bucket_offset(self, *, bucket: Expression, count: int, unit: TimeGranularity) -> Expression:
-        """A time bucket moved by ``count`` ``unit``s, comparable with ``bucket_comparand`` of a bucket."""
-        return self.build_date_add(
-            expr=self.bucket_comparand(bucket), count=exp.Literal.number(count), unit=unit,
-            operand=DataType.TIMESTAMP,
-        )
+    def bucket_offset(self, *, bucket: Expression, count: int, unit: TimeGranularity, operand: DataType) -> Expression:
+        """A time bucket (an ``operand``) moved by ``count`` ``unit``s."""
+        return self.build_date_add(expr=bucket, count=exp.Literal.number(count), unit=unit, operand=operand)
 
-    def bucket_comparand(self, bucket: Expression) -> Expression:
-        """A time bucket as compared with a ``bucket_offset``."""
-        return bucket
+    def build_temporal_comparands(self, left: Expression, right: Expression) -> tuple[Expression, Expression]:
+        """Two temporal values of one type as a comparison reads them."""
+        return left, right
 
     def build_date_add(
         self, *, expr: Expression, count: Expression, unit: TimeGranularity, operand: DataType,

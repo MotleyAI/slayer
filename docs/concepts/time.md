@@ -44,11 +44,15 @@ A comparison of a temporal operand `x` with a period `P` reads the period as a w
 
 So `ordered_at <= '2024-12-31'` includes Dec 31 10:00, and `ordered_at = '2024-06'` is June. A literal on the left mirrors the comparison; an instant keeps a plain comparison. `in` with a tuple (`code in ('2025-Q1',)`) keeps its value-list meaning.
 
-A temporal operand is anything typed DATE or TIMESTAMP: a declared column (base, derived, joined or a stage column), `min` / `max` / `first` / `last` of one, a date function or `interval` arithmetic, the clock, a `CAST(… AS DATE)` / `CAST(… AS TIMESTAMP)`, a `DATE '…'` / `TIMESTAMP '…'` literal, or a `coalesce` / `iif` over those (ISO literals inside count as dates). A plain date string against a non-temporal column keeps its string meaning; a relative token or single-string `in` there is a type error naming the column — declare its `type`. A DATE operand rejects sub-day points (`'last 6 hours'`, `'2025-01-01 10:00:00'`).
+A temporal operand is anything typed DATE or TIMESTAMP: a declared column (base, derived, joined or a stage column), `min` / `max` / `first` / `last` of one, a date function or `interval` arithmetic, the clock, a `date_trunc` bucket in any position, a `CAST(… AS DATE)` / `CAST(… AS TIMESTAMP)`, a `DATE '…'` / `TIMESTAMP '…'` literal, or a `coalesce` / `iif` over those (ISO literals inside count as dates). A plain date string against a non-temporal column keeps its string meaning; a relative token or single-string `in` there is a type error naming the column — declare its `type`. A DATE operand rejects sub-day points (`'last 6 hours'`, `'2025-01-01 10:00:00'`).
 
 ## Time buckets
 
 `date_trunc('<unit>', expr)` — `date_trunc('month', created_at)`, `date_trunc('week', ts)`, `date_trunc('fiscal_year', CAST(ts AS DATE))`, … — is the time bucket of the DATE / TIMESTAMP row-level expression `expr` for a built-in unit or a datasource granularity (any case), usable anywhere a row-level expression is: filters, aggregation sources (`count_distinct(date_trunc('month', created_at))`), computed dimensions and arithmetic. Compared with a time point it filters `expr` exactly: `date_trunc('month', created_at) >= '2024-03-15'` means `created_at >= 2024-04-01`.
+
+A bucket is a DATE when `expr` is a DATE and the unit (a custom granularity's base) is `day` or coarser, and a TIMESTAMP otherwise, so `date_trunc('hour', order_date)` is the TIMESTAMP at that day's midnight; every backend returns exactly that type, as a date or a naive timestamp (on SQLite `YYYY-MM-DD` or `YYYY-MM-DD HH:MM:SS` text).
+
+Wherever a DATE meets a TIMESTAMP — a comparison, `in`, `IS [NOT] DISTINCT FROM`, a TIMESTAMP-typed `coalesce` / `ifnull` / `iif` / `CASE` / `greatest` / `least`, the comparison inside `nullif` (which keeps its first argument's type), and the time spine's join to a DATE axis — the DATE reads as its midnight instant, and on SQLite two temporal values compare equal whatever ISO spelling they are stored in.
 
 `year(x)` … `second(x)` are integer extraction (`month(created_at)` is the month of year, 1–12), and comparing one with a date (`month(created_at) = '2025-03'`) is an error naming the `date_trunc` form.
 
