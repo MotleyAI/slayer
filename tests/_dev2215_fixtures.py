@@ -22,7 +22,7 @@ from __future__ import annotations
 import contextlib
 import json
 import warnings
-from collections.abc import AsyncGenerator, Iterable, Iterator
+from collections.abc import AsyncGenerator, Generator, Iterable
 from datetime import datetime
 from typing import Any, Optional
 
@@ -263,7 +263,7 @@ def warnings_mentioning(resp: SlayerResponse, *needles: str) -> list[Any]:
 
 
 @contextlib.contextmanager
-def recorded_warnings() -> Iterator[list[warnings.WarningMessage]]:
+def recorded_warnings() -> Generator[list[warnings.WarningMessage], None, None]:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         yield caught

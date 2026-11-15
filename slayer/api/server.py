@@ -3,7 +3,7 @@
 import contextlib
 import logging
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Any
 
@@ -338,7 +338,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             )
         )
     @contextlib.asynccontextmanager
-    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         # Every step runs even if an earlier one raises; per engine, aclose before close.
         async with contextlib.AsyncExitStack() as stack:
             for owned in (engine, getattr(mcp, "_slayer_engine")):

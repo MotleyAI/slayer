@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Dict, Iterable, Iterator, Literal, Optional, Sequence
+from typing import Dict, Generator, Iterable, Literal, Optional, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
@@ -112,7 +112,7 @@ _traversals: ContextVar[Optional[Dict[str, bool]]] = ContextVar(
 
 
 @contextmanager
-def observe_traversals() -> Iterator[Dict[str, bool]]:
+def observe_traversals() -> Generator[Dict[str, bool], None, None]:
     """Record every model a traversal in the block yields: name → strictly resolved
     (a hop walked) rather than only enumerated. Output-only; never feeds resolution."""
     sink: Dict[str, bool] = {}
@@ -124,7 +124,7 @@ def observe_traversals() -> Iterator[Dict[str, bool]]:
 
 
 @contextmanager
-def unobserved() -> Iterator[None]:
+def unobserved() -> Generator[None, None, None]:
     """Traversals in the block go unrecorded: a validation walk, not a read the planner must serve."""
     token = _traversals.set(None)
     try:

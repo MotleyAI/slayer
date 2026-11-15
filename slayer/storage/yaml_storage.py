@@ -25,7 +25,7 @@ import asyncio
 import contextlib
 import os
 from typing import Any
-from collections.abc import Hashable, Iterator
+from collections.abc import Generator, Hashable
 
 import yaml
 from pydantic import ValidationError
@@ -742,7 +742,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             return True
 
     @contextlib.contextmanager
-    def _memories_file_lock(self) -> Iterator[None]:
+    def _memories_file_lock(self) -> Generator[None, None, None]:
         """Reentrant advisory lock over ALL memory mutations
         (allocate+save, save, delete, cascade-strip). A single ``flock`` on
         ``<base_dir>/memories.lock`` is held on one persistent fd; nested

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, Generator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any, NoReturn
@@ -87,7 +87,7 @@ def _ds(path: Path, *, kind: str = "duckdb") -> DatasourceConfig:
 
 
 @asynccontextmanager
-async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient, None]:
     client = SlayerSQLClient(datasource=ds)
     try:
         yield client
@@ -175,7 +175,7 @@ class TestDuckdbKeys:
 
 
 @asynccontextmanager
-async def _attached(paths: tuple[Path, Path]) -> AsyncIterator[SlayerSQLClient]:
+async def _attached(paths: tuple[Path, Path]) -> AsyncGenerator[SlayerSQLClient, None]:
     """A client over ``main`` whose every connection attaches ``other``."""
     main, other = paths
     ds = _ds(main)
@@ -254,7 +254,7 @@ _FAILED_READS = {
 
 
 @contextmanager
-def _failing(read: _FailedRead) -> Iterator[None]:
+def _failing(read: _FailedRead) -> Generator[None, None, None]:
     """Raise on DuckDB's own catalog read of one key kind for one table."""
 
     def _boom(_conn, _cursor, statement, *_rest) -> None:  # noqa: ANN001

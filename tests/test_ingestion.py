@@ -3,7 +3,7 @@
 import logging
 import os
 import tempfile
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncGenerator, Callable, Iterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, NoReturn
@@ -142,7 +142,7 @@ def _pk_queries(conn: _CatalogConnection) -> list[str]:
 
 
 @asynccontextmanager
-async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient, None]:
     client = SlayerSQLClient(datasource=ds)
     try:
         yield client

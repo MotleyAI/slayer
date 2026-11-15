@@ -3,7 +3,7 @@ structured payloads. Live in ``slayer.core`` so schemas reference them without e
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Annotated, List, Literal, Optional, Union
@@ -14,7 +14,7 @@ _caller_announces: ContextVar[bool] = ContextVar("slayer_caller_announces", defa
 
 
 @contextmanager
-def announced_by_caller() -> Iterator[None]:
+def announced_by_caller() -> Generator[None, None, None]:
     """Inside the block the caller (a query response, a save) announces stored-document advisories, so loads do not."""
     token = _caller_announces.set(True)
     try:

@@ -7,7 +7,7 @@ mocked at the import boundary — no live API calls are made.
 
 from __future__ import annotations
 
-import asyncio
+import inspect
 from typing import Any
 
 import pytest
@@ -160,8 +160,8 @@ async def test_embed_query_returns_none_on_extra_missing(
 def test_event_loop_imports() -> None:
     """Sanity: this module's async helpers can be invoked from a fresh
     loop without import side-effects."""
-    assert asyncio.iscoroutinefunction(embedding_client.embed_batch)
-    assert asyncio.iscoroutinefunction(embedding_client.embed_query)
+    assert inspect.iscoroutinefunction(embedding_client.embed_batch)
+    assert inspect.iscoroutinefunction(embedding_client.embed_query)
 
 
 # ---------------------------------------------------------------------------

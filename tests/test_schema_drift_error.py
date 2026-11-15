@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -42,7 +42,7 @@ from tests._engine_helpers import disposable_engine
 
 
 @contextlib.asynccontextmanager
-async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient, None]:
     client = SlayerSQLClient(datasource=ds)
     try:
         yield client

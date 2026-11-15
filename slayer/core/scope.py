@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Dict, Generator, List, Optional, Sequence, Tuple, TypeVar
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -277,7 +277,7 @@ _stale_position: ContextVar[Optional[str]] = ContextVar(
 
 
 @contextmanager
-def collect_stale_spellings() -> Iterator[List[StaleSpelling]]:
+def collect_stale_spellings() -> Generator[List[StaleSpelling], None, None]:
     """Collect stale spellings recorded in the block, deduplicated, into the yielded list."""
     sink: Dict[StaleSpelling, None] = {}
     out: List[StaleSpelling] = []
@@ -290,7 +290,7 @@ def collect_stale_spellings() -> Iterator[List[StaleSpelling]]:
 
 
 @contextmanager
-def stale_spelling_stage(stage: Optional[str]) -> Iterator[None]:
+def stale_spelling_stage(stage: Optional[str]) -> Generator[None, None, None]:
     token = _stale_stage.set(stage)
     try:
         yield
@@ -299,7 +299,7 @@ def stale_spelling_stage(stage: Optional[str]) -> Iterator[None]:
 
 
 @contextmanager
-def stale_spelling_position(position: Optional[str]) -> Iterator[None]:
+def stale_spelling_position(position: Optional[str]) -> Generator[None, None, None]:
     """Referencing position for records in the block; ``None`` suppresses recording."""
     token = _stale_position.set(position)
     try:

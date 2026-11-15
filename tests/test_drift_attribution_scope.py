@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -143,7 +143,7 @@ class _Spies:
 
 
 @contextlib.asynccontextmanager
-async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient, None]:
     client = SlayerSQLClient(datasource=ds)
     try:
         yield client

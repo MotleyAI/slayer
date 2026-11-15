@@ -2,7 +2,7 @@
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from typing import (
     AbstractSet,
@@ -11,7 +11,6 @@ from typing import (
     Dict,
     FrozenSet,
     Iterable,
-    Iterator,
     List,
     Literal,
     Optional,
@@ -3965,7 +3964,7 @@ class SQLGenerator:
             self._gen_dep_stack.pop()
 
     @contextmanager
-    def _stage_scope(self, relation: Optional[str]) -> Iterator[None]:
+    def _stage_scope(self, relation: Optional[str]) -> Generator[None, None, None]:
         """One multi-stage statement's dep-registry frame; a non-root stage is also a split consumer."""
         self._gen_dep_stack.append({})
         if relation is not None:

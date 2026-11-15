@@ -6,7 +6,7 @@ from __future__ import annotations
 import contextlib
 import difflib
 import os
-from collections.abc import Iterator, Sequence
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
@@ -148,7 +148,7 @@ _bind_records: ContextVar[Optional[BindRecords]] = ContextVar("slayer_bind_recor
 
 
 @contextmanager
-def collect_bind_records() -> Iterator[BindRecords]:
+def collect_bind_records() -> Generator[BindRecords, None, None]:
     """Collect the records of every binding inside the block."""
     records = BindRecords()
     token = _bind_records.set(records)
@@ -163,7 +163,7 @@ _RANGE_AGGREGATIONS = frozenset({"min", "max"})
 
 
 @contextmanager
-def range_read() -> Iterator[None]:
+def range_read() -> Generator[None, None, None]:
     """Inside the block, ``min`` / ``max`` pass a column's ``allowed_aggregations`` (sample profiling's range)."""
     token = _RANGE_READ.set(True)
     try:

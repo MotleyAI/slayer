@@ -11,7 +11,7 @@ import os
 import socket
 import threading
 import weakref
-from collections.abc import Iterator
+from collections.abc import Generator
 from types import SimpleNamespace
 
 import pyarrow.flight as fl
@@ -258,7 +258,7 @@ def test_rest_mount_requests_not_counted_as_rest(store: str, started) -> None:
 
 
 @contextlib.contextmanager
-def _serve(app) -> Iterator[str]:
+def _serve(app) -> Generator[str, None, None]:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]

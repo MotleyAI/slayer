@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import Any
@@ -42,7 +42,7 @@ def _sqlite_ds(workspace: Path, script: str) -> DatasourceConfig:
 
 
 @asynccontextmanager
-async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient, None]:
     client = SlayerSQLClient(datasource=ds)
     try:
         yield client

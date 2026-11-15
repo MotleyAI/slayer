@@ -12,7 +12,7 @@ version that ``.save_*()`` will write today.
 """
 
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
@@ -33,7 +33,7 @@ _stored: ContextVar[bool] = ContextVar("slayer_stored_document", default=False)
 
 
 @contextmanager
-def migrating_document(label: str | None, *, stored: bool) -> Iterator[None]:
+def migrating_document(label: str | None, *, stored: bool) -> Generator[None, None, None]:
     """Name the document whose nested documents migrate inside the block; ``stored`` when it carries a version."""
     token = _document.set(label or _document.get())
     stored_token = _stored.set(stored or _stored.get())

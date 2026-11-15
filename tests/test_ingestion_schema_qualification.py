@@ -14,7 +14,7 @@ resolution over an inspector that happens to see attached catalogs.
 from __future__ import annotations
 
 import io
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
@@ -221,7 +221,7 @@ def attached_paths(tmp_path_factory) -> tuple[str, str]:
 
 
 @contextmanager
-def _open_attached(paths: tuple[str, str]) -> Iterator[sa.Engine]:
+def _open_attached(paths: tuple[str, str]) -> Generator[sa.Engine, None, None]:
     main_path, aaa_path = paths
     with disposable_engine(f"duckdb:///{main_path}") as engine:
 
@@ -240,7 +240,7 @@ def _ds(path: str, **kw) -> DatasourceConfig:
 
 
 @asynccontextmanager
-async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient, None]:
     client = SlayerSQLClient(datasource=ds)
     try:
         yield client
@@ -250,7 +250,7 @@ async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
 
 
 @asynccontextmanager
-async def _attached_client(paths: tuple[str, str]) -> AsyncIterator[SlayerSQLClient]:
+async def _attached_client(paths: tuple[str, str]) -> AsyncGenerator[SlayerSQLClient, None]:
     """A client over ``att_main`` whose every connection attaches ``aaa``."""
     main_path, aaa_path = paths
     ds = _ds(main_path)

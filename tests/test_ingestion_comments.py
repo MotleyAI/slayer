@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import io
 import re
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -199,7 +199,7 @@ def _inspector_client(inspector: Any, *, ds_type: str = "postgres", backend: str
 
 
 @asynccontextmanager
-async def _client(ds: DatasourceConfig) -> AsyncIterator[SlayerSQLClient]:
+async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient, None]:
     client = SlayerSQLClient(datasource=ds)
     try:
         yield client

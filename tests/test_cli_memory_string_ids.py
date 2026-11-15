@@ -14,7 +14,7 @@ import os
 import sys
 import tempfile
 from contextlib import contextmanager
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 
 import pytest
 
@@ -22,7 +22,7 @@ from slayer.cli import main as cli_main
 
 
 @contextmanager
-def _argv(*argv: str) -> Iterator[None]:
+def _argv(*argv: str) -> Generator[None, None, None]:
     original = sys.argv
     sys.argv = ["slayer", *argv]
     try:

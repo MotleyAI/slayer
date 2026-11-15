@@ -13,7 +13,7 @@ import weakref
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal, Protocol, TypeVar, runtime_checkable
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
 
 import sqlalchemy as sa
 import sqlalchemy.exc
@@ -450,7 +450,7 @@ async def _set_timeout_async(
 def _statement_timeout(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
     transaction_local: bool = False,
-) -> Iterator[list[StatementTimeoutSkippedWarning]]:
+) -> Generator[list[StatementTimeoutSkippedWarning], None, None]:
     """Put the dialect's timeout on ``conn`` for the block (a session statement once per value); yields the skips."""
     if dialect.timeout_reads_profile and not dialect.timeout_permitted(_server_profile(conn, engine=engine, dialect=dialect)):
         yield [_skip(datasource_name, timeout_seconds, "readonly_user")]
@@ -470,7 +470,7 @@ def _statement_timeout(
 async def _statement_timeout_async(
     conn, *, engine: Any, dialect: SqlDialect, datasource_name: str, timeout_seconds: int,
     transaction_local: bool = False,
-) -> AsyncIterator[list[StatementTimeoutSkippedWarning]]:
+) -> AsyncGenerator[list[StatementTimeoutSkippedWarning], None]:
     """Async sibling of ``_statement_timeout``."""
     if dialect.timeout_reads_profile and not dialect.timeout_permitted(
         await _server_profile_async(conn, engine=engine, dialect=dialect),
