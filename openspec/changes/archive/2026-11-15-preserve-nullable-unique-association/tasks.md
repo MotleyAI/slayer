@@ -11,4 +11,4 @@
 
 ## 3. Validation
 
-- [ ] 3.1 Run the association regression and repository validation gates.
+- [x] 3.1 Run the association regression and repository validation gates. Local pytest coverage is complete across the initial runs and environment-specific retries. Ruff, basedpyright, and living-architecture checks passed.

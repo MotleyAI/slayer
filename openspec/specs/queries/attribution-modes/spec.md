@@ -382,8 +382,9 @@ partition key fanning from its host, fails in every mode, the default included.
   every explicit mode
 
 ### Requirement: Per-query row identity for keyless homes
-A home dataset declaring no primary or unique key that needs association SHALL be
-deduplicated by a per-query row identity: each of its rows — after its model-level
+A home dataset whose model declares no primary key that needs association SHALL be
+deduplicated by a per-query row identity, including when the model declares a standalone
+unique column that may allow NULLs: each of its rows — after its model-level
 filters, before any join — is told apart from every other, so each physical row counts
 exactly once per cell. Two identical physical rows count as two rows; the copies a join
 fan-out makes of one row count once. The identity is query-local, determines every
@@ -407,6 +408,18 @@ associates; an association over list children only keeps its key-free evaluation
 - **WHEN** a keyless-home association query is rendered for every supported dialect
 - **THEN** each statement numbers the home rows with the dialect's accepted window
   syntax, executed on the in-process and locally runnable engines
+
+#### Scenario: A nullable unique column preserves each associated row
+- **WHEN** an aggregate associates over a fanning dimension, the home model has no primary
+  key, and two real home rows have NULL in a standalone unique column
+- **THEN** both home rows contribute once per cell they reach, even when a home row
+  matches multiple joined rows in the cell, on SQLite and DuckDB
+
+#### Scenario: A numbered home determines row-valued parameters
+- **WHEN** the same home supplies both the value and weight for an associated weighted
+  average
+- **THEN** each cell's average uses the distinct home rows that reach it and their own
+  weights, in default and explicit association modes
 
 ### Requirement: Stored broadcast defaults migrate
 A stored query saved with `to_many_handling: "broadcast"` — standalone, or a stage nested
