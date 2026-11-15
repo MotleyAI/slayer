@@ -19,6 +19,14 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.service import SearchService
 from slayer.storage.base import resolve_storage
 from slayer.storage.sqlite_conn import transaction
+from slayer.storage.base import StorageBackend
+from typing import Any
+
+
+def _stored_col(model: SlayerModel, name: str) -> Column:
+    col = model.get_column(name)
+    assert col is not None
+    return col
 
 
 @pytest_asyncio.fixture
@@ -57,11 +65,12 @@ async def search_setup(tmp_path) -> AsyncIterator[tuple[SearchService, object]]:
 
 
 @pytest.mark.asyncio
-async def test_search_backfills_numeric_column_hit_verbose(search_setup) -> None:
+async def test_search_backfills_numeric_column_hit_verbose(search_setup: tuple[Any, StorageBackend]) -> None:
     service, storage = search_setup
     # Sanity: the numeric column starts uncached.
     pre = await storage.get_model("orders", data_source="ds")
-    assert pre.get_column("amount").sampled is None
+    assert pre is not None
+    assert _stored_col(pre, "amount").sampled is None
 
     resp = await service.search(
         entities=["ds.orders.amount"], compact=False,
@@ -73,8 +82,10 @@ async def test_search_backfills_numeric_column_hit_verbose(search_setup) -> None
     assert amount_hits, "expected the amount column as a hit"
     # Persisted min/max range — proof the numeric back-fill fired in search.
     reloaded = await storage.get_model("orders", data_source="ds")
-    assert reloaded.get_column("amount").sampled is not None
-    assert ".." in reloaded.get_column("amount").sampled
+    assert reloaded is not None
+    sampled = _stored_col(reloaded, "amount").sampled
+    assert sampled is not None
+    assert ".." in sampled
     # Verbose hit text carries the refreshed min/max RANGE (not just any
     # "Sample values:" label) — proves the numeric back-fill re-rendered text.
     assert any(
@@ -83,7 +94,7 @@ async def test_search_backfills_numeric_column_hit_verbose(search_setup) -> None
 
 
 @pytest.mark.asyncio
-async def test_search_backfills_numeric_column_hit_compact(search_setup) -> None:
+async def test_search_backfills_numeric_column_hit_compact(search_setup: tuple[Any, StorageBackend]) -> None:
     """compact=True keeps ``text=""`` but still persists the back-filled
     range (the persist side-effect mirrors the categorical path)."""
     service, storage = search_setup
@@ -98,4 +109,5 @@ async def test_search_backfills_numeric_column_hit_compact(search_setup) -> None
     for h in amount_hits:
         assert h.text == ""
     reloaded = await storage.get_model("orders", data_source="ds")
-    assert reloaded.get_column("amount").sampled is not None
+    assert reloaded is not None
+    assert _stored_col(reloaded, "amount").sampled is not None

@@ -516,7 +516,7 @@ async def test_collect_over_exact_numerics(bq_amounts) -> None:
 # Last in the module: re-ingest re-types the shared ``stale`` model too. The BigQuery driver reports a
 # REPEATED result column by its element type, so only sqlglot typing finds the list (no untypeable shape).
 @pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", column="scores", untypeable=None))
-async def test_sql_mode_list_retype(bq_lists, sql: str, column: str, element: DataType) -> None:
+async def test_sql_mode_list_retype(bq_lists: tuple[StorageBackend, Any], sql: str, column: str, element: DataType) -> None:
     storage, ds = bq_lists
     engine = SlayerQueryEngine(storage=storage)
     await storage.save_model(stale_sql_model(sql=sql, column=column, data_source=ds.name))

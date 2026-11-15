@@ -16,6 +16,8 @@ from tests._sql_mode_retype_fixtures import (
 pytest.importorskip("pytest_postgresql")
 
 from pytest_postgresql import factories  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from slayer.engine.query_engine import SlayerQueryEngine
+from typing import Any
 
 postgresql_proc = factories.postgresql_proc(port=None)
 postgresql = factories.postgresql("postgresql_proc")
@@ -36,7 +38,7 @@ async def pg(postgresql, tmp_path):
 
 @pytest.mark.parametrize(("sql", "column", "element"), sql_shapes(table="contractors", column="scores",
                                                                   untypeable="same_list"))
-async def test_sql_mode_list_retype(pg, sql: str, column: str, element: DataType) -> None:
+async def test_sql_mode_list_retype(pg: tuple[SlayerQueryEngine, Any], sql: str, column: str, element: DataType) -> None:
     engine, ds = pg
     await engine.storage.save_model(stale_sql_model(sql=sql, column=column, data_source=ds.name))
     await check_validation_finding(engine, data_source=ds.name, column=column)

@@ -107,7 +107,7 @@ def _columns(model: SlayerModel) -> list[tuple[str, str | None]]:
     return [(c.name, c.sql) for c in model.columns]
 
 
-async def test_two_case_variants(pg) -> None:
+async def test_two_case_variants(pg: tuple[SlayerQueryEngine, Any]) -> None:
     engine, ds = pg
     model, notes = await _ingest(engine, ds, "casey")
     named = dict(_columns(model))
@@ -121,7 +121,7 @@ async def test_two_case_variants(pg) -> None:
     assert sorted((r["casey.Foo"], r["casey.foo_2"]) for r in resp.data) == [(1, 10), (2, 20)]
 
 
-async def test_suffix_already_taken_and_reingestion(pg) -> None:
+async def test_suffix_already_taken_and_reingestion(pg: tuple[SlayerQueryEngine, Any]) -> None:
     engine, ds = pg
     first, _ = await _ingest(engine, ds, "casey3")
     again, _ = await _ingest(engine, ds, "casey3")

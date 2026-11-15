@@ -1078,7 +1078,7 @@ def test_structured_array_needs_no_inference_query(sf_lists, sf_datasource: Data
     (["length(typed) = 1"], {2}),
     (["typed.value = 'sql'"], {1, 2}),
 ])
-def test_list_functions_on_a_structured_array(sf_lists: tuple[StorageBackend, Any], sf_datasource: DatasourceConfig, filters, kept) -> None:
+def test_list_functions_on_a_structured_array(sf_lists: tuple[YAMLStorage, Any], sf_datasource: DatasourceConfig, filters, kept) -> None:
     storage, _ = sf_lists
     (model,) = run_sync(_ingest(sf_datasource, include_tables=["structured"]))
     run_sync(storage.save_model(model))
@@ -1087,7 +1087,7 @@ def test_list_functions_on_a_structured_array(sf_lists: tuple[StorageBackend, An
     assert {int(r["structured.id"]) for r in resp.data} == kept, resp.sql
 
 
-def test_reingest_reinfers_only_unknown_elements(sf_lists, sf_datasource: DatasourceConfig) -> None:
+def test_reingest_reinfers_only_unknown_elements(sf_lists: tuple[YAMLStorage, Any], sf_datasource: DatasourceConfig) -> None:
     storage, cur = sf_lists
     cur.execute("CREATE OR REPLACE TABLE reingested CLONE inferred")  # a private copy: the seeded tables stay read-only
     try:
@@ -1096,6 +1096,7 @@ def test_reingest_reinfers_only_unknown_elements(sf_lists, sf_datasource: Dataso
         cur.execute("INSERT INTO reingested SELECT 2, ARRAY_CONSTRUCT('x'), NULL, NULL, ARRAY_CONSTRUCT(7)")
         _ingest_idempotent(datasource=sf_datasource, storage=storage, include_tables=["reingested"])
         model = run_sync(storage.get_model("reingested", data_source="sf_test"))
+        assert model is not None
     finally:
         cur.execute("DROP TABLE IF EXISTS reingested")
     typed = {c.name: c.element_type for c in model.columns if c.name in ("ints", "empty")}

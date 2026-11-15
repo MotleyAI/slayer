@@ -181,7 +181,7 @@ async def test_sql_model_typed_columns_do_not_report_false_drift(
     assert result == []
 
 
-async def test_drop_column_yields_edit_model_delete(duckdb_drift_env) -> None:
+async def test_drop_column_yields_edit_model_delete(duckdb_drift_env: tuple[SlayerQueryEngine, Any]) -> None:
     engine, db_path = duckdb_drift_env
     conn = duckdb.connect(db_path)
     # DuckDB rejects ALTER on tables with FK relationships, so use the
@@ -196,7 +196,7 @@ async def test_drop_column_yields_edit_model_delete(duckdb_drift_env) -> None:
     assert "description" in entry.remove.columns
 
 
-async def test_drop_table_yields_whole_model_delete(duckdb_drift_env) -> None:
+async def test_drop_table_yields_whole_model_delete(duckdb_drift_env: tuple[SlayerQueryEngine, Any]) -> None:
     engine, db_path = duckdb_drift_env
     conn = duckdb.connect(db_path)
     conn.execute("DROP TABLE products")

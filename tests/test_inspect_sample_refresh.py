@@ -135,7 +135,7 @@ def _count_profile_calls(monkeypatch, svc: InspectService) -> list:
 
 
 @pytest.mark.asyncio
-async def test_compact_false_backfills_categorical(inspect_setup) -> None:
+async def test_compact_false_backfills_categorical(inspect_setup: tuple[Any, StorageBackend]) -> None:
     svc, storage = inspect_setup
     out = await svc.inspect(
         reference="ds.orders.status", entity_type="column", compact=False,
@@ -144,7 +144,9 @@ async def test_compact_false_backfills_categorical(inspect_setup) -> None:
     assert "paid" in out
     # Persisted for later reads.
     reloaded = await storage.get_model("orders", data_source="ds")
+    assert reloaded is not None
     col = reloaded.get_column("status")
+    assert col is not None
     assert col.sampled_values is not None
     assert "paid" in col.sampled_values
 
@@ -155,7 +157,7 @@ async def test_compact_false_backfills_categorical(inspect_setup) -> None:
 
 
 @pytest.mark.asyncio
-async def test_compact_false_backfills_numeric(inspect_setup) -> None:
+async def test_compact_false_backfills_numeric(inspect_setup: tuple[Any, StorageBackend]) -> None:
     svc, storage = inspect_setup
     out = await svc.inspect(
         reference="ds.orders.amount", entity_type="column", compact=False,
@@ -164,11 +166,12 @@ async def test_compact_false_backfills_numeric(inspect_setup) -> None:
     # Numeric render is a min .. max range.
     assert ".." in out
     reloaded = await storage.get_model("orders", data_source="ds")
+    assert reloaded is not None
     assert _stored_col(reloaded, "amount").sampled is not None
 
 
 @pytest.mark.asyncio
-async def test_compact_false_backfills_temporal(inspect_setup) -> None:
+async def test_compact_false_backfills_temporal(inspect_setup: tuple[Any, StorageBackend]) -> None:
     """DATE/TIMESTAMP columns route through the numeric/temporal min/max path
     too — full non-regression includes temporal ranges."""
     svc, storage = inspect_setup
@@ -179,6 +182,7 @@ async def test_compact_false_backfills_temporal(inspect_setup) -> None:
     assert ".." in out  # min .. max range
     assert "2024-01-01" in out
     reloaded = await storage.get_model("orders", data_source="ds")
+    assert reloaded is not None
     assert _stored_col(reloaded, "order_date").sampled is not None
 
 
@@ -188,7 +192,7 @@ async def test_compact_false_backfills_temporal(inspect_setup) -> None:
 
 
 @pytest.mark.asyncio
-async def test_compact_true_does_not_refresh(inspect_setup, monkeypatch) -> None:
+async def test_compact_true_does_not_refresh(inspect_setup: tuple[Any, StorageBackend], monkeypatch) -> None:
     svc, storage = inspect_setup
     calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
@@ -198,12 +202,13 @@ async def test_compact_true_does_not_refresh(inspect_setup, monkeypatch) -> None
     assert calls == [], "compact=True must not run a profile query"
     # And nothing was persisted.
     reloaded = await storage.get_model("orders", data_source="ds")
+    assert reloaded is not None
     assert _stored_col(reloaded, "status").sampled_values is None
 
 
 @pytest.mark.asyncio
 async def test_compact_true_does_not_refresh_numeric(
-    inspect_setup, monkeypatch,
+    inspect_setup: tuple[Any, StorageBackend], monkeypatch,
 ) -> None:
     """Numeric is back-filled on compact=False — pin that
     compact=True still does NOT profile/persist a numeric column either."""
@@ -215,6 +220,7 @@ async def test_compact_true_does_not_refresh_numeric(
     assert "Sample values:" not in out
     assert calls == [], "compact=True must not run a profile query for numeric"
     reloaded = await storage.get_model("orders", data_source="ds")
+    assert reloaded is not None
     assert _stored_col(reloaded, "amount").sampled is None
 
 
@@ -310,7 +316,7 @@ async def test_inspect_model_passes_all_columns_in_one_call(
 
 
 @pytest.mark.asyncio
-async def test_already_cached_does_not_reprofile(inspect_setup, monkeypatch) -> None:
+async def test_already_cached_does_not_reprofile(inspect_setup: tuple[Any, StorageBackend], monkeypatch) -> None:
     svc, storage = inspect_setup
     # Pre-populate the structured cache so the column reads as cached.
     await storage.update_column_sampled(
@@ -350,7 +356,7 @@ async def test_json_text_carries_refreshed_samples(inspect_setup) -> None:
 
 
 @pytest.mark.asyncio
-async def test_batch_refreshes_both_members(inspect_setup) -> None:
+async def test_batch_refreshes_both_members(inspect_setup: tuple[Any, StorageBackend]) -> None:
     svc, storage = inspect_setup
     out = await svc.inspect(
         reference=["ds.orders.status", "ds.orders.amount"],
@@ -359,6 +365,7 @@ async def test_batch_refreshes_both_members(inspect_setup) -> None:
     assert "paid" in out          # categorical block
     assert ".." in out            # numeric block (min .. max)
     reloaded = await storage.get_model("orders", data_source="ds")
+    assert reloaded is not None
     assert _stored_col(reloaded, "status").sampled_values is not None
     assert _stored_col(reloaded, "amount").sampled is not None
 
@@ -370,7 +377,7 @@ async def test_batch_refreshes_both_members(inspect_setup) -> None:
 
 @pytest.mark.asyncio
 async def test_hidden_column_renders_without_refresh(
-    inspect_setup, monkeypatch,
+    inspect_setup: tuple[Any, StorageBackend], monkeypatch,
 ) -> None:
     svc, storage = inspect_setup
     calls = _count_profile_calls(monkeypatch, svc)
@@ -380,6 +387,7 @@ async def test_hidden_column_renders_without_refresh(
     assert "Column: ds.orders.secret" in out
     assert calls == [], "hidden columns are never profiled"
     reloaded = await storage.get_model("orders", data_source="ds")
+    assert reloaded is not None
     assert _stored_col(reloaded, "secret").sampled_values is None
 
 
@@ -409,7 +417,7 @@ async def test_profile_failure_renders_cleanly(inspect_setup, monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_persist_failure_renders_cleanly(inspect_setup, monkeypatch) -> None:
+async def test_persist_failure_renders_cleanly(inspect_setup: tuple[Any, StorageBackend], monkeypatch) -> None:
     """A persist failure (``update_column_sampled`` raises) is swallowed; the
     in-memory refresh still renders fresh samples this call."""
     svc, storage = inspect_setup
@@ -428,7 +436,7 @@ async def test_persist_failure_renders_cleanly(inspect_setup, monkeypatch) -> No
 
 @pytest.mark.asyncio
 async def test_persist_failure_numeric_renders_cleanly(
-    inspect_setup, monkeypatch,
+    inspect_setup: tuple[Any, StorageBackend], monkeypatch,
 ) -> None:
     """Numeric variant of the persist-failure path:
     a persist failure on a numeric column still renders the in-memory min/max

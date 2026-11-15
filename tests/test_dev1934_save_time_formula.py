@@ -71,7 +71,7 @@ async def seeded(tmp_path: Path) -> AsyncIterator[tuple[SlayerQueryEngine, YAMLS
 
 
 class TestEngineCheck:
-    async def test_unparseable_formula_rejected_naming_model_and_aggregation(self, seeded: tuple[SlayerQueryEngine, StorageBackend]) -> None:
+    async def test_unparseable_formula_rejected_naming_model_and_aggregation(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
         model = _model(_BROKEN)
         with pytest.raises(SlayerError) as ei:
@@ -80,24 +80,24 @@ class TestEngineCheck:
         assert "custom_agg" in str(ei.value)
         assert await store.get_model("orders", data_source=_DS) is None
 
-    async def test_qualifier_position_placeholder_rejected(self, seeded: tuple[SlayerQueryEngine, StorageBackend]) -> None:
+    async def test_qualifier_position_placeholder_rejected(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
         model = _model("SUM({t}.amount)")
         with pytest.raises(SlayerError, match="custom_agg"):
             await engine.save_model(model)
         assert await store.get_model("orders", data_source=_DS) is None
 
-    async def test_query_time_only_placeholder_accepted(self, seeded: tuple[SlayerQueryEngine, StorageBackend]) -> None:
+    async def test_query_time_only_placeholder_accepted(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
         await engine.save_model(_model("SUM({value} * {scale})"))
         assert await store.get_model("orders", data_source=_DS) is not None
 
-    async def test_formula_without_value_accepted(self, seeded: tuple[SlayerQueryEngine, StorageBackend]) -> None:
+    async def test_formula_without_value_accepted(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
         await engine.save_model(_model("COUNT(*)"))
         assert await store.get_model("orders", data_source=_DS) is not None
 
-    async def test_unresolvable_datasource_uses_generic_dialect(self, seeded: tuple[SlayerQueryEngine, StorageBackend]) -> None:
+    async def test_unresolvable_datasource_uses_generic_dialect(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
         model = _model(_BROKEN, data_source="nowhere")
         with pytest.raises(SlayerError, match="custom_agg"):
@@ -120,7 +120,7 @@ class TestEngineCheck:
         assert await store.get_model("orders", data_source="duck") is not None
 
     async def test_check_runs_before_storage_or_trial_execute(
-        self, seeded: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch,
+        self, seeded: tuple[SlayerQueryEngine, YAMLStorage], monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         engine, store = seeded
         executed: list[TypeProbe] = []
@@ -145,7 +145,7 @@ class TestEngineCheck:
         assert saved == []
 
     async def test_check_runs_before_backing_query_expansion(
-        self, seeded, monkeypatch: pytest.MonkeyPatch,
+        self, seeded: tuple[SlayerQueryEngine, YAMLStorage], monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         engine, _store = seeded
         expanded: list[str] = []
@@ -165,7 +165,7 @@ class TestEngineCheck:
         assert expanded == []
 
     async def test_query_backed_check_uses_the_expanded_datasource_dialect(
-        self, seeded: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch,
+        self, seeded: tuple[SlayerQueryEngine, YAMLStorage], monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         engine, store = seeded
         await store.save_datasource(DatasourceConfig(name="my", type="mysql", host="h", database="d"))
@@ -202,7 +202,7 @@ class TestUnreferencedParams:
         (Aggregation(name="sum", params=_p("scale")), "scale"),
         (Aggregation(name="percentile", params=_p("p", "q")), "q"),
     ])
-    async def test_unreferenced_param_blocks_the_save(self, seeded: tuple[SlayerQueryEngine, StorageBackend], agg: Aggregation, param: str) -> None:
+    async def test_unreferenced_param_blocks_the_save(self, seeded: tuple[SlayerQueryEngine, YAMLStorage], agg: Aggregation, param: str) -> None:
         engine, store = seeded
         model = _with(agg)
         with pytest.raises(
@@ -218,7 +218,7 @@ class TestUnreferencedParams:
         Aggregation(name="percentile", params=[AggregationParam(name="p", sql="0.5")]),
         Aggregation(name="weighted_avg", params=_p("weight")),
     ])
-    async def test_referenced_params_save(self, seeded: tuple[SlayerQueryEngine, StorageBackend], agg: Aggregation) -> None:
+    async def test_referenced_params_save(self, seeded: tuple[SlayerQueryEngine, YAMLStorage], agg: Aggregation) -> None:
         engine, store = seeded
         await engine.save_model(_with(agg))
         assert await store.get_model("orders", data_source=_DS) is not None
@@ -239,7 +239,7 @@ class TestUnreferencedParams:
         assert await store.get_model("orders", data_source="my") is None
 
     @pytest.mark.parametrize("name", ["first", "last"])
-    async def test_ranked_formula_override_blocks_the_save(self, seeded, name: str) -> None:
+    async def test_ranked_formula_override_blocks_the_save(self, seeded: tuple[SlayerQueryEngine, YAMLStorage], name: str) -> None:
         engine, _store = seeded
         model = _with(Aggregation(name=name, formula="MAX({value})"))
         with pytest.raises(AggregationArgumentError, match=rf"aggregation '{name}': a ranked aggregation cannot take a formula"):
@@ -253,7 +253,7 @@ def rest(seeded) -> tuple[TestClient, YAMLStorage]:
 
 
 class TestRest:
-    async def test_create_rejected(self, rest) -> None:
+    async def test_create_rejected(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, store = rest
         resp = client.post("/models", json=_model(_BROKEN).model_dump(mode="json"))
         assert resp.status_code == 400
@@ -261,17 +261,18 @@ class TestRest:
         assert "custom_agg" in resp.json()["detail"]
         assert await store.get_model("orders", data_source=_DS) is None
 
-    async def test_update_rejected_leaves_original(self, rest) -> None:
+    async def test_update_rejected_leaves_original(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, store = rest
         ok = client.post("/models", json=_model("SUM({value})").model_dump(mode="json"))
         assert ok.status_code == 200
         resp = client.put("/models/orders", json=_model(_BROKEN).model_dump(mode="json"))
         assert resp.status_code == 400
         kept = await store.get_model("orders", data_source=_DS)
+        assert kept is not None
         assert kept.aggregations[0].formula == "SUM({value})"
 
 
-    async def test_unreferenced_param_rejected(self, rest) -> None:
+    async def test_unreferenced_param_rejected(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, store = rest
         agg = Aggregation(name="custom_agg", formula="SUM({value})", params=_p("unused"))
         resp = client.post("/models", json=_with(agg).model_dump(mode="json"))
@@ -297,7 +298,7 @@ class TestRest:
 
 class TestCli:
     def test_create_rejected(
-        self, seeded, tmp_path: Path, capsys: pytest.CaptureFixture,
+        self, seeded: tuple[SlayerQueryEngine, YAMLStorage], tmp_path: Path, capsys: pytest.CaptureFixture,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _engine, store = seeded
@@ -333,7 +334,7 @@ _COLUMNS = [
 
 
 class TestMcp:
-    async def test_create_model_rejects_broken_formula(self, mcp) -> None:
+    async def test_create_model_rejects_broken_formula(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, _engine, store = mcp
         out = await _call(server=server, name="create_model", arguments={
             "name": "orders", "sql_table": "orders", "data_source": _DS, "columns": _COLUMNS,
@@ -344,7 +345,7 @@ class TestMcp:
         assert "custom_agg" in out
         assert await store.get_model("orders", data_source=_DS) is None
 
-    async def test_create_model_with_aggregation_is_queryable(self, mcp) -> None:
+    async def test_create_model_with_aggregation_is_queryable(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, engine, store = mcp
         out = await _call(server=server, name="create_model", arguments={
             "name": "orders", "sql_table": "orders", "data_source": _DS, "columns": _COLUMNS,
@@ -352,6 +353,7 @@ class TestMcp:
         })
         assert "created" in out, out
         saved = await store.get_model("orders", data_source=_DS)
+        assert saved is not None
         assert [a.name for a in saved.aggregations] == ["sum_sq"]
         resp = await engine.execute(SlayerQuery(
             source_model="orders", measures=[ModelMeasure(formula="sum_sq(amount)", name="m")],
@@ -367,7 +369,7 @@ class TestMcp:
         assert "Error" in out
         assert "aggregations" in out
 
-    async def test_edit_model_broken_formula_leaves_original(self, mcp) -> None:
+    async def test_edit_model_broken_formula_leaves_original(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, engine, store = mcp
         await engine.save_model(_model("SUM({value})"))
         out = await _call(server=server, name="edit_model", arguments={
@@ -376,6 +378,7 @@ class TestMcp:
         })
         assert "Error" in out or "error" in out
         kept = await store.get_model("orders", data_source=_DS)
+        assert kept is not None
         assert kept.aggregations[0].formula == "SUM({value})"
 
 
@@ -416,7 +419,7 @@ def test_v11_param_named_value_is_dropped_on_load() -> None:
     assert [p.name for p in agg.params] == ["k"]
 
 
-async def test_direct_storage_save_checks_aggregations(seeded) -> None:
+async def test_direct_storage_save_checks_aggregations(seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
     # CLI importers (dbt, Cube, OSI) persist through storage.save_model directly.
     _engine, store = seeded
     model = _model("SUM({value}) * {k}").model_copy(update={"aggregations": [Aggregation.model_validate({
@@ -429,7 +432,7 @@ async def test_direct_storage_save_checks_aggregations(seeded) -> None:
 
 
 async def test_ranked_formula_rejected_before_backing_query_expansion(
-    seeded, monkeypatch: pytest.MonkeyPatch,
+    seeded: tuple[SlayerQueryEngine, YAMLStorage], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     engine, _store = seeded
     expanded: list[str] = []
