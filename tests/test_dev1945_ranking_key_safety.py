@@ -37,6 +37,7 @@ from tests._dev1945_fixtures import (
     month_td,
     orders_q,
 )
+from slayer.engine.query_engine import SlayerResponse
 
 HOST_HOP = "unproven join hop to line_items from orders"
 MODES = ["broadcast", "error", "associate"]
@@ -75,7 +76,7 @@ async def _refused(
     return msg
 
 
-def _by_month(resp) -> dict:
+def _by_month(resp: SlayerResponse) -> dict:
     time_key = next(k for k in resp.columns if k.endswith("created_at"))
     return {month_key(r[time_key]): r["orders.l"] for r in resp.data}
 

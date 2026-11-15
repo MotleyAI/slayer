@@ -377,7 +377,7 @@ class TestResultTypes:
     def test_measure_type(self, text: str, expected: DataType) -> None:
         assert measure_key_type(model=ORDERS, key=_bind(text)) == expected
 
-    async def test_query_backed_model_column_types(self, engine) -> None:
+    async def test_query_backed_model_column_types(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(
             query={
                 "source_model": "orders",
@@ -400,7 +400,7 @@ class TestResultTypes:
         assert types["span"] == DataType.INT
         assert types["next_due"] == DataType.DATE
 
-    async def test_joined_and_stage_backed_result_types(self, engine) -> None:
+    async def test_joined_and_stage_backed_result_types(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(
             query=[
                 {
@@ -425,7 +425,7 @@ class TestResultTypes:
         assert types["lag_days"] == DataType.INT
         assert types["next_at"] == DataType.TIMESTAMP
 
-    async def test_stage_passthrough_keeps_types(self, engine) -> None:
+    async def test_stage_passthrough_keeps_types(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(
             query=[
                 {
@@ -443,7 +443,7 @@ class TestResultTypes:
         assert types["created_at"] == DataType.TIMESTAMP
         assert types["o"] == DataType.DATE
 
-    async def test_stage_measure_over_temporal_expression(self, engine) -> None:
+    async def test_stage_measure_over_temporal_expression(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(
             query=[
                 {

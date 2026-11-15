@@ -18,6 +18,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 
 def _orders_model() -> SlayerModel:
@@ -328,7 +329,7 @@ class TestSaveModelGuards:
             tmp.cleanup()
 
 
-def _wrap_save_counter(storage):
+def _wrap_save_counter(storage: StorageBackend):
     """Spy on ``storage.save_model``. Returns ``(calls, restore)`` where
     ``calls`` is a live list of saved-model names and ``restore()`` undoes
     the wrapping. Used to assert that read paths never write to storage.

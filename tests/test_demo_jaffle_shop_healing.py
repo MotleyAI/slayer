@@ -326,7 +326,7 @@ class TestDemoMoneyIsExact:
         assert _column(model, "order_total").db_type == "DECIMAL(12,2)"
         assert _column(model, "subtotal").db_type == "NUMERIC(18,4)"
 
-    def test_user_set_db_type_survives_setup(self, jaffle_generator, storage, store_dir) -> None:
+    def test_user_set_db_type_survives_setup(self, jaffle_generator, storage: YAMLStorage, store_dir) -> None:
         _setup(storage, store_dir)
         orders = _stored_models(storage)["orders"]
         _column(orders, "subtotal").db_type = "NUMERIC(18,4)"
@@ -408,7 +408,7 @@ class TestDemoSetupHealsModels:
         assert _run(storage, README_QUERY)
 
     def test_a_demo_model_that_is_not_stored_fails_setup(
-        self, jaffle_generator, storage, store_dir, monkeypatch: pytest.MonkeyPatch,
+        self, jaffle_generator, storage: YAMLStorage, store_dir, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         save_model_impl = storage._save_model_impl
 
@@ -421,7 +421,7 @@ class TestDemoSetupHealsModels:
         with pytest.raises(SlayerError, match=r"tweets.*disk full"):
             _setup(storage, store_dir)
 
-    def test_keyless_models_regain_their_keys(self, jaffle_generator, storage, store_dir) -> None:
+    def test_keyless_models_regain_their_keys(self, jaffle_generator, storage: YAMLStorage, store_dir) -> None:
         _setup(storage, store_dir)
         for model in _stored_models(storage).values():
             model.joins = []

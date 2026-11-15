@@ -81,7 +81,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
     yield SlayerQueryEngine(storage=storage)
 
 
-async def test_single_cross_model_parametric_key(engine):
+async def test_single_cross_model_parametric_key(engine: SlayerQueryEngine):
     resp = await engine.execute(
         SlayerQuery.model_validate({
             "source_model": "orders",
@@ -92,7 +92,7 @@ async def test_single_cross_model_parametric_key(engine):
     assert "orders.customers.revenue_percentile_p_0_5" in resp.columns
 
 
-async def test_two_parametric_variants_distinct_keys(engine):
+async def test_two_parametric_variants_distinct_keys(engine: SlayerQueryEngine):
     resp = await engine.execute(
         SlayerQuery(
             source_model="orders",

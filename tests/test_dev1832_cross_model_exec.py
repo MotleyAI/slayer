@@ -39,6 +39,7 @@ from tests._dev1832_fixtures import (
     rows_by,
     sales_q,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 _C_REGION, _C_TIER, _C_SPEND = 1, 3, 4
 _O_CUST, _O_STATUS, _O_STORE_CO, _O_STORE_NO = 1, 2, 6, 7
@@ -267,7 +268,7 @@ class TestCrossModelExpressions:
             assert "__regroup__" not in group.sql(), sql
             assert not re.search(r"__agg\d+__", group.sql()), sql
 
-    async def test_stage_scope_expression(self, exec_backend):
+    async def test_stage_scope_expression(self, exec_backend: SlayerQueryEngine):
         # Stage 2 aggregates an expression over stage 1's output column.
         stage1 = orders_q(name="stage1", dimensions=["status"],
                           measures=[ModelMeasure(formula="sum(amount - cost)",
@@ -279,7 +280,7 @@ class TestCrossModelExpressions:
         col = next(c for c in resp.columns if c.endswith(".total"))
         assert float(resp.data[0][col]) == pytest.approx(101.0)  # (51-1)+(52-1)
 
-    async def test_dotted_leaf_derived_key(self, exec_backend):
+    async def test_dotted_leaf_derived_key(self, exec_backend: SlayerQueryEngine):
         # No rename → the dotted leaf's dots collapse into the auto-named key.
         resp = await exec_backend.execute(orders_q(
             dimensions=["status"], measures=["sum(amount - customers.discount)"]))

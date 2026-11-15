@@ -11,13 +11,14 @@ from __future__ import annotations
 import pytest
 
 from tests._dev1865_fixtures import ModelMeasure, q
+from slayer.engine.query_engine import SlayerQueryEngine
 
 RK_REGION = "orders.customers.regions.name"
 RK_TIER = "orders.customers.tier"
 
 
 class TestDuplicateOppositeDirection:
-    async def test_min_and_max_wrap_the_same_column(self, exec_engine) -> None:
+    async def test_min_and_max_wrap_the_same_column(self, exec_engine: SlayerQueryEngine) -> None:
         # ASC wraps per-group MIN, DESC per-group MAX — two hidden slots for one
         # column must coexist, and neither leaks into the projection.
         query = q(
@@ -56,7 +57,7 @@ class TestNullsSortLast:
 
 
 class TestOrderOnlyTrimmed:
-    async def test_order_by_undeclared_aggregate_adds_no_column(self, exec_engine) -> None:
+    async def test_order_by_undeclared_aggregate_adds_no_column(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
             measures=[ModelMeasure(formula="sum(amount)", name="s")],
@@ -66,7 +67,7 @@ class TestOrderOnlyTrimmed:
 
 
 class TestOrderByCrossModelPartitioned:
-    async def test_sorts_by_partition_value_and_stays_hidden(self, exec_engine) -> None:
+    async def test_sorts_by_partition_value_and_stays_hidden(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.regions.name", "customers.tier"],
             measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],

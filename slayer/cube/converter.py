@@ -1327,7 +1327,7 @@ class CubeToSlayerConverter:
                 view=view.name, message=f"Could not build facade model: {exc}"))
             return None
 
-    def _facade_join_keys(self, *, join, root_model, columns, names, view, report) -> bool:
+    def _facade_join_keys(self, *, join: ModelJoin, root_model: SlayerModel, columns, names, view, report) -> bool:
         """Declare a carried join's source keys on the facade (hidden); ``False`` drops the join."""
         for src, _ in join.join_pairs:
             col = next((c for c in columns if c.name == src), None)
@@ -1344,7 +1344,7 @@ class CubeToSlayerConverter:
                 return False
         return True
 
-    def _convert_view_ref(self, view, ref, root_cube_name, root_model,
+    def _convert_view_ref(self, view, ref, root_cube_name, root_model: SlayerModel,
                           columns, measures, names, join_targets, report) -> None:
         path = ref.join_path.split(".")
         cube_name = path[-1]

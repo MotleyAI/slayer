@@ -42,6 +42,14 @@ from slayer.core.models import (
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.service import InspectService
 from slayer.storage.base import resolve_storage
+from slayer.storage.base import StorageBackend
+from typing import Any
+
+
+def _stored_col(model: SlayerModel, name: str) -> Column:
+    col = model.get_column(name)
+    assert col is not None
+    return col
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +164,7 @@ async def test_compact_false_backfills_numeric(inspect_setup) -> None:
     # Numeric render is a min .. max range.
     assert ".." in out
     reloaded = await storage.get_model("orders", data_source="ds")
-    assert reloaded.get_column("amount").sampled is not None
+    assert _stored_col(reloaded, "amount").sampled is not None
 
 
 @pytest.mark.asyncio
@@ -171,7 +179,7 @@ async def test_compact_false_backfills_temporal(inspect_setup) -> None:
     assert ".." in out  # min .. max range
     assert "2024-01-01" in out
     reloaded = await storage.get_model("orders", data_source="ds")
-    assert reloaded.get_column("order_date").sampled is not None
+    assert _stored_col(reloaded, "order_date").sampled is not None
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +198,7 @@ async def test_compact_true_does_not_refresh(inspect_setup, monkeypatch) -> None
     assert calls == [], "compact=True must not run a profile query"
     # And nothing was persisted.
     reloaded = await storage.get_model("orders", data_source="ds")
-    assert reloaded.get_column("status").sampled_values is None
+    assert _stored_col(reloaded, "status").sampled_values is None
 
 
 @pytest.mark.asyncio
@@ -207,7 +215,7 @@ async def test_compact_true_does_not_refresh_numeric(
     assert "Sample values:" not in out
     assert calls == [], "compact=True must not run a profile query for numeric"
     reloaded = await storage.get_model("orders", data_source="ds")
-    assert reloaded.get_column("amount").sampled is None
+    assert _stored_col(reloaded, "amount").sampled is None
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +252,7 @@ async def test_aggregation_does_not_refresh(inspect_setup, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_engine_none_no_refresh_attempt(inspect_setup, monkeypatch) -> None:
+async def test_engine_none_no_refresh_attempt(inspect_setup: tuple[Any, StorageBackend], monkeypatch) -> None:
     _, storage = inspect_setup
     svc = InspectService(storage=storage)  # no engine
 
@@ -266,7 +274,8 @@ async def test_engine_none_no_refresh_attempt(inspect_setup, monkeypatch) -> Non
     assert "Column: ds.orders.status" in out
     assert "Sample values:" not in out
     reloaded = await storage.get_model("orders", data_source="ds")
-    assert reloaded.get_column("status").sampled_values is None
+    assert reloaded is not None
+    assert _stored_col(reloaded, "status").sampled_values is None
 
 
 # ---------------------------------------------------------------------------
@@ -350,8 +359,8 @@ async def test_batch_refreshes_both_members(inspect_setup) -> None:
     assert "paid" in out          # categorical block
     assert ".." in out            # numeric block (min .. max)
     reloaded = await storage.get_model("orders", data_source="ds")
-    assert reloaded.get_column("status").sampled_values is not None
-    assert reloaded.get_column("amount").sampled is not None
+    assert _stored_col(reloaded, "status").sampled_values is not None
+    assert _stored_col(reloaded, "amount").sampled is not None
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +380,7 @@ async def test_hidden_column_renders_without_refresh(
     assert "Column: ds.orders.secret" in out
     assert calls == [], "hidden columns are never profiled"
     reloaded = await storage.get_model("orders", data_source="ds")
-    assert reloaded.get_column("secret").sampled_values is None
+    assert _stored_col(reloaded, "secret").sampled_values is None
 
 
 # ---------------------------------------------------------------------------

@@ -43,6 +43,7 @@ from tests._dev1847_fixtures import (
 )
 from tests._engine_helpers import _extract_cte_body, seeded_exec_engine
 from tests.test_dev1903_discovery import _discover
+from slayer.engine.query_engine import SlayerQueryEngine
 
 R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
 RLEVEL = {"expression": f"CASE WHEN {R} > 50 THEN 'hi' ELSE 'lo' END", "name": "rlevel"}
@@ -164,7 +165,7 @@ class TestTransformOverReaggregationInDimension:
             order=[{"column": f"rank({R}, direction='desc')", "direction": "asc"}]))
         assert _regions(resp) == ["South", "East", "North", "Gap", "Void"]
 
-    async def test_two_dimensions_share_the_reaggregation(self, exec_engine):
+    async def test_two_dimensions_share_the_reaggregation(self, exec_engine: SlayerQueryEngine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", TLEVEL, RLEVEL],
             measures=[TOT, ModelMeasure(formula=R, name="r")]))

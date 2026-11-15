@@ -33,6 +33,7 @@ from slayer.storage.base import resolve_storage
 from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import make_seeded_sqlite_engine
+from slayer.storage.base import StorageBackend
 
 
 # Column / model helpers
@@ -103,7 +104,7 @@ def _chain_models(
     return [consumer, customer, subscription, invoice]
 
 
-async def _save(storage, models: list[SlayerModel]) -> None:
+async def _save(storage: StorageBackend, models: list[SlayerModel]) -> None:
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=":memory:")
     )
@@ -606,7 +607,7 @@ class TestUniformSurfaces:
 # Requirement: type preserved / opaque rejected
 
 class TestTypeAndOpaque:
-    async def _virtual_columns(self, engine, stage: SlayerQuery):
+    async def _virtual_columns(self, engine: SlayerQueryEngine, stage: SlayerQuery):
         qb = SlayerModel(
             name="qb", data_source="test", source_queries=[stage],
         )

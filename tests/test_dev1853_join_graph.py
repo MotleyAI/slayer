@@ -91,7 +91,7 @@ async def unnamed_rec_engine() -> AsyncIterator[SlayerQueryEngine]:
 
 class TestRecommendRootModel:
     async def test_named_pair_recommendation_is_executable(
-        self, named_rec_engine,
+        self, named_rec_engine: SlayerQueryEngine,
     ) -> None:
         rec = await named_rec_engine.recommend_root_model(
             ["orders.status", "customers.name"])
@@ -102,12 +102,12 @@ class TestRecommendRootModel:
         assert crossing.split(".")[0] in {"billing_customer",
                                           "shipping_customer"}, crossing
         # Executable means executable: the emitted paths bind and run.
-        resp = await named_rec_engine.execute(SlayerQuery(
-            source_model=rec.root_model, dimensions=list(paths.values())))
+        resp = await named_rec_engine.execute(SlayerQuery.model_validate(
+            {"source_model": rec.root_model, "dimensions": list(paths.values())}))
         assert resp.data
 
     async def test_unnamed_ambiguous_pair_reports_unreachable(
-        self, unnamed_rec_engine,
+        self, unnamed_rec_engine: SlayerQueryEngine,
     ) -> None:
         rec = await unnamed_rec_engine.recommend_root_model(
             ["orders.status", "customers.name"])

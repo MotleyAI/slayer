@@ -249,11 +249,11 @@ class TestPerLeafRebucketing:
 
 
 class TestNamesAndKeys:
-    async def test_unnamed_expression_key(self, engine) -> None:
+    async def test_unnamed_expression_key(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_count(time_dimensions=[td(EFF)]))
         assert resp.columns == [KEY, "orders.v"]
 
-    async def test_named_expression_key_and_main_time_dimension(self, engine) -> None:
+    async def test_named_expression_key_and_main_time_dimension(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
             time_dimensions=[td("created_at"), td(EFF, name="effective_at")], main_time_dimension="effective_at",
             measures=[m("cumsum(count(*))")],
@@ -266,12 +266,12 @@ class TestNamesAndKeys:
             ("2025-02", "2025-02"): 1, ("2025-02", "2025-03"): 2, ("2025-03", "2025-04"): 1,
         }
 
-    async def test_named_column_time_dimension(self, engine) -> None:
+    async def test_named_column_time_dimension(self, engine: SlayerQueryEngine) -> None:
         named = await engine.execute(_count(time_dimensions=[td("created_at", name="m")]))
         assert named.columns == ["orders.m", "orders.v"]
         assert by_bucket(named, "orders.m", "orders.v") == CREATED_MONTH_COUNT
 
-    async def test_named_time_dimension_never_carries_the_granularity_suffix(self, engine) -> None:
+    async def test_named_time_dimension_never_carries_the_granularity_suffix(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_count(time_dimensions=[td(EFF, name="em"), td(EFF, "year", name="ey")]))
         assert set(resp.columns) == {"orders.em", "orders.ey", "orders.v"}
 
@@ -284,7 +284,7 @@ class TestNamesAndKeys:
         assert got == {("EU", "2025-01"): 10.0, ("EU", "2025-02"): 50.0, ("EU", "2025-04"): 50.0,
                        ("US", "2025-02"): 50.0, ("US", "2025-03"): 100.0}
 
-    async def test_two_granularities_of_one_expression(self, engine) -> None:
+    async def test_two_granularities_of_one_expression(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_count(dimensions=[f"date_trunc('month', {EFF})", f"date_trunc('year', {EFF})"]))
         assert set(resp.columns) == {f"{KEY}.month", f"{KEY}.year", "orders.v"}
         got = {(bucket(r[f"{KEY}.month"]), bucket(r[f"{KEY}.year"], width=4)): num(r["orders.v"]) for r in resp.data}
@@ -296,7 +296,7 @@ class TestNamesAndKeys:
             _count(time_dimensions=tds)
 
     @pytest.mark.parametrize("extra", [{}, {"label": "a"}, {"name": "effective_at"}])
-    async def test_equivalent_spellings_with_agreeing_metadata_dedupe_at_binding(self, engine, extra: dict) -> None:
+    async def test_equivalent_spellings_with_agreeing_metadata_dedupe_at_binding(self, engine: SlayerQueryEngine, extra: dict) -> None:
         once = await engine.execute(_count(time_dimensions=[td(EFF, **extra)]))
         twice = await engine.execute(_count(time_dimensions=[td(EFF, **extra),
                                                              td("COALESCE(shipped_at,created_at)", **extra)]))

@@ -31,6 +31,7 @@ from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 pytestmark = pytest.mark.integration
 
@@ -224,9 +225,10 @@ async def test_pass_allows_columnless_table(rls_storage):
 # -- profiling / sample data scoped -----------------------------------------
 
 
-async def test_profiling_sample_values_org_scoped(rls_storage):
+async def test_profiling_sample_values_org_scoped(rls_storage: StorageBackend):
     engine = SlayerQueryEngine(storage=rls_storage, policy=_org_policy(ORG_A))
     customers = await rls_storage.get_model("customers", data_source="rls_sqlite")
+    assert customers is not None
     region_col = next(c for c in customers.columns if c.name == "region")
     outcome = await ensure_samples_fresh(
         model=customers, columns=[region_col], engine=engine, storage=rls_storage,

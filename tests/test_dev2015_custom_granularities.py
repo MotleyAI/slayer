@@ -36,6 +36,7 @@ from tests._dev2015_fixtures import (
     spine_td,
     value,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 FY_ROWS = {"2023-04-01": 10.0, "2024-04-01": 50.0, "2025-04-01": 40.0}
 
@@ -230,7 +231,7 @@ class TestEveryPosition:
             await engine.execute(query, dry_run=True)
         assert "series" in str(exc.value)
 
-    async def test_refining_a_saved_query(self, engine) -> None:
+    async def test_refining_a_saved_query(self, engine: SlayerQueryEngine) -> None:
         await engine.create_model_from_query(query=SlayerQuery.model_validate({
             "source_model": "orders", "measures": [m("sum(amount)", "s")],
             "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
@@ -246,7 +247,7 @@ class TestEveryPosition:
             refine_query(saved=saved, refinement=moved)
         assert "order_date@FISCAL_YEAR" in str(exc.value)
 
-    async def test_name_scoped_to_its_datasource(self, engine) -> None:
+    async def test_name_scoped_to_its_datasource(self, engine: SlayerQueryEngine) -> None:
         cfg = await engine.storage.get_datasource("test")
         assert cfg is not None
         await engine.storage.save_datasource(DatasourceConfig(name="other", type=cfg.type, database=cfg.database))
@@ -266,7 +267,7 @@ class TestEveryPosition:
 # Nesting is boundary containment
 # ---------------------------------------------------------------------------
 
-async def _save(engine, model: SlayerModel) -> None:
+async def _save(engine: SlayerQueryEngine, model: SlayerModel) -> None:
     await engine.storage.save_model(model)
 
 
@@ -392,7 +393,7 @@ class TestNesting:
 # ---------------------------------------------------------------------------
 
 class TestColumnGranularity:
-    async def test_custom_value_round_trips_and_rebuckets(self, engine) -> None:
+    async def test_custom_value_round_trips_and_rebuckets(self, engine: SlayerQueryEngine) -> None:
         model = cg_orders_model(order_date_granularity="fiscal_year").model_copy(update={"name": "orders_fy"})
         await _save(engine, model)
         loaded = await engine.storage.get_model("orders_fy", data_source="test")
@@ -410,7 +411,7 @@ class TestColumnGranularity:
         with pytest.raises(TimeDimensionColumnError):
             await engine.execute(monthly, dry_run=True)
 
-    async def test_undefined_custom_value(self, engine) -> None:
+    async def test_undefined_custom_value(self, engine: SlayerQueryEngine) -> None:
         cfg = await engine.storage.get_datasource("test")
         assert cfg is not None
         await engine.storage.save_datasource(DatasourceConfig(name="other", type=cfg.type, database=cfg.database))

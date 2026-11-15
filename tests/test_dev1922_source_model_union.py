@@ -27,6 +27,7 @@ from slayer.ir import source_bundle
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1866_fixtures import make_chain_exec_engine
+from slayer.engine.query_engine import SlayerQueryEngine
 
 EXTENSION = {
     "source_name": "orders",
@@ -277,7 +278,7 @@ class TestSourceModelName:
         with pytest.warns(FutureWarning):
             assert SlayerQuery(source_model=EXTENSION).source_model_name == "orders"  # pyright: ignore[reportArgumentType] — the deprecated form, on purpose
 
-    async def test_root_qualifier_uses_the_typed_name(self, chain_engine) -> None:
+    async def test_root_qualifier_uses_the_typed_name(self, chain_engine: SlayerQueryEngine) -> None:
         qualified = await chain_engine.execute(_query(
             source_model="orders", extensions=[EXTENSION], dimensions=["orders.status"]))
         bare = await chain_engine.execute(_query(source_model="orders", extensions=[EXTENSION], dimensions=["status"]))

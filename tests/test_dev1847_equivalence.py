@@ -21,6 +21,7 @@ from tests._dev1847_fixtures import (
     reagg,
     sales_q,
 )
+from slayer.engine.query_engine import SlayerResponse
 
 OUTER_AGGS = ["avg", "count", "min", "max", "median"]
 
@@ -42,7 +43,7 @@ def _sq_model(outer: str) -> SlayerModel:
         ])
 
 
-def _by_region_suffix(resp, suffix):
+def _by_region_suffix(resp: SlayerResponse, suffix):
     rcol = next(c for c in resp.columns if c.endswith(".region"))
     vcol = next(c for c in resp.columns if c.endswith(suffix))
     return {row[rcol]: row[vcol] for row in resp.data}

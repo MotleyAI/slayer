@@ -20,6 +20,7 @@ from tests._dev1865_fixtures import (
     q,
     rows_by,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 def _bucket_key(row):
@@ -139,7 +140,7 @@ class TestMeasureMaskPrunesCellsOnly:
 
 
 class TestHiddenPositionsAddNoColumns:
-    async def test_filter_only_and_order_only_add_no_columns(self, exec_engine) -> None:
+    async def test_filter_only_and_order_only_add_no_columns(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"],
             measures=[ModelMeasure(formula="sum(amount)", name="s")],

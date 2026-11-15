@@ -36,6 +36,7 @@ from tests._dev2046_fixtures import (
     single,
 )
 from tests._engine_helpers import seeded_exec_engine
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -90,7 +91,7 @@ class TestColumnAggregates:
         assert not isinstance(row["orders.s"], bool)
         assert _num(row["orders.a"]) == pytest.approx(GT15_TOTALS["avg"])
 
-    async def test_measure_formats(self, engine) -> None:
+    async def test_measure_formats(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(orders_q(measures=[m("sum(flag)", "s"), m("avg(flag)", "a")]))
         assert resp.attributes.measures["orders.s"].format == NumberFormat(type=NumberFormatType.INTEGER)
         assert resp.attributes.measures["orders.a"].format == NumberFormat(type=NumberFormatType.PERCENT)
@@ -136,7 +137,7 @@ class TestExpressionSources:
         assert row["orders.cd"] == 2
         assert row["orders.sn"] == 1
 
-    async def test_time_point_comparison(self, engine) -> None:
+    async def test_time_point_comparison(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(orders_q(measures=[
             m("sum(ordered_at >= '2025-02')", "s"), m("max(ordered_at >= '2025-03')", "mx"),
         ]))

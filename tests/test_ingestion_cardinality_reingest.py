@@ -65,7 +65,7 @@ async def _setup(workspace: Path) -> tuple:
     return storage, ds
 
 
-def _order_join(model):
+def _order_join(model: SlayerModel):
     return next(j for j in model.joins if j.target_model == "customers")
 
 

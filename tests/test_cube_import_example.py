@@ -26,6 +26,7 @@ from slayer.core.query import (
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.model_render import render_model_skeleton
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 duckdb = pytest.importorskip("duckdb")
 
@@ -69,7 +70,7 @@ async def _prepare(tmp_path):
     return SlayerQueryEngine(storage=storage), storage, gold, db_path
 
 
-async def _model(storage, name) -> SlayerModel:
+async def _model(storage: StorageBackend, name) -> SlayerModel:
     model = await storage.get_model(name, data_source=DS)
     assert model is not None
     return model

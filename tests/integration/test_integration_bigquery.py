@@ -61,6 +61,7 @@ from tests._reserved_alias_probe import (
     keyword_universe,
     unquoted_alias_failures,
 )
+from slayer.storage.base import StorageBackend
 
 pytest.importorskip("sqlalchemy_bigquery")
 bigquery = pytest.importorskip("google.cloud.bigquery")
@@ -404,8 +405,9 @@ _EVENT_ROWS = ("(1, TIMESTAMP '2024-02-29 10:00:00 UTC', DATETIME '2024-02-29 10
                "(2, TIMESTAMP '2025-06-01 23:30:00 UTC', DATETIME '2025-06-01 23:30:00')")
 
 
-async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage) -> None:
+async def test_dev2120_zoned_timestamp_column(bq_dev2120_storage: StorageBackend) -> None:
     model = await bq_dev2120_storage.get_model("events", data_source="bqtest")
+    assert model is not None
     db_types = {c.name: c.db_type for c in model.columns if c.name in ("zoned_ts", "wall_ts")}
     assert db_types == {"zoned_ts": "TIMESTAMP", "wall_ts": None}
     engine = SlayerQueryEngine(storage=bq_dev2120_storage)

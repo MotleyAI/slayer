@@ -19,6 +19,7 @@ from tests._stored_upgrade_fixtures import (
     run,
     seed_shop,
 )
+from slayer.storage.base import StorageBackend
 
 REPAIRED_CASES = [
     pytest.param("ordered_at >= '2024-01-01T00:00:00Z'", 200.0, id="zulu"),
@@ -56,7 +57,7 @@ async def _store(*, tmp_path, ds: DatasourceConfig, backend: str, filters: list[
                            models=[orders_v10(), customers_v10(), qb])
 
 
-async def _loaded_filters(storage) -> list[str]:
+async def _loaded_filters(storage: StorageBackend) -> list[str]:
     model = await storage.get_model("rev_f", data_source=DS)
     assert model is not None
     return list((model.source_queries or [])[0].filters or [])

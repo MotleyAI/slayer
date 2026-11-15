@@ -43,6 +43,7 @@ from tests._dev1892_fixtures import (
     WAVG_CITY_BY_REGION,
     weighted_sales_models,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 _WEIGHT_COUNT = "weight=count(id, partition_by=[city, region])"
 _WAVG_REAGG = f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT})"
@@ -179,7 +180,7 @@ class TestReaggregationOperandParameter:
         assert float(vals["North"]) != pytest.approx(UNWEIGHTED_CITY_BY_REGION["North"])
         assert float(vals["Gap"]) != pytest.approx(UNWEIGHTED_CITY_BY_REGION["Gap"])
 
-    async def test_matches_manual_two_stage_encoding(self, reagg_engine):
+    async def test_matches_manual_two_stage_encoding(self, reagg_engine: SlayerQueryEngine):
         """The re-aggregation equals the manual stage-1-sum/count →
         stage-2-weighted_avg ``source_queries`` model, region by region."""
         reagg = await reagg_engine.execute(sales_q(

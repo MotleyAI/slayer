@@ -18,6 +18,7 @@ from slayer.engine.bind_inputs import (
 )
 from slayer.ir.bound import BoundExpr
 from tests import _dev1883_fixtures as fx
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture
@@ -34,7 +35,7 @@ def _mtd(*grans_and_cols: tuple) -> SlayerQuery:
     )
 
 
-async def _orders_model(engine, **overrides):
+async def _orders_model(engine: SlayerQueryEngine, **overrides):
     """The orders model (asserted present), with optional field overrides applied."""
     model = await engine.storage.get_model("orders")
     assert model is not None

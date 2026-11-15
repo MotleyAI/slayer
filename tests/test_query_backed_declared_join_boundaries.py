@@ -18,6 +18,7 @@ from tests._dev1902_fixtures import (
 )
 from tests._engine_helpers import seeded_exec_engine
 from tests.test_dev1902_join_key_spelling import _customer_totals, _query
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -29,7 +30,7 @@ async def engine(request):
         yield query_engine
 
 
-async def test_join_target_keeps_its_onward_relationship(engine):
+async def test_join_target_keeps_its_onward_relationship(engine: SlayerQueryEngine):
     await engine.save_model(_customer_totals())
     consumer = orders_model().model_copy(update={
         "name": "consumer",
@@ -46,7 +47,7 @@ async def test_join_target_keeps_its_onward_relationship(engine):
     assert cells(response, dim_suffix="customers.name", measure="total") == AMOUNT_BY_CUSTOMER
 
 
-async def test_saved_relation_without_outgoing_joins_can_use_incoming_edge(engine):
+async def test_saved_relation_without_outgoing_joins_can_use_incoming_edge(engine: SlayerQueryEngine):
     await engine.save_model(_customer_totals().model_copy(update={"joins": []}))
     customers = customers_model()
     await engine.save_model(customers.model_copy(update={"joins": [
@@ -63,7 +64,7 @@ async def test_saved_relation_without_outgoing_joins_can_use_incoming_edge(engin
     assert cells(response, dim_suffix="name", measure="total") == AMOUNT_BY_CUSTOMER
 
 
-async def test_extension_join_alias_resolves_to_the_named_stored_edge(engine):
+async def test_extension_join_alias_resolves_to_the_named_stored_edge(engine: SlayerQueryEngine):
     totals = _customer_totals()
     await engine.save_model(totals.model_copy(update={
         "joins": [totals.joins[0].model_copy(update={"name": "owner"})],
@@ -99,7 +100,7 @@ async def test_ordinary_stage_does_not_inherit_backing_source_joins(engine):
         await engine.execute([stage, consumer])
 
 
-async def test_legal_stage_named_join_target_is_not_a_synthetic_self_join(engine):
+async def test_legal_stage_named_join_target_is_not_a_synthetic_self_join(engine: SlayerQueryEngine):
     await engine.save_model(customers_model().model_copy(update={"name": "_stage"}))
     totals = _customer_totals()
     await engine.save_model(totals.model_copy(update={

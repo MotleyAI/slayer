@@ -28,7 +28,7 @@ def _path_for(rec, input_item: str):
 
 
 class TestRecommendAlignment:
-    async def test_saved_measures_are_attachments_and_dont_steer(self, engine) -> None:
+    async def test_saved_measures_are_attachments_and_dont_steer(self, engine: SlayerQueryEngine) -> None:
         """dim on regions + saved measures on orders. The old all-items objective
         min-hops over mentioned models {regions, orders} and picks orders; the
         dimension-only rule determines only regions.name (0 hops) ⇒ regions, with
@@ -42,14 +42,14 @@ class TestRecommendAlignment:
         assert _path_for(rec, "orders.revenue").attachment is True
         assert _path_for(rec, "orders.avg_amt").attachment is True
 
-    async def test_aggregation_suffixed_item_is_an_attachment(self, engine) -> None:
+    async def test_aggregation_suffixed_item_is_an_attachment(self, engine: SlayerQueryEngine) -> None:
         rec = await engine.recommend_root_model(
             ["customers.region", "sum(orders.amount)"], data_source=DS_CHAIN,
         )
         assert rec.root_model == "customers"
         assert _path_for(rec, "sum(orders.amount)").attachment is True
 
-    async def test_recommendation_matches_inference(self, engine) -> None:
+    async def test_recommendation_matches_inference(self, engine: SlayerQueryEngine) -> None:
         rec = await engine.recommend_root_model(
             ["customers.region"], data_source=DS_CHAIN,
         )
@@ -59,7 +59,7 @@ class TestRecommendAlignment:
         )
         assert rec.root_model == choice.model_name == "customers"
 
-    async def test_recommendation_matches_inference_multi_item(self, engine) -> None:
+    async def test_recommendation_matches_inference_multi_item(self, engine: SlayerQueryEngine) -> None:
         items = ["customers.region", "customers.regions.name"]
         rec = await engine.recommend_root_model(items, data_source=DS_CHAIN)
         choice = await infer_population(
@@ -67,13 +67,13 @@ class TestRecommendAlignment:
         )
         assert rec.root_model == choice.model_name == "customers"
 
-    async def test_feasible_root_hint_overrides(self, engine) -> None:
+    async def test_feasible_root_hint_overrides(self, engine: SlayerQueryEngine) -> None:
         rec = await engine.recommend_root_model(
             ["customers.region"], data_source=DS_CHAIN, root_hint="orders",
         )
         assert rec.root_model == "orders"
 
-    async def test_feasible_root_hint_with_determination_and_attachment(self, engine) -> None:
+    async def test_feasible_root_hint_with_determination_and_attachment(self, engine: SlayerQueryEngine) -> None:
         """A bridge that determines the dimension and reaches the measure is feasible."""
         rec = await engine.recommend_root_model(
             ["regions.name", "orders.revenue"],
@@ -81,21 +81,21 @@ class TestRecommendAlignment:
         )
         assert rec.root_model == "customers"
 
-    async def test_infeasible_root_hint_falls_back_with_warning(self, engine) -> None:
+    async def test_infeasible_root_hint_falls_back_with_warning(self, engine: SlayerQueryEngine) -> None:
         rec = await engine.recommend_root_model(
             ["customers.region"], data_source=DS_CHAIN, root_hint="regions",
         )
         assert rec.root_model == "customers"
         assert any("regions" in w for w in rec.warnings)
 
-    async def test_malformed_root_hint_raises(self, engine) -> None:
+    async def test_malformed_root_hint_raises(self, engine: SlayerQueryEngine) -> None:
         with pytest.raises(ValueError):
             await engine.recommend_root_model(
                 ["customers.region"], data_source=DS_CHAIN,
                 root_hint="does_not_exist",
             )
 
-    async def test_no_common_root_reports_coverage(self, engine) -> None:
+    async def test_no_common_root_reports_coverage(self, engine: SlayerQueryEngine) -> None:
         """Sibling dims have no single to-one determiner ⇒ not reachable."""
         rec = await engine.recommend_root_model(
             ["basket_items.sku", "basket_pays.method"], data_source=DS_FAN,

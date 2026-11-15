@@ -35,6 +35,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import seeded_exec_engine
+from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
@@ -175,14 +176,14 @@ def month_key(value) -> str:
     return str(value)[:7]
 
 
-def by_month(resp, name: str = "v") -> dict:
+def by_month(resp: SlayerResponse, name: str = "v") -> dict:
     tkey = next(k for k in resp.columns if "order_date" in k)
     out = {month_key(r[tkey]): r[f"orders.{name}"] for r in resp.data}
     assert len(out) == len(resp.data), "duplicate result rows for one month"
     return out
 
 
-def month_order(resp) -> List[str]:
+def month_order(resp: SlayerResponse) -> List[str]:
     tkey = next(k for k in resp.columns if "order_date" in k)
     return [month_key(r[tkey]) for r in resp.data]
 

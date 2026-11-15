@@ -303,7 +303,7 @@ def _check_edges_against_peers(
 
 
 def _check_edge_name_free(
-    *, model: SlayerModel, join, target: SlayerModel | None,
+    *, model: SlayerModel, join: ModelJoin, target: SlayerModel | None,
     peers: dict[str, SlayerModel], incident_to_self: set,
 ) -> None:
     target_incident = set(incident_to_self)

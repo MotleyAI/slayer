@@ -73,7 +73,7 @@ class TestExplicitVsInferredReporting:
         assert resp.population == "customers"
         assert resp.population_inferred is False
 
-    async def test_run_by_name_reports_population(self, engine) -> None:
+    async def test_run_by_name_reports_population(self, engine: SlayerQueryEngine) -> None:
         await engine.create_model_from_query(
             query=SlayerQuery(
                 source_model="customers",

@@ -31,6 +31,7 @@ from slayer.memories.models import Memory
 from slayer.memories.service import MemoryService
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +110,7 @@ def test_memory_json_schema_keeps_learning_required() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _seed_orders(storage) -> None:
+async def _seed_orders(storage: StorageBackend) -> None:
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="sqlite", database=":memory:")
     )

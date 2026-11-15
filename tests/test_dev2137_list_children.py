@@ -19,6 +19,7 @@ from tests._dev1836_fixtures import broadcast_warnings
 from tests._dev1841_fixtures import associated_warnings
 from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_model, emit_contractors
 from tests._dev2137_fixtures import all_models, list_engine, measure, num, query, twins_model
+from slayer.storage.base import StorageBackend
 
 
 @pytest.fixture(scope="module")
@@ -241,14 +242,14 @@ async def storage(tmp_path) -> YAMLStorage:
 
 
 class TestNameCollisions:
-    async def test_a_list_column_named_like_a_joined_model(self, storage) -> None:
+    async def test_a_list_column_named_like_a_joined_model(self, storage: StorageBackend) -> None:
         await storage.save_model(_plain("skills"))
         model = contractors_model().model_copy(update={"joins": [ModelJoin(target_model="skills",
                                                                            join_pairs=[["id", "id"]])]})
         with pytest.raises(ValueError, match="skills"):
             await storage.save_model(model)
 
-    async def test_a_list_column_named_like_an_edge(self, storage) -> None:
+    async def test_a_list_column_named_like_an_edge(self, storage: StorageBackend) -> None:
         await storage.save_model(_plain("people"))
         model = contractors_model().model_copy(update={"joins": [ModelJoin(target_model="people",
                                                                            join_pairs=[["id", "id"]],
@@ -256,20 +257,20 @@ class TestNameCollisions:
         with pytest.raises(ValueError, match="skills"):
             await storage.save_model(model)
 
-    async def test_the_collision_created_from_the_other_side(self, storage) -> None:
+    async def test_the_collision_created_from_the_other_side(self, storage: StorageBackend) -> None:
         await storage.save_model(contractors_model())
         skills = _plain("skills", joins=[ModelJoin(target_model="contractors", join_pairs=[["id", "id"]])])
         with pytest.raises(ValueError, match=r"contractors\.skills"):
             await storage.save_model(skills)
 
-    async def test_a_named_edge_created_from_the_other_side(self, storage) -> None:
+    async def test_a_named_edge_created_from_the_other_side(self, storage: StorageBackend) -> None:
         await storage.save_model(contractors_model())
         people = _plain("people", joins=[ModelJoin(target_model="contractors", join_pairs=[["id", "id"]],
                                                     name="skills")])
         with pytest.raises(ValueError, match=r"contractors\.skills"):
             await storage.save_model(people)
 
-    async def test_no_collision_saves(self, storage) -> None:
+    async def test_no_collision_saves(self, storage: StorageBackend) -> None:
         await storage.save_model(_plain("people"))
         await storage.save_model(contractors_model().model_copy(update={"joins": [ModelJoin(
             target_model="people", join_pairs=[["id", "id"]])]}))

@@ -111,7 +111,7 @@ class TestResolution:
         ))
         assert only_row(resp, "ne") == (3.0,)
 
-    async def test_stored_stage_of_a_query_backed_model(self, engine) -> None:
+    async def test_stored_stage_of_a_query_backed_model(self, engine: SlayerQueryEngine) -> None:
         await engine.save_model(SlayerModel(name="per_city", data_source="test", source_queries=[query(
             dimensions=["city"], measures=[m("count(*)", "n"), m("count(events.id)", "ne")],
         )]))
@@ -179,7 +179,7 @@ class TestNamesThatAreNotReachableDatasets:
             await engine.execute(q)
         assert "no countable rows" in str(exc.value)
 
-    async def test_model_of_another_datasource(self, engine) -> None:
+    async def test_model_of_another_datasource(self, engine: SlayerQueryEngine) -> None:
         await engine.storage.save_datasource(DatasourceConfig(name="other", type="sqlite", database=":memory:"))
         await engine.storage.save_model(SlayerModel(
             name="widgets", sql_table="widgets", data_source="other",
@@ -221,7 +221,7 @@ async def test_row_level_security_scopes_the_unrelated_dataset(backend) -> None:
 
 
 class TestStoredDefinitionsRefuse:
-    async def test_saved_measure(self, engine) -> None:
+    async def test_saved_measure(self, engine: SlayerQueryEngine) -> None:
         await engine.save_model(customers_model(measures=[ModelMeasure(name="ev", formula="count(events.id)")]))
         q = query(measures=["ev"])
         with pytest.raises(UnresolvableDimensionJoinError) as exc:
@@ -229,7 +229,7 @@ class TestStoredDefinitionsRefuse:
         assert "no route to target" in str(exc.value)
 
     @pytest.mark.parametrize("definition", ["column", "filter"])
-    async def test_column_sql_and_model_filter(self, engine, definition: str) -> None:
+    async def test_column_sql_and_model_filter(self, engine: SlayerQueryEngine, definition: str) -> None:
         if definition == "column":
             model = customers_model(columns=[Column(name="ev_amount", type=DataType.DOUBLE, sql="events.amount")])
             use, named = query(measures=[m("sum(ev_amount)", "x")]), "ev_amount"
@@ -247,7 +247,7 @@ class TestStoredDefinitionsRefuse:
             assert named in str(exc.value)
 
     @pytest.mark.parametrize("sql", ['"events".amount', '"events"."amount"'])
-    async def test_quoted_qualifier(self, engine, sql: str) -> None:
+    async def test_quoted_qualifier(self, engine: SlayerQueryEngine, sql: str) -> None:
         model = customers_model(columns=[Column(name="ev_amount", type=DataType.DOUBLE, sql=sql)])
         await engine.storage.save_model(model, _validate=False)
         q = query(measures=[m("sum(ev_amount)", "x")])
@@ -255,7 +255,7 @@ class TestStoredDefinitionsRefuse:
             await engine.execute(q)
 
     @pytest.mark.parametrize(("source", "formula"), [("per_city", "max(n)"), ("orgs", "max(per_city.n)")])
-    async def test_stage_base_definition(self, engine, source: str, formula: str) -> None:
+    async def test_stage_base_definition(self, engine: SlayerQueryEngine, source: str, formula: str) -> None:
         await engine.storage.save_model(SlayerModel(
             name="logs", sql_table="orgs", data_source="test",
             columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="name", type=DataType.TEXT)],
@@ -269,7 +269,7 @@ class TestStoredDefinitionsRefuse:
         with pytest.raises(UnreachableDefinitionError, match="no join path reaches 'logs' from 'customers'"):
             await engine.execute(q)
 
-    async def test_unspliceable_unrelated_query_backed_model(self, engine) -> None:
+    async def test_unspliceable_unrelated_query_backed_model(self, engine: SlayerQueryEngine) -> None:
         await engine.storage.save_model(SlayerModel(name="per_city", data_source="test", source_queries=[
             query(dimensions=["city"], measures=[m("count(nope)", "n")]),
         ]), _validate=False)
@@ -277,7 +277,7 @@ class TestStoredDefinitionsRefuse:
         with pytest.raises(UnknownReferenceError, match="'nope'"):
             await engine.execute(q)
 
-    async def test_edge_named_like_an_unspliceable_model(self, engine) -> None:
+    async def test_edge_named_like_an_unspliceable_model(self, engine: SlayerQueryEngine) -> None:
         await engine.storage.save_model(SlayerModel(name="per_city", data_source="test", source_queries=[
             query(dimensions=["city"], measures=[m("count(nope)", "n")]),
         ]), _validate=False)

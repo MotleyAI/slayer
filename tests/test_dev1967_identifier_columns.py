@@ -27,6 +27,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._dev1836_fixtures import make_exec_engine, orders_model
 from tests._stored_upgrade_fixtures import DS, raw_store
+from slayer.engine.query_engine import SlayerQueryEngine
 
 COMPOSITE_MEMBERS = {"order_id", "line_no", "status"}
 
@@ -210,20 +211,22 @@ class TestProbingAndProfiling:
         profile = await _sampled(model=orders_model(), engine=engine)
         assert profile["id"] is None
 
-    async def test_refresh_samples_composite_members(self, engine) -> None:
+    async def test_refresh_samples_composite_members(self, engine: SlayerQueryEngine) -> None:
         errors = await refresh_table_backed_model_sampled(
             model=order_lines(), engine=engine, storage=engine.storage,
         )
         assert errors == []
         stored = await engine.storage.get_model("order_lines")
+        assert stored is not None
         assert all(_col(model=stored, name=n).sampled is not None for n in COMPOSITE_MEMBERS)
 
-    async def test_refresh_skips_sole_primary_key(self, engine) -> None:
+    async def test_refresh_skips_sole_primary_key(self, engine: SlayerQueryEngine) -> None:
         errors = await refresh_table_backed_model_sampled(
             model=orders_model(), engine=engine, storage=engine.storage,
         )
         assert errors == []
         stored = await engine.storage.get_model("orders")
+        assert stored is not None
         assert _col(model=stored, name="id").sampled is None
         assert _col(model=stored, name="amount").sampled is not None
 

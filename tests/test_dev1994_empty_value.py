@@ -41,6 +41,7 @@ from tests._dev1994_fixtures import (
     query,
     regions_model,
 )
+from slayer.engine.query_engine import SlayerResponse
 
 MONTH_TD = [{"dimension": "signup_date", "granularity": "month"}]
 COUNT_OVERRIDE = Aggregation(name="count", formula="COUNT({value})")
@@ -61,11 +62,11 @@ def _ints(d: Dict[Any, Any]) -> Dict[Any, Optional[int]]:
     return {k: None if v is None else int(v) for k, v in d.items()}
 
 
-def _by_month(resp, value: str) -> Dict[str, Any]:
+def _by_month(resp: SlayerResponse, value: str) -> Dict[str, Any]:
     return {month(k): v for k, v in by(resp.data, resp.columns, key="signup_date", value=value).items()}
 
 
-def _names(resp) -> List[str]:
+def _names(resp: SlayerResponse) -> List[str]:
     k = col(resp.columns, "name")
     return [r[k] for r in resp.data]
 

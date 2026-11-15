@@ -50,7 +50,7 @@ async def test_query_backed_model_by_name(engine, name) -> None:
     assert _values(resp.data) == sorted(_BY_NAME[name], key=repr)
 
 
-async def test_monthly_by_name(engine) -> None:
+async def test_monthly_by_name(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute("monthly")
     assert len(resp.data) == 7
     assert sum(r[resp.columns[-1]] for r in resp.data) == 145.0

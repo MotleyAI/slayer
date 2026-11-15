@@ -30,6 +30,7 @@ from tests._dev1846_fixtures import (
 )
 from tests._engine_helpers import seeded_exec_engine
 from slayer.core import syntax
+from slayer.engine.query_engine import SlayerQueryEngine
 
 SAVED = [
     ModelMeasure(formula="sum(revenue)", name="rev"),
@@ -216,7 +217,7 @@ class TestSavedMeasureExecution:
         ("first(rev)", "first(sum(revenue))"),
         ("first(rev * 2)", "first(sum(revenue) * 2)"),
     ])
-    async def test_values_match_inline(self, exec_engine, saved, inline):
+    async def test_values_match_inline(self, exec_engine: SlayerQueryEngine, saved, inline):
         got = await exec_engine.execute(
             _q(measures=[ModelMeasure(formula=saved, name="m")]))
         want = await exec_engine.execute(

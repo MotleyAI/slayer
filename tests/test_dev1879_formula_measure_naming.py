@@ -18,6 +18,7 @@ from slayer.core.models import Column, ModelMeasure
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from slayer.core.refs import auto_name_from_expression
 from tests._dev1879_helpers import dry_response, mart_model
+from slayer.engine.query_engine import SlayerResponse
 
 
 # A result key: dot-separated bare identifiers, nothing else.
@@ -87,7 +88,7 @@ class TestDerivedKeys:
         assert "mart.e_100_logo_churn_sum" in resp.columns
 
 
-def _assert_key_and_alias(resp, key: str) -> None:
+def _assert_key_and_alias(resp: SlayerResponse, key: str) -> None:
     assert key in resp.columns
     assert resp.sql is not None
     assert f'AS "{key}"' in resp.sql

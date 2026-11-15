@@ -16,6 +16,7 @@ from sqlglot import exp
 
 from slayer.core.errors import NameCollisionError
 from slayer.core.models import SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.engine import query_engine as query_engine_module
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.response_meta import projection_result_keys
@@ -77,7 +78,7 @@ SINGLE_PLAIN_AND_NAMED = {
     "dimensions": ["customers.region_id", "status", RID],
     "measures": [REVENUE],
 }
-STAGE_PLAIN_AND_NAMED = [
+STAGE_PLAIN_AND_NAMED: list[SlayerQuery | dict] = [
     _stage(dimensions=["customers.region_id", "status", RID]),
     _outer(dimensions=["customers__region_id", "status", "rid", "revenue"]),
 ]
@@ -105,7 +106,7 @@ async def _save_query_backed_cr(engine: SlayerQueryEngine) -> None:
 
 
 class TestNamedJoinedPathSingleQuery:
-    async def test_named_one_hop_keys_by_name(self, exec_engine) -> None:
+    async def test_named_one_hop_keys_by_name(self, exec_engine: SlayerQueryEngine) -> None:
         customers = customers_model()
         customers.columns = [
             c.model_copy(update={"label": "Region"}) if c.name == "region_id" else c
@@ -119,13 +120,13 @@ class TestNamedJoinedPathSingleQuery:
         assert attribute_keys <= set(resp.columns)
         assert resp.attributes.dimensions["orders.region_id"].label == "Region"
 
-    async def test_order_by_name(self, exec_engine) -> None:
+    async def test_order_by_name(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(SINGLE_ORDER_BY_NAME)
         assert resp.columns == ["orders.rid", "orders.revenue"]
         got = [(r["orders.rid"], float(r["orders.revenue"])) for r in resp.data]
         assert got == [(2, 50.0), (1, 160.0)]
 
-    async def test_filter_by_name(self, exec_engine) -> None:
+    async def test_filter_by_name(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(SINGLE_FILTER_BY_NAME)
         assert resp.columns == ["orders.rid", "orders.revenue"]
         assert _rows(resp, "orders.rid", "orders.revenue") == [(1, 160.0)]
@@ -161,7 +162,7 @@ class TestNamedJoinedPathCrossesStage:
 
 
 class TestUnnamedComputedPathEqualsPlain:
-    async def test_single_query_keys_by_path(self, exec_engine) -> None:
+    async def test_single_query_keys_by_path(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(SINGLE_UNNAMED_PATH)
         assert resp.columns == ["orders.customers.region_id", "orders.revenue"]
         assert _rows(resp, "orders.customers.region_id", "orders.revenue") == [(1, 160.0), (2, 50.0)]
@@ -172,7 +173,7 @@ class TestUnnamedComputedPathEqualsPlain:
 
 
 class TestPlainAndNamedOverOnePath:
-    async def test_single_query_projects_both(self, exec_engine) -> None:
+    async def test_single_query_projects_both(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(SINGLE_PLAIN_AND_NAMED)
         assert resp.columns == [
             "orders.customers.region_id", "orders.status", "orders.rid", "orders.revenue",
@@ -180,7 +181,7 @@ class TestPlainAndNamedOverOnePath:
         assert resp.data
         assert all(r["orders.rid"] == r["orders.customers.region_id"] for r in resp.data)
 
-    async def test_stage_projects_both(self, exec_engine) -> None:
+    async def test_stage_projects_both(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(STAGE_PLAIN_AND_NAMED)
         assert resp.columns == ["cr.customers__region_id", "cr.status", "cr.rid", "cr.revenue"]
         assert resp.data

@@ -19,6 +19,7 @@ from slayer.core.models import (
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import EditModelDelete, WholeModelDelete
 from slayer.storage.yaml_storage import YAMLStorage
+from typing import Any
 
 duckdb = pytest.importorskip("duckdb")
 
@@ -147,14 +148,14 @@ def _find(name: str, entries):
     return None
 
 
-async def test_no_drift_returns_empty(duckdb_drift_env) -> None:
+async def test_no_drift_returns_empty(duckdb_drift_env: tuple[SlayerQueryEngine, Any]) -> None:
     engine, _ = duckdb_drift_env
     result = await engine.validate_models(data_source="dduckdb")
     assert result == []
 
 
 async def test_sql_model_typed_columns_do_not_report_false_drift(
-    duckdb_drift_env,
+    duckdb_drift_env: tuple[SlayerQueryEngine, Any],
 ) -> None:
     engine, _ = duckdb_drift_env
     await engine.storage.save_model(

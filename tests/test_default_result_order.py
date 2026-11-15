@@ -286,7 +286,7 @@ class TestOnlyOutermost:
         assert "region" in _order_text(sql, dialect=dialect)
         assert "customer_id" not in _order_text(sql, dialect=dialect)
 
-    async def test_query_list_final_stage_rows_sorted(self, engine) -> None:
+    async def test_query_list_final_stage_rows_sorted(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute([PER_CUSTOMER_STAGE, BY_REGION_STAGE])
         assert [r for r in resp.columns if r.endswith("region")]
         region_key = next(c for c in resp.columns if c.endswith("region"))
@@ -301,7 +301,7 @@ class TestOnlyOutermost:
         assert _ordered_ctes(sql, dialect=dialect) == []
         assert "region" in _order_text(sql, dialect=dialect)
 
-    async def test_saved_query_used_as_source_unordered(self, engine) -> None:
+    async def test_saved_query_used_as_source_unordered(self, engine: SlayerQueryEngine) -> None:
         await engine.create_model_from_query(query=[PER_CUSTOMER_STAGE, BY_REGION_STAGE], name="by_region")
         resp = await engine.execute(
             {"source_model": "by_region", "dimensions": ["region"], "measures": ["sum(total)"]}, dry_run=True,
@@ -310,7 +310,7 @@ class TestOnlyOutermost:
         assert _ordered_ctes(resp.sql, dialect="duckdb") == []
         assert _outer_order(resp.sql, dialect="duckdb") is not None
 
-    async def test_saved_query_run_by_name_is_ordered(self, engine) -> None:
+    async def test_saved_query_run_by_name_is_ordered(self, engine: SlayerQueryEngine) -> None:
         await engine.create_model_from_query(
             query={"source_model": "orders", "dimensions": ["status"], "measures": ["count(*)"]},
             name="status_counts",
@@ -318,7 +318,7 @@ class TestOnlyOutermost:
         resp = await engine.execute("status_counts")
         assert _column(resp, "orders.status") == ["a", "b", "c", "d", None]
 
-    async def test_refined_saved_query_is_ordered(self, engine) -> None:
+    async def test_refined_saved_query_is_ordered(self, engine: SlayerQueryEngine) -> None:
         await engine.create_model_from_query(
             query={"source_model": "orders", "dimensions": ["status"], "measures": ["count(*)"]},
             name="status_counts",
@@ -328,7 +328,7 @@ class TestOnlyOutermost:
         assert keys == sorted(keys, key=lambda k: (_null_last_key(k[0]), _null_last_key(k[1])))
         assert keys[-1][0] is None
 
-    async def test_saved_multistage_query_ordered_on_final_stage(self, engine) -> None:
+    async def test_saved_multistage_query_ordered_on_final_stage(self, engine: SlayerQueryEngine) -> None:
         await engine.create_model_from_query(query=[PER_CUSTOMER_STAGE, BY_REGION_STAGE], name="by_region")
         resp = await engine.execute("by_region")
         region_key = next(c for c in resp.columns if c.endswith("region"))
@@ -373,13 +373,13 @@ class TestCombinations:
         assert _outer_order(sql, dialect=dialect) is not None
         assert sql == await _sql(explicit, dialect=dialect)
 
-    async def test_filter_only_hidden_value_rows_sorted(self, engine) -> None:
+    async def test_filter_only_hidden_value_rows_sorted(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute({"source_model": "orders", "dimensions": ["status"], "measures": ["count(*)"],
                                      "filters": [f"{REVENUE} > 0"]})
         assert resp.columns == ["orders.status", "orders._count"]
         assert _column(resp, "orders.status") == ["a", "b", "c", "d", None]
 
-    async def test_time_spine_query_is_ordered(self, engine) -> None:
+    async def test_time_spine_query_is_ordered(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SPINE)
         spine_key = next(c for c in resp.columns if "timestamp" in c)
         keys = [(r["orders.region"], _month(r[spine_key])) for r in resp.data]

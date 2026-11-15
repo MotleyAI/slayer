@@ -6,6 +6,7 @@ from slayer.core import errors
 from slayer.core.enums import TimeGranularity
 from slayer.core.query import SlayerQuery
 from tests import _dev1883_fixtures as fx
+from slayer.engine.query_engine import SlayerQueryEngine
 
 GRANULARITIES = [g.value for g in TimeGranularity]
 BUCKET_FORM = "date_trunc('<unit>', expr)"
@@ -81,12 +82,12 @@ class TestUnknownSingleColumnCall:
 
 
 class TestNonRegression:
-    async def test_scalar_computed_dimension_unaffected(self, exec_engine) -> None:
+    async def test_scalar_computed_dimension_unaffected(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_q(["upper(status)"]))
         assert resp.columns == ["orders.upper_status", "orders._count"]
         assert {r["orders.upper_status"] for r in resp.data} == {"OPEN", "PAID"}
 
-    async def test_partition_by_aggregate_dimension_unaffected(self, exec_engine) -> None:
+    async def test_partition_by_aggregate_dimension_unaffected(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(
             _q(["status", "sum(amount, partition_by=status) > 20"])
         )

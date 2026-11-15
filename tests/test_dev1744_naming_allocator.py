@@ -266,7 +266,7 @@ class TestCrossModelCteNameAllocation:
         )
 
     async def test_unrenamed_cross_model_measures_keep_their_own_aliases(
-        self, engine,
+        self, engine: SlayerQueryEngine,
     ) -> None:
         resp = await engine.execute(
             SlayerQuery(

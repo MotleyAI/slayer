@@ -58,7 +58,7 @@ def _join(source: str, target: str, pairs: List[List[str]]) -> Dict[str, Any]:
             "extensions": [{"source_name": source, "joins": [{"target_model": target, "join_pairs": pairs}]}]}
 
 
-async def _assert_parity(engine, *, inline, splice, columns: List[str], rows: List[Dict[str, Any]]):
+async def _assert_parity(engine: SlayerQueryEngine, *, inline, splice, columns: List[str], rows: List[Dict[str, Any]]):
     got = await engine.execute(inline)
     ref = await engine.execute(splice)
     assert got.columns == ref.columns == columns
@@ -103,7 +103,7 @@ class TestParity:
             columns=["clients.tier", "clients.r"],
             rows=[{"clients.tier": t, "clients.r": v} for t, v in AMOUNT_BY_TIER.items()])
 
-    async def test_a_model_consumed_twice(self, engine, monkeypatch) -> None:
+    async def test_a_model_consumed_twice(self, engine: SlayerQueryEngine, monkeypatch) -> None:
         planned: List[Any] = []
         real = query_engine_module.plan_stages
 
@@ -142,7 +142,7 @@ class TestParity:
             rows=[{"x.id": c, "x.tier": tier[c], "x.cust_rev.rev": CUST_REV[c],
                    "x.ok_rev.ok_rev": OK_REV.get(c), "x.spend": spend[c]} for c in CUST_REV])
 
-    async def test_dependency_through_a_join_target_only(self, engine) -> None:
+    async def test_dependency_through_a_join_target_only(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(query(
             source_model="jt_qb", dimensions=["tier"], measures=[m("sum(v)", "total")]))
         assert resp.columns == ["jt_qb.tier", "jt_qb.total"]
@@ -216,7 +216,7 @@ class TestMetadata:
         assert t_meta.format is not None
         assert t_meta.format.type == NumberFormatType.CURRENCY
 
-    async def test_time_defaulting_through_a_spliced_model(self, engine) -> None:
+    async def test_time_defaulting_through_a_spliced_model(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(query(
             source_model="monthly", dimensions=["status"], measures=[m("last(rev)", "lr")]))
         assert resp.columns == ["monthly.status", "monthly.lr"]

@@ -205,7 +205,7 @@ class TestStageColumnRespellings:
 # Multistage.
 # --------------------------------------------------------------------------- #
 class TestDownstreamStageStaleReference:
-    async def test_binds_to_the_canonical_column(self, engine) -> None:
+    async def test_binds_to_the_canonical_column(self, engine: SlayerQueryEngine) -> None:
         stale = await engine.execute([_stage1(), _stage2(dim=STALE)])
         canon = await engine.execute([_stage1(), _stage2(dim=CANON)])
         assert stale.columns == canon.columns
@@ -213,7 +213,7 @@ class TestDownstreamStageStaleReference:
         _assert_one_stale(stale)
         assert stale_warnings(canon) == []
 
-    async def test_extension_over_the_sibling_stage(self, engine) -> None:
+    async def test_extension_over_the_sibling_stage(self, engine: SlayerQueryEngine) -> None:
         def ext(dim: str) -> SlayerQuery:
             return slayer_query(source_model="s1", extensions=[{"source_name": "s1"}], dimensions=[dim],
                                 measures=["sum(amount_sum)"])
@@ -278,7 +278,7 @@ class TestQueryBackedConsumer:
         with pytest.raises(UnknownReferenceError, match=STALE):
             await ambiguous_qb_engine.execute(query)
 
-    async def test_query_on_the_query_backed_model(self, engine) -> None:
+    async def test_query_on_the_query_backed_model(self, engine: SlayerQueryEngine) -> None:
         stale = await engine.execute(slayer_query(
             source_model="region_amounts", dimensions=[STALE], measures=["sum(amt)"]))
         canon = await engine.execute(slayer_query(
@@ -294,13 +294,13 @@ class TestQueryBackedConsumer:
         _assert_one_stale(resp)
 
 
-    async def test_joined_stale_leaf_surfaces_the_canonical_key(self, engine) -> None:
+    async def test_joined_stale_leaf_surfaces_the_canonical_key(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(slayer_query(
             source_model="regions", dimensions=[f"region_amounts.{STALE}"]))
         assert resp.columns == [f"regions.region_amounts.{CANON}"]
         _assert_one_stale(resp)
 
-    async def test_query_backed_over_query_backed(self, engine) -> None:
+    async def test_query_backed_over_query_backed(self, engine: SlayerQueryEngine) -> None:
         await engine.storage.save_model(SlayerModel(
             name="ra2", data_source="test", source_queries=[slayer_query(
                 source_model="region_amounts", dimensions=[CANON],
@@ -310,7 +310,7 @@ class TestQueryBackedConsumer:
         assert {r[f"ra2.{CANON}"] for r in resp.data} == {"North", "South", None}
         _assert_one_stale(resp)
 
-    async def test_stored_query_keeps_its_spelling(self, engine) -> None:
+    async def test_stored_query_keeps_its_spelling(self, engine: SlayerQueryEngine) -> None:
         await engine.execute(slayer_query(
             source_model="region_amounts", dimensions=[STALE], measures=["sum(amt)"]))
         model = await engine.storage.get_model("region_amounts", data_source="test")
@@ -319,7 +319,7 @@ class TestQueryBackedConsumer:
         dims = [d.full_name for d in model.source_queries[0].dimensions]
         assert dims == ["customers.region_id", "customers.regions.rname"]
 
-    async def test_authored_columns_stay_exact(self, engine) -> None:
+    async def test_authored_columns_stay_exact(self, engine: SlayerQueryEngine) -> None:
         orders = await engine.storage.get_model("orders", data_source="test")
         assert orders is not None
         orders.columns = [*orders.columns, Column(name=CANON, sql="status")]

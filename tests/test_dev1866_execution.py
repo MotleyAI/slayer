@@ -17,6 +17,7 @@ from tests._dev1866_fixtures import (
     make_chain_exec_engine,
     rows_by,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -31,7 +32,7 @@ def _canon(rows: list[dict]) -> list[tuple]:
     return sorted((tuple(sorted(r.items())) for r in rows), key=repr)
 
 
-async def _assert_twin(engine, *, rootless: SlayerQuery, explicit: SlayerQuery,
+async def _assert_twin(engine: SlayerQueryEngine, *, rootless: SlayerQuery, explicit: SlayerQuery,
                        population: str) -> None:
     r = await engine.execute(rootless)
     e = await engine.execute(explicit)

@@ -24,6 +24,7 @@ from tests._dev1739_fixtures import (
     rows_by,
 )
 import slayer.engine.bundle_builder
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -155,7 +156,7 @@ class TestPaginationWithHiddenOrdering:
 
 
 class TestResponseContractNoLeak:
-    async def test_no_placeholder_or_producer_column_leaks(self, exec_engine) -> None:
+    async def test_no_placeholder_or_producer_column_leaks(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
             measures=[ModelMeasure(

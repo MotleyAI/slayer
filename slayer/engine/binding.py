@@ -126,6 +126,8 @@ from slayer.sql.dialects.base import LIBRARY_FUNCTIONS, is_list_fn, require_libr
 from slayer.sql.sql_expr import build_cast_type, cast_slayer_type, has_window_function, native_json_type
 from slayer.sql.sql_template import SqlTemplateError, aggregation_reads
 from slayer.ir.bound import BoundExpr, BoundFilter, BoundTimeDimension
+from slayer.core.models import Column
+from slayer.core.models import ModelMeasure
 
 __all__ = [
     "bind_expr",
@@ -1183,7 +1185,7 @@ def _rerooted_bundle(
 
 def _resolve_saved_measure(
     *,
-    measure,
+    measure: ModelMeasure,
     terminal_model: SlayerModel,
     scope: ModelScope,
     bundle: ResolvedSourceBundle,
@@ -1199,6 +1201,7 @@ def _resolve_saved_measure(
         raise _ineligible_saved_measure_error(
             ref_text=ref_text, model_name=terminal_model.spelling,
         )
+    assert measure.name is not None  # a saved measure is named
     step = (terminal_model.name, measure.name)
     if step in measure_ctx.chain:
         raise MeasureCycleError(
@@ -1917,7 +1920,7 @@ def _known_aggregation(name: str, known, *, bundle: ResolvedSourceBundle) -> str
     return name
 
 
-def _column_agg_refusal(*, col, columns, agg: str, custom: bool) -> Optional[str]:
+def _column_agg_refusal(*, col: Column, columns, agg: str, custom: bool) -> Optional[str]:
     """Why gates 1-3 refuse ``agg`` on ``col``, else ``None``."""
     leaf = col.name
     if is_identifier(column=col, columns=columns):

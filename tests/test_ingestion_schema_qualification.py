@@ -59,6 +59,7 @@ from slayer.live_schema.type_refinement import _parse_sql_table_with_default_sch
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._engine_helpers import disposable_engine
+from slayer.storage.base import StorageBackend
 
 duckdb = pytest.importorskip("duckdb")
 
@@ -781,7 +782,7 @@ class TestForeignKeysAreSchemaAware:
 
 
 class TestSelfHeal:
-    async def _persist_bare(self, storage, ds, columns, *, extra=None):
+    async def _persist_bare(self, storage: StorageBackend, ds, columns, *, extra=None):
         model = SlayerModel(
             name="reports", sql_table="reports", data_source="ds",
             columns=columns,

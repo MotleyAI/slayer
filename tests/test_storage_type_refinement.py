@@ -12,6 +12,8 @@ error propagates out of ``get_model``. Same effective behavior as a query
 against the DS would produce.
 """
 
+from collections.abc import AsyncGenerator
+from typing import TypedDict
 import logging
 import os
 from slayer.storage.sqlite_conn import transaction
@@ -38,6 +40,7 @@ from slayer.live_schema.type_refinement import (
     refine_dict_with_live_schema,
 )
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 # Newest on-disk schema still live-refined on load.
 _NEWEST_REFINED_VERSION = 7
@@ -91,8 +94,15 @@ def sqlite_with_int_double_text():
         }
 
 
+class V4Store(TypedDict):
+    storage: StorageBackend
+    base: str
+    model_path: str
+    db_path: str
+
+
 @pytest.fixture
-async def storage_with_v4_model(sqlite_with_int_double_text):
+async def storage_with_v4_model(sqlite_with_int_double_text) -> AsyncGenerator[V4Store, None]:
     """A YAMLStorage backend with a hand-written v4 model on disk pointing at
     the ``items`` table. ``id`` and ``qty`` are INT in the live DB but stored
     as legacy ``number`` in the YAML — refinement should narrow them to
@@ -145,12 +155,7 @@ async def storage_with_v4_model(sqlite_with_int_double_text):
         )
 
     engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=base))
-    yield {
-        "storage": engine.storage,
-        "base": base,
-        "model_path": model_path,
-        "db_path": db_path,
-    }
+    yield V4Store(storage=engine.storage, base=base, model_path=model_path, db_path=db_path)
     await engine.aclose()
     engine.close()
 
@@ -293,7 +298,7 @@ class TestRefineDictWithLiveSchema:
 
 
 class TestYamlStorageRefinementOnLoad:
-    async def test_first_load_refines_int_columns(self, storage_with_v4_model) -> None:
+    async def test_first_load_refines_int_columns(self, storage_with_v4_model: V4Store) -> None:
         loaded = await storage_with_v4_model["storage"].get_model("items", data_source="live")
         assert loaded is not None
         # Map name -> type for ergonomic assertions.
@@ -306,7 +311,7 @@ class TestYamlStorageRefinementOnLoad:
         assert types["double_amount"] == DataType.DOUBLE
 
     async def test_first_load_writes_back_v5_with_refined_types(
-        self, storage_with_v4_model
+        self, storage_with_v4_model: V4Store
     ) -> None:
         await storage_with_v4_model["storage"].get_model("items", data_source="live")
         # Re-read raw YAML; the storage layer writes back at CURRENT_VERSIONS,
@@ -322,7 +327,7 @@ class TestYamlStorageRefinementOnLoad:
         assert types_by_name["name"] == "TEXT"
         assert types_by_name["double_amount"] == "DOUBLE"
 
-    async def test_second_load_does_not_introspect(self, storage_with_v4_model) -> None:
+    async def test_second_load_does_not_introspect(self, storage_with_v4_model: V4Store) -> None:
         """After write-back, the on-disk dict is v5 with refined types. The
         migrator chain returns early (version >= current) and the storage
         backend's refinement-helper invocation gate doesn't trigger."""

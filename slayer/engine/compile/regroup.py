@@ -10,6 +10,8 @@ from typing import AbstractSet, Callable, Dict, Mapping
 from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ColumnKey, ValueKey, substitute_value_keys, walk_value_keys
 from slayer.sql.naming import canonical_aggregate_alias
 from slayer.ir.bound import BoundFilter
+from slayer.core.models import SlayerModel
+from slayer.core.scope import StageSchema
 
 __all__ = [
     "REGROUP_LEAF_PREFIX",
@@ -19,12 +21,15 @@ __all__ = [
 ]
 
 
-def reserved_prefix_columns(model) -> list:
+def reserved_prefix_columns(model: SlayerModel | StageSchema | None) -> list[str]:
     """``model`` columns colliding with the reserved regroup placeholder prefix."""
     if model is None:
         return []
-    return [c.name for c in getattr(model, "columns", []) or []
-            if c.name.startswith(REGROUP_LEAF_PREFIX)]
+    if isinstance(model, StageSchema):
+        names = [c.name for c in model.columns]
+    else:
+        names = [c.name for c in model.columns]
+    return [n for n in names if n.startswith(REGROUP_LEAF_PREFIX)]
 
 
 class RegroupPlaceholderRegistry:

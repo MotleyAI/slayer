@@ -172,7 +172,7 @@ async def test_c2_routed_query_filter_on_joined_derived_column(engine):
     assert by_region == pytest.approx({"NA": 100.0, "EU": 70.0})
 
 
-async def test_derived_column_as_cross_model_agg_source(engine):
+async def test_derived_column_as_cross_model_agg_source(engine: SlayerQueryEngine):
     """A DERIVED column used as a cross-model aggregate source
     (``sum(customers.rev_x2)`` where rev_x2 = revenue*2) re-roots and
     expands correctly in the CTE, and aliases as ``rev_x2_sum`` (not the
@@ -195,7 +195,7 @@ async def test_derived_column_as_cross_model_agg_source(engine):
     assert by_region == pytest.approx({"NA": 200.0, "EU": 140.0, None: None})
 
 
-async def test_cr11_cross_model_agg_over_derived_column_metadata(engine):
+async def test_cr11_cross_model_agg_over_derived_column_metadata(engine: SlayerQueryEngine):
     """An aggregate over a derived column resolves label/format via
     src.model (not a path walk that could miss it)."""
     resp = await engine.execute(

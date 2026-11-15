@@ -86,7 +86,7 @@ class TestConstructionRejects:
 
 
 class TestStoredModelsReject:
-    async def test_create_model_from_query(self, engine) -> None:
+    async def test_create_model_from_query(self, engine: SlayerQueryEngine) -> None:
         with pytest.raises(ValueError) as exc:
             await engine.create_model_from_query(
                 query={"source_model": INLINE_QB, **OUTER}, name="wrapper")

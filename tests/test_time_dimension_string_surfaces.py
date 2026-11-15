@@ -16,6 +16,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from tests import _dev1883_fixtures as fx
+from slayer.storage.base import StorageBackend
 
 GRANULARITIES = [g.value for g in TimeGranularity]
 
@@ -104,7 +105,7 @@ class TestSchemaAdvertisesString:
 
 
 class TestStoredQuerySurface:
-    async def test_stored_query_document_accepts_string_entry(self, storage) -> None:
+    async def test_stored_query_document_accepts_string_entry(self, storage: StorageBackend) -> None:
         """A query-backed model whose stored document carries the string form
         loads and runs identically to the explicit form."""
         model = SlayerModel.model_validate({

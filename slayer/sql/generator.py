@@ -160,6 +160,7 @@ from slayer.sql.stage_wrapper import (
     build_flat_rename_wrapper,
     unmangle_dotted_table_refs,
 )
+from slayer.core.models import SlayerModel
 
 
 
@@ -1014,7 +1015,7 @@ class SQLGenerator:
         )
 
     @staticmethod
-    def _reserve_model_column_names(allocator: AliasAllocator, model) -> None:
+    def _reserve_model_column_names(allocator: AliasAllocator, model: SlayerModel) -> None:
         """Reserve every name a ``<relation>.*`` projection of ``model`` can"""
         names: List[str] = []
         for c in model.columns:
@@ -2732,7 +2733,7 @@ class SQLGenerator:
             scope.join_paths.add(p)
 
     def _ranked_value_expr(
-        self, *, key, root_model, root_relation: str, bundle, scope: ScopeFrame,
+        self, *, key, root_model: SlayerModel, root_relation: str, bundle, scope: ScopeFrame,
     ) -> Expression:
         """The value a ranked aggregate picks, anchored in its own scope."""
 
@@ -5278,7 +5279,7 @@ class SQLGenerator:
         )
 
 
-    def _emit_relation(self, *, model, alias: str, bundle) -> Expression:
+    def _emit_relation(self, *, model: SlayerModel, alias: str, bundle) -> Expression:
         """The one door a model reaches the SQL through (FROM, join target, semi-join
         hop, list parent), always as its filtered dataset (python.sql P13)."""
         if is_spine(model):
@@ -5475,7 +5476,7 @@ class SQLGenerator:
         return taken
 
     def _dim_column_expr_from_planned(
-        self, *, source_model, source_relation: str, leaf: str,
+        self, *, source_model: SlayerModel, source_relation: str, leaf: str,
     ) -> Expression:
         col = next(
             (c for c in source_model.columns if c.name == leaf), None,
@@ -5556,7 +5557,7 @@ class SQLGenerator:
         )
 
     def _expand_derived_column_sql(
-        self, *, source_model, source_relation: str, column_name: str, bundle,
+        self, *, source_model: SlayerModel, source_relation: str, column_name: str, bundle,
         owner_path: Tuple[str, ...] = (),
         root_relation: "Optional[str]" = None,
         crossed_paths: "Optional[Set[Tuple[str, ...]]]" = None,
@@ -5784,7 +5785,7 @@ class SQLGenerator:
         *,
         slot,
         key,
-        source_model,
+        source_model: SlayerModel,
         source_relation: str,
         full_alias: str,
         bundle=None,
@@ -6166,7 +6167,7 @@ class SQLGenerator:
         return _conjunction(where_parts), _conjunction(having_parts)
 
     @staticmethod
-    def _is_nontrivial_derived(model, name: str) -> bool:
+    def _is_nontrivial_derived(model: SlayerModel, name: str) -> bool:
         """True iff ``name`` is a column on ``model`` whose ``Column.sql`` is a"""
         col = next((c for c in model.columns if c.name == name), None)
         return col is not None and col.sql is not None and not is_trivial_base(

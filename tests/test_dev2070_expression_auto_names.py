@@ -25,6 +25,8 @@ from slayer.engine.compile.projection import ValueRegistry
 from slayer.sql.naming import canonical_aggregate_alias, expression_source_leaf
 
 from tests._dev2070_fixtures import dev2070_models, make_exec_engine
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerResponse
 
 _CLOCK_2024_03 = datetime(2024, 3, 20, 12, 0)
 _CLOCK_2025_02 = datetime(2025, 2, 15, 12, 0)
@@ -42,7 +44,7 @@ def q(**kw) -> SlayerQuery:
     return SlayerQuery.model_validate(kw)
 
 
-async def only_value(engine, formula: str, key: str, **kw):
+async def only_value(engine: SlayerQueryEngine, formula: str, key: str, **kw):
     """Execute ``formula`` as the query's one measure; assert its key, return the single value."""
     resp = await engine.execute(q(measures=[formula], **kw))
     assert key in resp.columns, resp.columns
@@ -50,7 +52,7 @@ async def only_value(engine, formula: str, key: str, **kw):
     return resp.data[0][key]
 
 
-def by(resp, *, dim: str, key: str) -> dict:
+def by(resp: SlayerResponse, *, dim: str, key: str) -> dict:
     assert key in resp.columns, resp.columns
     return {r[dim]: r[key] for r in resp.data}
 
@@ -115,7 +117,7 @@ NESTED_TRANSFORM_KEY = (
 
 
 @pytest.mark.parametrize("partition", ["[status, ordered_at]", "[ordered_at, status]"])
-async def test_nested_transform_operand(engine, partition) -> None:
+async def test_nested_transform_operand(engine: SlayerQueryEngine, partition) -> None:
     formula = f"sum(cumsum(sum(amount, partition_by={partition})) - 1)"
     month = {"dimension": "ordered_at", "granularity": "month"}
     for _ in range(2):

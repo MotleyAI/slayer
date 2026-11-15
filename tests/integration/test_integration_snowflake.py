@@ -74,6 +74,7 @@ pytest.importorskip("snowflake.sqlalchemy")
 import snowflake.connector  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 import snowflake.connector.errors as sf_errors  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 from snowflake.connector.errors import ProgrammingError  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from slayer.storage.base import StorageBackend
 
 _TOML_PATH = pathlib.Path("~/.snowflake/connections.toml").expanduser()
 _CONNECTION_NAME = os.environ.get("SLAYER_SNOWFLAKE_CONNECTION", "slayer_test")
@@ -393,7 +394,7 @@ def test_query_with_dimension(sf_storage_with_models) -> None:
     assert statuses == {"completed", "pending", "cancelled"}
 
 
-def test_dev1933_regex_literal_model_column(sf_storage_with_models) -> None:
+def test_dev1933_regex_literal_model_column(sf_storage_with_models: StorageBackend) -> None:
     """A model column holding a ``(?:...)`` regex literal and a ``%``
     LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
     engine = SlayerQueryEngine(storage=sf_storage_with_models)
@@ -1077,7 +1078,7 @@ def test_structured_array_needs_no_inference_query(sf_lists, sf_datasource: Data
     (["length(typed) = 1"], {2}),
     (["typed.value = 'sql'"], {1, 2}),
 ])
-def test_list_functions_on_a_structured_array(sf_lists, sf_datasource: DatasourceConfig, filters, kept) -> None:
+def test_list_functions_on_a_structured_array(sf_lists: tuple[StorageBackend, Any], sf_datasource: DatasourceConfig, filters, kept) -> None:
     storage, _ = sf_lists
     (model,) = run_sync(_ingest(sf_datasource, include_tables=["structured"]))
     run_sync(storage.save_model(model))

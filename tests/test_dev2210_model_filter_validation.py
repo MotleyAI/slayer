@@ -55,14 +55,14 @@ async def _save(engine: SlayerQueryEngine, model: SlayerModel, *, door: str) -> 
 
 @pytest.mark.parametrize("door", ["engine", "storage"])
 class TestSaveRefusesInvalidFilters:
-    async def test_filter_on_own_measure(self, engine, door):
+    async def test_filter_on_own_measure(self, engine: SlayerQueryEngine, door):
         model = _with_total("orders_tot")
         with pytest.raises(ModelFilterError) as exc:
             await _save(engine, model, door=door)
         assert "model filter 'tot > 100'" in str(exc.value)
         assert await engine.storage.get_model("orders_tot", data_source="test") is None
 
-    async def test_filter_on_joined_windowed_column(self, engine, door):
+    async def test_filter_on_joined_windowed_column(self, engine: SlayerQueryEngine, door):
         await engine.storage.save_model(_orders("ranked_orders", columns=[RANKED]), _validate=False)
         model = _returns("returns_ranked", target="ranked_orders", filters=["ranked_orders.ranked > 1"])
         with pytest.raises(ModelFilterError) as exc:
@@ -79,7 +79,7 @@ class TestSaveRefusesInvalidFilters:
 
 class TestQueryReadsInvalidStoredFilter:
     @pytest.fixture
-    async def stored(self, engine) -> SlayerQueryEngine:
+    async def stored(self, engine: SlayerQueryEngine) -> SlayerQueryEngine:
         await engine.storage.save_model(_with_total("bad_done"), _validate=False)
         await engine.storage.save_model(_returns("returns_bad", target="bad_done"), _validate=False)
         await engine.storage.save_model(

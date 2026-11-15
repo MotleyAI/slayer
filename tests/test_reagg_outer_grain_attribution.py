@@ -50,6 +50,8 @@ from tests._reagg_outer_grain_fixtures import (
     query,
     warnings_of,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerResponse
 
 MODES = ["broadcast", "error", "associate"]
 ACCOUNT = "account_snapshots.account_id"
@@ -85,7 +87,7 @@ def _by_account(*measures, **kw):
     return query(dimensions=["name", ACCOUNT], measures=list(measures), **kw)
 
 
-def _clean(resp) -> None:
+def _clean(resp: SlayerResponse) -> None:
     """No reserved placeholder name in the result, any warning, or the emitted SQL."""
     texts = [*resp.columns, *(w.human_message() for w in resp.warnings or []), resp.sql or ""]
     assert not any("__regroup__" in t for t in texts), texts
@@ -154,7 +156,7 @@ class TestJoinedTimeBucket:
 
 
 class TestPlainToManyColumn:
-    async def test_values_and_row_set(self, engine):
+    async def test_values_and_row_set(self, engine: SlayerQueryEngine):
         resp = await engine.execute(_by_account(m(f"sum({MAX_Q})")))
         bare = await engine.execute(_by_account())
         got = cells(resp, keys=BY_NAME_ACCOUNT)
@@ -225,13 +227,13 @@ class TestExplicitOuterKeys:
 
 
 class TestPositions:
-    async def test_order_key(self, engine):
+    async def test_order_key(self, engine: SlayerQueryEngine):
         resp = await engine.execute(_by_account(
             m(f"sum({MAX_Q})"), order=[{"column": f"sum({MAX_Q})", "direction": "desc"}]))
         v = col(resp.columns, "v")
         assert [r[v] for r in resp.data if r[v] is not None] == [700.0, 160.0, 80.0, 40.0, 25.0]
 
-    async def test_order_only_key(self, engine):
+    async def test_order_only_key(self, engine: SlayerQueryEngine):
         resp = await engine.execute(query(
             dimensions=["name"], time_dimensions=[MONTH_TD],
             measures=[m("sum(account_snapshots.balance)", "b")],
@@ -268,7 +270,7 @@ class TestOtherConsumerShapes:
                      {(k,): x for k, x in DEPTH3_MAX_ACCOUNT_TOTAL_BY_NAME.items()})
         _clean(resp)
 
-    async def test_computed_dimension(self, engine):
+    async def test_computed_dimension(self, engine: SlayerQueryEngine):
         size = {"expression": f"CASE WHEN {SUM_MAX_Q_BY_OUTER_ACCOUNT} > 100 "
                               f"THEN 'big' ELSE 'small' END", "name": "size"}
         resp = await engine.execute(query(dimensions=["name", ACCOUNT, size]))

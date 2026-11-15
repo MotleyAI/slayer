@@ -9,6 +9,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerModel
 from tests._dev2137_fixtures import as_list, list_engine, measure, num
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture
@@ -33,24 +34,24 @@ TEAM_SETS = {"source_model": "contractors", "dimensions": ["team"],
 
 
 class TestQueryBackedModels:
-    async def test_collect_columns_are_typed_lists(self, engine) -> None:
+    async def test_collect_columns_are_typed_lists(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(query=TEAM_SETS, name="team_sets")
         assert _typed(model, "team_skills") == (DataType.ARRAY, DataType.TEXT)
         assert _typed(model, "rates") == (DataType.ARRAY, DataType.INT)
 
-    async def test_count_of_a_list_is_an_integer(self, engine) -> None:
+    async def test_count_of_a_list_is_an_integer(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(query={
             "source_model": "contractors", "dimensions": ["team"], "measures": [measure("count(skills)", "n")]},
             name="list_counts")
         assert _typed(model, "n") == (DataType.INT, None)
 
-    async def test_element_access_on_a_stored_query_backed_model(self, engine) -> None:
+    async def test_element_access_on_a_stored_query_backed_model(self, engine: SlayerQueryEngine) -> None:
         await engine.create_model_from_query(query=TEAM_SETS, name="team_sets")
         resp = await engine.execute({"source_model": "team_sets", "dimensions": ["team_skills.value"],
                                      "measures": [measure("count(team_skills.*)", "n")]})
         assert {_cell(r, "team_skills.value"): num(_cell(r, "n")) for r in resp.data} == {"go": 2, "sql": 1}
 
-    async def test_through_two_stages(self, engine) -> None:
+    async def test_through_two_stages(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(query=[
             {**TEAM_SETS, "name": "s"},
             {"source_model": "s", "measures": [measure("collect(team_skills.value)", "all_skills"),
@@ -79,7 +80,7 @@ class TestStages:
 
 
 class TestReRootedProducers:
-    async def test_collect_across_a_to_one_join(self, engine) -> None:
+    async def test_collect_across_a_to_one_join(self, engine: SlayerQueryEngine) -> None:
         query = {"source_model": "assignments", "dimensions": ["contractors.id"],
                  "measures": [measure("collect(contractors.skills.value)", "s")]}
         resp = await engine.execute(query)

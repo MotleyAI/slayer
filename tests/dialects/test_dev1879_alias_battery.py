@@ -18,6 +18,7 @@ from slayer.core.enums import TimeGranularity
 from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery, TimeDimension
 from tests._dev1879_helpers import dry_response
+from slayer.engine.query_engine import SlayerResponse
 
 
 _ALL_DIALECTS = [
@@ -81,7 +82,7 @@ def _projection_aliases(sql: str, dialect: str) -> list[str]:
     return [proj.alias_or_name for proj in select.expressions]
 
 
-def _measure_key(resp) -> str:
+def _measure_key(resp: SlayerResponse) -> str:
     keys = [c for c in resp.columns if c != "mart.created_at"]
     assert len(keys) == 1, resp.columns
     return keys[0]

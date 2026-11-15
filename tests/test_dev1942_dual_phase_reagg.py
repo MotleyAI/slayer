@@ -43,6 +43,7 @@ from tests._dev1832_fixtures import (
 )
 from tests._dev1900_fixtures import pushed_filter_infos
 from tests._engine_helpers import _extract_cte_body, _join_aliases
+from slayer.engine.query_engine import SlayerResponse
 
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
@@ -82,7 +83,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-def _region_month(resp, name: str) -> dict:
+def _region_month(resp: SlayerResponse, name: str) -> dict:
     """``{(region, YYYY-MM): value}`` for measure ``name``, NULL-valued cells dropped."""
     mcol = next(c for c in resp.columns if "ordered_at" in c)
     vcol = next(c for c in resp.columns if c.endswith("." + name))

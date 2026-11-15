@@ -13,6 +13,7 @@ import pytest
 from slayer.core.query import SlayerQuery
 
 from tests._dev1866_fixtures import make_chain_exec_engine
+from slayer.engine.query_engine import SlayerQueryEngine
 
 # (label, dimensions, filters, expected inferred population)
 _BASES = [
@@ -42,7 +43,7 @@ def _law(condition: bool, *, detail: str) -> None:
 
 
 @pytest.mark.parametrize("label, dims, filters, population", _BASES)
-async def test_measure_does_not_requantify(chain_engine, label, dims, filters,
+async def test_measure_does_not_requantify(chain_engine: SlayerQueryEngine, label, dims, filters,
                                            population) -> None:
     base = await chain_engine.execute(SlayerQuery(dimensions=dims, filters=filters))
     _law(base.population == population,

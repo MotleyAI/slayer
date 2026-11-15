@@ -97,7 +97,7 @@ class TestSaveRefusesCycles:
         with pytest.raises(ModelFilterCycleError):
             await _save(engine, b, door=door)
 
-    async def test_stored_cycle_never_blocks_an_unrelated_save(self, engine, door):
+    async def test_stored_cycle_never_blocks_an_unrelated_save(self, engine: SlayerQueryEngine, door):
         await engine.storage.save_model(_model("a", "b", filters=["a_to_b.flag = 1"]), _validate=False)
         await engine.storage.save_model(_model("b", "a", "c", filters=["b_to_a.flag = 1"]), _validate=False)
         await _save(engine, _model("c", "a", filters=["flag = 1"]), door=door)
@@ -105,7 +105,7 @@ class TestSaveRefusesCycles:
 
 
 @pytest.mark.parametrize("source", ["a", "b"])
-async def test_stored_cycle_fails_the_query(engine, source):
+async def test_stored_cycle_fails_the_query(engine: SlayerQueryEngine, source):
     await engine.storage.save_model(_model("a", "b", filters=["a_to_b.flag = 1"]), _validate=False)
     await engine.storage.save_model(_model("b", "a", "c", filters=["b_to_a.flag = 1"]), _validate=False)
     with pytest.raises(ModelFilterCycleError):

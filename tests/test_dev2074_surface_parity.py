@@ -277,7 +277,7 @@ class TestDirectedCycle:
         assert len(resp.data) == 1
         assert sorted(resp.data[0].values()) == ["x1", "y1", "z1"]
 
-    async def test_recommendation_agrees_with_inference(self, cycle_engine) -> None:
+    async def test_recommendation_agrees_with_inference(self, cycle_engine: SlayerQueryEngine) -> None:
         rec = await cycle_engine.recommend_root_model(["x.v", "y.v", "z.v"])
         assert rec.reachable is False
         assert rec.root_model is None

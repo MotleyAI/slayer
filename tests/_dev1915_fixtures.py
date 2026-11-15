@@ -50,6 +50,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import _engine_generate, seeded_exec_engine
+from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
@@ -272,7 +273,7 @@ def rows_by(resp, *keys) -> dict:
     return out
 
 
-def by_month(resp, value_key: str) -> dict:
+def by_month(resp: SlayerResponse, value_key: str) -> dict:
     """``{month: value}`` for a single windowed measure grouped by the time bucket."""
     time_key = next(k for k in resp.columns if k.endswith("created_at")
                     or k.endswith("signup_at"))

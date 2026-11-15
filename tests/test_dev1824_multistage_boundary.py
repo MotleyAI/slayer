@@ -22,6 +22,7 @@ from tests._dev1824_fixtures import (
     make_exec_engine,
     q,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -41,7 +42,7 @@ def _stages(**stage2_kwargs) -> list:
 
 
 class TestDownstreamStageConsumesRegroupedDimension:
-    async def test_select_order_and_reaggregate_over_band(self, exec_engine) -> None:
+    async def test_select_order_and_reaggregate_over_band(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
             dimensions=["band"],
             measures=[ModelMeasure(formula="sum(bt)", name="total")],
@@ -55,7 +56,7 @@ class TestDownstreamStageConsumesRegroupedDimension:
             (0, pytest.approx(60.0)),
         ]
 
-    async def test_filter_on_band_in_downstream_stage(self, exec_engine) -> None:
+    async def test_filter_on_band_in_downstream_stage(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
             dimensions=["region"],
             filters=["band == 1"],
@@ -71,7 +72,7 @@ class TestDownstreamStageConsumesRegroupedDimension:
 
 
 class TestNoInternalNamesLeak:
-    async def test_response_surface_is_placeholder_free(self, exec_engine) -> None:
+    async def test_response_surface_is_placeholder_free(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
             dimensions=["band"],
             measures=[ModelMeasure(formula="sum(bt)", name="total")],

@@ -28,6 +28,7 @@ from slayer.inspect.service import InspectService
 from slayer.search.service import SearchService, handle_edit_refresh
 from slayer.storage.base import StorageBackend, resolve_storage
 from slayer.storage.sqlite_conn import transaction
+from typing import Any
 
 DS = "ds"
 BAD_SQL = "no_such_fn(status)"
@@ -331,7 +332,7 @@ async def test_forced_refresh_only_columns(env, monkeypatch) -> None:
     assert (await _stored(storage, column="amount")).sampled is None
 
 
-async def test_forced_refresh_reprofiles_cached_columns(env) -> None:
+async def test_forced_refresh_reprofiles_cached_columns(env: tuple[SlayerQueryEngine, StorageBackend]) -> None:
     engine, storage = env
     model = await _save(storage, _orders())
     await storage.update_column_sampled(
@@ -348,7 +349,7 @@ async def test_forced_refresh_reprofiles_cached_columns(env) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_all_null_numeric_is_cached(env, monkeypatch) -> None:
+async def test_all_null_numeric_is_cached(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch) -> None:
     engine, storage = env
     model = await _save(storage, _orders(extra=[Column(name="empty_num", type=DataType.DOUBLE)]))
     outcome = await ensure_samples_fresh(
@@ -359,6 +360,7 @@ async def test_all_null_numeric_is_cached(env, monkeypatch) -> None:
     assert stored.sampled == "all NULL"
     log = _record(engine=engine, monkeypatch=monkeypatch)
     reloaded = await storage.get_model("orders", data_source=DS)
+    assert reloaded is not None
     await ensure_samples_fresh(
         model=reloaded, columns=_cols(reloaded, "empty_num"), engine=engine, storage=storage,
     )
@@ -376,13 +378,14 @@ async def test_all_null_numeric_is_cached_via_inspect_column(env, monkeypatch) -
     assert log == []
 
 
-async def test_empty_categorical_is_cached(env, monkeypatch) -> None:
+async def test_empty_categorical_is_cached(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch) -> None:
     engine, storage = env
     model = await _save(storage, _orders(extra=[Column(name="note", type=DataType.TEXT)]))
     await ensure_samples_fresh(model=model, columns=_cols(model, "note"), engine=engine, storage=storage)
     assert _triple(await _stored(storage, column="note")) == ("", [], 0)
     log = _record(engine=engine, monkeypatch=monkeypatch)
     reloaded = await storage.get_model("orders", data_source=DS)
+    assert reloaded is not None
     await ensure_samples_fresh(model=reloaded, columns=_cols(reloaded, "note"), engine=engine, storage=storage)
     assert log == []
 
@@ -427,7 +430,7 @@ async def test_forced_filter_error_is_classified_via_probe(env, monkeypatch) -> 
     assert len(outcome.errors) == 1
 
 
-async def test_one_bad_column_on_healthy_model(env, monkeypatch, caplog) -> None:
+async def test_one_bad_column_on_healthy_model(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch, caplog) -> None:
     engine, storage = env
     model = await _save(storage, _orders(extra=[Column(name="bad", sql=BAD_SQL, type=DataType.TEXT)]))
     model = model.model_copy(update={"columns": [
@@ -452,6 +455,7 @@ async def test_one_bad_column_on_healthy_model(env, monkeypatch, caplog) -> None
     log.clear()
     caplog.clear()
     reloaded = await storage.get_model("orders", data_source=DS)
+    assert reloaded is not None
     with caplog.at_level(logging.DEBUG):
         await _profile(engine=engine, storage=storage, model=reloaded)
     assert log == []
@@ -499,7 +503,7 @@ async def test_probe_succeeds_but_every_column_fails(env, monkeypatch, caplog) -
     assert _profiling_warnings(caplog) == []
 
 
-async def test_failing_numeric_batch_on_healthy_model(env, monkeypatch) -> None:
+async def test_failing_numeric_batch_on_healthy_model(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch) -> None:
     engine, storage = env
     model = await _save(storage, SlayerModel(
         name="orders", sql_table="t", data_source=DS,
@@ -522,6 +526,7 @@ async def test_failing_numeric_batch_on_healthy_model(env, monkeypatch) -> None:
 
     log.clear()
     reloaded = await storage.get_model("orders", data_source=DS)
+    assert reloaded is not None
     await _profile(engine=engine, storage=storage, model=reloaded)
     assert log == []
 
@@ -559,7 +564,7 @@ async def test_inspect_service_model_makes_one_owner_call(env, monkeypatch) -> N
     assert {"status", "channel", "amount", "qty", "ordered_at"} <= set(calls[0])
 
 
-async def test_edit_refresh_on_failing_model_is_bounded(env, monkeypatch) -> None:
+async def test_edit_refresh_on_failing_model_is_bounded(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch) -> None:
     engine, storage = env
     await _save(storage, _ghost())
     await storage.update_column_sampled(
@@ -612,13 +617,14 @@ async def test_retry_after_ttl(env, monkeypatch, clock) -> None:
     assert len(log) == 2
 
 
-async def test_column_failure_retried_after_ttl(env, monkeypatch, clock) -> None:
+async def test_column_failure_retried_after_ttl(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch, clock) -> None:
     engine, storage = env
     model = await _save(storage, _orders(extra=[Column(name="bad", sql=BAD_SQL, type=DataType.TEXT)]))
     await _profile(engine=engine, storage=storage, model=model)
     log = _record(engine=engine, monkeypatch=monkeypatch)
     clock.now += TTL + 1
     reloaded = await storage.get_model("orders", data_source=DS)
+    assert reloaded is not None
     await _profile(engine=engine, storage=storage, model=reloaded)
     assert len(_categorical(log)) == 1
 
@@ -635,11 +641,12 @@ async def test_retry_after_model_edit(env, monkeypatch) -> None:
     assert (await _stored(storage, model="ghost", column="status")).sampled_values is not None
 
 
-async def test_retry_after_column_edit(env, monkeypatch) -> None:
+async def test_retry_after_column_edit(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch) -> None:
     engine, storage = env
     model = await _save(storage, _orders(extra=[Column(name="bad", sql=BAD_SQL, type=DataType.TEXT)]))
     await _profile(engine=engine, storage=storage, model=model)
     reloaded = await storage.get_model("orders", data_source=DS)
+    assert reloaded is not None
     fixed = await _save(storage, reloaded.model_copy(update={"columns": [
         c.model_copy(update={"sql": "channel"}) if c.name == "bad" else c for c in reloaded.columns
     ]}))
@@ -659,15 +666,15 @@ async def test_engines_do_not_share_failures(env, monkeypatch) -> None:
     assert len(log) == 2
 
 
-async def test_failures_are_not_persisted(env) -> None:
+async def test_failures_are_not_persisted(env: tuple[SlayerQueryEngine, StorageBackend]) -> None:
     engine, storage = env
     model = await _save(storage, _orders(extra=[Column(name="bad", sql=BAD_SQL, type=DataType.TEXT)]))
-    before = (await storage.get_model("orders", data_source=DS)).get_column("bad")
+    before = await _stored(storage, column="bad")
     await _profile(engine=engine, storage=storage, model=model)
     assert await _stored(storage, column="bad") == before
 
 
-async def test_forced_refresh_of_failing_model(env, monkeypatch) -> None:
+async def test_forced_refresh_of_failing_model(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch) -> None:
     engine, storage = env
     model = await _save(storage, _ghost())
     for name in ("status", "amount"):
@@ -677,6 +684,7 @@ async def test_forced_refresh_of_failing_model(env, monkeypatch) -> None:
         )
     before = {n: _triple(await _stored(storage, model="ghost", column=n)) for n in ("status", "amount")}
     model = await storage.get_model("ghost", data_source=DS)
+    assert model is not None
     log = _record(engine=engine, monkeypatch=monkeypatch)
     errors = await refresh_table_backed_model_sampled(model=model, engine=engine, storage=storage)
     assert len(log) == 2
@@ -698,7 +706,7 @@ async def test_forced_refresh_ignores_failure_cache_and_records(env, monkeypatch
     assert log == []
 
 
-async def test_forced_refresh_keeps_sample_of_failing_column(env) -> None:
+async def test_forced_refresh_keeps_sample_of_failing_column(env: tuple[SlayerQueryEngine, StorageBackend]) -> None:
     engine, storage = env
     model = await _save(storage, _orders(extra=[Column(name="bad", sql=BAD_SQL, type=DataType.TEXT)]))
     await storage.update_column_sampled(
@@ -755,7 +763,7 @@ async def test_model_level_failure_logs_once(env, caplog) -> None:
     assert "[SQL:" not in msg
 
 
-async def test_persist_failure_keeps_fresh_value(env, monkeypatch, caplog) -> None:
+async def test_persist_failure_keeps_fresh_value(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch, caplog) -> None:
     engine, storage = env
     model = await _save(storage, _orders())
 
@@ -779,7 +787,7 @@ async def test_persist_failure_keeps_fresh_value(env, monkeypatch, caplog) -> No
     assert len(log) == 1
 
 
-async def test_persist_failure_on_one_column_only(env, monkeypatch, caplog) -> None:
+async def test_persist_failure_on_one_column_only(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch, caplog) -> None:
     engine, storage = env
     model = await _save(storage, _orders())
     real = storage.update_column_sampled
@@ -799,7 +807,7 @@ async def test_persist_failure_on_one_column_only(env, monkeypatch, caplog) -> N
     assert (await _stored(storage, column="status")).sampled_values is not None
 
 
-async def test_persist_failure_renders_fresh_value_in_inspect(env, monkeypatch) -> None:
+async def test_persist_failure_renders_fresh_value_in_inspect(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch) -> None:
     engine, storage = env
     await _save(storage, _orders())
 
@@ -813,7 +821,7 @@ async def test_persist_failure_renders_fresh_value_in_inspect(env, monkeypatch) 
     assert "paid" in out
 
 
-async def test_forced_refresh_reports_persist_failure(env, monkeypatch) -> None:
+async def test_forced_refresh_reports_persist_failure(env: tuple[SlayerQueryEngine, StorageBackend], monkeypatch) -> None:
     engine, storage = env
     model = await _save(storage, _orders())
 
@@ -846,11 +854,12 @@ async def _store_status(storage: StorageBackend, *, model: str = "orders") -> No
     )
 
 
-async def test_policy_engine_ignores_persisted_samples(env, monkeypatch) -> None:
+async def test_policy_engine_ignores_persisted_samples(env: tuple[Any, StorageBackend], monkeypatch) -> None:
     _, storage = env
     await _save(storage, _orders())
     await _store_status(storage)
     model = await storage.get_model("orders", data_source=DS)
+    assert model is not None
     engine = _policy_engine(storage)
     persists = _count_persists(storage=storage, monkeypatch=monkeypatch)
     log = _record(engine=engine, monkeypatch=monkeypatch)
@@ -899,16 +908,17 @@ async def test_policy_engines_do_not_share_samples(env) -> None:
     assert next(c for c in outcome.columns if c.name == "status").sampled_values == ["cancelled", "refunded"]
 
 
-async def test_policy_failure_never_returns_persisted_samples(env) -> None:
+async def test_policy_failure_never_returns_persisted_samples(env: tuple[Any, StorageBackend]) -> None:
     _, storage = env
     await _save(storage, _ghost())
     await _store_status(storage, model="ghost")
     model = await storage.get_model("ghost", data_source=DS)
+    assert model is not None
     outcome = await _profile(engine=_policy_engine(storage), storage=storage, model=model)
     assert _triple(next(c for c in outcome.columns if c.name == "status")) == (None, None, None)
 
 
-async def test_policy_never_returns_persisted_samples_on_unprofiled_columns(env) -> None:
+async def test_policy_never_returns_persisted_samples_on_unprofiled_columns(env: tuple[Any, StorageBackend]) -> None:
     _, storage = env
     await _save(storage, _orders(extra=[
         Column(name="secret", sql="status", type=DataType.TEXT, hidden=True),
@@ -920,6 +930,7 @@ async def test_policy_never_returns_persisted_samples_on_unprofiled_columns(env)
             sampled="STORED", sampled_values=None, distinct_count=None,
         )
     model = await storage.get_model("orders", data_source=DS)
+    assert model is not None
     engine = _policy_engine(storage)
     for _ in range(2):  # second call serves the failure cache
         outcome = await _profile(engine=engine, storage=storage, model=model)
@@ -927,11 +938,12 @@ async def test_policy_never_returns_persisted_samples_on_unprofiled_columns(env)
             assert next(c for c in outcome.columns if c.name == name).sampled is None, name
 
 
-async def test_inspect_model_under_policy_renders_scoped_samples(env) -> None:
+async def test_inspect_model_under_policy_renders_scoped_samples(env: tuple[Any, StorageBackend]) -> None:
     _, storage = env
     await _save(storage, _orders())
     await _store_status(storage)
     model = await storage.get_model("orders", data_source=DS)
+    assert model is not None
     out = await render_model_inspection(
         model=model, storage=storage, engine=_policy_engine(storage), format="json", sections=["columns"],
     )

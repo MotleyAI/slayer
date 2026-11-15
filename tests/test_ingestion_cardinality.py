@@ -25,6 +25,7 @@ from slayer.sql.dialects.reflection import ReflectedForeignKey, TableLocation
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine
+from slayer.core.models import SlayerModel
 
 
 async def _ingest(*, datasource: DatasourceConfig, **kwargs: Any) -> IdempotentIngestResult:
@@ -134,7 +135,7 @@ async def _setup(workspace: Path) -> tuple:
     return storage, ds, db_path
 
 
-def _join_to(model, target: str):
+def _join_to(model: SlayerModel, target: str):
     return [j for j in model.joins if j.target_model == target]
 
 

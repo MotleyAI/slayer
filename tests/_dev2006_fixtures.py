@@ -54,6 +54,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import seeded_exec_engine
+from slayer.engine.query_engine import SlayerResponse
 
 
 # --------------------------------------------------------------------------- #
@@ -228,7 +229,7 @@ def by_customer(resp, name: str = "v") -> dict:
     return out
 
 
-def by_customer_month(resp, name: str = "v") -> dict:
+def by_customer_month(resp: SlayerResponse, name: str = "v") -> dict:
     tkey = next(k for k in resp.columns if "snapshot_date" in k)
     out = {
         (r["account_snapshots.customer_id"], month_key(r[tkey])): num(r[f"account_snapshots.{name}"])

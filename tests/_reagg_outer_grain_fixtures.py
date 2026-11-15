@@ -24,6 +24,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
+from slayer.engine.query_engine import SlayerResponse
 
 # (id, name)
 CUSTOMERS_ROWS = [(1, "Ann"), (2, "Bob"), (3, "Cy"), (4, "Dee")]
@@ -204,7 +205,7 @@ def month(value: Any) -> Optional[str]:
     return None if value is None else str(value)[:7]
 
 
-def cells(resp, *, keys: Tuple[str, ...], value: str = "v") -> Dict[Tuple[Any, ...], Any]:
+def cells(resp: SlayerResponse, *, keys: Tuple[str, ...], value: str = "v") -> Dict[Tuple[Any, ...], Any]:
     """Result rows as ``{(key values…): value}``; a ``snapshot_date`` key reads as its month."""
     names = [col(resp.columns, k) for k in keys]
     v = col(resp.columns, value)

@@ -48,6 +48,7 @@ from slayer.live_schema.schema_drift import (
 )
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 
 @pytest.fixture
@@ -684,7 +685,7 @@ def _create_probe_workspace_db(
 
 
 async def _persist_int_model(
-    storage, ds_name: str, table: str, column: str,
+    storage: StorageBackend, ds_name: str, table: str, column: str,
     *,
     column_format: NumberFormat | None = None,
     extra_meta: dict | None = None,

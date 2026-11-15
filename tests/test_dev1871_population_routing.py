@@ -29,6 +29,7 @@ from tests._dev1871_fixtures import (
     lit_models_by_name,
     make_routing_storage,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture
@@ -174,7 +175,7 @@ class TestInferenceBindingAgreement:
     """Spec (dotted-dimension-routing): Inference and binding agree on a routed short form."""
 
     async def test_rootless_routed_short_form_matches_explicit_twin(
-        self, chain_engine
+        self, chain_engine: SlayerQueryEngine
     ) -> None:
         rootless = SlayerQuery(dimensions=["orders.status", "regions.name"])
         explicit = SlayerQuery(

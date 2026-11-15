@@ -3,6 +3,7 @@ import pytest
 
 from slayer.core.query import SlayerQuery
 from tests import _dev1883_fixtures as fx
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture
@@ -37,7 +38,7 @@ class TestEquivalence:
         explicit = await engine.execute(_explicit(), dry_run=True)
         assert functional.sql == explicit.sql
 
-    async def test_rows_and_result_key_identical(self, exec_engine) -> None:
+    async def test_rows_and_result_key_identical(self, exec_engine: SlayerQueryEngine) -> None:
         functional = await exec_engine.execute(_functional())
         explicit = await exec_engine.execute(_explicit())
         assert functional.columns == explicit.columns
@@ -94,7 +95,7 @@ class TestEquivalence:
         ), dry_run=True)
         assert functional.sql == explicit.sql
 
-    async def test_dotted_functional_execution(self, exec_engine) -> None:
+    async def test_dotted_functional_execution(self, exec_engine: SlayerQueryEngine) -> None:
         functional = await exec_engine.execute(fx.q(
             source_model="orders",
             dimensions=["date_trunc('month', customers.created_at)"],

@@ -18,6 +18,7 @@ from slayer.engine.elaborate import elaborate_query
 from slayer.ir.variables import apply_variables_to_query
 from tests._dev1739_fixtures import customers_model, dev1739_models, month_key, orders_model
 from tests._dev1832_fixtures import bundle
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 def q(**kw: Any) -> SlayerQuery:
@@ -174,7 +175,7 @@ class TestTemplateNaming:
         resp = await exec_engine.execute([stage1, root], variables={"k": 10})
         assert only_value(resp) == pytest.approx(2100.0)
 
-    async def test_query_backed_model_columns_stable(self, exec_engine) -> None:
+    async def test_query_backed_model_columns_stable(self, exec_engine: SlayerQueryEngine) -> None:
         saved = await exec_engine.create_model_from_query(
             query=q(dimensions=["region"], measures=["sum(amount) * {k}"]), name="scaled_by_region",
             variables={"k": 1},
@@ -195,14 +196,14 @@ class TestTemplateNaming:
 
 
 class TestSavedMeasures:
-    async def test_saved_measure_on_source(self, exec_engine) -> None:
+    async def test_saved_measure_on_source(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_model(orders_model().model_copy(update={
             "measures": [ModelMeasure(name="amt_scaled", formula="sum(amount) * {k}")],
         }))
         resp = await exec_engine.execute(q(measures=["amt_scaled"], variables={"k": 10}))
         assert only_value(resp) == pytest.approx(2100.0)
 
-    async def test_saved_measure_uses_model_default(self, exec_engine) -> None:
+    async def test_saved_measure_uses_model_default(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_model(orders_model().model_copy(update={
             "measures": [ModelMeasure(name="amt_scaled", formula="sum(amount) * {k}")],
             "query_variables": {"k": 10},
@@ -210,7 +211,7 @@ class TestSavedMeasures:
         resp = await exec_engine.execute(q(measures=["amt_scaled"]))
         assert only_value(resp) == pytest.approx(2100.0)
 
-    async def test_saved_measure_on_stage_source(self, exec_engine) -> None:
+    async def test_saved_measure_on_stage_source(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_model(orders_model().model_copy(update={
             "measures": [ModelMeasure(name="amt_scaled", formula="sum(amount) * {k}")],
         }))
@@ -221,7 +222,7 @@ class TestSavedMeasures:
         resp = await exec_engine.execute([stage1, root], variables={"k": 10})
         assert only_value(resp) == pytest.approx(2100.0)
 
-    async def test_saved_measure_through_join_unresolved(self, exec_engine) -> None:
+    async def test_saved_measure_through_join_unresolved(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_model(customers_model().model_copy(update={
             "measures": [ModelMeasure(name="spend_scaled", formula="sum(spend) * {k}")],
         }))
@@ -229,7 +230,7 @@ class TestSavedMeasures:
         with pytest.raises(UnresolvedPlaceholderError, match=r"\{k\}"):
             await exec_engine.execute(query)
 
-    async def test_saved_measure_undefined_variable(self, exec_engine) -> None:
+    async def test_saved_measure_undefined_variable(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_model(orders_model().model_copy(update={
             "measures": [ModelMeasure(name="amt_scaled", formula="sum(amount) * {k}")],
         }))
@@ -237,7 +238,7 @@ class TestSavedMeasures:
         with pytest.raises(ValueError, match="Undefined variable 'k'"):
             await exec_engine.execute(query)
 
-    async def test_undefaulted_saved_measure_keeps_column_types(self, exec_engine) -> None:
+    async def test_undefaulted_saved_measure_keeps_column_types(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_model(orders_model().model_copy(update={
             "measures": [ModelMeasure(name="amt_scaled", formula="sum(amount) * {k}")],
         }))
@@ -290,13 +291,13 @@ class TestSave:
         ({"measures": ["sum(amount)"], "filters": ["amount > {k}"]}, "k"),
         ({"measures": ["sum(amount)"], "time_dimensions": [{**MONTH_TD, "date_range": ["{start}", None]}]}, "start"),
     ])
-    async def test_undefaulted_variable_refuses_save(self, exec_engine, kw, name: str) -> None:
+    async def test_undefaulted_variable_refuses_save(self, exec_engine: SlayerQueryEngine, kw, name: str) -> None:
         query = q(**kw)
         with pytest.raises(ValueError, match=f"Undefined variable '{name}'"):
             await exec_engine.create_model_from_query(query=query, name="refused")
         assert await exec_engine.storage.get_model("refused") is None
 
-    async def test_undefaulted_saved_measure_refuses_save(self, exec_engine) -> None:
+    async def test_undefaulted_saved_measure_refuses_save(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_model(orders_model().model_copy(update={
             "measures": [ModelMeasure(name="amt_scaled", formula="sum(amount) * {k}")],
         }))
@@ -305,13 +306,13 @@ class TestSave:
             await exec_engine.create_model_from_query(query=query, name="refused")
         assert await exec_engine.storage.get_model("refused") is None
 
-    async def test_stage_variables_satisfy_save(self, exec_engine) -> None:
+    async def test_stage_variables_satisfy_save(self, exec_engine: SlayerQueryEngine) -> None:
         saved = await exec_engine.create_model_from_query(
             query=q(dimensions=["region"], measures=["sum(amount) * {k}"], variables={"k": 10}), name="staged",
         )
         assert saved.columns
 
-    async def test_source_model_default_satisfies_save(self, exec_engine) -> None:
+    async def test_source_model_default_satisfies_save(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_model(orders_model().model_copy(update={
             "measures": [ModelMeasure(name="amt_scaled", formula="sum(amount) * {k}")],
             "query_variables": {"k": 10},
@@ -319,7 +320,7 @@ class TestSave:
         saved = await exec_engine.create_model_from_query(query=q(measures=["amt_scaled"]), name="sourced")
         assert saved.columns
 
-    async def test_defaulted_variable_renders_by_default(self, exec_engine) -> None:
+    async def test_defaulted_variable_renders_by_default(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.create_model_from_query(
             query=q(dimensions=["region"], measures=["sum(amount) * {k}"]), name="scaled", variables={"k": 10},
         )
@@ -329,7 +330,7 @@ class TestSave:
         assert default == at_10
         assert default != at_20
 
-    async def test_model_with_saved_measure_placeholder_saves(self, exec_engine) -> None:
+    async def test_model_with_saved_measure_placeholder_saves(self, exec_engine: SlayerQueryEngine) -> None:
         saved = await exec_engine.save_model(orders_model().model_copy(update={
             "measures": [ModelMeasure(name="amt_scaled", formula="sum(amount) * {k}")],
         }))

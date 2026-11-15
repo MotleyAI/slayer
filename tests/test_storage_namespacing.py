@@ -37,6 +37,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 # ``AmbiguousModelError`` is shipped in v4 alongside the namespacing change.
 # Importing it at module load doubles as a smoke test that the symbol exists.
 from slayer.core.errors import AmbiguousModelError  # noqa: E402
+from slayer.storage.base import StorageBackend
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +73,7 @@ def _ds(name: str) -> DatasourceConfig:
 
 
 class TestNamespacedSaveLoad:
-    async def test_two_models_same_name_different_datasource_coexist(self, storage) -> None:
+    async def test_two_models_same_name_different_datasource_coexist(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
 
@@ -88,7 +89,7 @@ class TestNamespacedSaveLoad:
         assert loaded_b is not None
         assert loaded_b.data_source == "db_b"
 
-    async def test_get_model_with_data_source_filters_to_exact_match(self, storage) -> None:
+    async def test_get_model_with_data_source_filters_to_exact_match(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -117,7 +118,7 @@ class TestNamespacedSaveLoad:
 
 
 class TestBareNameResolution:
-    async def test_unique_match_returns_it(self, storage) -> None:
+    async def test_unique_match_returns_it(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_model(_model("users", data_source="db_a"))
 
@@ -125,11 +126,11 @@ class TestBareNameResolution:
         assert m is not None
         assert m.data_source == "db_a"
 
-    async def test_no_match_returns_none(self, storage) -> None:
+    async def test_no_match_returns_none(self, storage: StorageBackend) -> None:
         m = await storage.get_model("does_not_exist")
         assert m is None
 
-    async def test_ambiguous_without_priority_raises(self, storage) -> None:
+    async def test_ambiguous_without_priority_raises(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -147,7 +148,7 @@ class TestBareNameResolution:
         assert "db_b" in msg
         assert "data_source" in msg or "datasource" in msg.lower()
 
-    async def test_priority_picks_first_match(self, storage) -> None:
+    async def test_priority_picks_first_match(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -159,7 +160,7 @@ class TestBareNameResolution:
         assert m is not None
         assert m.data_source == "db_b"
 
-    async def test_priority_skips_datasources_without_a_match(self, storage) -> None:
+    async def test_priority_skips_datasources_without_a_match(self, storage: StorageBackend) -> None:
         """Priority [db_b, db_a] but only db_a and db_c contain ``users`` →
         first list entry that actually has the model wins."""
         for n in ("db_a", "db_b", "db_c"):
@@ -173,7 +174,7 @@ class TestBareNameResolution:
         assert m is not None
         assert m.data_source == "db_a"
 
-    async def test_priority_misses_all_matches_raises(self, storage) -> None:
+    async def test_priority_misses_all_matches_raises(self, storage: StorageBackend) -> None:
         for n in ("db_a", "db_b", "db_x"):
             await storage.save_datasource(_ds(n))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -191,7 +192,7 @@ class TestBareNameResolution:
 
 
 class TestNamespacedDelete:
-    async def test_delete_with_data_source_targets_only_that_one(self, storage) -> None:
+    async def test_delete_with_data_source_targets_only_that_one(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -202,14 +203,14 @@ class TestNamespacedDelete:
         assert await storage.get_model("users", data_source="db_a") is None
         assert await storage.get_model("users", data_source="db_b") is not None
 
-    async def test_delete_bare_name_unique_succeeds(self, storage) -> None:
+    async def test_delete_bare_name_unique_succeeds(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_model(_model("users", data_source="db_a"))
 
         assert await storage.delete_model("users") is True
         assert await storage.get_model("users", data_source="db_a") is None
 
-    async def test_delete_bare_name_ambiguous_raises(self, storage) -> None:
+    async def test_delete_bare_name_ambiguous_raises(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -229,7 +230,7 @@ class TestNamespacedDelete:
 
 
 class TestListModels:
-    async def test_list_with_data_source_returns_that_subset(self, storage) -> None:
+    async def test_list_with_data_source_returns_that_subset(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -242,12 +243,12 @@ class TestListModels:
         names_b = await storage.list_models(data_source="db_b")
         assert names_b == ["users"]
 
-    async def test_list_with_invalid_data_source_raises(self, storage) -> None:
+    async def test_list_with_invalid_data_source_raises(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         with pytest.raises(ValueError, match=r"db_a|nope"):
             await storage.list_models(data_source="nope")
 
-    async def test_list_no_arg_single_datasource(self, storage) -> None:
+    async def test_list_no_arg_single_datasource(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_model(_model("users", data_source="db_a"))
         await storage.save_model(_model("orders", data_source="db_a"))
@@ -255,7 +256,7 @@ class TestListModels:
         names = await storage.list_models()
         assert sorted(names) == ["orders", "users"]
 
-    async def test_list_no_arg_multiple_datasources_raises(self, storage) -> None:
+    async def test_list_no_arg_multiple_datasources_raises(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -264,10 +265,10 @@ class TestListModels:
         with pytest.raises(ValueError, match=r"db_a.*db_b|db_b.*db_a|data_source"):
             await storage.list_models()
 
-    async def test_list_no_arg_empty_storage_returns_empty(self, storage) -> None:
+    async def test_list_no_arg_empty_storage_returns_empty(self, storage: StorageBackend) -> None:
         assert await storage.list_models() == []
 
-    async def test_list_with_data_source_having_models_but_no_config(self, storage) -> None:
+    async def test_list_with_data_source_having_models_but_no_config(self, storage: StorageBackend) -> None:
         """A model can carry a ``data_source`` string even when no
         ``DatasourceConfig`` has been saved for it (e.g. an orphan after a
         manual datasource delete, or a model imported from another env).
@@ -294,7 +295,7 @@ class TestListModels:
             "",
         ],
     )
-    async def test_get_model_rejects_path_traversal_in_name(self, storage, bad) -> None:
+    async def test_get_model_rejects_path_traversal_in_name(self, storage: StorageBackend, bad) -> None:
         """``get_model(name=..., data_source=...)`` must validate both
         components — path-traversal sequences and path separators are
         rejected at the storage boundary so a malicious caller (MCP/REST
@@ -323,7 +324,7 @@ class TestListModels:
             await storage._write_raw_model_dict(name=bad, data_source="db_a", data={"name": "orders"})
         assert sorted(p.name for p in tmp_path.iterdir()) == ["store"]
 
-    async def test_ambiguous_error_message_is_surface_neutral(self, storage) -> None:
+    async def test_ambiguous_error_message_is_surface_neutral(self, storage: StorageBackend) -> None:
         """``AmbiguousModelError.__str__`` must list candidates without
         leaking surface-specific Python-API names. Each surface
         (REST 409, MCP edit_model error string, CLI, etc.) appends its
@@ -345,7 +346,7 @@ class TestListModels:
         assert "set_datasource_priority(" not in msg
         assert "[...]" not in msg
 
-    async def test_list_with_unknown_data_source_still_raises(self, storage) -> None:
+    async def test_list_with_unknown_data_source_still_raises(self, storage: StorageBackend) -> None:
         """The 'unknown data_source' error stays when the name has neither
         a config nor any saved models — otherwise typos go unnoticed.
         """

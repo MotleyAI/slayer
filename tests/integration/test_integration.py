@@ -40,6 +40,8 @@ from slayer.search.service import SearchService
 from slayer.database import engine_factory
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
+from typing import Any
 
 pytestmark = pytest.mark.integration
 
@@ -1904,12 +1906,13 @@ async def diamond_env(tmp_path):
     return engine, storage
 
 
-async def test_diamond_joins_both_paths(diamond_env):
+async def test_diamond_joins_both_paths(diamond_env: tuple[SlayerQueryEngine, StorageBackend]):
     """Query both customer region and warehouse region in one query — must not collide."""
     engine, storage = diamond_env
 
     # Verify the ingested model has its own columns (not flattened joined dims)
     shipments = await storage.get_model("shipments")
+    assert shipments is not None
     dim_names = {d.name for d in shipments.columns}
     assert "customer_id" in dim_names
     assert "warehouse_id" in dim_names
@@ -1938,14 +1941,16 @@ async def test_diamond_joins_both_paths(diamond_env):
     assert rows[("EU", "Asia")] == 1  # Bob from WH-West
 
     # SQL must have two different aliases for regions
+    assert result.sql is not None
     assert "customers__regions" in result.sql
     assert "warehouses__regions" in result.sql
 
 
-async def test_sqlite_ingest_has_no_descriptions(diamond_env):
+async def test_sqlite_ingest_has_no_descriptions(diamond_env: tuple[Any, StorageBackend]):
     """SQLite has no table/column comments — ingested descriptions stay None."""
     _, storage = diamond_env
     shipments = await storage.get_model("shipments")
+    assert shipments is not None
     assert shipments.description is None
     assert all(c.description is None for c in shipments.columns)
 
@@ -3191,7 +3196,7 @@ async def search_env(tmp_path):
     return engine, storage
 
 
-async def test_refresh_samples_populates_sampled(search_env):
+async def test_refresh_samples_populates_sampled(search_env: tuple[SlayerQueryEngine, StorageBackend]):
     """Ingest no longer profiles columns (samples are lazy). An explicit
     ``refresh-samples`` pass writes ``Column.sampled`` for every non-pk
     column. Categorical and numeric columns get different formats —
@@ -3199,6 +3204,7 @@ async def test_refresh_samples_populates_sampled(search_env):
     engine, storage = search_env
     # After ingest alone, samples are unpopulated.
     orders = await storage.get_model("orders", data_source="test_sqlite")
+    assert orders is not None
     assert next(c for c in orders.columns if c.name == "status").sampled is None
 
     # Explicit refresh populates them.
@@ -3208,7 +3214,9 @@ async def test_refresh_samples_populates_sampled(search_env):
     assert errors == [], f"Unexpected refresh errors: {errors}"
 
     orders = await storage.get_model("orders", data_source="test_sqlite")
+    assert orders is not None
     customers = await storage.get_model("customers", data_source="test_sqlite")
+    assert customers is not None
     for model in (orders, customers):
         for col in model.columns:
             if col.primary_key or col.hidden:
@@ -3218,12 +3226,14 @@ async def test_refresh_samples_populates_sampled(search_env):
             )
 
     status = next(c for c in orders.columns if c.name == "status")
+    assert status.sampled is not None
     assert "completed" in status.sampled
     assert "pending" in status.sampled
     assert "cancelled" in status.sampled
 
     amount = next(c for c in orders.columns if c.name == "amount")
     # Numeric columns surface as "<min> .. <max>".
+    assert amount.sampled is not None
     assert ".." in amount.sampled
 
 
@@ -3267,7 +3277,7 @@ async def test_search_entity_filter_finds_memory(search_env):
     assert "refunds" in hit.text
 
 
-async def test_search_edit_model_filter_refreshes_sampled(search_env):
+async def test_search_edit_model_filter_refreshes_sampled(search_env: tuple[SlayerQueryEngine, StorageBackend]):
     """A model-level mutation (``SlayerModel.filters``) triggers
     ``handle_edit_refresh(model_level_change=True)`` which re-profiles
     every column. After the mutation, every column still has a
@@ -3302,6 +3312,7 @@ async def test_search_edit_model_filter_refreshes_sampled(search_env):
     status_after = next(c for c in orders_after.columns if c.name == "status")
     # The filter excludes 'cancelled', so the new sampled snapshot must
     # not list it.
+    assert status_after.sampled is not None
     assert "cancelled" not in status_after.sampled
     assert before_sampled["status"] != status_after.sampled
 

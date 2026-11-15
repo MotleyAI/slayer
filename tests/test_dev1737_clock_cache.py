@@ -11,6 +11,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.cache import CacheConfig, QueryCache
 from slayer.database.client import SlayerSQLClient
 from tests._dev1737_fixtures import exec_engine, scenario_models, scenario_tables
+from slayer.engine.query_engine import SlayerQueryEngine
 
 CLOCK_FILTER = "created_at >= date_add(current_date(), -30, 'day')"
 
@@ -87,7 +88,7 @@ class TestClockBypass:
         assert engine.cache_size == 1
         assert first.data == second.data
 
-    async def test_refresh_does_not_repopulate_a_clock_query(self, engine) -> None:
+    async def test_refresh_does_not_repopulate_a_clock_query(self, engine: SlayerQueryEngine) -> None:
         clock = _Clock()
         engine._cache = QueryCache(config=CacheConfig(ttl_seconds=100), clock=clock)
         plain = {"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "count(*)", "name": "n"}]}

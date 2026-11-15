@@ -24,6 +24,7 @@ from tests._dev1740_fixtures import (
     orders_model,
     rows_by,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -286,7 +287,7 @@ class TestChangeOverComputedDimension:
 
 
 class TestCaseInColumnSql:
-    async def test_mode_a_case_column_still_executes(self, exec_engine) -> None:
+    async def test_mode_a_case_column_still_executes(self, exec_engine: SlayerQueryEngine) -> None:
         # A CASE in Column.sql (raw SQL) grouped as a dimension — the existing
         # escape hatch, pinned against Part A regressions. Row 9 (amount 6000)
         # is the only per-row band 1; everything else bands 0.

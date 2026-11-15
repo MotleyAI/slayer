@@ -526,7 +526,7 @@ class TestIdentifierSeparation:
     shape a past bug produced."""
 
     async def test_no_flattened_key_leaks_from_a_joined_query(
-        self, engine,
+        self, engine: SlayerQueryEngine,
     ) -> None:
         resp = await engine.execute(
             SlayerQuery(
@@ -541,7 +541,7 @@ class TestIdentifierSeparation:
         for key in list(resp.columns) + list(resp.data[0].keys()):
             assert "__" not in key, f"inner-stage flat name leaked publicly: {key}"
 
-    async def test_public_keys_are_dotted_not_flattened(self, engine) -> None:
+    async def test_public_keys_are_dotted_not_flattened(self, engine: SlayerQueryEngine) -> None:
         """The positive form of the same contract: the dotted key is present
         AND its flattened twin is absent."""
         resp = await engine.execute(

@@ -252,7 +252,7 @@ class TestModeAQualifiersAreCanonical:
 # End to end — the join-traversal scenarios.
 # --------------------------------------------------------------------------- #
 class TestNamedEdgeTypedByModelName:
-    async def test_result_keys_follow_the_edge_name(self, engine) -> None:
+    async def test_result_keys_follow_the_edge_name(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(orders_q(
             dimensions=["customers.regions.rname"],
             measures=["max(customers.regions.pop)"]))
@@ -260,7 +260,7 @@ class TestNamedEdgeTypedByModelName:
         assert by_key(resp, RNAME, "orders.customers.hr.pop_max") == POP_MAX_BY_RNAME
         assert not broadcast_warnings(resp)
 
-    async def test_metadata_matches_the_edge_name_spelling(self, engine) -> None:
+    async def test_metadata_matches_the_edge_name_spelling(self, engine: SlayerQueryEngine) -> None:
         typed = await engine.execute(orders_q(
             dimensions=["customers.regions.rname"],
             measures=["max(customers.regions.pop)"]))
@@ -270,7 +270,7 @@ class TestNamedEdgeTypedByModelName:
         assert typed.attributes.dimensions[RNAME].label == "Region name"
         assert "orders.customers.hr.pop_max" in typed.attributes.measures
 
-    async def test_named_edge_time_dimension(self, engine) -> None:
+    async def test_named_edge_time_dimension(self, engine: SlayerQueryEngine) -> None:
         query = orders_q(
             time_dimensions=[TimeDimension(
                 dimension="customers.regions.founded_at",
@@ -369,7 +369,7 @@ class TestModelSqlSpelledByModelName:
         assert {(r["orders.region_label"], r[RNAME]) for r in resp.data} == \
             {("North", "North"), ("South", "South"), (None, None)}
 
-    async def test_model_filter_joins_once(self, engine) -> None:
+    async def test_model_filter_joins_once(self, engine: SlayerQueryEngine) -> None:
         orders = await engine.storage.get_model("orders", data_source="test")
         assert orders is not None
         orders.filters = [*orders.filters, "customers.regions.pop > 0"]
@@ -394,7 +394,7 @@ class TestModelSqlSpelledByModelName:
                               value="customers.hr.rname = 'North'")
         assert sql == await _dry(engine, query)
 
-    async def test_persisted_model_keeps_its_spelling(self, engine) -> None:
+    async def test_persisted_model_keeps_its_spelling(self, engine: SlayerQueryEngine) -> None:
         await engine.execute(orders_q(dimensions=["region_label"]))
         orders = await engine.storage.get_model("orders", data_source="test")
         assert orders is not None
@@ -403,7 +403,7 @@ class TestModelSqlSpelledByModelName:
 
 
 class TestDefinitionDefaultSpelledByModelName:
-    async def test_default_equals_the_edge_name_spelling(self, engine) -> None:
+    async def test_default_equals_the_edge_name_spelling(self, engine: SlayerQueryEngine) -> None:
         default = orders_q(dimensions=["customers.hr.rname"],
                            measures=[{"formula": "wpop(amount)", "name": "w"}])
         explicit = orders_q(dimensions=["customers.hr.rname"], measures=[
@@ -423,7 +423,7 @@ class TestDefinitionDefaultSpelledByModelName:
 
 
 class TestAutoRoutedShortForm:
-    async def test_result_key_is_canonical(self, engine) -> None:
+    async def test_result_key_is_canonical(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(orders_q(
             dimensions=["regions.rname"], measures=["sum(amount)"]))
         assert resp.columns == [RNAME, "orders.amount_sum"]
@@ -434,7 +434,7 @@ class TestSavedMeasures:
     @pytest.mark.parametrize("formula", [
         "customers.regions.maxpop", "orders.customers.regions.maxpop",
         "regions.maxpop"])
-    async def test_surfaces_under_the_canonical_path(self, engine, formula) -> None:
+    async def test_surfaces_under_the_canonical_path(self, engine: SlayerQueryEngine, formula) -> None:
         resp = await engine.execute(orders_q(
             dimensions=["customers.hr.rname"], measures=[formula]))
         key = "orders.customers.hr.maxpop"
@@ -455,7 +455,7 @@ class TestSavedMeasures:
         assert by_key(resp, RNAME, "orders.rp") == POP_MAX_BY_RNAME
         assert not broadcast_warnings(resp)
 
-    async def test_reverse_hop(self, engine) -> None:
+    async def test_reverse_hop(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(slayer_query(
             source_model="regions", dimensions=["rname"],
             measures=["customers.tot_spend"]))
@@ -464,7 +464,7 @@ class TestSavedMeasures:
 
 
 class TestSpellingTwinsShareOneCachedResult:
-    async def test_one_db_execution(self, engine, monkeypatch) -> None:
+    async def test_one_db_execution(self, engine: SlayerQueryEngine, monkeypatch) -> None:
         first = await engine.execute(orders_q(
             dimensions=["customers.regions.rname"], measures=["sum(amount)"]),
             cache=True)
@@ -482,7 +482,7 @@ class TestSpellingTwinsShareOneCachedResult:
 # Pins: canonical spellings, errors, lookup-only consumers, the D9 route.
 # --------------------------------------------------------------------------- #
 class TestCanonicalSpellingsUnchanged:
-    async def test_self_prefixed_and_unnamed_paths(self, engine) -> None:
+    async def test_self_prefixed_and_unnamed_paths(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(orders_q(
             dimensions=["orders.customers.hr.rname", "customers.tier"]))
         assert resp.columns == [RNAME, "orders.customers.tier"]

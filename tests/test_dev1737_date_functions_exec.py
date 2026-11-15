@@ -25,6 +25,7 @@ from tests._dev1737_fixtures import (
     sqlite_malformed_seed,
 )
 from tests._engine_helpers import seeded_exec_engine
+from slayer.engine.query_engine import SlayerQueryEngine
 
 CASES = matrix_cases()
 
@@ -181,7 +182,7 @@ class TestSpecScenarios:
         assert ops.sql == fn.sql
         assert_value(ops.data[0]["orders.m"], datetime(2025, 1, 2, 12, 0), where="interval")
 
-    async def test_operator_auto_name_matches(self, orders_engine) -> None:
+    async def test_operator_auto_name_matches(self, orders_engine: SlayerQueryEngine) -> None:
         ops = await orders_engine.execute(_q(measures=["max(shipped_at - interval(2, 'day'))"]))
         fn = await orders_engine.execute(_q(measures=["max(date_add(shipped_at, -2, 'day'))"]))
         assert ops.columns == fn.columns

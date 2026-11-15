@@ -92,7 +92,7 @@ class TestSpineInAnyCase:
         assert (canonical[0] if expected == "ok" else canonical[1]) == expected
         assert await outcome(engine, build(spelling)) == canonical
 
-    async def test_upper_case_spine_root(self, engine) -> None:
+    async def test_upper_case_spine_root(self, engine: SlayerQueryEngine) -> None:
         upper = await engine.execute(SlayerQuery.model_validate(
             {"source_model": "TIME_SPINE", "time_dimensions": [td("TIME_SPINE")], **sum_orders()}))
         plain = await engine.execute(SlayerQuery.model_validate(
@@ -126,7 +126,7 @@ class TestSpineInAnyCase:
         assert "'TIME_SPINE.timestamp'" in resp.sql
 
     @pytest.mark.parametrize("spelling", VARIANTS)
-    async def test_a_saved_rootless_stage_pins_the_spine(self, engine, spelling: str) -> None:
+    async def test_a_saved_rootless_stage_pins_the_spine(self, engine: SlayerQueryEngine, spelling: str) -> None:
         stage = SlayerQuery.model_validate({"name": "monthly", "time_dimensions": [td(spelling)], **sum_orders()})
         await engine.create_model_from_query(query=stage, name="saved_monthly")
         stored = await engine.storage.get_model("saved_monthly", data_source="test")
@@ -158,20 +158,20 @@ async def variant_engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 class TestReservedName:
     @pytest.mark.parametrize("name", ["time_spine", "Time_Spine", "TIME_SPINE"])
-    async def test_a_new_model_in_any_case_is_refused(self, engine, name: str) -> None:
+    async def test_a_new_model_in_any_case_is_refused(self, engine: SlayerQueryEngine, name: str) -> None:
         model = _variant(name)
         with pytest.raises(ReservedModelNameError) as err:
             await engine.storage.save_model(model)
         assert "time_spine" in str(err.value)
         assert await engine.storage.get_model(name, data_source="test") is None
 
-    async def test_a_stored_variant_loads_with_the_warning(self, variant_engine) -> None:
+    async def test_a_stored_variant_loads_with_the_warning(self, variant_engine: SlayerQueryEngine) -> None:
         with recorded_warnings() as caught:
             model = await variant_engine.storage.get_model("Time_Spine", data_source="test")
         assert model is not None
         assert messages(caught, "Time_Spine", "time_spine")
 
-    async def test_a_stored_variant_saves_unchanged_with_the_warning(self, variant_engine) -> None:
+    async def test_a_stored_variant_saves_unchanged_with_the_warning(self, variant_engine: SlayerQueryEngine) -> None:
         model = await variant_engine.storage.get_model("Time_Spine", data_source="test")
         assert model is not None
         with recorded_warnings() as caught:
@@ -197,7 +197,7 @@ class TestReservedName:
         resp = await variant_engine.execute(spine_query(measures=TWO_FACTS, source_model="time_spine"))
         assert by_bucket(resp, ["o", "r", "n"]) == TWO_FACT_ROWS
 
-    async def test_a_variant_in_another_datasource_is_no_ambiguity(self, engine) -> None:
+    async def test_a_variant_in_another_datasource_is_no_ambiguity(self, engine: SlayerQueryEngine) -> None:
         await engine.storage.save_datasource(DatasourceConfig(name="a", type="sqlite", database=":memory:"))
         await engine.storage.save_model(_variant(data_source="a"), _validate=False)
         resp = await engine.execute(spine_query(measures=TWO_FACTS, source_model="TIME_SPINE", time_dimensions=[

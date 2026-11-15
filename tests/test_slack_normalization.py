@@ -33,6 +33,7 @@ from slayer.engine.normalization import (
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 
 def _orders() -> SlayerModel:
@@ -450,7 +451,7 @@ def _chain_model(
     )
 
 
-async def _save_4hop_chain(storage) -> None:
+async def _save_4hop_chain(storage: StorageBackend) -> None:
     """Save the a->b->c->d->e chain shared by the 4-hop tests; ``e`` carries
     ``rolling_avg`` and a ``score`` column.
     """

@@ -4,6 +4,7 @@ import pytest
 
 from slayer.core.query import TimeDimension
 from tests import _dev1883_fixtures as fx
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture
@@ -17,7 +18,7 @@ async def exec_engine(tmp_path):
 
 
 class TestGranularitySuffixedKeys:
-    async def test_two_granularities_functional_execution(self, exec_engine) -> None:
+    async def test_two_granularities_functional_execution(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
             dimensions=["date_trunc('month', created_at)", "date_trunc('year', created_at)"],
@@ -40,7 +41,7 @@ class TestGranularitySuffixedKeys:
             "2025-03-01": ("2025-01-01", 5.0),
         }
 
-    async def test_two_granularities_dotted_column_execution(self, exec_engine) -> None:
+    async def test_two_granularities_dotted_column_execution(self, exec_engine: SlayerQueryEngine) -> None:
         """Joined (dotted) same-column collisions suffix both the SQL alias and the
         result key, so rows carry distinct month/year values (not one collapsed bucket)."""
         resp = await exec_engine.execute(fx.q(
@@ -66,7 +67,7 @@ class TestGranularitySuffixedKeys:
             "2024-07-01": ("2024-01-01", 25.0),
         }
 
-    async def test_explicit_form_gets_the_same_keys(self, exec_engine) -> None:
+    async def test_explicit_form_gets_the_same_keys(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
             time_dimensions=[
@@ -81,7 +82,7 @@ class TestGranularitySuffixedKeys:
             "orders.amount_sum",
         ]
 
-    async def test_mixed_functional_and_explicit_suffixed(self, exec_engine) -> None:
+    async def test_mixed_functional_and_explicit_suffixed(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "year"}],
@@ -94,7 +95,7 @@ class TestGranularitySuffixedKeys:
             "orders.amount_sum",
         }
 
-    async def test_single_time_dimension_keeps_unsuffixed_key(self, exec_engine) -> None:
+    async def test_single_time_dimension_keeps_unsuffixed_key(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
             dimensions=["date_trunc('month', created_at)"],
@@ -102,7 +103,7 @@ class TestGranularitySuffixedKeys:
         ))
         assert resp.columns == ["orders.created_at", "orders.amount_sum"]
 
-    async def test_distinct_columns_keep_unsuffixed_keys(self, exec_engine) -> None:
+    async def test_distinct_columns_keep_unsuffixed_keys(self, exec_engine: SlayerQueryEngine) -> None:
         """Two TDs on different columns don't collide, so neither key is suffixed."""
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
@@ -164,7 +165,7 @@ class TestDuplicateTimeDimensions:
         )
         assert q.time_dimensions == [TimeDimension.model_validate(entry)]
 
-    async def test_deduped_query_executes_as_single(self, exec_engine) -> None:
+    async def test_deduped_query_executes_as_single(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(fx.q(
             source_model="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],

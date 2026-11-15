@@ -48,6 +48,7 @@ from tests._dev1824_fixtures import (
     q,
     rows_by,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -447,7 +448,7 @@ class TestCardinalityNeutral:
         (["region", "city"], "month"),
     ])
     async def test_adding_partitioned_measure_is_neutral(
-        self, exec_engine, dims, tds,
+        self, exec_engine: SlayerQueryEngine, dims, tds,
     ) -> None:
         tds = month_td() if tds else None
         base = q(

@@ -446,15 +446,17 @@ def _find_column(node: Any, name: str) -> Optional[dict[str, Any]]:
 
 
 class TestRendering:
-    async def test_inspect_model_markdown(self, engine) -> None:
+    async def test_inspect_model_markdown(self, engine: SlayerQueryEngine) -> None:
         model = await engine.storage.get_model("contractors", data_source="test")
+        assert model is not None
         out = await render_model_inspection(model=model, storage=engine.storage, engine=engine, format="markdown",
                                             sections=["columns"])
         for needle in ("ARRAY<TEXT>", "go", "sql", "contains", "contains_any", "contains_all", "skills.value"):
             assert needle in out, (needle, out)
 
-    async def test_inspect_model_json(self, engine) -> None:
+    async def test_inspect_model_json(self, engine: SlayerQueryEngine) -> None:
         model = await engine.storage.get_model("contractors", data_source="test")
+        assert model is not None
         out = await render_model_inspection(model=model, storage=engine.storage, engine=engine, format="json",
                                             sections=["columns"])
         skills = _find_column(json.loads(out), "skills")

@@ -514,7 +514,7 @@ class TestLocalAggregateHiddenOrder:
 
 
 class TestExecutionHiddenOrder:
-    async def test_execute_top_n_by_hidden_aggregate(self, exec_engine) -> None:
+    async def test_execute_top_n_by_hidden_aggregate(self, exec_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -528,7 +528,7 @@ class TestExecutionHiddenOrder:
         assert all("amount_sum" not in k for k in resp.data[0]), f"row: {resp.data[0]}"
 
     async def test_execute_grouped_row_column_max_wrap_orders_correctly(
-        self, exec_engine,
+        self, exec_engine: SlayerQueryEngine,
     ) -> None:
         """Executed: the MAX wrap orders by latest ``created_at`` per status (open before paid, desc) without leaking into the response or changing row count."""
         query = SlayerQuery(
@@ -545,7 +545,7 @@ class TestExecutionHiddenOrder:
         assert all("created_at_max" not in k for k in resp.columns), resp.columns
 
     async def test_execute_ungrouped_joined_order_pulls_join_and_orders(
-        self, exec_engine,
+        self, exec_engine: SlayerQueryEngine,
     ) -> None:
         """A raw-rows query sorted by a joined column orders by its real values (Law-1 pull) without projecting it."""
         query = SlayerQuery(
@@ -562,7 +562,7 @@ class TestExecutionHiddenOrder:
         assert len(resp.data) == 4, resp.data
         assert all("region" not in k for k in resp.columns), resp.columns
 
-    async def test_hidden_order_slot_absent_from_attributes(self, exec_engine) -> None:
+    async def test_hidden_order_slot_absent_from_attributes(self, exec_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -651,7 +651,7 @@ class TestCrossModelHiddenOrder:
         with pytest.raises(DistinctDimensionValuesError):
             await _sql(engine, query)
 
-    async def test_execute_cross_model_hidden_order_stripped(self, exec_engine) -> None:
+    async def test_execute_cross_model_hidden_order_stripped(self, exec_engine: SlayerQueryEngine) -> None:
         """Executed: an order-only cross-model aggregate is absent from response columns, row keys, and attributes."""
         query = SlayerQuery(
             source_model="orders",

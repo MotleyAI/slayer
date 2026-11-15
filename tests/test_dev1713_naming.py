@@ -155,7 +155,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
 
 
 class TestJoinedDimensionDottedKeys:
-    async def test_joined_derived_dimension_key_is_dotted(self, engine) -> None:
+    async def test_joined_derived_dimension_key_is_dotted(self, engine: SlayerQueryEngine) -> None:
         """The bug-1 shape: a joined DERIVED dimension (``customers.rev_x2``,
         a ``ColumnSqlKey`` with a non-empty path) must project + return rows
         under ``orders.customers.rev_x2``, not ``orders.customers__rev_x2``."""
@@ -170,7 +170,7 @@ class TestJoinedDimensionDottedKeys:
         assert "orders.customers.rev_x2" in resp.attributes.dimensions
         assert "orders.customers.rev_x2" in resp.data[0]
 
-    async def test_multi_hop_joined_dimension_key_is_dotted(self, engine) -> None:
+    async def test_multi_hop_joined_dimension_key_is_dotted(self, engine: SlayerQueryEngine) -> None:
         """A two-hop joined dimension (``customers.regions.name``) surfaces
         as ``orders.customers.regions.name`` — the documented multi-hop
         result-key form — not ``orders.customers__regions__name``."""
@@ -184,7 +184,7 @@ class TestJoinedDimensionDottedKeys:
         assert "orders.customers__regions__name" not in resp.columns
         assert "orders.customers.regions.name" in resp.data[0]
 
-    async def test_joined_base_dimension_key_is_dotted(self, engine) -> None:
+    async def test_joined_base_dimension_key_is_dotted(self, engine: SlayerQueryEngine) -> None:
         """Guard: a joined BASE column dimension (``ColumnKey`` with a path)
         was already dotted; the D3 fix must not regress it."""
         query = SlayerQuery(
@@ -196,7 +196,7 @@ class TestJoinedDimensionDottedKeys:
         assert "orders.customers.region_id" in resp.columns, resp.columns
 
     async def test_order_by_joined_dimension_matches_dotted_projection(
-        self, engine,
+        self, engine: SlayerQueryEngine,
     ) -> None:
         """A dim-only query ORDERed BY a joined dimension must sort by the
         SAME dotted key the projection emits — the ORDER BY alias
@@ -214,10 +214,11 @@ class TestJoinedDimensionDottedKeys:
         resp = await engine.execute(query)
         assert "orders.customers.regions.name" in resp.columns, resp.columns
         dry = await engine.execute(query, dry_run=True)
+        assert dry.sql is not None
         assert "orders.customers__regions__name" not in dry.sql, dry.sql
         assert "orders.customers.regions.name" in dry.sql
 
-    async def test_cross_model_measure_key_still_dotted(self, engine) -> None:
+    async def test_cross_model_measure_key_still_dotted(self, engine: SlayerQueryEngine) -> None:
         """Guard: cross-model MEASURES already surfaced dotted
         (``orders.customers.revenue_sum``); the fix keeps that."""
         query = SlayerQuery(
@@ -228,7 +229,7 @@ class TestJoinedDimensionDottedKeys:
         resp = await engine.execute(query)
         assert "orders.customers.revenue_sum" in resp.columns, resp.columns
 
-    async def test_order_by_joined_dimension_in_cross_model_query(self, engine) -> None:
+    async def test_order_by_joined_dimension_in_cross_model_query(self, engine: SlayerQueryEngine) -> None:
         """Guard: the cross-model (combined) ORDER BY path also sorts a joined
         dimension by its dotted key and executes cleanly (no flat-alias
         mismatch), alongside a cross-model measure."""
@@ -243,7 +244,7 @@ class TestJoinedDimensionDottedKeys:
         assert "orders.customers.regions.name" in resp.columns, resp.columns
         assert "orders.customers.revenue_sum" in resp.columns
 
-    async def test_time_dimension_over_joined_column_dotted(self, engine) -> None:
+    async def test_time_dimension_over_joined_column_dotted(self, engine: SlayerQueryEngine) -> None:
         """Codex F9: a time dimension over a JOINED column keeps the dotted
         leaf key (no granularity suffix), matching a base-column TD."""
         query = SlayerQuery(
@@ -259,7 +260,7 @@ class TestJoinedDimensionDottedKeys:
         resp = await engine.execute(query)
         assert "orders.customers.signup_at" in resp.columns, resp.columns
 
-    async def test_response_attributes_agree_with_sql_aliases(self, engine) -> None:
+    async def test_response_attributes_agree_with_sql_aliases(self, engine: SlayerQueryEngine) -> None:
         """Codex F6: ``response_meta._slot_result_keys`` (which builds
         ``attributes``) and the generator's ``_full_alias_for_slot`` (which
         builds the SQL projection) must produce the SAME key for a joined
@@ -292,7 +293,7 @@ class TestJoinedDimensionDottedKeys:
         attr_keys = set(resp.attributes.dimensions) | set(resp.attributes.measures)
         assert attr_keys <= set(resp.columns), (attr_keys, resp.columns)
 
-    async def test_all_slot_types_generator_and_response_agree(self, engine) -> None:
+    async def test_all_slot_types_generator_and_response_agree(self, engine: SlayerQueryEngine) -> None:
         """Codex F6 (per slot-key type): local ColumnKey dim, joined ColumnKey
         dim, joined ColumnSqlKey (derived) dim, joined TimeTruncKey, local
         aggregate, cross-model aggregate, and star-count. The generator's SQL
@@ -313,6 +314,7 @@ class TestJoinedDimensionDottedKeys:
             # response_meta side (resp.columns) — every key dotted, none flattened.
             assert set(resp.columns) == expected, resp.columns
             # generator side (SQL projection) — must match response_meta exactly.
+            assert resp.sql is not None
             sql_cols = set(_outer_select_columns(resp.sql, dialect="sqlite"))
             assert sql_cols == expected, sql_cols
             # No ``__``-flattened joined key leaked from either producer.
@@ -409,7 +411,7 @@ async def _new_sql(*, storage, stages, dialect="sqlite") -> str:
 
 
 class TestMultiStageNaming:
-    async def test_inner_stage_flat_bind_still_works(self, engine) -> None:
+    async def test_inner_stage_flat_bind_still_works(self, engine: SlayerQueryEngine) -> None:
         """A 2-stage DAG: the inner stage reaches through a join and exposes
         the joined dim under the FLAT downstream name (``customers__region_id``),
         which the root binds. Inner stages must stay flat (contract unchanged)."""
@@ -434,7 +436,7 @@ class TestMultiStageNaming:
             resp.columns
         )
 
-    async def test_three_stage_flat_propagation_and_dotted_final(self, engine) -> None:
+    async def test_three_stage_flat_propagation_and_dotted_final(self, engine: SlayerQueryEngine) -> None:
         """Codex F1 + F12: the SAME bug-prone slot — a joined DERIVED dim
         (``customers.rev_x2``, a ``ColumnSqlKey`` with a path) — renders FLAT
         (``customers__rev_x2``) when its owning stage is INNER and DOTTED

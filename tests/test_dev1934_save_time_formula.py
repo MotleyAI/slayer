@@ -28,6 +28,7 @@ from slayer.sql.sql_template import SqlTemplateError
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 _DS = "ds"
 _BROKEN = "SUM({value}"
@@ -70,7 +71,7 @@ async def seeded(tmp_path: Path) -> AsyncIterator[tuple[SlayerQueryEngine, YAMLS
 
 
 class TestEngineCheck:
-    async def test_unparseable_formula_rejected_naming_model_and_aggregation(self, seeded) -> None:
+    async def test_unparseable_formula_rejected_naming_model_and_aggregation(self, seeded: tuple[SlayerQueryEngine, StorageBackend]) -> None:
         engine, store = seeded
         model = _model(_BROKEN)
         with pytest.raises(SlayerError) as ei:
@@ -79,24 +80,24 @@ class TestEngineCheck:
         assert "custom_agg" in str(ei.value)
         assert await store.get_model("orders", data_source=_DS) is None
 
-    async def test_qualifier_position_placeholder_rejected(self, seeded) -> None:
+    async def test_qualifier_position_placeholder_rejected(self, seeded: tuple[SlayerQueryEngine, StorageBackend]) -> None:
         engine, store = seeded
         model = _model("SUM({t}.amount)")
         with pytest.raises(SlayerError, match="custom_agg"):
             await engine.save_model(model)
         assert await store.get_model("orders", data_source=_DS) is None
 
-    async def test_query_time_only_placeholder_accepted(self, seeded) -> None:
+    async def test_query_time_only_placeholder_accepted(self, seeded: tuple[SlayerQueryEngine, StorageBackend]) -> None:
         engine, store = seeded
         await engine.save_model(_model("SUM({value} * {scale})"))
         assert await store.get_model("orders", data_source=_DS) is not None
 
-    async def test_formula_without_value_accepted(self, seeded) -> None:
+    async def test_formula_without_value_accepted(self, seeded: tuple[SlayerQueryEngine, StorageBackend]) -> None:
         engine, store = seeded
         await engine.save_model(_model("COUNT(*)"))
         assert await store.get_model("orders", data_source=_DS) is not None
 
-    async def test_unresolvable_datasource_uses_generic_dialect(self, seeded) -> None:
+    async def test_unresolvable_datasource_uses_generic_dialect(self, seeded: tuple[SlayerQueryEngine, StorageBackend]) -> None:
         engine, store = seeded
         model = _model(_BROKEN, data_source="nowhere")
         with pytest.raises(SlayerError, match="custom_agg"):
@@ -119,7 +120,7 @@ class TestEngineCheck:
         assert await store.get_model("orders", data_source="duck") is not None
 
     async def test_check_runs_before_storage_or_trial_execute(
-        self, seeded, monkeypatch: pytest.MonkeyPatch,
+        self, seeded: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         engine, store = seeded
         executed: list[TypeProbe] = []
@@ -164,7 +165,7 @@ class TestEngineCheck:
         assert expanded == []
 
     async def test_query_backed_check_uses_the_expanded_datasource_dialect(
-        self, seeded, monkeypatch: pytest.MonkeyPatch,
+        self, seeded: tuple[SlayerQueryEngine, StorageBackend], monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         engine, store = seeded
         await store.save_datasource(DatasourceConfig(name="my", type="mysql", host="h", database="d"))
@@ -201,7 +202,7 @@ class TestUnreferencedParams:
         (Aggregation(name="sum", params=_p("scale")), "scale"),
         (Aggregation(name="percentile", params=_p("p", "q")), "q"),
     ])
-    async def test_unreferenced_param_blocks_the_save(self, seeded, agg: Aggregation, param: str) -> None:
+    async def test_unreferenced_param_blocks_the_save(self, seeded: tuple[SlayerQueryEngine, StorageBackend], agg: Aggregation, param: str) -> None:
         engine, store = seeded
         model = _with(agg)
         with pytest.raises(
@@ -217,7 +218,7 @@ class TestUnreferencedParams:
         Aggregation(name="percentile", params=[AggregationParam(name="p", sql="0.5")]),
         Aggregation(name="weighted_avg", params=_p("weight")),
     ])
-    async def test_referenced_params_save(self, seeded, agg: Aggregation) -> None:
+    async def test_referenced_params_save(self, seeded: tuple[SlayerQueryEngine, StorageBackend], agg: Aggregation) -> None:
         engine, store = seeded
         await engine.save_model(_with(agg))
         assert await store.get_model("orders", data_source=_DS) is not None

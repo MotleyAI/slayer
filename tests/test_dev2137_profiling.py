@@ -9,6 +9,7 @@ from slayer.core.models import Column, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.engine.profiling import ensure_samples_fresh
 from tests._dev2120_fixtures import contractors_engine, contractors_model
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 def _record(*, engine, monkeypatch) -> list[SlayerQuery]:
@@ -24,9 +25,11 @@ def _record(*, engine, monkeypatch) -> list[SlayerQuery]:
     return log
 
 
-async def _profile(engine, name: str, monkeypatch, *, model: SlayerModel | None = None):
+async def _profile(engine: SlayerQueryEngine, name: str, monkeypatch, *, model: SlayerModel | None = None):
     stored = await engine.storage.get_model((model or contractors_model()).name, data_source="test")
+    assert stored is not None
     column = stored.get_column(name)
+    assert column is not None
     log = _record(engine=engine, monkeypatch=monkeypatch)
     outcome = await ensure_samples_fresh(model=stored, columns=[column], engine=engine, storage=engine.storage)
     (profiled,) = outcome.columns

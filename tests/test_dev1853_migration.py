@@ -22,6 +22,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.storage.base import StorageBackend
 
 
 def test_v10_is_current_and_registered() -> None:
@@ -111,7 +112,7 @@ async def _seed_sqlite(db_path: str, payloads: list[dict]) -> SQLiteStorage:
     return storage
 
 
-async def _joins_after_load(storage) -> tuple[list, list]:
+async def _joins_after_load(storage: StorageBackend) -> tuple[list, list]:
     orders = await storage.get_model("orders", data_source="ds")
     customers = await storage.get_model("customers", data_source="ds")
     assert orders is not None

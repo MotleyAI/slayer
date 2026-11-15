@@ -461,7 +461,7 @@ class TestCrossSpellingMatching:
         ("measure", "filter_"),
         [("sum(amount)", "SUM(amount) > 100"), ("SUM(amount)", "sum(amount) > 100")],
     )
-    async def test_filter_resolves_to_renamed_measure(self, exec_engine, measure, filter_) -> None:
+    async def test_filter_resolves_to_renamed_measure(self, exec_engine: SlayerQueryEngine, measure, filter_) -> None:
         resp = await exec_engine.execute(SlayerQuery.model_validate({
             "source_model": "orders", "dimensions": ["channel"],
             "measures": [{"formula": measure, "name": "rev"}], "filters": [filter_],

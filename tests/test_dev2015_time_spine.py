@@ -84,7 +84,7 @@ def _data_calls(monkeypatch) -> list[str]:
 # ---------------------------------------------------------------------------
 
 class TestReservedName:
-    async def test_save_rejected(self, engine) -> None:
+    async def test_save_rejected(self, engine: SlayerQueryEngine) -> None:
         clash = SlayerModel(name="time_spine", sql_table="customers", data_source="test",
                             columns=[Column(name="foo", type=DataType.INT, primary_key=True)])
         with pytest.raises(SlayerError) as exc:
@@ -94,7 +94,7 @@ class TestReservedName:
         stored = await engine.storage.get_model("time_spine", data_source="test")
         assert stored is None or "foo" not in {c.name for c in stored.columns}
 
-    async def test_stored_clash_fails_closed(self, engine) -> None:
+    async def test_stored_clash_fails_closed(self, engine: SlayerQueryEngine) -> None:
         clash = SlayerModel(name="time_spine", sql_table="customers", data_source="test",
                             columns=[Column(name="timestamp", type=DataType.DATE, primary_key=True)])
         await engine.storage._save_model_impl(clash)
@@ -369,9 +369,10 @@ class TestSpineStages:
     @pytest.mark.parametrize(("extra", "pinned", "count"), [
         ({}, "time_spine", 3.0), ({"dimensions": ["customers.region"]}, "customers", 9.0),
     ], ids=["unit", "per-group"])
-    async def test_a_saved_spine_query_read_as_a_source(self, engine, extra, pinned, count) -> None:
+    async def test_a_saved_spine_query_read_as_a_source(self, engine: SlayerQueryEngine, extra, pinned, count) -> None:
         await engine.create_model_from_query(query=_monthly_stage(**extra), name="saved_monthly")
         stored = await engine.storage.get_model("saved_monthly", data_source="test")
+        assert stored is not None and stored.source_queries is not None
         assert [s.source_model for s in stored.source_queries] == [pinned]
         resp = await engine.execute(_over_monthly(source_model="saved_monthly"))
         assert [(num(value(r, "t")), num(value(r, "c"))) for r in resp.data] == [(220.0, count)]

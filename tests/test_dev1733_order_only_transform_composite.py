@@ -1157,7 +1157,7 @@ class TestExecution:
         resp = await exec_engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == ["open", "paid"], resp.data
 
-    async def test_order_only_change_orders_by_the_delta(self, exec_engine) -> None:
+    async def test_order_only_change_orders_by_the_delta(self, exec_engine: SlayerQueryEngine) -> None:
         """change(sum(amount)): Jan delta NULL, Feb -25. NULLs sort last on every
         dialect, so Feb leads both directions; the sum(amount) control leads with
         Jan, proving the sort runs and reads the asked-for term."""
@@ -1190,7 +1190,7 @@ class TestExecution:
             resp_control.data
         )
 
-    async def test_hidden_order_slots_stripped_from_response(self, exec_engine) -> None:
+    async def test_hidden_order_slots_stripped_from_response(self, exec_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             source_model="orders",
             dimensions=[ColumnRef(name="status")],
@@ -1207,7 +1207,7 @@ class TestExecution:
         assert keys <= {"orders.status", "orders._count"}, keys
 
     async def test_hidden_transform_order_slot_stripped_from_response(
-        self, exec_engine,
+        self, exec_engine: SlayerQueryEngine,
     ) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -1220,7 +1220,7 @@ class TestExecution:
         assert all("rank" not in k for row in resp.data for k in row), resp.data
 
     async def test_order_only_windowed_executes_and_is_stripped(
-        self, exec_engine,
+        self, exec_engine: SlayerQueryEngine,
     ) -> None:
         query = SlayerQuery(
             source_model="orders",
@@ -1235,7 +1235,7 @@ class TestExecution:
 
 # Group 11 — multi-stage: the same shapes inside a downstream StageSchema.
 class TestMultiStage:
-    async def test_downstream_stage_order_only_composite(self, exec_engine) -> None:
+    async def test_downstream_stage_order_only_composite(self, exec_engine: SlayerQueryEngine) -> None:
         inner = SlayerQuery(
             name="s1",
             source_model="orders",
@@ -1255,7 +1255,7 @@ class TestMultiStage:
         assert resp.columns == ["s1.status", "s1.total"], resp.columns
         assert [r["s1.status"] for r in resp.data] == ["paid", "open"], resp.data
 
-    async def test_downstream_stage_order_only_transform(self, exec_engine) -> None:
+    async def test_downstream_stage_order_only_transform(self, exec_engine: SlayerQueryEngine) -> None:
         inner = SlayerQuery(
             name="s1",
             source_model="orders",
@@ -1273,7 +1273,7 @@ class TestMultiStage:
         assert [r["s1.status"] for r in resp.data] == ["open", "paid"], resp.data
 
     async def test_downstream_stage_schema_excludes_hidden_order_slot(
-        self, exec_engine,
+        self, exec_engine: SlayerQueryEngine,
     ) -> None:
         """A hidden inner-stage order slot must not surface in the stage schema."""
         inner = SlayerQuery(
@@ -1292,7 +1292,7 @@ class TestMultiStage:
         assert resp.columns == ["s1.status", "s1.total"], resp.columns
 
     async def test_hidden_windowed_order_slot_absent_from_stage_schema(
-        self, exec_engine,
+        self, exec_engine: SlayerQueryEngine,
     ) -> None:
         """Law 2, windowed: an inner-stage order-only windowed target is not a stage column."""
         inner = SlayerQuery(
@@ -1331,7 +1331,7 @@ class TestMultiStage:
         assert "amount_sum_window_90d" in str(ei.value), ei.value
 
     async def test_hidden_alias_rename_does_not_leak_into_stage_schema(
-        self, exec_engine,
+        self, exec_engine: SlayerQueryEngine,
     ) -> None:
         """Plan-time hidden renaming must not reach the downstream binding surface."""
         inner = SlayerQuery(
@@ -1354,7 +1354,7 @@ class TestMultiStage:
 # Group 9 — two pins superseded by Phase 1, inverted here (not deleted) so the
 # supersession stays visible and neither contract can silently regress.
 class TestSupersededByDev1703Phase1:
-    async def test_grouped_row_column_order_max_wraps(self, exec_engine) -> None:
+    async def test_grouped_row_column_order_max_wraps(self, exec_engine: SlayerQueryEngine) -> None:
         """Phase 1 replaced the rejection: a grouped LOCAL row column orders on a
         hidden ``<col>:max``. Seed: paid max = 2025-01-02, open = 2025-02-02, so
         DESC puts open first; a no-op sort would scramble that."""

@@ -60,7 +60,7 @@ def _root_over_b(flat_dim: str) -> SlayerQuery:
 
 
 class TestStoredDefinitionsNeverSeeStages:
-    async def test_stored_join_resolves_to_the_model_beside_a_same_named_stage(self, engine) -> None:
+    async def test_stored_join_resolves_to_the_model_beside_a_same_named_stage(self, engine: SlayerQueryEngine) -> None:
         customers_stage = query(name="customers", source_model="orders", dimensions=["status"],
                                 measures=[m("sum(amount)", "a")])
         resp = await engine.execute(
@@ -90,7 +90,7 @@ class TestStoredDefinitionsNeverSeeStages:
 
 class TestQueryBackedPrivateStageNames:
     async def test_private_stage_named_like_a_model_does_not_capture_its_stored_join(
-        self, engine,
+        self, engine: SlayerQueryEngine,
     ) -> None:
         resp = await engine.execute(query(
             source_model="qb_shadow", dimensions=["customers__tier"],
@@ -99,7 +99,7 @@ class TestQueryBackedPrivateStageNames:
         assert rows_by(resp.data, key="qb_shadow.customers__tier", value="qb_shadow.total") \
             == AMOUNT_BY_TIER
 
-    async def test_consumer_name_reaches_the_model_not_a_private_stage(self, engine) -> None:
+    async def test_consumer_name_reaches_the_model_not_a_private_stage(self, engine: SlayerQueryEngine) -> None:
         s = query(name="s", source_model="qb_shadow", dimensions=["customers__tier"],
                   measures=[m("sum(amt)", "t")])
         root = query(
@@ -124,12 +124,12 @@ class TestQueryBackedPrivateStageNames:
 
 
 class TestUserSpelling:
-    async def test_chain_result_keys_unchanged(self, engine48) -> None:
-        resp = await engine48.execute(f48.chain_list())
+    async def test_chain_result_keys_unchanged(self, engine48: SlayerQueryEngine) -> None:
+        resp = await engine48.execute([*f48.chain_list()])
         assert resp.columns == ["b.c__tr", "b.total"]
         assert rows_by(resp.data, key="b.c__tr", value="b.total") == f48.AMOUNT_BY_TIER
 
-    async def test_run_by_name_result_keys_unchanged(self, engine) -> None:
+    async def test_run_by_name_result_keys_unchanged(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute("cust_rev")
         assert resp.columns == ["x.customer_id", "x.rev", "x.top"]
         assert sorted_rows(resp.data) == sorted_rows([

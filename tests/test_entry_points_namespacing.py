@@ -33,6 +33,8 @@ from slayer.core.models import Column, DatasourceConfig, SlayerModel
 from slayer.engine import query_engine as qe_mod
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
+from slayer.core.query import SlayerQuery
+from slayer.storage.base import StorageBackend
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +122,7 @@ class TestMCPDatasourcePriority:
 
 
 class TestMCPModelToolsDataSourceArg:
-    async def test_edit_model_with_data_source_targets_only_that_one(self, mcp_server, storage) -> None:
+    async def test_edit_model_with_data_source_targets_only_that_one(self, mcp_server, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -144,7 +146,7 @@ class TestMCPModelToolsDataSourceArg:
         assert users_b is not None
         assert users_b.description != "edited a"
 
-    async def test_edit_model_ambiguous_without_data_source_returns_error(self, mcp_server, storage) -> None:
+    async def test_edit_model_ambiguous_without_data_source_returns_error(self, mcp_server, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -161,7 +163,7 @@ class TestMCPModelToolsDataSourceArg:
         assert "db_a" in result
         assert "db_b" in result
 
-    async def test_inspect_model_with_data_source_filters(self, mcp_server, storage) -> None:
+    async def test_inspect_model_with_data_source_filters(self, mcp_server, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -177,7 +179,7 @@ class TestMCPModelToolsDataSourceArg:
         assert "db_a" in result
 
     async def test_inspect_model_helper_chain_scoped_to_data_source(
-        self, mcp_server, storage, monkeypatch
+        self, mcp_server, storage: StorageBackend, monkeypatch
     ) -> None:
         """The helpers backing the model ``inspect`` (``_get_row_count``, sample
         profiling, the sample-data query) all run ``engine.execute`` against the model.
@@ -194,7 +196,7 @@ class TestMCPModelToolsDataSourceArg:
         captured: list[dict[str, Any]] = []
         original_execute = qe_mod.SlayerQueryEngine.execute
 
-        async def _capturing_execute(self, query, **kwargs):  # type: ignore[no-untyped-def]
+        async def _capturing_execute(self, query: SlayerQuery, **kwargs):  # type: ignore[no-untyped-def]
             captured.append({
                 "source_model": getattr(query, "source_model", None) if not isinstance(query, str) else query,
                 "data_source_kwarg": kwargs.get("data_source"),
@@ -225,7 +227,7 @@ class TestMCPModelToolsDataSourceArg:
             f"without data_source='db_a': {bad!r}"
         )
 
-    async def test_delete_model_with_data_source(self, mcp_server, storage) -> None:
+    async def test_delete_model_with_data_source(self, mcp_server, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -246,7 +248,7 @@ class TestMCPModelToolsDataSourceArg:
 
 
 class TestAPINamespacedModels:
-    async def test_get_model_with_data_source_query_param(self, http_client, storage) -> None:
+    async def test_get_model_with_data_source_query_param(self, http_client, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -258,7 +260,7 @@ class TestAPINamespacedModels:
         assert body["name"] == "users"
         assert body["data_source"] == "db_a"
 
-    async def test_get_model_ambiguous_returns_409(self, http_client, storage) -> None:
+    async def test_get_model_ambiguous_returns_409(self, http_client, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -271,7 +273,7 @@ class TestAPINamespacedModels:
         assert "db_a" in detail
         assert "db_b" in detail
 
-    async def test_delete_model_with_data_source_query_param(self, http_client, storage) -> None:
+    async def test_delete_model_with_data_source_query_param(self, http_client, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -283,7 +285,7 @@ class TestAPINamespacedModels:
         assert await storage.get_model("users", data_source="db_a") is None
         assert await storage.get_model("users", data_source="db_b") is not None
 
-    async def test_list_models_filterable_by_datasource(self, http_client, storage) -> None:
+    async def test_list_models_filterable_by_datasource(self, http_client, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))
@@ -345,7 +347,7 @@ class TestAPIDatasourcePriority:
 
 
 class TestClientNamespacing:
-    async def test_get_model_with_data_source(self, storage) -> None:
+    async def test_get_model_with_data_source(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
         await storage.save_model(_model("users", data_source="db_a"))

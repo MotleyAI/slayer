@@ -66,6 +66,7 @@ from tests._dev1832_fixtures import (
     status_key,
 )
 from tests._rank_direction_fixtures import rank_windows
+from slayer.engine.query_engine import SlayerResponse
 
 # Source formulas under test.
 GRAINED_CUMSUM = "sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)"
@@ -108,7 +109,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-def _month_cols(resp, name: str) -> tuple[str, str]:
+def _month_cols(resp: SlayerResponse, name: str) -> tuple[str, str]:
     month_col = next(c for c in resp.columns if c.endswith("ordered_at")
                      or "ordered_at" in c)
     return month_col, next(c for c in resp.columns if c.endswith("." + name))
@@ -459,7 +460,7 @@ def _reagg_multi_plan(formula: str):
         bundle=_monthly_multi_bundle())
 
 
-def _region_month(resp) -> dict:
+def _region_month(resp: SlayerResponse) -> dict:
     """``{(region, YYYY-MM): value}`` over a monthly [region]+month query, NULLs dropped."""
     month_col = next(c for c in resp.columns if "ordered_at" in c)
     meas_col = next(c for c in resp.columns if c.endswith(".m"))

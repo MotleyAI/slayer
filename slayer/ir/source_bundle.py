@@ -274,7 +274,7 @@ def stage_bundle_with_siblings(
 
 def resolve_scope(
     *,
-    query,
+    query: SlayerQuery,
     bundle: "ResolvedSourceBundle",
     stage_schemas: Optional[Dict[str, "StageSchema"]],
 ):

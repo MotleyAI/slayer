@@ -20,6 +20,8 @@ from tests._dev1836_fixtures import (
     orders_model,
     q,
 )
+from slayer.core.models import SlayerModel
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture(params=["sqlite"])
@@ -28,12 +30,12 @@ async def engine(request):
         yield eng
 
 
-def _pk_names(model) -> set[str]:
+def _pk_names(model: SlayerModel) -> set[str]:
     return {c.name for c in model.columns if c.primary_key}
 
 
 class TestStamping:
-    async def test_aggregated_query_stamps_composite_grain(self, engine) -> None:
+    async def test_aggregated_query_stamps_composite_grain(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(
             q(dimensions=["status", "channel"],
               measures=[ModelMeasure(formula="sum(amount)", name="total")]),
@@ -41,7 +43,7 @@ class TestStamping:
         )
         assert _pk_names(model) == {"status", "channel"}
 
-    async def test_dimension_only_distinct_stamps_grain(self, engine) -> None:
+    async def test_dimension_only_distinct_stamps_grain(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(
             q(dimensions=["status"]), "vm_dims",
         )
@@ -49,7 +51,7 @@ class TestStamping:
         assert _pk_names(model) == set()
         assert {c.name for c in model.columns if c.unique} == {"status"}
 
-    async def test_duplicate_preserving_query_stamps_nothing(self, engine) -> None:
+    async def test_duplicate_preserving_query_stamps_nothing(self, engine: SlayerQueryEngine) -> None:
         """F2 negative — ``distinct_dimension_values=False`` preserves
         duplicates, so no uniqueness claim may be stamped."""
         model = await engine.create_model_from_query(
@@ -63,7 +65,7 @@ class TestStamping:
 class TestStampedModelProvesJoins:
     """Scenario: an aggregated backing query proves N:1 joins onto it."""
 
-    async def test_join_onto_complete_grain_is_provable(self, engine) -> None:
+    async def test_join_onto_complete_grain_is_provable(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(
             q(dimensions=["status", "channel"],
               measures=[ModelMeasure(formula="sum(amount)", name="total")]),
@@ -75,7 +77,7 @@ class TestStampedModelProvesJoins:
         )
         assert provably_to_one(edge=full, target_model=model)
 
-    async def test_join_onto_partial_grain_stays_unproven(self, engine) -> None:
+    async def test_join_onto_partial_grain_stays_unproven(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(
             q(dimensions=["status", "channel"],
               measures=[ModelMeasure(formula="sum(amount)", name="total")]),
@@ -87,7 +89,7 @@ class TestStampedModelProvesJoins:
         assert not provably_to_one(edge=partial, target_model=model)
 
     async def test_metric_through_stamped_grain_keeps_exact_values(
-        self, engine,
+        self, engine: SlayerQueryEngine,
     ) -> None:
         """Scenario's executed clause: a cross-model metric over the proven
         join onto the query-backed model keeps exact per-dimension values."""
@@ -112,7 +114,7 @@ class TestStampedModelProvesJoins:
         assert len(resp.data) == 2
         assert got == pytest.approx(AMOUNT_BY_STATUS)
 
-    async def test_unstamped_model_proves_nothing(self, engine) -> None:
+    async def test_unstamped_model_proves_nothing(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(
             q(dimensions=["status"], distinct_dimension_values=False),
             "vm_dup2",

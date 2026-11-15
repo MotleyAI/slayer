@@ -191,7 +191,7 @@ class OnlineChecks:
         resp = await execute(self.corpus, online_store, key)
         assert sorted(c.rsplit(".", 1)[-1] for c in resp.columns) == sorted(self.corpus.expected[key]["rows"][0])
 
-    async def test_every_model_resaves(self, online_store):
+    async def test_every_model_resaves(self, online_store: StorageBackend):
         models, _ = await load_all(self.corpus, online_store)
         for model in models:
             await online_store.save_model(model)

@@ -43,6 +43,7 @@ from tests._rank_direction_fixtures import (
     rank_within,
     rank_windows,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 BOTH_SPELLINGS = ("direction='asc'", "direction='desc'", "lowest first", "highest first")
 
@@ -467,7 +468,7 @@ class TestNaming:
         ("dense_rank(sum(amount), direction=' DESC ')", "sales.dense_rank_amount_sum_desc"),
         ("ntile(sum(amount), n=4)", "sales.ntile_amount_sum_n_4"),
     ])
-    async def test_unnamed_key(self, engine, formula, key):
+    async def test_unnamed_key(self, engine: SlayerQueryEngine, formula, key):
         resp = await engine.execute(sales_q(dimensions=["region", "city"], measures=[formula]))
         assert key in resp.columns, resp.columns
         assert not any("direction" in c for c in resp.columns), resp.columns

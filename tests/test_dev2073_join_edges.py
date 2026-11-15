@@ -55,12 +55,12 @@ def _succeeded(text: str) -> bool:
 
 
 class TestMcpEditModelAddressesOneEdge:
-    async def test_remove_one_of_two_named_edges(self, mcp_server, storage) -> None:
+    async def test_remove_one_of_two_named_edges(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(orders_with(*named_pair()))
         assert _succeeded(await _edit(mcp_server, remove={"joins": ["billing_address"]}))
         assert await stored_joins(storage) == [("shipping_address", SHIPPING_PAIRS)]
 
-    async def test_ambiguous_target_reference_fails_listing_candidates(self, mcp_server, storage) -> None:
+    async def test_ambiguous_target_reference_fails_listing_candidates(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(orders_with(*unnamed_pair()))
         text = await _edit(mcp_server, remove={"joins": ["addresses"]})
         assert not _succeeded(text)
@@ -68,13 +68,13 @@ class TestMcpEditModelAddressesOneEdge:
         assert "shipping_address_id" in text
         assert len(await stored_joins(storage)) == 2
 
-    async def test_upsert_names_the_matching_unnamed_edge(self, mcp_server, storage) -> None:
+    async def test_upsert_names_the_matching_unnamed_edge(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(orders_with(*unnamed_pair()))
         spec = {"target_model": "addresses", "join_pairs": SHIPPING_PAIRS, "name": "shipping_address"}
         assert _succeeded(await _edit(mcp_server, joins=[spec]))
         assert await stored_joins(storage) == [(None, BILLING_PAIRS), ("shipping_address", SHIPPING_PAIRS)]
 
-    async def test_upsert_matches_by_name_before_pairs(self, mcp_server, storage) -> None:
+    async def test_upsert_matches_by_name_before_pairs(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(orders_with(*reversed(named_pair())))
         # The name selects billing; the pairs alone would select shipping.
         spec = {"target_model": "addresses", "join_pairs": SHIPPING_PAIRS, "name": "billing_address"}
@@ -83,13 +83,13 @@ class TestMcpEditModelAddressesOneEdge:
             ("shipping_address", SHIPPING_PAIRS), ("billing_address", SHIPPING_PAIRS),
         ]
 
-    async def test_exact_reference_removes_exactly_one_edge(self, mcp_server, storage) -> None:
+    async def test_exact_reference_removes_exactly_one_edge(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(orders_with(*unnamed_pair()))
         ref = {"target_model": "addresses", "join_pairs": SHIPPING_PAIRS}
         assert _succeeded(await _edit(mcp_server, remove={"join_edges": [ref]}))
         assert await stored_joins(storage) == [(None, BILLING_PAIRS)]
 
-    async def test_unnamed_join_to_an_already_parallel_target_is_rejected(self, mcp_server, storage) -> None:
+    async def test_unnamed_join_to_an_already_parallel_target_is_rejected(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_model(orders_with(*named_pair()))
         text = await _edit(mcp_server, joins=[{"target_model": "addresses", "join_pairs": [["legacy_addr", "id"]]}])
         assert not _succeeded(text)
@@ -98,12 +98,12 @@ class TestMcpEditModelAddressesOneEdge:
 
 
 class TestEngineRemovalAddressesOneEdge:
-    async def test_remove_by_edge_name(self, engine, storage) -> None:
+    async def test_remove_by_edge_name(self, engine: SlayerQueryEngine, storage: YAMLStorage) -> None:
         await storage.save_model(orders_with(*named_pair()))
         await engine.edit_model_remove(model_name="orders", data_source=DS, remove_joins=["billing_address"])
         assert await stored_joins(storage) == [("shipping_address", SHIPPING_PAIRS)]
 
-    async def test_ambiguous_target_reference_raises(self, engine, storage) -> None:
+    async def test_ambiguous_target_reference_raises(self, engine: SlayerQueryEngine, storage: YAMLStorage) -> None:
         await storage.save_model(orders_with(*unnamed_pair()))
         with pytest.raises(ValueError, match="shipping_address_id"):
             await engine.edit_model_remove(model_name="orders", data_source=DS, remove_joins=["addresses"])

@@ -28,6 +28,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 from tests import _emitted_reparse_law as emitted_reparse_law
 from tests._engine_helpers import _engine_generate
+from typing import Any
 
 # Marker a length-fit leaves in an alias: ``_<8 hex digits>_``. Its ABSENCE is
 # how the "no churn for the common case" tests prove the write pass was identity.
@@ -305,7 +306,7 @@ def _assert_order_by_refs_resolve(sql: str, dialect: str = "postgres") -> None:
                 )
 
 
-async def _sql(engine, model, query, *, dialect: str = "postgres", mode: str = "outer") -> str:
+async def _sql(engine: SlayerQueryEngine, model, query, *, dialect: str = "postgres", mode: str = "outer") -> str:
     """Emit SQL for ``query`` on ``dialect`` via the branch's dry-run pipeline.
 
     Rebuilds a fresh engine on ``dialect`` from the models the passed engine
@@ -317,10 +318,11 @@ async def _sql(engine, model, query, *, dialect: str = "postgres", mode: str = "
     """
     del mode
     names = await engine.storage.list_models(data_source=model.data_source)
-    models = [
+    loaded = [
         await engine.storage.get_model(name=n, data_source=model.data_source)
         for n in names
     ]
+    models = [m for m in loaded if m is not None]
     root = next(m for m in models if m.name == model.name)
     extras = [m for m in models if m.name != model.name]
     return await _engine_generate(
@@ -945,7 +947,7 @@ class TestEngineContract:
             assert key in resp.columns
 
     async def test_get_result_column_types_decodes_fitted_aliases(
-        self, chain, monkeypatch: pytest.MonkeyPatch,
+        self, chain: tuple[SlayerQueryEngine, Any], monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``get_result_column_types`` probe keys are fitted aliases and must decode back to canonical."""
         engine, _ = chain

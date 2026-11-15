@@ -38,6 +38,7 @@ from tests._engine_helpers import (
     _norm,
 )
 from tests._rank_direction_fixtures import rank_windows
+from slayer.storage.base import StorageBackend
 
 
 def _outer_order_terms(sql: str, dialect: str = "postgres") -> list[tuple[str, str]]:
@@ -2744,7 +2745,7 @@ class TestPathAliasJoinInference:
         assert "customers" in join_aliases
         assert "customers__regions" in join_aliases
 
-    async def test_time_dimension_sql_with_path_alias_infers_joins(self, storage) -> None:
+    async def test_time_dimension_sql_with_path_alias_infers_joins(self, storage: StorageBackend) -> None:
         """Inline time dimension SQL referencing path alias should also trigger join inference."""
         await storage.save_model(SlayerModel(
             name="orgs", sql_table="orgs", data_source="test",
@@ -3415,7 +3416,7 @@ class TestMeasureSourceSqlJoinInference:
     # Defensive scope skip + tracking xfails for follow-up tickets
 
     async def test_cross_model_source_not_in_host_collector_scope(
-        self, storage
+        self, storage: StorageBackend
     ) -> None:
         """Defensive: the new collector skips AGGREGATE slots whose ``source.path != ()`` (cross-model). For a cross-model aggregate whose target column has a LOCAL sql (no further join) the host base FROM must not pull a spurious deeper join."""
         await storage.save_model(SlayerModel(
@@ -3444,7 +3445,7 @@ class TestMeasureSourceSqlJoinInference:
         assert "regions" not in join_aliases
 
     async def test_cross_model_target_column_sql_crosses_further_join_xfail(
-        self, storage
+        self, storage: StorageBackend
     ) -> None:
         """A cross-model aggregate ``sum(customers_v2.deep_pop)`` where ``deep_pop`` lives on ``customers_v2`` with sql ``regions.population`` — the deeper customers_v2→regions join should appear inside the ``_cm_*`` CTE body. Currently it doesn't."""
         # `deep_pop` on customers_v2 points at the further-joined regions.
@@ -4573,7 +4574,7 @@ class TestSelfReferencingPaths:
         return YAMLStorage(base_dir=str(tmp_path))
 
     @pytest.fixture
-    async def engine_and_models(self, storage):
+    async def engine_and_models(self, storage: StorageBackend):
         orders = SlayerModel(
             name="orders", sql_table="orders", data_source="test",
             columns=[
@@ -7376,7 +7377,7 @@ class TestIsolatedFilteredMeasureCTEs:
 
 
     @pytest.fixture
-    def claim_amount_model_with_time(self, claim_amount_model):
+    def claim_amount_model_with_time(self, claim_amount_model: SlayerModel):
         """Extend claim_amount_model with a timestamp dimension and first/last measures."""
         claim_amount_model.default_time_dimension = "created_at"
         claim_amount_model.columns.append(
@@ -7481,7 +7482,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_isolated_first_with_explicit_time_column(
-        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+        self, generator: SQLGenerator, claim_amount_model_with_time: SlayerModel, related_models,
     ) -> None:
         """Isolated first measure with explicit time_column uses correct ordering."""
         # Add a timestamp dimension and measure for the explicit time column.
@@ -7513,7 +7514,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_multiple_isolated_first_last_separate_ctes(
-        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+        self, generator: SQLGenerator, claim_amount_model_with_time: SlayerModel, related_models,
     ) -> None:
         """Two isolated first/last measures produce separate CTEs, no ROW_NUMBER in base."""
         # latest_payment already has cross-model filter; add another.
@@ -7717,7 +7718,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_post_phase_filter_not_routed_to_outer_combined_where(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_model: SlayerModel, related_models,
     ) -> None:
         """A POST-phase filter (transform-wrapped, ``cumsum(...) > 0``) on an isolated filtered-local measure stays in the existing post-transform wrapper — it must NOT be re-routed to the outer combined WHERE."""
         # Need a time dimension for cumsum (which needs ordering).
@@ -7757,7 +7758,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_aggregate_and_post_filters_route_independently(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_model: SlayerModel, related_models,
     ) -> None:
         """A plain measure filter (``sum(loss_payment_amt) > 1000``) beside a transform filter (``cumsum(sum(loss_payment_amt)) > 0``): both mask at the chain's final select, so the plain one never shrinks the series cumsum reads (Axiom 14)."""
         claim_amount_model.default_time_dimension = "created_at"
@@ -7830,7 +7831,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_filtered_local_parametric_last_in_order_by(
-        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+        self, generator: SQLGenerator, claim_amount_model_with_time: SlayerModel, related_models,
     ) -> None:
         """A filtered-local PARAMETRIC ``last(updated_at)`` referenced from ORDER BY keeps its ranking INSIDE its own CTE, and the outer ORDER BY resolves through that CTE's joined-back column."""
         claim_amount_model_with_time.columns.append(
@@ -7867,7 +7868,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_filtered_local_parametric_last_in_having(
-        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+        self, generator: SQLGenerator, claim_amount_model_with_time: SlayerModel, related_models,
     ) -> None:
         """A filtered-local PARAMETRIC ``last(updated_at)`` referenced from a host filter routes as an AGGREGATE-phase filter to the outer combined WHERE. The ranking stays inside the CTE; the outer SELECT applies the comparison against the joined-back column."""
         claim_amount_model_with_time.columns.append(
@@ -8085,7 +8086,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_no_dim_query_with_host_row_filter_applies_in_base(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_model: SlayerModel, related_models,
     ) -> None:
         """A no-dimension query with cross-model aggregates AND a host-local ROW filter must apply the filter at the placeholder ``_base`` (via ``WHERE`` + ``LIMIT 1``). The round-2 fix that dropped the host ``FROM`` to avoid N-row CROSS JOIN duplication also bypassed ``_build_where_having_from_planned``, silently ignoring host-local ROW filters (Codex round 4 / CodeRabbit)."""
         # Add a host column the filter references.
@@ -8136,7 +8137,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_first_last_with_host_filter_not_reapplied_outside_ranked_subquery(
-        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+        self, generator: SQLGenerator, claim_amount_model_with_time: SlayerModel, related_models,
     ) -> None:
         """A query mixing a LOCAL first/last measure and a host ROW filter must apply the filter only INSIDE the ranked subquery (pre-ranking), not again on the outer ``_base`` SELECT. The first/last branch returns ``where_consumed=True``; the cross- model orchestrator must honour that and skip the outer WHERE application, otherwise the filter double-applies and changes first/last semantics by filtering AFTER ranking."""
         claim_amount_model_with_time.columns.append(
@@ -9918,7 +9919,7 @@ class TestCrossModelAggregateSourceSqlJoinInference:
             joins=[ModelJoin(target_model="customers_v2", join_pairs=[["customer_id", "id"]])],
         )
 
-    async def _engine_with(self, storage, customers_v2) -> SlayerQueryEngine:
+    async def _engine_with(self, storage: StorageBackend, customers_v2) -> SlayerQueryEngine:
         await storage.save_model(customers_v2)
         await storage.save_model(self._orders_x())
         return SlayerQueryEngine(storage=storage)

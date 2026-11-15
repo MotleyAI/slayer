@@ -758,7 +758,7 @@ class TestNullSafeJoinBackExecution:
         # must survive the join-back.
         assert null_row["orders_x.customers_v2.lifetime_value_sum"] == 50.0, resp.data
 
-    async def test_null_grain_retains_aggregate_filtered_local(self, sqlite_engine) -> None:
+    async def test_null_grain_retains_aggregate_filtered_local(self, sqlite_engine: SlayerQueryEngine) -> None:
         """Same, for a filtered-local (host-rooted) isolation CTE
         join-back. The filter references a joined table (customers_v2) so the
         measure isolates into a rerooted CTE joined back on the nullable

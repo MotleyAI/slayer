@@ -23,6 +23,7 @@ from tests._dev1868_fixtures import (
     LAST_SPEND_BY_TIER,
     LAST_TIER,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 TIER = "orders.customers.tier"
 REGION = "orders.customers.regions.name"
@@ -78,7 +79,7 @@ class TestFilterPosition:
 
 
 class TestOrderPosition:
-    async def test_order_sorts_by_the_undeclared_aggregate(self, exec_engine) -> None:
+    async def test_order_sorts_by_the_undeclared_aggregate(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
             filters=["customers.tier is not null"],
@@ -104,7 +105,7 @@ class TestDimensionPosition:
 
 
 class TestRanklessTargetStaysTyped:
-    async def test_no_ranking_column_is_a_clear_error(self, exec_engine) -> None:
+    async def test_no_ranking_column_is_a_clear_error(self, exec_engine: SlayerQueryEngine) -> None:
         # customers has no default_time_dimension and, with a second temporal
         # column, no sole-column default: the typed ranking-time error names the remedy.
         customers = await exec_engine.storage.get_model("customers")

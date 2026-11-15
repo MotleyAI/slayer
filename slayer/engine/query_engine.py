@@ -204,6 +204,7 @@ from slayer.storage.engine_view import EngineStorage
 from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.yaml_storage import YAMLStorage
 import slayer.engine.bundle_builder
+from slayer.core.models import ModelJoin
 
 logger = logging.getLogger(__name__)
 
@@ -2714,7 +2715,7 @@ class SlayerQueryEngine:
         return findings, persist_entries
 
     async def _detect_one_join(
-        self, *, model, join, by_name, client, sqlglot_name, data_source,
+        self, *, model, join: ModelJoin, by_name, client, sqlglot_name, data_source,
         datasource_cfg,
     ) -> "tuple[JoinCardinalityFinding, JoinCardinality | None]":
         pairs = [[p[0], p[1]] for p in join.join_pairs]
@@ -3319,12 +3320,12 @@ def _entry_client_key(entry: _CacheEntry) -> ClientCacheKey:
 # Join-cardinality detection helpers
 
 
-def _join_signature(join) -> tuple:
+def _join_signature(join: ModelJoin) -> tuple:
     """Stable identity for a join: (target_model, sorted key pairs)."""
     return (join.target_model, tuple(sorted((p[0], p[1]) for p in join.join_pairs)))
 
 
-def _scan_failed_finding(*, data_source, model, join, exc) -> JoinCardinalityFinding:
+def _scan_failed_finding(*, data_source, model, join: ModelJoin, exc) -> JoinCardinalityFinding:
     """Report a join whose profiling scan raised, instead of aborting."""
     logger.warning(
         "detect_join_cardinality: %s -> %s failed: %s",

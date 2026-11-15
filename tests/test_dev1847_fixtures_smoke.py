@@ -41,6 +41,7 @@ from tests._dev1847_fixtures import (
     make_exec_engine,
     source_queries_equiv_model,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 def _ssum(vals):
@@ -204,7 +205,7 @@ class TestSourceQueriesRealizesOracle:
         async for eng in make_exec_engine(request, models=models):
             yield eng
 
-    async def test_source_queries_matches_headline_oracle(self, engine):
+    async def test_source_queries_matches_headline_oracle(self, engine: SlayerQueryEngine):
         resp = await engine.execute("avg_city_total_by_region")
         region_col = next(c for c in resp.columns if c.endswith(".region"))
         acr_col = next(c for c in resp.columns if c.endswith(".acr"))

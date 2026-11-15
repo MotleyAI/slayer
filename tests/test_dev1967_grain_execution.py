@@ -15,6 +15,7 @@ from tests._dev1836_fixtures import (
     customers_model,
     make_exec_engine,
 )
+from slayer.engine.query_engine import SlayerQueryEngine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -117,7 +118,7 @@ class TestSiblingJoins:
 
 
 class TestQueryBacked:
-    async def test_composite_grain_member_stays_aggregatable(self, engine) -> None:
+    async def test_composite_grain_member_stays_aggregatable(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(SlayerQuery.model_validate({
             "source_model": "customers", "dimensions": ["id", "tier"],
             "measures": [{"formula": "sum(spend)", "name": "sp"}],
@@ -128,7 +129,7 @@ class TestQueryBacked:
         }))
         assert resp.data[0]["vm_id_tier.mt"] == "silver"
 
-    async def test_single_column_grain_is_unique_not_identifier(self, engine) -> None:
+    async def test_single_column_grain_is_unique_not_identifier(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(SlayerQuery.model_validate({
             "source_model": "customers", "dimensions": ["tier"],
             "measures": [{"formula": "count(*)", "name": "n"}],
@@ -141,7 +142,7 @@ class TestQueryBacked:
         }))
         assert resp.data[0]["vm_tier.mt"] == "silver"
 
-    async def test_metric_across_unique_grain_join_is_exact(self, engine) -> None:
+    async def test_metric_across_unique_grain_join_is_exact(self, engine: SlayerQueryEngine) -> None:
         await engine.create_model_from_query(SlayerQuery.model_validate({
             "source_model": "customers", "dimensions": ["tier"],
             "measures": [{"formula": "count(*)", "name": "n"}],
@@ -157,7 +158,7 @@ class TestQueryBacked:
         assert _by(resp, "customers_t.tier", "customers_t.n") == {"gold": 2, "silver": 1, "bronze": 1}
         assert broadcast_warnings(resp) == []
 
-    async def test_measure_is_never_stamped(self, engine) -> None:
+    async def test_measure_is_never_stamped(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_model_from_query(SlayerQuery.model_validate({
             "source_model": "orders", "dimensions": ["status", "channel"],
             "measures": [{"formula": "sum(amount, partition_by=status)", "name": "st"}],
@@ -170,7 +171,7 @@ class TestQueryBacked:
 class TestAggregateValuedGrainMember:
     """Grain ``(status, ct)``: a join on ``status`` alone is unproven, never multiplied."""
 
-    async def _model(self, engine) -> SlayerModel:
+    async def _model(self, engine: SlayerQueryEngine) -> SlayerModel:
         return await engine.create_model_from_query(SlayerQuery.model_validate({
             "source_model": "orders",
             "dimensions": ["status", {"expression": "sum(amount, partition_by=channel)", "name": "ct"}],
@@ -182,7 +183,7 @@ class TestAggregateValuedGrainMember:
         join = ModelJoin(target_model="vm_ctot", join_pairs=[["status", "status"]])
         assert not provably_to_one(edge=join, target_model=model)
 
-    async def test_join_on_status_alone_broadcasts_not_multiplies(self, engine) -> None:
+    async def test_join_on_status_alone_broadcasts_not_multiplies(self, engine: SlayerQueryEngine) -> None:
         await self._model(engine)
         host = SlayerModel(
             name="two_ok", data_source="test",

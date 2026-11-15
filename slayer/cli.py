@@ -1642,7 +1642,7 @@ async def _refine_one_model_for_cli(
     refineable or widenable columns (text-only, query-backed, sql-mode,
     already-narrowed) skip silently and don't require a live datasource.
     """
-    raw = await _load_raw_model_dict(inner, ds_name, model_name)
+    raw = await inner._load_raw_model_dict(name=model_name, data_source=ds_name)
     if raw is None:
         return False
     upgraded = _mig.migrate("SlayerModel", _mig.stamp_stored(copy.deepcopy(raw)))
@@ -1675,20 +1675,6 @@ async def _refine_one_model_for_cli(
         # Save-time validation loads peers, which may still need refining through the engine.
         await engine.storage.save_model(model)
     return True
-
-
-async def _load_raw_model_dict(storage, data_source: str, name: str) -> dict | None:
-    """Read a model's raw on-disk dict bypassing Pydantic's validator chain."""
-    if hasattr(storage, "_model_path"):  # YAMLStorage
-        path = storage._model_path(data_source, name)
-        if not os.path.exists(path):
-            return None
-        with open(path) as f:  # NOSONAR(S7493) — sync I/O in async by design (CLAUDE.md, Async Architecture)
-            return yaml.safe_load(f)
-    if hasattr(storage, "_get_model_sync"):  # SQLiteStorage
-        raw = await asyncio.to_thread(storage._get_model_sync, data_source, name)
-        return json.loads(raw) if raw else None
-    return None
 
 
 def _parse_cli_variables(args) -> dict:
@@ -1989,7 +1975,7 @@ def _indent_block(text: str, *, indent: str = "  ") -> str:
                      for line in text.split("\n"))
 
 
-def _resolve_validate_scope(args, storage) -> None:
+def _resolve_validate_scope(args, storage: StorageBackend) -> None:
     """Fail fast on a typoed --datasource / --model.
 
     Either would otherwise yield an empty report, indistinguishable from
@@ -2075,7 +2061,7 @@ async def _collect_cardinality_report(args, engine: SlayerQueryEngine):
         _fail(f"validate-models: cardinality profiling failed: {exc}")
 
 
-async def _collect_all_models(args, storage) -> list:
+async def _collect_all_models(args, storage: StorageBackend) -> list:
     """Every model in the requested datasource scope (for join-safety audit)."""
     ds_names = [args.datasource] if args.datasource else await storage.list_datasources()
     failures = DocumentLoadFailures()
@@ -2466,7 +2452,7 @@ async def _import_osi_workflow(args, engine: SlayerQueryEngine) -> None:
     )
 
 
-def _models_list(storage, args) -> None:
+def _models_list(storage: StorageBackend, args) -> None:
     names = run_sync(storage.list_models())
     usage_reporting.observe_model_count(len(names))
     builtins = [m for ds in run_sync(storage.list_datasources()) for m in run_sync(storage.builtin_models(ds))]
@@ -2484,7 +2470,7 @@ def _models_list(storage, args) -> None:
         print(f"{model.name}  — {model.description}")
 
 
-def _models_show(storage, args) -> None:
+def _models_show(storage: StorageBackend, args) -> None:
     model = run_sync(storage.get_model_or_builtin(args.name))
     if model is None:
         _fail(f"Model '{args.name}' not found.")
@@ -2503,7 +2489,7 @@ def _models_create(storage, args) -> None:
     print(f"Created model '{model.name}'.")
 
 
-def _models_delete(storage, args) -> None:
+def _models_delete(storage: StorageBackend, args) -> None:
     if not run_sync(storage.delete_model(args.name)):
         _fail(f"Model '{args.name}' not found.")
     print(f"Deleted model '{args.name}'.")
@@ -2661,7 +2647,7 @@ def _confirm(prompt: str, *, assume_yes: bool) -> bool:
     return answer in ("y", "yes")
 
 
-def _persist_ingested_models(models, storage, *, assume_yes: bool) -> None:
+def _persist_ingested_models(models, storage: StorageBackend, *, assume_yes: bool) -> None:
     """Persist freshly-ingested models (``datasources create --ingest``), after a collision-confirmation prompt."""
     if not models:
         print("No models were generated.")
