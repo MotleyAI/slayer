@@ -12,7 +12,7 @@ from pytest_postgresql import factories
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import SlayerError
-from slayer.core.models import Column
+from slayer.core.models import Column, ModelJoin
 from slayer.sql.naming import ROW_IDENTITY_COLUMN
 from tests._dev1841_fixtures import keyless_root_models
 from tests._dev1841_fixtures import make_exec_engine as dev1841_engine
@@ -25,6 +25,7 @@ from tests._dev2216_fixtures import (
     SPEND_BY_STATUS,
     WAVG_BY_STATUS,
     WSUM_BY_STATUS,
+    _seed,
     cells,
     kinds,
     measure,
@@ -32,7 +33,7 @@ from tests._dev2216_fixtures import (
     ossie_models,
     query,
 )
-from tests._engine_helpers import _engine_generate
+from tests._engine_helpers import _engine_generate, seeded_exec_engine
 
 postgresql_proc = factories.postgresql_proc(port=None)
 
@@ -110,6 +111,42 @@ class TestKeylessHome:
 
 
 class TestRowIdentity:
+    @pytest.mark.parametrize("mode", MODES)
+    @pytest.mark.parametrize("nullable", [True, False], ids=["nullable-unique", "all-non-null"])
+    @pytest.mark.parametrize("source", ["sales", "tags"], ids=["local", "cross-model"])
+    async def test_nullable_unique_keeps_each_sale(self, dialect, mode, nullable, source) -> None:
+        refs = "(NULL, 1, 30, 1), (NULL, 1, 40, 2)" if nullable else "('b', 1, 30, 1), ('c', 1, 40, 2)"
+        stmts = [
+            "CREATE TABLE sales (source_ref VARCHAR UNIQUE, tag_id INTEGER, amount INTEGER, weight INTEGER)",
+            "CREATE TABLE tags (tag_id INTEGER, label VARCHAR)",
+            f"INSERT INTO sales VALUES ('a', 1, 10, 1), {refs}, ('d', 2, 90, 1)",
+            "INSERT INTO tags VALUES (1, 'shared'), (1, 'shared'), (2, 'other')",
+        ]
+        async with seeded_exec_engine(dialect=dialect, seed=_seed(dialect, stmts), models=[]) as (engine, _):
+            ds = await engine.storage.get_datasource("test")
+            assert ds is not None
+            models = await engine.ingest(ds)
+            sales = next(model for model in models if model.name == "sales")
+            assert next(col for col in sales.columns if col.name == "source_ref").unique
+            sales.joins = [ModelJoin(target_model="tags", join_pairs=[["tag_id", "tag_id"]])]
+            for model in models:
+                await engine.storage.save_model(model, _validate=False)
+            dimension = "tags.label" if source == "sales" else "label"
+            prefix = "" if source == "sales" else "sales."
+            resp = await engine.execute(query(
+                source_model=source, dimensions=[dimension],
+                measures=[
+                    measure(f"sum({prefix}amount)", "total"),
+                    measure("count(sales.*)", "n"),
+                    measure(f"weighted_avg({prefix}amount, weight={prefix}weight)", "weighted"),
+                ],
+                **mode,
+            ))
+        assert cells(resp, "label", "total") == {"shared": 80.0, "other": 90.0}
+        assert cells(resp, "label", "n") == {"shared": 3.0, "other": 1.0}
+        assert cells(resp, "label", "weighted") == pytest.approx({"shared": 30.0, "other": 90.0})
+        assert kinds(resp, "associated")
+
     @pytest.mark.parametrize("mode", MODES)
     async def test_duplicate_rows_count_separately_fan_out_copies_once(self, dialect, mode) -> None:
         async with ossie_engine(dialect, duplicate=True) as engine:

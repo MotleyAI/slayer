@@ -2609,7 +2609,7 @@ def _reached_by_root_lists(key: ValueKey, *, root_model: SlayerModel, models_by_
 
 
 class _AssociationEntity(NamedTuple):
-    """The entities an association producer deduplicates: the home (numbered when it has no unique key),
+    """The entities an association producer deduplicates: the home (numbered when it has no primary key),
     each unattributable dimension rerooted into it, and its entity key columns."""
 
     root_model: SlayerModel
@@ -2617,12 +2617,20 @@ class _AssociationEntity(NamedTuple):
     list_rows: bool
     entity_columns: List[str]
 
-    def models_by_name(self, models_by_name: Dict[str, SlayerModel]) -> Dict[str, SlayerModel]:
-        return {**models_by_name, self.root_model.name: self.root_model}
-
     def host_grain(self, target_path: Tuple[str, ...]) -> Grain:
         return Grain.of(
             column_default_key(path=target_path, leaf=col, base=self.root_model) for col in self.entity_columns
+        )
+
+    def determines_param(
+        self, *, value: ValueKey, target_path: Tuple[str, ...], host_model: SlayerModel,
+        models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    ) -> bool:
+        # For a local home the initial grain seed reads the host model directly.
+        return _param_is_determined(
+            value=value, grain=self.host_grain(target_path),
+            host_model=host_model if target_path else self.root_model,
+            models_by_name={**models_by_name, self.root_model.name: self.root_model}, bundle=bundle,
         )
 
 
@@ -2644,12 +2652,13 @@ def _association_entity(
         for _key, rerooted in assoc_pairs
     ):
         return _AssociationEntity(root_model=root_model, assoc_pairs=assoc_pairs, list_rows=True, entity_columns=[])
-    key_sets = unique_key_sets(root_model)
-    if not key_sets:
+    # A standalone UNIQUE constraint can allow NULLs, which cannot identify individual rows.
+    entity_columns = [column.name for column in root_model.columns if column.primary_key]
+    if not entity_columns:
         root_model = with_row_identity(root_model)
-        key_sets = [[ROW_IDENTITY_COLUMN]]
+        entity_columns = [ROW_IDENTITY_COLUMN]
     return _AssociationEntity(
-        root_model=root_model, assoc_pairs=assoc_pairs, list_rows=False, entity_columns=key_sets[0],
+        root_model=root_model, assoc_pairs=assoc_pairs, list_rows=False, entity_columns=entity_columns,
     )
 
 
@@ -2662,11 +2671,10 @@ def _association_unsupported(
         return "window="
     if is_ranked(agg):
         return f"{agg.agg}()"
-    grain = entity.host_grain(target_path)
     for name, value in _param_values(agg):
-        if not isinstance(value, (AggregateKey, TransformKey)) and not _param_is_determined(
-            value=value, grain=grain, host_model=host_model,
-            models_by_name=entity.models_by_name(models_by_name), bundle=bundle,
+        if not isinstance(value, (AggregateKey, TransformKey)) and not entity.determines_param(
+            value=value, target_path=target_path, host_model=host_model,
+            models_by_name=models_by_name, bundle=bundle,
         ):
             return f"a {name}= parameter the associated entity does not determine"
     return None
@@ -2709,9 +2717,9 @@ def _association_arm(
             check_parameter_determined(
                 alias=alias, param_name=name,
                 grain_display=_grain_display(entity_grain),
-                determined=_param_is_determined(
-                    value=value, grain=entity_grain, host_model=host_model,
-                    models_by_name=entity.models_by_name(models_by_name), bundle=bundle,
+                determined=entity.determines_param(
+                    value=value, target_path=target_path, host_model=host_model,
+                    models_by_name=models_by_name, bundle=bundle,
                 ),
             )
         picked_params.append(PickedParam(name=name, key=reroot_from_root(
