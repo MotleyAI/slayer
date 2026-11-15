@@ -6342,7 +6342,7 @@ class TestCrossModelRerootedSubquery:
     """Tests for the re-rooted subquery approach to cross-model measure CTEs."""
 
     @pytest.fixture
-    def _models(self):
+    def _models(self) -> tuple[SlayerModel, SlayerModel, SlayerModel, SlayerModel]:
         """Shared model definitions for re-rooting tests."""
         policy = SlayerModel(
             name="policy", sql_table="policy", data_source="test",
@@ -6397,7 +6397,7 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
                 await storage.save_model(m)
             yield SlayerQueryEngine(storage=storage)
 
-    async def test_rerooted_cte_includes_reachable_and_sibling_filters(self, generator, _models):
+    async def test_rerooted_cte_includes_reachable_and_sibling_filters(self, generator: SQLGenerator, _models: tuple[SlayerModel, SlayerModel, SlayerModel, SlayerModel]):
         """The re-rooted producer includes filters REACHABLE from the target root — the target-path filter (``policy_amount.premium.has_premium``) AND the host-sibling filter (``agreement_party_role``): the root's own provably to-one join reaches the sibling, so it inherits instead of dropping (the Q9 shape). Nothing warns."""
         policy, policy_amount, premium, agreement_party_role = _models
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
@@ -6425,7 +6425,7 @@ Column(name="total_policy_amount", sql="policy_amount", type=DataType.DOUBLE)],
             assert "agreement_party_role" in cte_body
             assert "party_role_code" in cte_body
 
-    async def test_rerooted_cte_without_filters(self, generator, _models):
+    async def test_rerooted_cte_without_filters(self, generator: SQLGenerator, _models: tuple[SlayerModel, SlayerModel, SlayerModel, SlayerModel]):
         """Cross-model measure with no filters still uses re-rooted CTE."""
         policy, policy_amount, premium, agreement_party_role = _models
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
@@ -6497,7 +6497,7 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             # Combined: CROSS JOIN (no shared dims)
             assert "CROSS JOIN" in sql
 
-    async def test_rerooted_with_time_dimension(self, generator, _models):
+    async def test_rerooted_with_time_dimension(self, generator: SQLGenerator, _models: tuple[SlayerModel, SlayerModel, SlayerModel, SlayerModel]):
         """Re-rooted CTE includes time dimension when reachable from target."""
         policy, policy_amount, premium, agreement_party_role = _models
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
@@ -6519,7 +6519,7 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             assert "effective_date" in cte_section.lower()
             assert "GROUP BY" in cte_section
 
-    async def test_rerooted_cross_model_in_formula(self, generator, _models):
+    async def test_rerooted_cross_model_in_formula(self, generator: SQLGenerator, _models: tuple[SlayerModel, SlayerModel, SlayerModel, SlayerModel]):
         """Formula mixing local + cross-model measure uses re-rooted CTE."""
         policy, policy_amount, premium, agreement_party_role = _models
         # Add a local column on policy that the formula will aggregate
@@ -6545,7 +6545,7 @@ Column(name="score", sql="score", type=DataType.DOUBLE)],
             assert "_cm_" in sql
             assert "/" in sql  # Division expression
 
-    async def test_rerooted_local_filter_remapped_to_source(self, generator, _models):
+    async def test_rerooted_local_filter_remapped_to_source(self, generator: SQLGenerator, _models: tuple[SlayerModel, SlayerModel, SlayerModel, SlayerModel]):
         """Unqualified filter on source model is remapped to source.col in CTE (the producer reaches the host over its provably to-one reverse join)."""
         policy, policy_amount, premium, agreement_party_role = _models
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:

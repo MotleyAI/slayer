@@ -74,7 +74,7 @@ class TestAttribution:
         stage = {"source_model": "orders", "measures": ["count(*)"], "strict": True}
         with recorded() as caught:
             line = _next_line()
-            SlayerModel(name="m", source_queries=[stage])
+            SlayerModel.model_validate({"name": "m", "source_queries": [stage]})
         [w] = deprecations(caught)
         assert (w.filename, w.lineno) == (__file__, line)
 

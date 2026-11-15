@@ -44,6 +44,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from slayer.core.models import SlayerModel
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX as _MEMORY_PREFIX
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
@@ -186,7 +187,7 @@ def _create_schema(conn: Any) -> None:
     conn.execute("CREATE REL TABLE JOINS(FROM Model TO Model, cardinality STRING)")
 
 
-def _insert_model_child_nodes(conn: Any, canonical_model: str, model: Any) -> None:
+def _insert_model_child_nodes(conn: Any, canonical_model: str, model: SlayerModel) -> None:
     """Insert ModelColumn, Measure, and Aggregation nodes for one model."""
     for col in model.columns:
         if col.hidden:
@@ -227,7 +228,7 @@ def _insert_model_child_nodes(conn: Any, canonical_model: str, model: Any) -> No
 def _insert_nodes(
     conn: Any,
     datasource_names: list[str],
-    visible_models: dict,
+    visible_models: dict[str, SlayerModel],
     memories: list,
     datasource_descriptions: dict[str, str | None] | None = None,
 ) -> None:
@@ -276,7 +277,7 @@ def _insert_nodes(
 def _insert_contains_edges(
     conn: Any,
     datasource_names: list[str],
-    visible_models: dict,
+    visible_models: dict[str, SlayerModel],
 ) -> None:
     """Insert CONTAINS edges: Datasource→Model and Model→{ModelColumn/Measure/Agg}."""
     ds_set = set(datasource_names)
@@ -312,7 +313,7 @@ def _insert_contains_edges(
             )
 
 
-def _insert_joins_edges(conn: Any, visible_models: dict) -> None:
+def _insert_joins_edges(conn: Any, visible_models: dict[str, SlayerModel]) -> None:
     """Insert JOINS edges: Model→Model (via model.joins). Missing targets silently skipped."""
     for canonical_model, model in visible_models.items():
         ds = canonical_model.split(".", 1)[0]
@@ -382,7 +383,7 @@ def _connect_entity_mention(
 
 
 def _build_valid_entity_sets(
-    visible_models: dict,
+    visible_models: dict[str, SlayerModel],
     memories: list,
 ) -> tuple[set[str], set[str], set[str], set[str]]:
     """Build (valid_columns, valid_measures, valid_aggs, valid_memory_canonicals)."""
@@ -405,7 +406,7 @@ def _build_valid_entity_sets(
 def _insert_mentions_edges(
     conn: Any,
     memories: list,
-    visible_models: dict,
+    visible_models: dict[str, SlayerModel],
     datasource_names: list[str],
 ) -> None:
     """Insert MENTIONS edges: Memory → {Datasource, Model, ModelColumn, Measure, Agg, Memory}."""
@@ -440,7 +441,7 @@ async def build_graph(storage: StorageBackend, *, failures: DocumentLoadFailures
 
     datasource_names = await storage.list_datasources()
     failures = failures or DocumentLoadFailures()
-    visible_models: dict = {
+    visible_models: dict[str, SlayerModel] = {
         f"{m.data_source}.{m.name}": m
         for m in failures.skip(await storage.load_models()) if not m.hidden
     }

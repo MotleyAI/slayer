@@ -44,7 +44,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.sqlite_conn import transaction
 
 from tests._engine_helpers import seeded_exec_engine
@@ -338,7 +338,7 @@ async def make_items_engine() -> AsyncIterator[SlayerQueryEngine]:
         yield engine
 
 
-def rows_by(resp: Any, *, key: str) -> dict[Any, dict[str, Any]]:
+def rows_by(resp: SlayerResponse, *, key: str) -> dict[Any, dict[str, Any]]:
     """Result rows keyed by the column whose name ends with ``key``."""
     col = next(c for c in resp.columns if c.endswith(key))
     out = {str(r[col])[:7] if "date" in col else r[col]: r for r in resp.data}

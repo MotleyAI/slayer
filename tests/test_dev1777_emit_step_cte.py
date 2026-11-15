@@ -22,11 +22,12 @@ from slayer.core.enums import DataType
 from slayer.core.keys import (
     ArithmeticKey,
     ColumnKey,
+    Phase,
     LiteralKey,
     ScalarCallKey,
     TransformKey,
 )
-from slayer.ir.planned import Stage, StageKind
+from slayer.ir.planned import Stage, StageKind, ValueSlot
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.render.cte_assembly import CteEntry
 
@@ -39,13 +40,11 @@ def _base_ctes() -> list[CteEntry]:
     return [CteEntry(name="base", query=exp.Select().select(exp.column("x")).from_("t"))]
 
 
-def _slot(name: str, *, type_=None) -> SimpleNamespace:
-    return SimpleNamespace(
-        public_aliases=[name],
-        declared_name=name,
-        type=type_,
-        cast_type=type_,
-        preserve_native_type=False,
+def _slot(name: str, *, type_: DataType | None = None, public_aliases: list[str] | None = None) -> ValueSlot:
+    return ValueSlot(
+        id=name, key=ColumnKey(path=(), leaf=name), declared_name=name,
+        public_aliases=[name] if public_aliases is None else public_aliases, phase=Phase.ROW,
+        type=type_, type_is_explicit=type_ is not None,
     )
 
 
@@ -148,9 +147,7 @@ def test_multi_alias_slot_emits_one_column_per_public_alias() -> None:
         source_relation="orders",
         slot_entries=[(
             "sid",
-            SimpleNamespace(
-                public_aliases=["a", "b"], declared_name="a", type=None,
-            ),
+            _slot("a", public_aliases=["a", "b"]),
         )],
         render=render,
     )
@@ -175,7 +172,7 @@ def test_no_public_aliases_falls_back_to_declared_name() -> None:
         source_relation="orders",
         slot_entries=[(
             "sid",
-            SimpleNamespace(public_aliases=[], declared_name="d", type=None),
+            _slot("d", public_aliases=[]),
         )],
         render=lambda s: exp.column("v", quoted=True),
     )

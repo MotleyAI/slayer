@@ -164,33 +164,33 @@ async def client_for(tmp_path: Path) -> AsyncIterator[Callable[[DatasourceConfig
 
 
 @pytest.fixture(scope="module")
-def bq_models(bq_dataset):
+def bq_models(bq_dataset) -> tuple[dict[str, SlayerModel], str]:
     _, dataset_id = bq_dataset
     models = run_sync(_ingest(_ds_config(dataset_id), schema=dataset_id))
     return {m.name: m for m in models}, dataset_id
 
 
 class TestBigQueryCommentIngestion:
-    def test_column_descriptions_imported(self, bq_models) -> None:
+    def test_column_descriptions_imported(self, bq_models: tuple[dict[str, SlayerModel], str]) -> None:
         models, _ = bq_models
         cols = {c.name: c for c in models["orders"].columns}
         assert cols["id"].description == "Order id"
         assert cols["amount"].description == "Order amount in USD"
         assert cols["status"].description is None
 
-    def test_table_description_imported(self, bq_models) -> None:
+    def test_table_description_imported(self, bq_models: tuple[dict[str, SlayerModel], str]) -> None:
         models, _ = bq_models
         assert models["orders"].description == "All orders"
         assert models["plain"].description is None
 
-    def test_record_column_description(self, bq_models) -> None:
+    def test_record_column_description(self, bq_models: tuple[dict[str, SlayerModel], str]) -> None:
         models, _ = bq_models
         cols = {c.name: c for c in models["orders"].columns}
         assert cols["payload"].description == "Structured payload"
         # Flattened RECORD subfields (dotted names) never become columns.
         assert not any("." in name for name in cols)
 
-    def test_types_sanity(self, bq_models) -> None:
+    def test_types_sanity(self, bq_models: tuple[dict[str, SlayerModel], str]) -> None:
         models, _ = bq_models
         cols = {c.name: c for c in models["orders"].columns}
         assert cols["id"].type is DataType.INT

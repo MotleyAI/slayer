@@ -15,6 +15,8 @@ refs (``{CUBE}`` …); ``${FILTER_PARAMS...}`` interpolations become structured
 
 import logging
 import re
+from collections.abc import Iterator
+from typing import Any, Protocol, TypeGuard, cast
 
 import esprima
 from pydantic import BaseModel, Field
@@ -55,6 +57,36 @@ _MEMBER_SECTIONS = {
 _PARAM_SUFFIX = {0: "from", 1: "to"}
 
 
+class _JsNode(Protocol):
+    type: str
+    name: str
+    computed: bool
+    operator: str
+    value: Any
+    expression: "_JsNode"
+    left: "_JsNode"
+    right: "_JsNode"
+    declaration: "_JsNode | None"
+    declarations: "list[_JsNode]"
+    init: "_JsNode | None"
+    callee: "_JsNode"
+    arguments: "list[_JsNode]"
+    properties: "list[_JsNode]"
+    key: "_JsNode"
+    expressions: "list[_JsNode]"
+    quasis: "list[_JsNode]"
+    argument: "_JsNode"
+    elements: "list[_JsNode | None]"
+    object: "_JsNode"
+    property: "_JsNode"
+    params: "list[_JsNode]"
+    body: "_JsNode"
+
+
+class _JsProgram(Protocol):
+    body: list[_JsNode]
+
+
 class CubeJsParseResult(BaseModel):
     cubes: list[CubeCube] = Field(default_factory=list)
     views: list[CubeView] = Field(default_factory=list)
@@ -87,7 +119,7 @@ def parse_cube_js(source: str, *, path: str = "<string>") -> CubeJsParseResult:
     return CubeJsParseResult(cubes=cubes, views=views, issues=issues)
 
 
-def _parse_js_source(source: str, path: str, issues: list[CubeConversionIssue]):
+def _parse_js_source(source: str, path: str, issues: list[CubeConversionIssue]) -> _JsProgram | None:
     """Parse ``source`` to an ESTree, tolerating both plain script configs and
     ES-module configs. ``parseScript`` is tried first (the classic global-``cube``
     style); on failure ``parseModule`` handles top-level ``import`` / ``export``
@@ -95,11 +127,11 @@ def _parse_js_source(source: str, path: str, issues: list[CubeConversionIssue]):
     issue when neither parses."""
     opts = {"range": True, "comment": True}
     try:
-        return esprima.parseScript(source, opts)
+        return cast(_JsProgram, esprima.parseScript(source, opts))
     except Exception:  # noqa: BLE001 — retry as a module before giving up
         pass
     try:
-        return esprima.parseModule(source, opts)
+        return cast(_JsProgram, esprima.parseModule(source, opts))
     except Exception as exc:  # noqa: BLE001 — surface as a report issue
         issues.append(CubeConversionIssue(
             category=CubeIssueCategory.PARSE_ERROR, severity="warning",
@@ -108,7 +140,7 @@ def _parse_js_source(source: str, path: str, issues: list[CubeConversionIssue]):
         return None
 
 
-def _iter_cube_calls(tree):
+def _iter_cube_calls(tree: _JsProgram) -> Iterator[_JsNode]:
     """Yield top-level ``cube(...)`` / ``view(...)`` CallExpression nodes,
     unwrapping ``module.exports = ``, ``export default``, and ``const x = ``
     wrappers."""
@@ -118,7 +150,7 @@ def _iter_cube_calls(tree):
                 yield node
 
 
-def _candidate_expressions(stmt):
+def _candidate_expressions(stmt: _JsNode) -> list[_JsNode | None]:
     t = stmt.type
     if t == "ExpressionStatement":
         expr = stmt.expression
@@ -134,7 +166,7 @@ def _candidate_expressions(stmt):
     return []
 
 
-def _is_cube_or_view_call(node) -> bool:
+def _is_cube_or_view_call(node: _JsNode | None) -> TypeGuard[_JsNode]:
     return (
         node is not None
         and node.type == "CallExpression"
@@ -154,7 +186,7 @@ class _Walker:
 
     # ── entry ────────────────────────────────────────────────────────────
 
-    def convert_call(self, call, cubes: list, views: list) -> None:
+    def convert_call(self, call: _JsNode, cubes: list, views: list) -> None:
         kind = call.callee.name
         name = self._name_arg(call.arguments[0]) if call.arguments else None
         if name is None:
@@ -182,7 +214,7 @@ class _Walker:
         else:
             self._build_view(name, body, views)
 
-    def _cube_object(self, node, *, cube: str) -> dict:
+    def _cube_object(self, node: _JsNode, *, cube: str) -> dict:
         """Convert a cube()/view() top-level object. Member-map sections
         (dimensions/measures/segments/joins) are converted with per-member error
         isolation so one dynamic member does not sink the whole cube; a dynamic
@@ -200,7 +232,7 @@ class _Walker:
                 out[key] = self._value(prop.value)
         return out
 
-    def _member_map(self, node, *, section: str, cube: str) -> dict:
+    def _member_map(self, node: _JsNode, *, section: str, cube: str) -> dict:
         """Convert a ``{name: {...}}`` member map, isolating per-member failures."""
         if node.type != "ObjectExpression":
             raise _DynamicValue(f"'{section}' is not an object literal")
@@ -257,14 +289,14 @@ class _Walker:
 
     # ── value conversion ─────────────────────────────────────────────────
 
-    def _name_arg(self, node) -> str | None:
+    def _name_arg(self, node: _JsNode) -> str | None:
         if node.type == "Literal" and isinstance(node.value, str):
             return node.value
         if node.type == "TemplateLiteral" and not node.expressions:
             return "".join(q.value.cooked for q in node.quasis)
         return None
 
-    def _object(self, node, *, in_meta: bool = False) -> dict:
+    def _object(self, node: _JsNode, *, in_meta: bool = False) -> dict:
         out: dict = {}
         for prop in node.properties:
             if prop.type != "Property":
@@ -276,7 +308,7 @@ class _Walker:
                 out[key] = self._value(prop.value, in_meta=in_meta)
         return out
 
-    def _key_name(self, prop) -> str:
+    def _key_name(self, prop: _JsNode) -> str:
         if prop.computed:
             raise _DynamicValue("computed property key")
         k = prop.key
@@ -286,7 +318,7 @@ class _Walker:
             return str(k.value)
         raise _DynamicValue("non-literal property key")
 
-    def _value(self, node, *, in_meta: bool = False):
+    def _value(self, node: _JsNode, *, in_meta: bool = False):
         t = node.type
         if t == "Literal":
             return node.value
@@ -303,7 +335,7 @@ class _Walker:
             return -node.argument.value if node.operator == "-" else node.argument.value
         raise _DynamicValue(f"unsupported {t}")
 
-    def _raw_meta(self, node):
+    def _raw_meta(self, node: _JsNode):
         """Convert a ``meta`` subtree verbatim — no key normalisation, no ref
         translation (meta is opaque user JSON)."""
         t = node.type
@@ -322,7 +354,7 @@ class _Walker:
 
     # ── template literals + FILTER_PARAMS ────────────────────────────────
 
-    def _template_literal(self, node) -> str:
+    def _template_literal(self, node: _JsNode) -> str:
         parts: list[str] = []
         quasis = node.quasis
         exprs = node.expressions
@@ -332,7 +364,7 @@ class _Walker:
                 parts.append(self._interpolation(exprs[i]))
         return "".join(parts)
 
-    def _interpolation(self, expr) -> str:
+    def _interpolation(self, expr: _JsNode) -> str:
         t = expr.type
         if t == "Identifier":
             return "{" + expr.name + "}"
@@ -342,7 +374,7 @@ class _Walker:
             return self._filter_params(expr)
         raise _DynamicValue(f"unsupported interpolation {t}")
 
-    def _member_path(self, expr) -> str:
+    def _member_path(self, expr: _JsNode) -> str:
         parts: list[str] = []
         cur = expr
         while cur.type == "MemberExpression":
@@ -355,7 +387,7 @@ class _Walker:
         parts.append(cur.name)
         return ".".join(reversed(parts))
 
-    def _filter_params(self, call) -> str:
+    def _filter_params(self, call: _JsNode) -> str:
         chain = self._filter_call_chain(call)
         if chain is None:
             raise _DynamicValue("unsupported call in interpolation (not FILTER_PARAMS)")
@@ -367,7 +399,7 @@ class _Walker:
         self._fp_refs.append(ref)
         return sentinel
 
-    def _filter_call_chain(self, call) -> tuple[str, str] | None:
+    def _filter_call_chain(self, call: _JsNode) -> tuple[str, str] | None:
         """If ``call`` is ``FILTER_PARAMS.<cube>.<member>.filter(...)``, return
         ``(cube, member)``; else ``None``."""
         callee = call.callee
@@ -383,7 +415,7 @@ class _Walker:
             return None
         return path[1], path[2]
 
-    def _build_fp_ref(self, *, cube, member, arg, sentinel) -> CubeFilterParamRef:
+    def _build_fp_ref(self, *, cube: str, member: str, arg: _JsNode | None, sentinel: str) -> CubeFilterParamRef:
         if arg is None:
             raise _DynamicValue("FILTER_PARAMS.filter() with no argument")
         if arg.type == "Literal" and isinstance(arg.value, str):
@@ -395,7 +427,7 @@ class _Walker:
                 cube=cube, member=member, segments=segments, sentinel=sentinel)
         raise _DynamicValue("unsupported FILTER_PARAMS argument")
 
-    def _arrow_segments(self, arrow) -> list[tuple[str, str]]:
+    def _arrow_segments(self, arrow: _JsNode) -> list[tuple[str, str]]:
         suffix_by_name: dict[str, str] = {}
         for idx, param in enumerate(arrow.params):
             if param.type != "Identifier" or idx not in _PARAM_SUFFIX:
@@ -405,7 +437,7 @@ class _Walker:
         self._collect_arrow_body(arrow.body, suffix_by_name, segments)
         return segments
 
-    def _collect_arrow_body(self, node, suffix_by_name, segments) -> None:
+    def _collect_arrow_body(self, node: _JsNode, suffix_by_name: dict[str, str], segments: list[tuple[str, str]]) -> None:
         t = node.type
         if t == "Literal" and isinstance(node.value, str):
             segments.append(("lit", node.value))
@@ -419,12 +451,12 @@ class _Walker:
         else:
             raise _DynamicValue(f"unsupported FILTER_PARAMS arrow body ({t})")
 
-    def _param_suffix(self, node, suffix_by_name) -> str:
+    def _param_suffix(self, node: _JsNode, suffix_by_name: dict[str, str]) -> str:
         if node.name not in suffix_by_name:
             raise _DynamicValue(f"unknown arrow param '{node.name}'")
         return suffix_by_name[node.name]
 
-    def _collect_template_body(self, node, suffix_by_name, segments) -> None:
+    def _collect_template_body(self, node: _JsNode, suffix_by_name: dict[str, str], segments: list[tuple[str, str]]) -> None:
         for i, quasi in enumerate(node.quasis):
             if quasi.value.cooked:
                 segments.append(("lit", quasi.value.cooked))

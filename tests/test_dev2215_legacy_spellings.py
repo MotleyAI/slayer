@@ -164,7 +164,8 @@ async def test_a_saved_query_stores_the_canonical_twin(storage: StorageBackend) 
     loaded = await storage.get_model("paid_orders", data_source="test")
     assert loaded is not None
     assert loaded.source_queries
-    assert loaded.source_queries[0].filters == ["status = 'paid' and region IS NOT NULL"]
+    stage = loaded.source_queries[0]
+    assert stage.filters == ["status = 'paid' and region IS NOT NULL"]
 
 
 PAID_SPELLINGS = "sum(iif(status == 'paid' AND region is not None, amount, 0))"

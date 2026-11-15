@@ -261,6 +261,7 @@ async def test_hidden_columns_not_surfaced(metabase_e2e_env: MetabaseE2EEnv) -> 
     host, port = metabase_e2e_env.pg_primary
 
     model = run_sync(storage.get_model(name="products", data_source="jaffle_shop"))
+    assert model is not None
     target = next(c for c in model.columns if c.name == "description")
     original = target.hidden
     target.hidden = True
@@ -300,6 +301,7 @@ async def test_descriptions_surface_in_metadata(metabase_e2e_env: MetabaseE2EEnv
     host, port = metabase_e2e_env.pg_primary
 
     model = run_sync(storage.get_model(name="orders", data_source="jaffle_shop"))
+    assert model is not None
     target = next(c for c in model.columns if c.name == "order_total")
     original_desc = target.description
     marker = "e2e description marker"

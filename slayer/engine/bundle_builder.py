@@ -284,8 +284,9 @@ async def _stage_base_components(
 ) -> List[SlayerModel]:
     """The components of ``model``'s stage bases, bar bases named in ``skip`` or resolving into ``known``."""
     out: List[SlayerModel] = []
-    private = {q.name: q for q in model.source_queries or [] if q.name}
-    for stage in model.source_queries or []:
+    own_stages: list[SlayerQuery] = model.source_queries or []
+    private = {q.name: q for q in own_stages if q.name}
+    for stage in own_stages:
         spec = follow_sibling_chain(spec=stage.source_model, named_queries=private)
         if spec is None or spec in skip:
             continue

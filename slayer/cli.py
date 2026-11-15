@@ -28,7 +28,7 @@ from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.time_points import host_clock
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.parser import parse_cube_project
-from slayer.cube.report import CubeConversionIssue, CubeIssueCategory
+from slayer.cube.report import CubeConversionIssue, CubeConversionResult, CubeIssueCategory
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.parser import parse_dbt_project
 from slayer.importers.physical import UndecidableIdentifierCaseError
@@ -39,14 +39,14 @@ from slayer.demo import (
     ingest_demo_models,
     resolve_demo_db_path,
 )
-from slayer.engine.cardinality.inference import CardinalityVerdict
+from slayer.engine.cardinality.inference import CardinalityVerdict, JoinCardinalityReport
 from slayer.live_schema import ingestion as engine_ingestion
 from slayer.live_schema.ingestion import (
     _empty_ingest_message,
     _print_ingest_addition,
     _print_ingest_drift_and_errors,
 )
-from slayer.engine.cardinality.join_safety import audit_join_safety
+from slayer.engine.cardinality.join_safety import JoinSafetyFinding, audit_join_safety
 from slayer.flight.cli import add_flight_serve_subparser, run_flight_serve
 from slayer.engine.profiling import (
     refresh_all_table_backed_sampled,
@@ -135,7 +135,7 @@ def _storage_path(args) -> str:
     return resolved
 
 
-def _resolve_storage(args):
+def _resolve_storage(args) -> StorageBackend:
     """Resolve storage backend from the --storage flag."""
     storage = resolve_storage(_storage_path(args))
     usage_reporting.observe_storage(storage)
@@ -1567,7 +1567,7 @@ def _run_storage_migrate_types(args) -> None:
         print(f"\nDone: refined {refined_total} model(s).")
 
 
-async def _migrate_types_workflow(args, *, engine: SlayerQueryEngine, inner, dry_run: bool) -> int:
+async def _migrate_types_workflow(args, *, engine: SlayerQueryEngine, inner: StorageBackend, dry_run: bool) -> int:
     """Refine every in-scope model through the engine's clients; the number refined."""
     data_source_filter = getattr(args, "data_source", None)
     refined_total = 0
@@ -1625,7 +1625,7 @@ def _print_refinement_diff(
 
 
 async def _refine_one_model_for_cli(
-    *, inner, engine: SlayerQueryEngine, ds_name: str, model_name: str, dry_run: bool,
+    *, inner: StorageBackend, engine: SlayerQueryEngine, ds_name: str, model_name: str, dry_run: bool,
 ) -> bool:
     """Per-model refinement loop body for ``slayer storage migrate-types``.
 
@@ -1952,7 +1952,7 @@ def _format_validate_models_output(entries) -> str:
     return "\n".join(lines)
 
 
-def _format_cardinality_report_text(report, *, indent: str = "") -> str:
+def _format_cardinality_report_text(report: JoinCardinalityReport, *, indent: str = "") -> str:
     if not report.findings:
         return f"{indent}No joins found."
     lines: list[str] = []
@@ -2068,7 +2068,7 @@ async def _collect_all_models(args, storage: StorageBackend) -> list:
     return [m for ds in ds_names for m in failures.skip(await storage.load_models(data_source=ds))]
 
 
-async def _collect_join_safety_findings(args, storage) -> list:
+async def _collect_join_safety_findings(args, storage: StorageBackend) -> list[JoinSafetyFinding]:
     """Joins whose arity is neither declared m:1/1:1 nor structurally proven —
     metrics crossing them broadcast."""
     findings = audit_join_safety(models=await _collect_all_models(args=args, storage=storage))
@@ -2077,7 +2077,7 @@ async def _collect_join_safety_findings(args, storage) -> list:
     return findings
 
 
-def _print_join_safety_section(findings) -> None:
+def _print_join_safety_section(findings: list[JoinSafetyFinding]) -> None:
     if not findings:
         return
     print("\nJoin safety")
@@ -2331,7 +2331,7 @@ async def _import_cube_workflow(args, engine: SlayerQueryEngine) -> None:
     )
 
 
-def _print_cube_import_summary(result, *, include_hidden):
+def _print_cube_import_summary(result: CubeConversionResult, *, include_hidden: bool) -> None:
     for model in result.models:
         if model.hidden and not include_hidden:
             continue
@@ -2506,7 +2506,7 @@ def _run_models(args):
     handler(storage, args)
 
 
-def _datasources_list(storage, args) -> None:
+def _datasources_list(storage: StorageBackend, args) -> None:
     names = run_sync(storage.list_datasources())
     if not names:
         usage_reporting.observe_datasources([])
@@ -2647,7 +2647,7 @@ def _confirm(prompt: str, *, assume_yes: bool) -> bool:
     return answer in ("y", "yes")
 
 
-def _persist_ingested_models(models, storage: StorageBackend, *, assume_yes: bool) -> None:
+def _persist_ingested_models(models: list[SlayerModel], storage: StorageBackend, *, assume_yes: bool) -> None:
     """Persist freshly-ingested models (``datasources create --ingest``), after a collision-confirmation prompt."""
     if not models:
         print("No models were generated.")

@@ -126,7 +126,7 @@ async def orders_customers_regions_engine(tmp_path) -> tuple[SlayerQueryEngine, 
 
 class TestCrossModelRenameSingleStage:
     async def test_cross_model_rename_top_level_result_key(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """User name reaches the outer projection; the CTE column stays canonical."""
         engine, _ = orders_customers_engine
@@ -156,7 +156,7 @@ class TestCrossModelRenameSingleStage:
         )
 
     async def test_cross_model_rename_renders_in_sql(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Renamed aggregate aliases under the user name; canonical leaf never
         surfaces as a public alias (it legitimately lives inside the CTE)."""
@@ -178,7 +178,7 @@ class TestCrossModelRenameSingleStage:
         )
 
     async def test_cross_model_rename_propagates_to_dry_run_columns(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Dry-run ``columns`` carries the renamed key ``orders.cust_rev`` (no hop)."""
         engine, _ = orders_customers_engine
@@ -201,7 +201,7 @@ class TestCrossModelRenameSingleStage:
 
 class TestCrossModelRenameNestedDAG:
     async def test_cross_model_rename_propagates_to_downstream_stage(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Stage 2's ``max(cust_rev)`` resolves against stage 1's renamed measure."""
         engine, _ = orders_customers_engine
@@ -227,7 +227,7 @@ class TestCrossModelRenameNestedDAG:
         )
 
     async def test_cross_model_rename_downstream_short_form_is_bare_user_name(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Downstream-stage column for a renamed cross-model measure is the bare
         user name, so stage 2 can write ``max(cust_rev)`` directly."""
@@ -251,7 +251,7 @@ class TestCrossModelRenameNestedDAG:
         )
 
     async def test_hidden_cross_model_measure_kept_user_declared_false(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """A cross-model aggregate hoisted out of an arithmetic formula stays
         hidden: only the division is public, the aggregate lives in the CTE."""
@@ -282,7 +282,7 @@ class TestCrossModelRenameNestedDAG:
         )
 
     async def test_cross_model_rename_downstream_stage_does_not_see_canonical(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Once renamed, the old canonical short ``customers__revenue_sum`` is
         gone from the virtual model, so a stage-2 reference to it must not resolve."""
@@ -307,7 +307,7 @@ class TestCrossModelRenameNestedDAG:
 
 class TestCrossModelStarAndCountDistinctRename:
     async def test_cross_model_star_count_rename(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """``count(customers.*)`` renamed ``cust_n`` projects COUNT(*) under it."""
         engine, _ = orders_customers_engine
@@ -329,7 +329,7 @@ class TestCrossModelStarAndCountDistinctRename:
         )
 
     async def test_cross_model_count_distinct_rename(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """``count_distinct(customers.id)`` renamed ``cust_distinct`` projects
         COUNT(DISTINCT …) under it."""
@@ -360,7 +360,7 @@ class TestCrossModelStarAndCountDistinctRename:
 
 class TestCrossModelDeclaredTypeCast:
     async def test_declared_type_casts_producer_column(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Explicit INT on a DOUBLE-column sum casts to the declared type."""
         engine, _ = orders_customers_engine
@@ -381,7 +381,7 @@ class TestCrossModelDeclaredTypeCast:
         ), f"declared type must win over the source column's:\n{sql}"
 
     async def test_declared_int_count_still_casts(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Explicit INT still casts, unlike inferred INT (COUNT range preserved)."""
         engine, _ = orders_customers_engine
@@ -405,7 +405,7 @@ class TestCrossModelDeclaredTypeCast:
 
 class TestCrossModelRenameCollisionGuards:
     async def test_cross_model_rename_collides_with_local_canonical_raises(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Rename target equal to a sibling's canonical alias is rejected, not
         silently merged onto ``orders.revenue_sum``."""
@@ -422,7 +422,7 @@ class TestCrossModelRenameCollisionGuards:
             await engine.execute(query=query, dry_run=True)
 
     async def test_cross_model_rename_leaf_vs_sibling_canonical_leaf_stay_distinct(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """A measure renamed to a sibling's canonical leaf (``id_count_distinct``)
         stays a distinct public column: the renamed key is source-model-prefixed,
@@ -463,7 +463,7 @@ class TestCrossModelRenameCollisionGuards:
         )
 
     async def test_two_local_renames_mutually_colliding_canonicals_stay_distinct(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Symmetric swap of two local renames (A's name == B's canonical and
         vice versa) keeps both aggregates distinct with their own bodies."""
@@ -521,7 +521,7 @@ class TestCrossModelRenameCollisionGuards:
             await engine.execute(query=query, dry_run=True)
 
     async def test_cross_model_duplicate_explicit_name_raises(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Two cross-model measures with the same explicit ``name`` are rejected."""
         engine, _ = orders_customers_engine
@@ -537,7 +537,7 @@ class TestCrossModelRenameCollisionGuards:
             await engine.execute(query=query, dry_run=True)
 
     async def test_cross_model_star_count_vs_renamed_sibling_stay_distinct(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """A ``count(*)`` (canonical leaf ``_count``) and a sibling renamed to
         ``_count`` stay distinct: ``orders._count`` vs ``orders.customers._count``."""
@@ -570,7 +570,7 @@ class TestCrossModelRenameCollisionGuards:
         assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
 
     async def test_cross_model_rename_collides_with_dimension_downstream_short_raises(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """A measure renamed to a dimension's ``__``-flattened downstream short
         (``customers__region_id``) is rejected, even though public aliases differ."""
@@ -591,7 +591,7 @@ class TestCrossModelRenameCollisionGuards:
             await engine.execute(query=query, dry_run=True)
 
     async def test_cross_model_rename_vs_dimension_stay_distinct(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """A measure renamed ``region_id`` and a ``customers.region_id`` dimension
         occupy distinct public keys (``orders.region_id`` vs the hop-qualified one)."""
@@ -615,7 +615,7 @@ class TestCrossModelRenameCollisionGuards:
         assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
 
     async def test_cross_model_rename_vs_arithmetic_mangled_name_stay_distinct(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """A measure renamed ``revenue_sum__div__100`` and an arithmetic
         ``sum(revenue) / 100`` stay distinct; the arithmetic one derives the
@@ -649,7 +649,7 @@ class TestCrossModelRenameCollisionGuards:
         assert 'CAST(SUM(customers.lifetime_revenue) AS REAL) AS "customers.revenue_sum"' in sql, sql
 
     async def test_two_local_renames_distinct_canonicals_pass(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Two local renames with non-colliding names and canonicals resolve
         (no false-positive rejection)."""
@@ -673,7 +673,7 @@ class TestCrossModelRenameCollisionGuards:
 
 class TestRenameRegressionGuards:
     async def test_cross_model_no_rename_unchanged(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Without a name, the public key stays canonical ``<model>.<hop>.<col>_<agg>``."""
         engine, _ = orders_customers_engine
@@ -691,7 +691,7 @@ class TestRenameRegressionGuards:
         )
 
     async def test_local_rename_unchanged(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Local rename: the user name becomes the public key over the aggregate."""
         engine, _ = orders_customers_engine
@@ -717,7 +717,7 @@ class TestRenameRegressionGuards:
 
 class TestCrossModelRenameLabelAndType:
     async def test_cross_model_rename_label_propagates(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """``label`` survives the rename, published under the renamed result key."""
         engine, _ = orders_customers_engine
@@ -747,7 +747,7 @@ class TestCrossModelRenameLabelAndType:
         )
 
     async def test_cross_model_rename_type_propagates_to_measure(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """``type=INT`` survives the rename as a CAST in the cross-model CTE."""
         engine, _ = orders_customers_engine
@@ -784,7 +784,7 @@ class TestCrossModelRenameOrderBy:
     """ORDER BY via the bare user alias resolves to the cross-model CTE column."""
 
     async def test_order_by_user_alias_resolves_to_cross_model_cte_column(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """ORDER BY on the bare user alias sorts on the CTE column, ``desc`` kept."""
         engine, _ = orders_customers_engine
@@ -810,7 +810,7 @@ class TestCrossModelRenameOrderBy:
 
 class TestCrossModelRenameFilters:
     async def test_filter_via_user_alias_resolves_to_cross_model_value(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Filter ``"cust_rev > 100"`` lands as an outer WHERE on the producer
         CTE's output column, not a base-table column."""
@@ -842,7 +842,7 @@ class TestCrossModelRenameFilters:
 
 class TestDeferredCrossModelFilterScope:
     async def test_cross_model_aggregate_filter_with_rename_deferred(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """Filter ``sum(customers.revenue) > 100`` with a rename lands
         as an outer WHERE on the producer CTE column; measure still projects."""
@@ -874,7 +874,7 @@ class TestDeferredCrossModelFilterScope:
 
 class TestCrossModelRenameMultiHopAndCTEUniqueness:
     async def test_cross_model_rename_multi_hop(
-        self, orders_customers_regions_engine,
+        self, orders_customers_regions_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """A two-hop measure renamed ``region_pop`` projects the bare user name;
         the CTE keeps the fully hop-qualified canonical column."""
@@ -903,7 +903,7 @@ class TestCrossModelRenameMultiHopAndCTEUniqueness:
         ), f"multi-hop CTE column stays canonical (target-rooted):\n{sql}"
 
     async def test_renamed_and_unrenamed_cross_model_no_collision(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         """One renamed + one unrenamed cross-model measure produce distinct CTEs
         and distinct projection aliases."""
@@ -948,7 +948,7 @@ class TestTransformWrappedCrossModelDeferred:
         )
     )
     async def test_transform_wrapped_cross_model_with_name_pinned(
-        self, orders_customers_engine,
+        self, orders_customers_engine: tuple[SlayerQueryEngine, SlayerModel],
     ) -> None:
         engine, _ = orders_customers_engine
         query = SlayerQuery(

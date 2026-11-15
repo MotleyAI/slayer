@@ -16,6 +16,7 @@ from slayer.core.errors import GranularityCallError, NameCollisionError
 from slayer.core.models import SlayerModel
 from slayer.core.query import ComputedDimension, SlayerQuery, computed_dimension_name
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._dev1920_colon_errors import assert_colon_refused
 from tests._dev1920_fixtures import (  # noqa: F401 — fixture
@@ -255,7 +256,7 @@ class TestMemories:
         assert raw_documents(backend=backend, base=store_base(tmp_path, backend=backend))["memories/m_rev"] == before
 
 
-async def _renamed_store(*, tmp_path: Any, backend: str) -> Any:
+async def _renamed_store(*, tmp_path: Any, backend: str) -> StorageBackend:
     """A v1.4.1 store defining the granularity ``left``; a saved query and a memory bucket by ``created_at:left``."""
     base = str(tmp_path / f"renamed-{backend}")
     stage = stage_doc(dimensions=["created_at:left"], measures=[SUM])

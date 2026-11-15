@@ -17,6 +17,7 @@ from slayer.core.errors import (
     SlayerError,
 )
 from slayer.engine.plan import plan_query
+from slayer.ir.planned import PlannedQuery, SemiJoinHop
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
@@ -138,12 +139,12 @@ def _bundle(*, models, root: str) -> ResolvedSourceBundle:
         source_model=src, referenced_models=[x for x in models if x.name != root])
 
 
-def _base_hops(planned) -> list:
+def _base_hops(planned: PlannedQuery) -> list[SemiJoinHop]:
     """Every SemiJoinHop of the base query's pushed conjuncts."""
     return [h for sf in planned.semi_join_filters for h in sf.hops]
 
 
-def _hop(planned, target_model: str):
+def _hop(planned: PlannedQuery, target_model: str) -> SemiJoinHop:
     hs = [h for h in _base_hops(planned) if h.target_model == target_model]
     assert hs, f"no {target_model} hop in the base push: {_base_hops(planned)}"
     return hs[0]

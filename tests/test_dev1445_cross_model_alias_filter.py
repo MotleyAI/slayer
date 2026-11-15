@@ -105,7 +105,7 @@ def _cte_names(sql: str) -> list:
     return _CTE_DEF_RE.findall(sql)
 
 
-async def test_dev1445_alias_filter_matches_dotted_filter(engine):
+async def test_dev1445_alias_filter_matches_dotted_filter(engine: Tuple[SlayerQueryEngine, str]):
     """The user alias ``rev`` and the dotted aggregation
     ``sum(customers.revenue)`` bind to one slot — both filter forms produce
     identical results.
@@ -148,7 +148,7 @@ async def test_dev1445_alias_filter_matches_dotted_filter(engine):
     )
 
 
-async def test_dev1445_filter_actually_applies(engine):
+async def test_dev1445_filter_actually_applies(engine: Tuple[SlayerQueryEngine, str]):
     """Sanity that the HAVING is real: the filtered result differs from the
     unfiltered one (otherwise both-forms-equal would pass vacuously).
     """
@@ -179,7 +179,7 @@ async def test_dev1445_filter_actually_applies(engine):
     assert _rowset(filtered.data) != _rowset(unfiltered.data)
 
 
-async def test_dev1445_both_filter_forms_share_one_cte(engine):
+async def test_dev1445_both_filter_forms_share_one_cte(engine: Tuple[SlayerQueryEngine, str]):
     """Both filter forms in the SAME query intern to ONE slot — the rendered
     SQL has exactly one cross-model (``_cm_``) CTE with one HAVING predicate.
 

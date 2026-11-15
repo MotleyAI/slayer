@@ -136,7 +136,7 @@ async def _new_sql(
 # ---------------------------------------------------------------------------
 
 
-async def test_two_stage_local_aggregate_matches_legacy(harness):
+async def test_two_stage_local_aggregate_matches_legacy(harness: Tuple[SlayerQueryEngine, YAMLStorage, str]):
     engine, storage, db_path = harness
     stage1 = SlayerQuery.model_validate({
         "name": "stage1",
@@ -161,7 +161,7 @@ async def test_two_stage_local_aggregate_matches_legacy(harness):
     assert "STAGE1" in new_sql.upper()
 
 
-async def test_three_stage_chain_matches_legacy(harness):
+async def test_three_stage_chain_matches_legacy(harness: Tuple[SlayerQueryEngine, YAMLStorage, str]):
     engine, storage, db_path = harness
     s1 = SlayerQuery.model_validate({
         "name": "s1",
@@ -187,7 +187,7 @@ async def test_three_stage_chain_matches_legacy(harness):
     assert _rowset(new_rows) == _rowset(legacy.data), new_sql
 
 
-async def test_cross_model_intermediate_stage_matches_legacy(harness):
+async def test_cross_model_intermediate_stage_matches_legacy(harness: Tuple[SlayerQueryEngine, YAMLStorage, str]):
     """An intermediate stage with a cross-model aggregate emits its own
     ``_cm_`` CTE — the chain must nest it inside the stage CTE and still
     execute / match legacy rows.
@@ -211,7 +211,7 @@ async def test_cross_model_intermediate_stage_matches_legacy(harness):
     assert _rowset(new_rows) == _rowset(legacy.data), new_sql
 
 
-async def test_mixed_local_and_cross_model_intermediate_matches_legacy(harness):
+async def test_mixed_local_and_cross_model_intermediate_matches_legacy(harness: Tuple[SlayerQueryEngine, YAMLStorage, str]):
     """Intermediate stage mixes a LOCAL aggregate with a cross-model one.
 
     The cross-model renderer emits base columns before cross-model columns,
@@ -251,7 +251,7 @@ async def test_mixed_local_and_cross_model_intermediate_matches_legacy(harness):
 # ---------------------------------------------------------------------------
 
 
-async def test_dev1448_named_join_measure_alias(harness):
+async def test_dev1448_named_join_measure_alias(harness: Tuple[SlayerQueryEngine, YAMLStorage, str]):
     _, storage, db_path = harness
     stage1 = SlayerQuery.model_validate({
         "name": "stage1",
@@ -283,7 +283,7 @@ async def test_dev1448_named_join_measure_alias(harness):
 # ---------------------------------------------------------------------------
 
 
-async def test_dev1449_flat_name_resolves(harness):
+async def test_dev1449_flat_name_resolves(harness: Tuple[SlayerQueryEngine, YAMLStorage, str]):
     _, storage, db_path = harness
     stage1 = SlayerQuery.model_validate({
         "name": "stage1",
@@ -306,7 +306,7 @@ async def test_dev1449_flat_name_resolves(harness):
     assert len(new_rows) > 0, new_sql
 
 
-async def test_dev1449_dotted_form_raises(harness):
+async def test_dev1449_dotted_form_raises(harness: Tuple[SlayerQueryEngine, YAMLStorage, str]):
     _, storage, _ = harness
     stage1 = SlayerQuery.model_validate({
         "name": "stage1",
@@ -356,7 +356,7 @@ async def _two_stage_bundle_and_plan(storage):
     return planned, bundle
 
 
-async def test_multistage_bigquery_root_emit_mangles_aliases(harness):
+async def test_multistage_bigquery_root_emit_mangles_aliases(harness: Tuple[SlayerQueryEngine, YAMLStorage, str]):
     """``generate_planned_stages(..., dialect='bigquery')`` must emit NO dotted
     backticked aliases (BigQuery rejects dots in column names) — the rewrite
     hook must fire on the multi-stage root emit, not just single-stage."""
@@ -370,7 +370,7 @@ async def test_multistage_bigquery_root_emit_mangles_aliases(harness):
     assert "___" in sql, f"multi-stage BigQuery rewrite did not fire:\n{sql}"
 
 
-async def test_multistage_tsql_root_emit_mangles_bracketed_aliases(harness):
+async def test_multistage_tsql_root_emit_mangles_bracketed_aliases(harness: Tuple[SlayerQueryEngine, YAMLStorage, str]):
     """``generate_planned_stages(..., dialect='tsql')`` must not leak
     ANSI-double-quoted or literal-dot bracketed aliases from the multi-stage
     root emit — identifiers are bracketed and dotted aliases are mangled."""

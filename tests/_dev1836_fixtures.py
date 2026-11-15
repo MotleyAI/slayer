@@ -67,7 +67,8 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.warnings import BroadcastGrainWarningPayload
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._engine_helpers import seeded_exec_engine
 from slayer.storage.sqlite_conn import transaction
 
@@ -307,10 +308,10 @@ def rows_by(resp, *keys) -> dict:
     return out
 
 
-def broadcast_warnings(resp) -> list:
-    """The response's ``kind == "broadcast"`` warnings (DEV-1836 D6)."""
+def broadcast_warnings(resp: SlayerResponse) -> list[BroadcastGrainWarningPayload]:
+    """The response's ``kind == "broadcast"`` warnings."""
     return [w for w in (resp.warnings or [])
-            if getattr(w, "kind", None) == "broadcast"]
+            if isinstance(w, BroadcastGrainWarningPayload)]
 
 
 __all__ = [

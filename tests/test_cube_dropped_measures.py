@@ -51,7 +51,7 @@ def _measure_issues(report: CubeConversionReport, *members: str) -> list:
             if i.category == CubeIssueCategory.COMPLEX_MEASURE and i.member in members]
 
 
-def test_agg_measure_over_dropped_column_is_dropped_and_reported(converted) -> None:
+def test_agg_measure_over_dropped_column_is_dropped_and_reported(converted: tuple[dict[str, SlayerModel], CubeConversionReport]) -> None:
     models, report = converted
     assert models["orders"].get_measure("bad_total") is None
     issues = _measure_issues(report, "bad_total")
@@ -60,7 +60,7 @@ def test_agg_measure_over_dropped_column_is_dropped_and_reported(converted) -> N
     assert all(":sum" not in i.message for i in issues), issues
 
 
-def test_dependent_calc_measures_are_dropped_and_reported(converted) -> None:
+def test_dependent_calc_measures_are_dropped_and_reported(converted: tuple[dict[str, SlayerModel], CubeConversionReport]) -> None:
     models, report = converted
     orders = models["orders"]
     assert orders.get_measure("bad_ratio") is None
@@ -69,13 +69,13 @@ def test_dependent_calc_measures_are_dropped_and_reported(converted) -> None:
     assert _measure_issues(report, "bad_ratio2")
 
 
-def test_collision_renamed_measure_over_dropped_column_is_dropped(converted) -> None:
+def test_collision_renamed_measure_over_dropped_column_is_dropped(converted: tuple[dict[str, SlayerModel], CubeConversionReport]) -> None:
     models, report = converted
     assert models["orders"].get_measure("status_measure") is None
     assert _measure_issues(report, "status", "status_measure")
 
 
-def test_unaffected_measures_survive(converted) -> None:
+def test_unaffected_measures_survive(converted: tuple[dict[str, SlayerModel], CubeConversionReport]) -> None:
     models, _ = converted
     formulas = {m.name: m.formula for m in models["orders"].measures}
     assert formulas["count"] == "count(*)"
@@ -97,10 +97,13 @@ def test_calc_measure_over_bare_column_is_dropped_and_reported() -> None:
     assert _measure_issues(result.report, "doubled")
 
 
-def test_view_does_not_reexport_dropped_measures(converted) -> None:
+def test_view_does_not_reexport_dropped_measures(converted: tuple[dict[str, SlayerModel], CubeConversionReport]) -> None:
     models, _ = converted
     view = models["orders_view"]
-    names = {m.name for m in view.measures}
+    names: set[str] = set()
+    for m in view.measures:
+        assert m.name is not None
+        names.add(m.name)
     assert "count" in names
     assert "ok_total" in names
     assert "bad_total" not in names

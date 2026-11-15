@@ -40,7 +40,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="module")
-def jaffle_duckdb_path(tmp_path_factory):
+def jaffle_duckdb_path(tmp_path_factory: pytest.TempPathFactory) -> str:
     """Path to a Jaffle Shop DuckDB file. Reuses the project-wide cached DB
     at docs/examples/jaffle_data/demo/jaffle_shop.duckdb when present; falls
     back to ``jafgen`` for fresh checkouts."""
@@ -75,7 +75,7 @@ async def _ingest(ds: DatasourceConfig) -> list[SlayerModel]:
 
 
 @pytest.fixture(scope="module")
-def jaffle_models(jaffle_duckdb_path):
+def jaffle_models(jaffle_duckdb_path: str) -> dict[str, SlayerModel]:
     """Ingest the Jaffle Shop DuckDB and return models keyed by name."""
     ds = DatasourceConfig(
         name="jaffle_test",
@@ -171,12 +171,12 @@ _EXPECTED_JOINS: dict[str, set] = {
 }
 
 
-def test_all_jaffle_models_produced(jaffle_models):
+def test_all_jaffle_models_produced(jaffle_models: dict[str, SlayerModel]) -> None:
     assert set(jaffle_models.keys()) == set(_EXPECTED_COLUMNS.keys())
 
 
 @pytest.mark.parametrize("model_name", sorted(_EXPECTED_COLUMNS.keys()))
-def test_jaffle_model_columns_v2_shape(jaffle_models, model_name):
+def test_jaffle_model_columns_v2_shape(jaffle_models: dict[str, SlayerModel], model_name: str) -> None:
     model: SlayerModel = jaffle_models[model_name]
     expected = _EXPECTED_COLUMNS[model_name]
 
@@ -194,13 +194,13 @@ def test_jaffle_model_columns_v2_shape(jaffle_models, model_name):
             assert col.format.type == fmt_type, f"{model_name}.{col_name}: format.type"
 
 
-def test_jaffle_models_have_empty_measures_library(jaffle_models):
+def test_jaffle_models_have_empty_measures_library(jaffle_models: dict[str, SlayerModel]) -> None:
     """Auto-ingestion never populates the named-measures formula library."""
     for name, model in jaffle_models.items():
         assert model.measures == [], f"{name} should have measures == []"
 
 
-def test_jaffle_no_dotted_column_names(jaffle_models):
+def test_jaffle_no_dotted_column_names(jaffle_models: dict[str, SlayerModel]) -> None:
     """Joined columns live on the target model and must not leak into the source."""
     for name, model in jaffle_models.items():
         for col in model.columns:
@@ -210,7 +210,7 @@ def test_jaffle_no_dotted_column_names(jaffle_models):
 
 
 @pytest.mark.parametrize("model_name", sorted(_EXPECTED_JOINS.keys()))
-def test_jaffle_model_joins(jaffle_models, model_name):
+def test_jaffle_model_joins(jaffle_models: dict[str, SlayerModel], model_name: str) -> None:
     model = jaffle_models[model_name]
     expected = _EXPECTED_JOINS[model_name]
 
@@ -224,7 +224,7 @@ def test_jaffle_model_joins(jaffle_models, model_name):
     assert actual == expected
 
 
-async def test_jaffle_yaml_round_trip_omits_v1_keys(jaffle_models):
+async def test_jaffle_yaml_round_trip_omits_v1_keys(jaffle_models: dict[str, SlayerModel]) -> None:
     """Saving an ingested model to YAML must produce current-schema shape with no v1 keys."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)

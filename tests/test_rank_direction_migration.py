@@ -322,7 +322,7 @@ async def _execute(storage: StorageBackend, query: SlayerQuery):
 
 
 class TestStorageLoad:
-    async def test_stored_model_measure_keeps_descending_meaning(self, seed):
+    async def test_stored_model_measure_keeps_descending_meaning(self, seed: Seeder):
         storage = await seed(models=[_model_dict(measures=[{"name": "r", "formula": BARE}])])
         model = await storage.get_model("sales", data_source="test")
         assert model is not None
@@ -334,7 +334,7 @@ class TestStorageLoad:
             {"source_model": "sales", "dimensions": ["region"], "measures": ["r"]}))
         assert {k[0]: v["sales.r"] for k, v in rows_by(resp, "sales.region").items()} == RANK_DESC
 
-    async def test_unversioned_model_with_unversioned_nested_query(self, seed):
+    async def test_unversioned_model_with_unversioned_nested_query(self, seed: Seeder):
         qb = {"name": "qb", "data_source": "test",
               "source_queries": [{"source_model": "sales", "dimensions": ["region"],
                                   "measures": [{"formula": BARE, "name": "r"}]}]}
@@ -344,7 +344,7 @@ class TestStorageLoad:
         [q] = model.source_queries or []
         assert (q.measures or [])[0].formula == FILLED
 
-    async def test_unversioned_memory_and_query(self, seed):
+    async def test_unversioned_memory_and_query(self, seed: Seeder):
         storage = await seed(memories=[{
             "id": "m1", "learning": "top regions",
             "query": {"source_model": "sales", "measures": [BARE], "filters": [f"{BARE} <= 2"]},
@@ -354,7 +354,7 @@ class TestStorageLoad:
         assert (mem.query.measures or [])[0].formula == FILLED
         assert mem.query.filters == [f"{FILLED} <= 2"]
 
-    async def test_versioned_legacy_memory(self, seed):
+    async def test_versioned_legacy_memory(self, seed: Seeder):
         storage = await seed(memories=[{
             "version": 2, "id": "m2", "learning": "top regions",
             "query": {"version": 4, "source_model": "sales", "measures": [BARE]},
@@ -363,7 +363,7 @@ class TestStorageLoad:
         assert mem.query is not None
         assert (mem.query.measures or [])[0].formula == FILLED
 
-    async def test_untouched_calls_stay_byte_identical(self, seed):
+    async def test_untouched_calls_stay_byte_identical(self, seed: Seeder):
         formulas = ["rank(sum(amount), direction='asc')", "ntile(sum(amount), n=4)",
                     "percent_rank(sum(amount))"]
         data = _model_dict(measures=[{"name": f"m{i}", "formula": f} for i, f in enumerate(formulas)])
@@ -374,14 +374,14 @@ class TestStorageLoad:
         assert [m.formula for m in model.measures] == formulas
         assert next(c for c in model.columns if c.name == "rn").sql == "dense_rank() over (order by id)"
 
-    async def test_untokenisable_measure_still_loads(self, seed):
+    async def test_untokenisable_measure_still_loads(self, seed: Seeder):
         storage = await seed(models=[_model_dict(measures=[{"name": "x", "formula": "rank(sum(amount)"}])])
         model = await storage.get_model("sales", data_source="test")
         assert model is not None
         assert model.measures[0].formula == "rank(sum(amount)"
 
     @pytest.mark.parametrize("version", [None, "current"])
-    async def test_fresh_or_current_query_with_bare_rank_fails(self, seed, version):
+    async def test_fresh_or_current_query_with_bare_rank_fails(self, seed: Seeder, version):
         storage = await seed(models=[_model_dict(measures=[])])
         payload: dict = {"source_model": "sales", "dimensions": ["region"], "measures": [BARE]}
         if version == "current":
@@ -392,7 +392,7 @@ class TestStorageLoad:
         assert "direction='asc'" in str(ei.value)
         assert "direction='desc'" in str(ei.value)
 
-    async def test_explicit_old_query_executes_descending(self, seed):
+    async def test_explicit_old_query_executes_descending(self, seed: Seeder):
         storage = await seed(models=[_model_dict(measures=[])])
         resp = await _execute(storage, SlayerQuery.model_validate(
             {"version": 4, "source_model": "sales", "dimensions": ["region"],

@@ -12,7 +12,7 @@ import tempfile
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.engine.cardinality.join_safety import audit_join_safety
+from slayer.engine.cardinality.join_safety import JoinSafetyFinding, audit_join_safety
 from slayer.inspect.model_render import render_model_inspection
 from slayer.inspect.service import InspectService
 from slayer.storage.yaml_storage import YAMLStorage
@@ -81,7 +81,7 @@ class TestCollectionSurfaceListsReverseNeighbors:
             assert "orders" in customers["joins_to"]
 
 
-def _edge_finding(findings):
+def _edge_finding(findings: list[JoinSafetyFinding]) -> JoinSafetyFinding:
     matches = [f for f in findings
                if f.model == "orders" and f.target_model == "customers"]
     assert len(matches) == 1

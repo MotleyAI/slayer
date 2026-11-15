@@ -64,7 +64,7 @@ async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, Dat
 
 
 @pytest.mark.parametrize("part", EXTRACTIONS)
-async def test_extraction_equals_its_date_part_twin(pg, part: str) -> None:
+async def test_extraction_equals_its_date_part_twin(pg: tuple[SlayerQueryEngine, DatasourceConfig], part: str) -> None:
     engine, _ = pg
     alias = await engine.execute(q(dimensions=["id", {"expression": f"{part}(created_at)", "name": "x"}]))
     twin = await engine.execute(q(dimensions=["id", {"expression": f"date_part('{part}', created_at)", "name": "x"}]))
@@ -74,17 +74,17 @@ async def test_extraction_equals_its_date_part_twin(pg, part: str) -> None:
     assert int(next(r["orders.x"] for r in alias.data if int(r["orders.id"]) == 3)) == ROW3_PARTS[part]
 
 
-async def test_week_is_the_iso_week_number(pg) -> None:
+async def test_week_is_the_iso_week_number(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
     engine, _ = pg
     assert ids(await engine.execute(q(dimensions=["id"], filters=["week(created_at) = 1"]))) == {3}
 
 
-async def test_first_last_never_pick_a_null_key(pg) -> None:
+async def test_first_last_never_pick_a_null_key(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
     engine, _ = pg
     await check_events(engine)
 
 
-async def test_first_last_partitioned_cross_model(pg) -> None:
+async def test_first_last_partitioned_cross_model(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
     engine, _ = pg
     resp = await engine.execute(q(dimensions=["customers.region", "customers.name"], measures=[
         m("last(customers.status, customers.updated_at, partition_by=customers.region)", "l"),

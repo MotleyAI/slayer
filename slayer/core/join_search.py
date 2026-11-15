@@ -89,7 +89,7 @@ class _Graph:
         self._memo: dict[str, list[_Hop]] = {}
 
     def incident(self, name: str) -> list[_Hop]:
-        hops = self._memo.get(name)
+        hops: list[_Hop] | None = self._memo.get(name)
         if hops is None:
             model = self.models[name]
             edges = neighbors(model=model, models_by_name=self.models)

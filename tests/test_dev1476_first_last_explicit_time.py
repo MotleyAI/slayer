@@ -135,7 +135,7 @@ async def engine_with_seeded_data() -> AsyncIterator[SlayerQueryEngine]:
 
 
 async def test_b_no_time_dimension_with_explicit_time_arg(
-    engine_with_seeded_data,
+    engine_with_seeded_data: SlayerQueryEngine,
 ) -> None:
     engine = engine_with_seeded_data
     resp = await engine.execute(SlayerQuery.model_validate({
@@ -155,7 +155,7 @@ async def test_b_no_time_dimension_with_explicit_time_arg(
 
 
 async def test_c_cross_model_bare_column_explicit_time_arg(
-    engine_with_seeded_data,
+    engine_with_seeded_data: SlayerQueryEngine,
 ) -> None:
     engine = engine_with_seeded_data
     resp = await engine.execute(SlayerQuery.model_validate({
@@ -175,7 +175,7 @@ async def test_c_cross_model_bare_column_explicit_time_arg(
 
 
 async def test_local_first_last_over_derived_column_expands_inner_refs(
-    engine_with_seeded_data,
+    engine_with_seeded_data: SlayerQueryEngine,
 ) -> None:
     """Derived ``ColumnSqlKey`` aggregate source must qualify inner bare refs; the execute is the pin (an unqualified ref fails 'no such column')."""
     engine = engine_with_seeded_data
@@ -296,7 +296,7 @@ async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
 
 
 async def test_d_cross_cross_model_derived_time_arg(
-    engine_with_seeded_data,
+    engine_with_seeded_data: SlayerQueryEngine,
 ) -> None:
     engine = engine_with_seeded_data
     resp = await engine.execute(SlayerQuery(

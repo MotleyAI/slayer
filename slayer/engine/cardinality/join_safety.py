@@ -59,6 +59,7 @@ from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.cardinality.inference import (
     CardinalityVerdict,
+    JoinCardinalityFinding,
     JoinCardinalityReport,
 )
 
@@ -214,7 +215,7 @@ def _edge_finding(
     )
 
 
-def _contradiction_finding(finding) -> JoinSafetyFinding:
+def _contradiction_finding(finding: JoinCardinalityFinding) -> JoinSafetyFinding:
     return JoinSafetyFinding(
         data_source=finding.data_source,
         model=finding.model,

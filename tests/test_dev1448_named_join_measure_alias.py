@@ -92,7 +92,7 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
     yield SlayerQueryEngine(storage=storage), db_path
 
 
-async def test_dev1448_downstream_resolves_user_name(engine):
+async def test_dev1448_downstream_resolves_user_name(engine: tuple[SlayerQueryEngine, str]) -> None:
     """The renamed join measure is referenced downstream by its user name."""
     eng, _ = engine
     stage1 = SlayerQuery.model_validate({
@@ -119,7 +119,7 @@ async def test_dev1448_downstream_resolves_user_name(engine):
     }
 
 
-async def test_dev1448_canonical_form_not_a_downstream_name(engine):
+async def test_dev1448_canonical_form_not_a_downstream_name(engine: tuple[SlayerQueryEngine, str]) -> None:
     """Because the user ``name`` GOVERNS the stage alias, the canonical
     ``customers__revenue_sum`` is no longer exposed downstream — referencing
     it raises rather than silently resolving.

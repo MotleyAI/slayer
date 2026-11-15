@@ -13,6 +13,7 @@ All of the above is implemented; this module guards it against regression.
 from __future__ import annotations
 
 import re
+from collections.abc import AsyncIterator
 
 import pytest
 import sqlglot
@@ -66,7 +67,7 @@ from tests._dev1832_fixtures import (
     status_key,
 )
 from tests._rank_direction_fixtures import rank_windows
-from slayer.engine.query_engine import SlayerResponse
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 # Source formulas under test.
 GRAINED_CUMSUM = "sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)"
@@ -104,7 +105,7 @@ MIXED_FAN = "sum(weight * min(sum(amount, partition_by=[status, channel]), parti
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
-async def exec_backend(request):
+async def exec_backend(request) -> AsyncIterator[tuple[str, SlayerQueryEngine]]:
     async for engine in make_exec_engine(request):
         yield request.param, engine
 
@@ -115,7 +116,7 @@ def _month_cols(resp: SlayerResponse, name: str) -> tuple[str, str]:
     return month_col, next(c for c in resp.columns if c.endswith("." + name))
 
 
-def _by_month(resp, name: str) -> dict:
+def _by_month(resp: SlayerResponse, name: str) -> dict:
     """``{YYYY-MM: value}`` for measure ``name``, NULL-valued cells dropped."""
     month_col, meas_col = _month_cols(resp, name)
     return {month_key(row[month_col]): row[meas_col] for row in resp.data
@@ -146,7 +147,7 @@ def _monthly_multi_bundle() -> ResolvedSourceBundle:
 class TestGrainedTransformConstituent:
     """queries/semantics › Grained transform constituent aggregates the cells."""
 
-    async def test_running_total_minus_one_by_month(self, exec_backend):
+    async def test_running_total_minus_one_by_month(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=GRAINED_CUMSUM, name="m")],
@@ -158,7 +159,7 @@ class TestGrainedTransformConstituent:
 class TestUngrainedTransformConstituent:
     """queries/semantics › Ungrained transform constituent is identity + warning."""
 
-    async def test_identity_plus_degenerate_warning(self, exec_backend):
+    async def test_identity_plus_degenerate_warning(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=UNGRAINED_CUMSUM, name="m")],
@@ -166,7 +167,7 @@ class TestUngrainedTransformConstituent:
         assert _by_month(resp, "m") == pytest.approx(UNGRAINED_CUMSUM_BY_MONTH)
         assert degenerate_warnings(resp), "expected a degenerate-reaggregation warning"
 
-    async def test_scalar_call_wrapped_reaggregation_attaches_axis(self, exec_backend):
+    async def test_scalar_call_wrapped_reaggregation_attaches_axis(self, exec_backend: tuple[str, SlayerQueryEngine]):
         # The cumsum inside an aggregate that is a scalar-call argument still gets
         # its time axis attached (the attachment half of the scalar-call fix); the
         # coalesce leaves the non-null values unchanged.
@@ -205,7 +206,7 @@ class TestDualGranularityQueryGrain:
                  if isinstance(k, TimeTruncKey)}
         assert grans == {"month", "year"}
 
-    async def test_rank_over_monthly_totals_by_executed_values(self, exec_backend):
+    async def test_rank_over_monthly_totals_by_executed_values(self, exec_backend: tuple[str, SlayerQueryEngine]):
         # Cells are the (month, year) totals 15 / 35 / 30 → ranks 3 / 1 / 2; a
         # per-column grain would rank the lone yearly total (1 everywhere).
         _, engine = exec_backend
@@ -221,7 +222,7 @@ class TestDualGranularityQueryGrain:
 class TestMixedTransformConstituent:
     """queries/partitioned-aggregates › Transform constituent inside a mixed source."""
 
-    async def test_rank_mixed_by_region(self, exec_backend):
+    async def test_rank_mixed_by_region(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(sales_q(
             dimensions=["region"], measures=[ModelMeasure(formula=RANK_MIXED, name="m")]))
@@ -229,7 +230,7 @@ class TestMixedTransformConstituent:
                if v["sales.m"] is not None}
         assert got == pytest.approx(MIXED_RANK_SUM_BY_REGION)
 
-    async def test_joined_model_row_leaf_mixed_by_status(self, exec_backend):
+    async def test_joined_model_row_leaf_mixed_by_status(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(orders_q(
             dimensions=["status"],
@@ -251,7 +252,7 @@ class TestTransformSourceRejections:
             await gen(query)
         assert not re.search(r"DEV-\d+", str(ei.value))
 
-    async def test_projected_grain_key_under_transform_legal(self, exec_backend):
+    async def test_projected_grain_key_under_transform_legal(self, exec_backend: tuple[str, SlayerQueryEngine]):
         # sum(rank(region)) over [region]: the transform types at the query grain
         # — the degenerate identity (one non-null row per region) plus warning.
         _, engine = exec_backend
@@ -346,7 +347,7 @@ class TestGrainedTransformPlanStructure:
 # Collapsing constituents (D4c): first/last reduce X along the axis.
 # --------------------------------------------------------------------------- #
 class TestCollapsingConstituent:
-    async def test_last_collapses_along_the_axis(self, exec_backend):
+    async def test_last_collapses_along_the_axis(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=LAST_X, name="m")],
@@ -355,7 +356,7 @@ class TestCollapsingConstituent:
         # The collapsed value drops the month axis, so it broadcasts across months.
         assert broadcast_warnings(resp), "expected a broadcast warning on the month dim"
 
-    async def test_first_collapses_along_the_axis(self, exec_backend):
+    async def test_first_collapses_along_the_axis(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=FIRST_X, name="m")],
@@ -363,7 +364,7 @@ class TestCollapsingConstituent:
         assert _by_month(resp, "m") == pytest.approx(FIRST_SUM_BY_MONTH)
         assert broadcast_warnings(resp)
 
-    async def test_preserving_minus_collapsing_no_warning(self, exec_backend):
+    async def test_preserving_minus_collapsing_no_warning(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=CUMSUM_MINUS_LAST, name="m")],
@@ -371,7 +372,7 @@ class TestCollapsingConstituent:
         assert _by_month(resp, "m") == pytest.approx(CUMSUM_MINUS_LAST_BY_MONTH)
         assert not broadcast_warnings(resp), "cumsum keeps the axis; no broadcast"
 
-    async def test_filter_only_collapsing_all_survive(self, exec_backend):
+    async def test_filter_only_collapsing_all_survive(self, exec_backend: tuple[str, SlayerQueryEngine]):
         # last-sum is 45 > 40 for every month, so every cell survives unchanged.
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
@@ -422,7 +423,7 @@ class TestTransformFamily:
         (f"lead({_X}, 1)", LEAD_SUM_BY_MONTH),
         (f"consecutive_periods({_X} > 12)", CONSEC_SUM_BY_MONTH),
     ])
-    async def test_family_by_month(self, exec_backend, op, oracle):
+    async def test_family_by_month(self, exec_backend: tuple[str, SlayerQueryEngine], op, oracle):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=f"sum({op})", name="m")],
@@ -472,35 +473,35 @@ class TestReaggMixedSource:
     """queries/partitioned-aggregates › a re-aggregation constituent in a mixed source
     evaluates at its own grain and broadcasts per partition onto the source's rows."""
 
-    async def test_collapse_mixed_executes(self, exec_backend):
+    async def test_collapse_mixed_executes(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=COLLAPSE_MIXED, name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(COLLAPSE_MIXED_BY_MONTH)
 
-    async def test_handwritten_min_mixed_executes(self, exec_backend):
+    async def test_handwritten_min_mixed_executes(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=HANDWRITTEN_MIN, name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(HANDWRITTEN_MIN_MIXED_BY_MONTH)
 
-    async def test_empty_grain_mixed_broadcasts_one_value(self, exec_backend):
+    async def test_empty_grain_mixed_broadcasts_one_value(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=EMPTY_GRAIN_MIXED, name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(EMPTY_GRAIN_MIXED_BY_MONTH)
 
-    async def test_reaggregation_as_attached_parameter(self, exec_backend):
+    async def test_reaggregation_as_attached_parameter(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=WAVG_MIN_PARAM, name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(WAVG_MIN_MIXED_BY_MONTH)
 
-    async def test_mixed_reagg_combined_with_coarser_measure(self, exec_backend):
+    async def test_mixed_reagg_combined_with_coarser_measure(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             dimensions=["region"],
@@ -509,7 +510,7 @@ class TestReaggMixedSource:
         assert len(resp.data) == 6  # (region, month) cells incl. West's NULL row
         assert _region_month(resp) == pytest.approx(MIXED_COMBINED_BY_REGION_MONTH)
 
-    async def test_collapse_mixed_in_filter_position(self, exec_backend):
+    async def test_collapse_mixed_in_filter_position(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula="sum(amount)", name="s")],
@@ -518,7 +519,7 @@ class TestReaggMixedSource:
         # each keeping its unfiltered amount:sum (a measure-typed filter prunes only).
         assert _by_month(resp, "s") == pytest.approx({"2024-02": 35.0, "2024-03": 30.0})
 
-    async def test_collapse_mixed_in_order_position(self, exec_backend):
+    async def test_collapse_mixed_in_order_position(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula="sum(amount)", name="s")],
@@ -553,7 +554,7 @@ class TestReaggMixedPlanStructure:
         assert_scope_closed(sql, dialect="duckdb")
         assert "__regroup__" not in sql
 
-    async def test_adding_mixed_reagg_is_cardinality_neutral(self, exec_backend):
+    async def test_adding_mixed_reagg_is_cardinality_neutral(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         base = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula="sum(amount)", name="s")],
@@ -572,7 +573,7 @@ class TestReaggMixedModeAxis:
     re-aggregation — an orders-rooted mixed source grouped by the fanning
     ``region_events`` dimension broadcasts (with a warning) or refuses under error."""
 
-    async def test_broadcast_repeats_and_warns(self, exec_backend):
+    async def test_broadcast_repeats_and_warns(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(orders_q(
             dimensions=[FAN_DIM],
@@ -585,7 +586,7 @@ class TestReaggMixedModeAxis:
         assert len(set(vals)) == 1
         assert broadcast_warnings(resp)
 
-    async def test_error_mode_refuses_naming_the_hop(self, exec_backend):
+    async def test_error_mode_refuses_naming_the_hop(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         query = orders_q(
             dimensions=[FAN_DIM],
@@ -602,7 +603,7 @@ class TestWindowedInnerConstituent:
     """queries/partitioned-aggregates › Windowed inner under a transform constituent
     executes — the query's active bucket reaches the nested producer."""
 
-    async def test_executes_three_buckets_all_nonnull(self, exec_backend):
+    async def test_executes_three_buckets_all_nonnull(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             measures=[ModelMeasure(formula=WINDOWED_INNER, name="m")],
@@ -665,7 +666,7 @@ class TestCrossModelGrainedInnerBoundary:
         assert not re.search(r"DEV-\d+", msg)
 
     @pytest.mark.parametrize("mode", [None, "associate"])
-    async def test_host_time_axis_associates_by_default(self, exec_backend, mode):
+    async def test_host_time_axis_associates_by_default(self, exec_backend: tuple[str, SlayerQueryEngine], mode):
         _, engine = exec_backend
         resp = await engine.execute(orders_q(
             measures=[ModelMeasure(formula=XMODEL_BOUNDARY, name="m")],
@@ -673,14 +674,14 @@ class TestCrossModelGrainedInnerBoundary:
         assert _by_month(resp, "m") == pytest.approx(
             {"2024-01": 100.0, "2024-02": 150.0, "2024-03": 200.0, "2024-04": 420.0})
 
-    async def test_to_one_cross_model_partition_key_executes(self, exec_backend):
+    async def test_to_one_cross_model_partition_key_executes(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(orders_q(
             measures=[ModelMeasure(formula=XMODEL_TOONE, name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(XMODEL_TIER_CUMSUM_BY_MONTH)
 
-    async def test_non_time_cross_model_key_still_associates(self, exec_backend):
+    async def test_non_time_cross_model_key_still_associates(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(orders_q(
             dimensions=["status"],
@@ -700,7 +701,7 @@ class TestReaggAxiomCompliance:
     Pins that the windowed re-aggregation joins at COMBINED phase (over cells) — never a
     row attach that would double every bucket — while the mixed form joins at ROW."""
 
-    async def test_windowed_pure_reagg_counts_cells_not_rows(self, exec_backend):
+    async def test_windowed_pure_reagg_counts_cells_not_rows(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_multi_q(
             measures=[ModelMeasure(formula=WINDOWED_INNER, name="m")],
@@ -711,7 +712,7 @@ class TestReaggAxiomCompliance:
         assert got != pytest.approx(
             {m: v * 2 for m, v in WINDOWED_MULTI_BY_MONTH.items()})
 
-    async def test_mixed_reagg_counts_rows(self, exec_backend):
+    async def test_mixed_reagg_counts_rows(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_multi_q(
             measures=[ModelMeasure(formula=HANDWRITTEN_MIN, name="m")],
@@ -724,7 +725,7 @@ class TestReaggAxiomCompliance:
         [mixed] = _reagg_multi_plan(HANDWRITTEN_MIN).regroup_attach_plans
         assert mixed.attach_phase == "row"  # row leaf → over model rows
 
-    async def test_reagg_used_standalone_and_mixed_executes(self, exec_backend):
+    async def test_reagg_used_standalone_and_mixed_executes(self, exec_backend: tuple[str, SlayerQueryEngine]):
         # The same re-aggregation both on its own (combined phase) and inside a mixed
         # row aggregation (row phase): one shared producer at two phases whose nested
         # carrier is emitted before every consumer on strict dialects. Each

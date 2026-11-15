@@ -43,6 +43,7 @@ from slayer.core.granularity import CustomGranularity, Granularity, granularity_
 from slayer.core.time_spine import TIME_SPINE_COLUMN, is_spine
 from slayer.core.keys import restricts_own_rows, BOOL_CONNECTIVE_OPS, KIND_POLICY, REGROUP_LEAF_PREFIX, SLOT_COMPOSITE_KINDS, TEMPORAL_TYPES, VALUE_KEY_TYPES, AggregateKey, ArithmeticKey, CastKey, ColumnKey, ColumnSqlKey, ColumnTypeFn, InKey, ListSetKey, LiteralKey, Phase, ScalarCallKey, StarKey, TimePointCmpKey, TimeTruncKey, TransformKey, ValueKey, aggregation_source_type, is_ranked, column_path, date_add_type, is_boolean_shaped, parameter_row_leaves, shift_offset_of, source_anchor_path, substitute_value_keys, temporal_type, list_element_type, list_valued, literal_type, value_type, walk_value_keys, TEXT_RESULT_SCALARS
 from slayer.core.join_walker import (
+    OrientedJoin,
     aggregation_owner,
     follow,
     is_lateral_edge,
@@ -67,7 +68,9 @@ from slayer.sql.column_expansion import (
 from slayer.ir.planned import (
     AssociationProducerKernel,
     MaskTyping,
+    PlannedQuery,
     RankedGrainMember,
+    SemiJoinFilter,
     SemiJoinHop,
     SpineFactor,
     StageKind,
@@ -1283,7 +1286,7 @@ class SQLGenerator:
                 )
 
     def _generate_from_planned_impl(
-        self, planned_query, *, bundle, as_cte_body: bool = False, producer_kernel=None,
+        self, planned_query, *, bundle: ResolvedSourceBundle, as_cte_body: bool = False, producer_kernel=None,
     ) -> exp.Select:
         """Compose one planned query with its root's column types in reach of alias-mode renders."""
         source_model = bundle.source_model
@@ -1343,7 +1346,7 @@ class SQLGenerator:
         self,
         planned_query,
         *,
-        bundle,
+        bundle: ResolvedSourceBundle,
         as_cte_body: bool = False,
         producer_kernel=None,
     ) -> exp.Select:
@@ -1662,8 +1665,8 @@ class SQLGenerator:
         aliases_by_slot_id: Dict[str, List[str]],
         available_alias_by_slot_id: Dict[str, str],
         source_relation: str,
-        slot_entries: Iterable[Tuple[str, Any]],
-        render: Callable[[Any], Expression],
+        slot_entries: Iterable[Tuple[str, ValueSlot]],
+        render: Callable[[ValueSlot], Expression],
     ) -> Tuple[str, int]:
         """Emit one transform-chain step CTE and advance the chain."""
         step_num += 1
@@ -2340,7 +2343,7 @@ class SQLGenerator:
         self,
         *,
         plan,
-        agg_slot,
+        agg_slot: ValueSlot,
         source_model,
         source_relation: str,
         bundle,
@@ -2967,7 +2970,7 @@ class SQLGenerator:
         ))
         return parts
 
-    def _render_kernel_producer_body(self, *, planned_query, bundle, kernel) -> exp.Select:
+    def _render_kernel_producer_body(self, *, planned_query, bundle: ResolvedSourceBundle, kernel) -> exp.Select:
         """The aggregate phase of a ranked / trailing-window kernel producer"""
         source_model = bundle.source_model
         source_relation = planned_query.source_relation
@@ -3055,13 +3058,14 @@ class SQLGenerator:
         return body
 
     def _render_association_producer_body(  # NOSONAR(S3776) — one cohesive two-level association body: level-1 dedup SELECT (grain × entity key, picked value) wrapped as ``_base``, level-2 aggregate over the picked rows. The two arms share the grain-alias / scope state.
-        self, *, planned_query, bundle, kernel, source_model, source_relation,
+        self, *, planned_query: PlannedQuery, bundle, kernel, source_model, source_relation,
         slots_by_id, regroup_env=None, regroup_join_specs=None,
     ) -> exp.Select:
         """The distinct-entity association producer: level 1 groups by
         (grain × the root's entity key) picking each input once per entity; level
         2 aggregates over the picked rows per grain."""
         agg_slot = planned_query.aggregate_slots[0]
+        assert isinstance(agg_slot.key, AggregateKey)
         grain_slots = [
             slots_by_id[sid]
             for sid in planned_query.projection
@@ -3386,7 +3390,7 @@ class SQLGenerator:
         self,
         *,
         planned_query,
-        bundle,
+        bundle: ResolvedSourceBundle,
         spine_mark: int,
     ) -> exp.Select:
         """Render a ``PlannedQuery`` that carries one or more COMBINED"""
@@ -3623,7 +3627,7 @@ class SQLGenerator:
                 if _ph_slot is not None:
                     outer_composite_cm_map[_ph_slot.id] = _cm
 
-            def _render_outer_composite(cslot) -> Expression:
+            def _render_outer_composite(cslot: ValueSlot) -> Expression:
                 rendered = render_value_key(
                     key=cslot.key,
                     ctx=self._outer_wrapper_render_ctx(
@@ -4368,7 +4372,9 @@ class SQLGenerator:
             _add_row_slot(sid)
         return ordered
 
-    def _oriented_hop_chain(self, *, source_model, path, bundle):
+    def _oriented_hop_chain(
+        self, *, source_model: SlayerModel, path, bundle: ResolvedSourceBundle,
+    ) -> List[Tuple[OrientedJoin, SlayerModel]]:
         """``(OrientedJoin, next_model)`` hops of a bound (possibly composed) join ``path``;
         ``ValueError`` when it does not resolve, ``AmbiguousJoinPathError`` on an ambiguous hop."""
         models_by_name = bundle.models_by_name
@@ -4427,7 +4433,8 @@ class SQLGenerator:
         return base_from, joins
 
     def _list_relation(
-        self, *, parent, column: str, parent_alias: str, alias: str, bundle, leading: bool, distinct: bool = False,
+        self, *, parent: SlayerModel, column: str, parent_alias: str, alias: str, bundle, leading: bool,
+        distinct: bool = False,
     ):
         """``parent``'s list ``column`` (read at ``parent_alias``) as its element relation ``alias``."""
         col = parent.get_column(column)
@@ -4454,13 +4461,13 @@ class SQLGenerator:
         return self._dialect.read_column(key, zoned=self._dialect.is_zoned_db_type(column.db_type))
 
     def _hop_join(
-        self, *, edge, prev_model, next_model, current_alias: str, next_alias: str, bundle,
-        distinct_lists: bool = False,
+        self, *, edge: OrientedJoin, prev_model: SlayerModel, next_model: SlayerModel, current_alias: str,
+        next_alias: str, bundle, distinct_lists: bool = False,
     ) -> Tuple[Expression, Optional[exp.Condition], str]:
         """``(join_expr, on_expr, join_type)`` for one oriented hop; an unrelated product hop fails closed."""
         if is_unrelated_edge(edge):
             raise ValueError(f"The product hop {edge.source_model} × {edge.target_model} cannot be joined.")
-        if is_lateral_edge(edge):
+        if edge.lateral is not None:
             if next_model.list_of is None:
                 raise ValueError(f"The hop from list child {prev_model.name!r} back to its parent is its own row.")
             return self._list_join(
@@ -4489,7 +4496,7 @@ class SQLGenerator:
         *,
         path: Tuple[str, ...],
         leaf: str,
-        source_model,
+        source_model: SlayerModel,
         source_relation: str,
         bundle,
     ) -> Expression:
@@ -5250,7 +5257,7 @@ class SQLGenerator:
         return derived_expr_by_sid
 
     def _derived_column_expr(
-        self, *, key, source_model, source_relation: str, bundle,
+        self, *, key, source_model: SlayerModel, source_relation: str, bundle,
         crossed_paths: "Optional[Set[Tuple[str, ...]]]" = None,
     ) -> "Optional[Expression]":
         """The rendered expression for a derived (``ColumnSqlKey``) column."""
@@ -5388,7 +5395,8 @@ class SQLGenerator:
         return exp.Subquery(this=select, alias=exp.to_identifier(alias))
 
     def _association_exists(
-        self, *, model, chains, predicate: Expression, path_alias: Callable[[Tuple[str, ...]], str], bundle,
+        self, *, model: SlayerModel, chains: Dict[Tuple[str, ...], List[Tuple[OrientedJoin, SlayerModel]]],
+        predicate: Expression, path_alias: Callable[[Tuple[str, ...]], str], bundle,
     ) -> Expression:
         """``EXISTS`` over the null-extending joins the associated filter entries read, keyed on the row's own columns."""
         hops = []
@@ -5772,7 +5780,7 @@ class SQLGenerator:
             return frozenset(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
         return self._formula_template(agg_name=agg, formula=formula).placeholder_names
 
-    def _walk_join_path_model(self, *, source_model, path, bundle):
+    def _walk_join_path_model(self, *, source_model: SlayerModel, path, bundle) -> Optional[SlayerModel]:
         """The terminal model of a join ``path`` walked from ``source_model``
         via the shared walker (tokens may be edge names or reverse hops)."""
         return resolved_terminal(
@@ -5783,7 +5791,7 @@ class SQLGenerator:
     def _build_agg_render_spec_from_planned(  # NOSONAR(S3776) — sequential isinstance dispatch over StarKey / ColumnKey / ColumnSqlKey with helper extractions for aggregation-def lookup, kwarg path validation, and explicit-time-arg resolution. Further splitting would scatter the per-source-kind contract.
         self,
         *,
-        slot,
+        slot: Optional[ValueSlot],
         key,
         source_model: SlayerModel,
         source_relation: str,
@@ -5994,7 +6002,7 @@ class SQLGenerator:
             for group in groups
         ]
 
-    def _hop_model(self, *, name: str, bundle):
+    def _hop_model(self, *, name: str, bundle: ResolvedSourceBundle) -> SlayerModel:
         model = bundle.get_referenced_model(name)
         if model is None and bundle.source_model is not None \
                 and bundle.source_model.name == name:
@@ -6008,7 +6016,8 @@ class SQLGenerator:
 
 
     def _build_semi_join_exists(
-        self, *, group, source_model, source_relation: str, bundle, allocator,
+        self, *, group: SemiJoinFilter, source_model: SlayerModel, source_relation: str,
+        bundle: ResolvedSourceBundle, allocator,
     ) -> Expression:
         """Build one correlated EXISTS lowering the group's join product:
         outer-attached hops (parent outside the group) correlate to the outer
@@ -6025,7 +6034,7 @@ class SQLGenerator:
         in_group = {tuple(h.node_path) for h in group.hops}
         node_models = {(): source_model.name, **{tuple(h.node_path): h.target_model for h in group.hops}}
 
-        def _table(hop, leading: bool) -> Tuple[Expression, str]:
+        def _table(hop: SemiJoinHop, leading: bool) -> Tuple[Expression, str]:
             if hop.lateral is None:
                 return self._emit_relation(
                     model=self._hop_model(name=hop.target_model, bundle=bundle), alias=_alias(hop.node_path),
@@ -6699,7 +6708,7 @@ def generate_planned_stages(
 
 
 def _build_planned_stages_ast(
-    planned_queries, *, bundle, dialect: "str | SqlDialect", kept_stages: "Optional[Set[str]]" = None,
+    planned_queries: List[PlannedQuery], *, bundle, dialect: "str | SqlDialect", kept_stages: "Optional[Set[str]]" = None,
 ) -> exp.Select:
     """Compose a multi-stage DAG (``plan_stages`` output) as one statement AST."""
     if not planned_queries:
@@ -6781,6 +6790,7 @@ def _build_planned_stages_ast(
     entries = reachable_cte_entries(entries=[*stage_entries, *root_entries], seeds=seeds)
     kept = {e.name for e in entries} & generator._gen_stage_relations
     for planned in planned_queries[:-1]:
+        assert planned.stage_schema is not None
         if planned.splice_conflict and planned.stage_schema.relation_name in kept:
             raise ValueError(planned.splice_conflict)
     if kept_stages is not None:

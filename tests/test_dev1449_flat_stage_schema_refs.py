@@ -100,7 +100,7 @@ def _stage1() -> SlayerQuery:
     })
 
 
-async def test_dev1449_flat_name_resolves(engine):
+async def test_dev1449_flat_name_resolves(engine: Tuple[SlayerQueryEngine, str]) -> None:
     """The multi-hop upstream dimension is referenced downstream by its flat
     name ``customers__region``.
     """
@@ -128,7 +128,7 @@ async def test_dev1449_flat_name_resolves(engine):
     }
 
 
-async def test_dev1449_dotted_form_raises(engine):
+async def test_dev1449_dotted_form_raises(engine: Tuple[SlayerQueryEngine, str]) -> None:
     """The dotted form reads a model no join path reaches from the flat upstream stage."""
     eng, _ = engine
     root = SlayerQuery.model_validate({

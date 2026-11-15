@@ -18,6 +18,7 @@ import math as _math
 import statistics
 from datetime import date, timedelta
 import tempfile
+from collections.abc import Iterator
 import uuid
 from typing import Any
 
@@ -685,7 +686,7 @@ class TestCrossModelAndMultistageMySQL:
 
 
 @pytest.fixture(scope="module")
-def mysql_ingest_env(mysql_container):
+def mysql_ingest_env(mysql_container) -> Iterator[tuple[list[SlayerModel], DatasourceConfig, None]]:
     """Set up tables with InnoDB FK relationships and ingest. If FK
     introspection returns nothing, fail the fixture with a clear reason —
     don't silently degrade. Module-scoped: tests destructure
@@ -751,7 +752,7 @@ def mysql_ingest_env(mysql_container):
 
 @pytest.mark.integration
 class TestRollupIngestionMySQL:
-    def test_orders_has_own_columns_only(self, mysql_ingest_env) -> None:
+    def test_orders_has_own_columns_only(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = mysql_ingest_env
         orders = next(m for m in models if m.name == "orders")
         col_names = [c.name for c in orders.columns]
@@ -760,20 +761,20 @@ class TestRollupIngestionMySQL:
         assert "amount" in col_names
         assert not any("." in name for name in col_names)
 
-    def test_orders_uses_sql_table_with_joins(self, mysql_ingest_env) -> None:
+    def test_orders_uses_sql_table_with_joins(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = mysql_ingest_env
         orders = next(m for m in models if m.name == "orders")
         assert orders.sql_table is not None
         assert orders.sql is None
         assert len(orders.joins) > 0
 
-    def test_regions_has_no_rollup(self, mysql_ingest_env) -> None:
+    def test_regions_has_no_rollup(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = mysql_ingest_env
         regions = next(m for m in models if m.name == "regions")
         assert regions.sql_table is not None
         assert regions.sql is None
 
-    async def test_rollup_query_group_by_customer(self, mysql_ingest_env) -> None:
+    async def test_rollup_query_group_by_customer(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, ds, _ = mysql_ingest_env
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
@@ -793,7 +794,7 @@ class TestRollupIngestionMySQL:
         assert by_name["Globex"] == 1
         assert by_name["Initech"] == 1
 
-    async def test_rollup_query_group_by_region(self, mysql_ingest_env) -> None:
+    async def test_rollup_query_group_by_region(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, ds, _ = mysql_ingest_env
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
@@ -814,7 +815,7 @@ class TestRollupIngestionMySQL:
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
         assert float(by_region["EU"]["orders.amount_sum"]) == 50.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
-    def test_orders_has_no_named_measures_after_ingest(self, mysql_ingest_env) -> None:
+    def test_orders_has_no_named_measures_after_ingest(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = mysql_ingest_env
         orders = next(m for m in models if m.name == "orders")
         assert orders.measures == []
@@ -827,7 +828,7 @@ class TestRollupIngestionMySQL:
     # the rollup query test; the multi-hop variant below covers transitive
     # resolution which is the part that genuinely differs.
 
-    async def test_dotted_dimension_multi_hop(self, mysql_ingest_env) -> None:
+    async def test_dotted_dimension_multi_hop(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, ds, _ = mysql_ingest_env
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
@@ -845,7 +846,7 @@ class TestRollupIngestionMySQL:
         assert by_region["US"] == 3
         assert by_region["EU"] == 1
 
-    async def test_selective_joins_no_joined_dims(self, mysql_ingest_env) -> None:
+    async def test_selective_joins_no_joined_dims(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, ds, _ = mysql_ingest_env
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
@@ -858,7 +859,7 @@ class TestRollupIngestionMySQL:
         assert "LEFT JOIN" not in result.sql
         assert result.data[0]["orders._count"] == 4
 
-    async def test_selective_joins_single_hop(self, mysql_ingest_env) -> None:
+    async def test_selective_joins_single_hop(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, ds, _ = mysql_ingest_env
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
@@ -876,7 +877,7 @@ class TestRollupIngestionMySQL:
         assert "customers" in result.sql
         assert "regions" not in result.sql
 
-    async def test_selective_joins_transitive(self, mysql_ingest_env) -> None:
+    async def test_selective_joins_transitive(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, ds, _ = mysql_ingest_env
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
@@ -893,7 +894,7 @@ class TestRollupIngestionMySQL:
         assert "customers" in result.sql
         assert "regions" in result.sql
 
-    def test_orders_has_joins_metadata(self, mysql_ingest_env) -> None:
+    def test_orders_has_joins_metadata(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = mysql_ingest_env
         orders = next(m for m in models if m.name == "orders")
         join_targets = [j.target_model for j in orders.joins]
@@ -904,12 +905,12 @@ class TestRollupIngestionMySQL:
             for pair in j.join_pairs:
                 assert len(pair) == 2
 
-    def test_regions_has_no_joins(self, mysql_ingest_env) -> None:
+    def test_regions_has_no_joins(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = mysql_ingest_env
         regions = next(m for m in models if m.name == "regions")
         assert regions.joins == []
 
-    async def test_joins_serialize_to_yaml(self, mysql_ingest_env) -> None:
+    async def test_joins_serialize_to_yaml(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = mysql_ingest_env
         orders = next(m for m in models if m.name == "orders")
         tmpdir = tempfile.mkdtemp()
@@ -1469,7 +1470,7 @@ class TestMySQLModeAEscaping:
 
 @pytest.mark.integration
 class TestMySQLIngestComments:
-    def test_table_and_column_comments_imported(self, mysql_ingest_env) -> None:
+    def test_table_and_column_comments_imported(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = mysql_ingest_env
         orders = next(m for m in models if m.name == "orders")
         assert orders.description == "All orders"
@@ -1477,7 +1478,7 @@ class TestMySQLIngestComments:
         assert by_name["amount"].description == "Order amount"
         assert by_name["id"].description is None
 
-    def test_uncommented_table_has_no_description(self, mysql_ingest_env) -> None:
+    def test_uncommented_table_has_no_description(self, mysql_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = mysql_ingest_env
         regions = next(m for m in models if m.name == "regions")
         assert regions.description is None

@@ -116,7 +116,8 @@ class TestEverySurface:
     def test_model_source_queries(self) -> None:
         doc = query_backed_v10(name="paid_rev", version=15, stages=[rev_query(filters=['status == "ok"'])])
         model = SlayerModel.model_validate(doc)
-        assert (model.source_queries or [])[0].filters == ["status = 'ok'"]
+        stage = (model.source_queries or [])[0]
+        assert stage.filters == ["status = 'ok'"]
 
     def test_memory_query(self) -> None:
         mem = Memory.model_validate(memory_v2(memory_id="m", version=4, query=rev_query(filters=['status == "ok"'])))
@@ -162,6 +163,7 @@ class TestStoredResultsUnchanged:
         model = await storage.get_model("rev_q", data_source=DS)
         assert model is not None
         [loaded] = model.source_queries or []
+        assert isinstance(loaded, SlayerQuery)
         assert loaded.filters == ["status = 'ok'"]
         assert loaded.measures is not None
         assert loaded.measures[0].formula == "sum(iif(status = 'ok', amount, 0))"
@@ -173,7 +175,8 @@ class TestStoredResultsUnchanged:
         storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", stage=stage)
         model = await storage.get_model("rev_q", data_source=DS)
         assert model is not None
-        assert (model.source_queries or [])[0].filters == ["ordered_at >= '2024-01-01T00:00:00'"]
+        stage = (model.source_queries or [])[0]
+        assert stage.filters == ["ordered_at >= '2024-01-01T00:00:00'"]
         resp = await run(storage, {"source_model": "rev_q", "measures": ["sum(rev)"]})
         assert measure_total(resp, measure="rev_sum") == 200.0
 

@@ -8,7 +8,8 @@ Run with: poetry run pytest tests/integration/test_mcp_inspect.py -m integration
 """
 
 import json as _json
-from typing import Any
+from pathlib import Path
+from typing import Any, TypedDict
 
 import pytest
 
@@ -31,6 +32,12 @@ from slayer.storage.yaml_storage import YAMLStorage
 pytestmark = pytest.mark.integration
 
 
+class InspectEnv(TypedDict):
+    storage: YAMLStorage
+    engine: SlayerQueryEngine
+    model: SlayerModel
+
+
 async def _profile(*, model: SlayerModel, engine: SlayerQueryEngine) -> dict[str, Column]:
     """Profile every column of ``model`` through the owner; ``{name: refreshed column}``."""
     outcome = await ensure_samples_fresh(
@@ -40,7 +47,7 @@ async def _profile(*, model: SlayerModel, engine: SlayerQueryEngine) -> dict[str
 
 
 @pytest.fixture
-async def env(tmp_path):
+async def env(tmp_path: Path) -> InspectEnv:
     """Real SQLite DB + YAMLStorage + a saved ``orders`` model."""
     db_path = tmp_path / "test.db"
     with transaction(str(db_path)) as conn:
@@ -106,18 +113,18 @@ class TestDescribeDatasourceTables:
         )
         return content[0].text
 
-    async def test_tables_appear_by_default(self, env) -> None:
+    async def test_tables_appear_by_default(self, env: InspectEnv) -> None:
         server = create_mcp_server(storage=env["storage"])
         out = await self._call_describe(server, name="test_sqlite")
         assert "Tables (1):" in out
         assert "  - orders" in out
 
-    async def test_list_tables_false_suppresses_section(self, env) -> None:
+    async def test_list_tables_false_suppresses_section(self, env: InspectEnv) -> None:
         server = create_mcp_server(storage=env["storage"])
         out = await self._call_describe(server, name="test_sqlite", list_tables=False)
         assert "Tables" not in out.split("Connection:")[1]
 
-    async def test_schema_name_is_forwarded(self, env) -> None:
+    async def test_schema_name_is_forwarded(self, env: InspectEnv) -> None:
         """An unknown schema name is tolerated — error surfaces inline, rest of
         the response still renders."""
         server = create_mcp_server(storage=env["storage"])
@@ -131,7 +138,7 @@ class TestDescribeDatasourceTables:
 
 
 class TestGetRowCount:
-    async def test_non_empty_table(self, env) -> None:
+    async def test_non_empty_table(self, env: InspectEnv) -> None:
         count = await _get_row_count(model=env["model"], engine=env["engine"])
         assert count == 6
 
@@ -154,7 +161,7 @@ class TestGetRowCount:
 
 
 class TestCollectDimProfile:
-    async def test_categorical_enumerated(self, env) -> None:
+    async def test_categorical_enumerated(self, env: InspectEnv) -> None:
         """string/boolean dims get distinct values with counts."""
         by_name = await _profile(model=env["model"], engine=env["engine"])
 
@@ -165,7 +172,7 @@ class TestCollectDimProfile:
         is_paid = by_name["is_paid"]
         assert is_paid.distinct_count == 2
 
-    async def test_numeric_and_temporal_min_max(self, env) -> None:
+    async def test_numeric_and_temporal_min_max(self, env: InspectEnv) -> None:
         """number/date/time dims get min/max via the batched query."""
         by_name = await _profile(model=env["model"], engine=env["engine"])
 
@@ -244,7 +251,7 @@ class TestInspectModelEndToEnd:
         content, _ = await server.call_tool(name=name, arguments=arguments or {})
         return content[0].text
 
-    async def test_full_response(self, env) -> None:
+    async def test_full_response(self, env: InspectEnv) -> None:
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(server, name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False, "num_rows": 5})
 
@@ -300,7 +307,7 @@ class TestInspectModelEndToEnd:
         assert "sample_data_error" not in result
         assert "is not a saved measure" not in result
 
-    async def test_no_longer_json(self, env) -> None:
+    async def test_no_longer_json(self, env: InspectEnv) -> None:
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(server, name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False})
         with pytest.raises(_json.JSONDecodeError):
@@ -319,7 +326,7 @@ class TestInspectModelSectionGatingIntegration:
         content, _ = await server.call_tool(name=name, arguments=arguments or {})
         return content[0].text
 
-    async def test_columns_only_short_circuits_samples(self, env) -> None:
+    async def test_columns_only_short_circuits_samples(self, env: InspectEnv) -> None:
         """sections=['columns'] keeps the columns table populated and skips
         sample-data entirely; the footer documents what was trimmed."""
         server = create_mcp_server(storage=env["storage"])
@@ -342,7 +349,7 @@ class TestInspectModelSectionGatingIntegration:
         assert "> Sections shown: columns." in result
         assert "> Omitted: samples, learnings, saved_queries." in result
 
-    async def test_descriptions_max_chars_truncates_in_columns_table(self, env) -> None:
+    async def test_descriptions_max_chars_truncates_in_columns_table(self, env: InspectEnv) -> None:
         """descriptions_max_chars trims long descriptions and appends the marker."""
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(
@@ -362,7 +369,7 @@ class TestInspectModelSectionGatingIntegration:
 class TestMeasureTypeInference:
     """get_result_column_types infers column types via LIMIT 0 against a real DB."""
 
-    async def test_infers_numeric_types(self, env) -> None:
+    async def test_infers_numeric_types(self, env: InspectEnv) -> None:
         """amount (REAL) infers as DOUBLE and quantity (INTEGER) as INT."""
         engine = env["engine"]
         types = await engine.get_result_column_types(model_name="orders")
@@ -395,7 +402,7 @@ class TestMeasureTypeInference:
         assert types["label"].type == DataType.TEXT
         assert types["price"].type == DataType.DOUBLE
 
-    async def test_type_appears_in_model_inspect(self, env) -> None:
+    async def test_type_appears_in_model_inspect(self, env: InspectEnv) -> None:
         """The model inspect columns table includes a type column with declared types."""
         server = create_mcp_server(storage=env["storage"])
         content, _ = await server.call_tool(
@@ -406,7 +413,7 @@ class TestMeasureTypeInference:
         assert "| type |" in columns_section
         assert "DOUBLE" in columns_section
 
-    async def test_measure_sampled_shows_min_max(self, env) -> None:
+    async def test_measure_sampled_shows_min_max(self, env: InspectEnv) -> None:
         """Measures with data show min .. max in the sampled column."""
         profile = await _profile(model=env["model"], engine=env["engine"])
         amount, quantity = profile["amount"].sampled, profile["quantity"].sampled
@@ -454,7 +461,7 @@ class TestStringAggregationRejection:
     Triggering ``sum(status)`` / ``avg(status)`` etc. should produce a clear
     ValueError, not a database-level type error."""
 
-    async def _run(self, env, formula: str) -> None:
+    async def _run(self, env: InspectEnv, formula: str) -> None:
         q = SlayerQuery.model_validate({
             "source_model": "orders",
             "measures": [{"formula": formula}],
@@ -462,11 +469,11 @@ class TestStringAggregationRejection:
         await env["engine"].execute(query=q)
 
     @pytest.mark.parametrize("agg", ["sum", "avg", "median"])
-    async def test_numeric_only_aggregations_rejected_on_string(self, env, agg: str) -> None:
+    async def test_numeric_only_aggregations_rejected_on_string(self, env: InspectEnv, agg: str) -> None:
         with pytest.raises(ValueError, match="is not applicable to TEXT column"):
             await self._run(env, f"{agg}(status)")
 
-    async def test_min_max_allowed_on_string(self, env) -> None:
+    async def test_min_max_allowed_on_string(self, env: InspectEnv) -> None:
         """min/max work on strings (alphabetical ordering) — should pass."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
@@ -475,7 +482,7 @@ class TestStringAggregationRejection:
         result = await env["engine"].execute(query=q)
         assert result.data  # executed without error
 
-    async def test_count_and_count_distinct_allowed_on_string(self, env) -> None:
+    async def test_count_and_count_distinct_allowed_on_string(self, env: InspectEnv) -> None:
         """count/count_distinct always work regardless of type."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
@@ -484,7 +491,7 @@ class TestStringAggregationRejection:
         result = await env["engine"].execute(query=q)
         assert result.data
 
-    async def test_numeric_aggregations_allowed_on_numeric_measure(self, env) -> None:
+    async def test_numeric_aggregations_allowed_on_numeric_measure(self, env: InspectEnv) -> None:
         """avg/sum on the numeric `amount` measure must still work."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
@@ -498,7 +505,7 @@ class TestPrimaryKeyAggregationRule:
     """v2 contract: primary-key columns are restricted to count/count_distinct
     regardless of type or any explicit ``allowed_aggregations`` whitelist."""
 
-    async def test_sum_on_pk_rejected(self, env) -> None:
+    async def test_sum_on_pk_rejected(self, env: InspectEnv) -> None:
         """`:sum` on a numeric primary-key column is rejected at enrichment."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
@@ -507,7 +514,7 @@ class TestPrimaryKeyAggregationRule:
         with pytest.raises(ValueError, match="primary-key column"):
             await env["engine"].execute(query=q)
 
-    async def test_count_on_pk_allowed(self, env) -> None:
+    async def test_count_on_pk_allowed(self, env: InspectEnv) -> None:
         """`:count` on a primary-key column is always allowed."""
         q = SlayerQuery.model_validate({
             "source_model": "orders",
@@ -567,7 +574,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         return _json.loads(content[0].text)
 
     async def test_json_output_includes_sampled_values_and_distinct_count(
-        self, env,
+        self, env: InspectEnv,
     ) -> None:
         """JSON model inspect output carries both new fields per column."""
         server = create_mcp_server(storage=env["storage"])
@@ -584,7 +591,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         assert amount["sampled_values"] is None
         assert amount["distinct_count"] is None
 
-    async def test_markdown_table_unchanged_no_new_column(self, env) -> None:
+    async def test_markdown_table_unchanged_no_new_column(self, env: InspectEnv) -> None:
         """The markdown ``## Columns`` table must not gain new headers — the
         issue explicitly says the text format does not change. New data is
         carried only in JSON (and in the persisted model)."""
@@ -602,7 +609,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         assert "| sampled |" in col_section
 
     async def test_v6_stale_cache_re_profiles_to_populate_sampled_values(
-        self, env,
+        self, env: InspectEnv,
     ) -> None:
         """A v6 model with ``sampled`` set but no ``sampled_values`` is
         cache-miss and re-profiles on the next model ``inspect``. Pins
@@ -621,7 +628,9 @@ class TestInspectModelSampledValuesAndDistinctCount:
         await self._call_json(server, model_name="orders")
         # After the model inspect runs, the structured field has been populated.
         reloaded = await storage.get_model("orders", data_source="test_sqlite")
+        assert reloaded is not None
         status = reloaded.get_column("status")
+        assert status is not None
         assert status.sampled_values is not None
         assert status.distinct_count == 3
 
@@ -736,7 +745,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         assert len(kind_col.sampled_values) == 30
 
     async def test_legacy_sampled_text_preserved_in_markdown_on_profile_failure(
-        self, env, monkeypatch: pytest.MonkeyPatch,
+        self, env: InspectEnv, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """When profiling fails, the markdown ``sampled`` cell still shows the
         LEGACY persisted text: the owner returns the input column on failure,
@@ -827,7 +836,7 @@ class TestCollectMeasureProfileTypeRestriction:
     """Text/boolean columns are served only by the categorical query (structured
     ``sampled_values``); numeric/temporal only by the min/max query."""
 
-    async def test_text_and_boolean_columns_skipped(self, env) -> None:
+    async def test_text_and_boolean_columns_skipped(self, env: InspectEnv) -> None:
         result = await _profile(model=env["model"], engine=env["engine"])
         for name in ("status", "notes", "is_paid"):
             assert result[name].sampled_values is not None, name

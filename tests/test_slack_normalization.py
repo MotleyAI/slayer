@@ -65,6 +65,8 @@ class TestFunctionalSpellingFirstClass:
             warnings.simplefilter("always")
             result = normalize_query(q)
 
+        assert result.query is not None
+        assert result.query.measures
         assert result.query.measures[0].formula == "sum(revenue)"
         assert result.warnings == []
         slack = [c for c in caught if isinstance(c.message, SlayerNormalizationWarning)]
@@ -73,6 +75,8 @@ class TestFunctionalSpellingFirstClass:
     def test_count_star_not_rewritten(self):
         q = SlayerQuery(source_model="orders", measures=[{"formula": "count(*)"}])
         result = normalize_query(q)
+        assert result.query is not None
+        assert result.query.measures
         assert result.query.measures[0].formula == "count(*)"
         assert result.warnings == []
 
@@ -152,6 +156,8 @@ class TestMisplacedMeasure:
             measures=[{"formula": "sum(revenue)"}],
         )
         result = normalize_query(q, model=_orders())
+        assert result.query is not None
+        assert result.query.measures
         assert result.query.measures[0].formula == "sum(revenue)"
         assert result.warnings == []
 
@@ -227,6 +233,8 @@ class TestMisplacedMeasure:
         })
         result = normalize_query(q, model=m)
         assert len(result.query.measures) == 1
+        assert result.query is not None
+        assert result.query.measures
         assert result.query.measures[0].formula == "sum(revenue)"
         dim_names = [getattr(d, "name", d) for d in result.query.dimensions]
         assert "status" in dim_names

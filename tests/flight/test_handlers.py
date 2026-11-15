@@ -19,6 +19,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from typing import cast
 
 import pyarrow as pa
 import pyarrow.flight as fl
@@ -40,6 +41,7 @@ from slayer.flight.handlers import (
     decode_ticket,
 )
 from slayer.flight.translator import InfoSchemaResult, ProbeResult, TranslationError
+from tests._arrow_types import ArrowSchema, ArrowTable
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "capture-latest.jsonl"
@@ -147,7 +149,7 @@ def test_get_table_types_returns_three_rows() -> None:
 
 def test_get_primary_keys_empty_well_typed() -> None:
     handlers = _make_handlers()
-    table = handlers.handle_get_primary_keys()
+    table: ArrowTable = handlers.handle_get_primary_keys()
     assert table.num_rows == 0
     assert "column_name" in table.schema.names
     assert table.schema.field("key_sequence").type == pa.int32()
@@ -226,7 +228,7 @@ def test_create_prepared_statement_for_probe_returns_canned_schema() -> None:
     bytes_out = handlers.handle_create_prepared_statement(cmd)
     response = _unpack_prepared_statement_result(bytes_out)
     reader = pa.ipc.open_stream(pa.BufferReader(response.dataset_schema))
-    schema = reader.schema
+    schema: ArrowSchema = reader.schema
     assert schema.field("1").type == pa.int64()
 
 
@@ -326,7 +328,8 @@ def test_get_flight_info_for_probe_builds_canned_schema() -> None:
     handlers = _make_handlers()
     descriptor = fl.FlightDescriptor.for_command(b"")
     info = handlers.get_flight_info_for_sql(descriptor, "SELECT 1")
-    assert info.schema.field("1").type == pa.int64()
+    info_schema = cast(ArrowSchema, info.schema)
+    assert info_schema.field("1").type == pa.int64()
     # Ticket is Any-wrapped TicketStatementQuery containing the original SQL.
     endpoint = info.endpoints[0]
     ticket_bytes = endpoint.ticket.ticket

@@ -18,7 +18,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError, SlayerError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.database.client import ExecutionResult, ResultColumnType, TypeProbe
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.postgres import PostgresDialect
@@ -28,7 +28,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 from tests import _emitted_reparse_law as emitted_reparse_law
 from tests._engine_helpers import _engine_generate
-from typing import Any
+from typing import Any, Protocol
 
 # Marker a length-fit leaves in an alias: ``_<8 hex digits>_``. Its ABSENCE is
 # how the "no churn for the common case" tests prove the write pass was identity.
@@ -40,6 +40,14 @@ _UNPORTED_SURFACE = (
     "Virtual-model-short fitting not ported to the typed pipeline "
     "(no engine._query_as_model / _fit_short); tests exercise removed internals."
 )
+
+
+class _VirtualModelEngine(Protocol):
+    async def _query_as_model(
+        self, *, inner_query: SlayerQuery, override_name: str | None = None,
+    ) -> SlayerModel: ...
+
+    async def execute(self, query: list[SlayerQuery], *, dry_run: bool = False) -> SlayerResponse: ...
 
 DS = "sandbox"
 DEEP = "SandboxSubscription.SandboxCustomer.SandboxConsumer"
@@ -180,7 +188,7 @@ async def _build_engine(tmp_path, *, validate: bool = True, **kw) -> tuple[Slaye
 
 
 @pytest.fixture
-async def chain(tmp_path):
+async def chain(tmp_path) -> tuple[SlayerQueryEngine, SlayerModel]:
     """Engine + root model for the 3-hop chain, with a postgres datasource."""
     return await _build_engine(tmp_path)
 
@@ -738,9 +746,10 @@ def _wrapper_select(vm_sql: str) -> exp.Select:
 class TestVirtualModelShorts:
     pytestmark = pytest.mark.skip(reason=_UNPORTED_SURFACE)
 
-    async def test_short_within_limit_and_matches_column_name(self, chain) -> None:
+    async def test_short_within_limit_and_matches_column_name(self, chain: tuple[_VirtualModelEngine, SlayerModel]) -> None:
         engine, _ = chain
         vm = await engine._query_as_model(inner_query=_repro_query())
+        assert vm.sql is not None
         emitted = {n for n, _ in _projection_aliases(_wrapper_select(vm.sql))}
         for col in vm.columns:
             assert _nbytes(col.name) <= 63, col.name
@@ -749,18 +758,19 @@ class TestVirtualModelShorts:
                 f"emits\n{vm.sql}"
             )
 
-    async def test_long_siblings_get_distinct_shorts(self, chain) -> None:
+    async def test_long_siblings_get_distinct_shorts(self, chain: tuple[_VirtualModelEngine, SlayerModel]) -> None:
         engine, _ = chain
         vm = await engine._query_as_model(inner_query=_repro_query())
         names = [c.name for c in vm.columns]
         assert len(names) == len(set(names))
 
     async def test_short_alias_quoting_matches_the_downstream_reference(
-        self, chain,
+        self, chain: tuple[_VirtualModelEngine, SlayerModel],
     ) -> None:
         """The wrapper's ``AS <short>`` is quoted exactly when the downstream reference is."""
         engine, _ = chain
         vm = await engine._query_as_model(inner_query=_repro_query())
+        assert vm.sql is not None
         gen = SQLGenerator(dialect="postgres")
         select = _wrapper_select(vm.sql)
         assert select.expressions, vm.sql
@@ -772,7 +782,9 @@ class TestVirtualModelShorts:
             short = ident.this
             assert short in by_short, f"{short!r} is not a virtual-model column\n{vm.sql}"
             # How the generator will emit a downstream reference to this column.
-            ref = gen._parse(by_short[short].sql).find(exp.Column)
+            short_sql = by_short[short].sql
+            assert short_sql is not None
+            ref = gen._parse(short_sql).find(exp.Column)
             assert ref is not None
             assert ident.quoted == ref.this.quoted, (
                 f"short {short!r} is emitted {'quoted' if ident.quoted else 'bare'} "
@@ -781,10 +793,11 @@ class TestVirtualModelShorts:
                 f"case-folding backend resolves those to different columns\n{vm.sql}"
             )
 
-    async def test_mixed_case_short_is_quoted(self, chain) -> None:
+    async def test_mixed_case_short_is_quoted(self, chain: tuple[_VirtualModelEngine, SlayerModel]) -> None:
         """The original defect: a mixed-case short emitted bare."""
         engine, _ = chain
         vm = await engine._query_as_model(inner_query=_repro_query())
+        assert vm.sql is not None
         mixed = [
             proj for proj in _wrapper_select(vm.sql).expressions
             if isinstance(proj, exp.Alias)
@@ -824,10 +837,11 @@ class TestVirtualModelShorts:
             f"to the same column emits {reference!r}"
         )
 
-    async def test_lowercase_short_stays_bare(self, chain) -> None:
+    async def test_lowercase_short_stays_bare(self, chain: tuple[_VirtualModelEngine, SlayerModel]) -> None:
         """Mirror image: an all-lowercase short must stay bare on upper-folding backends."""
         engine, _ = chain
         vm = await engine._query_as_model(inner_query=_repro_query())
+        assert vm.sql is not None
         lower = [
             proj for proj in _wrapper_select(vm.sql).expressions
             if isinstance(proj, exp.Alias)
@@ -839,9 +853,10 @@ class TestVirtualModelShorts:
                 f"lowercase short {proj.args['alias'].this!r} must stay bare\n{vm.sql}"
             )
 
-    async def test_inner_and_wrapper_agree_on_the_fitted_alias(self, chain) -> None:
+    async def test_inner_and_wrapper_agree_on_the_fitted_alias(self, chain: tuple[_VirtualModelEngine, SlayerModel]) -> None:
         engine, _ = chain
         vm = await engine._query_as_model(inner_query=_repro_query())
+        assert vm.sql is not None
         fitted = get_dialect("postgres").fit_alias(LONG_EMAIL)
         select = _wrapper_select(vm.sql)
         sources = {
@@ -881,7 +896,7 @@ class TestVirtualModelShorts:
         assert "query-backed model column" in str(exc.value)
         assert flat in str(exc.value)
 
-    async def test_caller_supplied_measure_names_are_fitted(self, chain) -> None:
+    async def test_caller_supplied_measure_names_are_fitted(self, chain: tuple[_VirtualModelEngine, SlayerModel]) -> None:
         """A caller-supplied measure ``name`` bypasses ``_alias_to_short`` and needs its own fitting."""
         engine, _ = chain
         long_a = "z" * 63 + "b"   # 64 bytes
@@ -896,6 +911,7 @@ class TestVirtualModelShorts:
             ],
         )
         vm = await engine._query_as_model(inner_query=query)
+        assert vm.sql is not None
         names = [c.name for c in vm.columns]
         for name in names:
             assert _nbytes(name) <= 63, f"{name!r} is {_nbytes(name)} bytes"
@@ -907,7 +923,7 @@ class TestVirtualModelShorts:
         assert long_a not in vm.sql, vm.sql
         assert long_b not in vm.sql, vm.sql
 
-    async def test_nested_dag_two_levels_agree(self, chain) -> None:
+    async def test_nested_dag_two_levels_agree(self, chain: tuple[_VirtualModelEngine, SlayerModel]) -> None:
         """Two stages: stage 2 references stage 1's virtual-model columns."""
         engine, _ = chain
         stage1 = _repro_query().model_copy(update={"name": "stage1"})
@@ -919,6 +935,7 @@ class TestVirtualModelShorts:
             "measures": [{"formula": "sum(totalAmount_sum)"}],
         })
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
+        assert resp.sql is not None
         _assert_within_limit(resp.sql, 63)
         _assert_no_namespace_collision(resp.sql)
         _assert_order_by_refs_resolve(resp.sql)
@@ -928,19 +945,20 @@ class TestVirtualModelShorts:
 
 
 class TestEngineContract:
-    async def test_dry_run_columns_stay_canonical(self, chain) -> None:
+    async def test_dry_run_columns_stay_canonical(self, chain: tuple[SlayerQueryEngine, SlayerModel]) -> None:
         engine, _ = chain
         resp = await engine.execute(query=_repro_query(), dry_run=True)
         assert LONG_NAME in resp.columns
         assert LONG_EMAIL in resp.columns
 
-    async def test_dry_run_sql_carries_the_shortened_form(self, chain) -> None:
+    async def test_dry_run_sql_carries_the_shortened_form(self, chain: tuple[SlayerQueryEngine, SlayerModel]) -> None:
         engine, _ = chain
         resp = await engine.execute(query=_repro_query(), dry_run=True)
+        assert resp.sql is not None
         assert LONG_EMAIL not in resp.sql
         assert get_dialect("postgres").fit_alias(LONG_EMAIL) in resp.sql
 
-    async def test_attribute_keys_are_result_keys(self, chain) -> None:
+    async def test_attribute_keys_are_result_keys(self, chain: tuple[SlayerQueryEngine, SlayerModel]) -> None:
         engine, _ = chain
         resp = await engine.execute(query=_repro_query(), dry_run=True)
         for key in resp.attributes.dimensions:

@@ -129,12 +129,14 @@ class TestOrderShorthandHealing:
 
     def test_shorthand_desc(self) -> None:
         q = SlayerQuery(source_model="orders", order=[{"avg_processing_time_days": "desc"}])
+        assert q.order is not None
         assert len(q.order) == 1
         assert q.order[0].column.name == "avg_processing_time_days"
         assert q.order[0].direction == "desc"
 
     def test_shorthand_asc(self) -> None:
         q = SlayerQuery(source_model="orders", order=[{"status": "asc"}])
+        assert q.order is not None
         assert q.order[0].column.name == "status"
         assert q.order[0].direction == "asc"
 
@@ -167,6 +169,7 @@ class TestOrderShorthandHealing:
 
     def test_shorthand_formula_key(self) -> None:
         q = SlayerQuery.model_validate({"source_model": "orders", "order": [{"sum(revenue)": "desc"}]})
+        assert q.order is not None
         assert q.order[0].column.name == "_funcstyle_pending"
         assert q.order[0].raw_formula == "sum(revenue)"
         assert q.order[0].direction == "desc"
@@ -198,12 +201,14 @@ class TestOrderShorthandHealing:
 
     def test_bare_dict_shorthand_wrapped(self) -> None:
         q = SlayerQuery(source_model="orders", order={"status": "desc"})
+        assert q.order is not None
         assert len(q.order) == 1
         assert q.order[0].column.name == "status"
         assert q.order[0].direction == "desc"
 
     def test_bare_canonical_dict_wrapped(self) -> None:
         q = SlayerQuery(source_model="orders", order={"column": "status", "direction": "asc"})
+        assert q.order is not None
         assert len(q.order) == 1
         assert q.order[0].column.name == "status"
         assert q.order[0].direction == "asc"
@@ -215,6 +220,7 @@ class TestOrderShorthandHealing:
     def test_bare_orderitem_wrapped(self) -> None:
         item = OrderItem(column="status", direction="desc")
         q = SlayerQuery(source_model="orders", order=item)
+        assert q.order is not None
         assert len(q.order) == 1
         assert q.order[0].column.name == "status"
         assert q.order[0].direction == "desc"
@@ -223,6 +229,7 @@ class TestOrderShorthandHealing:
 
     def test_canonical_unchanged(self) -> None:
         q = SlayerQuery(source_model="orders", order=[{"column": "status", "direction": "desc"}])
+        assert q.order is not None
         assert q.order[0].column.name == "status"
         assert q.order[0].direction == "desc"
 
@@ -238,6 +245,7 @@ class TestOrderShorthandHealing:
         # Single reserved 'column' key whose value happens to be a direction word
         # stays canonical (order by a column literally named "desc").
         q = SlayerQuery(source_model="orders", order=[{"column": "desc"}])
+        assert q.order is not None
         assert q.order[0].column.name == "desc"
         assert q.order[0].direction == "asc"
 
@@ -324,6 +332,7 @@ class TestOrderShorthandHealing:
             "source_model": "orders",
             "order": [{"sum(revenue)": "desc", "max(amount)": "asc"}],
         })
+        assert q.order is not None
         assert len(q.order) == 2
         assert q.order[0].column.name == "_funcstyle_pending"
         assert q.order[0].raw_formula == "sum(revenue)"
@@ -335,6 +344,7 @@ class TestOrderShorthandHealing:
     def test_list_orderitem_passthrough(self) -> None:
         item = OrderItem.model_validate({"column": "sum(revenue)", "direction": "desc"})
         q = SlayerQuery(source_model="orders", order=[item])
+        assert q.order is not None
         assert len(q.order) == 1
         assert q.order[0].column.name == "_funcstyle_pending"
         assert q.order[0].direction == "desc"
@@ -795,13 +805,13 @@ class TestSourceQueryStages:
     def test_dicts_parsed_to_slayer_query(self) -> None:
         """source_queries entries given as dicts are parsed into SlayerQuery
         instances by the before-validator."""
-        m = SlayerModel(
-            name="saved",
-            data_source="ds",
-            source_queries=[
+        m = SlayerModel.model_validate({
+            "name": "saved",
+            "data_source": "ds",
+            "source_queries": [
                 {"source_model": "orders", "measures": [{"formula": "count(*)"}]}
             ],
-        )
+        })
         assert m.source_queries is not None
         assert isinstance(m.source_queries[0], SlayerQuery)
         assert m.source_queries[0].measures is not None
@@ -1497,7 +1507,9 @@ class TestStringCoercion:
             "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
             "order": [{"column": "_count", "direction": "desc"}],
         })
+        assert query.time_dimensions is not None
         assert query.time_dimensions[0].dimension == "created_at"
+        assert query.order is not None
         assert query.order[0].column.name == "_count"
         assert query.order[0].direction == "desc"
 
@@ -1525,11 +1537,13 @@ class TestCoerceFieldsAndDimensions:
 
     def test_fields_list_of_strings_coerced(self) -> None:
         q = SlayerQuery.model_validate({"source_model": "orders", "measures": ["count(*)", "sum(revenue)"]})
+        assert q.measures is not None
         assert q.measures[0].formula == "count(*)"
         assert q.measures[1].formula == "sum(revenue)"
 
     def test_fields_list_of_dicts_accepted(self) -> None:
         q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "count(*)", "name": "cnt"}]})
+        assert q.measures is not None
         assert q.measures[0].formula == "count(*)"
         assert q.measures[0].name == "cnt"
 
@@ -1941,6 +1955,7 @@ class TestModelMeasureType:
             "source_model": "orders",
             "measures": [{"formula": "count(*) / count(orders)", "name": "ratio", "type": "DOUBLE"}],
         })
+        assert q.measures is not None
         assert q.measures[0].type == DataType.DOUBLE
 
 

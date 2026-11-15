@@ -421,7 +421,7 @@ class TestSqliteProbe:
         model = SlayerModel(name="t", sql_table="t", data_source="s", columns=[
             _pk(), Column(name="code", type=DataType.INT), Column(name="amt", type=DataType.INT),
             Column(name="amount", sql='"amt"', type=DataType.INT)])
-        findings: list[Any] = []
+        findings: list[schema_drift.RetypeFinding] = []
         client = SlayerSQLClient(datasource=ds)
         try:
             await schema_drift.validate_datasource(datasource=ds, models=[model], client=client,

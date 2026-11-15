@@ -11,12 +11,16 @@ create/edit, and the migration write-back (the migration path passes
 ``_validate=False`` so legacy cyclic data remains loadable).
 """
 
+from collections.abc import Callable
+from pathlib import Path
+
 import pytest
 import yaml
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ColumnCycleError
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -415,7 +419,7 @@ async def test_save_model_skips_subquery_scope_refs_in_cycle_detection(
 
 @pytest.mark.parametrize("backend_factory", [_yaml_storage, _sqlite_storage])
 async def test_save_model_template_method_runs_for_yaml_and_sqlite_backends(
-    tmp_path, backend_factory,
+    tmp_path: Path, backend_factory: Callable[[Path], StorageBackend],
 ) -> None:
     storage = backend_factory(tmp_path)
     cyclic = SlayerModel(

@@ -23,14 +23,14 @@ from slayer.engine.cardinality.inference import (
     JoinCardinalityReport,
     SideStats,
 )
-from slayer.engine.cardinality.join_safety import audit_join_safety
+from slayer.engine.cardinality.join_safety import JoinSafetyFinding, audit_join_safety
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 
 from tests._dev1836_fixtures import dev1836_models
 
 
-def _findings_by_edge(findings) -> dict:
+def _findings_by_edge(findings: list[JoinSafetyFinding]) -> dict:
     return {(f.model, f.target_model): f for f in findings}
 
 

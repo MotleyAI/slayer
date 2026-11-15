@@ -35,7 +35,7 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.scope import ModelScope
 from slayer.engine.binding import bind_time_dimension
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -191,11 +191,11 @@ class TestBindDerivedTimeDimension:
 # ---------------------------------------------------------------------------
 
 
-def _amounts(resp, key: str):
+def _amounts(resp: SlayerResponse, key: str):
     return sorted(r[key] for r in resp.data)
 
 
-async def test_derived_td_dimension_groups_by_derived_expr(engine):
+async def test_derived_td_dimension_groups_by_derived_expr(engine: tuple[SlayerQueryEngine, str]) -> None:
     """A derived TD groups by the EXPANDED expression, not the bare column;
     the result key matches the base-column TD shape (``orders.effective_at``)."""
     eng, _ = engine
@@ -213,7 +213,7 @@ async def test_derived_td_dimension_groups_by_derived_expr(engine):
     assert _amounts(resp, "orders._count") == [1, 2, 2]
 
 
-async def test_derived_td_carries_attribute_label(engine):
+async def test_derived_td_carries_attribute_label(engine: tuple[SlayerQueryEngine, str]) -> None:
     eng, _ = engine
     resp = await eng.execute(
         SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
@@ -224,7 +224,7 @@ async def test_derived_td_carries_attribute_label(engine):
     assert resp.attributes.dimensions["orders.effective_at"].label == "Effective date"
 
 
-async def test_derived_td_order_by(engine):
+async def test_derived_td_order_by(engine: tuple[SlayerQueryEngine, str]) -> None:
     eng, _ = engine
     resp = await eng.execute(
         SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
@@ -236,7 +236,7 @@ async def test_derived_td_order_by(engine):
     assert [r["orders.amount_sum"] for r in resp.data] == [10.0, 12.0, 12.0]
 
 
-async def test_derived_td_cumsum_over_order(engine):
+async def test_derived_td_cumsum_over_order(engine: tuple[SlayerQueryEngine, str]) -> None:
     """cumsum's OVER(ORDER BY <td>) uses the derived TD's SELECT alias."""
     eng, _ = engine
     resp = await eng.execute(
@@ -257,7 +257,7 @@ async def test_derived_td_cumsum_over_order(engine):
     assert [r["orders.cs"] for r in resp.data] == [1, 3, 5]
 
 
-async def test_derived_td_time_shift(engine):
+async def test_derived_td_time_shift(engine: tuple[SlayerQueryEngine, str]) -> None:
     """time_shift's self-join CTE shifts the EXPANDED derived expression."""
     eng, _ = engine
     resp = await eng.execute(
@@ -279,7 +279,7 @@ async def test_derived_td_time_shift(engine):
     assert [r["orders.prev"] for r in resp.data] == [None, 10.0, 12.0]
 
 
-async def test_derived_td_change(engine):
+async def test_derived_td_change(engine: tuple[SlayerQueryEngine, str]) -> None:
     """change desugars to time_shift + arithmetic over the derived TD."""
     eng, _ = engine
     resp = await eng.execute(
@@ -300,7 +300,7 @@ async def test_derived_td_change(engine):
     assert [r["orders.chg"] for r in resp.data] == [None, 2.0, 0.0]
 
 
-async def test_derived_td_consecutive_periods(engine):
+async def test_derived_td_consecutive_periods(engine: tuple[SlayerQueryEngine, str]) -> None:
     """consecutive_periods reads the materialised derived-TD alias."""
     eng, _ = engine
     resp = await eng.execute(
@@ -320,7 +320,7 @@ async def test_derived_td_consecutive_periods(engine):
     assert [r["orders.streak"] for r in resp.data] == [1, 2, 3]
 
 
-async def test_derived_td_date_range(engine):
+async def test_derived_td_date_range(engine: tuple[SlayerQueryEngine, str]) -> None:
     """date_range builds ``<expanded sql> BETWEEN start AND end`` — filtering
     on the derived effective date, not the bare created date."""
     eng, _ = engine
@@ -339,7 +339,7 @@ async def test_derived_td_date_range(engine):
     assert resp.data[0]["orders._count"] == 2
 
 
-async def test_joined_derived_td(engine):
+async def test_joined_derived_td(engine: tuple[SlayerQueryEngine, str]) -> None:
     """A derived TD on a JOIN TARGET (``customers.signup_eff``) resolves
     through the join and groups orders by the customer's derived month."""
     eng, _ = engine
@@ -355,7 +355,7 @@ async def test_joined_derived_td(engine):
     assert _amounts(resp, "orders.amount_sum") == [7.0, 12.0, 15.0]
 
 
-async def test_cross_model_agg_with_joined_derived_td_shared_grain(engine):
+async def test_cross_model_agg_with_joined_derived_td_shared_grain(engine: tuple[SlayerQueryEngine, str]) -> None:
     """A cross-model aggregate (``sum(customers.revenue)``) grouped by a
     joined derived TD on the same target shares grain through the derived
     expression."""

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Container, Iterable
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypeVar
 
 from pydantic import (
     AliasChoices,
@@ -69,6 +69,8 @@ from slayer.storage.migrations import (
     migrate as _migrate_schema,
     with_root_extension,
 )
+
+_T = TypeVar("_T")
 
 #: The SlayerQuery version whose migration retired ``strict``.
 _STRICT_RETIRED_AT = 4
@@ -1645,14 +1647,14 @@ def _show(value: Any) -> str:
 
 
 def _union(
-    saved: list | None, refined: list | None, *, field: str, canon: Callable[[Any], Any],
-    identity: Callable[[Any], tuple[str, str]],
-) -> list | None:
+    saved: list[_T] | None, refined: list[_T] | None, *, field: str, canon: Callable[[_T], Any],
+    identity: Callable[[_T], tuple[str, str]],
+) -> list[_T] | None:
     """``saved`` then the ``refined`` entries not present; same ``(kind, key)`` identity must mean equal ``canon``."""
     if not refined:
         return saved
     merged = list(saved or [])
-    seen: dict[tuple[str, str], Any] = {}
+    seen: dict[tuple[str, str], _T] = {}
     for entry in merged:
         seen.setdefault(identity(entry), entry)
     for entry in refined:

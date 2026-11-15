@@ -4,7 +4,7 @@ import math as _math
 import statistics
 import tempfile
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any, LiteralString, cast
 
 import pytest
@@ -30,7 +30,10 @@ from tests.integration._consecutive_periods_calendar import (
 pytest.importorskip("pytest_postgresql")
 
 import psycopg  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+from psycopg.rows import TupleRow  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 from pytest_postgresql import factories  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
+
+PgIngestEnv = tuple[list[SlayerModel], DatasourceConfig, psycopg.Connection[TupleRow]]
 
 # Spawn a temporary Postgres process (random port)
 postgresql_proc = factories.postgresql_proc(port=None)
@@ -554,7 +557,7 @@ async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
 
 
 @pytest.fixture(scope="module")
-def pg_ingest_env(postgresql_proc):
+def pg_ingest_env(postgresql_proc) -> Iterator[PgIngestEnv]:
     """Set up tables with FK relationships and ingest via rollup.
 
     Module-scoped: tests destructure ``(models, ds, _)`` and build their own
@@ -616,7 +619,7 @@ def pg_ingest_env(postgresql_proc):
 
 
 @pytest.fixture
-async def pg_ingest_engine(pg_ingest_env, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
+async def pg_ingest_engine(pg_ingest_env: PgIngestEnv, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
     """A per-test engine over the ingested models."""
     models, ds, _ = pg_ingest_env
     async with pg_query_engine(ds, base_dir=str(tmp_path), models=models) as engine:
@@ -625,7 +628,7 @@ async def pg_ingest_engine(pg_ingest_env, tmp_path) -> AsyncIterator[SlayerQuery
 
 @pytest.mark.integration
 class TestRollupIngestion:
-    def test_orders_has_own_columns_only(self, pg_ingest_env) -> None:
+    def test_orders_has_own_columns_only(self, pg_ingest_env: PgIngestEnv) -> None:
         """After ingestion, models only have their own columns (no flattened joined dims)."""
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
@@ -639,7 +642,7 @@ class TestRollupIngestion:
         # Joined dimensions are resolved via join graph, not pre-flattened.
         assert not any("." in name for name in col_names)
 
-    def test_orders_uses_sql_table_with_joins(self, pg_ingest_env) -> None:
+    def test_orders_uses_sql_table_with_joins(self, pg_ingest_env: PgIngestEnv) -> None:
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
@@ -648,7 +651,7 @@ class TestRollupIngestion:
         assert orders.sql is None
         assert len(orders.joins) > 0
 
-    def test_regions_has_no_rollup(self, pg_ingest_env) -> None:
+    def test_regions_has_no_rollup(self, pg_ingest_env: PgIngestEnv) -> None:
         models, _, _ = pg_ingest_env
         regions = next(m for m in models if m.name == "regions")
 
@@ -656,7 +659,7 @@ class TestRollupIngestion:
         assert regions.sql_table is not None
         assert regions.sql is None
 
-    def test_orders_has_no_named_measures_after_ingest(self, pg_ingest_env) -> None:
+    def test_orders_has_no_named_measures_after_ingest(self, pg_ingest_env: PgIngestEnv) -> None:
         """v2 auto-ingest leaves model.measures (formula list) empty.
 
         Row-level columns live on .columns; named-formula measures are an
@@ -772,7 +775,7 @@ class TestRollupIngestion:
         assert "customers" in result.sql
         assert "regions" in result.sql
 
-    def test_orders_has_joins_metadata(self, pg_ingest_env) -> None:
+    def test_orders_has_joins_metadata(self, pg_ingest_env: PgIngestEnv) -> None:
         """Ingested models should have only direct join metadata."""
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
@@ -790,13 +793,13 @@ class TestRollupIngestion:
             for pair in j.join_pairs:
                 assert len(pair) == 2  # [source_dim, target_dim]
 
-    def test_regions_has_no_joins(self, pg_ingest_env) -> None:
+    def test_regions_has_no_joins(self, pg_ingest_env: PgIngestEnv) -> None:
         """Models with no FK references should have empty joins."""
         models, _, _ = pg_ingest_env
         regions = next(m for m in models if m.name == "regions")
         assert regions.joins == []
 
-    async def test_joins_serialize_to_yaml(self, pg_ingest_env) -> None:
+    async def test_joins_serialize_to_yaml(self, pg_ingest_env: PgIngestEnv) -> None:
         """Joins should survive YAML round-trip."""
         models, ds, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
@@ -806,6 +809,7 @@ class TestRollupIngestion:
         await storage.save_model(orders)
 
         loaded = await storage.get_model("orders")
+        assert loaded is not None
         assert len(loaded.joins) == len(orders.joins)
         for orig, loaded_j in zip(orders.joins, loaded.joins):
             assert orig.target_model == loaded_j.target_model
@@ -1571,7 +1575,7 @@ class TestPostgresReservedWordModel:
 
 @pytest.mark.integration
 class TestPostgresIngestComments:
-    def test_table_and_column_comments_imported(self, pg_ingest_env) -> None:
+    def test_table_and_column_comments_imported(self, pg_ingest_env: PgIngestEnv) -> None:
         models, _, _ = pg_ingest_env
         orders = next(m for m in models if m.name == "orders")
         assert orders.description == "All orders"
@@ -1579,7 +1583,7 @@ class TestPostgresIngestComments:
         assert by_name["amount"].description == "Order amount"
         assert by_name["id"].description is None
 
-    def test_uncommented_table_has_no_description(self, pg_ingest_env) -> None:
+    def test_uncommented_table_has_no_description(self, pg_ingest_env: PgIngestEnv) -> None:
         models, _, _ = pg_ingest_env
         regions = next(m for m in models if m.name == "regions")
         assert regions.description is None

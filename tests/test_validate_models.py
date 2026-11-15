@@ -1276,7 +1276,7 @@ class TestValidateModelsSqliteProbe:
         # No probe-related drift; the test mainly asserts the patch never
         # fires.
         assert all(e.model_name != "sensordata" or
-                   "tempstabidx" not in getattr(e, "remove", RemoveSpec()).columns
+                   "tempstabidx" not in (e.remove if isinstance(e, EditModelDelete) else RemoveSpec()).columns
                    for e in result)
 
     async def test_probe_failure_no_entry(self, workspace: Path) -> None:

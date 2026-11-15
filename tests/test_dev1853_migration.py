@@ -18,7 +18,7 @@ import yaml
 
 from slayer.core.errors import AmbiguousJoinPathError
 from slayer.core.join_walker import edges_between, resolve_hop
-from slayer.core.models import DatasourceConfig
+from slayer.core.models import DatasourceConfig, ModelJoin
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -112,7 +112,7 @@ async def _seed_sqlite(db_path: str, payloads: list[dict]) -> SQLiteStorage:
     return storage
 
 
-async def _joins_after_load(storage: StorageBackend) -> tuple[list, list]:
+async def _joins_after_load(storage: StorageBackend) -> tuple[list[ModelJoin], list[ModelJoin]]:
     orders = await storage.get_model("orders", data_source="ds")
     customers = await storage.get_model("customers", data_source="ds")
     assert orders is not None

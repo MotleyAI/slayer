@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -33,6 +33,8 @@ from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine, seeded_exec_engine
 from tests._osi_helpers import run_converter
+
+EngineBuilder = Callable[[list[SlayerModel]], Awaitable[SlayerQueryEngine]]
 
 DS = "ds"
 M2O = JoinCardinality.MANY_TO_ONE
@@ -72,7 +74,7 @@ def _unnamed_pair() -> list[SlayerModel]:
 
 
 @pytest.fixture
-async def make_engine() -> AsyncIterator:
+async def make_engine() -> AsyncIterator[EngineBuilder]:
     with tempfile.TemporaryDirectory() as tmp:
         async def build(models: list[SlayerModel]) -> SlayerQueryEngine:
             storage = YAMLStorage(base_dir=tmp)
@@ -88,7 +90,7 @@ class TestRecommendation:
         ("regions.rname", "customers.hr.rname"),
         ("regions.n", "customers.hr.n"),
     ])
-    async def test_single_named_edge_is_emitted_by_its_name(self, make_engine, item: str, path: str) -> None:
+    async def test_single_named_edge_is_emitted_by_its_name(self, make_engine: EngineBuilder, item: str, path: str) -> None:
         engine = await make_engine([
             _m("orders", cols=("customer_id",), joins=[_to("customers", "customer_id")]),
             _m("customers", cols=("region_id",), joins=[_to("regions", "region_id", name="hr")]),
@@ -99,7 +101,7 @@ class TestRecommendation:
         paths = {ip.input_item: ip.path for ip in rec.item_paths}
         assert paths[item] == path
 
-    async def test_equal_length_routes_prefer_the_to_one_hop(self, make_engine) -> None:
+    async def test_equal_length_routes_prefer_the_to_one_hop(self, make_engine: EngineBuilder) -> None:
         engine = await make_engine([
             _m("a", cols=("b_id", "x"), joins=[_to("b", "b_id", name="to_b")]),
             _m("b", cols=("a_id", "y"), joins=[_to("a", "a_id", name="to_a")],
@@ -110,7 +112,7 @@ class TestRecommendation:
         paths = {ip.input_item: ip.path for ip in rec.item_paths}
         assert paths["b.total"] == "to_b.total"
 
-    async def test_unaddressable_pair_is_named_in_the_warnings(self, make_engine) -> None:
+    async def test_unaddressable_pair_is_named_in_the_warnings(self, make_engine: EngineBuilder) -> None:
         engine = await make_engine(_unnamed_pair())
         rec = await engine.recommend_root_model(["orders.id", "addresses.city"])
         assert not any("addresses" in ip.path.split(".")[:-1] for ip in rec.item_paths)
@@ -233,7 +235,7 @@ class TestOsiConversion:
 
 
 class TestPopulationInference:
-    async def test_unaddressable_pair_in_the_candidate_reason(self, make_engine) -> None:
+    async def test_unaddressable_pair_in_the_candidate_reason(self, make_engine: EngineBuilder) -> None:
         engine = await make_engine(_unnamed_pair())
         query = SlayerQuery.model_validate({"dimensions": ["orders.status", "addresses.city"]})
         with pytest.raises(PopulationInferenceError) as ei:

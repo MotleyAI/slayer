@@ -3,7 +3,7 @@
 import logging
 import os
 import re
-from typing import AbstractSet, Annotated, Any, Optional
+from typing import TYPE_CHECKING, AbstractSet, Annotated, Any, Optional, Sequence
 
 from pydantic import (
     BaseModel,
@@ -32,6 +32,13 @@ from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
 from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema, migrating_document
+
+if TYPE_CHECKING:
+    from slayer.core.query import SlayerQuery
+
+    _SourceQueries = list[SlayerQuery] | None
+else:
+    _SourceQueries = list | None  # items are SlayerQuery (``_coerce_source_queries``); the import is circular
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z_]\w*$", re.ASCII)
 
@@ -742,7 +749,7 @@ def _check_join_keys(*, model_name: str, columns: list[Column], joins: list[Mode
 
 
 def _check_column_measure_namespace(
-    *, model_name: str, columns: list, measures: list
+    *, model_name: str, columns: list[Column], measures: list[ModelMeasure]
 ) -> None:
     """Columns and measures share one namespace: unique within each, disjoint across."""
     col_names_seq = [c.name for c in columns]
@@ -783,9 +790,7 @@ class SlayerModel(BaseModel):
     # Kind of DB object ``sql_table`` names; only auto-ingestion sets it. ``None`` = unknown.
     source_kind: Optional[ObjectKind] = None
     sql: str | None = None
-    source_queries: Annotated[
-        list | None, BeforeValidator(_coerce_source_queries)
-    ] = None  # List of SlayerQuery — query-backed source mode
+    source_queries: Annotated[_SourceQueries, BeforeValidator(_coerce_source_queries)] = None
     query_variables: dict[str, Any] = Field(default_factory=dict)
     data_source: str = ""
     columns: list[Column] = Field(default_factory=list)
@@ -1315,7 +1320,7 @@ def case_collisions(model: SlayerModel) -> list[tuple[str, list[str]]]:
         ("aggregations", [a.name for a in model.aggregations]),
         ("joins", [j.name for j in model.joins if j.name]),
     ]
-    stages = model.source_queries or []
+    stages: Sequence[SlayerQuery | dict[str, Any]] = model.source_queries or []
     namespaces.append(("stages", [n for q in stages if (n := _item_name(q))]))
     for q in stages:
         where = f"result names of stage {_item_name(q)!r}" if _item_name(q) else "result names"

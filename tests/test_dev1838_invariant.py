@@ -8,8 +8,11 @@ in the same commit as the checker."""
 
 from __future__ import annotations
 
+from typing import Protocol
+
 import pytest
 
+from slayer.ir.planned import PlannedQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 
@@ -26,6 +29,13 @@ from tests._dev1838_fixtures import (
 M = ModelMeasure(formula="sum(amount)", name="m")
 
 
+class _LegacyCrossModelPlan(Protocol):
+    cte_root_model: str | None
+    target_model: str
+    aggregate_slot_id: str
+    rerooted_plan: PlannedQuery | None
+
+
 def _bundle() -> ResolvedSourceBundle:
     models = dev1838_models()
     return ResolvedSourceBundle(
@@ -34,7 +44,7 @@ def _bundle() -> ResolvedSourceBundle:
     )
 
 
-def _walk_cmas(planned, out) -> None:
+def _walk_cmas(planned: PlannedQuery, out: list[_LegacyCrossModelPlan]) -> None:
     # getattr-guarded: task 2.5 deleted the CMA field, so the sweep
     # degenerates to "no cross-model aggregate plans at all" and stays green.
     for plan in getattr(planned, "cross_model_aggregate_plans", None) or ():
@@ -71,7 +81,7 @@ class TestNoUnrootedCrossModelPlan:
     @pytest.mark.parametrize("shape", sorted(SHAPES))
     def test_every_surviving_plan_is_host_rooted(self, shape: str) -> None:
         planned = plan_query(query=SHAPES[shape], bundle=_bundle())
-        cmas = []
+        cmas: list[_LegacyCrossModelPlan] = []
         _walk_cmas(planned, cmas)
         unrooted = [p for p in cmas if p.cte_root_model is None]
         assert not unrooted, [

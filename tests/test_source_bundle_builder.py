@@ -19,6 +19,7 @@ from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
 from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.extensions import apply_query_extensions
 from slayer.ir.source_bundle import ResolvedSourceBundle
+from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
 import slayer.engine.bundle_builder
 
@@ -382,14 +383,14 @@ class TestMultiStage:
 class _CountingStorage:
     """Delegates to a real storage, counting get_model calls per key."""
 
-    def __init__(self, inner):
+    def __init__(self, inner: StorageBackend) -> None:
         self._inner = inner
         self.reads: dict[tuple, int] = {}
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
 
-    async def get_model(self, name, data_source=None):
+    async def get_model(self, name: str, data_source: str | None = None) -> SlayerModel | None:
         key = (name, data_source)
         self.reads[key] = self.reads.get(key, 0) + 1
         return await self._inner.get_model(name, data_source=data_source)

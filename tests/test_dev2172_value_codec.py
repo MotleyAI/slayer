@@ -28,6 +28,7 @@ from slayer.mcp.server import create_mcp_server
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.types import value_to_binary, value_to_text
 from slayer.storage.yaml_storage import YAMLStorage
+from tests._arrow_types import ArrowTable
 from tests._cli_inprocess import run_cli_in_process
 from tests._dev2172_fixtures import strict_json
 from tests.flight.test_handlers import _FakeEngine as _FlightEngine
@@ -232,7 +233,7 @@ def flight_cell(value: Any, *, column_type: DataType = DataType.TEXT) -> Any:
     )
     result = handlers._translate("SELECT v FROM vals")
     assert isinstance(result, QueryResult), result
-    table = handlers._execute_full(result)
+    table: ArrowTable = handlers._execute_full(result)
     if column_type in (DataType.TEXT, DataType.UNKNOWN, DataType.ARRAY):
         assert table.schema.field("v").type == pa.utf8()
     return table.to_pylist()[0]["v"]

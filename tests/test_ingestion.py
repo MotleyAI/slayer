@@ -34,7 +34,7 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormatType
-from slayer.core.models import DatasourceConfig
+from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.live_schema import ingestion
 from slayer.live_schema.schema_drift import _live_schema_for_datasource
 from slayer.live_schema.ingestion import (
@@ -151,7 +151,7 @@ async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient, None]
         client.close()
 
 
-async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list:
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
     async with _client(ds) as client:
         return await ingestion.ingest_datasource_async(ds, client=client, **kwargs)
 
@@ -1001,7 +1001,7 @@ class TestSqliteIngestionProbe:
 class TestCountColumnRenameInJoinKeys:
     """Ingestion's ``_count`` → ``count_col`` rename applies to join keys too."""
 
-    async def _ingest(self, ddl: list[str]):
+    async def _ingest(self, ddl: list[str]) -> dict[str, SlayerModel]:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "cnt.db")
             with disposable_engine(f"sqlite:///{db_path}") as engine:

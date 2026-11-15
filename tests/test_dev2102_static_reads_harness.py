@@ -13,7 +13,7 @@ from slayer.engine.extensions import query_scopes
 from slayer.engine.model_reads import models_read_by
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.statement_reads import StatementReads
-from slayer.live_schema.schema_drift import WholeModelDelete, column_dependents
+from slayer.live_schema.schema_drift import ToDeleteEntry, WholeModelDelete, column_dependents
 from tests._dev2102_fixtures import (
     DS, CUSTOMER_PAIRS, base_models, customers, ext, join, q, regions, respelled_model, shop,
 )
@@ -164,7 +164,7 @@ def _keys(models: dict[str, SlayerModel], reads: StatementReads) -> set[tuple[st
     return pks | crossed
 
 
-def _drops_qb(entries: list) -> bool:
+def _drops_qb(entries: list[ToDeleteEntry]) -> bool:
     return any(e.model_name == _HARNESS_QB for e in entries if isinstance(e, WholeModelDelete) or e.remove.columns)
 
 

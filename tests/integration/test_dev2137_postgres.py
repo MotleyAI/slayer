@@ -1,6 +1,8 @@
 """List columns on a real Postgres: ingestion, list functions, element access and ``collect`` (spec:
 models/list-columns, queries/list-functions, queries/list-children, aggregations/collect)."""
 
+from collections.abc import AsyncIterator
+
 import pytest
 
 from slayer.core.enums import DataType
@@ -20,7 +22,7 @@ postgresql = factories.postgresql("postgresql_proc")
 
 
 @pytest.fixture
-async def pg(postgresql, tmp_path):
+async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, DatasourceConfig]]:
     cur = postgresql.cursor()
     for stmt in [*contractors_statements(dialect="postgres"), *assignments_statements(dialect="postgres")]:
         cur.execute(stmt)
@@ -42,12 +44,12 @@ async def pg(postgresql, tmp_path):
 
 
 @pytest.mark.integration
-async def test_lists(pg) -> None:
+async def test_lists(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
     await check_lists(pg[0], dialect="postgres")
 
 
 @pytest.mark.integration
-async def test_ingested_list_columns(pg) -> None:
+async def test_ingested_list_columns(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
     (model,) = await pg[0].ingest(pg[1], include_tables=["contractors"])
     typed = {c.name: (c.type, c.element_type) for c in model.columns if c.name in ("skills", "scores")}
     assert typed == {"skills": (DataType.ARRAY, DataType.TEXT), "scores": (DataType.ARRAY, DataType.INT)}

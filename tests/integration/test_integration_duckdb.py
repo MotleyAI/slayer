@@ -364,7 +364,7 @@ async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
 
 
 @pytest.fixture(scope="module")
-def duckdb_ingest_env(tmp_path_factory):
+def duckdb_ingest_env(tmp_path_factory) -> tuple[list[SlayerModel], DatasourceConfig]:
     """Set up tables with FK relationships and ingest via rollup.
 
     Module-scoped: tests destructure ``(models, ds)`` and build their own
@@ -420,7 +420,7 @@ def duckdb_ingest_env(tmp_path_factory):
 
 @pytest.mark.integration
 class TestDuckDBIngestion:
-    def test_orders_has_own_columns_only(self, duckdb_ingest_env) -> None:
+    def test_orders_has_own_columns_only(self, duckdb_ingest_env: tuple[list[SlayerModel], DatasourceConfig]) -> None:
         """After ingestion, models only have their own columns (no flattened joined dims)."""
         models, _ = duckdb_ingest_env
         orders = next(m for m in models if m.name == "orders")
@@ -434,7 +434,7 @@ class TestDuckDBIngestion:
         # Joined dimensions are resolved via join graph, not pre-flattened.
         assert not any("." in name for name in col_names)
 
-    def test_orders_uses_sql_table_with_joins(self, duckdb_ingest_env) -> None:
+    def test_orders_uses_sql_table_with_joins(self, duckdb_ingest_env: tuple[list[SlayerModel], DatasourceConfig]) -> None:
         models, _ = duckdb_ingest_env
         orders = next(m for m in models if m.name == "orders")
 
@@ -447,7 +447,7 @@ class TestDuckDBIngestion:
         # Multi-hop targets (regions) are NOT baked in — resolved at query time
         assert "regions" not in join_targets
 
-    def test_regions_has_no_rollup(self, duckdb_ingest_env) -> None:
+    def test_regions_has_no_rollup(self, duckdb_ingest_env: tuple[list[SlayerModel], DatasourceConfig]) -> None:
         models, _ = duckdb_ingest_env
         regions = next(m for m in models if m.name == "regions")
 
@@ -455,7 +455,7 @@ class TestDuckDBIngestion:
         assert regions.sql_table is not None
         assert regions.sql is None
 
-    def test_orders_has_no_named_measures_after_ingest(self, duckdb_ingest_env) -> None:
+    def test_orders_has_no_named_measures_after_ingest(self, duckdb_ingest_env: tuple[list[SlayerModel], DatasourceConfig]) -> None:
         """After ingestion, model.measures (formula list) is empty in v2.
 
         v1 generated row-level measures from each non-ID column. In v2, those
@@ -469,7 +469,7 @@ class TestDuckDBIngestion:
         col_names = [c.name for c in orders.columns]
         assert "amount" in col_names
 
-    async def test_rollup_query_group_by_customer(self, duckdb_ingest_env) -> None:
+    async def test_rollup_query_group_by_customer(self, duckdb_ingest_env: tuple[list[SlayerModel], DatasourceConfig]) -> None:
         """Query orders grouped by rolled-up customer name."""
         models, ds = duckdb_ingest_env
 
@@ -492,7 +492,7 @@ class TestDuckDBIngestion:
         assert by_name["Globex"] == 1
         assert by_name["Initech"] == 1
 
-    async def test_rollup_query_group_by_region(self, duckdb_ingest_env) -> None:
+    async def test_rollup_query_group_by_region(self, duckdb_ingest_env: tuple[list[SlayerModel], DatasourceConfig]) -> None:
         """Query orders grouped by transitively rolled-up region name."""
         models, ds = duckdb_ingest_env
 
@@ -1484,7 +1484,7 @@ class TestDev1753GreatestLeastIgnoreNulls:
 
 @pytest.mark.integration
 class TestDuckDBIngestComments:
-    def test_table_and_column_comments_imported(self, duckdb_ingest_env) -> None:
+    def test_table_and_column_comments_imported(self, duckdb_ingest_env: tuple[list[SlayerModel], DatasourceConfig]) -> None:
         models, _ = duckdb_ingest_env
         orders = next(m for m in models if m.name == "orders")
         assert orders.description == "All orders"
@@ -1492,7 +1492,7 @@ class TestDuckDBIngestComments:
         assert by_name["amount"].description == "Order amount"
         assert by_name["id"].description is None
 
-    def test_uncommented_table_has_no_description(self, duckdb_ingest_env) -> None:
+    def test_uncommented_table_has_no_description(self, duckdb_ingest_env: tuple[list[SlayerModel], DatasourceConfig]) -> None:
         models, _ = duckdb_ingest_env
         regions = next(m for m in models if m.name == "regions")
         assert regions.description is None

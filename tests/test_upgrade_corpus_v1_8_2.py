@@ -7,6 +7,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, SlayerModel
+from slayer.core.query import SlayerQuery
 from tests._upgrade_corpus import Corpus, OfflineChecks, OnlineChecks, offline
 
 CORPUS = Corpus.load(release="v1_8_2", datasources=("shop",), data_files=("data.duckdb",))
@@ -57,7 +58,8 @@ async def test_the_store_holds_the_list_column_shapes(backend: str, tmp_path, mo
     go_teams = await storage.get_model("go_teams", data_source="shop")
     assert go_teams is not None
     assert go_teams.source_queries
-    filters = " ".join(str(f) for q in go_teams.source_queries for f in (q.filters or []))
+    stages: list[SlayerQuery] = go_teams.source_queries
+    filters = " ".join(str(f) for q in stages for f in (q.filters or []))
     assert "contains(" in filters, filters
     assert "contains_any(" in filters, filters
     memory = await storage.get_memory("m_assignments")

@@ -6,6 +6,7 @@ import asyncio
 import warnings
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 import sqlglot
@@ -35,7 +36,7 @@ REGION_QUERY = {"source_model": "orders", "dimensions": ["customers.region"], "m
 
 
 @pytest.fixture(params=["duckdb", "sqlite"])
-def shop_ds(request, tmp_path):
+def shop_ds(request: pytest.FixtureRequest, tmp_path: Path) -> Generator[DatasourceConfig]:
     dialect = request.param
     db = str(tmp_path / f"shop.{dialect}")
     seed_shop(db, dialect=dialect)
@@ -67,7 +68,7 @@ def _assert_cast_free_key_equality(sql: str, *, dialect: str) -> None:
 
 class TestSourceSide:
     @pytest.mark.parametrize("backend", BACKENDS)
-    async def test_cube_import_shape_loads_with_hidden_key(self, tmp_path, shop_ds, backend):
+    async def test_cube_import_shape_loads_with_hidden_key(self, tmp_path, shop_ds: DatasourceConfig, backend):
         storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
                                   models=[orders_v10(declare_fk=False), customers_v10()])
         orders = await storage.get_model("orders", data_source=DS)
@@ -80,17 +81,18 @@ class TestSourceSide:
         assert _hidden(doc, "customer_id")["type"] == "INT"
 
     @pytest.mark.parametrize("backend", BACKENDS)
-    async def test_query_returns_the_0_10_2_rows_with_cast_free_on(self, tmp_path, shop_ds, backend):
+    async def test_query_returns_the_0_10_2_rows_with_cast_free_on(self, tmp_path, shop_ds: DatasourceConfig, backend):
         storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
                                   models=[orders_v10(declare_fk=False), customers_v10()])
         resp = await run(storage, REGION_QUERY)
         assert by_dimension(resp, dim_suffix="region") == AMOUNT_BY_REGION
         dry = await run(storage, REGION_QUERY, dry_run=True)
         assert dry.sql is not None
+        assert shop_ds.type is not None
         _assert_cast_free_key_equality(dry.sql, dialect=shop_ds.type)
 
     @pytest.mark.parametrize("backend", BACKENDS)
-    async def test_second_load_is_a_noop_and_resave_passes(self, tmp_path, shop_ds, backend):
+    async def test_second_load_is_a_noop_and_resave_passes(self, tmp_path, shop_ds: DatasourceConfig, backend):
         base = str(tmp_path / "store")
         storage = await raw_store(backend=backend, base=base, datasource=shop_ds,
                                   models=[orders_v10(declare_fk=False), customers_v10()])
@@ -101,7 +103,7 @@ class TestSourceSide:
         assert stored_bytes(backend=backend, base=base, name="orders") == after_first
         await storage.save_model(orders)
 
-    async def test_hidden_key_type_defaults_when_peer_type_is_unknown(self, tmp_path, shop_ds):
+    async def test_hidden_key_type_defaults_when_peer_type_is_unknown(self, tmp_path, shop_ds: DatasourceConfig):
         customers = customers_v10()
         customers["columns"][0]["type"] = "not_a_type"
         storage = await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=shop_ds,
@@ -114,7 +116,7 @@ class TestSourceSide:
 class TestTargetSide:
     @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.parametrize("target_version", [10, 13])
-    async def test_undeclared_target_key_becomes_hidden(self, tmp_path, shop_ds, backend, target_version):
+    async def test_undeclared_target_key_becomes_hidden(self, tmp_path, shop_ds: DatasourceConfig, backend, target_version):
         storage = await raw_store(
             backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
             models=[orders_v10(), customers_v10(declare_pk=False, version=target_version)])
@@ -127,7 +129,7 @@ class TestTargetSide:
         assert by_dimension(resp, dim_suffix="region") == AMOUNT_BY_REGION
 
     @pytest.mark.parametrize("backend", BACKENDS)
-    async def test_query_through_undeclared_target_key(self, tmp_path, shop_ds, backend):
+    async def test_query_through_undeclared_target_key(self, tmp_path, shop_ds: DatasourceConfig, backend):
         storage = await raw_store(
             backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
             models=[orders_v10(), customers_v10(declare_pk=False)])
@@ -136,7 +138,7 @@ class TestTargetSide:
         orders = await raw_doc(storage, "orders")
         assert [c["name"] for c in orders["columns"]].count("id") == 0
 
-    async def test_query_backed_target_is_untouched(self, tmp_path, shop_ds):
+    async def test_query_backed_target_is_untouched(self, tmp_path, shop_ds: DatasourceConfig):
         qb = {"version": 10, "name": "customers", "data_source": DS,
               "source_queries": [{"source_model": "people", "dimensions": ["region"],
                                   "measures": [{"formula": "count(*)", "name": "n"}]}]}
@@ -229,7 +231,7 @@ class TestRawPassMemo:
 
 class TestLeftForValidation:
     @pytest.mark.parametrize("backend", BACKENDS)
-    async def test_dotted_key_fails_while_siblings_load(self, tmp_path, shop_ds, backend):
+    async def test_dotted_key_fails_while_siblings_load(self, tmp_path, shop_ds: DatasourceConfig, backend):
         orders = orders_v10(declare_fk=False, joins=[
             {"target_model": "customers", "join_pairs": [["orders.customer_id", "id"]]}])
         storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
@@ -239,7 +241,7 @@ class TestLeftForValidation:
         assert await storage.get_model("customers", data_source=DS) is not None
         assert "orders.customer_id" not in {c["name"] for c in (await raw_doc(storage, "orders"))["columns"]}
 
-    async def test_corrupt_sibling_does_not_block_the_target_scan(self, tmp_path, shop_ds):
+    async def test_corrupt_sibling_does_not_block_the_target_scan(self, tmp_path, shop_ds: DatasourceConfig):
         storage = await raw_store(
             backend="sqlite", base=str(tmp_path / "store"), datasource=shop_ds,
             models=[orders_v10(), customers_v10(declare_pk=False)],
@@ -255,7 +257,7 @@ class TestLeftForValidation:
         with pytest.raises(ValueError, match="broken"):
             await storage.get_model("broken", data_source=DS)
 
-    async def test_corrupt_sibling_warns_once_per_enumeration(self, tmp_path, shop_ds):
+    async def test_corrupt_sibling_warns_once_per_enumeration(self, tmp_path, shop_ds: DatasourceConfig):
         storage = await raw_store(
             backend="sqlite", base=str(tmp_path / "store"), datasource=shop_ds,
             models=[orders_v10(), customers_v10(declare_pk=False)],

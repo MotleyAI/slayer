@@ -36,6 +36,7 @@ from slayer.memories.models import (
 )
 from slayer.memories.service import MemoryService
 from slayer.search.service import SearchResponse, SearchService
+from slayer.storage.base import StorageBackend
 
 # httpx is the optional ``client`` extra; keep it import-safe so local-engine
 # mode loads without it. pandas is heavier and only ``query_df`` needs it, so it
@@ -77,13 +78,13 @@ class SlayerClient:
     def __init__(
         self,
         url: str = "http://localhost:5143",
-        storage: Any | None = None,
+        storage: StorageBackend | None = None,
         *,
         policy: "SessionPolicy | None" = None,
         client_factory: ClientFactory | None = None,
     ):
         self.url = url.rstrip("/")
-        self._storage = storage
+        self._storage: StorageBackend | None = storage
         self._engine = None
         if storage is not None:
             self._engine = SlayerQueryEngine(storage=storage, policy=policy, client_factory=client_factory)

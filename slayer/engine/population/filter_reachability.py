@@ -14,13 +14,15 @@ from typing import List, Optional, Tuple
 from sqlglot import exp
 
 from slayer.core.keys import ColumnKey, ColumnSqlKey
+from slayer.core.models import Column, SlayerModel
 from slayer.engine.reference_closure import (
     UnhandledValueKindError,  # re-exported
     _child_keys,
     _expand_derived_refs_any_dialect,
     parse_fragment_any_dialect,
 )
-from slayer.ir.planned import FilterReachability
+from slayer.ir.planned import FilterReachability, PlannedQuery
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 __all__ = [
     "UnhandledValueKindError",
@@ -32,7 +34,9 @@ __all__ = [
 Path = Tuple[str, ...]
 
 
-def _resolve_key_column(*, key: ColumnSqlKey, anchor_model, bundle):
+def _resolve_key_column(
+    *, key: ColumnSqlKey, anchor_model: SlayerModel | None, bundle: ResolvedSourceBundle,
+) -> tuple[SlayerModel | None, Column | None]:
     """The (model, column) a ``ColumnSqlKey`` names, or ``(None, None)``."""
     model = (
         anchor_model if key.model == getattr(anchor_model, "name", None)
@@ -169,7 +173,7 @@ def key_has_host_local_ref(
     return _walk(key)
 
 
-def recompute_filter_reachability(planned_query, *, bundle) -> List:
+def recompute_filter_reachability(planned_query: PlannedQuery, *, bundle: ResolvedSourceBundle) -> List:
     """Recompute every mask's summary from scratch, anchored at
     ``planned_query``'s OWN root.
 

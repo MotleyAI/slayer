@@ -16,6 +16,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.connection import (
     PgConnection,
@@ -111,10 +112,10 @@ class _CapturingEngine:
 
     def __init__(self, data) -> None:
         self.data = data
-        self.last_query = None
-        self.last_data_source = None
+        self.last_query: SlayerQuery | None = None
+        self.last_data_source: str | None = None
 
-    async def execute(self, *, query=None, data_source=None):  # NOSONAR(S7503) — async to satisfy the awaited interface
+    async def execute(self, *, query: SlayerQuery | None = None, data_source: str | None = None):  # NOSONAR(S7503) — async to satisfy the awaited interface
         self.last_query = query
         self.last_data_source = data_source
         return types.SimpleNamespace(data=self.data)
@@ -885,6 +886,7 @@ async def test_string_param_is_quote_escaped() -> None:
         + _terminate()
     )
     await _run(inp, engine=engine)
+    assert engine.last_query is not None
     assert engine.last_query.filters == ["status = 'O''Brien'"]
 
 

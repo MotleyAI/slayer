@@ -33,7 +33,7 @@ if sys.argv and sys.argv[0].endswith("_dev1836_equiv_driver.py") and len(sys.arg
 
 from slayer.async_utils import run_sync  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
 from slayer.core.enums import DataType  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
-from slayer.core.models import DatasourceConfig, SlayerModel  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
+from slayer.core.models import Column, DatasourceConfig, SlayerModel  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
 from slayer.engine.query_engine import SlayerQueryEngine  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
 from slayer.storage.yaml_storage import YAMLStorage  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
 
@@ -54,10 +54,10 @@ _SQLITE_TYPE = {
 }
 
 
-def _physical_columns(model: SlayerModel):
+def _physical_columns(model: SlayerModel) -> list[Column]:
     """Only bare/identity columns are real table columns; a ``sql`` expression
     (derived/filtered) or a filter-bearing column is computed by the query."""
-    out = []
+    out: list[Column] = []
     for c in model.columns:
         sql = getattr(c, "sql", None)
         if getattr(c, "filter", None) is not None:
@@ -83,11 +83,12 @@ def _rand_value(dtype, rng: random.Random):
     return rng.choice(["a", "b", "c", "web", "app", "ok", "hold", None])
 
 
-def _topo(models):
+def _topo(models: list[SlayerModel]) -> list[SlayerModel]:
     by = {m.name: m for m in models}
-    seen, out = set(), []
+    seen: set[str] = set()
+    out: list[SlayerModel] = []
 
-    def visit(m):
+    def visit(m: SlayerModel) -> None:
         if m.name in seen:
             return
         seen.add(m.name)
@@ -101,7 +102,7 @@ def _topo(models):
     return out
 
 
-def seed_sqlite(models, db_path, *, seed=20240501, n_rows=9):
+def seed_sqlite(models: list[SlayerModel], db_path: str, *, seed: int = 20240501, n_rows: int = 9) -> None:
     rng = random.Random(seed)
     with transaction(db_path) as con:
         pk_values: dict[str, dict[str, list]] = {}

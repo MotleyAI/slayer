@@ -108,9 +108,9 @@ class TestRejected:
 
     def test_a_model_s_stage_with_a_duplicate_is_rejected_too(self) -> None:
         with pytest.raises(ValidationError) as info:
-            SlayerModel(name="qb", source_queries=[{
+            SlayerModel.model_validate({"name": "qb", "source_queries": [{
                 "source_model": "orders", "measures": ONE_MEASURE,
-                "extensions": [{"source_name": "customers"}, {"source_name": "customers"}]}])
+                "extensions": [{"source_name": "customers"}, {"source_name": "customers"}]}]})
         _assert_rejected_naming(info.value, "customers")
 
 

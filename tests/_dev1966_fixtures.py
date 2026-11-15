@@ -8,14 +8,14 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ModelExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -315,9 +315,9 @@ def explicit_splice(
     """``model``'s stages as named user stages: private stages renamed per ``rename``, the final one
     named after the model."""
     rename = rename or {}
-    stages = list(model.source_queries or [])
+    stages: List[SlayerQuery] = list(model.source_queries or [])
 
-    def respell(spec: Any) -> Any:
+    def respell(spec: Union[str, ModelExtension, SlayerModel, None]) -> Union[str, ModelExtension, SlayerModel, None]:
         if isinstance(spec, str):
             return rename.get(spec, spec)
         if spec is None or isinstance(spec, SlayerModel):
@@ -329,7 +329,7 @@ def explicit_splice(
 
     out = []
     for i, stage in enumerate(stages):
-        name = model.name if i == len(stages) - 1 else rename.get(stage.name, stage.name)
+        name = model.name if i == len(stages) - 1 else respell(stage.name)
         extensions = [respell(e) for e in stage.extensions] if stage.extensions else stage.extensions
         out.append(stage.model_copy(update={"name": name, "source_model": respell(stage.source_model),
                                             "extensions": extensions}))

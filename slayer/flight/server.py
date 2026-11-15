@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from collections.abc import Iterator
+from typing import Protocol
 
 import pyarrow.flight as fl
 
@@ -30,6 +31,20 @@ from slayer.flight.handlers import (
 from slayer.flight.translator import TranslationError
 
 logger = logging.getLogger(__name__)
+
+
+class _ActionBody(Protocol):
+    def to_pybytes(self) -> bytes: ...
+
+
+class FlightAction(Protocol):
+    """The members of a ``pyarrow.flight.Action`` (untyped extension class) the servers read."""
+
+    @property
+    def type(self) -> str: ...
+
+    @property
+    def body(self) -> _ActionBody | None: ...
 
 
 _ACTION_CREATE_PREPARED = "CreatePreparedStatement"
@@ -223,7 +238,7 @@ class FlightSqlServer(fl.FlightServerBase):
         ]
 
     def do_action(
-        self, context: fl.ServerCallContext, action: fl.Action,
+        self, context: fl.ServerCallContext, action: FlightAction,
     ) -> Iterator[fl.Result]:
         action_type = action.type
         body_bytes = action.body.to_pybytes() if action.body is not None else b""

@@ -11,7 +11,7 @@ time_shift are implementation-defined and stay engine-vs-engine only.
 
 import importlib.util
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -62,7 +62,7 @@ def frames_from_dataset(dataset: Any) -> dict[str, pd.DataFrame]:
 _BUCKET_FORMATS = {"month": "%Y-%m-01", "year": "%Y-01-01"}
 
 
-def _apply_joins(df: pd.DataFrame, joins: list[dict], frames: dict) -> pd.DataFrame:
+def _apply_joins(df: pd.DataFrame, joins: list[dict], frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
     for join in joins:
         right = frames[join["table"]].copy()
         right.columns = [f"{join['table']}.{c}" for c in right.columns]
@@ -70,9 +70,9 @@ def _apply_joins(df: pd.DataFrame, joins: list[dict], frames: dict) -> pd.DataFr
         # SQL semantics: NULL keys never match (pandas merge would pair NaNs)
         right = right[right[right_key].notna()]
         left_key = df[join["left_on"]]
-        matched = df[left_key.notna()].merge(
+        matched = cast(pd.DataFrame, df[left_key.notna()].merge(
             right, how="left", left_on=join["left_on"], right_on=right_key,
-        )
+        ))
         unmatched = df[left_key.isna()].reindex(columns=matched.columns)
         df = pd.concat([matched, unmatched], ignore_index=True)
     return df

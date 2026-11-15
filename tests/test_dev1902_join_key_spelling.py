@@ -4,6 +4,8 @@ key column is renamed (``tests/_dev1902_fixtures.py``)."""
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import pytest
 
 from slayer.core.enums import DataType, JoinCardinality
@@ -57,7 +59,7 @@ async def pk_renamed(request):
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
-async def all_renamed(request):
+async def all_renamed(request) -> AsyncIterator[SlayerQueryEngine]:
     async for engine in make_exec_engine(request, models=renamed_graph()):
         yield engine
 
@@ -89,21 +91,21 @@ class TestExecutedRenamedKeys:
         assert warnings_of(resp, "broadcast") == []
         assert "customer_pk" in resp.sql
 
-    async def test_renamed_both_sides_two_hops(self, all_renamed):
+    async def test_renamed_both_sides_two_hops(self, all_renamed: SlayerQueryEngine):
         resp = await all_renamed.execute(_query(
             source_model="orders", dimensions=["customers.regions.name"],
             measures=[AMT]))
         assert cells(resp, dim_suffix="regions.name", measure="amt") == AMOUNT_BY_REGION
         assert warnings_of(resp, "broadcast") == []
 
-    async def test_association_over_renamed_pk_root(self, all_renamed):
+    async def test_association_over_renamed_pk_root(self, all_renamed: SlayerQueryEngine):
         resp = await all_renamed.execute(_query(
             source_model="orders", dimensions=["status"],
             measures=[ModelMeasure(formula="sum(customers.credit)", name="cr")],
             to_many_handling="associate"))
         assert cells(resp, dim_suffix="status", measure="cr") == ASSOC_CREDIT_BY_STATUS
 
-    async def test_renamed_fk_dimension_slices_target_measure(self, all_renamed):
+    async def test_renamed_fk_dimension_slices_target_measure(self, all_renamed: SlayerQueryEngine):
         # The FK dimension reroots onto the target key, so it slices, not broadcasts.
         resp = await all_renamed.execute(SlayerQuery.model_validate({
             "source_model": "orders", "dimensions": ["customer_id"],
@@ -112,7 +114,7 @@ class TestExecutedRenamedKeys:
             1: 100.0, 2: 200.0, 3: 300.0}
         assert warnings_of(resp, "broadcast") == []
 
-    async def test_population_pushdown_over_renamed_keys(self, all_renamed):
+    async def test_population_pushdown_over_renamed_keys(self, all_renamed: SlayerQueryEngine):
         resp = await all_renamed.execute(_query(
             source_model="customers",
             measures=[ModelMeasure(formula="sum(credit)", name="cr")],
@@ -121,6 +123,7 @@ class TestExecutedRenamedKeys:
         value = next(v for k, v in row.items() if k.endswith("cr"))
         assert float(value) == pytest.approx(CREDIT_WITH_NEW_ORDER)
         assert warnings_of(resp, "semi_join_pushed")
+        assert resp.sql is not None
         assert "cust_fk" in resp.sql
         assert "customer_pk" in resp.sql
 
@@ -207,14 +210,14 @@ def _customer_totals(*, key: str = "customer_id") -> SlayerModel:
 
 
 class TestQueryBackedJoinKeys:
-    async def test_join_on_backing_output_column_executes(self, all_renamed):
+    async def test_join_on_backing_output_column_executes(self, all_renamed: SlayerQueryEngine):
         await all_renamed.save_model(_customer_totals())
         resp = await all_renamed.execute(_query(
             source_model="customer_totals", dimensions=["customers.name"],
             measures=[{"formula": "sum(amt)", "name": "total"}]))
         assert cells(resp, dim_suffix="customers.name", measure="total") == AMOUNT_BY_CUSTOMER
 
-    async def test_extension_join_over_query_backed_base_executes(self, all_renamed):
+    async def test_extension_join_over_query_backed_base_executes(self, all_renamed: SlayerQueryEngine):
         base = SlayerModel.model_validate({
             **_customer_totals().model_dump(exclude={"joins"}), "joins": []})
         await all_renamed.save_model(base)
@@ -226,7 +229,7 @@ class TestQueryBackedJoinKeys:
             measures=[{"formula": "sum(amt)", "name": "total"}]))
         assert cells(resp, dim_suffix="customers.name", measure="total") == AMOUNT_BY_CUSTOMER
 
-    async def test_join_on_undeclared_output_rejected_at_save(self, all_renamed):
+    async def test_join_on_undeclared_output_rejected_at_save(self, all_renamed: SlayerQueryEngine):
         model = _customer_totals(key="nope")
         with pytest.raises(JoinKeyError, match="key 'nope'"):
             await all_renamed.save_model(model)

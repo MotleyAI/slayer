@@ -47,7 +47,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-async def integration_env(tmp_path):
+async def integration_env(tmp_path) -> SlayerQueryEngine:
     """Create a real SQLite database with test data, configure storage, models, and engine."""
 
     # -- SQLite database --
@@ -349,7 +349,7 @@ async def test_multiple_measures(integration_env):
 
 
 
-async def test_cumsum_change_identity(integration_env):
+async def test_cumsum_change_identity(integration_env: SlayerQueryEngine):
     """Mathematical identity: cumsum(change(x)) == x - x[0] for all rows after the first."""
     engine = integration_env
 
@@ -1487,7 +1487,7 @@ async def test_query_backed_model_aggregate(integration_env):
     assert response.data[0]["monthly.total_amount_sum_sum"] == pytest.approx(750.0)
 
 
-async def test_create_model_from_query(integration_env):
+async def test_create_model_from_query(integration_env: SlayerQueryEngine):
     """A query can be saved as a permanent model and then queried by name."""
     engine = integration_env
 
@@ -1674,7 +1674,7 @@ async def test_formula_dimension_via_query_list(integration_env):
     assert by_tier["low"] == 1
 
 
-async def test_multistage_renamed_measure_returns_non_null(integration_env):
+async def test_multistage_renamed_measure_returns_non_null(integration_env: SlayerQueryEngine):
     """A 2-stage query-backed model where the inner stage
     renames its aggregated measure via ``name=`` must return non-NULL values
     for the renamed column when executed end-to-end.
@@ -1990,13 +1990,14 @@ async def test_diamond_joins_single_path(diamond_env):
 # ---------------------------------------------------------------------------
 
 
-async def test_filtered_measure_sum(integration_env):
+async def test_filtered_measure_sum(integration_env: SlayerQueryEngine):
     """Measure with filter produces CASE WHEN — only matching rows aggregated."""
     engine = integration_env
     storage = engine.storage
 
     # Add a filtered measure: only sum completed orders' amounts
     orders = await storage.get_model("orders")
+    assert orders is not None
     orders.columns.append(
         Column(name="completed_revenue", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
     )
@@ -2017,12 +2018,13 @@ async def test_filtered_measure_sum(integration_env):
     assert completed == pytest.approx(600.0)
 
 
-async def test_filtered_measure_count(integration_env):
+async def test_filtered_measure_count(integration_env: SlayerQueryEngine):
     """Filtered count measure counts only matching rows."""
     engine = integration_env
     storage = engine.storage
 
     orders = await storage.get_model("orders")
+    assert orders is not None
     orders.columns.append(
         Column(name="completed_count", sql="id", filter="status = 'completed'", type=DataType.DOUBLE)
     )
@@ -2042,12 +2044,13 @@ async def test_filtered_measure_count(integration_env):
     assert completed == 3
 
 
-async def test_filtered_measure_with_dimensions(integration_env):
+async def test_filtered_measure_with_dimensions(integration_env: SlayerQueryEngine):
     """Filtered measure works with GROUP BY dimensions."""
     engine = integration_env
     storage = engine.storage
 
     orders = await storage.get_model("orders")
+    assert orders is not None
     orders.columns.append(
         Column(name="completed_revenue", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
     )
@@ -2068,7 +2071,7 @@ async def test_filtered_measure_with_dimensions(integration_env):
             assert row["orders.completed_revenue_sum"] is None
 
 
-async def test_filtered_last_picks_correct_row(integration_env):
+async def test_filtered_last_picks_correct_row(integration_env: SlayerQueryEngine):
     """A ``Column.filter`` masks the value and never restricts the ranking: ``last``
     picks the globally latest row and reads its masked value (NULL when that row
     fails the filter).
@@ -2080,6 +2083,7 @@ async def test_filtered_last_picks_correct_row(integration_env):
     storage = engine.storage
 
     orders = await storage.get_model("orders")
+    assert orders is not None
     orders.columns.append(
         Column(name="completed_latest", sql="amount", filter="status = 'completed'", type=DataType.DOUBLE)
     )
@@ -2116,12 +2120,13 @@ async def test_filtered_last_picks_correct_row(integration_env):
     assert feb["orders.completed_latest_last"] is None
 
 
-async def test_time_dimension_label_fallback(integration_env):
+async def test_time_dimension_label_fallback(integration_env: SlayerQueryEngine):
     """Time dimension inherits label from model dimension definition."""
     engine = integration_env
     storage = engine.storage
 
     orders = await storage.get_model("orders")
+    assert orders is not None
     for d in orders.columns:
         if d.name == "created_at":
             d.label = "Order Date"
@@ -2144,12 +2149,13 @@ async def test_time_dimension_label_fallback(integration_env):
     assert td_meta.label == "Order Date"
 
 
-async def test_label_propagation_enrichment(integration_env):
+async def test_label_propagation_enrichment(integration_env: SlayerQueryEngine):
     """Model-level labels propagate through enrichment to query results."""
     engine = integration_env
     storage = engine.storage
 
     orders = await storage.get_model("orders")
+    assert orders is not None
     # Add labels to a dimension and measure
     for d in orders.columns:
         if d.name == "status":
@@ -3817,7 +3823,7 @@ async def test_sqlite_mixed_real_int_ingest_query_no_truncation(tmp_path):
 
 
 @pytest.fixture
-async def composite_score_env(tmp_path):
+async def composite_score_env(tmp_path) -> SlayerQueryEngine:
     """A model whose ``Column.sql`` is a multi-term
     arithmetic expression. Used by both the WHERE-side and HAVING-side
     paren-wrap integration tests.
@@ -3918,7 +3924,7 @@ async def test_dev1539_where_multiterm_filter_emits_outer_parens(composite_score
         )
 
 
-async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_score_env):
+async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_score_env: SlayerQueryEngine):
     """HAVING-side: when a custom multi-term aggregation is
     referenced by name in a HAVING filter, the substituted SQL must be
     wrapped in outer parens before the comparator.
@@ -3929,6 +3935,7 @@ async def test_dev1539_having_multiterm_measure_emits_outer_parens(composite_sco
     engine = composite_score_env
     # Re-fetch and edit the model to add the custom aggregation.
     model = await engine.storage.get_model("entities", data_source="score_sqlite")
+    assert model is not None
     model.aggregations = [
         Aggregation(
             name="wavg",

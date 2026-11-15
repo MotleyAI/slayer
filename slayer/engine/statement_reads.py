@@ -11,7 +11,7 @@ from slayer.core.join_walker import aggregation_owner, follow, resolved_terminal
 from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, StarKey, ValueKey, walk_value_keys
 from slayer.core.models import SlayerModel, aggregation_definition
 from slayer.engine.column_dependency import definition_reads
-from slayer.ir.planned import plan_value_keys_by_root
+from slayer.ir.planned import PlannedQuery, plan_value_keys_by_root
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 #: ``(declaring model, target model, edge name, join pairs)``.
@@ -28,7 +28,7 @@ class StatementReads(BaseModel):
 
 
 def statement_reads(
-    *, plans: list, bundle: ResolvedSourceBundle, measures: Iterable[tuple[str, str]] = (),
+    *, plans: list[PlannedQuery], bundle: ResolvedSourceBundle, measures: Iterable[tuple[str, str]] = (),
 ) -> StatementReads:
     """The reads of the emitted ``plans`` (each against its own stage bundle, else ``bundle``)."""
     reads = StatementReads(measures=set(measures))

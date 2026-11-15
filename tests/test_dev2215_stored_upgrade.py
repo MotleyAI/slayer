@@ -18,6 +18,7 @@ from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.database import engine_factory
 from slayer.memories.models import Memory
+from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._dev2215_fixtures import future_warnings, recorded_warnings
 from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, raw_store, run, seed_shop
@@ -72,7 +73,7 @@ def shop_ds(tmp_path: Path) -> Generator[DatasourceConfig]:
 
 
 async def store(tmp_path: Path, ds: DatasourceConfig, *, backend: str, models: list[dict],
-                memories: tuple[dict, ...] = ()) -> Any:
+                memories: tuple[dict, ...] = ()) -> StorageBackend:
     return await raw_store(backend=backend, base=str(tmp_path / f"store-{backend}"), datasource=ds,
                            models=[_CUSTOMERS, *models], memories=memories)
 

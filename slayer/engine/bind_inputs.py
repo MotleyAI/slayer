@@ -205,12 +205,12 @@ def _expr_has_measure_ref(
 
 
 def _reject_measure_refs_for_raw_rows(
-    *, query: SlayerQuery, scope, bundle: ResolvedSourceBundle,
+    *, query: SlayerQuery, scope: ModelScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> None:
     """Raw-rows mode (``distinct_dimension_values=False``): reject any measure reference in filters/order."""
-    src = getattr(scope, "source_model", None)
+    src = scope.source_model if isinstance(scope, ModelScope) else None
     measure_names: FrozenSet[str] = frozenset(
-        m.name for m in (getattr(src, "measures", None) or []) if m.name
+        m.name for m in (src.measures if src is not None else []) if m.name
     )
     _reject_measure_refs_in_filters(
         query=query, measure_names=measure_names, scope=scope, bundle=bundle,

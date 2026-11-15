@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 import yaml
@@ -15,9 +15,10 @@ from slayer import cli
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import DefaultTimeDimensionTypeError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtMeasure, DbtMetric, DbtProject, DbtSemanticModel
+from slayer.ingest_report import ConversionResult
 from slayer.mcp.server import create_mcp_server
 from slayer.search.service import SearchService
 from slayer.storage.yaml_storage import YAMLStorage
@@ -282,7 +283,7 @@ def _dbt_project(field: str, value: Any) -> DbtProject:
     )
 
 
-def _converted_measure(result, name: str):
+def _converted_measure(result: ConversionResult, name: str) -> Optional[ModelMeasure]:
     for model in result.models:
         for measure in model.measures:
             if measure.name == name:

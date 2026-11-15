@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-import pyarrow as pa
 import pytest
 import sqlglot
 from sqlglot import exp
@@ -18,6 +17,7 @@ from slayer.facade.catalog import build_catalog
 from slayer.facade.translator import QueryResult, translate
 from slayer.flight.handlers import FlightHandlers
 from slayer.storage.sqlite_conn import transaction
+from tests._arrow_types import ArrowTable
 from tests._engine_helpers import _engine_generate, seeded_exec_engine
 
 REVENUE = "sum(order_total)"
@@ -407,5 +407,5 @@ class TestFacades:
         handlers = FlightHandlers(engine=engine)
         result = handlers._translate("SELECT status, order_total_sum FROM orders")
         assert isinstance(result, QueryResult), result
-        table: pa.Table = handlers._execute_full(result)
+        table: ArrowTable = handlers._execute_full(result)
         assert table.column(0).to_pylist() == ["a", "b", "c", "d", None]

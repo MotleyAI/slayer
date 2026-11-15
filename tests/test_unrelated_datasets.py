@@ -24,6 +24,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.access_filtered import AccessFilteredStorage
 
+from tests._dev1836_fixtures import broadcast_warnings
 from tests._unrelated_datasets_fixtures import (
     BACKENDS,
     GROUPED,
@@ -296,7 +297,7 @@ class TestAggregates:
     async def test_grouped_query_broadcasts_the_total(self, engine) -> None:
         resp = await engine.execute(grouped_query(to_many_handling="broadcast"))
         assert rows(resp, "n_customers", "n_events") == {"A": (2.0, 5.0), "B": (1.0, 5.0)}
-        (w,) = warnings_of(resp, "broadcast")
+        (w,) = broadcast_warnings(resp)
         assert "n_events" in w.measure
         assert "city" in " ".join(d.dimension for d in w.dimensions)
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Protocol, cast
 
 import pyarrow as pa
 import pytest
@@ -41,6 +41,34 @@ ARROW_TYPES: dict[str, pa.DataType] = {
     "BIGINT": pa.int64(), "VARCHAR": pa.utf8(), "DOUBLE": pa.float64(), "BOOLEAN": pa.bool_(),
     "DATE": pa.date32(), "TIMESTAMP": pa.timestamp("us"),
 }
+
+
+class _ArrowField(Protocol):
+    @property
+    def name(self) -> str: ...
+    @property
+    def type(self) -> pa.DataType: ...
+
+
+class _ArrowSchema(Protocol):
+    def field(self, i: int) -> _ArrowField: ...
+    def __iter__(self) -> Iterator[_ArrowField]: ...
+
+
+class _ArrowColumn(Protocol):
+    def to_pylist(self) -> list[Any]: ...
+
+
+class _ArrowTable(Protocol):
+    @property
+    def num_rows(self) -> int: ...
+    @property
+    def schema(self) -> _ArrowSchema: ...
+    def column(self, i: int) -> _ArrowColumn: ...
+
+
+def _flight_table(port: int, sql: str) -> _ArrowTable:
+    return cast(_ArrowTable, flight_query(port, sql))
 
 
 @pytest.fixture(scope="module")
@@ -100,7 +128,7 @@ def _select_pg(servers: Servers, table: str, column: str, type_name: str) -> str
 
 def _select_flight(servers: Servers, table: str, column: str, type_name: str) -> str | None:
     try:
-        result = flight_query(servers.flight_port, f"SELECT {_sql_column(column)} FROM {table}")
+        result = _flight_table(servers.flight_port, f"SELECT {_sql_column(column)} FROM {table}")
     except Exception as exc:  # noqa: BLE001 — every failure is reported together
         return f"{table}.{column}: {type(exc).__name__}: {str(exc)[:300]}"
     if result.num_rows == 0:
@@ -138,10 +166,10 @@ class TestEveryAdvertisedColumnIsSelectable:
     def test_flight_get_tables_schemas(self, servers: Servers) -> None:
         """Every field a ``GetTables(include_schema)`` table schema advertises is selectable with that type."""
         failures = []
-        for table, schema in flight_table_schemas(servers.flight_port).items():
+        for table, schema in cast(dict[str, _ArrowSchema], flight_table_schemas(servers.flight_port)).items():
             for field in schema:
                 try:
-                    result = flight_query(servers.flight_port, f"SELECT {_sql_column(field.name)} FROM {table}")
+                    result = _flight_table(servers.flight_port, f"SELECT {_sql_column(field.name)} FROM {table}")
                 except Exception as exc:  # noqa: BLE001 — every failure is reported together
                     failures.append(f"{table}.{field.name}: {type(exc).__name__}: {str(exc)[:300]}")
                     continue
@@ -170,7 +198,7 @@ class TestFanningAndToOneDimensions:
 
     @pytest.mark.parametrize("column", ["teams.label", "parts.thing_id", "parts.qty"])
     def test_flight_returns_one_row_per_joined_record(self, servers: Servers, column: str) -> None:
-        table = flight_query(servers.flight_port, f"SELECT {column} FROM things")
+        table = _flight_table(servers.flight_port, f"SELECT {column} FROM things")
         assert Counter(table.column(0).to_pylist()) == _thing_rows(column)
 
     def test_select_star_omits_fanning_dimensions(self, servers: Servers) -> None:

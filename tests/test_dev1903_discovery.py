@@ -6,13 +6,13 @@ from __future__ import annotations
 
 import importlib
 import inspect
-from typing import Callable, List, Sequence
+from typing import Callable, List, Optional, Sequence
 
 import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import PartitionKeyError, TimeAxisError
-from slayer.core.keys import AggregateKey, TransformKey, ValueKey
+from slayer.core.keys import AggregateKey, Grain, TransformKey, ValueKey
 from slayer.core.models import ModelMeasure
 from slayer.core.query import SlayerQuery
 from slayer.engine.compile.discovery import RootDisposition, discover_roots
@@ -63,7 +63,8 @@ def _discover(query: SlayerQuery, bundle: ResolvedSourceBundle) -> List[RootDisp
 
 def _leaves(key: ValueKey) -> List[str]:
     out = []
-    for pk in getattr(key, "partition_keys", None) or ():
+    partition_keys: Optional[Grain] = getattr(key, "partition_keys", None)
+    for pk in partition_keys or ():
         col = getattr(pk, "column", pk)
         out.append(getattr(col, "leaf", str(col)))
     return sorted(out)

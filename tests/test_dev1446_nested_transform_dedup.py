@@ -103,7 +103,7 @@ def _query() -> SlayerQuery:
         ], "measures": [{"formula": "sum(amount)", "name": "revenue"}], "filters": ["change(sum(amount)) > 0"]})
 
 
-async def test_dev1446_change_filter_keeps_correct_rows(engine):
+async def test_dev1446_change_filter_keeps_correct_rows(engine: Tuple[SlayerQueryEngine, str]):
     eng, _ = engine
     resp = await eng.execute(_query())
     assert resp.columns == ["orders.created_at", "orders.revenue"]
@@ -112,7 +112,7 @@ async def test_dev1446_change_filter_keeps_correct_rows(engine):
     ]
 
 
-async def test_dev1446_aggregate_interned_to_one_slot(engine):
+async def test_dev1446_aggregate_interned_to_one_slot(engine: Tuple[SlayerQueryEngine, str]):
     """The inner ``sum(amount)`` inside ``change(...)`` dedupes onto the
     declared ``revenue`` slot — no separate ``amount_sum`` column is minted,
     and the ``change`` arithmetic in the filter is computed against the

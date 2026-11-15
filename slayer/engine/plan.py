@@ -468,7 +468,7 @@ class _StagePlanner:
     def _base_time_dimension(self, name: str) -> Optional[str]:
         model = self.bundle.query_backed[name]
         private = {q.name: q for q in model.source_queries or [] if q.name}
-        stages = topologically_order_stages(list(model.source_queries or []))
+        stages: list[SlayerQuery] = topologically_order_stages(list(model.source_queries or []))
         if not stages:
             return None
         spec = follow_sibling_chain(spec=stages[-1].source_model, named_queries=private)

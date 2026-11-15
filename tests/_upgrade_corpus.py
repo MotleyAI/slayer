@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.models import SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.database import engine_factory
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
@@ -121,7 +121,7 @@ def rows(resp, *, ordered: bool) -> list[dict]:
     return out if ordered else sorted(out, key=lambda r: json.dumps(r, sort_keys=True))
 
 
-async def execute(corpus: Corpus, storage: StorageBackend, key: str) -> Any:
+async def execute(corpus: Corpus, storage: StorageBackend, key: str) -> SlayerResponse:
     """The response to the recorded query ``key`` (a memory's stored query for ``memory:<id>``)."""
     spec = corpus.expected[key]
     if key.startswith(MEMORY_PREFIX):

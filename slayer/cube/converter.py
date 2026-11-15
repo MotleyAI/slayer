@@ -1231,7 +1231,7 @@ class CubeToSlayerConverter:
                     message=f"Column sql does not parse; dropped: {col.sql!r}"))
         return good_cols, dropped
 
-    def _drop_measures_over(self, *, cube_name, measures, info, dropped, report) -> list[ModelMeasure]:
+    def _drop_measures_over(self, *, cube_name, measures: list[ModelMeasure], info, dropped, report) -> list[ModelMeasure]:
         by_emitted = {i.emitted_name: i for i in info.values() if i.emitted_name}
         good_measures = []
         for m in measures:
@@ -1245,7 +1245,7 @@ class CubeToSlayerConverter:
                 good_measures.append(m)
         return good_measures
 
-    def _drop_unparseable_measures(self, cube_name, measures, report, *, model: SlayerModel | None = None
+    def _drop_unparseable_measures(self, cube_name, measures: list[ModelMeasure], report, *, model: SlayerModel | None = None
                                    ) -> list[ModelMeasure]:
         """``measures`` that resolve among their peers (and, given ``model``, its columns and join paths)."""
         if model is not None:
@@ -1385,7 +1385,7 @@ class CubeToSlayerConverter:
             self._facade_measure(view, cube_name, cube_model, mname, prefix, is_root,
                                  columns, measures, names, report)
 
-    def _selected_members(self, cube, ref, view, report) -> tuple[list[str], list[str]]:
+    def _selected_members(self, cube: CubeCube, ref, view, report) -> tuple[list[str], list[str]]:
         dims = [d.name for d in cube.dimensions if d.type not in ("geo", "switch") and not d.sub_query]
         meas = [m.name for m in cube.measures]
         exclude = set(ref.excludes or [])
@@ -1424,7 +1424,7 @@ class CubeToSlayerConverter:
                 names.append(name)
         return names
 
-    def _facade_dimension(self, cube, cube_model, dname, prefix, is_root, columns, names, view, report) -> None:
+    def _facade_dimension(self, cube: CubeCube, cube_model: SlayerModel, dname, prefix, is_root, columns, names, view, report) -> None:
         col = cube_model.get_column(dname)
         if col is None:
             return

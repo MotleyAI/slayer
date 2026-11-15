@@ -17,6 +17,7 @@ inherited ones, compared against the hand-expanded twin.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -30,20 +31,20 @@ from tests._dev1842_fixtures import dev1842_models, make_exec_engine, q
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
-async def exec_backend(request):
+async def exec_backend(request: pytest.FixtureRequest) -> AsyncIterator[tuple[str, SlayerQueryEngine]]:
     async for engine in make_exec_engine(request):
         yield request.param, engine
 
 
 class TestImplicitAndExplicitName:
-    async def test_implicit_name_is_the_dotted_path(self, exec_backend) -> None:
+    async def test_implicit_name_is_the_dotted_path(self, exec_backend: tuple[str, SlayerQueryEngine]) -> None:
         """Unnamed ``customers.aov`` → result key ``orders.customers.aov``."""
         _, engine = exec_backend
         resp = await engine.execute(q(dimensions=["customers.tier"],
                                       measures=[{"formula": "customers.aov"}]))
         assert "orders.customers.aov" in resp.columns
 
-    async def test_explicit_name_overrides_the_implicit_key(self, exec_backend) -> None:
+    async def test_explicit_name_overrides_the_implicit_key(self, exec_backend: tuple[str, SlayerQueryEngine]) -> None:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],

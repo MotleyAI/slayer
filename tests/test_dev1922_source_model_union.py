@@ -160,11 +160,11 @@ class TestRejection:
 
     def test_nested_stage_boundary_rejects_too(self) -> None:
         with pytest.raises(ValidationError, match="filters"):
-            SlayerModel(
-                name="qb",
-                source_queries=[{"source_model": "orders", "extensions": [EXTENSION_WITH_FILTERS],
-                                 "measures": ONE_MEASURE}],
-            )
+            SlayerModel.model_validate({
+                "name": "qb",
+                "source_queries": [{"source_model": "orders", "extensions": [EXTENSION_WITH_FILTERS],
+                                    "measures": ONE_MEASURE}],
+            })
 
     def test_rest_body_rejects_unknown_extension_key_with_422(self, rest_client) -> None:
         resp = rest_client.post("/query", json={

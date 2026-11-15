@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from slayer.core.models import DatasourceConfig
+from slayer.core.query import SlayerQuery
 from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
@@ -153,7 +154,8 @@ class TestRewrites:
                                          "filters": ["created_at <= '2024-12-31'"]}),))
         model = await storage.get_model("year_end", data_source=DS)
         assert model is not None
-        assert (model.source_queries or [])[0].filters == ["created_at < '2025-01-01'"]
+        stage = (model.source_queries or [])[0]
+        assert stage.filters == ["created_at < '2025-01-01'"]
         resp = await run(storage, {"source_model": "year_end", "dimensions": ["id"]})
         assert ids(resp, model="year_end") == {1, 2, 3, 4, 5, 6}
         assert notices(resp) == []
@@ -383,7 +385,9 @@ class TestLeftAlone:
                               models=(namesake, saved_query_doc("staged", stage, reader)))
         model = await storage.get_model("staged", data_source=DS)
         assert model is not None
-        assert (model.source_queries or [])[1].filters == ["code <= '2024-04-10'"]
+        loaded = (model.source_queries or [])[1]
+        assert isinstance(loaded, SlayerQuery)
+        assert loaded.filters == ["code <= '2024-04-10'"]
 
     async def test_missing_model_is_left_and_logged(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                                     caplog: pytest.LogCaptureFixture) -> None:
@@ -406,7 +410,8 @@ class TestVersionGating:
         storage = await store(tmp_path, shop_ds, backend=backend, models=(doc,))
         model = await storage.get_model("mixed", data_source=DS)
         assert model is not None
-        assert (model.source_queries or [])[0].filters == ["created_at < '2025-01-01'"]
+        stage = (model.source_queries or [])[0]
+        assert stage.filters == ["created_at < '2025-01-01'"]
 
     async def test_current_memory_with_an_older_query(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                       backend: str) -> None:

@@ -10,7 +10,7 @@ import decimal
 import logging
 import tempfile
 import warnings as _warnings_module
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from functools import partial
 from typing import Any, Callable, Coroutine, Dict, Iterator, List, Optional, Set, Tuple, TypeVar, Unpack
@@ -765,7 +765,7 @@ class _QueryBackedExpansion(BaseModel):
 
 
 def _granularity_conflict_warnings(
-    *, planned_list, labels: List[str],
+    *, planned_list: List[PlannedQuery], labels: List[str],
 ) -> List[WholePeriodsNonNestingWarningPayload]:
     """One payload per non-nesting ``whole_periods_only`` granularity pair, per stage."""
     return [
@@ -2558,7 +2558,8 @@ class SlayerQueryEngine:
         return await self.storage.delete_model(model_name, data_source=data_source)
 
     async def apply_drift_deletes(
-        self, deletes: "List[Any]"
+        self,
+        deletes: "Sequence[schema_drift.EditModelDelete | schema_drift.WholeModelDelete | schema_drift.NarrowedAccessFinding | schema_drift.RetypeFinding]",
     ) -> "Any":
         """Apply each ``ToDeleteEntry`` → ``ApplyDriftResult``; per-entry failures land in ``errors``, ``residual`` from a re-validate."""
         applied: List[schema_drift.AppliedEntry] = []
@@ -3148,7 +3149,7 @@ class SlayerQueryEngine:
             return
         await self._trial_execute_sql_source(model, ds)
 
-    async def _trial_execute_sql_source(self, model: SlayerModel, ds) -> None:
+    async def _trial_execute_sql_source(self, model: SlayerModel, ds: DatasourceConfig) -> None:
         """Trial-execute read-only ``model.sql`` against ``ds``: raise on a
         reachable rejection, warn-and-return on an inconclusive verdict."""
         assert model.sql is not None
@@ -3244,7 +3245,7 @@ class SlayerQueryEngine:
 
     async def _pin_populations(self, *, model: SlayerModel, prefer_data_source: Optional[str]) -> SlayerModel:
         """``model`` with each rootless stage's inferred population written as its ``source_model``."""
-        stages = list(model.source_queries or [])
+        stages: List[SlayerQuery] = list(model.source_queries or [])
         if all(stage.source_model is not None for stage in stages):
             return model
         ordered = topologically_order_stages(stages)
@@ -3343,7 +3344,9 @@ def _scan_failed_finding(*, data_source, model, join: ModelJoin, exc) -> JoinCar
     )
 
 
-def _detection_skip_reason(*, model, target, src_cols, tgt_cols) -> str | None:
+def _detection_skip_reason(
+    *, model: SlayerModel, target: SlayerModel | None, src_cols: List[str], tgt_cols: List[str],
+) -> str | None:
     """Why a join can't be profiled; ``None`` when it can."""
     if model.sql_table is None:
         return (
@@ -3387,7 +3390,8 @@ def _validate_join_keys(
 
 
 def _unique_contradictions(
-    *, model, target, src_cols, tgt_cols, src_side, tgt_side,
+    *, model: SlayerModel, target: SlayerModel, src_cols: List[str], tgt_cols: List[str],
+    src_side: SideStats, tgt_side: SideStats,
 ) -> list[str]:
     """Single-column join keys declared unique/PK but observed to have dups."""
     out: list[str] = []

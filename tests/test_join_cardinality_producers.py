@@ -13,7 +13,7 @@ from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.entities import EntityRegistry
 from slayer.dbt.models import DbtEntity, DbtProject, DbtSemanticModel
 from slayer.facade.catalog import FacadeJoin, build_catalog, _facade_join_from
-from slayer.facade.translator import translate
+from slayer.facade.translator import QueryResult, translate
 from slayer.osi.converter import OsiToSlayerConverter
 from slayer.osi.parser import parse_osi_path
 from slayer.database.client import SlayerSQLClient
@@ -246,14 +246,20 @@ class TestFacadeDynamicJoin:
         # ON joins to stores.id (the PK) -> target is unique -> many_to_one.
         sql = _metabase_join_sql('"public"."orders"."store_id" = "Stores"."id"')
         result = translate(sql=sql, catalog=_dyn_catalog(), dialect="postgres")
+        assert isinstance(result, QueryResult)
+        assert result.query.extensions is not None
         ext = result.query.extensions[0]
+        assert ext.joins is not None
         assert ext.joins[0].cardinality is JoinCardinality.MANY_TO_ONE
 
     def test_dynamic_join_none_when_target_not_unique(self) -> None:
         # ON joins to stores.tax_rate (not PK/unique) -> undetermined -> None.
         sql = _metabase_join_sql('"public"."orders"."store_id" = "Stores"."tax_rate"')
         result = translate(sql=sql, catalog=_dyn_catalog(), dialect="postgres")
+        assert isinstance(result, QueryResult)
+        assert result.query.extensions is not None
         ext = result.query.extensions[0]
+        assert ext.joins is not None
         assert ext.joins[0].cardinality is None
 
     def test_dynamic_join_none_for_composite_pk_member(self) -> None:
@@ -289,7 +295,10 @@ class TestFacadeDynamicJoin:
             'ON "public"."orders"."store_id" = "Stores"."id"'
         )
         result = translate(sql=sql, catalog=catalog, dialect="postgres")
+        assert isinstance(result, QueryResult)
+        assert result.query.extensions is not None
         ext = result.query.extensions[0]
+        assert ext.joins is not None
         assert ext.joins[0].cardinality is None
 
     def test_dynamic_join_many_to_one_for_non_pk_unique_target(self) -> None:
@@ -324,5 +333,8 @@ class TestFacadeDynamicJoin:
             'ON "public"."orders"."store_code" = "Stores"."code"'
         )
         result = translate(sql=sql, catalog=catalog, dialect="postgres")
+        assert isinstance(result, QueryResult)
+        assert result.query.extensions is not None
         ext = result.query.extensions[0]
+        assert ext.joins is not None
         assert ext.joins[0].cardinality is JoinCardinality.MANY_TO_ONE

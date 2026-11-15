@@ -50,6 +50,7 @@ from slayer.live_schema.ingestion import (
 from slayer.live_schema.schema_scope import schema_ref_from_token, validate_scope_args
 from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine, SlayerResponse
+from slayer.engine.response_meta import FieldMetadata, ResponseAttributes
 from slayer.database.client import SqlClient, SqlClientError
 from slayer.memories.help_seed import seed_help_memories
 from slayer.inspect.model_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
@@ -1349,7 +1350,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 lines.append(f"Could not save datasource description: {exc}")
 
         save_errors: list[str] = []
-        saved_models = []
+        saved_models: list[SlayerModel] = []
         for model in models:
             try:
                 await storage.save_model(model)
@@ -1964,7 +1965,7 @@ def _population_comment(population: str | None) -> str:
     return "" if population is None else f"# population: {population} (inferred)\n"
 
 
-def _format_field_meta(entries: dict[str, Any]) -> list[str]:
+def _format_field_meta(entries: dict[str, FieldMetadata]) -> list[str]:
     """Format a dict of field metadata entries into lines."""
     lines = []
     for col, fm in entries.items():
@@ -1983,7 +1984,7 @@ def _format_field_meta(entries: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _format_attributes(attributes) -> str:
+def _format_attributes(attributes: ResponseAttributes) -> str:
     """Format response attributes as a compact section."""
     lines = []
     dim_lines = _format_field_meta(attributes.dimensions)
@@ -1997,7 +1998,7 @@ def _format_attributes(attributes) -> str:
     return "\n".join(lines) if lines else ""
 
 
-def _has_attributes(attributes) -> bool:
+def _has_attributes(attributes: ResponseAttributes | None) -> bool:
     return bool(attributes and (attributes.dimensions or attributes.measures))
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.errors import SlayerError
+from slayer.engine.query_engine import SlayerResponse
 
 from tests._dev1842_fixtures import broadcast_warnings, make_exec_engine, q
 
@@ -24,7 +25,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-def _warn_signature(resp) -> list:
+def _warn_signature(resp: SlayerResponse) -> list:
     """Order-independent signature of the broadcast warnings: each aggregate's
     named measure plus the set of dimensions it broadcast across."""
     return sorted(

@@ -15,7 +15,8 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import Column, ModelMeasure, SlayerModel
 from slayer.core.query import SlayerQuery, TimeDimension
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.core.warnings import BroadcastGrainWarningPayload
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._engine_helpers import seeded_exec_engine
 
 from tests._dev1836_fixtures import (
@@ -134,9 +135,9 @@ def rows_by(resp, *keys) -> dict:
     return out
 
 
-def broadcast_warnings(resp) -> list:
+def broadcast_warnings(resp: SlayerResponse) -> list[BroadcastGrainWarningPayload]:
     return [w for w in (resp.warnings or [])
-            if getattr(w, "kind", None) == "broadcast"]
+            if isinstance(w, BroadcastGrainWarningPayload)]
 
 
 #: (dotted saved-measure spelling, hand-expanded host-prefixed twin). Every pair

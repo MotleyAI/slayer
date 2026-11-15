@@ -86,6 +86,7 @@ class TestObjectFormBecomesText:
         stages = [_query(version=None, tds=[_td(SIGNUP_OBJECT)])]
         model = SlayerModel.model_validate(query_backed_v10(name="rev_q", version=16, stages=stages))
         [query] = model.source_queries or []
+        assert isinstance(query, SlayerQuery)
         assert [td.dimension for td in query.time_dimensions or []] == [SIGNUP_TEXT]
         dumped = model.model_dump(mode="json", exclude_none=True)
         assert dumped["source_queries"][0]["time_dimensions"] == [{"dimension": SIGNUP_TEXT, "granularity": "month"}]
@@ -95,7 +96,8 @@ class TestObjectFormBecomesText:
         outer = {"source_model": "s1", "measures": [{"formula": "sum(rev)", "name": "rev"}],
                  "time_dimensions": [_td({"name": "customers__signed_up_at"}, key="column", granularity="year")]}
         model = SlayerModel.model_validate(query_backed_v10(name="two", version=16, stages=[inner, outer]))
-        assert [[td.dimension for td in s.time_dimensions or []] for s in model.source_queries or []] == [
+        assert [[td.dimension for td in s.time_dimensions or []]
+                for s in model.source_queries or []] == [
             [SIGNUP_TEXT], ["customers__signed_up_at"],
         ]
 

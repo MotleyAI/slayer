@@ -29,6 +29,7 @@ from sqlglot.optimizer.scope import Scope, build_scope
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.core.warnings import UnrelatedDatasetWarningPayload
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev1737_fixtures import TableSpec, seed_backend
@@ -258,8 +259,8 @@ def warnings_of(resp: SlayerResponse, kind: str) -> list:
     return [w for w in (resp.warnings or []) if getattr(w, "kind", None) == kind]
 
 
-def unrelated_warnings(resp: SlayerResponse) -> list:
-    return warnings_of(resp, "unrelated_dataset")
+def unrelated_warnings(resp: SlayerResponse) -> list[UnrelatedDatasetWarningPayload]:
+    return [w for w in resp.warnings or [] if isinstance(w, UnrelatedDatasetWarningPayload)]
 
 
 async def execute_capturing(engine: SlayerQueryEngine, q: Any) -> tuple[SlayerResponse, list[warnings.WarningMessage]]:

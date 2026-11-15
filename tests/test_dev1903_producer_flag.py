@@ -5,6 +5,7 @@ a strict subset of the producer grain (design D3, D6)."""
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 
 import pytest
 
@@ -362,8 +363,11 @@ class TestStrictSubsetNesting:
                      lambda: _bundle(_claim_amount()), id="filter-crossing"),
         pytest.param("sum(region_pay)", None, _s5_bundle, id="input-crossing"),
     ])
-    def test_own_answer_at_producer_grain_never_nests(self, formula, dimensions, bundle):
+    def test_own_answer_at_producer_grain_never_nests(
+        self, formula: str, dimensions, bundle: Callable[[], ResolvedSourceBundle],
+    ) -> None:
         host = bundle().source_model
+        assert host is not None
         q = SlayerQuery(source_model=host.name, dimensions=dimensions,
                         measures=[ModelMeasure(formula=formula, name="m0")])
         pq = plan_as_producer(query=q, bundle=bundle())

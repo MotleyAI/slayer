@@ -7,7 +7,7 @@ import json
 import struct
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Protocol
 
 import pyarrow as pa
 import pytest
@@ -126,6 +126,11 @@ class TestPgWireValues:
         assert json.loads(text) == ["Oslo", "Rome"]
 
 
+class _ArrowField(Protocol):
+    @property
+    def type(self) -> pa.DataType: ...
+
+
 def _flight_text(value: Any) -> Any:
     handlers = FlightHandlers(
         engine=_FlightEngine(  # type: ignore[arg-type]
@@ -135,7 +140,8 @@ def _flight_text(value: Any) -> Any:
     result = handlers._translate("SELECT cities FROM contractors")
     assert isinstance(result, QueryResult), result
     table = handlers._execute_full(result)
-    assert table.schema.field("cities").type == pa.utf8()
+    cities: _ArrowField = table.schema.field("cities")
+    assert cities.type == pa.utf8()
     return table.to_pylist()[0]["cities"]
 
 

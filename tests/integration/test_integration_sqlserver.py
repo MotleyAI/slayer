@@ -45,6 +45,7 @@ import math as _math
 import re as _re
 import statistics
 import tempfile
+from collections.abc import Iterator
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -701,7 +702,7 @@ class TestCrossModelAndMultistageSQLServer:
 
 
 @pytest.fixture(scope="module")
-def sqlserver_ingest_env(sqlserver_container):
+def sqlserver_ingest_env(sqlserver_container) -> Iterator[tuple[list[SlayerModel], DatasourceConfig, None]]:
     """Set up tables with FK relationships and ingest."""
     db_name = _create_module_db(sqlserver_container)
     try:
@@ -756,7 +757,7 @@ def sqlserver_ingest_env(sqlserver_container):
 
 @pytest.mark.integration
 class TestSQLServerIngestComments:
-    def test_table_and_column_comments_imported(self, sqlserver_ingest_env) -> None:
+    def test_table_and_column_comments_imported(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = sqlserver_ingest_env
         orders = next(m for m in models if m.name == "orders")
         assert orders.description == "All orders"
@@ -764,7 +765,7 @@ class TestSQLServerIngestComments:
         assert by_name["amount"].description == "Order amount"
         assert by_name["id"].description is None
 
-    def test_uncommented_table_has_no_description(self, sqlserver_ingest_env) -> None:
+    def test_uncommented_table_has_no_description(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = sqlserver_ingest_env
         regions = next(m for m in models if m.name == "regions")
         assert regions.description is None
@@ -772,7 +773,7 @@ class TestSQLServerIngestComments:
 
 @pytest.mark.integration
 class TestRollupIngestionSQLServer:
-    def test_orders_has_own_columns_only(self, sqlserver_ingest_env) -> None:
+    def test_orders_has_own_columns_only(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = sqlserver_ingest_env
         orders = next(m for m in models if m.name == "orders")
         col_names = [c.name for c in orders.columns]
@@ -781,20 +782,20 @@ class TestRollupIngestionSQLServer:
         assert "amount" in col_names
         assert not any("." in name for name in col_names)
 
-    def test_orders_uses_sql_table_with_joins(self, sqlserver_ingest_env) -> None:
+    def test_orders_uses_sql_table_with_joins(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = sqlserver_ingest_env
         orders = next(m for m in models if m.name == "orders")
         assert orders.sql_table is not None
         assert orders.sql is None
         assert len(orders.joins) > 0
 
-    def test_regions_has_no_rollup(self, sqlserver_ingest_env) -> None:
+    def test_regions_has_no_rollup(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = sqlserver_ingest_env
         regions = next(m for m in models if m.name == "regions")
         assert regions.sql_table is not None
         assert regions.sql is None
 
-    async def test_rollup_query_group_by_customer(self, sqlserver_ingest_env) -> None:
+    async def test_rollup_query_group_by_customer(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, ds, _ = sqlserver_ingest_env
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
@@ -813,7 +814,7 @@ class TestRollupIngestionSQLServer:
         assert by_name["Globex"] == 1
         assert by_name["Initech"] == 1
 
-    async def test_rollup_query_group_by_region(self, sqlserver_ingest_env) -> None:
+    async def test_rollup_query_group_by_region(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, ds, _ = sqlserver_ingest_env
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
@@ -833,7 +834,7 @@ class TestRollupIngestionSQLServer:
         assert float(by_region["US"]["orders.amount_sum"]) == 450.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
         assert float(by_region["EU"]["orders.amount_sum"]) == 50.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
-    def test_orders_has_no_named_measures_after_ingest(self, sqlserver_ingest_env) -> None:
+    def test_orders_has_no_named_measures_after_ingest(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = sqlserver_ingest_env
         orders = next(m for m in models if m.name == "orders")
         assert orders.measures == []
@@ -845,7 +846,7 @@ class TestRollupIngestionSQLServer:
     # (Sonar python:S4144). Single-hop path is already covered there; the
     # multi-hop variant below tests the part that's genuinely different.
 
-    async def test_dotted_dimension_multi_hop(self, sqlserver_ingest_env) -> None:
+    async def test_dotted_dimension_multi_hop(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, ds, _ = sqlserver_ingest_env
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
@@ -863,7 +864,7 @@ class TestRollupIngestionSQLServer:
         assert by_region["US"] == 3
         assert by_region["EU"] == 1
 
-    async def test_selective_joins_no_joined_dims(self, sqlserver_ingest_env) -> None:
+    async def test_selective_joins_no_joined_dims(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, ds, _ = sqlserver_ingest_env
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
@@ -876,7 +877,7 @@ class TestRollupIngestionSQLServer:
         assert "LEFT JOIN" not in result.sql
         assert result.data[0]["orders._count"] == 4
 
-    async def test_selective_joins_single_hop(self, sqlserver_ingest_env) -> None:
+    async def test_selective_joins_single_hop(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, ds, _ = sqlserver_ingest_env
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
@@ -894,7 +895,7 @@ class TestRollupIngestionSQLServer:
         assert "customers" in result.sql
         assert "regions" not in result.sql
 
-    async def test_selective_joins_transitive(self, sqlserver_ingest_env) -> None:
+    async def test_selective_joins_transitive(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, ds, _ = sqlserver_ingest_env
         tmpdir = tempfile.mkdtemp()
         storage = YAMLStorage(base_dir=tmpdir)
@@ -911,7 +912,7 @@ class TestRollupIngestionSQLServer:
         assert "customers" in result.sql
         assert "regions" in result.sql
 
-    def test_orders_has_joins_metadata(self, sqlserver_ingest_env) -> None:
+    def test_orders_has_joins_metadata(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = sqlserver_ingest_env
         orders = next(m for m in models if m.name == "orders")
         join_targets = [j.target_model for j in orders.joins]
@@ -922,12 +923,12 @@ class TestRollupIngestionSQLServer:
             for pair in j.join_pairs:
                 assert len(pair) == 2
 
-    def test_regions_has_no_joins(self, sqlserver_ingest_env) -> None:
+    def test_regions_has_no_joins(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = sqlserver_ingest_env
         regions = next(m for m in models if m.name == "regions")
         assert regions.joins == []
 
-    async def test_joins_serialize_to_yaml(self, sqlserver_ingest_env) -> None:
+    async def test_joins_serialize_to_yaml(self, sqlserver_ingest_env: tuple[list[SlayerModel], DatasourceConfig, None]) -> None:
         models, _, _ = sqlserver_ingest_env
         orders = next(m for m in models if m.name == "orders")
         tmpdir = tempfile.mkdtemp()

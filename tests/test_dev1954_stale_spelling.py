@@ -14,7 +14,7 @@ import pytest
 
 from slayer.core.errors import UnknownReferenceError
 from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ColumnRef, SlayerQuery
 from slayer.core.scope import StageColumn
 from slayer.engine.plan import plan_stages
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -316,7 +316,9 @@ class TestQueryBackedConsumer:
         model = await engine.storage.get_model("region_amounts", data_source="test")
         assert model is not None
         assert model.source_queries
-        dims = [d.full_name for d in model.source_queries[0].dimensions]
+        dimensions = model.source_queries[0].dimensions
+        assert dimensions is not None and all(isinstance(d, ColumnRef) for d in dimensions)
+        dims = [d.full_name for d in dimensions if isinstance(d, ColumnRef)]
         assert dims == ["customers.region_id", "customers.regions.rname"]
 
     async def test_authored_columns_stay_exact(self, engine: SlayerQueryEngine) -> None:
@@ -330,7 +332,7 @@ class TestQueryBackedConsumer:
 
 
 class TestEdgeNamedLater:
-    async def test_existing_reference_keeps_resolving(self, unnamed_engine) -> None:
+    async def test_existing_reference_keeps_resolving(self, unnamed_engine: SlayerQueryEngine) -> None:
         query = slayer_query(source_model="region_amounts", dimensions=[STALE],
                             measures=["sum(amt)"])
         before = await unnamed_engine.execute(query)
