@@ -1,9 +1,9 @@
-"""DEV-1841 task 4.1 — distinct-entity association, executed values on SQLite +
-DuckDB: cross-model, multi-hop, ``count(*)``, median, measure-local filter,
-mode-invariance of attributable slices, and cardinality neutrality.
+"""Distinct-entity association, executed values on SQLite + DuckDB: cross-model,
+multi-hop, ``count(*)``, median, measure-local filter, mode-invariance of
+attributable slices, and cardinality neutrality.
 
-Spec: openspec …/specs/queries/attribution-modes — "Distinct-entity association
-semantics", "Association eligibility and input handling"; and
+Spec: queries/attribution-modes — "Distinct-entity association over the virtual
+model", "Association eligibility, input handling and row identity"; and
 queries/semantics — "Associate mode keeps attributable dimensions exact".
 """
 
@@ -80,7 +80,7 @@ class TestCrossModelAssociation:
     async def test_filtered_count_over_association_counts_matching_entities(
         self, exec_backend_ext,
     ):
-        """DEV-1832: a non-star ``count`` over a filtered association column counts
+        """A non-star ``count`` over a filtered association column counts
         only the entities whose masked value is non-NULL (COUNT(_v)), NOT every
         associated entity (COUNT(*)). ``gold_spend`` masks ``spend`` to gold tier,
         so ``count(gold_spend)`` = distinct GOLD customers/cell — a strict subset of

@@ -12,7 +12,7 @@ from pytest_postgresql import factories
 
 from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.errors import SlayerError
-from slayer.core.models import Column, ModelJoin
+from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.sql.naming import ROW_IDENTITY_COLUMN
 from tests._dev1841_fixtures import keyless_root_models
 from tests._dev1841_fixtures import make_exec_engine as dev1841_engine
@@ -25,13 +25,13 @@ from tests._dev2216_fixtures import (
     SPEND_BY_STATUS,
     WAVG_BY_STATUS,
     WSUM_BY_STATUS,
-    _seed,
     cells,
     kinds,
     measure,
     ossie_engine,
     ossie_models,
     query,
+    seed_with,
 )
 from tests._engine_helpers import _engine_generate, seeded_exec_engine
 
@@ -49,10 +49,80 @@ CUSTOMER_MEASURES = [
 ORDERED_ROW_NUMBER = {"tsql", "snowflake", "databricks", "spark", "oracle"}
 ROW_NUMBER = re.compile(r"ROW_NUMBER\s*\(\s*\)\s*OVER\s*\(([^)]*)\)", re.IGNORECASE)
 
+#: #597's sales/tags data: two sales share tag 1 and a NULL (or distinct) ``source_ref``; tag 1 is stored twice.
+SALES_BY_LABEL = {"shared": 80.0, "other": 90.0}
+SALES_COUNT_BY_LABEL = {"shared": 3.0, "other": 1.0}
+SALES_WAVG_BY_LABEL = {"shared": 30.0, "other": 90.0}
+
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 def dialect(request) -> str:
     return request.param
+
+
+def sales_statements(*, nullable: bool, keyed: bool = False) -> list[str]:
+    b, c = ("NULL", "NULL") if nullable else ("'b'", "'c'")
+    rows = [("'a'", 1, 10, 1), (b, 1, 30, 1), (c, 1, 40, 2), ("'d'", 2, 90, 1)]
+    values = ", ".join(
+        "(" + ", ".join(str(v) for v in ((i,) if keyed else ()) + row) + ")" for i, row in enumerate(rows, start=1)
+    )
+    pk = "id INTEGER PRIMARY KEY, " if keyed else ""
+    return [
+        f"CREATE TABLE sales ({pk}source_ref VARCHAR UNIQUE, tag_id INTEGER, amount INTEGER, weight INTEGER)",
+        "CREATE TABLE tags (tag_id INTEGER, label VARCHAR)",
+        f"INSERT INTO sales VALUES {values}",
+        "INSERT INTO tags VALUES (1, 'shared'), (1, 'shared'), (2, 'other')",
+    ]
+
+
+def sales_query(*, source: str, mode: dict):
+    dimension = "tags.label" if source == "sales" else "label"
+    prefix = "" if source == "sales" else "sales."
+    return query(
+        source_model=source, dimensions=[dimension],
+        measures=[
+            measure(f"sum({prefix}amount)", "total"),
+            measure("count(sales.*)", "n"),
+            measure(f"weighted_avg({prefix}amount, weight={prefix}weight)", "weighted"),
+        ],
+        **mode,
+    )
+
+
+def assert_sales_cells(resp) -> None:
+    assert cells(resp, "label", "total") == SALES_BY_LABEL
+    assert cells(resp, "label", "n") == SALES_COUNT_BY_LABEL
+    assert cells(resp, "label", "weighted") == pytest.approx(SALES_WAVG_BY_LABEL)
+    assert kinds(resp, "associated")
+    assert not [k for row in resp.data for k in row if "__slayer_" in k]
+
+
+def keyed_sales_models() -> list[SlayerModel]:
+    """``sales`` with a primary key and a nullable standalone unique ``source_ref``."""
+    sales = SlayerModel(
+        name="sales", data_source="test", sql_table="sales",
+        columns=[
+            Column(name="id", type=DataType.INT, primary_key=True),
+            Column(name="source_ref", type=DataType.TEXT, unique=True),
+            Column(name="tag_id", type=DataType.INT),
+            Column(name="amount", type=DataType.INT),
+            Column(name="weight", type=DataType.INT),
+        ],
+        joins=[ModelJoin(target_model="tags", join_pairs=[["tag_id", "tag_id"]])],
+    )
+    tags = SlayerModel(
+        name="tags", data_source="test", sql_table="tags",
+        columns=[Column(name="tag_id", type=DataType.INT), Column(name="label", type=DataType.TEXT)],
+    )
+    return [sales, tags]
+
+
+async def count_sql(*, dialect: str, keyed: bool = False, unique: bool = False) -> str:
+    models = ossie_models(keyed=keyed, unique=unique)
+    return await _engine_generate(
+        query=query(source_model="orders", dimensions=["status"], measures=[measure("count(customers.*)", "n")]),
+        model=models[0], extra_models=models[1:], dialect=dialect, validate=False,
+    )
 
 
 class TestUnprovenHopAssociatesByDefault:
@@ -115,14 +185,8 @@ class TestRowIdentity:
     @pytest.mark.parametrize("nullable", [True, False], ids=["nullable-unique", "all-non-null"])
     @pytest.mark.parametrize("source", ["sales", "tags"], ids=["local", "cross-model"])
     async def test_nullable_unique_keeps_each_sale(self, dialect, mode, nullable, source) -> None:
-        refs = "(NULL, 1, 30, 1), (NULL, 1, 40, 2)" if nullable else "('b', 1, 30, 1), ('c', 1, 40, 2)"
-        stmts = [
-            "CREATE TABLE sales (source_ref VARCHAR UNIQUE, tag_id INTEGER, amount INTEGER, weight INTEGER)",
-            "CREATE TABLE tags (tag_id INTEGER, label VARCHAR)",
-            f"INSERT INTO sales VALUES ('a', 1, 10, 1), {refs}, ('d', 2, 90, 1)",
-            "INSERT INTO tags VALUES (1, 'shared'), (1, 'shared'), (2, 'other')",
-        ]
-        async with seeded_exec_engine(dialect=dialect, seed=_seed(dialect, stmts), models=[]) as (engine, _):
+        stmts = sales_statements(nullable=nullable)
+        async with seeded_exec_engine(dialect=dialect, seed=seed_with(dialect, stmts), models=[]) as (engine, _):
             ds = await engine.storage.get_datasource("test")
             assert ds is not None
             models = await engine.ingest(ds)
@@ -131,21 +195,8 @@ class TestRowIdentity:
             sales.joins = [ModelJoin(target_model="tags", join_pairs=[["tag_id", "tag_id"]])]
             for model in models:
                 await engine.storage.save_model(model, _validate=False)
-            dimension = "tags.label" if source == "sales" else "label"
-            prefix = "" if source == "sales" else "sales."
-            resp = await engine.execute(query(
-                source_model=source, dimensions=[dimension],
-                measures=[
-                    measure(f"sum({prefix}amount)", "total"),
-                    measure("count(sales.*)", "n"),
-                    measure(f"weighted_avg({prefix}amount, weight={prefix}weight)", "weighted"),
-                ],
-                **mode,
-            ))
-        assert cells(resp, "label", "total") == {"shared": 80.0, "other": 90.0}
-        assert cells(resp, "label", "n") == {"shared": 3.0, "other": 1.0}
-        assert cells(resp, "label", "weighted") == pytest.approx({"shared": 30.0, "other": 90.0})
-        assert kinds(resp, "associated")
+            resp = await engine.execute(sales_query(source=source, mode=mode))
+        assert_sales_cells(resp)
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_duplicate_rows_count_separately_fan_out_copies_once(self, dialect, mode) -> None:
@@ -194,23 +245,41 @@ class TestRowIdentity:
     @pytest.mark.parametrize("target", ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake",
                                         "clickhouse", "trino", "redshift", "databricks", "spark", "oracle"])
     async def test_every_dialect_numbers_the_home_rows(self, target) -> None:
-        models = ossie_models()
-        sql = await _engine_generate(
-            query=query(source_model="orders", dimensions=["status"], measures=[measure("count(customers.*)", "n")]),
-            model=models[0], extra_models=models[1:], dialect=target, validate=False,
-        )
+        sql = await count_sql(dialect=target)
         over = ROW_NUMBER.findall(sql)
         assert over, sql
         if target in ORDERED_ROW_NUMBER:
             assert all("ORDER BY" in clause.upper() for clause in over), sql
 
     async def test_keyed_homes_are_not_numbered(self) -> None:
-        models = ossie_models(keyed=True)
+        sql = await count_sql(dialect="duckdb", keyed=True)
+        assert not ROW_NUMBER.search(sql), sql
+
+    async def test_unique_only_homes_are_numbered(self) -> None:
+        sql = await count_sql(dialect="duckdb", unique=True)
+        assert ROW_NUMBER.search(sql), sql
+
+
+class TestPrimaryKeyWithNullableUnique:
+    """A primary key, not a nullable unique column, deduplicates the home."""
+
+    async def test_sql_is_not_numbered(self) -> None:
+        sales, tags = keyed_sales_models()
         sql = await _engine_generate(
-            query=query(source_model="orders", dimensions=["status"], measures=[measure("count(customers.*)", "n")]),
-            model=models[0], extra_models=models[1:], dialect="duckdb", validate=False,
+            query=sales_query(source="sales", mode={}),
+            model=sales, extra_models=[tags], dialect="duckdb", validate=False,
         )
         assert not ROW_NUMBER.search(sql), sql
+
+    @pytest.mark.parametrize("mode", MODES)
+    @pytest.mark.parametrize("source", ["sales", "tags"], ids=["local", "cross-model"])
+    async def test_null_unique_rows_contribute(self, dialect, mode, source) -> None:
+        stmts = sales_statements(nullable=True, keyed=True)
+        async with seeded_exec_engine(
+            dialect=dialect, seed=seed_with(dialect, stmts), models=keyed_sales_models(),
+        ) as (engine, _):
+            resp = await engine.execute(sales_query(source=source, mode=mode))
+        assert_sales_cells(resp)
 
 
 class TestAttributableKeylessHome:

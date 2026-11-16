@@ -51,11 +51,12 @@ DUP_COUNT_BY_STATUS = {"completed": 3, "pending": 1}
 FILTERED_SPEND_BY_STATUS = {"completed": 40.0, "pending": 20.0}
 
 
-def customers_model(*, keyed: bool = False) -> SlayerModel:
+def customers_model(*, keyed: bool = False, unique: bool = False) -> SlayerModel:
+    """``keyed`` declares ``id`` the primary key; ``unique`` declares it a standalone unique column."""
     return SlayerModel(
         name="customers", data_source="test", sql_table="customers",
         columns=[
-            Column(name="id", type=DataType.INT, primary_key=keyed),
+            Column(name="id", type=DataType.INT, primary_key=keyed, unique=unique),
             Column(name="region", type=DataType.TEXT),
             Column(name="spend", type=DataType.DOUBLE),
         ],
@@ -80,8 +81,8 @@ def orders_model(*, cardinality: JoinCardinality | None = None) -> SlayerModel:
     )
 
 
-def ossie_models(*, keyed: bool = False) -> list[SlayerModel]:
-    return [orders_model(), customers_model(keyed=keyed)]
+def ossie_models(*, keyed: bool = False, unique: bool = False) -> list[SlayerModel]:
+    return [orders_model(), customers_model(keyed=keyed, unique=unique)]
 
 
 def statements(*, duplicate: bool = False) -> list[str]:
@@ -94,7 +95,8 @@ def statements(*, duplicate: bool = False) -> list[str]:
     ]
 
 
-def _seed(dialect: str, stmts: Sequence[str]):
+def seed_with(dialect: str, stmts: Sequence[str]):
+    """A ``seeded_exec_engine`` seed running ``stmts`` on ``dialect``."""
     def seed(db_path: str) -> None:
         if dialect == "duckdb":
             con = pytest.importorskip("duckdb").connect(db_path)
@@ -130,7 +132,7 @@ async def ossie_engine(
         return
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
-    async with seeded_exec_engine(dialect=dialect, seed=_seed(dialect, stmts), models=models) as (engine, _):
+    async with seeded_exec_engine(dialect=dialect, seed=seed_with(dialect, stmts), models=models) as (engine, _):
         yield engine
 
 

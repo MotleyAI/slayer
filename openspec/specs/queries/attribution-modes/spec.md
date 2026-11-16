@@ -93,8 +93,8 @@ its mode-aware resolution.
 When an aggregate with at least one unattributable grain dimension associates (the mode
 omitted, or `to_many_handling: "associate"`), it SHALL return, for each result cell, the
 aggregate over the distinct home entities associated with that cell — each entity counted
-exactly once per cell, deduplicated by the home model's unique key, else by its per-query
-row identity. Association is defined by the join path from the aggregate's home dataset
+exactly once per cell, deduplicated by the home model's primary key, else by its per-query
+row identity (per "Per-query row identity for keyless homes"). Association is defined by the join path from the aggregate's home dataset
 to the dimension (Axiom 3, Association): an entity belongs to a cell iff its own path
 reaches the cell's dimension values, so a home entity with no population row still counts
 in every cell its path reaches, and the origin of the population's rows never restricts
@@ -275,7 +275,7 @@ row-valued parameter the entity grain does not determine. An ineligible aggregat
 needs association SHALL fail under `to_many_handling: "associate"` with a clear typed
 error naming the combination and the remedy, and SHALL broadcast with the reason when
 the mode is omitted (per "Broadcast fallback for association-ineligible aggregates").
-A home declaring no primary or unique key SHALL be associated through a per-query row
+A home declaring no primary key SHALL be associated through a per-query row
 identity (per "Per-query row identity for keyless homes"), never refused.
 
 #### Scenario: Percentile attributes over the association
@@ -389,7 +389,9 @@ filters, before any join — is told apart from every other, so each physical ro
 exactly once per cell. Two identical physical rows count as two rows; the copies a join
 fan-out makes of one row count once. The identity is query-local, determines every
 column of its own row, and never appears in results. It applies in every mode that
-associates; an association over list children only keeps its key-free evaluation.
+associates. A home whose model declares a primary key SHALL be deduplicated by that key,
+whatever unique columns it also declares. An association over list children only keeps
+its key-free evaluation.
 
 #### Scenario: Duplicate physical rows count separately, fan-out copies once
 - **WHEN** a keyless `customers` model holds one customer's row twice, another customer
@@ -420,6 +422,13 @@ associates; an association over list children only keeps its key-free evaluation
   average
 - **THEN** each cell's average uses the distinct home rows that reach it and their own
   weights, in default and explicit association modes
+
+#### Scenario: A home with a primary key associates by it
+- **WHEN** an aggregate associates over a home declaring a primary key and a standalone
+  unique column holding NULLs
+- **THEN** the home rows are deduplicated by the primary key without numbering, and
+  every row with a NULL unique value still contributes, by executed values on SQLite and
+  DuckDB
 
 ### Requirement: Stored broadcast defaults migrate
 A stored query saved with `to_many_handling: "broadcast"` — standalone, or a stage nested
