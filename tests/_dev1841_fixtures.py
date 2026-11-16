@@ -1,4 +1,4 @@
-"""Shared fixtures for DEV-1841 — the ``to_many_handling`` mode axis and the
+"""Shared fixtures for the ``to_many_handling`` mode axis and the
 distinct-entity association producer.
 
 Built on ``tests/_dev1840_fixtures.py`` (same graph, dual-engine dataset,
@@ -39,7 +39,7 @@ def _customers(models: List[SlayerModel]) -> SlayerModel:
 
 
 def dev1841_models(**kw) -> List[SlayerModel]:
-    """DEV-1840 graph plus a measure-local filtered column on customers:
+    """The ``_dev1840_fixtures`` graph plus a measure-local filtered column on customers:
     ``gold_spend`` = ``spend`` restricted (inside the aggregate) to gold tier."""
     models = dev1840_models(**kw)
     _customers(models).columns.append(
@@ -50,8 +50,7 @@ def dev1841_models(**kw) -> List[SlayerModel]:
 
 
 def keyless_root_models() -> List[SlayerModel]:
-    """The graph with customers stripped of its unique key — association cannot
-    dedup entities, so associate-mode resolution must fail closed."""
+    """The graph with customers stripped of its unique key (associated by row identity)."""
     models = dev1840_models()
     cust = _customers(models)
     cust.columns = [
@@ -92,7 +91,7 @@ def error_q(**kw) -> SlayerQuery:
 
 
 def bcast_q(**kw) -> SlayerQuery:
-    """Explicit broadcast — identical to the default, spelled out."""
+    """Explicit broadcast."""
     kw.setdefault("source_model", "orders")
     return SlayerQuery(to_many_handling="broadcast", **kw)
 
@@ -110,13 +109,12 @@ def associated_warnings(resp) -> list:
 
 
 def pushed_filter_infos(resp) -> list:
-    """The response's semi-join-pushed informational entries (DEV-1841 amends
-    DEV-1840's silence)."""
+    """The response's semi-join-pushed informational entries."""
     return [w for w in (resp.warnings or [])
             if getattr(w, "kind", None) == "semi_join_pushed"]
 
 
-# Oracles — hand-computed from the DEV-1840 dataset (per-cell = distinct entities).
+# Oracles — hand-computed from the ``_dev1840_fixtures`` dataset (per-cell = distinct entities).
 ASSOC_SPEND_BY_STATUS = {"ok": 420.0, "new": 290.0}
 #: broadcast default: metric total over every customer incl. orderless c7.
 BCAST_SPEND_CROSS = 515.0

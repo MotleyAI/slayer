@@ -253,11 +253,6 @@ ROWS: Tuple[LedgerRow, ...] = (
          + AT + "measure …"
          + SUGGEST + "Drop the window/first-last or attribute the dimension.",
          category="checker", family="association", user=True, owner="checker"),
-    _row(module=_EE, function="check_association_root_unique_key", exc="AssociationError",
-         message="The aggregate needs distinct-entity association, but its root model … declares no primary or unique key to deduplicate entities by."
-         + AT + "measure …"
-         + SUGGEST + "Declare a primary or unique key on ….",
-         category="checker", family="association", user=True, owner="checker"),
     _row(module=_EE, function="check_parameter_determined", exc="ParameterGrainError",
          message="Parameter … is not determined by the operand grain (…); the aggregation reads one value per cell of that grain."
          + AT + "measure …"
