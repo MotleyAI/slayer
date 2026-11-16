@@ -406,6 +406,12 @@ its key-free evaluation.
   the fanning hop
 - **THEN** that home row counts once per cell it reaches, by executed values
 
+#### Scenario: Model-level filters apply before numbering
+- **WHEN** a keyless home model carries a model-level filter and the query associates an
+  aggregate of that home across a fanning hop
+- **THEN** only the rows passing the filter contribute, each once per cell it reaches,
+  by executed values
+
 #### Scenario: The row identity renders on every dialect
 - **WHEN** a keyless-home association query is rendered for every supported dialect
 - **THEN** each statement numbers the home rows with the dialect's accepted window
