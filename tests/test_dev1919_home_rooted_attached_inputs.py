@@ -5,7 +5,7 @@ unattributable dimensions. Executed on SQLite + DuckDB (``_dev1840_fixtures`` da
 
 Spec: queries/partitioned-aggregates — "Attached parameters on row-level
 sources"; aggregations/expression-aggregation — "Expression source typing";
-queries/attribution-modes — "Association eligibility and input handling";
+queries/attribution-modes — "Association eligibility, input handling and row identity";
 queries/cross-model-aggregates — "Unsafe aggregate inputs fail closed".
 """
 

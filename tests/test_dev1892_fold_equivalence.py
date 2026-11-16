@@ -1,11 +1,11 @@
-"""DEV-1892 task 1.4 — the folded pick path renders every value-source shape
-identically, whether or not a parameter rides alongside: a to-one-path measure
+"""The folded pick path renders every value-source shape identically, whether
+or not a parameter rides alongside: a to-one-path measure
 filter and ``count(*)`` keep their executed values (fold regression), a
 cross-model to-one derived source carries a weight, and a definition default
 anchored on the owner binds the TARGET column even when the host shares the bare
 name.
 
-Spec: queries/attribution-modes — "Association eligibility and input handling";
+Spec: queries/attribution-modes — "Association eligibility, input handling and row identity";
 queries/semantics — "Definition-default parameter follows the same rule".
 """
 
