@@ -57,78 +57,6 @@ value SHALL fail with a clear validation error.
 - **THEN** the query fails with the error-mode broadcast refusal naming the metric and the
   dimension
 
-### Requirement: Association eligibility and input handling
-Associate-mode resolution SHALL support the full plain scalar aggregation family
-(including count, count_distinct, avg, min, max, median, percentile, and stddev-class
-aggregations), subject to each dialect's existing aggregate capability — grouped
-`median`/`percentile` remains a `NotImplementedError` on T-SQL and MySQL, unchanged by
-mode (per the divergence ledger). Every input expression of the aggregation — arguments and
-aggregation-parameter fragments alike — is evaluated per associated entity (constant
-per entity under the established unsafe-aggregate-inputs rule, which keeps applying
-unchanged); a column-reference or aggregate-valued parameter — explicit, positional, or
-supplied by the aggregation definition's default — is legal exactly when the entity grain
-determines it (per `queries/semantics` › Aggregation parameters are typed by the home
-dataset's grain) and is then picked once per associated entity alongside the aggregate's
-own value; `count(*)` counts the distinct associated entities per cell. An
-aggregation's own column filter restricts the associated entities before per-cell
-aggregation. Association is needed only when at least one grain dimension is
-unattributable from the aggregate's home: an aggregate whose grain dimensions the home
-all determines takes the plain path under `associate` exactly as under `broadcast`,
-its attached inputs compiled at their own homes, so the eligibility rules below apply
-only when association is needed. Combining associate-mode resolution with `window=` or
-`first`/`last` on the same aggregate SHALL fail with a clear typed error naming the
-combination and the remedy. An aggregate root model without a declared unique key SHALL
-fail associate-mode resolution with a clear typed error naming the model and the remedy
-(declare a primary or unique key).
-
-#### Scenario: Percentile attributes over the association
-- **WHEN** an associate-mode query slices a cross-model percentile aggregate by an
-  unattributable dimension, on a dialect that supports grouped percentile
-- **THEN** each cell's value is the percentile over the distinct associated entities'
-  values, by executed values; on a dialect without grouped percentile (T-SQL, MySQL)
-  the query raises the established `NotImplementedError`, unchanged by mode
-
-#### Scenario: Star-count counts distinct associated entities
-- **WHEN** an associate-mode query rooted at `orders` selects `count(customers.*)` by an
-  orders-level dimension
-- **THEN** each cell counts the distinct customers associated with it, by executed
-  values
-
-#### Scenario: Measure-local filter restricts the association
-- **WHEN** an associate-mode aggregate carries its own column filter
-- **THEN** each cell aggregates only the associated entities passing the filter, and
-  result cardinality is unchanged
-
-#### Scenario: Weighted association by executed values
-- **WHEN** an associate-mode query rooted at `orders` selects
-  `weighted_avg(customers.spend, weight=customers.spend)`, the custom `wsum(customers.spend)`
-  whose `weight` defaults to `spend`, and `weighted_avg(customers.spend, weight=customers.regions.pop)`
-  by the orders-level dimension `status`
-- **THEN** each executes with hand-computed per-cell values over the distinct associated
-  customers on SQLite and DuckDB — the explicit and defaulted spellings identical, a
-  customer with two orders in one cell weighted once — with unchanged result grain and
-  sibling values
-
-#### Scenario: Windowed or first/last combination fails closed
-- **WHEN** an associate-mode query needs association for an aggregate that also
-  declares `window=` or uses `first`/`last`
-- **THEN** the query fails with a clear typed error naming the unsupported combination
-  — never a silently wrong value
-
-#### Scenario: Root without a unique key fails closed
-- **WHEN** an associate-mode query needs association for an aggregate whose root model
-  declares no primary or unique key
-- **THEN** the query fails with a clear typed error naming the model and the remedy
-
-#### Scenario: Attributable dimensions need no association
-- **WHEN** an associate-mode query rooted at `orders` selects
-  `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))`
-  by `customers.tier` against a `customers` model declaring no primary or unique key,
-  the `orders → customers` hop declared many-to-one
-- **THEN** the query executes with the same values as under `broadcast` and no
-  association warning — the home determines every dimension, so no entity
-  deduplication is needed and the unique-key rule does not apply
-
 ### Requirement: Error mode refuses silent semantics
 Under `to_many_handling: "error"`, every event the retired strict flag rejected SHALL
 fail with a clear typed error: an implicit-grain broadcast (cross-model or local) and a
@@ -236,7 +164,8 @@ its mode-aware resolution.
 Under `to_many_handling: "associate"`, an aggregate with at least one unattributable
 grain dimension SHALL return, for each result cell, the aggregate over the distinct
 home entities associated with that cell — each entity counted exactly once per cell,
-deduplicated by the home model's unique key. Association is defined by the join path
+deduplicated by the home model's primary key, else by its per-query row identity (per
+"Per-query row identity for keyless homes"). Association is defined by the join path
 from the aggregate's home dataset to the dimension (Axiom 3, Association): an entity
 belongs to a cell iff its own path reaches the cell's dimension values, so a home entity
 with no population row still counts in every cell its path reaches, and the origin of the
@@ -316,3 +245,133 @@ broadcast mode.
   cells, and the orderless customer's value lands only in the virtual model's
   (South, NULL-status) cell, which the population lacks, so no result row carries it
   and the row count is unchanged, by executed values
+
+### Requirement: Association eligibility, input handling and row identity
+Associate-mode resolution SHALL support the full plain scalar aggregation family
+(including count, count_distinct, avg, min, max, median, percentile, and stddev-class
+aggregations), subject to each dialect's existing aggregate capability — grouped
+`median`/`percentile` remains a `NotImplementedError` on T-SQL and MySQL, unchanged by
+mode (per the divergence ledger). Every input expression of the aggregation — arguments and
+aggregation-parameter fragments alike — is evaluated per associated entity (constant
+per entity under the established unsafe-aggregate-inputs rule, which keeps applying
+unchanged); a column-reference or aggregate-valued parameter — explicit, positional, or
+supplied by the aggregation definition's default — is legal exactly when the entity grain
+determines it (per `queries/semantics` › Aggregation parameters are typed by the home
+dataset's grain) and is then picked once per associated entity alongside the aggregate's
+own value; `count(*)` counts the distinct associated entities per cell. An
+aggregation's own column filter restricts the associated entities before per-cell
+aggregation. Association is needed only when at least one grain dimension is
+unattributable from the aggregate's home: an aggregate whose grain dimensions the home
+all determines takes the plain path under `associate` exactly as under `broadcast`,
+its attached inputs compiled at their own homes, so the eligibility rules below apply
+only when association is needed. Combining associate-mode resolution with `window=` or
+`first`/`last` on the same aggregate SHALL fail with a clear typed error naming the
+combination and the remedy. A home declaring no primary key SHALL be associated through
+a per-query row identity (per "Per-query row identity for keyless homes"), never refused.
+
+#### Scenario: Percentile attributes over the association
+- **WHEN** an associate-mode query slices a cross-model percentile aggregate by an
+  unattributable dimension, on a dialect that supports grouped percentile
+- **THEN** each cell's value is the percentile over the distinct associated entities'
+  values, by executed values; on a dialect without grouped percentile (T-SQL, MySQL)
+  the query raises the established `NotImplementedError`, unchanged by mode
+
+#### Scenario: Star-count counts distinct associated entities
+- **WHEN** an associate-mode query rooted at `orders` selects `count(customers.*)` by an
+  orders-level dimension
+- **THEN** each cell counts the distinct customers associated with it, by executed
+  values
+
+#### Scenario: Measure-local filter restricts the association
+- **WHEN** an associate-mode aggregate carries its own column filter
+- **THEN** each cell aggregates only the associated entities passing the filter, and
+  result cardinality is unchanged
+
+#### Scenario: Weighted association by executed values
+- **WHEN** an associate-mode query rooted at `orders` selects
+  `weighted_avg(customers.spend, weight=customers.spend)`, the custom `wsum(customers.spend)`
+  whose `weight` defaults to `spend`, and `weighted_avg(customers.spend, weight=customers.regions.pop)`
+  by the orders-level dimension `status`
+- **THEN** each executes with hand-computed per-cell values over the distinct associated
+  customers on SQLite and DuckDB — the explicit and defaulted spellings identical, a
+  customer with two orders in one cell weighted once — with unchanged result grain and
+  sibling values
+
+#### Scenario: Windowed or first/last combination fails closed
+- **WHEN** an associate-mode query needs association for an aggregate that also
+  declares `window=` or uses `first`/`last`
+- **THEN** the query fails with a clear typed error naming the unsupported combination
+  — never a silently wrong value
+
+#### Scenario: A keyless home associates
+- **WHEN** an associate-mode query rooted at `orders` selects `sum(customers.spend)`,
+  the custom `wsum(customers.spend)` (whose `weight` defaults to `spend`) and
+  `weighted_avg(customers.spend, weight=customers.spend)` by `status`, against a
+  `customers` model declaring no primary or unique key
+- **THEN** each executes with the same per-cell values as against the keyed `customers`
+  model, by executed values on SQLite and DuckDB
+
+#### Scenario: Attributable dimensions need no association
+- **WHEN** an associate-mode query rooted at `orders` selects
+  `weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))`
+  by `customers.tier` against a `customers` model declaring no primary or unique key,
+  the `orders → customers` hop declared many-to-one
+- **THEN** the query executes with the same values as under `broadcast` and no
+  association warning — the home determines every dimension, so no entity
+  deduplication is needed
+
+### Requirement: Per-query row identity for keyless homes
+A home dataset whose model declares no primary key that needs association SHALL be
+deduplicated by a per-query row identity, including when the model declares a standalone
+unique column that may allow NULLs: each of its rows — after its model-level
+filters, before any join — is told apart from every other, so each physical row counts
+exactly once per cell. Two identical physical rows count as two rows; the copies a join
+fan-out makes of one row count once. The identity is query-local, determines every
+column of its own row, and never appears in results. A home whose model declares a
+primary key SHALL be deduplicated by that key, whatever unique columns it also declares.
+An association over list children only keeps its key-free evaluation.
+
+#### Scenario: Duplicate physical rows count separately, fan-out copies once
+- **WHEN** a keyless `customers` model holds one customer's row twice, another customer
+  has two `completed` orders, and an associate-mode query rooted at `orders` selects
+  `count(customers.*)` by `status`
+- **THEN** each physical customer row counts once per status cell — the duplicated
+  customer twice, the two-order customer once — by executed values on SQLite, DuckDB
+  and Postgres
+
+#### Scenario: Fan-out under a joined filter still counts each row once
+- **WHEN** a keyless home row reaches several rows of a joined dataset that a query
+  filter reads, and an associate-mode query associates an aggregate of that home by a
+  dimension across the fanning hop
+- **THEN** that home row counts once per cell it reaches, by executed values
+
+#### Scenario: Model-level filters apply before numbering
+- **WHEN** a keyless home model carries a model-level filter and an associate-mode query
+  associates an aggregate of that home across a fanning hop
+- **THEN** only the rows passing the filter contribute, each once per cell it reaches,
+  by executed values
+
+#### Scenario: The row identity renders on every dialect
+- **WHEN** a keyless-home association query is rendered for every supported dialect
+- **THEN** each statement numbers the home rows with the dialect's accepted window
+  syntax, ordering by a constant on dialects whose row numbering rejects an empty window
+
+#### Scenario: A nullable unique column preserves each associated row
+- **WHEN** an associate-mode query aggregates `sum`, `count` and `weighted_avg` of a home
+  with no primary key over a fanning dimension, rooted at the home and again at the
+  joined model, and two real home rows have NULL in a standalone unique column
+- **THEN** both home rows contribute once per cell they reach, even when a home row
+  matches multiple joined rows in the cell, with the same values as when every unique
+  value is non-NULL, on SQLite and DuckDB
+
+#### Scenario: A numbered home determines row-valued parameters
+- **WHEN** the same home supplies both the value and weight for an associate-mode
+  weighted average and the home has no primary key
+- **THEN** each cell's average uses the distinct home rows that reach it and their own
+  weights
+
+#### Scenario: A home with a primary key associates by it
+- **WHEN** an associate-mode query associates an aggregate of a home declaring a primary
+  key and a standalone unique column holding NULLs
+- **THEN** the home rows are deduplicated by the primary key without numbering, and
+  every row with a NULL unique value still contributes, by executed values
