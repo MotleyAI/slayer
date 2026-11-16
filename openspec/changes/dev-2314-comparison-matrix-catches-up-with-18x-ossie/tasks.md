@@ -1,9 +1,9 @@
 ## 1. Tests (pr-tests stage)
 
-- [ ] 1.1 Port `main`'s `test_list_columns_row_has_probes_on_every_engine` (and its `import yaml`) byte for byte into `tests/test_comparison_matrix.py` (`git show origin/main:tests/test_comparison_matrix.py`); verify it fails on `1.x` (no Q27 row)
-- [ ] 1.2 Add a version → probe-ref unit test to `tests/test_comparison_matrix.py` (`1.8.5` → `1.x`, `2.0.0.dev0` → `main`, `2.1.0` → `main`) and assert the committed `matrix.json` links use `blob/1.x` (`probes[*].url`) and `tree/1.x` (`source`); verify both fail before 3.1
-- [ ] 1.3 Add the 7 `Q27-*` probes to `probes.yaml` byte for byte from `main` (after the Q26 block, as on `main`); verify `run_slayer.py --row Q27` fails before task 2.1 (no `tags` column)
-- [ ] 1.4 Add the 5 C23 probes to `probes.yaml` (design Decision 8): `C23-ossie-roundtrip-models`, `-roundtrip-transform`, `-roundtrip-query-backed`, `-report-extension`, `-report-plain`; write their `truth_sql` against `dataset.sql` and their `contains` strings from the real export report; verify `run_slayer.py --row C23` fails before 3.2 (unknown `osi_roundtrip` field)
+- [x] 1.1 Port `main`'s `test_list_columns_row_has_probes_on_every_engine` (and its `import yaml`) byte for byte into `tests/test_comparison_matrix.py` (`git show origin/main:tests/test_comparison_matrix.py`); verify it fails on `1.x` (no Q27 row)
+- [x] 1.2 Add a version → probe-ref unit test to `tests/test_comparison_matrix.py` (`1.8.5` → `1.x`, `2.0.0.dev0` → `main`, `2.1.0` → `main`) and assert the committed `matrix.json` links use `blob/1.x` (`probes[*].url`) and `tree/1.x` (`source`); verify both fail before 3.1
+- [x] 1.3 Add the 7 `Q27-*` probes to `probes.yaml` byte for byte from `main` (after the Q26 block, as on `main`); verify `run_slayer.py --row Q27` fails before task 2.1 (no `tags` column)
+- [x] 1.4 Add the 5 C23 probes to `probes.yaml` (design Decision 8): `C23-ossie-roundtrip-models`, `-roundtrip-transform`, `-roundtrip-query-backed`, `-report-extension`, `-report-plain`; write their `truth_sql` against `dataset.sql` and their `contains` strings from the real export report; verify `run_slayer.py --row C23` fails before 3.2 (unknown `osi_roundtrip` field)
 
 ## 2. Q27 / Q22 / C4 data and fixtures from `main`
 
