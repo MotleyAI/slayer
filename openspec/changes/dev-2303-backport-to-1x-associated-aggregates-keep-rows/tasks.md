@@ -23,4 +23,4 @@
 - [x] 3.1 `docs/concepts/queries.md:792`: eligibility no longer needs a key; one sentence that a home without a primary key is told apart row by row, including one with a nullable unique column
 - [x] 3.2 Bump `pyproject.toml` version to 1.8.5
 - [x] 3.3 Run the local test scope, `ruff check`, `basedpyright` (no new errors vs baseline), `la-arch-check`, `openspec validate dev-2303-backport-to-1x-associated-aggregates-keep-rows --strict`; all green
-- [ ] 3.4 Open the PR against base `1.x` (not `main`) after the user's go-ahead
+- [x] 3.4 Open the PR against base `1.x` (not `main`) after the user's go-ahead
