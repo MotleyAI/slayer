@@ -129,7 +129,7 @@ FAMILY_CASES = [
      ComputedDimensionError, "dimension 'band'", False),
     ("association",
      lambda: (f1841.assoc_q(dimensions=["status"], measures=[_m("sum(customers.spend, window='90d')", "cm")],
-                            time_dimensions=[TimeDimension(dimension="customers.signup_at", granularity=TimeGranularity.MONTH)]),
+                            time_dimensions=[TimeDimension(dimension=ColumnRef(name="customers.signup_at"), granularity=TimeGranularity.MONTH)]),
               f1841.dev1840_models()),
      AssociationError, "measure 'cm'", True),
     ("parameter-grain",

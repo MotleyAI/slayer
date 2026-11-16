@@ -1860,20 +1860,6 @@ def check_association_windowed_ranked(*, alias: str, windowed_or_ranked: bool) -
         )
 
 
-def check_association_root_unique_key(
-    *, alias: str, root_name: str, has_unique_key: bool,
-) -> None:
-    """The association root must declare a unique key to dedup its entities."""
-    if not has_unique_key:
-        raise AssociationError(
-            summary=f"The aggregate needs distinct-entity association, but its root "
-            f"model {root_name!r} declares no primary or unique key to deduplicate "
-            f"entities by.",
-            location=f"measure {alias!r}",
-            suggestion=f"Declare a primary or unique key on {root_name!r}.",
-        )
-
-
 def check_parameter_determined(
     *, alias: str, param_name: str, grain_display: str, determined: bool,
 ) -> None:

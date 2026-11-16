@@ -51,7 +51,6 @@ from slayer.core.join_walker import (
     model_column_type,
     physical_join_pairs,
     reverse_token,
-    unique_key_sets,
 )
 from slayer.engine.join_safety import (
     UNREACHABLE_NO_PATH,
@@ -73,7 +72,9 @@ from slayer.engine.join_safety import (
 from slayer.core.query import (
     SlayerQuery,
 )
-from slayer.sql.naming import canonical_aggregate_alias, flat_name, pick_slot_alias, slot_result_key
+from slayer.sql.naming import (
+    ROW_IDENTITY_COLUMN, canonical_aggregate_alias, flat_name, pick_slot_alias, slot_result_key, with_row_identity,
+)
 from slayer.core.time_bounds import strip_frame_bounds
 from slayer.core.window_duration import parse_window_duration
 from slayer.core.scope import ModelScope, StageColumn, StageSchema, host_model_name
@@ -83,7 +84,6 @@ from slayer.engine.elaborate_env import (
     is_dimension_transform_root,
     position_classes,
     check_stage_flatten_collision,
-    check_association_root_unique_key,
     check_association_windowed_ranked,
     check_cross_model_inputs_safe,
     check_cross_model_partition_keys_attributable,
@@ -2181,6 +2181,7 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
     picked_params: List[PickedParam] = []
     restricted_texts: List[str] = []
     entity_keys_root: List[ValueKey] = []
+    entity: Optional[_AssociationEntity] = None
     list_rows = False
     associated_measure: Optional[str] = None
     associated_dimensions: List[str] = []
@@ -2191,16 +2192,18 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         # entity via the association kernel — a home entity absent from the
         # population still counts in the cells its own path reaches.
         agg_rooted = agg_rooted.model_copy(update={"locus": "host"})
-        picked_params, entity_keys_root, assoc_pairs, list_rows = (
-            _association_arm(
-                agg=agg, agg_rooted=agg_rooted, alias=alias, root_model=root_model,
-                target_path=target_path, unattributable=unattributable,
-                host_model=host_model, models_by_name=models_by_name,
-                bundle=bundle,
-            )
+        entity = _association_entity(
+            root_model=root_model, target_path=target_path, unattributable=unattributable,
+            host_model=host_model, models_by_name=models_by_name,
         )
+        picked_params, entity_keys_root = _association_arm(
+            agg=agg, agg_rooted=agg_rooted, alias=alias, entity=entity,
+            target_path=target_path, host_model=host_model,
+            models_by_name=models_by_name, bundle=bundle,
+        )
+        list_rows = entity.list_rows
         # The unattributable dims join back on the host key exactly like safe_pairs.
-        safe_pairs = [*safe_pairs, *assoc_pairs]
+        safe_pairs = [*safe_pairs, *entity.assoc_pairs]
         inherited, restricted_texts = _association_inline_filters(
             base_filters=base_filters_with_text, target_path=target_path,
             root_model=root_model, models_by_name=models_by_name,
@@ -2266,6 +2269,8 @@ def _synthesize_cross_model_producer(  # NOSONAR(S3776) — one cohesive target-
         projected_dim_keys=projected_dim_keys, projected_td_keys=projected_td_keys,
         active_bucket=prebound.main_time_key,
     )
+    if entity is not None:
+        root_model = entity.root_model
     root_bundle = bundle.rerooted(root_model)
     root_scope = (
         ModelScope(source_model=root_model)
@@ -2500,11 +2505,11 @@ def _check_attached_params_determined(
     an ungrained aggregate types at the query grain and is determined by
     construction. A grained transform resolves to its
     result grain first, so this predicate needs no transform arm."""
-    key_sets = unique_key_sets(root_model)
+    primary_key = _primary_key_columns(root_model)
     grain_display = _grain_display(Grain.of(
         column_default_key(path=target_path, leaf=col, base=root_model)
-        for col in key_sets[0]
-    )) if key_sets else f"{root_model.name} rows"
+        for col in primary_key
+    )) if primary_key else f"{root_model.name} rows"
     for name, value in agg.kwargs:
         if not isinstance(value, (AggregateKey, TransformKey)):
             continue
@@ -2540,25 +2545,41 @@ def _reached_by_root_lists(key: ValueKey, *, root_model: SlayerModel, models_by_
     return True
 
 
-def _association_arm(
-    *, agg: AggregateKey, agg_rooted: AggregateKey, alias: str,
-    root_model: SlayerModel, target_path: Tuple[str, ...],
+def _primary_key_columns(model: SlayerModel) -> List[str]:
+    return [column.name for column in model.columns if column.primary_key]
+
+
+class _AssociationEntity(NamedTuple):
+    """The entities an association producer deduplicates: the home (numbered when it has no primary key),
+    each unattributable dimension rerooted into it, and its entity key columns."""
+
+    root_model: SlayerModel
+    assoc_pairs: List[Tuple[ValueKey, ValueKey]]
+    list_rows: bool
+    entity_columns: List[str]
+
+    def host_grain(self, target_path: Tuple[str, ...]) -> Grain:
+        return Grain.of(
+            column_default_key(path=target_path, leaf=col, base=self.root_model) for col in self.entity_columns
+        )
+
+    def determines_param(
+        self, *, value: ValueKey, target_path: Tuple[str, ...], host_model: SlayerModel,
+        models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    ) -> bool:
+        # For a local home the initial grain seed reads the host model directly.
+        return _param_is_determined(
+            value=value, grain=self.host_grain(target_path),
+            host_model=host_model if target_path else self.root_model,
+            models_by_name={**models_by_name, self.root_model.name: self.root_model}, bundle=bundle,
+        )
+
+
+def _association_entity(
+    *, root_model: SlayerModel, target_path: Tuple[str, ...],
     unattributable: List[_UnattributableDim], host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
-) -> Tuple[
-    List[PickedParam], List[ValueKey], List[Tuple[ValueKey, ValueKey]], bool,
-]:
-    """The home-rooted association arm: eligibility + mode-invariant
-    input safety on the rerooted host-locus aggregate (compiled inline at its fanning
-    grain, its level-1 dedup removing the fan-out); the kernel entity keys in ROOT
-    coordinates and the parameters the entity grain picks, rerooted into the home;
-    and each unattributable dimension rerooted to join back on the host key exactly
-    like ``safe_pairs``."""
-    check_association_windowed_ranked(
-        alias=alias,
-        windowed_or_ranked=is_kernel_requiring(agg),
-    )
-    key_sets = unique_key_sets(root_model)
+    models_by_name: Dict[str, SlayerModel],
+) -> _AssociationEntity:
     assoc_pairs = [
         (u.key, reroot_from_root(
             key=u.key, target_path=target_path, root_model=root_model,
@@ -2567,12 +2588,34 @@ def _association_arm(
         for u in unattributable
     ]
     # A list child's rows are its root row's own elements: association needs no key (design D6).
-    list_rows = bool(assoc_pairs) and all(
+    if assoc_pairs and all(
         _reached_by_root_lists(rerooted, root_model=root_model, models_by_name=models_by_name)
         for _key, rerooted in assoc_pairs
+    ):
+        return _AssociationEntity(root_model=root_model, assoc_pairs=assoc_pairs, list_rows=True, entity_columns=[])
+    # A standalone UNIQUE constraint can allow NULLs, which cannot identify individual rows.
+    entity_columns = _primary_key_columns(root_model)
+    if not entity_columns:
+        root_model = with_row_identity(root_model)
+        entity_columns = [ROW_IDENTITY_COLUMN]
+    return _AssociationEntity(
+        root_model=root_model, assoc_pairs=assoc_pairs, list_rows=False, entity_columns=entity_columns,
     )
-    check_association_root_unique_key(
-        alias=alias, root_name=root_model.name, has_unique_key=list_rows or bool(key_sets),
+
+
+def _association_arm(
+    *, agg: AggregateKey, agg_rooted: AggregateKey, alias: str,
+    entity: _AssociationEntity, target_path: Tuple[str, ...], host_model: SlayerModel,
+    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+) -> Tuple[List[PickedParam], List[ValueKey]]:
+    """The home-rooted association arm: eligibility + mode-invariant
+    input safety on the rerooted host-locus aggregate (compiled inline at its fanning
+    grain, its level-1 dedup removing the fan-out); the kernel entity keys in ROOT
+    coordinates and the parameters the entity grain picks, rerooted into the home."""
+    root_model = entity.root_model
+    check_association_windowed_ranked(
+        alias=alias,
+        windowed_or_ranked=is_kernel_requiring(agg),
     )
     _assert_cross_model_inputs_safe(
         agg=agg, agg_rooted=agg_rooted, root_model=root_model,
@@ -2585,15 +2628,10 @@ def _association_arm(
     # one is judged by the shared home-determination rule. Lift every parameter,
     # rerooted into the home so the level-1 pick reads it there; the kernel dedups
     # by the entity key in ROOT coordinates.
-    entity_columns = [] if list_rows else key_sets[0]
-    host_entity_keys: List[ValueKey] = [
-        column_default_key(path=target_path, leaf=col, base=root_model)
-        for col in entity_columns
-    ]
+    entity_grain = entity.host_grain(target_path)
     entity_keys_root: List[ValueKey] = [
-        column_default_key(path=(), leaf=col, base=root_model) for col in entity_columns
+        column_default_key(path=(), leaf=col, base=root_model) for col in entity.entity_columns
     ]
-    entity_grain = Grain.of(host_entity_keys)
     picked_params: List[PickedParam] = []
     for name, value in _param_values(agg):
         # Attached kinds (aggregate- and transform-valued) are judged by the shared
@@ -2602,8 +2640,8 @@ def _association_arm(
             check_parameter_determined(
                 alias=alias, param_name=name,
                 grain_display=_grain_display(entity_grain),
-                determined=_param_is_determined(
-                    value=value, grain=entity_grain, host_model=host_model,
+                determined=entity.determines_param(
+                    value=value, target_path=target_path, host_model=host_model,
                     models_by_name=models_by_name, bundle=bundle,
                 ),
             )
@@ -2611,7 +2649,7 @@ def _association_arm(
             key=value, target_path=target_path, root_model=root_model,
             models_by_name=models_by_name, host_name=host_model.name,
         )))
-    return picked_params, entity_keys_root, assoc_pairs, list_rows
+    return picked_params, entity_keys_root
 
 
 def _association_inline_filters(
