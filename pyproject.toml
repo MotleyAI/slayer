@@ -1,6 +1,6 @@
 [project]
 name = "motley-slayer"
-version = "1.8.4"
+version = "1.8.5"
 description = "A lightweight, agent-first semantic layer for AI agents"
 requires-python = ">=3.11"
 license = "MIT"
@@ -131,7 +131,7 @@ jpype1 = "^1.5.0"
 # and skip cleanly if it's missing; CI workflows assert the extras are
 # importable before invoking pytest so a missing dep surfaces as failure.
 testcontainers = {extras = ["mysql", "clickhouse", "mssql", "trino"], version = "^4.0"}
-basedpyright = "^1.39.10"
+basedpyright = "^1.40.2"
 pytest-xdist = ">=3.6"
 living-architecture = "0.4.0"
 jsonschema = "^4.23"
