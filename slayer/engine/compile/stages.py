@@ -51,7 +51,6 @@ from slayer.core.join_walker import (
     join_key_columns,
     model_column_type,
     reverse_token,
-    unique_key_sets,
 )
 from slayer.engine.cardinality.join_safety import (
     UNREACHABLE_NO_PATH,
@@ -2568,11 +2567,11 @@ def _check_attached_params_determined(
     an ungrained aggregate types at the query grain and is determined by
     construction. A grained transform resolves to its
     result grain first, so this predicate needs no transform arm."""
-    key_sets = unique_key_sets(root_model)
+    primary_key = _primary_key_columns(root_model)
     grain_display = _grain_display(Grain.of(
         column_default_key(path=target_path, leaf=col, base=root_model)
-        for col in key_sets[0]
-    )) if key_sets else f"{root_model.name} rows"
+        for col in primary_key
+    )) if primary_key else f"{root_model.name} rows"
     for name, value in agg.kwargs:
         if not isinstance(value, (AggregateKey, TransformKey)):
             continue
@@ -2606,6 +2605,10 @@ def _reached_by_root_lists(key: ValueKey, *, root_model: SlayerModel, models_by_
                 or chain[0].cardinality is not JoinCardinality.ONE_TO_MANY:
             return False
     return True
+
+
+def _primary_key_columns(model: SlayerModel) -> List[str]:
+    return [column.name for column in model.columns if column.primary_key]
 
 
 class _AssociationEntity(NamedTuple):
@@ -2653,7 +2656,7 @@ def _association_entity(
     ):
         return _AssociationEntity(root_model=root_model, assoc_pairs=assoc_pairs, list_rows=True, entity_columns=[])
     # A standalone UNIQUE constraint can allow NULLs, which cannot identify individual rows.
-    entity_columns = [column.name for column in root_model.columns if column.primary_key]
+    entity_columns = _primary_key_columns(root_model)
     if not entity_columns:
         root_model = with_row_identity(root_model)
         entity_columns = [ROW_IDENTITY_COLUMN]
