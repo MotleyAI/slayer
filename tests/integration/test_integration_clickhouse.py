@@ -46,7 +46,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
 )
-from slayer.core.policy import RelationshipFilterRule, RelationshipFilterRuleset, SessionPolicy
+from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.core.query import FieldRef, ComputedDimension, OrderItem, SlayerQuery, TimeDimension
 from slayer.core.warnings import SlayerStatementTimeoutSkippedWarning, StatementTimeoutSkippedWarning
 from slayer.live_schema import ingestion
@@ -1605,24 +1605,24 @@ class _RecordingGateway(DelegatingSqlClient):
         return await self.inner.execute(sql, *args, **kwargs)
 
 
-_TENANT_POLICY = SessionPolicy(ruleset=RelationshipFilterRuleset(
-    table="customers", field="org", value="A",
-    relationships=(
-        RelationshipFilterRule(target_table="orders", relationship_path=("orders.customer_id = customers.id",)),
-        RelationshipFilterRule(
+_TENANT_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
+    table="customers", column="org", value="A",
+    joins=(
+        JoinFilterRule(target_table="orders", join_path=("orders.customer_id = customers.id",)),
+        JoinFilterRule(
             target_table="line_items",
-            relationship_path=("line_items.order_id = orders.id", "orders.customer_id = customers.id"),
+            join_path=("line_items.order_id = orders.id", "orders.customer_id = customers.id"),
         ),
     ),
 ))
 
-_DIST_POLICY = SessionPolicy(ruleset=RelationshipFilterRuleset(
-    table="customers_dist", field="org", value="A",
-    relationships=(
-        RelationshipFilterRule(target_table="orders_dist", relationship_path=("orders_dist.customer_id = customers_dist.id",)),
-        RelationshipFilterRule(
+_DIST_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
+    table="customers_dist", column="org", value="A",
+    joins=(
+        JoinFilterRule(target_table="orders_dist", join_path=("orders_dist.customer_id = customers_dist.id",)),
+        JoinFilterRule(
             target_table="line_items_dist",
-            relationship_path=("line_items_dist.order_id = orders_dist.id", "orders_dist.customer_id = customers_dist.id"),
+            join_path=("line_items_dist.order_id = orders_dist.id", "orders_dist.customer_id = customers_dist.id"),
         ),
     ),
 ))

@@ -9,7 +9,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
-from slayer.core.policy import FieldFilterRuleset, RelationshipFilterRule, RelationshipFilterRuleset, SessionPolicy
+from slayer.core.policy import ColumnFilterRuleset, JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2210_fixtures import by_id, ids, seed
@@ -25,12 +25,12 @@ DDL = (
     "INSERT INTO returns VALUES (10, 1, 't1'), (11, 2, 't1'), (12, 3, 't2'), (14, 5, 't1')",
 )
 
-COLUMN_POLICY = SessionPolicy(ruleset=FieldFilterRuleset(field="tenant", value="t1"))
-JOIN_POLICY = SessionPolicy(ruleset=RelationshipFilterRuleset(
-    table="orders", field="tenant", value="t1",
-    relationships=(
-        RelationshipFilterRule(target_table="shipments", relationship_path=("shipments.order_ref = orders.id",)),
-        RelationshipFilterRule(target_table="returns", relationship_path=("returns.order_id = orders.id",)),
+COLUMN_POLICY = SessionPolicy(ruleset=ColumnFilterRuleset(column="tenant", value="t1"))
+JOIN_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
+    table="orders", column="tenant", value="t1",
+    joins=(
+        JoinFilterRule(target_table="shipments", join_path=("shipments.order_ref = orders.id",)),
+        JoinFilterRule(target_table="returns", join_path=("returns.order_id = orders.id",)),
     ),
 ))
 

@@ -68,11 +68,11 @@ async def _assert_parity(
     assert unscoped is not None
     async with owned_query_engine(storage=engine.storage, policy=POLICIES[policy]) as scoped:
         if executed:
-            has_column = await scoped._has_field(
+            has_column = await scoped._has_column(
                 statement=sqlglot.parse_one(unscoped, read=dialect), datasource=ds, policy=POLICIES[policy],
             )
         else:
-            monkeypatch.setattr(scoped, "_field_present", stub_column_present)
+            monkeypatch.setattr(scoped, "_column_present", stub_column_present)
             has_column = stub_has_column
         try:
             expected = reference_scoped_sql(sql=unscoped, dialect=dialect, policy=POLICIES[policy],
@@ -148,7 +148,7 @@ async def test_dotted_result_names_survive_scoping(
     async with emission_engine(dialect) as (engine, _):
         unscoped = await engine.execute(SHAPES["joined_dims"], dry_run=True)
         scoped = SlayerQueryEngine(storage=engine.storage, policy=POLICIES[policy])
-        monkeypatch.setattr(scoped, "_field_present", stub_column_present)
+        monkeypatch.setattr(scoped, "_column_present", stub_column_present)
         try:
             response = await scoped.execute(SHAPES["joined_dims"], dry_run=True)
         finally:
@@ -184,7 +184,7 @@ REFUSALS: dict[str, tuple[SessionPolicy, Any]] = {
     "blocked_column": (POLICIES["column_block"], _never_present),
     "uncovered_table": (_join_policy(joins=[], whitelist=[]), None),
     "invalid_join_path": (_join_policy(
-        joins=[ORDERS_RULE.model_copy(update={"relationship_path": ("orders.customer_id = regions.id",)}), ITEMS_RULE],
+        joins=[ORDERS_RULE.model_copy(update={"join_path": ("orders.customer_id = regions.id",)}), ITEMS_RULE],
         whitelist=["regions"],
     ), None),
 }
@@ -195,7 +195,7 @@ async def _scoped_engine(base: SlayerQueryEngine, kind: str, monkeypatch: pytest
     engine = SlayerQueryEngine(storage=base.storage, policy=policy,
                                cache_config=CacheConfig(refresh_keys=(("orders", "COUNT(*)"),)))
     if presence is not None:
-        monkeypatch.setattr(engine, "_field_present", presence)
+        monkeypatch.setattr(engine, "_column_present", presence)
     return engine
 
 
@@ -242,7 +242,7 @@ async def test_a_refresh_whose_scan_fails_closed_keeps_the_entry(monkeypatch: py
         async with file_engine("sqlite") as (base, _):
             engine = SlayerQueryEngine(storage=base.storage, policy=POLICIES["column_pass"],
                                        cache_config=CacheConfig(refresh_keys=(("orders", "COUNT(*)"),)))
-            monkeypatch.setattr(engine, "_field_present", _presence)
+            monkeypatch.setattr(engine, "_column_present", _presence)
             try:
                 await engine.execute(SHAPES["plain"], cache=True)
                 sent = len(spy.executed)

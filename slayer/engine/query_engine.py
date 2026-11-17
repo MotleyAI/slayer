@@ -197,7 +197,7 @@ from slayer.sql.generator import (
     read_datasets,
 )
 from slayer.sql.physical_tables import physical_tables
-from slayer.sql.session_policy import HasField, ScopedTable, apply_session_policy, policy_field_checks
+from slayer.sql.session_policy import HasColumn, ScopedTable, apply_session_policy, policy_column_checks
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from slayer.storage.base import StorageBackend, with_canonical_spellings
 from slayer.storage.engine_view import EngineStorage
@@ -865,18 +865,18 @@ class SlayerQueryEngine:
         """``statement`` rewritten to enforce the forced-filter policy; unchanged when no policy."""
         if not self.policy:
             return statement
-        has_column = await self._has_field(statement=statement, datasource=datasource, policy=self.policy)
+        has_column = await self._has_column(statement=statement, datasource=datasource, policy=self.policy)
         return apply_session_policy(
-            statement, sql_dialect=get_dialect(dialect), policy=self.policy, has_field=has_column,
+            statement, sql_dialect=get_dialect(dialect), policy=self.policy, has_column=has_column,
         )
 
-    async def _has_field(
+    async def _has_column(
         self, *, statement: Expr, datasource: DatasourceConfig, policy: SessionPolicy,
-    ) -> HasField:
+    ) -> HasColumn:
         """The column presence facts the policy rewrite of ``statement`` asks for, read up front."""
         present = {
-            check: await self._field_present(datasource=datasource, scoped_table=check[0], field=check[1])
-            for check in policy_field_checks(statement, policy=policy)
+            check: await self._column_present(datasource=datasource, scoped_table=check[0], column=check[1])
+            for check in policy_column_checks(statement, policy=policy)
         }
         return lambda scoped, column: present.get((scoped, column))
 
@@ -924,14 +924,14 @@ class SlayerQueryEngine:
         if reason is not None:
             raise SlayerError(f"{lead} {reason} Alternatively, restructure the filter.")
 
-    async def _field_present(
+    async def _column_present(
         self,
         *,
         datasource: DatasourceConfig,
         scoped_table: ScopedTable,
-        field: str,
+        column: str,
     ) -> bool | None:
-        """Whether ``field`` exists on ``scoped_table``: ``True``/``False``/``None`` (only confirmed results cached)."""
+        """Whether ``column`` exists on ``scoped_table``: ``True``/``False``/``None`` (only confirmed results cached)."""
         schema = scoped_table.schema_name or datasource.schema_name
         # Cross-catalog refs can't be confirmed (introspection takes no catalog
         # argument) — fail closed rather than risk an under-filter.
@@ -946,7 +946,7 @@ class SlayerQueryEngine:
             scoped_table.catalog,
             schema,
             scoped_table.name,
-            field,
+            column,
         )
         if key in self._column_presence_cache:
             return self._column_presence_cache[key]
@@ -961,14 +961,14 @@ class SlayerQueryEngine:
                 "(column %r): %s",
                 schema or "<default>",
                 scoped_table.name,
-                field,
+                column,
                 exc,
             )
             return None
         if not cols:
             return None  # no columns resolved -> cannot confirm
         names = {c.name.lower() for c in cols}
-        present = field.lower() in names
+        present = column.lower() in names
         self._column_presence_cache[key] = present
         return present
 

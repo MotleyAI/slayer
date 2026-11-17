@@ -16,7 +16,7 @@ from slayer.core.errors import (
 )
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.enums import DataType
-from slayer.core.policy import RelationshipFilterRule, RelationshipFilterRuleset, SessionPolicy
+from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
@@ -592,11 +592,11 @@ class TestRebucketing:
 # ---------------------------------------------------------------------------
 
 def _region_policy() -> SessionPolicy:
-    return SessionPolicy(ruleset=RelationshipFilterRuleset(
-        table="customers", field="region", value="N",
-        relationships=(
-            RelationshipFilterRule(target_table="orders", relationship_path=("orders.customer_id = customers.id",)),
-            RelationshipFilterRule(target_table="returns", relationship_path=("returns.customer_id = customers.id",)),
+    return SessionPolicy(ruleset=JoinFilterRuleset(
+        table="customers", column="region", value="N",
+        joins=(
+            JoinFilterRule(target_table="orders", join_path=("orders.customer_id = customers.id",)),
+            JoinFilterRule(target_table="returns", join_path=("returns.customer_id = customers.id",)),
         ),
     ))
 

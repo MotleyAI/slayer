@@ -33,9 +33,9 @@ import sqlglot
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.policy import (
-    FieldFilterRuleset,
-    RelationshipFilterRule,
-    RelationshipFilterRuleset,
+    ColumnFilterRuleset,
+    JoinFilterRule,
+    JoinFilterRuleset,
     SessionPolicy,
 )
 from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
@@ -299,8 +299,8 @@ class TestRlsIsolationCte:
         assert_scope_closed(sql)  # pre-RLS
         wrapped = apply_session_policy(
             sqlglot.parse_one(sql, dialect="postgres"), sql_dialect=get_dialect("postgres"),
-            policy=SessionPolicy(ruleset=FieldFilterRuleset(field="org", value="7ef3")),
-            has_field=_ALWAYS,
+            policy=SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="7ef3")),
+            has_column=_ALWAYS,
         ).sql(dialect="postgres")
         # Column ruleset wraps each table with a plain WHERE (no correlation);
         # closed even without the allowlist, and with it.
@@ -311,13 +311,13 @@ class TestRlsIsolationCte:
         sql = await self._cross_dataset_sql()
         wrapped = apply_session_policy(
             sqlglot.parse_one(sql, dialect="postgres"), sql_dialect=get_dialect("postgres"),
-            policy=SessionPolicy(ruleset=RelationshipFilterRuleset(
-                table="customers", field="organization_uuid", value="orgA",
-                relationships=[RelationshipFilterRule(
+            policy=SessionPolicy(ruleset=JoinFilterRuleset(
+                table="customers", column="organization_uuid", value="orgA",
+                joins=[JoinFilterRule(
                     target_table="orders",
-                    relationship_path=["orders.customer_id = customers.id"])],
+                    join_path=["orders.customer_id = customers.id"])],
             )),
-            has_field=_ALWAYS,
+            has_column=_ALWAYS,
         ).sql(dialect="postgres")
         assert "_rls_src" in wrapped  # intentional correlated EXISTS emitted
         # The checker is correlation-aware (planner-emitted semi-joins

@@ -14,7 +14,7 @@ import slayer.engine.profiling as profiling
 import slayer.inspect.dataset_render as dataset_render
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
-from slayer.core.policy import FieldFilterRuleset, SessionPolicy
+from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.core.query import FieldRef, SlayerQuery
 from slayer.engine.profiling import (
     ProfileOutcome,
@@ -422,7 +422,7 @@ async def test_forced_filter_error_is_classified_via_probe(env, monkeypatch: pyt
     _, storage = env
     model = await _save(storage, _orders())
     engine = SlayerQueryEngine(
-        storage=storage, policy=SessionPolicy(ruleset=FieldFilterRuleset(field="tenant_zz", value="x")),
+        storage=storage, policy=SessionPolicy(ruleset=ColumnFilterRuleset(column="tenant_zz", value="x")),
     )
     log = _record(engine=engine, monkeypatch=monkeypatch)
     outcome = await _profile(engine=engine, storage=storage, dataset=model)
@@ -843,7 +843,7 @@ async def test_forced_refresh_reports_persist_failure(env: tuple[SlayerQueryEngi
 
 def _policy_engine(storage: StorageBackend, *, org: str = "a") -> SlayerQueryEngine:
     return SlayerQueryEngine(
-        storage=storage, policy=SessionPolicy(ruleset=FieldFilterRuleset(field="org", value=org)),
+        storage=storage, policy=SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value=org)),
     )
 
 

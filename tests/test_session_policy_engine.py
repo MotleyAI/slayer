@@ -11,9 +11,9 @@ import sqlglot
 from slayer.core.enums import DataType
 from slayer.core.models import DatasourceConfig
 from slayer.core.policy import (
-    FieldFilterRuleset,
-    RelationshipFilterRule,
-    RelationshipFilterRuleset,
+    ColumnFilterRuleset,
+    JoinFilterRule,
+    JoinFilterRuleset,
     SessionPolicy,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -36,7 +36,7 @@ async def _teardown(eng: SlayerQueryEngine) -> None:
 @pytest.fixture
 async def engine(tmp_path: Path) -> AsyncIterator[SlayerQueryEngine]:
     eng = _mk_engine(
-        tmp_path, SessionPolicy(ruleset=FieldFilterRuleset(field="org", value="x"))
+        tmp_path, SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="x"))
     )
     yield eng
     await _teardown(eng)
@@ -75,34 +75,34 @@ def _ds(tmp_path, *, schema_name=None):
 
 async def test_field_present_true(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     _patch_columns(monkeypatch, lambda self, **k: _cols("org", "id"))
-    present = await engine._field_present(
-        datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), field="org"
+    present = await engine._column_present(
+        datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
     )
     assert present is True
 
 
 async def test_field_present_false(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     _patch_columns(monkeypatch, lambda self, **k: _cols("id", "amount"))
-    present = await engine._field_present(
-        datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), field="org"
+    present = await engine._column_present(
+        datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
     )
     assert present is False
 
 
 async def test_field_present_case_insensitive(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     _patch_columns(monkeypatch, lambda self, **k: _cols("Organization_UUID"))
-    present = await engine._field_present(
+    present = await engine._column_present(
         datasource=_ds(tmp_path),
         scoped_table=ScopedTable(name="orders"),
-        field="organization_uuid",
+        column="organization_uuid",
     )
     assert present is True
 
 
 async def test_field_present_none_on_empty(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
     _patch_columns(monkeypatch, lambda self, **k: [])
-    present = await engine._field_present(
-        datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), field="org"
+    present = await engine._column_present(
+        datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
     )
     assert present is None
 
@@ -112,8 +112,8 @@ async def test_field_present_none_on_introspection_error(engine: SlayerQueryEngi
         raise RuntimeError("introspection blew up")
 
     _patch_columns(monkeypatch, boom)
-    present = await engine._field_present(
-        datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), field="org"
+    present = await engine._column_present(
+        datasource=_ds(tmp_path), scoped_table=ScopedTable(name="orders"), column="org"
     )
     assert present is None
 
@@ -128,8 +128,8 @@ async def test_confirmed_result_is_cached(engine: SlayerQueryEngine, tmp_path, m
     _patch_columns(monkeypatch, counting)
     ds = _ds(tmp_path)
     st = ScopedTable(name="orders")
-    assert await engine._field_present(datasource=ds, scoped_table=st, field="org") is True
-    assert await engine._field_present(datasource=ds, scoped_table=st, field="org") is True
+    assert await engine._column_present(datasource=ds, scoped_table=st, column="org") is True
+    assert await engine._column_present(datasource=ds, scoped_table=st, column="org") is True
     assert calls["n"] == 1
 
 
@@ -142,8 +142,8 @@ async def test_none_result_is_not_cached(engine: SlayerQueryEngine, tmp_path, mo
     _patch_columns(monkeypatch, flaky)
     ds = _ds(tmp_path)
     st = ScopedTable(name="orders")
-    assert await engine._field_present(datasource=ds, scoped_table=st, field="org") is None
-    assert await engine._field_present(datasource=ds, scoped_table=st, field="org") is True
+    assert await engine._column_present(datasource=ds, scoped_table=st, column="org") is None
+    assert await engine._column_present(datasource=ds, scoped_table=st, column="org") is True
 
 
 async def test_cross_catalog_fails_closed(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
@@ -154,10 +154,10 @@ async def test_cross_catalog_fails_closed(engine: SlayerQueryEngine, tmp_path, m
         return _cols("org")
 
     _patch_columns(monkeypatch, counting)
-    present = await engine._field_present(
+    present = await engine._column_present(
         datasource=_ds(tmp_path),
         scoped_table=ScopedTable(catalog="other_project", name="orders"),
-        field="org",
+        column="org",
     )
     assert present is None
     assert calls["n"] == 0
@@ -171,10 +171,10 @@ async def test_schema_resolves_ast_first(engine: SlayerQueryEngine, tmp_path, mo
         return _cols("org")
 
     _patch_columns(monkeypatch, capture)
-    await engine._field_present(
+    await engine._column_present(
         datasource=_ds(tmp_path, schema_name="ds_default"),
         scoped_table=ScopedTable(schema_name="ast_schema", name="orders"),
-        field="org",
+        column="org",
     )
     assert seen["schema"] == "ast_schema"
 
@@ -186,14 +186,14 @@ async def test_schema_resolves_ast_first(engine: SlayerQueryEngine, tmp_path, mo
 
 def _join_policy():
     return SessionPolicy(
-        ruleset=RelationshipFilterRuleset(
+        ruleset=JoinFilterRuleset(
             table="customers",
-            field="organization_uuid",
+            column="organization_uuid",
             value="orgA",
-            relationships=[
-                RelationshipFilterRule(
+            joins=[
+                JoinFilterRule(
                     target_table="orders",
-                    relationship_path=["orders.customer_id = customers.id"],
+                    join_path=["orders.customer_id = customers.id"],
                 )
             ],
         )
@@ -240,7 +240,7 @@ async def test_apply_policy_no_policy_returns_verbatim(tmp_path):
 
 
 async def test_apply_policy_column_ruleset_probes(engine: SlayerQueryEngine, tmp_path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(engine, "_field_present", _always_present)
+    monkeypatch.setattr(engine, "_column_present", _always_present)
     out = await _scoped(
         engine, "SELECT * FROM orders", dialect="sqlite", datasource=_ds(tmp_path)
     )
@@ -252,7 +252,7 @@ async def test_apply_policy_join_ruleset_does_not_probe(join_engine: SlayerQuery
     async def boom(**k):
         raise AssertionError("_field_present must not be called for a join ruleset")
 
-    monkeypatch.setattr(join_engine, "_field_present", boom)
+    monkeypatch.setattr(join_engine, "_column_present", boom)
     out = await _scoped(
         join_engine, "SELECT * FROM orders", dialect="sqlite", datasource=_ds(tmp_path)
     )
@@ -261,7 +261,7 @@ async def test_apply_policy_join_ruleset_does_not_probe(join_engine: SlayerQuery
 
 async def test_apply_policy_join_rule_clickhouse_needs_no_version(join_engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch):
     """No profile has been probed, yet the join rule applies: it needs no server setting."""
-    monkeypatch.setattr(join_engine, "_field_present", _always_present)
+    monkeypatch.setattr(join_engine, "_column_present", _always_present)
     out = await _scoped(
         join_engine, "SELECT * FROM orders", dialect="clickhouse", datasource=_ch_ds()
     )
@@ -271,7 +271,7 @@ async def test_apply_policy_join_rule_clickhouse_needs_no_version(join_engine: S
 
 
 async def test_apply_policy_column_only_clickhouse_not_blocked(engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(engine, "_field_present", _always_present)
+    monkeypatch.setattr(engine, "_column_present", _always_present)
     out = await _scoped(
         engine, "SELECT * FROM orders", dialect="clickhouse", datasource=_ch_ds()
     )

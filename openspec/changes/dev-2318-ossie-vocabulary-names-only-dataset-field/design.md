@@ -104,7 +104,7 @@ None is strained.
     - both are `@deprecated("…", category=None)` and warn through the one tagged site in `slayer/core/vocabulary.py`;
     - an old class name is a `TYPE_CHECKING`-only `@deprecated` subclass declaration, plus a runtime module `__getattr__`;
     - a 1.x backend's overrides of old hook names stay runtime-only, because basedpyright does not report overriding a deprecated method;
-    - a curated class also accepts its old field names as input keys (constructor keywords or dict keys), converted as fresh input with a deprecation, so Storyline's `JoinFilterRuleset(column=…, joins=…)`, `JoinFilterRule(join_path=…)` and `ColumnFilterRuleset(column=…)` keep working (user).
+    - a curated class also accepts its old field names as input keys (constructor keywords or dict keys), converted as fresh input with a deprecation (user).
 
     (default, probe)
 16. **The `reportDeprecated` groundwork is in this PR** (DEV-2294, closed as a duplicate):
@@ -128,6 +128,7 @@ None is strained.
 27. **The Python client reads `attributes.metrics`,** with contract tests for a new client against a new server and against an old route. A new client against a pre-2.0 server is not supported. (codex)
 28. **Rejected (codex): "query `filters` must stay `filters`".** The issue renames the key ("query `source_model` / `measures` / `filters` (still a list)"); only "filter as a string" is DEV-1607's.
 29. **Rejected (codex): "write-back on load violates storage P3.1".** P3.1 is `[target: DEV-1844]`, and the plan keeps today's per-entity behaviour (decision 13). (user)
+30. **Session-policy names keep their words.** The row-level-security policy (`ColumnFilterRuleset`, `JoinFilterRuleset`, `JoinFilterRule`, `JoinHop` and their `column` / `joins` / `join_path`) names physical tables, physical columns and SQL join conditions, so it falls under the physical and SQL `JOIN` carve-outs. The generated list renamed it; phase 1 reverts that, and Storyline's policy calls keep working unchanged, with no twins. (user)
 
 ## Risks / Trade-offs
 

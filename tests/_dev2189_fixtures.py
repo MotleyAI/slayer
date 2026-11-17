@@ -18,9 +18,9 @@ from slayer.core.enums import DataType
 from slayer.core.errors import ForcedFilterError
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.policy import (
-    FieldFilterRuleset,
-    RelationshipFilterRule,
-    RelationshipFilterRuleset,
+    ColumnFilterRuleset,
+    JoinFilterRule,
+    JoinFilterRuleset,
     SessionPolicy,
 )
 from slayer.core.query import SlayerQuery
@@ -204,21 +204,21 @@ async def correlating_profile(_self: Any) -> ServerProfile:
 # --------------------------------------------------------------------------- #
 # Policies
 # --------------------------------------------------------------------------- #
-ORDERS_RULE = RelationshipFilterRule(target_table="orders", relationship_path=("orders.customer_id = customers.id",))
-ITEMS_RULE = RelationshipFilterRule(
-    target_table="items", relationship_path=("items.order_id = orders.id", "orders.customer_id = customers.id"),
+ORDERS_RULE = JoinFilterRule(target_table="orders", join_path=("orders.customer_id = customers.id",))
+ITEMS_RULE = JoinFilterRule(
+    target_table="items", join_path=("items.order_id = orders.id", "orders.customer_id = customers.id"),
 )
 
 
-def _join(*, joins: list[RelationshipFilterRule], whitelist: list[str]) -> SessionPolicy:
-    return SessionPolicy(ruleset=RelationshipFilterRuleset(
-        table="customers", field=TENANT, value=TENANT_VALUE, relationships=tuple(joins), whitelist=tuple(whitelist),
+def _join(*, joins: list[JoinFilterRule], whitelist: list[str]) -> SessionPolicy:
+    return SessionPolicy(ruleset=JoinFilterRuleset(
+        table="customers", column=TENANT, value=TENANT_VALUE, joins=tuple(joins), whitelist=tuple(whitelist),
     ))
 
 
 POLICIES: dict[str, SessionPolicy] = {
-    "column_pass": SessionPolicy(ruleset=FieldFilterRuleset(field=TENANT, value=TENANT_VALUE, on_unapplicable="pass")),
-    "column_block": SessionPolicy(ruleset=FieldFilterRuleset(field=TENANT, value=TENANT_VALUE)),
+    "column_pass": SessionPolicy(ruleset=ColumnFilterRuleset(column=TENANT, value=TENANT_VALUE, on_unapplicable="pass")),
+    "column_block": SessionPolicy(ruleset=ColumnFilterRuleset(column=TENANT, value=TENANT_VALUE)),
     "join_one_hop": _join(joins=[ORDERS_RULE], whitelist=["regions", "items"]),
     "join_multi_hop": _join(joins=[ORDERS_RULE, ITEMS_RULE], whitelist=["regions"]),
     "join_whitelist": _join(joins=[], whitelist=["orders", "items", "regions"]),
@@ -281,7 +281,7 @@ def sqlglot_name(dialect: str) -> str:
 def reference_scoped_sql(*, sql: str, dialect: str, policy: SessionPolicy, has_column) -> str:
     """Parse the unscoped render, apply ``policy`` to that tree, render it."""
     tree: Expr = sqlglot.parse_one(sql, read=dialect)
-    scoped = apply_session_policy(tree, sql_dialect=get_dialect(dialect), policy=policy, has_field=has_column)
+    scoped = apply_session_policy(tree, sql_dialect=get_dialect(dialect), policy=policy, has_column=has_column)
     return scoped.sql(dialect=dialect)
 
 
@@ -297,7 +297,7 @@ def normalized(sql: str, *, dialect: str) -> str:
 
 
 def refusal(exc: ForcedFilterError) -> tuple[Optional[str], Optional[str]]:
-    return exc.table, exc.field
+    return exc.table, exc.column
 
 
 def row_values(rows: list[dict[str, Any]]) -> list[tuple]:

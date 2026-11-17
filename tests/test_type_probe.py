@@ -18,7 +18,7 @@ from sqlglot.errors import ParseError
 from slayer.core.enums import DataType
 from slayer.core.errors import NotReadOnlyQueryError
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
-from slayer.core.policy import FieldFilterRuleset, SessionPolicy
+from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.engine_factory import client_cache_key
 from slayer.database.client import (
@@ -303,7 +303,7 @@ async def test_engine_probe_applies_the_session_policy(tmp_path: Path) -> None:
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db))
     await storage.save_dataset(_orders())
     engine = SlayerQueryEngine(storage=storage, policy=SessionPolicy(
-        ruleset=FieldFilterRuleset(field="org", value="secret-org")))
+        ruleset=ColumnFilterRuleset(column="org", value="secret-org")))
     seen: list[str] = []
     real = SlayerSQLClient.get_result_column_types
 

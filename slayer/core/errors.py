@@ -998,17 +998,17 @@ class IdentifierLengthError(SlayerError, ValueError):
 
 
 class ForcedFilterError(SlayerError):
-    """The session policy's ruleset can't be safely applied to a query; carries the offending ``table``/``field`` (either may be ``None``)."""
+    """The session policy's ruleset can't be safely applied to a query; carries the offending ``table``/``column`` (either may be ``None``)."""
 
     def __init__(
         self,
         message: str,
         *,
         table: str | None = None,
-        field: str | None = None,
+        column: str | None = None,
     ) -> None:
         self.table = table
-        self.field = field
+        self.column = column
         super().__init__(message)
 
 

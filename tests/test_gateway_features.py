@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
-from slayer.core.policy import FieldFilterRuleset, SessionPolicy
+from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtProject, DbtRegularModel
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
@@ -159,7 +159,7 @@ class TestGatewayServesEveryFeature:
 
         twin = await _twin(
             datasource=ds, build=build, base=tmp_path, run=run,
-            policy=SessionPolicy(ruleset=FieldFilterRuleset(field="org", value="acme")),
+            policy=SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="acme")),
         )
         assert twin.attempts == []
         assert twin.default == [

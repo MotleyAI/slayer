@@ -7,11 +7,11 @@ from pydantic import ValidationError
 
 import slayer.core.policy as policy_mod
 from slayer.core.policy import (
-    FieldFilterRuleset,
+    ColumnFilterRuleset,
     FilterRuleset,  # noqa: F401 — exported union
-    RelationshipFilterRule,
-    RelationshipFilterRuleset,
-    RelationshipHop,  # internal parse product — imported only to pin strings-only input
+    JoinFilterRule,
+    JoinFilterRuleset,
+    JoinHop,  # internal parse product — imported only to pin strings-only input
     SessionPolicy,
 )
 
@@ -20,75 +20,75 @@ from slayer.core.policy import (
 
 
 def test_scalar_value_ruleset():
-    rs = FieldFilterRuleset(field="organization_uuid", value="7ef3")
+    rs = ColumnFilterRuleset(column="organization_uuid", value="7ef3")
     assert rs.kind == "column"
-    assert rs.field == "organization_uuid"
+    assert rs.column == "organization_uuid"
     assert rs.value == "7ef3"
     assert rs.on_unapplicable == "block"
 
 
 def test_list_value_coerced_to_tuple():
-    rs = FieldFilterRuleset(field="org", value=["a", "b"])
+    rs = ColumnFilterRuleset(column="org", value=["a", "b"])
     assert rs.value == ("a", "b")
     assert isinstance(rs.value, tuple)
 
 
 def test_numeric_and_bool_scalar_values():
-    assert FieldFilterRuleset(field="tenant_id", value=42).value == 42
-    assert FieldFilterRuleset(field="ratio", value=3.5).value == pytest.approx(3.5)
-    assert FieldFilterRuleset(field="is_active", value=True).value is True
+    assert ColumnFilterRuleset(column="tenant_id", value=42).value == 42
+    assert ColumnFilterRuleset(column="ratio", value=3.5).value == pytest.approx(3.5)
+    assert ColumnFilterRuleset(column="is_active", value=True).value is True
 
 
 def test_empty_list_value_rejected():
     with pytest.raises(ValidationError):
-        FieldFilterRuleset(field="org", value=[])
+        ColumnFilterRuleset(column="org", value=[])
 
 
 def test_empty_tuple_value_rejected():
     with pytest.raises(ValidationError):
-        FieldFilterRuleset(field="org", value=())
+        ColumnFilterRuleset(column="org", value=())
 
 
 def test_blank_column_rejected():
     with pytest.raises(ValidationError):
-        FieldFilterRuleset(field="", value="x")
+        ColumnFilterRuleset(column="", value="x")
 
 
 def test_whitespace_column_rejected():
     with pytest.raises(ValidationError):
-        FieldFilterRuleset(field="   ", value="x")
+        ColumnFilterRuleset(column="   ", value="x")
 
 
 def test_on_unapplicable_pass_allowed():
-    rs = FieldFilterRuleset(field="org", value="x", on_unapplicable="pass")
+    rs = ColumnFilterRuleset(column="org", value="x", on_unapplicable="pass")
     assert rs.on_unapplicable == "pass"
 
 
 def test_on_unapplicable_invalid_rejected():
     with pytest.raises(ValidationError):
-        FieldFilterRuleset(field="org", value="x", on_unapplicable="skip")
+        ColumnFilterRuleset(column="org", value="x", on_unapplicable="skip")
 
 
 def test_column_ruleset_extra_forbidden():
     with pytest.raises(ValidationError):
-        FieldFilterRuleset(field="org", value="x", op="=")
+        ColumnFilterRuleset(column="org", value="x", op="=")
 
 
 def test_column_ruleset_name_field_removed():
     """There is no ``name`` attribute anywhere, so passing one hits extra-forbid."""
     with pytest.raises(ValidationError):
-        FieldFilterRuleset(name="tenant", field="org", value="x")
+        ColumnFilterRuleset(name="tenant", column="org", value="x")
 
 
 def test_column_ruleset_is_frozen():
-    rs = FieldFilterRuleset(field="org", value="x")
+    rs = ColumnFilterRuleset(column="org", value="x")
     with pytest.raises(ValidationError):
-        rs.field = "other"
+        rs.column = "other"
 
 
 def test_column_ruleset_kind_literal_enforced():
     with pytest.raises(ValidationError):
-        FieldFilterRuleset(kind="join", field="org", value="x")
+        ColumnFilterRuleset(kind="join", column="org", value="x")
 
 
 # -- JoinHop / hop parsing helpers -------------------------------------------
@@ -115,9 +115,9 @@ def _hop(**kw):
 
 def _join_rule(**kw):
     """JoinFilterRule factory (no column/value — hoisted to the ruleset)."""
-    base = {"target_table": "orders", "relationship_path": [_hop()]}
+    base = {"target_table": "orders", "join_path": [_hop()]}
     base.update(kw)
-    return RelationshipFilterRule(**base)
+    return JoinFilterRule(**base)
 
 
 # -- JoinFilterRule ----------------------------------------------------------
@@ -126,10 +126,10 @@ def _join_rule(**kw):
 def test_join_rule_construction():
     rule = _join_rule()
     assert rule.target_table == "orders"
-    assert rule.relationship_path == ("orders.customer_id = customers.id",)
-    assert isinstance(rule.relationship_path, tuple)
+    assert rule.join_path == ("orders.customer_id = customers.id",)
+    assert isinstance(rule.join_path, tuple)
     # no kind on the nested rule; no column/value/name
-    assert not hasattr(rule, "field")
+    assert not hasattr(rule, "column")
     assert not hasattr(rule, "value")
 
 
@@ -142,16 +142,16 @@ def test_join_rule_column_value_removed():
     """column/value are hoisted to the ruleset — the nested rule rejects them."""
     hop = _hop()
     with pytest.raises(ValidationError):
-        RelationshipFilterRule(
+        JoinFilterRule(
             target_table="orders",
-            relationship_path=[hop],
+            join_path=[hop],
             column="organization_uuid",
             value="7ef3",
         )
 
 
 def test_join_path_elements_are_strings():
-    assert all(isinstance(h, str) for h in _join_rule().relationship_path)
+    assert all(isinstance(h, str) for h in _join_rule().join_path)
 
 
 def test_join_rule_parses_hops():
@@ -189,17 +189,17 @@ def test_join_rule_has_no_kind_field():
 
 
 def test_join_rule_join_path_list_coerced_to_tuple():
-    assert isinstance(_join_rule(relationship_path=[_hop()]).relationship_path, tuple)
+    assert isinstance(_join_rule(join_path=[_hop()]).join_path, tuple)
 
 
 def test_join_rule_empty_join_path_rejected():
     with pytest.raises(ValidationError):
-        _join_rule(relationship_path=[])
+        _join_rule(join_path=[])
 
 
 def test_bare_string_join_path_rejected():
     with pytest.raises(ValidationError):
-        _join_rule(relationship_path="orders.customer_id = customers.id")
+        _join_rule(join_path="orders.customer_id = customers.id")
 
 
 @pytest.mark.parametrize(
@@ -216,16 +216,16 @@ def test_bare_string_join_path_rejected():
 )
 def test_non_string_hop_element_rejected(bad_element):
     with pytest.raises(ValidationError):
-        _join_rule(relationship_path=[bad_element])
+        _join_rule(join_path=[bad_element])
 
 
 def test_joinhop_instance_hop_element_rejected():
-    hop = RelationshipHop(
+    hop = JoinHop(
         from_table="orders", from_column="customer_id",
         to_table="customers", to_column="id",
     )
     with pytest.raises(ValidationError):
-        _join_rule(relationship_path=[hop])
+        _join_rule(join_path=[hop])
 
 
 @pytest.mark.parametrize(
@@ -245,14 +245,14 @@ def test_joinhop_instance_hop_element_rejected():
 )
 def test_malformed_hop_string_rejected(bad):
     with pytest.raises(ValidationError):
-        _join_rule(relationship_path=[bad])
+        _join_rule(join_path=[bad])
 
 
 def test_hop_whitespace_tolerant():
-    rule = _join_rule(relationship_path=["   orders.customer_id   =   customers.id   "])
+    rule = _join_rule(join_path=["   orders.customer_id   =   customers.id   "])
     assert rule.parsed_hops[0].from_table == "orders"
     assert rule.parsed_hops[0].to_column == "id"
-    assert rule.relationship_path == ("   orders.customer_id   =   customers.id   ",)
+    assert rule.join_path == ("   orders.customer_id   =   customers.id   ",)
 
 
 # -- JoinFilterRule endpoint validation (either direction) -------------------
@@ -261,7 +261,7 @@ def test_hop_whitespace_tolerant():
 def test_join_rule_target_first_accepted():
     """Path written target-first (orders -> customers)."""
     rule = _join_rule(
-        target_table="orders", relationship_path=["orders.customer_id = customers.id"]
+        target_table="orders", join_path=["orders.customer_id = customers.id"]
     )
     assert rule.parsed_hops[0].from_table == "orders"
 
@@ -269,7 +269,7 @@ def test_join_rule_target_first_accepted():
 def test_join_rule_master_first_accepted():
     """A path may be written anchor-first, putting the target at the end."""
     rule = _join_rule(
-        target_table="orders", relationship_path=["customers.id = orders.customer_id"]
+        target_table="orders", join_path=["customers.id = orders.customer_id"]
     )
     # endpoints are {customers, orders}; target=orders is an endpoint
     assert rule._endpoints == ("customers", "orders")
@@ -280,7 +280,7 @@ def test_join_rule_target_not_an_endpoint_rejected():
     with pytest.raises(ValidationError):
         _join_rule(
             target_table="line_items",  # not an endpoint of orders<->customers
-            relationship_path=["orders.customer_id = customers.id"],
+            join_path=["orders.customer_id = customers.id"],
         )
 
 
@@ -288,7 +288,7 @@ def test_join_rule_hops_must_chain():
     with pytest.raises(ValidationError):
         _join_rule(
             target_table="line_items",
-            relationship_path=[
+            join_path=[
                 "line_items.order_id = orders.id",
                 "customers.region_id = regions.id",  # broken chain
             ],
@@ -298,18 +298,18 @@ def test_join_rule_hops_must_chain():
 def test_join_rule_multihop_valid_chain():
     rule = _join_rule(
         target_table="line_items",
-        relationship_path=[
+        join_path=[
             "line_items.order_id = orders.id",
             "orders.customer_id = customers.id",
         ],
     )
-    assert len(rule.relationship_path) == 2
+    assert len(rule.join_path) == 2
     assert rule._endpoints == ("line_items", "customers")
 
 
 def test_endpoint_check_is_case_insensitive():
     rule = _join_rule(
-        target_table="ORDERS", relationship_path=["orders.customer_id = customers.id"]
+        target_table="ORDERS", join_path=["orders.customer_id = customers.id"]
     )
     assert rule.target_table == "ORDERS"
 
@@ -319,7 +319,7 @@ def test_endpoint_check_is_case_insensitive():
 
 def test_oriented_hops_target_first_unchanged():
     rule = _join_rule(
-        target_table="orders", relationship_path=["orders.customer_id = customers.id"]
+        target_table="orders", join_path=["orders.customer_id = customers.id"]
     )
     oriented = rule.oriented_hops()
     assert oriented[0].from_table == "orders"
@@ -329,7 +329,7 @@ def test_oriented_hops_target_first_unchanged():
 def test_oriented_hops_master_first_reversed():
     """An anchor-first path is reversed hop by hop so it ends up target-first."""
     rule = _join_rule(
-        target_table="orders", relationship_path=["customers.id = orders.customer_id"]
+        target_table="orders", join_path=["customers.id = orders.customer_id"]
     )
     oriented = rule.oriented_hops()
     assert oriented[0].from_table == "orders"
@@ -341,7 +341,7 @@ def test_oriented_hops_master_first_reversed():
 def test_oriented_hops_multihop_master_first_reversed():
     rule = _join_rule(
         target_table="line_items",
-        relationship_path=[
+        join_path=[
             "customers.id = orders.customer_id",
             "orders.id = line_items.order_id",
         ],
@@ -362,7 +362,7 @@ def test_join_rule_model_copy_rederives_parsed_hops():
     copied = rule.model_copy(
         update={
             "target_table": "line_items",
-            "relationship_path": ("line_items.order_id = orders.id",),
+            "join_path": ("line_items.order_id = orders.id",),
         }
     )
     assert copied.parsed_hops[0].from_table == "line_items"
@@ -371,14 +371,14 @@ def test_join_rule_model_copy_rederives_parsed_hops():
 def test_join_rule_model_copy_breaking_chain_fails_closed():
     rule = _join_rule(
         target_table="line_items",
-        relationship_path=[
+        join_path=[
             "line_items.order_id = orders.id",
             "orders.customer_id = customers.id",
         ],
     )
     broken = rule.model_copy(
         update={
-            "relationship_path": (
+            "join_path": (
                 "line_items.order_id = orders.id",
                 "customers.region_id = regions.id",  # non-chaining
             )
@@ -394,22 +394,22 @@ def test_join_rule_model_copy_breaking_chain_fails_closed():
 def _join_ruleset(**kw):
     base = {
         "table": "customers",
-        "field": "organization_uuid",
+        "column": "organization_uuid",
         "value": "7ef3",
-        "relationships": [_join_rule()],  # orders -> customers
+        "joins": [_join_rule()],  # orders -> customers
     }
     base.update(kw)
-    return RelationshipFilterRuleset(**base)
+    return JoinFilterRuleset(**base)
 
 
 def test_join_ruleset_construction():
     rs = _join_ruleset()
     assert rs.kind == "join"
     assert rs.table == "customers"
-    assert rs.field == "organization_uuid"
+    assert rs.column == "organization_uuid"
     assert rs.value == "7ef3"
-    assert len(rs.relationships) == 1
-    assert isinstance(rs.relationships, tuple)
+    assert len(rs.joins) == 1
+    assert isinstance(rs.joins, tuple)
     assert rs.whitelist == ()
 
 
@@ -428,7 +428,7 @@ def test_join_ruleset_empty_value_rejected():
         _join_ruleset(value=[])
 
 
-@pytest.mark.parametrize("field", ["table", "field"])
+@pytest.mark.parametrize("field", ["table", "column"])
 def test_join_ruleset_blank_field_rejected(field):
     with pytest.raises(ValidationError):
         _join_ruleset(**{field: "  "})
@@ -447,11 +447,11 @@ def test_join_ruleset_is_frozen():
 
 def test_join_ruleset_empty_joins_valid():
     """A ruleset with no joins (anchor + whitelist only) is valid."""
-    rs = RelationshipFilterRuleset(
-        table="customers", field="organization_uuid", value="7ef3",
+    rs = JoinFilterRuleset(
+        table="customers", column="organization_uuid", value="7ef3",
         whitelist=["exchange_rates"],
     )
-    assert rs.relationships == ()
+    assert rs.joins == ()
     assert rs.whitelist == ("exchange_rates",)
 
 
@@ -467,81 +467,81 @@ def test_join_ruleset_whitelist_list_coerced():
 def test_ruleset_non_target_endpoint_must_be_master():
     """The join path's non-target endpoint must equal the ruleset anchor."""
     # endpoints {line_items, orders}; master=customers absent
-    rule = RelationshipFilterRule(
+    rule = JoinFilterRule(
         target_table="line_items",
-        relationship_path=["line_items.order_id = orders.id"],
+        join_path=["line_items.order_id = orders.id"],
     )
     with pytest.raises(ValidationError):
-        RelationshipFilterRuleset(
-            table="customers", field="organization_uuid", value="7ef3",
-            relationships=[rule],
+        JoinFilterRuleset(
+            table="customers", column="organization_uuid", value="7ef3",
+            joins=[rule],
         )
 
 
 def test_ruleset_master_first_path_accepted():
-    rs = RelationshipFilterRuleset(
-        table="customers", field="organization_uuid", value="7ef3",
-        relationships=[
-            RelationshipFilterRule(
+    rs = JoinFilterRuleset(
+        table="customers", column="organization_uuid", value="7ef3",
+        joins=[
+            JoinFilterRule(
                 target_table="orders",
-                relationship_path=["customers.id = orders.customer_id"],
+                join_path=["customers.id = orders.customer_id"],
             )
         ],
     )
-    assert rs.relationships[0].target_table == "orders"
+    assert rs.joins[0].target_table == "orders"
 
 
 def test_ruleset_master_as_intermediate_rejected():
     """The anchor mid-path is rejected even when the endpoints are {target, anchor}."""
-    rule = RelationshipFilterRule(
+    rule = JoinFilterRule(
         target_table="line_items",
-        relationship_path=[
+        join_path=[
             "line_items.a = customers.b",   # master mid-path
             "customers.c = orders.d",
             "orders.e = customers.f",        # master terminal too
         ],
     )
     with pytest.raises(ValidationError):
-        RelationshipFilterRuleset(
-            table="customers", field="organization_uuid", value="7ef3",
-            relationships=[rule],
+        JoinFilterRuleset(
+            table="customers", column="organization_uuid", value="7ef3",
+            joins=[rule],
         )
 
 
 def test_ruleset_join_targeting_anchor_rejected():
-    rule = RelationshipFilterRule(
+    rule = JoinFilterRule(
         target_table="customers",  # == anchor
-        relationship_path=["customers.id = customers.id"],
+        join_path=["customers.id = customers.id"],
     )
     with pytest.raises(ValidationError):
-        RelationshipFilterRuleset(
-            table="customers", field="organization_uuid", value="7ef3",
-            relationships=[rule],
+        JoinFilterRuleset(
+            table="customers", column="organization_uuid", value="7ef3",
+            joins=[rule],
         )
 
 
 def test_ruleset_duplicate_target_rejected():
-    rule_a = RelationshipFilterRule(
+    rule_a = JoinFilterRule(
         target_table="orders",
-        relationship_path=["orders.customer_id = customers.id"],
+        join_path=["orders.customer_id = customers.id"],
     )
-    rule_b = RelationshipFilterRule(
+    rule_b = JoinFilterRule(
         target_table="orders",  # duplicate
-        relationship_path=["orders.region_id = customers.id"],
+        join_path=["orders.region_id = customers.id"],
     )
     with pytest.raises(ValidationError):
-        RelationshipFilterRuleset(
-            table="customers", field="organization_uuid", value="7ef3",
-            relationships=[rule_a, rule_b],
+        JoinFilterRuleset(
+            table="customers", column="organization_uuid", value="7ef3",
+            joins=[rule_a, rule_b],
         )
 
 
 def test_ruleset_whitelist_intersects_target_rejected():
     rule = _join_rule()  # target orders
     with pytest.raises(ValidationError):
-        RelationshipFilterRuleset(
-            table="customers", field="organization_uuid", value="7ef3",
-            relationships=[rule],
+        JoinFilterRuleset(
+            table="customers", column="organization_uuid", value="7ef3",
+            joins=[rule],
             whitelist=["orders"],  # also whitelisted -> contradiction
         )
 
@@ -554,40 +554,40 @@ def test_ruleset_anchor_in_whitelist_rejected():
 def test_ruleset_qualified_anchor_requires_qualified_endpoint():
     """A qualified anchor reached via a bare endpoint is rejected: its schema would
     otherwise be dropped from the emitted SQL."""
-    rule = RelationshipFilterRule(
+    rule = JoinFilterRule(
         target_table="public.orders",
-        relationship_path=["public.orders.customer_id = customers.id"],  # bare anchor endpoint
+        join_path=["public.orders.customer_id = customers.id"],  # bare anchor endpoint
     )
     with pytest.raises(ValidationError):
-        RelationshipFilterRuleset(
-            table="public.customers", field="organization_uuid", value="7ef3",
-            relationships=[rule],
+        JoinFilterRuleset(
+            table="public.customers", column="organization_uuid", value="7ef3",
+            joins=[rule],
         )
 
 
 def test_ruleset_qualified_anchor_qualified_endpoint_accepted():
-    rule = RelationshipFilterRule(
+    rule = JoinFilterRule(
         target_table="public.orders",
-        relationship_path=["public.orders.customer_id = public.customers.id"],
+        join_path=["public.orders.customer_id = public.customers.id"],
     )
-    rs = RelationshipFilterRuleset(
-        table="public.customers", field="organization_uuid", value="7ef3",
-        relationships=[rule],
+    rs = JoinFilterRuleset(
+        table="public.customers", column="organization_uuid", value="7ef3",
+        joins=[rule],
     )
     assert rs.table == "public.customers"
 
 
 def test_ruleset_bare_anchor_qualified_endpoint_accepted():
     """Over-qualifying the endpoint of a bare anchor is safe and allowed."""
-    rule = RelationshipFilterRule(
+    rule = JoinFilterRule(
         target_table="orders",
-        relationship_path=["orders.customer_id = public.customers.id"],
+        join_path=["orders.customer_id = public.customers.id"],
     )
-    rs = RelationshipFilterRuleset(
-        table="customers", field="organization_uuid", value="7ef3",
-        relationships=[rule],
+    rs = JoinFilterRuleset(
+        table="customers", column="organization_uuid", value="7ef3",
+        joins=[rule],
     )
-    assert rs.relationships[0].target_table == "orders"
+    assert rs.joins[0].target_table == "orders"
 
 
 # -- SessionPolicy -----------------------------------------------------------
@@ -600,25 +600,25 @@ def test_bare_session_policy_rejected():
 
 
 def test_policy_with_column_ruleset():
-    policy = SessionPolicy(ruleset=FieldFilterRuleset(field="org", value="x"))
+    policy = SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="x"))
     assert policy.version == 1
-    assert isinstance(policy.ruleset, FieldFilterRuleset)
+    assert isinstance(policy.ruleset, ColumnFilterRuleset)
 
 
 def test_policy_with_join_ruleset():
     policy = SessionPolicy(ruleset=_join_ruleset())
-    assert isinstance(policy.ruleset, RelationshipFilterRuleset)
+    assert isinstance(policy.ruleset, JoinFilterRuleset)
 
 
 def test_policy_unknown_version_rejected():
-    rs = FieldFilterRuleset(field="org", value="x")
+    rs = ColumnFilterRuleset(column="org", value="x")
     with pytest.raises(ValidationError):
         SessionPolicy(version=2, ruleset=rs)
 
 
 def test_policy_column_dict_with_kind():
-    policy = SessionPolicy.model_validate({"ruleset": {"kind": "column", "field": "org", "value": "x"}})
-    assert isinstance(policy.ruleset, FieldFilterRuleset)
+    policy = SessionPolicy(ruleset={"kind": "column", "column": "org", "value": "x"})
+    assert isinstance(policy.ruleset, ColumnFilterRuleset)
 
 
 def test_policy_join_dict_with_kind():
@@ -626,24 +626,24 @@ def test_policy_join_dict_with_kind():
         ruleset={
             "kind": "join",
             "table": "customers",
-            "field": "organization_uuid",
+            "column": "organization_uuid",
             "value": "7ef3",
-            "relationships": [
+            "joins": [
                 {
                     "target_table": "orders",
-                    "relationship_path": ["orders.customer_id = customers.id"],
+                    "join_path": ["orders.customer_id = customers.id"],
                 }
             ],
         }
     )
-    assert isinstance(policy.ruleset, RelationshipFilterRuleset)
-    assert policy.ruleset.relationships[0].target_table == "orders"
+    assert isinstance(policy.ruleset, JoinFilterRuleset)
+    assert policy.ruleset.joins[0].target_table == "orders"
 
 
 def test_policy_kindless_dict_rejected():
     """kind is explicit — a kind-less dict ruleset cannot be discriminated."""
     with pytest.raises(ValidationError):
-        SessionPolicy(ruleset={"field": "org", "value": "x"})
+        SessionPolicy(ruleset={"column": "org", "value": "x"})
 
 
 def test_policy_kindless_join_dict_rejected():
@@ -651,7 +651,7 @@ def test_policy_kindless_join_dict_rejected():
         SessionPolicy(
             ruleset={
                 "table": "customers",
-                "field": "organization_uuid",
+                "column": "organization_uuid",
                 "value": "7ef3",
             }
         )
@@ -659,27 +659,27 @@ def test_policy_kindless_join_dict_rejected():
 
 def test_policy_data_filters_rejected():
     """Hard break: the old data_filters= kwarg is gone (extra-forbid)."""
-    rs = FieldFilterRuleset(field="org", value="x")
+    rs = ColumnFilterRuleset(column="org", value="x")
     with pytest.raises(ValidationError):
         SessionPolicy(data_filters=[rs])
 
 
 def test_policy_extra_forbidden():
-    rs = FieldFilterRuleset(field="org", value="x")
+    rs = ColumnFilterRuleset(column="org", value="x")
     with pytest.raises(ValidationError):
         SessionPolicy(ruleset=rs, extra_field=1)
 
 
 def test_policy_is_frozen():
-    policy = SessionPolicy(ruleset=FieldFilterRuleset(field="org", value="x"))
+    policy = SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="x"))
     with pytest.raises(ValidationError):
-        policy.ruleset = FieldFilterRuleset(field="other", value="y")
+        policy.ruleset = ColumnFilterRuleset(column="other", value="y")
 
 
 def test_join_only_policy_needs_no_column_backstop():
     """A join ruleset needs no column-rule backstop; the whitelist subsumes it."""
     policy = SessionPolicy(ruleset=_join_ruleset())
-    assert isinstance(policy.ruleset, RelationshipFilterRuleset)
+    assert isinstance(policy.ruleset, JoinFilterRuleset)
 
 
 def test_removed_symbols_absent_from_public_api():
@@ -693,12 +693,12 @@ def test_policy_full_round_trip():
         ruleset={
             "kind": "join",
             "table": "customers",
-            "field": "organization_uuid",
+            "column": "organization_uuid",
             "value": "7ef3",
-            "relationships": [
+            "joins": [
                 {
                     "target_table": "line_items",
-                    "relationship_path": [
+                    "join_path": [
                         "line_items.order_id = orders.id",
                         "orders.customer_id = customers.id",
                     ],
@@ -708,6 +708,6 @@ def test_policy_full_round_trip():
         }
     )
     rebuilt = SessionPolicy(**original.model_dump())
-    assert isinstance(rebuilt.ruleset, RelationshipFilterRuleset)
-    assert rebuilt.ruleset.relationships[0].parsed_hops[1].to_table == "customers"
+    assert isinstance(rebuilt.ruleset, JoinFilterRuleset)
+    assert rebuilt.ruleset.joins[0].parsed_hops[1].to_table == "customers"
     assert rebuilt.ruleset.whitelist == ("exchange_rates",)

@@ -12,7 +12,7 @@ from sqlglot import exp
 from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import ForcedFilterError
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
-from slayer.core.policy import FieldFilterRuleset, SessionPolicy
+from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.engine.cardinality.inference import CardinalityVerdict, RelationshipCardinalityReport
 from slayer.engine.query_engine import SlayerQueryEngine, _physical_keys
 from slayer.database.client import SlayerSQLClient
@@ -425,8 +425,8 @@ class TestSessionPolicyAppliedToProfiling:
         # that lack it through so we can observe the rewrite on the one that
         # has it.
         policy = SessionPolicy(
-            ruleset=FieldFilterRuleset(
-                field="region", value="US", on_unapplicable="pass"
+            ruleset=ColumnFilterRuleset(
+                column="region", value="US", on_unapplicable="pass"
             )
         )
         scoped = SlayerQueryEngine(storage=storage, policy=policy)
@@ -469,7 +469,7 @@ class TestSessionPolicyAppliedToProfiling:
         """
         _, storage, _ = await _build_engine(workspace)
         policy = SessionPolicy(
-            ruleset=FieldFilterRuleset(field="tenant_id", value="t1")
+            ruleset=ColumnFilterRuleset(column="tenant_id", value="t1")
         )
         scoped = SlayerQueryEngine(storage=storage, policy=policy)
         with pytest.raises(ForcedFilterError):

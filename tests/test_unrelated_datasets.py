@@ -19,7 +19,7 @@ from slayer.core.errors import (
 )
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.enums import DataType
-from slayer.core.policy import FieldFilterRuleset, SessionPolicy
+from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.access_filtered import AccessFilteredStorage
@@ -212,7 +212,7 @@ class TestNamesThatAreNotReachableDatasets:
 async def test_row_level_security_scopes_the_unrelated_dataset(backend) -> None:
     async with main_engine(backend) as eng:
         scoped = SlayerQueryEngine(
-            storage=eng.storage, policy=SessionPolicy(ruleset=FieldFilterRuleset(field="tenant", value="t1")),
+            storage=eng.storage, policy=SessionPolicy(ruleset=ColumnFilterRuleset(column="tenant", value="t1")),
         )
         try:
             resp = await scoped.execute(ratio_query())

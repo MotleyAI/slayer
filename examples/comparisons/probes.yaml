@@ -27,9 +27,9 @@ slayer_policies:
     ruleset:
       kind: join
       table: customers
-      field: region_id
+      column: region_id
       value: 1
-      relationships: [{target_table: orders, relationship_path: ["orders.customer_id = customers.id"]}]
+      joins: [{target_table: orders, join_path: ["orders.customer_id = customers.id"]}]
       whitelist: [regions]
 
 probes:

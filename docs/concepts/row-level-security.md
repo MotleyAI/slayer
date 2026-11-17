@@ -8,14 +8,14 @@ any query field. Under a policy, field samples are profiled and cached per engin
 
 A policy carries exactly one **ruleset**, one of two kinds:
 
-- A **`FieldFilterRuleset`** — "every physical table that has column `C` is
+- A **`ColumnFilterRuleset`** — "every physical table that has column `C` is
   filtered to `C = <value>` (or `C IN (...)`)". This fits the common shape
   where the same tenant column (e.g. `organization_uuid`) is present on every
   table.
-- A **`RelationshipFilterRuleset`** — the tenant identifier lives on **one** anchor
-  table; every other table reaches it through an explicit relationship path, and a
+- A **`JoinFilterRuleset`** — the tenant identifier lives on **one** anchor
+  table; every other table reaches it through an explicit join, and a
   `whitelist` names the shared tables that need no filtering. Any table that is
-  neither the anchor, a relationship target, nor whitelisted **fails closed**.
+  neither the anchor, a join target, nor whitelisted **fails closed**.
 
 For a runnable walkthrough on the Jaffle Shop demo, see the
 [Row-Level Security notebook](../examples/10_row_level_security/row_level_security_nb.ipynb).
@@ -25,14 +25,14 @@ For a runnable walkthrough on the Jaffle Shop demo, see the
 A policy is set once, at engine (or local-engine client) construction; `engine.policy` is read-only afterwards:
 
 ```python
-from slayer.core.policy import SessionPolicy, FieldFilterRuleset
+from slayer.core.policy import SessionPolicy, ColumnFilterRuleset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 storage = YAMLStorage(base_dir="./slayer_data")  # your configured backend
 
 policy = SessionPolicy(
-    ruleset=FieldFilterRuleset(field="organization_uuid", value="7ef3ab6c-...."),
+    ruleset=ColumnFilterRuleset(column="organization_uuid", value="7ef3ab6c-...."),
 )
 engine = SlayerQueryEngine(storage=storage, policy=policy)
 ```
@@ -62,7 +62,7 @@ df = client.query_df({"population": "orders", "metrics": [{"expression": "count(
 (the default). A bare `SessionPolicy()` raises rather than silently building a
 no-op.
 
-## Field ruleset
+## Column ruleset
 
 ### Operator: scalar vs list
 
@@ -70,10 +70,10 @@ The `value` shape selects the operator:
 
 ```python
 # Single tenant -> column = value
-FieldFilterRuleset(field="organization_uuid", value="7ef3...")
+ColumnFilterRuleset(column="organization_uuid", value="7ef3...")
 
 # Several tenants in one session -> column IN (...)
-FieldFilterRuleset(field="organization_uuid", value=["7ef3...", "a1b2..."])
+ColumnFilterRuleset(column="organization_uuid", value=["7ef3...", "a1b2..."])
 ```
 
 ### Tables that lack the column: `on_unapplicable`
@@ -88,8 +88,8 @@ A table that **confirms it does not have** the column is handled by
 
 ```python
 # Allow column-less (shared) tables through unfiltered instead of failing:
-SessionPolicy(ruleset=FieldFilterRuleset(
-    field="organization_uuid", value="7ef3...", on_unapplicable="pass"))
+SessionPolicy(ruleset=ColumnFilterRuleset(
+    column="organization_uuid", value="7ef3...", on_unapplicable="pass"))
 ```
 
 A table whose column presence **cannot be confirmed** (an introspection error,
@@ -98,33 +98,33 @@ query is blocked regardless of `on_unapplicable`.
 This is a deliberate security control: SLayer never emits an unscoped query on
 a table it could not verify.
 
-## Relationship ruleset
+## Join ruleset
 
-When the tenant column lives on **only one** table, use a `RelationshipFilterRuleset`.
-It names the anchor `table` + `field` + `value` that hold the identifier;
-every other table either reaches the anchor through an explicit `RelationshipFilterRule`
+When the tenant column lives on **only one** table, use a `JoinFilterRuleset`.
+It names the anchor `table` + `column` + `value` that hold the identifier;
+every other table either reaches the anchor through an explicit `JoinFilterRule`
 or is listed in the `whitelist`.
 
 ```python
 from slayer.core.policy import (
-    SessionPolicy, RelationshipFilterRuleset, RelationshipFilterRule,
+    SessionPolicy, JoinFilterRuleset, JoinFilterRule,
 )
 
-policy = SessionPolicy(ruleset=RelationshipFilterRuleset(
+policy = SessionPolicy(ruleset=JoinFilterRuleset(
     # The tenant identifier lives on customers.organization_uuid.
     table="customers",
-    field="organization_uuid",
+    column="organization_uuid",
     value="7ef3...",
-    relationships=[
+    joins=[
         # orders lacks the column -> reach it via orders.customer_id = customers.id
-        RelationshipFilterRule(
+        JoinFilterRule(
             target_table="orders",
-            relationship_path=["orders.customer_id = customers.id"],
+            join_path=["orders.customer_id = customers.id"],
         ),
         # line_items reaches it multihop: line_items -> orders -> customers
-        RelationshipFilterRule(
+        JoinFilterRule(
             target_table="line_items",
-            relationship_path=[
+            join_path=[
                 "line_items.order_id = orders.id",
                 "orders.customer_id = customers.id",
             ],
@@ -140,7 +140,7 @@ Each table is scoped as follows:
 - **The anchor** (`customers`) is filtered directly, exactly like a field
   ruleset: `WHERE organization_uuid = '7ef3...'`.
 - **A relationship target** (`orders`, `line_items`) is scoped by a correlated
-  `EXISTS` semi-join along its `relationship_path` — cardinality-safe (it never
+  `EXISTS` semi-join along its `join_path` — cardinality-safe (it never
   multiplies rows) and `LEFT JOIN`-preserving. `orders` becomes:
 
   ```sql
@@ -157,7 +157,7 @@ Each table is scoped as follows:
   not whitelisted — **fails closed** (raises), so a table the operator forgot
   can never leak.
 
-### The relationship path
+### The join path
 
 Each hop is a string `"from_table.from_column = to_table.to_column"` in
 **physical DB table/column names** (not dataset names; tables optionally
@@ -167,15 +167,15 @@ anchor-first:
 
 ```python
 # these two are equivalent
-RelationshipFilterRule(target_table="orders", relationship_path=["orders.customer_id = customers.id"])
-RelationshipFilterRule(target_table="orders", relationship_path=["customers.id = orders.customer_id"])
+JoinFilterRule(target_table="orders", join_path=["orders.customer_id = customers.id"])
+JoinFilterRule(target_table="orders", join_path=["customers.id = orders.customer_id"])
 ```
 
 A multi-hop path must **chain**: each hop starts on the table the previous one
 ended on (`line_items -> orders`, then `orders -> customers` above). The anchor
 may appear only as the far endpoint, never as an intermediate hop.
 
-`value` selects the operator exactly like a field ruleset (scalar → `=`,
+`value` selects the operator exactly like a column ruleset (scalar → `=`,
 non-empty list → `IN`). A target schema-qualified as `public.orders` matches
 only the same-schema table; a bare `orders` matches the table in any schema
 (case-insensitive).
@@ -183,7 +183,7 @@ only the same-schema table; a bare `orders` matches the table in any schema
 ### Trust model
 
 The policy author is trusted; the agent is not. SLayer takes the anchor
-`field`, the relationship-path table/column names, and the `whitelist` entries **on
+`column`, the join-path table/column names, and the `whitelist` entries **on
 trust** — it emits them as written and never introspects or validates them
 against the database. So:
 
@@ -201,17 +201,17 @@ against the database. So:
 
 ### ClickHouse
 
-On ClickHouse a relationship target is scoped by a non-correlated semi-join instead —
+On ClickHouse a join target is scoped by a non-correlated semi-join instead —
 `WHERE _rls_src.customer_id GLOBAL IN (SELECT toNullable(_rls_j0.id) FROM customers AS
 _rls_j0 WHERE _rls_j0.id IS NOT NULL AND _rls_j0.organization_uuid = '7ef3...')` — which
-needs no server setting, so relationship rules work on every server version, for `readonly = 1`
+needs no server setting, so join rules work on every server version, for `readonly = 1`
 users, and over sharded `Distributed` tables.
 
 ## How it works
 
 The filter is applied at the final-SQL layer: each physical-table reference is
-wrapped in place (a filtered sub-query for a field filter / the anchor, or a
-semi-join sub-query — `EXISTS`, or `IN` on ClickHouse — for a relationship target),
+wrapped in place (a filtered sub-query for a column filter / the anchor, or a
+semi-join sub-query — `EXISTS`, or `IN` on ClickHouse — for a join target),
 preserving its alias.
 
 ```sql
@@ -219,7 +219,7 @@ preserving its alias.
 FROM orders
 LEFT JOIN customers c ON c.id = orders.customer_id
 
--- after (FieldFilterRuleset on organization_uuid = '7ef3...')
+-- after (ColumnFilterRuleset on organization_uuid = '7ef3...')
 FROM      (SELECT * FROM orders    WHERE organization_uuid = '7ef3...') AS orders
 LEFT JOIN (SELECT * FROM customers WHERE organization_uuid = '7ef3...') AS c
        ON c.id = orders.customer_id
@@ -239,9 +239,9 @@ returns exactly the SQL that would execute, including the wraps.
   `SlayerClient` in HTTP mode raises — server-side policy is not yet available.
 - Relationship paths are **explicit** (authored in the policy), never auto-discovered
   from dataset relationships or BFS-resolved. Alternate-column-per-table overrides,
-  composite-key hops (one column pair per hop), auto/BFS path resolution,
-  multiple relationship paths to one target (diamond), and a multi-column
-  `FieldFilterRuleset` are out of scope.
+  composite-key hops (one column pair per hop), auto/BFS join resolution,
+  multiple join paths to one target (diamond), and a multi-column
+  `ColumnFilterRuleset` are out of scope.
 - The wrapper preserves each table's original alias (or the bare table name if
   no alias was written). SLayer-generated SQL references columns by table
   alias, so this is transparent. A hand-written `sql`-mode dataset that
@@ -251,7 +251,7 @@ returns exactly the SQL that would execute, including the wraps.
   rows); reference columns by table name (`orders.id`) instead.
 - Cross-catalog (three-part `catalog.schema.table`) references — e.g. a
   BigQuery query spanning two projects — cannot be confirmed by a
-  `FieldFilterRuleset`'s schema-only column probe, so under that ruleset they
+  `ColumnFilterRuleset`'s schema-only column probe, so under that ruleset they
   **fail closed** (the query is blocked). Single-catalog usage is unaffected:
   the reference names no catalog, or it names the one the datasource itself
   declares. A datasource that declares no catalog cannot confirm any three-part

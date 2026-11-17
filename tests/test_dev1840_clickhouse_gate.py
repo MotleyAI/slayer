@@ -20,9 +20,9 @@ import pytest
 from slayer.core.errors import ForcedFilterError, SlayerError
 from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.policy import (
-    FieldFilterRuleset,
-    RelationshipFilterRule,
-    RelationshipFilterRuleset,
+    ColumnFilterRuleset,
+    JoinFilterRule,
+    JoinFilterRuleset,
     SessionPolicy,
 )
 from slayer.engine.plan import plan_query, plan_stages
@@ -53,8 +53,8 @@ CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 PUSHED = q(dimensions=["customers.tier"], metrics=[M, CM],
            filter=["channel = 'app'"])
 
-_ORDERS_RULE = RelationshipFilterRule(
-    target_table="orders", relationship_path=("orders.customer_id = customers.id",),
+_ORDERS_RULE = JoinFilterRule(
+    target_table="orders", join_path=("orders.customer_id = customers.id",),
 )
 
 
@@ -291,22 +291,22 @@ class TestPolicyNeedsNoProbe:
     @pytest.mark.parametrize(
         "ruleset",
         [
-            RelationshipFilterRuleset(
-                table="customers", field="organization_uuid", value="orgA",
-                relationships=(_ORDERS_RULE,),
+            JoinFilterRuleset(
+                table="customers", column="organization_uuid", value="orgA",
+                joins=(_ORDERS_RULE,),
             ),
-            RelationshipFilterRuleset(
-                table="customers", field="organization_uuid", value="orgA",
+            JoinFilterRuleset(
+                table="customers", column="organization_uuid", value="orgA",
                 whitelist=("orders",),
             ),
-            FieldFilterRuleset(field="organization_uuid", value="orgA"),
+            ColumnFilterRuleset(column="organization_uuid", value="orgA"),
         ],
         ids=["join", "anchor_only", "column"],
     )
     async def test_policy_only_query_sends_nothing(self, tmp_path, ch_server, monkeypatch: pytest.MonkeyPatch, ruleset):
         fake = ch_server.start(version="25.4.1.1", readonly=1, correlated=False)
         engine = await _ch_engine(tmp_path, policy=SessionPolicy(ruleset=ruleset))
-        monkeypatch.setattr(engine, "_field_present", _always_present)
+        monkeypatch.setattr(engine, "_column_present", _always_present)
         sql = await _dry_sql(engine, q(metrics=[M]))
         assert fake.requests == []
         assert _SETTING not in sql
@@ -332,11 +332,11 @@ class TestSettingsCoexistence:
         out = apply_session_policy(
             sqlglot.parse_one(sql, dialect="clickhouse"),
             sql_dialect=get_dialect("clickhouse"),
-            policy=SessionPolicy(ruleset=RelationshipFilterRuleset(
-                table="customers", field="organization_uuid", value="orgA",
-                relationships=(_ORDERS_RULE,),
+            policy=SessionPolicy(ruleset=JoinFilterRuleset(
+                table="customers", column="organization_uuid", value="orgA",
+                joins=(_ORDERS_RULE,),
             )),
-            has_field=_boom_probe,
+            has_column=_boom_probe,
         ).sql(dialect="clickhouse")
         assert out.count("SETTINGS") == 1
         assert out.count(_SETTING) == 1

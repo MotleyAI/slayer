@@ -27,7 +27,7 @@ from slayer.core.models import (
     SlayerDataset,
     SourceDatasetOrigin,
 )
-from slayer.core.policy import FieldFilterRuleset, RelationshipFilterRule, RelationshipFilterRuleset
+from slayer.core.policy import ColumnFilterRuleset, JoinFilterRule, JoinFilterRuleset
 from slayer.core.query import DatasetExtension, FieldRef, OrderItem, QueryRefinement, SlayerQuery, TimeDimension
 from slayer.core.recommend import CandidateCoverage, PopulationRecommendation
 from slayer.core.warnings import (
@@ -95,10 +95,6 @@ CLASSES: dict[tuple[str, str], str] = {
     ("slayer.core.warnings", "SlayerExtensionColumnInlinedWarning"): "SlayerExtensionFieldInlinedWarning",
     ("slayer.core.warnings", "SpineJoinDroppedWarning"): "SpineRelationshipDroppedWarning",
     ("slayer.core.warnings", "SlayerSpineJoinDroppedWarning"): "SlayerSpineRelationshipDroppedWarning",
-    ("slayer.core.policy", "ColumnFilterRuleset"): "FieldFilterRuleset",
-    ("slayer.core.policy", "JoinFilterRule"): "RelationshipFilterRule",
-    ("slayer.core.policy", "JoinFilterRuleset"): "RelationshipFilterRuleset",
-    ("slayer.core.policy", "JoinHop"): "RelationshipHop",
     ("slayer.live_schema.schema_drift", "EditModelDelete"): "EditDatasetDelete",
     ("slayer.live_schema.schema_drift", "ModelAddition"): "DatasetAddition",
     ("slayer.live_schema.schema_drift", "WholeModelDelete"): "WholeDatasetDelete",
@@ -111,9 +107,6 @@ FUNCTIONS: dict[tuple[str, str], str] = {
     ("slayer.live_schema.ingestion", "introspect_table_to_model"): "introspect_table_to_dataset",
     ("slayer.search.render", "collect_model_entity_pairs"): "collect_dataset_entity_pairs",
 }
-
-#: Modules defining ``__all__``: it lists each replacement and no pre-2.0 name.
-EXPORTING_MODULES = frozenset({"slayer.core.policy"})
 
 STORAGE_METHODS = {
     "get_model": "get_dataset", "save_model": "save_dataset", "delete_model": "delete_dataset",
@@ -176,15 +169,6 @@ class TestClassNames:
             exec("from slayer.core.models import SlayerModel", namespace)  # noqa: S102 — the old name as a string
         assert namespace["SlayerModel"] is SlayerDataset
         assert_one_future_naming(caught, "SlayerDataset")
-
-    @pytest.mark.parametrize(
-        ("module", "old"), sorted(k for k in [*CLASSES, *FUNCTIONS] if k[0] in EXPORTING_MODULES),
-    )
-    def test_all_lists_the_new_name_only(self, module: str, old: str) -> None:
-        exported = importlib.import_module(module).__all__
-        new = {**CLASSES, **FUNCTIONS}[(module, old)]
-        assert old not in exported
-        assert new in exported
 
 
 class _Spy:
@@ -458,15 +442,6 @@ ATTRIBUTES: dict[str, AttributeCase] = {
     "whole_periods.column": AttributeCase(
         make=lambda: WholePeriodsNonNestingWarningPayload(field="c", granularities=[], location="q"),
         old="column", new="field", assign=lambda: "e"),
-    "field_filter.column": AttributeCase(
-        make=lambda: FieldFilterRuleset(field="region", value="EU"), old="column", new="field"),
-    "relationship_filter_rule.join_path": AttributeCase(
-        make=lambda: RelationshipFilterRule(target_table="t", relationship_path=("a",)), old="join_path",
-        new="relationship_path"),
-    "relationship_filter.column": AttributeCase(
-        make=lambda: RelationshipFilterRuleset(table="t", field="c", value=1), old="column", new="field"),
-    "relationship_filter.joins": AttributeCase(
-        make=lambda: RelationshipFilterRuleset(table="t", field="c", value=1), old="joins", new="relationships"),
 }
 WRITABLE = sorted(k for k, c in ATTRIBUTES.items() if c.assign is not None)
 #: Cases whose replacement is a declared field: its old name is also accepted as an input key.
@@ -532,11 +507,10 @@ class TestAttributes:
             rule = getattr(mod, "JoinFilterRule")(**{"target_table": "t", "join_path": ("a",)})
             joined = getattr(mod, "JoinFilterRuleset")(**{"table": "t", "column": "c", "value": 1, "joins": (rule,)})
             single = getattr(mod, "ColumnFilterRuleset")(**{"column": "region", "value": "EU"})
-        assert rule == RelationshipFilterRule(target_table="t", relationship_path=("a",))
-        assert joined == RelationshipFilterRuleset(table="t", field="c", value=1, relationships=(rule,))
-        assert single == FieldFilterRuleset(field="region", value="EU")
-        assert sorted(payload_of(w).old for w in deprecations(caught)) == sorted(
-            ["column", "join_path", "joins"])
+        assert rule == JoinFilterRule(target_table="t", join_path=("a",))
+        assert joined == JoinFilterRuleset(table="t", column="c", value=1, joins=(rule,))
+        assert single == ColumnFilterRuleset(column="region", value="EU")
+        assert deprecations(caught) == []
 
     def test_dataset_columns_write_lands_in_fields(self) -> None:
         dataset = _dataset()

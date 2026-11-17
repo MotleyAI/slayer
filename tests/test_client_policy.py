@@ -6,9 +6,9 @@ import pytest
 
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.policy import (
-    FieldFilterRuleset,
-    RelationshipFilterRule,
-    RelationshipFilterRuleset,
+    ColumnFilterRuleset,
+    JoinFilterRule,
+    JoinFilterRuleset,
     SessionPolicy,
 )
 from slayer.storage.yaml_storage import YAMLStorage
@@ -16,7 +16,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 def _policy():
     return SessionPolicy(
-        ruleset=FieldFilterRuleset(field="organization_uuid", value="7ef3")
+        ruleset=ColumnFilterRuleset(column="organization_uuid", value="7ef3")
     )
 
 
@@ -51,14 +51,14 @@ def test_no_policy_local_mode_ok(tmp_path):
 
 def _join_policy():
     return SessionPolicy(
-        ruleset=RelationshipFilterRuleset(
+        ruleset=JoinFilterRuleset(
             table="customers",
-            field="organization_uuid",
+            column="organization_uuid",
             value="7ef3",
-            relationships=[
-                RelationshipFilterRule(
+            joins=[
+                JoinFilterRule(
                     target_table="orders",
-                    relationship_path=["orders.customer_id = customers.id"],
+                    join_path=["orders.customer_id = customers.id"],
                 )
             ],
         )

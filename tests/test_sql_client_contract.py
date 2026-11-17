@@ -17,7 +17,7 @@ from slayer.core.enums import DataType
 from slayer.core.errors import ForcedFilterError
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import DatasourceConfig
-from slayer.core.policy import FieldFilterRuleset, SessionPolicy
+from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
 from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import WholeDatasetDelete
@@ -144,7 +144,7 @@ class TestTypedFailures:
 
         engine = SlayerQueryEngine(
             storage=shop.storage, client_factory=_wrapping(_ColumnsDown),
-            policy=SessionPolicy(ruleset=FieldFilterRuleset(field="org", value="acme")),
+            policy=SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="acme")),
         )
         with pytest.raises(ForcedFilterError):
             await engine.execute(COUNT_ORDERS)
@@ -153,7 +153,7 @@ class TestTypedFailures:
         factory = GatewayFactory()
         engine = SlayerQueryEngine(
             storage=shop.storage, client_factory=factory,
-            policy=SessionPolicy(ruleset=FieldFilterRuleset(field="org", value="acme")),
+            policy=SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="acme")),
         )
         response = await engine.execute(COUNT_ORDERS)
         assert response.data[0]["orders.n"] == 3

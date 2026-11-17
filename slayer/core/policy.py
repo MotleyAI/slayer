@@ -65,8 +65,8 @@ def _reaches_anchor(endpoint: str, anchor: str) -> bool:
     ) >= len(_table_parts(anchor))
 
 
-class FieldFilterRuleset(BaseModel):
-    """Filter every physical table that has ``field``; a scalar emits ``=``, a tuple ``IN``.
+class ColumnFilterRuleset(BaseModel):
+    """Filter every physical table that has ``column``; a scalar emits ``=``, a tuple ``IN``.
 
     ``on_unapplicable`` governs a table that confirms it lacks the column. A table whose
     column presence cannot be confirmed always fails closed regardless.
@@ -75,13 +75,13 @@ class FieldFilterRuleset(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     kind: Literal["column"] = "column"
-    field: str
+    column: str
     value: Union[PolicyScalar, Tuple[PolicyScalar, ...]]
     on_unapplicable: OnUnapplicable = "block"
 
-    @field_validator("field")
+    @field_validator("column")
     @classmethod
-    def _non_blank_field(cls, v: str, info: ValidationInfo) -> str:
+    def _non_blank_column(cls, v: str, info: ValidationInfo) -> str:
         return _require_non_blank(v, info)
 
     @field_validator("value", mode="before")
@@ -90,7 +90,7 @@ class FieldFilterRuleset(BaseModel):
         return _coerce_policy_value(v)
 
 
-class RelationshipHop(BaseModel):
+class JoinHop(BaseModel):
     """One parsed join hop: ``from_table.from_column`` -> ``to_table.to_column``.
 
     Internal only — callers author hops as strings (see :func:`_parse_hop`).
@@ -109,19 +109,19 @@ class RelationshipHop(BaseModel):
         return _require_non_blank(v, info)
 
 
-def _parse_hop(spec: str) -> RelationshipHop:
-    """Parse ``"from_table.from_column = to_table.to_column"`` into a :class:`RelationshipHop`.
+def _parse_hop(spec: str) -> JoinHop:
+    """Parse ``"from_table.from_column = to_table.to_column"`` into a :class:`JoinHop`.
 
     Each side splits on its last dot, so a column containing a dot is not expressible.
     """
     if not isinstance(spec, str):
         raise ValueError(
-            f"relationship_path hop must be a string, got {type(spec).__name__}"
+            f"join_path hop must be a string, got {type(spec).__name__}"
         )
     sides = spec.split("=")
     if len(sides) != 2:
         raise ValueError(
-            f"relationship_path hop {spec!r} must be "
+            f"join_path hop {spec!r} must be "
             "'from_table.from_column = to_table.to_column' (exactly one '=')"
         )
 
@@ -129,14 +129,14 @@ def _parse_hop(spec: str) -> RelationshipHop:
         table, dot, column = side.strip().rpartition(".")
         if not dot:
             raise ValueError(
-                f"relationship_path hop side {side.strip()!r} must be 'table.column' "
+                f"join_path hop side {side.strip()!r} must be 'table.column' "
                 f"(in hop {spec!r})"
             )
         return table.strip(), column.strip()
 
     from_table, from_column = _split(sides[0])
     to_table, to_column = _split(sides[1])
-    return RelationshipHop(
+    return JoinHop(
         from_table=from_table,
         from_column=from_column,
         to_table=to_table,
@@ -144,26 +144,26 @@ def _parse_hop(spec: str) -> RelationshipHop:
     )
 
 
-def _validate_hop_chain(*, hops: Tuple["RelationshipHop", ...]) -> None:
+def _validate_hop_chain(*, hops: Tuple["JoinHop", ...]) -> None:
     """Assert ``hops`` is non-empty and each hop starts where the previous one ended.
 
     Runs on every ``parsed_hops`` access, so a ``model_copy`` bypassing validation
     still fails closed rather than reaching SQL generation.
     """
     if not hops:
-        raise ValueError("RelationshipFilterRule.relationship_path must be non-empty")
+        raise ValueError("JoinFilterRule.join_path must be non-empty")
     for prev, cur in zip(hops, hops[1:]):
         if cur.from_table.casefold() != prev.to_table.casefold():
             raise ValueError(
-                "RelationshipFilterRule.relationship_path hops must chain: hop from_table "
+                "JoinFilterRule.join_path hops must chain: hop from_table "
                 f"{cur.from_table!r} must equal the previous hop's to_table "
                 f"{prev.to_table!r}"
             )
 
 
-def _reverse_hop(hop: RelationshipHop) -> RelationshipHop:
+def _reverse_hop(hop: JoinHop) -> JoinHop:
     """Swap a hop's endpoints (used to normalize a master-first path)."""
-    return RelationshipHop(
+    return JoinHop(
         from_table=hop.to_table,
         from_column=hop.to_column,
         to_table=hop.from_table,
@@ -171,23 +171,23 @@ def _reverse_hop(hop: RelationshipHop) -> RelationshipHop:
     )
 
 
-class RelationshipFilterRule(BaseModel):
+class JoinFilterRule(BaseModel):
     """Scope ``target_table`` via an explicit join path to the ruleset's anchor.
 
-    ``relationship_path`` holds hop strings (``"from_table.from_column = to_table.to_column"``,
+    ``join_path`` holds hop strings (``"from_table.from_column = to_table.to_column"``,
     physical names) whose two endpoints are ``target_table`` and the anchor, in either
-    written order. The tenant ``field``/``value`` live on the owning ruleset.
+    written order. The tenant ``column``/``value`` live on the owning ruleset.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     target_table: str
-    relationship_path: Tuple[str, ...]
+    join_path: Tuple[str, ...]
 
     @property
-    def parsed_hops(self) -> Tuple[RelationshipHop, ...]:
-        """``relationship_path`` parsed and chain-validated, derived fresh so it can never go stale."""
-        hops = tuple(_parse_hop(spec) for spec in self.relationship_path)
+    def parsed_hops(self) -> Tuple[JoinHop, ...]:
+        """``join_path`` parsed and chain-validated, derived fresh so it can never go stale."""
+        hops = tuple(_parse_hop(spec) for spec in self.join_path)
         _validate_hop_chain(hops=hops)
         return hops
 
@@ -196,7 +196,7 @@ class RelationshipFilterRule(BaseModel):
         hops = self.parsed_hops
         return (hops[0].from_table, hops[-1].to_table)
 
-    def oriented_hops(self) -> Tuple[RelationshipHop, ...]:
+    def oriented_hops(self) -> Tuple[JoinHop, ...]:
         """``parsed_hops`` normalized target-first, reversing a path authored anchor-first.
 
         Lets the EXISTS builder always find the wrapped source at the start and the
@@ -209,8 +209,8 @@ class RelationshipFilterRule(BaseModel):
         if _table_names_match(end, self.target_table):
             return tuple(_reverse_hop(h) for h in reversed(hops))
         raise ValueError(
-            f"RelationshipFilterRule.target_table ({self.target_table!r}) is not an "
-            f"endpoint of relationship_path (endpoints {start!r}, {end!r})"
+            f"JoinFilterRule.target_table ({self.target_table!r}) is not an "
+            f"endpoint of join_path (endpoints {start!r}, {end!r})"
         )
 
     @field_validator("target_table")
@@ -218,13 +218,13 @@ class RelationshipFilterRule(BaseModel):
     def _non_blank(cls, v: str, info: ValidationInfo) -> str:
         return _require_non_blank(v, info)
 
-    @field_validator("relationship_path", mode="before")
+    @field_validator("join_path", mode="before")
     @classmethod
     def _coerce_path(cls, v):
         if isinstance(v, str):
             # Would otherwise be iterated into a tuple of single characters.
             raise ValueError(
-                "RelationshipFilterRule.relationship_path must be a list of hop strings, not a "
+                "JoinFilterRule.join_path must be a list of hop strings, not a "
                 "single string"
             )
         if isinstance(v, list):
@@ -242,16 +242,16 @@ class RelationshipFilterRule(BaseModel):
             or _table_names_match(end, self.target_table)
         ):
             raise ValueError(
-                "RelationshipFilterRule.target_table "
-                f"({self.target_table!r}) must be one of the relationship_path "
+                "JoinFilterRule.target_table "
+                f"({self.target_table!r}) must be one of the join_path "
                 f"endpoints ({start!r}, {end!r})"
             )
         return self
 
 
-def _validate_relationship_rule_anchor(
-    rule: RelationshipFilterRule, anchor: str
-) -> Tuple[RelationshipHop, ...]:
+def _validate_join_rule_anchor(
+    rule: JoinFilterRule, anchor: str
+) -> Tuple[JoinHop, ...]:
     """Validate one join rule against the ruleset ``anchor``, returning target-first hops.
 
     Single source of truth for the per-rule anchor invariants, shared by ruleset
@@ -262,7 +262,7 @@ def _validate_relationship_rule_anchor(
     terminal = oriented[-1].to_table
     if not _reaches_anchor(terminal, anchor):
         raise ValueError(
-            f"RelationshipFilterRule for target '{rule.target_table}': the relationship_path "
+            f"JoinFilterRule for target '{rule.target_table}': the join_path "
             f"must reach the anchor table '{anchor}' at its non-target endpoint, "
             f"qualified at least as fully as the anchor (got '{terminal}')."
         )
@@ -270,22 +270,22 @@ def _validate_relationship_rule_anchor(
     node_sequence = [oriented[0].from_table] + [h.to_table for h in oriented]
     if sum(1 for n in node_sequence if _table_names_match(n, anchor)) != 1:
         raise ValueError(
-            f"RelationshipFilterRule for target '{rule.target_table}': the anchor table "
+            f"JoinFilterRule for target '{rule.target_table}': the anchor table "
             f"'{anchor}' must appear exactly once in the join path, only as the "
             "terminal endpoint (not as an intermediate hop)."
         )
     if _table_names_match(rule.target_table, anchor):
         raise ValueError(
-            f"RelationshipFilterRule may not target the anchor table '{anchor}' "
+            f"JoinFilterRule may not target the anchor table '{anchor}' "
             "(the anchor is filtered directly)."
         )
     return oriented
 
 
-class RelationshipFilterRuleset(BaseModel):
-    """Single-anchor join model: the tenant identifier lives on one ``table`` + ``field``.
+class JoinFilterRuleset(BaseModel):
+    """Single-anchor join model: the tenant identifier lives on one ``table`` + ``column``.
 
-    The anchor is filtered directly, each :class:`RelationshipFilterRule` target is scoped via a
+    The anchor is filtered directly, each :class:`JoinFilterRule` target is scoped via a
     correlated ``EXISTS`` to it, ``whitelist`` tables are emitted unfiltered, and any
     other physical table fails closed. Fully structural — no column introspection.
     """
@@ -294,12 +294,12 @@ class RelationshipFilterRuleset(BaseModel):
 
     kind: Literal["join"] = "join"
     table: str
-    field: str
+    column: str
     value: Union[PolicyScalar, Tuple[PolicyScalar, ...]]
-    relationships: Tuple[RelationshipFilterRule, ...] = ()
+    joins: Tuple[JoinFilterRule, ...] = ()
     whitelist: Tuple[str, ...] = ()
 
-    @field_validator("table", "field")
+    @field_validator("table", "column")
     @classmethod
     def _non_blank(cls, v: str, info: ValidationInfo) -> str:
         return _require_non_blank(v, info)
@@ -309,7 +309,7 @@ class RelationshipFilterRuleset(BaseModel):
     def _coerce_value(cls, v):
         return _coerce_policy_value(v)
 
-    @field_validator("relationships", "whitelist", mode="before")
+    @field_validator("joins", "whitelist", mode="before")
     @classmethod
     def _coerce_tuple(cls, v):
         return tuple(v) if isinstance(v, list) else v
@@ -326,11 +326,11 @@ class RelationshipFilterRuleset(BaseModel):
     def _validate_anchor_reachability(self):
         master = self.table
         seen_targets: list[str] = []
-        for rule in self.relationships:
-            _validate_relationship_rule_anchor(rule, master)
+        for rule in self.joins:
+            _validate_join_rule_anchor(rule, master)
             if any(_table_names_match(rule.target_table, t) for t in seen_targets):
                 raise ValueError(
-                    f"Duplicate RelationshipFilterRule target '{rule.target_table}' "
+                    f"Duplicate JoinFilterRule target '{rule.target_table}' "
                     "(one path per target)."
                 )
             seen_targets.append(rule.target_table)
@@ -351,7 +351,7 @@ class RelationshipFilterRuleset(BaseModel):
 # Keyed on the explicit ``kind`` field — no inference, so a kind-less dict fails
 # to discriminate.
 FilterRuleset = Annotated[
-    Union[FieldFilterRuleset, RelationshipFilterRuleset], Field(discriminator="kind")
+    Union[ColumnFilterRuleset, JoinFilterRuleset], Field(discriminator="kind")
 ]
 
 
@@ -369,9 +369,9 @@ class SessionPolicy(BaseModel):
 __all__ = [
     "PolicyScalar",
     "OnUnapplicable",
-    "FieldFilterRuleset",
-    "RelationshipFilterRule",
-    "RelationshipFilterRuleset",
+    "ColumnFilterRuleset",
+    "JoinFilterRule",
+    "JoinFilterRuleset",
     "FilterRuleset",
     "SessionPolicy",
 ]

@@ -19,9 +19,9 @@ from slayer.core.models import (
     SlayerDataset,
 )
 from slayer.core.policy import (
-    FieldFilterRuleset,
-    RelationshipFilterRule,
-    RelationshipFilterRuleset,
+    ColumnFilterRuleset,
+    JoinFilterRule,
+    JoinFilterRuleset,
     SessionPolicy,
 )
 from slayer.core.query import FieldRef, SlayerQuery
@@ -146,7 +146,7 @@ async def rls_storage(tmp_path):
 
 def _org_policy(org=ORG_A, **kw):
     return SessionPolicy(
-        ruleset=FieldFilterRuleset(field="organization_uuid", value=org, **kw)
+        ruleset=ColumnFilterRuleset(column="organization_uuid", value=org, **kw)
     )
 
 
@@ -206,7 +206,7 @@ async def test_block_fails_on_columnless_table(rls_storage):
     with pytest.raises(ForcedFilterError) as exc:
         await engine.execute(q)
     assert exc.value.table == "exchange_rates"
-    assert exc.value.field == "organization_uuid"
+    assert exc.value.column == "organization_uuid"
 
 
 async def test_pass_allows_columnless_table(rls_storage):
@@ -462,15 +462,15 @@ def _join_policy(org=ORG_A, *, whitelist=()):
     """Anchored on ``customers``, reaching orders (single-hop) and line_items
     (multihop) via explicit joins; ``whitelist`` names pass-through tables."""
     return SessionPolicy(
-        ruleset=RelationshipFilterRuleset(
+        ruleset=JoinFilterRuleset(
             table="customers",
-            field="organization_uuid",
+            column="organization_uuid",
             value=org,
-            relationships=[
-                RelationshipFilterRule(target_table="orders", relationship_path=[_ORDERS_HOP]),
-                RelationshipFilterRule(
+            joins=[
+                JoinFilterRule(target_table="orders", join_path=[_ORDERS_HOP]),
+                JoinFilterRule(
                     target_table="line_items",
-                    relationship_path=["line_items.order_id = orders.id", _ORDERS_HOP],
+                    join_path=["line_items.order_id = orders.id", _ORDERS_HOP],
                 ),
             ],
             whitelist=whitelist,
