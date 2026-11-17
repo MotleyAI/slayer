@@ -108,7 +108,7 @@ _QUERY = {"source_model": "orders"}
         {"osi_roundtrip": {}, "query": _QUERY},
         {"query": _QUERY},
         {"run_by_name": "saved"},
-        {"steps": [{"tool": "query", "args": {}}]},
+        {"steps": [{"tool": "query", "args": {"format": "json"}}]},
     ],
 )
 def test_output_checks_reject_query_rows_they_would_skip(source, check):
@@ -153,6 +153,9 @@ def test_expectations_that_all_run_are_accepted(expect):
         {"osi_roundtrip": {}},
         {"steps": [{"tool": "inspect", "args": {}}]},
         {"steps": [{"tool": "query", "args": {"dry_run": True}}]},
+        {"steps": [{"tool": "query", "args": {"format": "json", "explain": True}}]},
+        {"steps": [{"tool": "query", "args": {"format": "json", "show_sql": True}}]},
+        {"steps": [{"tool": "query", "args": {}}]},
     ],
 )
 def test_output_checks_on_a_report_or_tool_output_are_accepted(source):

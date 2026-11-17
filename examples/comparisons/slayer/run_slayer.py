@@ -120,6 +120,13 @@ class Step(BaseModel):
             raise ValueError("a step needs exactly one of tool / sql")
         return self
 
+    @property
+    def returns_rows(self) -> bool:
+        """A ``query`` call whose output `as_response` parses: bare JSON, no SQL or plan text."""
+        a = self.args
+        return (self.tool == "query" and str(a.get("format", "markdown")).lower().strip() == "json"
+                and not any(a.get(k) for k in ("dry_run", "explain", "show_sql")))
+
 
 class SlayerBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -159,9 +166,7 @@ class SlayerBlock(BaseModel):
         ex = self.expect if isinstance(self.expect, SlayerExpect) else SlayerExpect()
         if ex.same_models and (self.osi_roundtrip is None or self.query is not None):
             raise ValueError("same_models needs osi_roundtrip without query")
-        last = self.steps[-1] if self.steps else None
-        rows = (self.query is not None or self.run_by_name is not None
-                or (last is not None and last.tool == "query" and not last.args.get("dry_run")))
+        rows = self.query is not None or self.run_by_name is not None or (self.steps and self.steps[-1].returns_rows)
         if (ex.contains or ex.lacks) and rows:
             raise ValueError("contains / lacks check a report or tool output, not query rows")
         return self
@@ -401,7 +406,7 @@ def run_session(block: SlayerBlock, base_db: Path, workdir: Path) -> SessionResu
     finally:
         if server is not None:
             run_sync(server._slayer_engine.aclose())
-    return SessionResult(text=text, resp=as_response(text) if block.steps[-1].tool == "query" else None)
+    return SessionResult(text=text, resp=as_response(text) if block.steps[-1].returns_rows else None)
 
 
 def run_cli(args: List[str], phase: str) -> str:
