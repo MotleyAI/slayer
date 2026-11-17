@@ -37,6 +37,7 @@ function canon(v) {
   if (v === null || v === undefined) return null;
   if (typeof v === 'bigint') return Number(v);
   if (v instanceof Date) return v.toISOString().slice(0, 10);
+  if (Array.isArray(v)) return JSON.stringify(v.map(canon));
   if (typeof v === 'string') {
     if (DATE_RE.test(v)) return v.slice(0, 10);
     if (NUM_RE.test(v)) return Number(v);

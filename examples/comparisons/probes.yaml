@@ -11,7 +11,10 @@
 #                 expect: match | {error} | {warning} | {known_bug, buggy_rows, buggy_row_count, buggy_error};
 #                 or steps (MCP tool calls {tool, args} and {sql} edits on a private database copy; "{db_path}" in
 #                 args is that copy) with setup: models | datasource | empty, and expect: match (last step a json
-#                 query) | {error} | {contains: [...], lacks: [...]} (substrings the last step's output has / lacks)
+#                 query) | {error} | {contains: [...], lacks: [...]} (substrings the last step's output has / lacks);
+#                 or osi_roundtrip {extensions (default true)}, optionally with a query: export-osi, then import-osi
+#                 into a fresh store, and expect: match (the query on the re-imported store) | {same_models: true}
+#                 (each model equals its re-imported twin, ignoring osi_* meta) | {contains, lacks} (the export report)
 #   malloy:       query (appended to malloy/model.malloy), flatten (nest name), keys/values overrides,
 #                 expect: match | {compile_error} | {db_error} | {warning} | {known_bug, buggy_rows, buggy_error, buggy_row_count}
 #   cube:         rest (a /load query) or sql (SQL API), planners (default [tesseract, legacy]), model_declared,

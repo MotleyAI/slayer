@@ -1,5 +1,5 @@
 {
- "source": "https://github.com/MotleyAI/slayer/tree/main/examples/comparisons",
+ "source": "https://github.com/MotleyAI/slayer/tree/1.x/examples/comparisons",
  "tools": [
   {
    "key": "slayer",
@@ -66,112 +66,112 @@
     {
      "engine": "SLayer",
      "id": "Q1a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L37"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L40"
     },
     {
      "engine": "Malloy",
      "id": "Q1a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L37"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L40"
     },
     {
      "engine": "Cube",
      "id": "Q1a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L37"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L40"
     },
     {
      "engine": "Malloy",
      "id": "Q1a-exclude",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L53"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L56"
     },
     {
      "engine": "Malloy",
      "id": "Q1a-not-output",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L64"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L67"
     },
     {
      "engine": "SLayer",
      "id": "Q1b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L72"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L75"
     },
     {
      "engine": "Malloy",
      "id": "Q1b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L72"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L75"
     },
     {
      "engine": "Cube",
      "id": "Q1b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L72"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L75"
     },
     {
      "engine": "SLayer",
      "id": "Q1c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L87"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L90"
     },
     {
      "engine": "Malloy",
      "id": "Q1c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L87"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L90"
     },
     {
      "engine": "SLayer",
      "id": "Q1d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L103"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L106"
     },
     {
      "engine": "Malloy",
      "id": "Q1d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L103"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L106"
     },
     {
      "engine": "Cube",
      "id": "Q1d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L103"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L106"
     },
     {
      "engine": "SLayer",
      "id": "Q1e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L121"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L124"
     },
     {
      "engine": "Malloy",
      "id": "Q1e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L121"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L124"
     },
     {
      "engine": "SLayer",
      "id": "Q1f",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L137"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L140"
     },
     {
      "engine": "Malloy",
      "id": "Q1f",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L137"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L140"
     },
     {
      "engine": "SLayer",
      "id": "S1",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L153"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L156"
     },
     {
      "engine": "MetricFlow",
      "id": "S1",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L153"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L156"
     },
     {
      "engine": "SLayer",
      "id": "S3",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L167"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L170"
     },
     {
      "engine": "Cube",
      "id": "Q1-cube-keep-only",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L177"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L180"
     },
     {
      "engine": "MetricFlow",
      "id": "Q1-mf-metric-filter-region",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3756"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3940"
     }
    ]
   },
@@ -212,92 +212,92 @@
     {
      "engine": "SLayer",
      "id": "Q2a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L194"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L197"
     },
     {
      "engine": "Malloy",
      "id": "Q2a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L194"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L197"
     },
     {
      "engine": "Cube",
      "id": "Q2a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L194"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L197"
     },
     {
      "engine": "SLayer",
      "id": "Q2a-total",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L210"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L213"
     },
     {
      "engine": "Malloy",
      "id": "Q2a-total",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L210"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L213"
     },
     {
      "engine": "Cube",
      "id": "Q2a-total",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L210"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L213"
     },
     {
      "engine": "Malloy",
      "id": "Q2a-filtered",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L225"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L228"
     },
     {
      "engine": "SLayer",
      "id": "Q2b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L236"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L239"
     },
     {
      "engine": "Malloy",
      "id": "Q2b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L236"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L239"
     },
     {
      "engine": "SLayer",
      "id": "Q2c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L250"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L253"
     },
     {
      "engine": "SLayer",
      "id": "F4",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L262"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L265"
     },
     {
      "engine": "SLayer",
      "id": "F5",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L270"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L273"
     },
     {
      "engine": "SLayer",
      "id": "F5b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L278"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L281"
     },
     {
      "engine": "SLayer",
      "id": "F10",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L287"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L290"
     },
     {
      "engine": "SLayer",
      "id": "F11",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L295"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L298"
     },
     {
      "engine": "SLayer",
      "id": "F13",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L304"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L307"
     },
     {
      "engine": "SLayer",
      "id": "X5",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L313"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L316"
     },
     {
      "engine": "Cube",
      "id": "Q2-cube-share-of-region",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L322"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L325"
     }
    ]
   },
@@ -336,127 +336,127 @@
     {
      "engine": "SLayer",
      "id": "Q3a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L339"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L342"
     },
     {
      "engine": "Malloy",
      "id": "Q3a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L339"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L342"
     },
     {
      "engine": "Cube",
      "id": "Q3a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L339"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L342"
     },
     {
      "engine": "Malloy",
      "id": "Q3a-one-stage",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L355"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L358"
     },
     {
      "engine": "SLayer",
      "id": "F1b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L363"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L366"
     },
     {
      "engine": "SLayer",
      "id": "F1c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L373"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L376"
     },
     {
      "engine": "SLayer",
      "id": "F2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L383"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L386"
     },
     {
      "engine": "SLayer",
      "id": "F2b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L394"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L397"
     },
     {
      "engine": "SLayer",
      "id": "F3",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L405"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L408"
     },
     {
      "engine": "SLayer",
      "id": "F7",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L416"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L419"
     },
     {
      "engine": "SLayer",
      "id": "F9",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L426"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L429"
     },
     {
      "engine": "SLayer",
      "id": "F9b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L435"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L438"
     },
     {
      "engine": "SLayer",
      "id": "F9c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L447"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L450"
     },
     {
      "engine": "SLayer",
      "id": "F9d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L457"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L460"
     },
     {
      "engine": "SLayer",
      "id": "F9e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L473"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L476"
     },
     {
      "engine": "SLayer",
      "id": "F9f",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L486"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L489"
     },
     {
      "engine": "SLayer",
      "id": "X6",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L500"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L503"
     },
     {
      "engine": "Cube",
      "id": "X6",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L500"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L503"
     },
     {
      "engine": "Cube",
      "id": "Q3-cube-grain-include",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L517"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L520"
     },
     {
      "engine": "Cube",
      "id": "Q3-cube-avg-of-avg",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L532"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L535"
     },
     {
      "engine": "Cube",
      "id": "Q3-cube-sum-of-distinct",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L544"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L547"
     },
     {
      "engine": "Cube",
      "id": "Q3-cube-sum-of-avg-measure",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L555"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L558"
     },
     {
      "engine": "Cube",
      "id": "Q3-cube-number-agg-plain",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L565"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L568"
     },
     {
      "engine": "Cube",
      "id": "Q3-cube-number-agg-ms-column",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L578"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L581"
     },
     {
      "engine": "Cube",
      "id": "Q3-cube-number-agg-ms-grain",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L589"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L592"
     }
    ]
   },
@@ -496,162 +496,162 @@
     {
      "engine": "SLayer",
      "id": "Q4a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L601"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L604"
     },
     {
      "engine": "Malloy",
      "id": "Q4a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L601"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L604"
     },
     {
      "engine": "Cube",
      "id": "Q4a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L601"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L604"
     },
     {
      "engine": "MetricFlow",
      "id": "Q4a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L601"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L604"
     },
     {
      "engine": "SLayer",
      "id": "Q4a2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L638"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L641"
     },
     {
      "engine": "MetricFlow",
      "id": "Q4a2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L638"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L641"
     },
     {
      "engine": "SLayer",
      "id": "Q4b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L660"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L663"
     },
     {
      "engine": "SLayer",
      "id": "Q4c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L673"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L676"
     },
     {
      "engine": "SLayer",
      "id": "Q4d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L684"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L687"
     },
     {
      "engine": "SLayer",
      "id": "Q4e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L695"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L698"
     },
     {
      "engine": "Malloy",
      "id": "Q4e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L695"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L698"
     },
     {
      "engine": "SLayer",
      "id": "Q4f",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L710"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L713"
     },
     {
      "engine": "Malloy",
      "id": "Q4f",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L710"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L713"
     },
     {
      "engine": "Cube",
      "id": "Q4f",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L710"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L713"
     },
     {
      "engine": "SLayer",
      "id": "Q4f2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L731"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L734"
     },
     {
      "engine": "Malloy",
      "id": "Q4f-where",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L742"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L745"
     },
     {
      "engine": "Malloy",
      "id": "Q4f-later-stage",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L757"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L760"
     },
     {
      "engine": "Malloy",
      "id": "Q4-filtered-escape",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L769"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L772"
     },
     {
      "engine": "SLayer",
      "id": "Q4g",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L784"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L787"
     },
     {
      "engine": "SLayer",
      "id": "Q4h",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L797"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L800"
     },
     {
      "engine": "SLayer",
      "id": "Q4i",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L809"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L812"
     },
     {
      "engine": "SLayer",
      "id": "Q4j",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L822"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L825"
     },
     {
      "engine": "SLayer",
      "id": "Q4k",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L833"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L836"
     },
     {
      "engine": "SLayer",
      "id": "S2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L844"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L847"
     },
     {
      "engine": "Cube",
      "id": "Q4-cube-compare-date-range",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L852"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L855"
     },
     {
      "engine": "Cube",
      "id": "Q4-cube-lag-change",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L865"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L868"
     },
     {
      "engine": "Cube",
      "id": "Q4-cube-prior-year-only",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L879"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L882"
     },
     {
      "engine": "Cube",
      "id": "Q4-cube-prior-year-with-revenue",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L898"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L901"
     },
     {
      "engine": "MetricFlow",
      "id": "Q4-mf-offset-no-row",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3767"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3951"
     },
     {
      "engine": "MetricFlow",
      "id": "Q4-mf-change",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3786"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3970"
     },
     {
      "engine": "MetricFlow",
      "id": "Q4-mf-cum-day",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3806"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3990"
     },
     {
      "engine": "MetricFlow",
      "id": "Q4-mf-ytd-first",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3823"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4007"
     }
    ]
   },
@@ -690,97 +690,97 @@
     {
      "engine": "SLayer",
      "id": "Q5a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L915"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L918"
     },
     {
      "engine": "Malloy",
      "id": "Q5a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L915"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L918"
     },
     {
      "engine": "Cube",
      "id": "Q5a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L915"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L918"
     },
     {
      "engine": "SLayer",
      "id": "Q5a2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L943"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L946"
     },
     {
      "engine": "Malloy",
      "id": "Q5a2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L943"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L946"
     },
     {
      "engine": "Malloy",
      "id": "Q5a-in-dimension",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L965"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L968"
     },
     {
      "engine": "SLayer",
      "id": "Q5b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L973"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L976"
     },
     {
      "engine": "MetricFlow",
      "id": "Q5b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L973"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L976"
     },
     {
      "engine": "Malloy",
      "id": "Q5-having",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L993"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L996"
     },
     {
      "engine": "MetricFlow",
      "id": "Q5-having",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L993"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L996"
     },
     {
      "engine": "Malloy",
      "id": "Q5-agg-in-where",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1012"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1015"
     },
     {
      "engine": "Malloy",
      "id": "Q5-calc-in-having",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1020"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1023"
     },
     {
      "engine": "Malloy",
      "id": "Q5-order-by-expr",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1028"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1031"
     },
     {
      "engine": "SLayer",
      "id": "Q5d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1036"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1039"
     },
     {
      "engine": "SLayer",
      "id": "F8",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1047"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1050"
     },
     {
      "engine": "SLayer",
      "id": "X4",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1059"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1062"
     },
     {
      "engine": "Cube",
      "id": "Q5-cube-sub-query",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1072"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1075"
     },
     {
      "engine": "Cube",
      "id": "Q5-cube-sub-query-count",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1087"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1090"
     },
     {
      "engine": "MetricFlow",
      "id": "Q5-mf-band-high",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3845"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4029"
     }
    ]
   },
@@ -823,147 +823,147 @@
     {
      "engine": "SLayer",
      "id": "Q6a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1100"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1103"
     },
     {
      "engine": "MetricFlow",
      "id": "Q6a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1100"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1103"
     },
     {
      "engine": "SLayer",
      "id": "Q6a-assoc",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1115"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1118"
     },
     {
      "engine": "Cube",
      "id": "Q6a-assoc",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1115"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1118"
     },
     {
      "engine": "SLayer",
      "id": "Q6a-error",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1132"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1135"
     },
     {
      "engine": "SLayer",
      "id": "Q6b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1140"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1143"
     },
     {
      "engine": "MetricFlow",
      "id": "Q6b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1140"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1143"
     },
     {
      "engine": "SLayer",
      "id": "Q6c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1158"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1161"
     },
     {
      "engine": "MetricFlow",
      "id": "Q6c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1158"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1161"
     },
     {
      "engine": "SLayer",
      "id": "Q6d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1172"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1175"
     },
     {
      "engine": "MetricFlow",
      "id": "Q6d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1172"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1175"
     },
     {
      "engine": "SLayer",
      "id": "Q6e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1187"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1190"
     },
     {
      "engine": "MetricFlow",
      "id": "Q6e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1187"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1190"
     },
     {
      "engine": "SLayer",
      "id": "Q6f",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1202"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1205"
     },
     {
      "engine": "Malloy",
      "id": "Q6-locality",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1212"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1215"
     },
     {
      "engine": "Malloy",
      "id": "Q6-multihop",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1222"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1225"
     },
     {
      "engine": "SLayer",
      "id": "X1",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1234"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1237"
     },
     {
      "engine": "MetricFlow",
      "id": "X1",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1234"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1237"
     },
     {
      "engine": "SLayer",
      "id": "X3",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1253"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1256"
     },
     {
      "engine": "MetricFlow",
      "id": "X3",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1253"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1256"
     },
     {
      "engine": "SLayer",
      "id": "X7",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1271"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1274"
     },
     {
      "engine": "Cube",
      "id": "Q6-cube-raw-sum",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1282"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1285"
     },
     {
      "engine": "Cube",
      "id": "Q6-cube-raw-sum-legacy",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1295"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1298"
     },
     {
      "engine": "Cube",
      "id": "Q6-cube-region",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1306"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1309"
     },
     {
      "engine": "Cube",
      "id": "Q6-cube-region-legacy",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1319"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1322"
     },
     {
      "engine": "SLayer",
      "id": "Q9d-assoc",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1978"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1981"
     },
     {
      "engine": "Malloy",
      "id": "Q9d-assoc",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1978"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1981"
     },
     {
      "engine": "Cube",
      "id": "Q9d-assoc",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1978"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1981"
     },
     {
      "engine": "MetricFlow",
      "id": "Q6-mf-two-hop-city",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3860"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4044"
     }
    ]
   },
@@ -1002,147 +1002,147 @@
     {
      "engine": "SLayer",
      "id": "Q7a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1332"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1335"
     },
     {
      "engine": "SLayer",
      "id": "Q7b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1344"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1347"
     },
     {
      "engine": "SLayer",
      "id": "Q7c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1356"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1359"
     },
     {
      "engine": "SLayer",
      "id": "Q7c2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1364"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1367"
     },
     {
      "engine": "SLayer",
      "id": "Q7d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1377"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1380"
     },
     {
      "engine": "SLayer",
      "id": "Q7e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1391"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1394"
     },
     {
      "engine": "SLayer",
      "id": "Q7f",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1404"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1407"
     },
     {
      "engine": "SLayer",
      "id": "Q7g",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1416"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1419"
     },
     {
      "engine": "SLayer",
      "id": "Q7h",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1429"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1432"
     },
     {
      "engine": "SLayer",
      "id": "Q7i",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1442"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1445"
     },
     {
      "engine": "SLayer",
      "id": "Q9c-1",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1454"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1457"
     },
     {
      "engine": "SLayer",
      "id": "Q9c-2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1465"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1468"
     },
     {
      "engine": "SLayer",
      "id": "Q9c-3",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1476"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1479"
     },
     {
      "engine": "Malloy",
      "id": "Q7-lag-of-calc",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1484"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1487"
     },
     {
      "engine": "Malloy",
      "id": "Q7-lag-of-all",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1492"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1495"
     },
     {
      "engine": "Malloy",
      "id": "Q7-calc-of-agg",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1500"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1503"
     },
     {
      "engine": "Malloy",
      "id": "Q7-analytic-measure",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1508"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1511"
     },
     {
      "engine": "Malloy",
      "id": "Q7-3105-row-number",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1516"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1519"
     },
     {
      "engine": "Malloy",
      "id": "Q7-3105-lag-sum",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1525"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1528"
     },
     {
      "engine": "Malloy",
      "id": "Q7-3105-measure",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1534"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1537"
     },
     {
      "engine": "Malloy",
      "id": "Q7-3105-sole",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1543"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1546"
     },
     {
      "engine": "Malloy",
      "id": "Q7-3105-variants",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1552"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1555"
     },
     {
      "engine": "Malloy",
      "id": "Q7-lag-input",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1561"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1564"
     },
     {
      "engine": "Malloy",
      "id": "Q7-lag-input-stage2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1569"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1572"
     },
     {
      "engine": "Malloy",
      "id": "Q7-avg-moving-input",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1577"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1580"
     },
     {
      "engine": "Malloy",
      "id": "Q7-lag-output-ref",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1585"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1588"
     },
     {
      "engine": "Malloy",
      "id": "Q7-method-syntax",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1593"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1596"
     },
     {
      "engine": "Cube",
      "id": "Q7-cube-cumsum-of-change",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1601"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1604"
     },
     {
      "engine": "Cube",
      "id": "Q7-cube-rank-of-share",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1614"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1617"
     }
    ]
   },
@@ -1180,92 +1180,92 @@
     {
      "engine": "SLayer",
      "id": "Q8a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1627"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1630"
     },
     {
      "engine": "Cube",
      "id": "Q8a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1627"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1630"
     },
     {
      "engine": "SLayer",
      "id": "Q8b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1642"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1645"
     },
     {
      "engine": "MetricFlow",
      "id": "Q8b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1642"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1645"
     },
     {
      "engine": "SLayer",
      "id": "Q8c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1665"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1668"
     },
     {
      "engine": "MetricFlow",
      "id": "Q8c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1665"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1668"
     },
     {
      "engine": "Malloy",
      "id": "Q8-from-orders",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1686"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1689"
     },
     {
      "engine": "Malloy",
      "id": "Q8-from-customers",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1696"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1699"
     },
     {
      "engine": "Cube",
      "id": "Q8-cube-root-tesseract",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1707"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1710"
     },
     {
      "engine": "Cube",
      "id": "Q8-cube-root-legacy",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1717"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1720"
     },
     {
      "engine": "Cube",
      "id": "Q8-cube-join-hints",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1727"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1730"
     },
     {
      "engine": "Cube",
      "id": "Q8-cube-region-root",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1736"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1739"
     },
     {
      "engine": "Cube",
      "id": "Q8-cube-region-root-legacy",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1748"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1751"
     },
     {
      "engine": "Cube",
      "id": "Q8-cube-region-legacy",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1757"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1760"
     },
     {
      "engine": "Cube",
      "id": "Q8-cube-count-legacy",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1769"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1772"
     },
     {
      "engine": "MetricFlow",
      "id": "Q8-mf-root-orders",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3872"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4056"
     },
     {
      "engine": "MetricFlow",
      "id": "Q8-mf-union-null",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3887"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4071"
     },
     {
      "engine": "MetricFlow",
      "id": "Q8-mf-fill-nulls",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3905"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4089"
     }
    ]
   },
@@ -1305,177 +1305,177 @@
     {
      "engine": "SLayer",
      "id": "Q9a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1779"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1782"
     },
     {
      "engine": "Malloy",
      "id": "Q9a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1779"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1782"
     },
     {
      "engine": "Cube",
      "id": "Q9a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1779"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1782"
     },
     {
      "engine": "MetricFlow",
      "id": "Q9a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1779"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1782"
     },
     {
      "engine": "Malloy",
      "id": "Q9a-count-leaf",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1808"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1811"
     },
     {
      "engine": "Malloy",
      "id": "Q9a-count-leaf-total",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1818"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1821"
     },
     {
      "engine": "Malloy",
      "id": "Q9a-count-filtered",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1828"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1831"
     },
     {
      "engine": "Malloy",
      "id": "Q9a-sum-parent",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1838"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1841"
     },
     {
      "engine": "Malloy",
      "id": "Q9a-sum-per-customer",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1849"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1852"
     },
     {
      "engine": "Malloy",
      "id": "Q9a-nopk-count",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1861"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1864"
     },
     {
      "engine": "Malloy",
      "id": "Q9a-nopk-sum",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1871"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1874"
     },
     {
      "engine": "Malloy",
      "id": "Q9a-traverses",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1884"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1887"
     },
     {
      "engine": "Malloy",
      "id": "Q9a-no-locality",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1893"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1896"
     },
     {
      "engine": "Malloy",
      "id": "Q9-bad-join-usage",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1901"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1904"
     },
     {
      "engine": "SLayer",
      "id": "Q9a2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1911"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1914"
     },
     {
      "engine": "Malloy",
      "id": "Q9a2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1911"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1914"
     },
     {
      "engine": "MetricFlow",
      "id": "Q9a2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1911"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1914"
     },
     {
      "engine": "SLayer",
      "id": "Q9b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1931"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1934"
     },
     {
      "engine": "Cube",
      "id": "Q9b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1931"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1934"
     },
     {
      "engine": "SLayer",
      "id": "Q9b2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1944"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1947"
     },
     {
      "engine": "Cube",
      "id": "Q9b2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1944"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1947"
     },
     {
      "engine": "SLayer",
      "id": "Q9b3",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1957"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1960"
     },
     {
      "engine": "SLayer",
      "id": "Q9d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L1967"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L1970"
     },
     {
      "engine": "SLayer",
      "id": "F6",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2000"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2003"
     },
     {
      "engine": "SLayer",
      "id": "F6-assoc",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2010"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2013"
     },
     {
      "engine": "SLayer",
      "id": "F6-error",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2023"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2026"
     },
     {
      "engine": "SLayer",
      "id": "B1",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2032"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2035"
     },
     {
      "engine": "SLayer",
      "id": "B1-assoc",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2049"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2052"
     },
     {
      "engine": "SLayer",
      "id": "B1-tier",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2065"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2068"
     },
     {
      "engine": "Cube",
      "id": "B1-tier",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2065"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2068"
     },
     {
      "engine": "Cube",
      "id": "B1-cube-tier-legacy",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2079"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2082"
     },
     {
      "engine": "SLayer",
      "id": "B2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2088"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2091"
     },
     {
      "engine": "SLayer",
      "id": "B2-coalesce",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2098"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2101"
     },
     {
      "engine": "Cube",
      "id": "Q9-cube-no-pk",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2107"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2110"
     },
     {
      "engine": "MetricFlow",
      "id": "Q9-mf-raw-where-alias",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3921"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4105"
     }
    ]
   },
@@ -1516,172 +1516,172 @@
     {
      "engine": "SLayer",
      "id": "Q10a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2116"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2119"
     },
     {
      "engine": "Malloy",
      "id": "Q10a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2116"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2119"
     },
     {
      "engine": "Cube",
      "id": "Q10a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2116"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2119"
     },
     {
      "engine": "MetricFlow",
      "id": "Q10a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2116"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2119"
     },
     {
      "engine": "Malloy",
      "id": "Q10a-restricts-orders",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2139"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2142"
     },
     {
      "engine": "SLayer",
      "id": "Q10b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2153"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2156"
     },
     {
      "engine": "Malloy",
      "id": "Q10b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2153"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2156"
     },
     {
      "engine": "Cube",
      "id": "Q10b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2153"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2156"
     },
     {
      "engine": "MetricFlow",
      "id": "Q10b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2153"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2156"
     },
     {
      "engine": "SLayer",
      "id": "Q10c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2181"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2184"
     },
     {
      "engine": "Malloy",
      "id": "Q10c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2181"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2184"
     },
     {
      "engine": "Cube",
      "id": "Q10c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2181"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2184"
     },
     {
      "engine": "SLayer",
      "id": "Q10d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2200"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2203"
     },
     {
      "engine": "Malloy",
      "id": "Q10d-malloy",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2212"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2215"
     },
     {
      "engine": "SLayer",
      "id": "Q10e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2224"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2227"
     },
     {
      "engine": "Malloy",
      "id": "Q10e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2224"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2227"
     },
     {
      "engine": "MetricFlow",
      "id": "Q10e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2224"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2227"
     },
     {
      "engine": "SLayer",
      "id": "Q10f",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2243"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2246"
     },
     {
      "engine": "SLayer",
      "id": "Q10g",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2253"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2256"
     },
     {
      "engine": "SLayer",
      "id": "Q10h",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2263"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2266"
     },
     {
      "engine": "Cube",
      "id": "Q10h",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2263"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2266"
     },
     {
      "engine": "Malloy",
      "id": "Q10-exists-having",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2279"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2282"
     },
     {
      "engine": "Malloy",
      "id": "Q10-antijoin-count",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2289"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2292"
     },
     {
      "engine": "SLayer",
      "id": "X2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2299"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2302"
     },
     {
      "engine": "Cube",
      "id": "Q10-cube-not-equals-null",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2310"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2313"
     },
     {
      "engine": "Cube",
      "id": "Q10-cube-not-set",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2322"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2325"
     },
     {
      "engine": "Cube",
      "id": "Q10-cube-not-set-measure-only",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2331"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2334"
     },
     {
      "engine": "Cube",
      "id": "Q10-cube-not-set-measure-only-legacy",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2344"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2347"
     },
     {
      "engine": "Cube",
      "id": "Q10-cube-not-equals-measure-only-legacy",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2353"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2356"
     },
     {
      "engine": "MetricFlow",
      "id": "Q10-mf-any-order",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3942"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4126"
     },
     {
      "engine": "MetricFlow",
      "id": "Q10-mf-gold-or-any-order",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3953"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4137"
     },
     {
      "engine": "MetricFlow",
      "id": "Q10-mf-rowlevel-or",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3966"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4150"
     },
     {
      "engine": "MetricFlow",
      "id": "Q10-mf-antijoin-eq0",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3977"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4161"
     },
     {
      "engine": "MetricFlow",
      "id": "X2-mf-any",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3991"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4175"
     }
    ]
   },
@@ -1721,117 +1721,117 @@
     {
      "engine": "SLayer",
      "id": "Q11a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2366"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2369"
     },
     {
      "engine": "SLayer",
      "id": "Q11-count_distinct",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2378"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2381"
     },
     {
      "engine": "SLayer",
      "id": "Q11-min",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2390"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2393"
     },
     {
      "engine": "SLayer",
      "id": "Q11-max",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2402"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2405"
     },
     {
      "engine": "SLayer",
      "id": "Q11-count",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2414"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2417"
     },
     {
      "engine": "SLayer",
      "id": "Q11-avg",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2426"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2429"
     },
     {
      "engine": "SLayer",
      "id": "Q11-last",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2438"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2441"
     },
     {
      "engine": "SLayer",
      "id": "Q11-first",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2451"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2454"
     },
     {
      "engine": "SLayer",
      "id": "Q11-range",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2464"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2467"
     },
     {
      "engine": "Cube",
      "id": "Q11-range",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2464"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2467"
     },
     {
      "engine": "SLayer",
      "id": "Q11-range-cd",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2485"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2488"
     },
     {
      "engine": "Cube",
      "id": "Q11-range-cd",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2485"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2488"
     },
     {
      "engine": "SLayer",
      "id": "Q11-status",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2505"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2508"
     },
     {
      "engine": "SLayer",
      "id": "W1",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2518"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2521"
     },
     {
      "engine": "SLayer",
      "id": "W3",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2532"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2535"
     },
     {
      "engine": "Malloy",
      "id": "Q11-moving",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2545"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2548"
     },
     {
      "engine": "Malloy",
      "id": "Q11-distinct-sum",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2559"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2562"
     },
     {
      "engine": "Cube",
      "id": "Q11-cube-rows-frame",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2575"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2578"
     },
     {
      "engine": "Cube",
      "id": "Q11-cube-range-frame",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2590"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2593"
     },
     {
      "engine": "Cube",
      "id": "Q11-cube-rolling-no-range",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2599"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2602"
     },
     {
      "engine": "MetricFlow",
      "id": "Q11-mf-90d-day",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4007"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4191"
     },
     {
      "engine": "MetricFlow",
      "id": "Q11-mf-90d-cd-day",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4024"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4208"
     },
     {
      "engine": "MetricFlow",
      "id": "Q11-mf-90d-last",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4041"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4225"
     }
    ]
   },
@@ -1869,37 +1869,37 @@
     {
      "engine": "SLayer",
      "id": "Q12a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2611"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2614"
     },
     {
      "engine": "Malloy",
      "id": "Q12a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2611"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2614"
     },
     {
      "engine": "Cube",
      "id": "Q12a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2611"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2614"
     },
     {
      "engine": "Malloy",
      "id": "Q12-agg-in-agg",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2627"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2630"
     },
     {
      "engine": "SLayer",
      "id": "Q12b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2635"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2638"
     },
     {
      "engine": "SLayer",
      "id": "Q12c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2644"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2647"
     },
     {
      "engine": "SLayer",
      "id": "Q12d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2655"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2658"
     }
    ]
   },
@@ -1936,62 +1936,62 @@
     {
      "engine": "SLayer",
      "id": "Q13a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2665"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2668"
     },
     {
      "engine": "MetricFlow",
      "id": "Q13a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2665"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2668"
     },
     {
      "engine": "SLayer",
      "id": "Q13a-order",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2683"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2686"
     },
     {
      "engine": "Malloy",
      "id": "Q13a-order",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2683"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2686"
     },
     {
      "engine": "Malloy",
      "id": "Q13-not-in-output",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2699"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2702"
     },
     {
      "engine": "Malloy",
      "id": "Q13-dotted",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2707"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2710"
     },
     {
      "engine": "Malloy",
      "id": "Q13-calc",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2715"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2718"
     },
     {
      "engine": "SLayer",
      "id": "Q13b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2723"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2726"
     },
     {
      "engine": "SLayer",
      "id": "Q13c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2734"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2737"
     },
     {
      "engine": "Cube",
      "id": "Q13-cube-order-measure",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2743"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2746"
     },
     {
      "engine": "Cube",
      "id": "Q13-cube-order-dimension",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2755"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2758"
     },
     {
      "engine": "MetricFlow",
      "id": "Q13-mf-order-unselected-dim",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4064"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4248"
     }
    ]
   },
@@ -2030,62 +2030,62 @@
     {
      "engine": "SLayer",
      "id": "Q14a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2766"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2769"
     },
     {
      "engine": "Malloy",
      "id": "Q14a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2766"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2769"
     },
     {
      "engine": "Malloy",
      "id": "Q14a-nest",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2785"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2788"
     },
     {
      "engine": "SLayer",
      "id": "Q14b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2798"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2801"
     },
     {
      "engine": "SLayer",
      "id": "W2",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2810"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2813"
     },
     {
      "engine": "SLayer",
      "id": "Q14c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2823"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2826"
     },
     {
      "engine": "Malloy",
      "id": "Q14c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2823"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2826"
     },
     {
      "engine": "SLayer",
      "id": "Q14d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2846"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2849"
     },
     {
      "engine": "Cube",
      "id": "Q14-cube-rank",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2862"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2865"
     },
     {
      "engine": "Cube",
      "id": "Q14-cube-rank-uncast",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2872"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2875"
     },
     {
      "engine": "Cube",
      "id": "Q14-cube-rank-measure",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2879"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2882"
     },
     {
      "engine": "Cube",
      "id": "Q14-cube-rank-measure-filtered",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2890"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2893"
     }
    ]
   },
@@ -2125,57 +2125,57 @@
     {
      "engine": "SLayer",
      "id": "Q15a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2904"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2907"
     },
     {
      "engine": "Malloy",
      "id": "Q15a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2904"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2907"
     },
     {
      "engine": "Cube",
      "id": "Q15a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2904"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2907"
     },
     {
      "engine": "SLayer",
      "id": "Q15b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2919"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2922"
     },
     {
      "engine": "SLayer",
      "id": "Q15c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2932"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2935"
     },
     {
      "engine": "SLayer",
      "id": "Q15d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2943"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2946"
     },
     {
      "engine": "SLayer",
      "id": "Q15e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2957"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2960"
     },
     {
      "engine": "SLayer",
      "id": "Q15f",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2971"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2974"
     },
     {
      "engine": "SLayer",
      "id": "Q15g",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2981"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2984"
     },
     {
      "engine": "SLayer",
      "id": "Q15h",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2991"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2994"
     },
     {
      "engine": "Malloy",
      "id": "Q15h",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L2991"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L2994"
     }
    ]
   },
@@ -2213,47 +2213,47 @@
     {
      "engine": "SLayer",
      "id": "Q16a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3008"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3011"
     },
     {
      "engine": "Malloy",
      "id": "Q16a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3008"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3011"
     },
     {
      "engine": "Cube",
      "id": "Q16a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3008"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3011"
     },
     {
      "engine": "SLayer",
      "id": "Q16b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3024"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3027"
     },
     {
      "engine": "SLayer",
      "id": "Q16c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3033"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3036"
     },
     {
      "engine": "Cube",
      "id": "Q16-cube-dow",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3042"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3045"
     },
     {
      "engine": "Cube",
      "id": "Q16-cube-dow-direct",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3050"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3053"
     },
     {
      "engine": "MetricFlow",
      "id": "Q16-mf-filter-expression",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4074"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4258"
     },
     {
      "engine": "MetricFlow",
      "id": "Q16-mf-groupby-expression",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4085"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4269"
     }
    ]
   },
@@ -2292,62 +2292,62 @@
     {
      "engine": "SLayer",
      "id": "Q17a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3058"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3061"
     },
     {
      "engine": "Malloy",
      "id": "Q17a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3058"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3061"
     },
     {
      "engine": "Cube",
      "id": "Q17a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3058"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3061"
     },
     {
      "engine": "MetricFlow",
      "id": "Q17a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3058"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3061"
     },
     {
      "engine": "SLayer",
      "id": "Q17b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3081"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3084"
     },
     {
      "engine": "SLayer",
      "id": "Q17c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3092"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3095"
     },
     {
      "engine": "SLayer",
      "id": "Q17d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3103"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3106"
     },
     {
      "engine": "Malloy",
      "id": "Q17d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3103"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3106"
     },
     {
      "engine": "Cube",
      "id": "Q17d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3103"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3106"
     },
     {
      "engine": "Malloy",
      "id": "Q17-lag-aov",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3121"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3124"
     },
     {
      "engine": "Cube",
      "id": "Q17-lag-aov",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3121"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3124"
     },
     {
      "engine": "SLayer",
      "id": "Q17e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3136"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3139"
     }
    ]
   },
@@ -2384,87 +2384,87 @@
     {
      "engine": "SLayer",
      "id": "Q18-create",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3145"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3148"
     },
     {
      "engine": "SLayer",
      "id": "Q18a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3158"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3161"
     },
     {
      "engine": "MetricFlow",
      "id": "Q18a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3158"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3161"
     },
     {
      "engine": "Malloy",
      "id": "Q18-malloy-day",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3171"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3174"
     },
     {
      "engine": "Malloy",
      "id": "Q18-malloy-inline",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3181"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3184"
     },
     {
      "engine": "Malloy",
      "id": "Q18-malloy-week",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3191"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3194"
     },
     {
      "engine": "Malloy",
      "id": "Q18-malloy-filter",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3202"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3205"
     },
     {
      "engine": "Malloy",
      "id": "Q18-malloy-year",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3213"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3216"
     },
     {
      "engine": "SLayer",
      "id": "Q18b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3222"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3225"
     },
     {
      "engine": "MetricFlow",
      "id": "Q18b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3222"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3225"
     },
     {
      "engine": "SLayer",
      "id": "Q18c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3235"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3238"
     },
     {
      "engine": "MetricFlow",
      "id": "Q18c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3235"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3238"
     },
     {
      "engine": "SLayer",
      "id": "Q18d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3250"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3253"
     },
     {
      "engine": "MetricFlow",
      "id": "Q18d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3250"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3253"
     },
     {
      "engine": "SLayer",
      "id": "Q18e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3267"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3270"
     },
     {
      "engine": "Cube",
      "id": "Q18-cube-day",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3278"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3281"
     },
     {
      "engine": "MetricFlow",
      "id": "Q18-mf-filter-day-grain",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4094"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4278"
     }
    ]
   },
@@ -2504,22 +2504,22 @@
     {
      "engine": "Cube",
      "id": "Q19-cube-rest",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3288"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3291"
     },
     {
      "engine": "Cube",
      "id": "Q19-cube-sql",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3300"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3303"
     },
     {
      "engine": "Cube",
      "id": "Q19-cube-rest-legacy",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3312"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3315"
     },
     {
      "engine": "Cube",
      "id": "Q19-cube-sql-orders-first",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3324"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3327"
     }
    ]
   },
@@ -2560,52 +2560,52 @@
     {
      "engine": "Cube",
      "id": "Q20-cube-days-ago",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3335"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3338"
     },
     {
      "engine": "Cube",
      "id": "Q20-cube-last-years",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3345"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3348"
     },
     {
      "engine": "MetricFlow",
      "id": "Q20-mf-sql-date-math",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4104"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4288"
     },
     {
      "engine": "MetricFlow",
      "id": "Q20-mf-start-snaps",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4115"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4299"
     },
     {
      "engine": "SLayer",
      "id": "Q20-slayer-last-n",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4219"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4403"
     },
     {
      "engine": "SLayer",
      "id": "Q20-slayer-ago",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4231"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4415"
     },
     {
      "engine": "SLayer",
      "id": "Q20-slayer-this-year",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4240"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4424"
     },
     {
      "engine": "SLayer",
      "id": "Q20-slayer-quarter-literal",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4249"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4433"
     },
     {
      "engine": "SLayer",
      "id": "Q20-slayer-period-upper",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4258"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4442"
     },
     {
      "engine": "SLayer",
      "id": "Q20-slayer-open-ended",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4267"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4451"
     }
    ]
   },
@@ -2644,42 +2644,42 @@
     {
      "engine": "Cube",
      "id": "Q21-cube-timezone",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3357"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3360"
     },
     {
      "engine": "Cube",
      "id": "Q21-cube-day-of-week",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3370"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3373"
     },
     {
      "engine": "MetricFlow",
      "id": "Q21-mf-dow",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4134"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4318"
     },
     {
      "engine": "MetricFlow",
      "id": "Q21-mf-dow-dunder",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4146"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4330"
     },
     {
      "engine": "SLayer",
      "id": "Q21-slayer-day-of-week",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4694"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4878"
     },
     {
      "engine": "SLayer",
      "id": "Q21-slayer-date-diff",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4703"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4887"
     },
     {
      "engine": "SLayer",
      "id": "Q21-slayer-date-add",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4712"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4896"
     },
     {
      "engine": "SLayer",
      "id": "Q21-slayer-interval",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4723"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4907"
     }
    ]
   },
@@ -2691,8 +2691,9 @@
    "origin": "Malloy",
    "cells": {
     "slayer": {
-     "verdict": "no",
-     "text": "Array and struct columns are opaque."
+     "verdict": "partial",
+     "how": "<code>count_distinct(tags.value)</code> · <code>contains(tags, 'vip')</code>",
+     "caveat": "List columns aggregate fan-out-safe beside parent aggregates (Q27); struct columns are opaque."
     },
     "malloy": {
      "verdict": "yes",
@@ -2750,47 +2751,47 @@
     {
      "engine": "MetricFlow",
      "id": "Q23-mf-saved-where",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4155"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4339"
     },
     {
      "engine": "MetricFlow",
      "id": "Q23-mf-saved-groupby",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4169"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4353"
     },
     {
      "engine": "SLayer",
      "id": "Q23-slayer-refine-groupby",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4279"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4463"
     },
     {
      "engine": "SLayer",
      "id": "Q23-slayer-refine-where",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4290"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4474"
     },
     {
      "engine": "SLayer",
      "id": "Q23-slayer-refine-measure",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4299"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4483"
     },
     {
      "engine": "SLayer",
      "id": "Q23-slayer-refine-top",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4308"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4492"
     },
     {
      "engine": "SLayer",
      "id": "Q23-slayer-refine-final-stage",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4317"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4501"
     },
     {
      "engine": "SLayer",
      "id": "Q23-slayer-refine-aggregated-away",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4326"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4510"
     },
     {
      "engine": "SLayer",
      "id": "Q23-slayer-refine-conflict",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4334"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4518"
     }
    ]
   },
@@ -2827,27 +2828,27 @@
     {
      "engine": "SLayer",
      "id": "Q24a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3378"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3381"
     },
     {
      "engine": "Malloy",
      "id": "Q24a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3378"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3381"
     },
     {
      "engine": "SLayer",
      "id": "Q24-ties",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3400"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3403"
     },
     {
      "engine": "Malloy",
      "id": "Q24-sibling-customers",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3417"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3420"
     },
     {
      "engine": "Malloy",
      "id": "Q24-sibling-status",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3434"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3437"
     }
    ]
   },
@@ -2887,32 +2888,32 @@
     {
      "engine": "SLayer",
      "id": "Q25-per-customer",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3450"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3453"
     },
     {
      "engine": "SLayer",
      "id": "Q25-measure-on-orders",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3459"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3462"
     },
     {
      "engine": "SLayer",
      "id": "Q25-customers-with-orders",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3469"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3472"
     },
     {
      "engine": "Malloy",
      "id": "Q25-customers-with-orders",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3469"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3472"
     },
     {
      "engine": "SLayer",
      "id": "Q25-per-order",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3482"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3485"
     },
     {
      "engine": "Malloy",
      "id": "Q25-per-order",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3482"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3485"
     }
    ]
   },
@@ -2952,112 +2953,288 @@
     {
      "engine": "SLayer",
      "id": "Q26-total-per-customer",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3497"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3500"
     },
     {
      "engine": "Malloy",
      "id": "Q26-total-per-customer",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3497"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3500"
     },
     {
      "engine": "Cube",
      "id": "Q26-total-per-customer",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3497"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3500"
     },
     {
      "engine": "MetricFlow",
      "id": "Q26-total-per-customer",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3497"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3500"
     },
     {
      "engine": "SLayer",
      "id": "Q26-ratio",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3517"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3520"
     },
     {
      "engine": "Malloy",
      "id": "Q26-ratio",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3517"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3520"
     },
     {
      "engine": "Cube",
      "id": "Q26-ratio",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3517"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3520"
     },
     {
      "engine": "MetricFlow",
      "id": "Q26-ratio",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3517"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3520"
     },
     {
      "engine": "SLayer",
      "id": "Q26-two-totals",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3538"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3541"
     },
     {
      "engine": "Malloy",
      "id": "Q26-two-totals",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3538"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3541"
     },
     {
      "engine": "Cube",
      "id": "Q26-two-totals",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3538"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3541"
     },
     {
      "engine": "MetricFlow",
      "id": "Q26-two-totals",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3538"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3541"
     },
     {
      "engine": "SLayer",
      "id": "Q26-per-month",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3559"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3562"
     },
     {
      "engine": "Malloy",
      "id": "Q26-per-month",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3559"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3562"
     },
     {
      "engine": "Cube",
      "id": "Q26-per-month",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3559"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3562"
     },
     {
      "engine": "MetricFlow",
      "id": "Q26-per-month",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3559"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3562"
     },
     {
      "engine": "SLayer",
      "id": "Q26-per-region-month",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3600"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3603"
     },
     {
      "engine": "Malloy",
      "id": "Q26-per-region-month",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3600"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3603"
     },
     {
      "engine": "Cube",
      "id": "Q26-per-region-month",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3600"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3603"
     },
     {
      "engine": "MetricFlow",
      "id": "Q26-per-region-month",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3600"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3603"
     },
     {
      "engine": "SLayer",
      "id": "Q26-group-by-unrelated-refused",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3637"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3640"
     },
     {
      "engine": "Cube",
      "id": "Q26-cube-fake-join",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3644"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3647"
+    }
+   ]
+  },
+  {
+   "id": "Q27",
+   "group": "Query semantics",
+   "name": "List columns",
+   "intent": "Customers tagged <code>vip</code>, tagged both <code>vip</code> and <code>eu</code>, counted per tag, and each region's tag set, over a <code>tags VARCHAR[]</code> column.",
+   "origin": "SLayer",
+   "cells": {
+    "slayer": {
+     "verdict": "yes",
+     "how": "<code>contains(tags, 'vip')</code> · <code>contains_all(tags, ['vip', 'eu'])</code> · <code>tags.value</code> · <code>collect(tags.value)</code>",
+     "caveat": "A repeated tag counts its customer once per tag under <code>associate</code>, element aggregates sit next to customer aggregates without fan-out, and NULL elements are ignored (verified)."
+    },
+    "malloy": {
+     "verdict": "yes",
+     "how": "<code>tags.each</code> · <code>count(tags.each) { where: ... }</code> in <code>having:</code>",
+     "caveat": "Symmetric aggregates keep customer counts exact (verified); both tags need a <code>having:</code> per tag, and a tag set is a <code>nest:</code>, not a list value."
+    },
+    "cube": {
+     "verdict": "no",
+     "text": "A list dimension groups by whole lists, its <code>contains</code> filter is a database error, and the SQL API has no list functions (verified).",
+     "caveat": "A model-declared one-row-per-tag cube with a synthetic key counts customers per tag; next to a customer count either planner's root selection drops customers (not counted)."
+    },
+    "metricflow": {
+     "verdict": "partial",
+     "text": "A raw-SQL <code>where</code> (<code>list_contains(...)</code>, <code>list_has_all(...)</code>) filters by tags (verified).",
+     "caveat": "Grouping by the list dimension groups by whole lists; per-tag counts need a one-row-per-tag dbt model (not counted)."
+    }
+   },
+   "leaders": [
+    "slayer",
+    "malloy"
+   ],
+   "comment": "SLayer and Malloy treat a list column as rows of its elements without double counting; Cube and MetricFlow see whole lists, MetricFlow filtering them only through raw SQL.",
+   "probes": [
+    {
+     "engine": "SLayer",
+     "id": "Q27-has-tag",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3662"
+    },
+    {
+     "engine": "Malloy",
+     "id": "Q27-has-tag",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3662"
+    },
+    {
+     "engine": "Cube",
+     "id": "Q27-has-tag",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3662"
+    },
+    {
+     "engine": "MetricFlow",
+     "id": "Q27-has-tag",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3662"
+    },
+    {
+     "engine": "SLayer",
+     "id": "Q27-has-tag-element",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3683"
+    },
+    {
+     "engine": "Malloy",
+     "id": "Q27-has-tag-element",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3683"
+    },
+    {
+     "engine": "Cube",
+     "id": "Q27-has-tag-element",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3683"
+    },
+    {
+     "engine": "MetricFlow",
+     "id": "Q27-has-tag-element",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3683"
+    },
+    {
+     "engine": "SLayer",
+     "id": "Q27-has-both",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3705"
+    },
+    {
+     "engine": "Malloy",
+     "id": "Q27-has-both",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3705"
+    },
+    {
+     "engine": "Cube",
+     "id": "Q27-has-both",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3705"
+    },
+    {
+     "engine": "MetricFlow",
+     "id": "Q27-has-both",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3705"
+    },
+    {
+     "engine": "SLayer",
+     "id": "Q27-customers-per-tag",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3728"
+    },
+    {
+     "engine": "Malloy",
+     "id": "Q27-customers-per-tag",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3728"
+    },
+    {
+     "engine": "Cube",
+     "id": "Q27-customers-per-tag",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3728"
+    },
+    {
+     "engine": "MetricFlow",
+     "id": "Q27-customers-per-tag",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3728"
+    },
+    {
+     "engine": "SLayer",
+     "id": "Q27-group-by-list",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3756"
+    },
+    {
+     "engine": "Malloy",
+     "id": "Q27-group-by-list",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3756"
+    },
+    {
+     "engine": "Cube",
+     "id": "Q27-group-by-list",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3756"
+    },
+    {
+     "engine": "MetricFlow",
+     "id": "Q27-group-by-list",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3756"
+    },
+    {
+     "engine": "SLayer",
+     "id": "Q27-region-tags",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3779"
+    },
+    {
+     "engine": "Malloy",
+     "id": "Q27-region-tags",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3779"
+    },
+    {
+     "engine": "Cube",
+     "id": "Q27-region-tags",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3779"
+    },
+    {
+     "engine": "MetricFlow",
+     "id": "Q27-region-tags",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3779"
+    },
+    {
+     "engine": "SLayer",
+     "id": "Q27-region-tag-set",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3814"
+    },
+    {
+     "engine": "Malloy",
+     "id": "Q27-region-tag-set",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3814"
+    },
+    {
+     "engine": "Cube",
+     "id": "Q27-region-tag-set",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3814"
+    },
+    {
+     "engine": "MetricFlow",
+     "id": "Q27-region-tag-set",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3814"
     }
    ]
   },
@@ -3156,32 +3333,32 @@
     {
      "engine": "SLayer",
      "id": "C3a",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3657"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3841"
     },
     {
      "engine": "SLayer",
      "id": "C3b",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3666"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3850"
     },
     {
      "engine": "SLayer",
      "id": "C3c",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3675"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3859"
     },
     {
      "engine": "SLayer",
      "id": "C3d",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3689"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3873"
     },
     {
      "engine": "SLayer",
      "id": "C3e",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3701"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3885"
     },
     {
      "engine": "SLayer",
      "id": "C3f",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3709"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3893"
     }
    ]
   },
@@ -3194,7 +3371,7 @@
    "cells": {
     "slayer": {
      "verdict": "yes",
-     "text": "8 engines tested live, 4 more by SQL generation."
+     "text": "9 engines tested live, 4 more by SQL generation."
     },
     "malloy": {
      "verdict": "yes",
@@ -3444,12 +3621,12 @@
     {
      "engine": "SLayer",
      "id": "C11-facade-listing",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3719"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3903"
     },
     {
      "engine": "SLayer",
      "id": "C11-facade-query",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L3741"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L3925"
     }
    ]
   },
@@ -3550,32 +3727,32 @@
     {
      "engine": "MetricFlow",
      "id": "C14-mf-fiscal-year",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4178"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4362"
     },
     {
      "engine": "SLayer",
      "id": "C14-slayer-fiscal-year",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4543"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4727"
     },
     {
      "engine": "SLayer",
      "id": "C14-slayer-fiscal-year-shift",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4554"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4738"
     },
     {
      "engine": "SLayer",
      "id": "C14-slayer-fiscal-year-spine",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4566"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4750"
     },
     {
      "engine": "SLayer",
      "id": "C14-slayer-quarter-hour",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4581"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4765"
     },
     {
      "engine": "SLayer",
      "id": "C14-slayer-quarter-hour-spine",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4590"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4774"
     }
    ]
   },
@@ -3615,7 +3792,7 @@
     {
      "engine": "MetricFlow",
      "id": "C15-mf-drill-across-tier",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4192"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4376"
     }
    ]
   },
@@ -3689,7 +3866,7 @@
     {
      "engine": "MetricFlow",
      "id": "C17-mf-dimension-only",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4207"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4391"
     }
    ]
   },
@@ -3761,37 +3938,37 @@
     {
      "engine": "SLayer",
      "id": "C19-axis-two-facts",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4482"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4666"
     },
     {
      "engine": "SLayer",
      "id": "C19-axis-two-facts-region",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4499"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4683"
     },
     {
      "engine": "SLayer",
      "id": "C19-axis-ambiguous-route",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4518"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4702"
     },
     {
      "engine": "SLayer",
      "id": "C19-calendar-model-parity",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4527"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4711"
     },
     {
      "engine": "MetricFlow",
      "id": "C19-mf-two-facts",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4604"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4788"
     },
     {
      "engine": "Cube",
      "id": "C19-cube-two-facts",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4654"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4838"
     },
     {
      "engine": "Malloy",
      "id": "C19-malloy-calendar",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4673"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4857"
     }
    ]
   },
@@ -3830,67 +4007,67 @@
     {
      "engine": "SLayer",
      "id": "C20-spine-fill-month",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4343"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4527"
     },
     {
      "engine": "SLayer",
      "id": "C20-spine-fill-coalesce",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4355"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4539"
     },
     {
      "engine": "SLayer",
      "id": "C20-spine-no-lower-bound",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4367"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4551"
     },
     {
      "engine": "SLayer",
      "id": "C20-spine-per-group",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4375"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4559"
     },
     {
      "engine": "SLayer",
      "id": "C20-spine-fact-filter",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4391"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4575"
     },
     {
      "engine": "SLayer",
      "id": "C20-spine-change",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4403"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4587"
     },
     {
      "engine": "SLayer",
      "id": "C20-spine-cumsum",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4416"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4600"
     },
     {
      "engine": "SLayer",
      "id": "C20-spine-consecutive",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4429"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4613"
     },
     {
      "engine": "SLayer",
      "id": "C20-spine-window",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4443"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4627"
     },
     {
      "engine": "SLayer",
      "id": "C20-spine-lag",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4456"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4640"
     },
     {
      "engine": "SLayer",
      "id": "C20-spine-stage",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4469"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4653"
     },
     {
      "engine": "MetricFlow",
      "id": "C20-mf-no-fill",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4619"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4803"
     },
     {
      "engine": "MetricFlow",
      "id": "C20-mf-join-to-timespine",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4635"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4819"
     }
    ]
   },
@@ -3964,8 +4141,10 @@
    "origin": "MetricFlow",
    "cells": {
     "slayer": {
-     "verdict": "partial",
-     "text": "Imports OSI, dbt and Cube; no export."
+     "verdict": "yes",
+     "how": "<code>slayer export-osi</code>",
+     "text": "Writes an Ossie document that re-imports unedited to the same models (verified); imports Ossie, dbt and Cube.",
+     "caveat": "What Ossie can't express (transforms, windowed and multi-model measures) travels in a SLayer extension and is reported (verified)."
     },
     "malloy": {
      "verdict": "no",
@@ -3981,10 +4160,37 @@
     }
    },
    "leaders": [
+    "slayer",
     "metricflow"
    ],
-   "comment": "OSI has been renamed Apache Ossie.",
-   "probes": []
+   "comment": "SLayer and MetricFlow write Ossie; OSI has been renamed Apache Ossie.",
+   "probes": [
+    {
+     "engine": "SLayer",
+     "id": "C23-ossie-roundtrip-models",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4918"
+    },
+    {
+     "engine": "SLayer",
+     "id": "C23-ossie-roundtrip-transform",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4925"
+    },
+    {
+     "engine": "SLayer",
+     "id": "C23-ossie-roundtrip-query-backed",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4942"
+    },
+    {
+     "engine": "SLayer",
+     "id": "C23-ossie-report-extension",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4953"
+    },
+    {
+     "engine": "SLayer",
+     "id": "C23-ossie-report-plain",
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4960"
+    }
+   ]
   },
   {
    "id": "C24",
@@ -4023,12 +4229,12 @@
     {
      "engine": "SLayer",
      "id": "C24-mcp-connect-and-ask",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4734"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4969"
     },
     {
      "engine": "SLayer",
      "id": "C24-mcp-help",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4746"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4981"
     }
    ]
   },
@@ -4066,17 +4272,17 @@
     {
      "engine": "SLayer",
      "id": "C25-memory-recalled-by-draft-query",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4754"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L4989"
     },
     {
      "engine": "SLayer",
      "id": "C25-memory-in-inspect",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4765"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L5000"
     },
     {
      "engine": "SLayer",
      "id": "C25-example-query",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4775"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L5010"
     }
    ]
   },
@@ -4117,12 +4323,12 @@
     {
      "engine": "SLayer",
      "id": "C26-search-finds-column",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4787"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L5022"
     },
     {
      "engine": "SLayer",
      "id": "C26-search-memories-and-columns",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4795"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L5030"
     }
    ]
   },
@@ -4160,12 +4366,12 @@
     {
      "engine": "SLayer",
      "id": "C27-ingest-fk-joins",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4805"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L5040"
     },
     {
      "engine": "SLayer",
      "id": "C27-ingest-comments",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4820"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L5055"
     }
    ]
   },
@@ -4205,12 +4411,12 @@
     {
      "engine": "SLayer",
      "id": "C28-edit-column-then-query",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4831"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L5066"
     },
     {
      "engine": "SLayer",
      "id": "C28-saved-measure-then-query",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4842"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L5077"
     }
    ]
   },
@@ -4250,17 +4456,17 @@
     {
      "engine": "SLayer",
      "id": "C29-drift-query-error",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4857"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L5092"
     },
     {
      "engine": "SLayer",
      "id": "C29-validate-models",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4867"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L5102"
     },
     {
      "engine": "SLayer",
      "id": "C29-reingest-keeps-edits",
-     "url": "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml#L4876"
+     "url": "https://github.com/MotleyAI/slayer/blob/1.x/examples/comparisons/probes.yaml#L5111"
     }
    ]
   }

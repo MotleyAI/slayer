@@ -74,7 +74,7 @@ Base and PR target: `1.x` (version 1.8.5). See proposal.md for the motivation.
    - `match`: the probe's `query` runs against the re-imported store and is compared with `truth_sql`.
    - `{same_models: true}`: every model in the original store equals its re-imported twin, comparing
      `model_dump(exclude_defaults=True)` with `meta` keys prefixed `osi_` (import provenance) removed, and an emptied
-     `meta` dropped.
+     `meta` dropped, at every nesting level.
    - `{contains, lacks}`: checked against the **export** report text only.
 
    (codex: the model-equality assertion substantiates "re-imports unedited to the same models"; the export-only report
@@ -113,3 +113,5 @@ Base and PR target: `1.x` (version 1.8.5). See proposal.md for the motivation.
   `matrix.json` after the merge, and keep `main`'s C9 probes and cell.
 - [`same_models` gets brittle if the importer adds more provenance keys] → It ignores only the `osi_` prefix the
   importer owns, so any other difference is a real round-trip regression.
+- [`customers.yaml`'s `tags` line differs from `main`'s (it adds `db_type`)] → The forward-merge keeps `1.x`'s line;
+  `main`'s C23 round trip needs it too.

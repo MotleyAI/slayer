@@ -4,11 +4,12 @@
 --   order 20 is an orphan (NULL customer_id); no orders in 2024-04..11 or 2025-04 (month gaps);
 --   returns: 2024-06 has returns but no orders, return 3 is an orphan, Eve returns once;
 --   events carry sub-hour timestamps for quarter-hour buckets.
+--   tags: Alice repeats 'vip', Carol has a NULL element, Dave's list is empty, Eve's is NULL.
 -- Foreign keys are declared, as auto-ingestion reads them (DuckDB then refuses to alter a referenced table).
 CREATE TABLE regions (id INTEGER PRIMARY KEY, name VARCHAR);
 CREATE TABLE customers (
   id INTEGER PRIMARY KEY, name VARCHAR, region_id INTEGER REFERENCES regions (id), city VARCHAR,
-  tier VARCHAR, credit DOUBLE, discount DOUBLE
+  tier VARCHAR, credit DOUBLE, discount DOUBLE, tags VARCHAR[]
 );
 CREATE TABLE orders (
   id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES customers (id), amount DOUBLE, status VARCHAR,
@@ -18,13 +19,13 @@ CREATE TABLE orders (
 INSERT INTO regions VALUES (1, 'North'), (2, 'South'), (3, 'East');
 
 INSERT INTO customers VALUES
-  (1, 'Alice', 1, 'Oslo', 'gold', 100, 1),
-  (2, 'Bob', 1, 'Bergen', 'silver', 200, 2),
-  (3, 'Carol', 2, 'Rome', 'gold', 300, 3),
-  (4, 'Dave', 2, 'Rome', 'bronze', 400, 0),
-  (5, 'Eve', NULL, 'Paris', 'silver', 500, 5),
-  (6, 'Frank', 1, 'Oslo', 'gold', 600, 0),
-  (7, 'Gina', 2, 'Oslo', 'bronze', 700, 1);
+  (1, 'Alice', 1, 'Oslo', 'gold', 100, 1, ['vip', 'eu', 'vip']),
+  (2, 'Bob', 1, 'Bergen', 'silver', 200, 2, ['eu']),
+  (3, 'Carol', 2, 'Rome', 'gold', 300, 3, ['vip', NULL]),
+  (4, 'Dave', 2, 'Rome', 'bronze', 400, 0, []),
+  (5, 'Eve', NULL, 'Paris', 'silver', 500, 5, NULL),
+  (6, 'Frank', 1, 'Oslo', 'gold', 600, 0, ['new', 'eu']),
+  (7, 'Gina', 2, 'Oslo', 'bronze', 700, 1, ['vip', 'new']);
 
 INSERT INTO orders VALUES
   (1, 1, 100, 'ok', DATE '2024-01-05'),
