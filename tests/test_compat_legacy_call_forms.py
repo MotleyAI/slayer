@@ -146,7 +146,7 @@ def test_a_scope_error_fails_before_reading(sqlite_shop: DatasourceConfig, tmp_p
 # --------------------------------------------------------------------------- #
 # Converters
 # --------------------------------------------------------------------------- #
-def _client_converter(kind: str, *, dialect: str | None) -> Any:
+def _client_converter(kind: str, *, dialect: str | None) -> DbtToSlayerConverter | OsiToSlayerConverter:
     if kind == "dbt":
         return DbtToSlayerConverter(project=ORDERS_PROJECT, data_source=DS_NAME, include_hidden_datasets=True)
     return OsiToSlayerConverter(documents=[ORDERS_OSI], data_source=DS_NAME, target_dialect=dialect)

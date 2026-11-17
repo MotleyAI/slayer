@@ -9,7 +9,7 @@ value equalling the measure's is pinned by the executed twin-query law in
 
 from __future__ import annotations
 
-from slayer.ir.planned import OrderEntry
+from slayer.ir.planned import OrderEntry, PlannedQuery, RegroupAttachPlan
 from slayer.engine.plan import plan_query
 
 from tests._dev1840_fixtures import DatasetMetric as _CM
@@ -20,7 +20,7 @@ from tests._dev1865_fixtures import DatasetMetric, plan, q
 _DEV1840_CM = _CM(expression="sum(customers.spend)", name="cm")
 
 
-def _dev1840_attach(planned, root):
+def _dev1840_attach(planned: PlannedQuery, root: str) -> RegroupAttachPlan:
     matches = [a for a in planned.regroup_attach_plans if a.producer_root_dataset == root]
     assert len(matches) == 1, [a.producer_root_dataset for a in planned.regroup_attach_plans]
     return matches[0]

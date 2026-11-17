@@ -26,7 +26,7 @@ from slayer.core.models import (
     SlayerDataset,
 )
 from slayer.core.query import SlayerQuery, TimeDimension
-from slayer.ir.planned import MaskTyping, RankedProducerKernel
+from slayer.ir.planned import MaskTyping, PlannedQuery, RankedProducerKernel, RegroupAttachPlan
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
@@ -501,7 +501,7 @@ def _s5_plans(formula: str, *, dimensions=None, **plan_kwargs):
     ]
 
 
-def _assert_single_ranked_host(planned):
+def _assert_single_ranked_host(planned: PlannedQuery) -> RegroupAttachPlan:
     """A first/last isolates through the ranked route, one regroup producer with no nested plan. Returns the attach."""
     assert len(planned.regroup_attach_plans) == 1, (
         f"Expected exactly one regroup-attach producer; "
@@ -517,7 +517,7 @@ def _assert_single_ranked_host(planned):
     return attach
 
 
-def _assert_single_host_rooted(plans):
+def _assert_single_host_rooted(plans: list[RegroupAttachPlan]) -> RegroupAttachPlan:
     """One HOST-rooted producer attach, its producer free of nested isolation."""
     assert len(plans) == 1, (
         f"Expected exactly one host-rooted producer; got {len(plans)}: {plans}"

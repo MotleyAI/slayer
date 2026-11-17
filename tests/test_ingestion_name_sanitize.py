@@ -232,7 +232,7 @@ class TestCollisionPolicy:
         monkeypatch.setattr(ingestion_module, "list_ingestable_objects", _reversed)
         backward = await _report(ds)
 
-        def _mapping(report):
+        def _mapping(report: IngestionScanReport) -> dict[str, str | None]:
             return {m.name: m.sql_table for m in report.datasets}
 
         assert _mapping(forward) == _mapping(backward)
@@ -274,7 +274,7 @@ class TestCollisionPolicy:
         monkeypatch.setattr(ingestion_module, "list_ingestable_objects", _reversed)
         backward = await _report(ds)
 
-        def _mapping(report):
+        def _mapping(report: IngestionScanReport) -> dict[str, str | None]:
             return {m.name: m.sql_table for m in report.datasets}
 
         assert _mapping(forward) == _mapping(backward)

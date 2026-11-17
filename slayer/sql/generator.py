@@ -1699,8 +1699,8 @@ class SQLGenerator:
 
     @staticmethod
     def _unmaterialised_post_slots(
-        planned_query, aliases_by_slot_id: Dict[str, List[str]],
-    ) -> List[Any]:
+        planned_query: PlannedQuery, aliases_by_slot_id: Dict[str, List[str]],
+    ) -> List[ValueSlot]:
         """DERIVED composite slots needing a column, not yet materialised —
         every level fused into the one trailing step (D8, sql P11). A mask-only
         value has ``needs_column=False`` and renders as a predicate."""
@@ -3506,6 +3506,7 @@ class SQLGenerator:
                     scope=placeholder_scope,
                     skip_filter_ids=placeholder_skip_ids,
                 )
+                assert source_model is not None
                 placeholder_from, placeholder_joins = self._build_from_and_joins(
                     source_dataset=source_model,
                     source_relation=source_relation,
@@ -3921,7 +3922,7 @@ class SQLGenerator:
         return [f"{source_relation}.{a}" for a in slot.public_aliases]
 
     @staticmethod
-    def _producer_render_bundle(attach, bundle):
+    def _producer_render_bundle(attach: RegroupAttachPlan, bundle: ResolvedSourceBundle) -> ResolvedSourceBundle:
         """The bundle a target-rooted producer renders against."""
         root_name = getattr(attach, "producer_root_dataset", None)
         if not root_name:
@@ -4390,10 +4391,10 @@ class SQLGenerator:
     def _build_from_and_joins(
         self,
         *,
-        source_dataset,
+        source_dataset: SlayerDataset,
         source_relation: str,
         joined_paths: List[Tuple[str, ...]],
-        bundle,
+        bundle: ResolvedSourceBundle,
         distinct_lists: bool = False,
     ):
         """Build ``(from_expr, joins)`` for a base SELECT; a list child root reads its parent's own rows."""
@@ -5259,7 +5260,7 @@ class SQLGenerator:
         return derived_expr_by_sid
 
     def _derived_field_expr(
-        self, *, key, source_dataset: SlayerDataset, source_relation: str, bundle,
+        self, *, key: FieldSqlKey, source_dataset: SlayerDataset, source_relation: str, bundle: ResolvedSourceBundle,
         crossed_paths: "Optional[Set[Tuple[str, ...]]]" = None,
     ) -> "Optional[Expression]":
         """The rendered expression for a derived (``ColumnSqlKey``) column."""
@@ -5512,7 +5513,7 @@ class SQLGenerator:
         )
 
     def _raw_time_col_expr_for_planned(
-        self, *, time_field, source_dataset, source_relation: str, bundle,
+        self, *, time_field, source_dataset: SlayerDataset, source_relation: str, bundle: ResolvedSourceBundle,
     ) -> Expression:
         """Untruncated value of a column bucket source."""
 
@@ -5567,7 +5568,7 @@ class SQLGenerator:
         )
 
     def _expand_derived_field_sql(
-        self, *, source_dataset: SlayerDataset, source_relation: str, field_name: str, bundle,
+        self, *, source_dataset: SlayerDataset, source_relation: str, field_name: str, bundle: ResolvedSourceBundle,
         owner_path: Tuple[str, ...] = (),
         root_relation: "Optional[str]" = None,
         crossed_paths: "Optional[Set[Tuple[str, ...]]]" = None,
@@ -5782,7 +5783,9 @@ class SQLGenerator:
             return frozenset(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
         return self._expression_template(agg_name=agg, expression=expression).placeholder_names
 
-    def _walk_join_path_dataset(self, *, source_dataset: SlayerDataset, path, bundle) -> Optional[SlayerDataset]:
+    def _walk_join_path_dataset(
+        self, *, source_dataset: SlayerDataset, path: Sequence[str], bundle: ResolvedSourceBundle,
+    ) -> Optional[SlayerDataset]:
         """The terminal model of a join ``path`` walked from ``source_dataset``
         via the shared walker (tokens may be edge names or reverse hops)."""
         return resolved_terminal(
@@ -5798,7 +5801,7 @@ class SQLGenerator:
         source_dataset: SlayerDataset,
         source_relation: str,
         full_alias: str,
-        bundle=None,
+        bundle: Optional[ResolvedSourceBundle] = None,
         resolved_agg_kwargs: "Optional[Dict[str, ResolvedAggKwarg]]" = None,
         scope: Optional[ScopeFrame] = None,
     ) -> AggRenderSpec:
@@ -6098,7 +6101,7 @@ class SQLGenerator:
         return exp.Exists(this=inner)
 
     def _element_test(
-        self, *, hop, predicates: List[Expression], node_datasets, source_relation: str, bundle, alias,
+        self, *, hop, predicates: List[Expression], node_datasets, source_relation: str, bundle: ResolvedSourceBundle, alias,
     ) -> Expression:
         """Some non-NULL element of the leaf list hop satisfies every predicate (read on its parent's row)."""
         parent_path = tuple(hop.node_path[:-1])
@@ -6237,7 +6240,7 @@ class SQLGenerator:
         )
 
     def _outer_wrapper_alias_facilities(
-        self, *, slot_by_key, cross_dataset_agg_slot_to_cm, aliases_by_slot_id,
+        self, *, slot_by_key, cross_dataset_agg_slot_to_cm: Dict[str, AttachedValue], aliases_by_slot_id,
     ) -> AliasFacilities:
         """Precompute the outer-WHERE slot→qualified-column map as an"""
         slot_id_by_key: Dict[Any, str] = {}

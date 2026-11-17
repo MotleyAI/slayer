@@ -16,7 +16,7 @@ import pytest
 from slayer.core.errors import SlayerError
 from slayer.core.keys import AggregateKey
 from slayer.engine.plan import plan_query
-from slayer.ir.planned import PlainProducerKernel, TrailingWindowProducerKernel
+from slayer.ir.planned import PlainProducerKernel, PlannedQuery, RegroupAttachPlan, TrailingWindowProducerKernel
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
@@ -208,7 +208,7 @@ class TestAttributableDimensionsNeedNoAssociation:
         assert associated_warnings(resp)
 
 
-def _customers_attach(planned):
+def _customers_attach(planned: PlannedQuery) -> RegroupAttachPlan:
     (att,) = [a for a in planned.regroup_attach_plans
               if a.producer_root_dataset == "customers"]
     return att

@@ -35,6 +35,7 @@ from slayer.storage.sidecar_embedding_store import (
 from slayer.storage.sqlite_conn import open_connection, transaction
 from slayer.storage.migrations import stamp_stored
 from slayer.storage.v4_migration import migrate_sqlite_schema
+from slayer.storage.document_keys import keys_for
 
 
 _PRIORITY_KEY = "datasource_priority"
@@ -374,7 +375,9 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                     f"{data_source!r} not found."
                 )
             data = json.loads(row[0])
-            cols = data.get("columns") or []
+            version = data.get("version")
+            fields_key = keys_for(entity="SlayerModel", version=version if isinstance(version, int) else 1).fields
+            cols = data.get(fields_key) or []
             for col in cols:
                 if isinstance(col, dict) and col.get("name") == field_name:
                     _write_sample_fields(

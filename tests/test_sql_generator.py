@@ -7350,10 +7350,11 @@ class TestIsolatedFilteredMeasureCTEs:
         )
 
     async def test_same_filtered_measure_different_aggs_separate_ctes(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_model: SlayerDataset, related_models,
     ) -> None:
         """Same filtered measure with sum + avg must produce distinct _cm_ CTEs, not collide."""
         loss_m = claim_amount_model.get_field("loss_payment_amt")
+        assert loss_m is not None
         loss_m.allowed_aggregations = ["sum", "avg"]
 
         query = SlayerQuery(

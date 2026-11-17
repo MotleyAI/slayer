@@ -1713,7 +1713,7 @@ def _record_shadow(*, owner: SlayerDataset, definition: Aggregation, written: st
 
 
 def _resolve_agg_owner(
-    source, bundle: ResolvedSourceBundle,
+    source: ValueKey, bundle: ResolvedSourceBundle,
 ) -> "tuple[Optional[SlayerDataset], Optional[str]]":
     """``(owning_model, gate_leaf)`` for an aggregate source; ``(None, None)`` when
     the owner can't be confirmed (no host model, unresolved join hop)."""

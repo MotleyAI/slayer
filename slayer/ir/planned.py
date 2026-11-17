@@ -789,10 +789,12 @@ def plan_value_keys(planned) -> Iterator[ValueKey]:
     yield from _walk_plan_keys(planned, set())
 
 
-def plan_value_keys_by_root(planned, root: Optional[str] = None) -> Iterator[Tuple[Optional[str], ValueKey]]:
-    """``plan_value_keys`` paired with the model each key is rooted at: a target-rooted producer's keys at its
+def plan_value_keys_by_root(
+    planned: PlannedQuery, root: Optional[str] = None,
+) -> Iterator[Tuple[Optional[str], ValueKey]]:
+    """``plan_value_keys`` paired with the dataset each key is rooted at: a target-rooted producer's keys at its
     ``producer_root_dataset``, every other key at the enclosing plan's root (``None``: the plan's own)."""
-    attaches = list(getattr(planned, "regroup_attach_plans", ()) or ())
+    attaches = list(planned.regroup_attach_plans)
     for key in _walk_plan_keys(planned, {id(a.producer_plan) for a in attaches}):
         yield root, key
     for attach in attaches:

@@ -57,7 +57,7 @@ def _plan(*, source_model: str = "orders", **kw) -> PlannedQuery:
     return plan_query(query=SlayerQuery(population=source_model, **kw), bundle=_bundle())
 
 
-def _all_slots(pq: PlannedQuery, *, recurse: bool = True) -> list:
+def _all_slots(pq: PlannedQuery, *, recurse: bool = True) -> list[ValueSlot]:
     slots = list(pq.row_slots) + list(pq.aggregate_slots) + list(pq.combined_expression_slots)
     if recurse:
         for ap in pq.regroup_attach_plans:
@@ -76,8 +76,18 @@ def _dep_slots(slot: ValueSlot, by_key: dict) -> list:
     return out
 
 
-def _transform_slots(pq: PlannedQuery) -> list:
+def _transform_slots(pq: PlannedQuery) -> list[ValueSlot]:
     return [s for s in _all_slots(pq) if isinstance(s.key, TransformKey)]
+
+
+def _op(slot: ValueSlot) -> str:
+    assert isinstance(slot.key, TransformKey)
+    return slot.key.op
+
+
+def _stage(slot: ValueSlot) -> Stage:
+    assert slot.stage is not None
+    return slot.stage
 
 
 def _composite_slots(pq: PlannedQuery) -> list:
@@ -216,13 +226,13 @@ class TestConcreteStages:
 
     def test_time_shift_inner_is_derived_level_one(self) -> None:
         pq = _plan(measures=[DatasetMetric(expression="change(sum(amount))", name="c")])
-        [ts] = [s for s in _transform_slots(pq) if s.key.op == "time_shift"]
+        [ts] = [s for s in _transform_slots(pq) if _op(s) == "time_shift"]
         assert ts.stage == Stage(kind=StageKind.DERIVED, level=1)
 
     def test_nested_transform_reaches_derived_level_two(self) -> None:
         pq = _plan(measures=[DatasetMetric(expression="change(cumsum(sum(amount)))", name="n")])
-        assert {s.stage.kind for s in _transform_slots(pq)} == {StageKind.DERIVED}
-        assert {s.stage.level for s in _transform_slots(pq)} == {1, 2}
+        assert {_stage(s).kind for s in _transform_slots(pq)} == {StageKind.DERIVED}
+        assert {_stage(s).level for s in _transform_slots(pq)} == {1, 2}
 
     def test_combined_attach_placeholder_is_producer(self) -> None:
         pq = _plan(measures=[DatasetMetric(expression=f"{CM} + sum(amount)", name="c")])
@@ -234,7 +244,7 @@ class TestConcreteStages:
         ]
         assert placeholders
         for ph in placeholders:
-            assert ph.stage.kind == StageKind.PRODUCER
+            assert _stage(ph).kind == StageKind.PRODUCER
 
     def test_composite_over_a_combined_placeholder_is_combined(self) -> None:
         """No transform operand → the combined-SELECT expression is COMBINED,
@@ -263,8 +273,8 @@ class TestTransparentCompositeLevels:
     def test_last_over_change_shares_the_composites_level(self) -> None:
         pq = _plan(**_LOCAL_STALL)
         by_key = {s.key: s for s in _all_slots(pq)}
-        [ts] = [s for s in _transform_slots(pq) if s.key.op == "time_shift"]
-        [last] = [s for s in _transform_slots(pq) if s.key.op == "last"]
+        [ts] = [s for s in _transform_slots(pq) if _op(s) == "time_shift"]
+        [last] = [s for s in _transform_slots(pq) if _op(s) == "last"]
         assert ts.stage == Stage(kind=StageKind.DERIVED, level=1)
         assert last.stage == Stage(kind=StageKind.DERIVED, level=2)
         change_comps = [
@@ -287,7 +297,7 @@ class TestTransparentCompositeLevels:
 
     def test_measure_only_last_over_change_is_level_two(self) -> None:
         pq = _plan(measures=[DatasetMetric(expression="last(change(sum(amount)))", name="t")])
-        [last] = [s for s in _transform_slots(pq) if s.key.op == "last"]
+        [last] = [s for s in _transform_slots(pq) if _op(s) == "last"]
         assert last.stage == Stage(kind=StageKind.DERIVED, level=2)
 
     def test_staging_is_a_function_of_the_term_alone(self) -> None:
@@ -310,7 +320,7 @@ class TestTransparentCompositeLevels:
             DatasetMetric(expression="change(cumsum(sum(amount)))", name="ch"),
             DatasetMetric(expression="last(change(cumsum(sum(amount))))", name="t"),
         ])
-        by_op = {s.key.op: s for s in _transform_slots(pq)}
+        by_op = {_op(s): s for s in _transform_slots(pq)}
         assert by_op["cumsum"].stage == Stage(kind=StageKind.DERIVED, level=1)
         assert by_op["time_shift"].stage == Stage(kind=StageKind.DERIVED, level=2)
         assert by_op["last"].stage == Stage(kind=StageKind.DERIVED, level=3)
@@ -351,8 +361,8 @@ class TestNeedsColumn:
         dep) and its ``time_shift`` (read by a later level) as columns."""
         pq = _plan(measures=[DatasetMetric(expression="sum(amount)", name="a")],
                    filters=["last(change(sum(amount))) < 0"])
-        [last] = [s for s in _transform_slots(pq) if s.key.op == "last"]
-        [ts] = [s for s in _transform_slots(pq) if s.key.op == "time_shift"]
+        [last] = [s for s in _transform_slots(pq) if _op(s) == "last"]
+        [ts] = [s for s in _transform_slots(pq) if _op(s) == "time_shift"]
         assert last.needs_field is True
         assert ts.needs_field is True
 
@@ -362,7 +372,7 @@ class TestNeedsColumn:
         by_id = {s.id: s for s in _all_slots(pq)}
         targets = [by_id[e.slot_id] for e in pq.order]
         [comp] = [s for s in targets if isinstance(s.key, ArithmeticKey)]
-        assert comp.stage.kind == StageKind.DERIVED
+        assert _stage(comp).kind == StageKind.DERIVED
         assert comp.needs_field is True
 
 
@@ -373,12 +383,12 @@ class TestNeedsColumn:
 class TestSeriesRegime:
     def test_local_change_is_reaggregation(self) -> None:
         pq = _plan(measures=[DatasetMetric(expression="change(sum(amount))", name="c")])
-        [ts] = [s for s in _transform_slots(pq) if s.key.op == "time_shift"]
+        [ts] = [s for s in _transform_slots(pq) if _op(s) == "time_shift"]
         assert ts.series is False
 
     def test_predicate_uses_series(self) -> None:
         pq = _plan(measures=[DatasetMetric(expression="consecutive_periods(sum(amount) > 0)", name="p")])
-        [cp] = [s for s in _transform_slots(pq) if s.key.op == "consecutive_periods"]
+        [cp] = [s for s in _transform_slots(pq) if _op(s) == "consecutive_periods"]
         assert cp.series is True
 
 

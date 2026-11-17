@@ -17,6 +17,7 @@ from slayer.core.enums import DataType, JoinType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.importers.column_types import LiveSource
+from slayer.ingest_report import ConversionResult
 from slayer.osi.converter import OsiConversionError, OsiToSlayerConverter
 from slayer.osi.models import (
     OSIDataset,
@@ -69,7 +70,7 @@ def _shop_result(engine: sa.Engine):
     return _convert(engine, doc)
 
 
-def _by_name(result):
+def _by_name(result: ConversionResult) -> dict[str, SlayerDataset]:
     return {m.name: m for m in result.datasets}
 
 
@@ -1339,7 +1340,11 @@ def test_a_cycle_of_cross_model_refs_has_no_end(monkeypatch: pytest.MonkeyPatch)
     model = SlayerDataset(name="m", sql_table="m", data_source="testds", fields=[
         DatasetField(name=n, sql=f"x.{n}", datatype=DataType.DOUBLE) for n in ("a", "b", "c")])
     nxt = {"a": "b", "b": "c", "c": "a"}
-    monkeypatch.setattr(OsiToSlayerConverter, "_single_cross_dataset_ref",
-                        lambda self, model, sql: (model, model.get_field(nxt[sql.split(".")[1]])))
+    def _single_ref(
+        self: OsiToSlayerConverter, dataset: SlayerDataset, sql: str,
+    ) -> tuple[SlayerDataset, DatasetField | None]:
+        return dataset, dataset.get_field(nxt[sql.split(".")[1]])
+
+    monkeypatch.setattr(OsiToSlayerConverter, "_single_cross_dataset_ref", _single_ref)
     converter = OsiToSlayerConverter(documents=[], data_source="testds")
     assert [converter._ref_chain_end(dataset=model, col=c) for c in model.fields] == [None, None, None]

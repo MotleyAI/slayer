@@ -13,7 +13,7 @@ import pytest
 
 from slayer.core.errors import AmbiguousRelationshipPathError
 from slayer.engine.plan import plan_query
-from slayer.ir.planned import SemiJoinHop
+from slayer.ir.planned import PlannedQuery, RegroupAttachPlan, SemiJoinHop
 
 from tests._dev1840_fixtures import (
     DatasetMetric,
@@ -35,7 +35,7 @@ def _plan(query, models=None):
     return plan_query(query=query, bundle=bundle(models))
 
 
-def _attach(planned, root):
+def _attach(planned: PlannedQuery, root: str) -> RegroupAttachPlan:
     matches = [a for a in planned.regroup_attach_plans
                if a.producer_root_dataset == root]
     assert len(matches) == 1, [a.producer_root_dataset

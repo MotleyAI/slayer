@@ -131,6 +131,7 @@ from slayer.engine.cache import (
     _CacheEntry,
 )
 from slayer.engine.normalization import normalize_query, stale_spelling_warnings
+from slayer.core.keys import AggregateKey, CastKey, FieldKey, FieldSqlKey, ListSetKey, TimeTruncKey, ValueKey
 from slayer.ir.planned import (
     PlannedQuery,
     _iter_plans_with_producers,
@@ -781,6 +782,14 @@ def _plan_label(*, planned: PlannedQuery, index: int, root: Optional[SlayerQuery
     if root is not None:
         return f"stage {root.name!r}" if root.name else f"stages[{index}]"
     return planned.stage_schema.label if planned.stage_schema is not None else f"stages[{index}]"
+
+
+def _bare_source_name(key: ValueKey) -> Optional[str]:
+    """The field ``key``'s source reads directly (a bare field), else ``None``."""
+    src = key.source if isinstance(key, (AggregateKey, TimeTruncKey, CastKey, ListSetKey)) else None
+    if isinstance(src, FieldKey):
+        return src.leaf or None
+    return src.field_name if isinstance(src, FieldSqlKey) else None
 
 
 def _reject_expressions_unparseable_everywhere(dataset: SlayerDataset) -> None:
@@ -2162,11 +2171,7 @@ class SlayerQueryEngine:
         for slot in root.aggregate_slots:
             if slot.hidden:
                 continue
-            src = getattr(slot.key, "source", None)
-            bare = (
-                getattr(src, "leaf", None)
-                or getattr(src, "field_name", None)
-            )
+            bare = _bare_source_name(slot.key)
             if bare is None:
                 continue
             public = slot.public_name or slot.declared_name
@@ -2181,11 +2186,7 @@ class SlayerQueryEngine:
                 ph_slot = slot_by_key.get(sub.placeholder)
                 if ph_slot is None or ph_slot.hidden:
                     continue
-                src = getattr(sub.original_key, "source", None)
-                bare = (
-                    getattr(src, "leaf", None)
-                    or getattr(src, "field_name", None)
-                )
+                bare = _bare_source_name(sub.original_key)
                 if bare is None or bare in result:
                     continue
                 public = ph_slot.public_name or ph_slot.declared_name

@@ -53,6 +53,7 @@ from slayer.storage.sidecar_embedding_store import (
 )
 from slayer.storage.migrations import stamp_stored
 from slayer.storage.v4_migration import migrate_yaml_layout
+from slayer.storage.document_keys import keys_for
 
 
 _LEGACY_RENAMES = ("embeddings.yaml", "counters.yaml")
@@ -489,7 +490,9 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             )
         with open(path) as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design
             data = yaml.safe_load(f) or {}
-        cols = data.get("columns") or []
+        version = data.get("version")
+        fields_key = keys_for(entity="SlayerModel", version=version if isinstance(version, int) else 1).fields
+        cols = data.get(fields_key) or []
         for col in cols:
             if isinstance(col, dict) and col.get("name") == field_name:
                 _write_sample_fields(

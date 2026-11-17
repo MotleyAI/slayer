@@ -121,7 +121,7 @@ def _mode_a_surface_refs(data: dict):
     ``container[key]`` reads and writes that surface. One traversal shared by the
     read (:func:`mode_a_surface_texts`) and the mutate
     (:func:`apply_dunder_rewrite_to_dataset_dict`) helpers so they can't drift."""
-    yield from _field_surface_refs(data.get("columns"))
+    yield from _field_surface_refs(data.get("fields"))
     yield from _filter_surface_refs(data.get("filters"))
 
 

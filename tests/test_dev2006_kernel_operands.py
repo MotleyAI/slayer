@@ -6,17 +6,21 @@ and windowed operands"; python.sql.arc42.md P10 (own ordering / own frame → ow
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import Optional
+
 import pytest
 
 from slayer.core.enums import RANKED_AGGREGATIONS
 from slayer.core.errors import AssociationError, ReaggregationError, TimeAxisError
-from slayer.core.keys import AggregateKey, walk_value_keys, window_kwarg_of
+from slayer.core.keys import AggregateKey, FieldKey, walk_value_keys, window_kwarg_of
 from slayer.engine import plan
 from slayer.engine.compile import stages
 from slayer.ir.planned import (
     PlainProducerKernel,
     PlannedQuery,
     RankedProducerKernel,
+    RegroupAttachPlan,
     TrailingWindowProducerKernel,
     regroup_producer_identity,
 )
@@ -108,7 +112,9 @@ def _kernel_requiring(k) -> bool:
     )
 
 
-def _attaches(pq: PlannedQuery, owner=None):
+def _attaches(
+    pq: PlannedQuery, owner: Optional[RegroupAttachPlan] = None,
+) -> Iterator[tuple[Optional[RegroupAttachPlan], RegroupAttachPlan]]:
     """(owning attach or None, attach) over the whole producer tree."""
     for a in pq.regroup_attach_plans:
         yield owner, a
@@ -132,8 +138,24 @@ def _assert_kernel_invariant(pq: PlannedQuery) -> None:
         assert isinstance(kernel, want), f"{k} renders under {type(kernel).__name__}"
 
 
-def _kernel_attaches(pq: PlannedQuery, kind) -> list:
+def _kernel_attaches(pq: PlannedQuery, kind: type) -> list[tuple[Optional[RegroupAttachPlan], RegroupAttachPlan]]:
     return [(o, a) for o, a in _attaches(pq) if isinstance(a.kernel, kind)]
+
+
+def _ranked_kernel(attach: RegroupAttachPlan) -> RankedProducerKernel:
+    assert isinstance(attach.kernel, RankedProducerKernel)
+    return attach.kernel
+
+
+def _ranking_leaf(attach: RegroupAttachPlan) -> str:
+    key = _ranked_kernel(attach).ranking_time_key
+    assert isinstance(key, FieldKey)
+    return key.leaf
+
+
+def _window_raw(attach: RegroupAttachPlan) -> str:
+    assert isinstance(attach.kernel, TrailingWindowProducerKernel)
+    return attach.kernel.window_raw
 
 
 # --------------------------------------------------------------------------- #
@@ -349,21 +371,21 @@ class TestPlanStructure:
         [(carrier, ranked)] = _kernel_attaches(pq, RankedProducerKernel)
         assert carrier is not None
         assert carrier.attach_phase == "row"
-        assert ranked.kernel.agg == "last"
-        assert ranked.kernel.ranking_time_key.leaf == "snapshot_date"
+        assert _ranked_kernel(ranked).agg == "last"
+        assert _ranking_leaf(ranked) == "snapshot_date"
 
     def test_distinct_ranking_keys_get_distinct_producers(self) -> None:
         pq = _plan(_by_customer_q(TWO_RANKINGS))
         _assert_kernel_invariant(pq)
         ranked = [a for _, a in _kernel_attaches(pq, RankedProducerKernel)]
-        assert sorted(a.kernel.ranking_time_key.leaf for a in ranked) == ["recorded_at", "snapshot_date"]
+        assert sorted(_ranking_leaf(a) for a in ranked) == ["recorded_at", "snapshot_date"]
         assert len({regroup_producer_identity(a) for a in ranked}) == 2
 
     def test_distinct_windows_get_distinct_producers(self) -> None:
         pq = _plan(snap_q(dimensions=["customer_id"], time_dimensions=month_td(), measures=[m(TWO_WINDOWS)]))
         _assert_kernel_invariant(pq)
         windowed = [a for _, a in _kernel_attaches(pq, TrailingWindowProducerKernel)]
-        assert sorted(a.kernel.window_raw for a in windowed) == ["30d", "60d"]
+        assert sorted(_window_raw(a) for a in windowed) == ["30d", "60d"]
         assert len({regroup_producer_identity(a) for a in windowed}) == 2
 
     def test_structural_twin_interns_to_one_producer(self) -> None:

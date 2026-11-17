@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -938,12 +939,12 @@ class SearchService:
         return await self._fan_out_with_isolation(
             hook_name="refresh_datasource",
             invoke=lambda r: r.refresh_datasource(
-                name=name, models=datasets, description=description,
+                name=name, datasets=datasets, description=description,
             ),
         )
 
     async def _fan_out_with_isolation(
-        self, *, hook_name: str, invoke,
+        self, *, hook_name: str, invoke: Callable[[Retriever], Awaitable[list[str]]],
     ) -> list[str]:
         """Call ``invoke`` on each retriever in order; failures become prefixed warnings."""
         warnings: list[str] = []

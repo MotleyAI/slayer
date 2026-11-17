@@ -280,7 +280,9 @@ def test_flat_rename_wrapper_error_names_the_stage() -> None:
     assert "stage 'orders'" not in str(info.value)
 
 
-async def test_query_backed_mismatch_names_the_model(exec_engine, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_query_backed_mismatch_names_the_model(
+    exec_engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def _mismatching(**kwargs: Any) -> exp.Select:
         return build_flat_rename_wrapper(**{**kwargs, "expected_columns": ["bogus"]})
 

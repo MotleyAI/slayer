@@ -179,12 +179,12 @@ def check_element_type(*, name: str, data_type: DataType, element_type: DataType
 
 def _coerce_legacy_type_field(data: Any) -> Any:
     """Map a legacy lowercase ``datatype`` string in a raw payload; drop pseudo-types."""
-    if isinstance(data, dict) and "type" in data:
-        mapped = _coerce_legacy_datatype(data["type"])
+    if isinstance(data, dict) and "datatype" in data:
+        mapped = _coerce_legacy_datatype(data["datatype"])
         if mapped is None:
-            data = {k: v for k, v in data.items() if k != "type"}
-        elif mapped is not data["type"]:
-            data = {**data, "type": mapped}
+            data = {k: v for k, v in data.items() if k != "datatype"}
+        elif mapped is not data["datatype"]:
+            data = {**data, "datatype": mapped}
     return data
 
 
@@ -442,7 +442,7 @@ class DatasetMetric(BaseModel):
     @classmethod
     def _coerce_legacy_type(cls, data: Any) -> Any:
         # ``datatype`` declares the expression's result type; an explicit null stays set.
-        if isinstance(data, dict) and "type" in data and data["type"] is None:
+        if isinstance(data, dict) and "datatype" in data and data["datatype"] is None:
             return data
         return _coerce_legacy_type_field(data)
 

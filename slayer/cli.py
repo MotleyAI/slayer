@@ -12,7 +12,7 @@ import threading
 from collections.abc import Callable, Sequence
 from importlib.metadata import PackageNotFoundError, version
 from types import FrameType
-from typing import Any, ClassVar, Literal, NoReturn, TypedDict, TypeVar
+from typing import Any, ClassVar, Literal, NoReturn, TypedDict, TypeVar, cast
 from urllib.parse import parse_qs, urlparse
 
 import yaml
@@ -125,6 +125,22 @@ class RefreshSamplesResult(BaseModel):
 
     errors: list[str] = Field(default_factory=list)
     unresolved_datasets: list[str] = Field(default_factory=list)
+
+
+class _RefreshSamplesArgs(argparse.Namespace):
+    """Parsed ``slayer datasources refresh-samples`` arguments."""
+
+    data_source: str | None
+    datasets: list[str] | None
+
+
+class _ExportOsiArgs(argparse.Namespace):
+    """Parsed ``slayer export-osi`` arguments."""
+
+    datasource: str
+    datasets: list[str] | None
+    out: str
+    no_extensions: bool
 
 
 def _add_storage_arg(parser):
@@ -1371,7 +1387,7 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) 
     elif args.command == "import-osi":
         _run_import_osi(args)
     elif args.command == "export-osi":
-        _run_export_osi(args)
+        _run_export_osi(cast(_ExportOsiArgs, args))
     elif args.command == "datasets":
         _run_datasets(args)
     elif args.command == "datasources":
@@ -1429,7 +1445,7 @@ def _search_question(args) -> str | None:
     return positional if positional is not None else flag
 
 
-async def _refresh_samples_async(*, args, engine: SlayerQueryEngine) -> "RefreshSamplesResult":
+async def _refresh_samples_async(*, args: _RefreshSamplesArgs, engine: SlayerQueryEngine) -> "RefreshSamplesResult":
     """Async core of ``slayer datasources refresh-samples`` — loop datasources
     and (optional) model filters, accumulate per-column errors and the
     names of any user-specified models that didn't resolve."""
@@ -1466,7 +1482,7 @@ def _datasources_refresh_samples(storage, args) -> None:
     """``slayer datasources refresh-samples`` — re-profile + persist ``Column.sampled``
     for every table-backed model in scope; unresolved ``--model`` names exit 1."""
     engine = SlayerQueryEngine(storage=storage)
-    result = engine.run_sync(_refresh_samples_async(args=args, engine=engine))
+    result = engine.run_sync(_refresh_samples_async(args=cast(_RefreshSamplesArgs, args), engine=engine))
     if args.format == "json":
         print(result.model_dump_json(indent=2))
         if result.unresolved_datasets:
@@ -2377,7 +2393,7 @@ def _run_import_osi(args):
     engine.run_sync(_import_osi_workflow(args, engine))
 
 
-def _run_export_osi(args):
+def _run_export_osi(args: _ExportOsiArgs):
     engine = SlayerQueryEngine(storage=_resolve_storage(args))
     try:
         result = engine.run_sync(export_osi(engine=engine, datasource=args.datasource, datasets=args.datasets,

@@ -41,6 +41,7 @@ from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.sql.dialects.reflection import is_exact_numeric_db_type
 from slayer.engine.response_meta import _infer_aggregated_format
 from slayer.ir.prebound import walk_key_path
+from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import SqlDialect, dialect_for_ds_type, get_dialect
 from slayer.sql.naming import expression_source_leaf
 
@@ -114,7 +115,7 @@ def _local_aggregate_source_name(key: ValueKey) -> Optional[str]:
     return getattr(src, "leaf", None) or getattr(src, "field_name", None)
 
 
-def _dataset_types(*, dataset: SlayerDataset, bundle) -> FieldTypeFn:
+def _dataset_types(*, dataset: SlayerDataset, bundle: Optional[ResolvedSourceBundle]) -> FieldTypeFn:
     return dataset_field_type(
         dataset=dataset, datasets_by_name=bundle.datasets_by_name if bundle is not None else {},
     )
@@ -143,7 +144,7 @@ def stage_field_element(schema: StageSchema) -> FieldElementFn:
     return field_element
 
 
-def scope_field_element(*, scope: DatasetScope | StageSchema, bundle) -> FieldElementFn:
+def scope_field_element(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> FieldElementFn:
     if isinstance(scope, StageSchema):
         return stage_field_element(scope)
     if scope.population is None:
@@ -151,7 +152,7 @@ def scope_field_element(*, scope: DatasetScope | StageSchema, bundle) -> FieldEl
     return dataset_field_element(dataset=scope.population, datasets_by_name=bundle.datasets_by_name)
 
 
-def key_element_type(key: ValueKey, *, scope: DatasetScope | StageSchema, bundle) -> Optional[DataType]:
+def key_element_type(key: ValueKey, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> Optional[DataType]:
     """The element type of a list-valued ``key`` (``UNKNOWN`` when it cannot be told); ``None`` for a scalar."""
     column_type = scope_field_type(scope=scope, bundle=bundle)
     if not list_valued(key, field_type=column_type):
@@ -162,7 +163,7 @@ def key_element_type(key: ValueKey, *, scope: DatasetScope | StageSchema, bundle
     return element or DataType.UNKNOWN
 
 
-def scope_field_type(*, scope: DatasetScope | StageSchema, bundle) -> FieldTypeFn:
+def scope_field_type(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> FieldTypeFn:
     if isinstance(scope, StageSchema):
         return stage_field_type(scope)
     if scope.population is None:
@@ -170,13 +171,13 @@ def scope_field_type(*, scope: DatasetScope | StageSchema, bundle) -> FieldTypeF
     return dataset_field_type(dataset=scope.population, datasets_by_name=bundle.datasets_by_name)
 
 
-def bundle_dialect(bundle) -> SqlDialect:
+def bundle_dialect(bundle: ResolvedSourceBundle) -> SqlDialect:
     """The datasource's own dialect (``MariadbDialect`` for a MariaDB source), else the sqlglot name's."""
     own = dialect_for_ds_type(bundle.datasource_type)
     return own if own.sqlglot_name == bundle.dialect else get_dialect(bundle.dialect)
 
 
-def scope_zoned_timestamp(*, scope: DatasetScope | StageSchema, bundle) -> Callable[[object], bool]:
+def scope_zoned_timestamp(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> Callable[[object], bool]:
     """Whether a model column leaf holds a zoned instant on the bundle's dialect (a stage column already
     reads naive)."""
     dialect = bundle_dialect(bundle)
@@ -218,7 +219,7 @@ def stage_metric_type(key: ValueKey, *, schema: StageSchema) -> Optional[DataTyp
 
 
 def metric_key_type(
-    *, dataset: SlayerDataset, key: ValueKey, bundle=None,
+    *, dataset: SlayerDataset, key: ValueKey, bundle: Optional[ResolvedSourceBundle] = None,
 ) -> Optional[DataType]:
     """``type`` for a measure slot, from its bound key alone."""
     if isinstance(key, CastKey):
@@ -251,7 +252,7 @@ def metric_key_preserves_native_type(*, dataset: SlayerDataset, key: ValueKey) -
 
 
 def metric_key_format_description(
-    *, dataset: SlayerDataset, key: ValueKey, bundle=None,
+    *, dataset: SlayerDataset, key: ValueKey, bundle: Optional[ResolvedSourceBundle] = None,
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
     """``format`` / ``description`` for a measure slot, from its bound key.
 
@@ -272,7 +273,7 @@ def metric_key_format_description(
 
 
 def dimension_key_metadata(
-    *, dataset: SlayerDataset, key: ValueKey, bundle,
+    *, dataset: SlayerDataset, key: ValueKey, bundle: ResolvedSourceBundle,
 ) -> Tuple[Optional[DataType], Optional[NumberFormat], Optional[str]]:
     """``(type, format, description)`` for a dimension slot, from its key.
 

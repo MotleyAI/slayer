@@ -22,7 +22,7 @@ from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.plan import plan_query
 from slayer.core.syntax import parse_expr
-from slayer.ir.planned import PlainProducerKernel
+from slayer.ir.planned import PlainProducerKernel, PlannedQuery, RegroupAttachPlan
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
@@ -388,7 +388,7 @@ class TestOwnPartitionBy:
 # --------------------------------------------------------------------------- #
 # Plan shape.
 # --------------------------------------------------------------------------- #
-def _customers_attach(planned):
+def _customers_attach(planned: PlannedQuery) -> RegroupAttachPlan:
     (att,) = [a for a in planned.regroup_attach_plans
               if a.producer_root_dataset == "customers"]
     return att

@@ -13,6 +13,7 @@ from slayer.core.enums import DataType
 from slayer.core.keys import AggregateKey, TransformKey
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.plan import plan_query
+from slayer.ir.planned import PlannedQuery, RegroupAttachPlan
 
 from tests._dev1840_fixtures import bundle, dev1840_models, make_exec_engine
 from tests._dev1841_fixtures import DatasetMetric
@@ -84,7 +85,7 @@ def _plan(formula: str, models=None, mode=None):
     return plan_query(query=_q(formula, mode), bundle=bundle(models))
 
 
-def _host_rooted_wrapping(planned, agg: str) -> list:
+def _host_rooted_wrapping(planned: PlannedQuery, agg: str) -> list[RegroupAttachPlan]:
     return [
         a for a in planned.regroup_attach_plans
         if a.attach_phase == "combined" and a.producer_root_dataset is None

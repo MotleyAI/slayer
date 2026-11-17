@@ -38,6 +38,7 @@ from slayer.cube.models import (
     CubeFilterParamRef,
     CubeMeasure,
     CubeView,
+    CubeViewCubeRef,
 )
 from slayer.cube.refs import CubeSql, ForeignRef, JoinSide, classify_cube_refs, parse_join_keys, translate_cube_refs
 from slayer.cube.report import (
@@ -1344,7 +1345,7 @@ class CubeToSlayerConverter:
                 return False
         return True
 
-    def _convert_view_ref(self, view, ref, root_cube_name, root_dataset: SlayerDataset,
+    def _convert_view_ref(self, view: CubeView, ref: CubeViewCubeRef, root_cube_name: str, root_dataset: SlayerDataset,
                           fields, metrics, names, relationship_targets, report) -> None:
         path = ref.join_path.split(".")
         cube_name = path[-1]
@@ -1385,7 +1386,7 @@ class CubeToSlayerConverter:
             self._facade_metric(view, cube_name, cube_model, mname, prefix, is_root,
                                  fields, metrics, names, report)
 
-    def _selected_members(self, cube: CubeCube, ref, view, report) -> tuple[list[str], list[str]]:
+    def _selected_members(self, cube: CubeCube, ref: CubeViewCubeRef, view, report) -> tuple[list[str], list[str]]:
         dims = [d.name for d in cube.dimensions if d.type not in ("geo", "switch") and not d.sub_query]
         meas = [m.name for m in cube.measures]
         exclude = set(ref.excludes or [])

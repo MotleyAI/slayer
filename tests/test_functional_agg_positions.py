@@ -193,6 +193,7 @@ class TestOrderPosition:
         )
         q2 = SlayerQuery.model_validate(q1.model_dump())
         # The author's functional spelling survives coercion and round-trip.
+        assert q1.order is not None and q2.order is not None
         assert q1.order[0].raw_expression == "sum(revenue)"
         assert q2.order[0].raw_expression == "sum(revenue)"
         r1 = await _dry(q1)

@@ -12,6 +12,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeProject
+from slayer.cube.report import CubeConversionResult
 from slayer.database import engine_factory
 from tests._dev2171_fixtures import (
     collect_over_engine,
@@ -55,7 +56,7 @@ def db(tmp_path: Path) -> Path:
     return seed(tmp_path)
 
 
-async def _measure(result, db: Path, name: str, model: str = "orders") -> Any:
+async def _measure(result: CubeConversionResult, db: Path, name: str, model: str = "orders") -> Any:
     return await value(models=result.datasets, db=db, model=model, formula=name)
 
 
@@ -339,7 +340,7 @@ class TestCalculatedMeasures:
 class TestJoinKeys:
     JOIN = {"name": "customers", "relationship": "many_to_one", "sql": "{CUBE}.customer_id = {customers}.id"}
 
-    async def _by_customer(self, result, db: Path) -> dict[Any, int]:
+    async def _by_customer(self, result: CubeConversionResult, db: Path) -> dict[Any, int]:
         return await counts_by(models=result.datasets, db=db, model="orders", dimension="customers.name")
 
     @MASKED

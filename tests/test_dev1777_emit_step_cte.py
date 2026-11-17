@@ -13,7 +13,6 @@ cross-model chains). These pin the shell directly and deterministically:
 from __future__ import annotations
 
 from decimal import Decimal
-from types import SimpleNamespace
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expression
@@ -26,8 +25,9 @@ from slayer.core.keys import (
     LiteralKey,
     ScalarCallKey,
     TransformKey,
+    ValueKey,
 )
-from slayer.ir.planned import Stage, StageKind, ValueSlot
+from slayer.ir.planned import PlannedQuery, Stage, StageKind, ValueSlot
 from slayer.sql.generator import SQLGenerator
 from slayer.sql.render.cte_assembly import CteEntry
 
@@ -199,32 +199,24 @@ def test_typed_slot_is_cast_wrapped() -> None:
     assert "CAST" in ctes[-1].query.sql(dialect="postgres").upper()
 
 
+def _post_slot(slot_id: str, key: ValueKey, *, needs_field: bool = False) -> ValueSlot:
+    stage = Stage(kind=StageKind.DERIVED, level=1)
+    return ValueSlot(id=slot_id, key=key, declared_name=slot_id, phase=Phase.ROW, stage=stage, needs_field=needs_field)
+
+
 def test_unmaterialised_post_slots_detects_arith_and_scalar_call() -> None:
     # The detection loop feeding block C (F1) and block D (F2): DERIVED
     # Arithmetic and ScalarCall slots needing a column are detected; TransformKey
     # (materialised by a layer), an already-materialised slot, a mask-only slot
-    # (needs_column=False), and a plain ColumnKey are skipped.
-    derived = Stage(kind=StageKind.DERIVED, level=1)
-    arith = SimpleNamespace(
-        id="arith", key=ArithmeticKey(op="-", operands=(LiteralKey(value=Decimal(1)),)),
-        stage=derived, needs_column=True,
-    )
-    scalar = SimpleNamespace(
-        id="scalar", key=ScalarCallKey(name="abs", args=(FieldKey(leaf="x"),)),
-        stage=derived, needs_column=True,
-    )
-    transform = SimpleNamespace(
-        id="xf", key=TransformKey(op="cumsum", input=FieldKey(leaf="x")),
-    )
-    materialised = SimpleNamespace(
-        id="done", key=ArithmeticKey(op="+", operands=(LiteralKey(value=Decimal(2)),)),
-    )
-    mask_only = SimpleNamespace(
-        id="mask", key=ArithmeticKey(op=">", operands=(LiteralKey(value=Decimal(3)),)),
-        stage=derived, needs_column=False,
-    )
-    column = SimpleNamespace(id="col", key=FieldKey(leaf="y"))
-    pq = SimpleNamespace(
+    # (needs_field=False), and a plain ColumnKey are skipped.
+    arith = _post_slot("arith", ArithmeticKey(op="-", operands=(LiteralKey(value=Decimal(1)),)), needs_field=True)
+    scalar = _post_slot("scalar", ScalarCallKey(name="abs", args=(FieldKey(leaf="x"),)), needs_field=True)
+    transform = _post_slot("xf", TransformKey(op="cumsum", input=FieldKey(leaf="x")))
+    materialised = _post_slot("done", ArithmeticKey(op="+", operands=(LiteralKey(value=Decimal(2)),)))
+    mask_only = _post_slot("mask", ArithmeticKey(op=">", operands=(LiteralKey(value=Decimal(3)),)))
+    column = _post_slot("col", FieldKey(leaf="y"))
+    pq = PlannedQuery(
+        source_relation="orders",
         combined_expression_slots=[arith, scalar, transform, materialised, mask_only, column],
     )
     out = SQLGenerator._unmaterialised_post_slots(pq, {"done": ["orders.done"]})

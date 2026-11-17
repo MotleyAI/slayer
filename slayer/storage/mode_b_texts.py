@@ -1,6 +1,6 @@
-"""One recursive walk over a stored document's Mode-B texts: model measures, query fields, nested stages, inline
-models and extensions, and a memory's query. Mode-A text (``Column.sql``, ``sql_table``, model ``filters``,
-aggregation formulas) is never visited."""
+"""One recursive walk over a stored document's Mode-B texts, in the keys of its version: dataset metrics, query
+fields, nested stages, inline datasets and extensions, and a memory's query. Mode-A text (``DatasetField.sql``,
+``sql_table``, dataset ``filters``, aggregation expressions) is never visited."""
 
 import contextlib
 from collections.abc import Callable
@@ -8,37 +8,40 @@ from typing import Any
 
 from slayer.core.legacy_spellings import LegacySpan, rewrite_spans
 from slayer.core.syntax import call_spans, legacy_spans, rewrite_colon_spans
+from slayer.storage.document_keys import DocumentKeys
 from slayer.storage.rank_direction_migration import rewrite_query_fields
 
 TextRewrite = Callable[[str], str]
 
 
-def rewrite_dataset_doc(data: dict, fn: TextRewrite) -> dict:
+def rewrite_dataset_doc(data: dict, fn: TextRewrite, *, keys: DocumentKeys) -> dict:
     out = dict(data)
-    if isinstance(out.get("measures"), list):
-        out["measures"] = [_expression(m, fn) for m in out["measures"]]
+    if isinstance(out.get(keys.metrics), list):
+        out[keys.metrics] = [_expression(m, fn, keys=keys) for m in out[keys.metrics]]
     if isinstance(out.get("source_queries"), list):
-        out["source_queries"] = [rewrite_query_doc(q, fn) if isinstance(q, dict) else q for q in out["source_queries"]]
+        out["source_queries"] = [
+            rewrite_query_doc(q, fn, keys=keys) if isinstance(q, dict) else q for q in out["source_queries"]
+        ]
     return out
 
 
-def rewrite_query_doc(data: dict, fn: TextRewrite) -> dict:
-    out = rewrite_query_fields(dict(data), fn)
-    source = out.get("source_model")
+def rewrite_query_doc(data: dict, fn: TextRewrite, *, keys: DocumentKeys) -> dict:
+    out = rewrite_query_fields(dict(data), fn, keys)
+    source = out.get(keys.population)
     if isinstance(source, dict):
-        out["source_model"] = rewrite_dataset_doc(source, fn)
+        out[keys.population] = rewrite_dataset_doc(source, fn, keys=keys)
     return out
 
 
-def rewrite_memory_doc(data: dict, fn: TextRewrite) -> dict:
+def rewrite_memory_doc(data: dict, fn: TextRewrite, *, keys: DocumentKeys) -> dict:
     if not isinstance(data.get("query"), dict):
         return data
-    return {**data, "query": rewrite_query_doc(data["query"], fn)}
+    return {**data, "query": rewrite_query_doc(data["query"], fn, keys=keys)}
 
 
-def _expression(metric: Any, fn: TextRewrite) -> Any:
-    if isinstance(metric, dict) and isinstance(metric.get("formula"), str):
-        return {**metric, "formula": fn(metric["formula"])}
+def _expression(metric: Any, fn: TextRewrite, *, keys: DocumentKeys) -> Any:
+    if isinstance(metric, dict) and isinstance(metric.get(keys.expression), str):
+        return {**metric, keys.expression: fn(metric[keys.expression])}
     return metric
 
 

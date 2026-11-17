@@ -69,6 +69,7 @@ from slayer.storage import migrations as _mig
 from slayer.storage.date_only_migration import (
     StoredDatasets, below_date_only_upgrade, is_exact_inverse_relationship, needs_typing, stored_type, typing_with, upgraded_text,
 )
+from slayer.storage.document_keys import CURRENT_KEYS, keys_for
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
 from slayer.storage.granularity_rename import (
     Renames,
@@ -449,7 +450,7 @@ def with_canonical_spellings(dataset: SlayerDataset) -> tuple[SlayerDataset, lis
     """``dataset`` with each deprecated spelling in its Mode-B texts replaced by its twin, and one warning per spelling."""
     found: dict[str, LegacySpan] = {}
     dumped = dataset.model_dump(mode="json", exclude_none=True)
-    rewritten = rewrite_dataset_doc(dumped, lambda text: canonical_spellings(text, found=found))
+    rewritten = rewrite_dataset_doc(dumped, lambda text: canonical_spellings(text, found=found), keys=CURRENT_KEYS)
     if not found:
         return dataset, []
     return SlayerDataset.model_validate(rewritten), emit_deprecations(found)
@@ -1034,7 +1035,10 @@ class StorageBackend(ABC):
         data = _mig.stamp_stored(data)
         pre_version = int(data["version"])
         if pre_version < _CUSTOM_BUCKET_CALLS_BELOW["SlayerModel"]:
-            data = rewrite_dataset_doc(data, await self._custom_bucket_calls(data_sources=[data_source]))
+            data = rewrite_dataset_doc(
+                data, await self._custom_bucket_calls(data_sources=[data_source]),
+                keys=keys_for(entity="SlayerModel", version=pre_version),
+            )
         typing = StoredDatasets()
         if needs_typing("SlayerModel", data):
             typing = (await self._stored_datasets(data_source)).model_copy(update={"stages": _stage_names(data)})
@@ -1538,7 +1542,8 @@ class StorageBackend(ABC):
             data = _mig.stamp_stored(self._renamed_since_read(decode(), kind="memory", key=memory_id))
             if isinstance(data, dict) and int(data["version"]) < _CUSTOM_BUCKET_CALLS_BELOW["Memory"]:
                 data = rewrite_memory_doc(data, await self._custom_bucket_calls(
-                    data_sources=await self._memory_data_sources(data)))
+                    data_sources=await self._memory_data_sources(data)),
+                    keys=keys_for(entity="Memory", version=int(data["version"])))
             typing = await self._memory_typing(data) if needs_typing("Memory", data) else StoredDatasets()
             with typing_with(typing):
                 # Memories are never written back, so the repair repeats on every load of a pre-v4 document.

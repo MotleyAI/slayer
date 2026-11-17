@@ -31,6 +31,7 @@ from slayer.core.keys import TimeTruncKey
 from slayer.core.models import SlayerDataset
 from slayer.core.warnings import DateOnlyMidnightWarning
 from slayer.ir.bound import BoundFilter, DeclaredMetric, GranularityConflict, OrderSpec, WholeListRead
+from slayer.ir.source_bundle import ResolvedSourceBundle
 
 __all__ = [
     "ModePolicy",
@@ -195,7 +196,7 @@ class StrictQueryCarrier(BaseModel):
 
 
 def walk_key_path(
-    *, dataset: SlayerDataset, path: Tuple[str, ...], bundle,
+    *, dataset: SlayerDataset, path: Tuple[str, ...], bundle: ResolvedSourceBundle,
 ) -> Optional[SlayerDataset]:
     """The terminal model of a bound (possibly composed) key ``path`` from ``dataset``; ``None`` on any miss."""
     return resolved_terminal(root=dataset, path=path, datasets_by_name=bundle.datasets_by_name)

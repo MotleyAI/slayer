@@ -18,7 +18,7 @@
 
 - [x] 2.1 Move the `living-architecture` pin to 0.11.0 in `pyproject.toml` (and `CONTRIBUTING.md` if it names it), then `poetry lock`. Verify `la-doctor` passes.
 - [x] 2.2 Make `typing-extensions` a direct dependency and set `reportDeprecated = "error"` in `[tool.basedpyright]`. Fix every site the rule flags today in code. Verify `la-typecheck` reports no new errors and the baseline is untouched.
-- [ ] 2.3 Type the rename's blast radius with `la:make-refactor-target-compliant`, reusing DEV-1607's typing commits where a fresh compliance pass asks for them. The map ran with `--allow-blindspots`: the receivers it listed as blindspots (83) were respelled by hand, then typed after the fact so a later refactor over them is verifiable.
+- [x] 2.3 Type the rename's blast radius with `la:make-refactor-target-compliant`, reusing DEV-1607's typing commits where a fresh compliance pass asks for them. The map ran with `--allow-blindspots`: the receivers it listed as blindspots (83) were respelled by hand, then typed after the fact so a later refactor over them is verifiable.
 - [x] 2.4 Regenerate the rename list from the current `main` with the issue's word table and carve-outs. Drop the `core/formula.py` and `engine/join_safety.py` module entries (design decision 9). Verify the list against the issue's attachment; differences come only from commits `main` gained since 73e8ebb5.
 
 ## 3. Phase 1: rename (commits, all before phase 2)

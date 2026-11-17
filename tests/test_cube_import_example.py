@@ -17,6 +17,7 @@ import pytest
 
 from slayer.async_utils import run_sync
 from slayer.core.models import DatasourceConfig, SlayerDataset
+from slayer.cube.report import CubeConversionResult
 from slayer.core.query import (
     SlayerQuery,
     extract_dataset_variables,
@@ -127,7 +128,7 @@ def test_gold_values_are_exact(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_library_import_persists_all_models(tmp_path):
     store = tmp_path / "slayer_models"
-    result = setup_cube.import_cube_lib(models_dir=store)
+    result: CubeConversionResult = setup_cube.import_cube_lib(models_dir=store)
     assert not result.report.has_errors
     assert {m.name for m in result.datasets} == EXPECTED_MODELS
     fp_members = {

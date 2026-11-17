@@ -1671,7 +1671,7 @@ def _union(
     return merged
 
 
-_RESTATABLE_FIELDS = ("label", "type", "description", "meta")
+_RESTATABLE_FIELDS = ("label", "datatype", "description", "meta")
 
 
 def _restated_name(expression: str, root: str | None) -> str | None:

@@ -35,6 +35,10 @@ COLUMNS = [
 SOURCES = [AMOUNT, SPEND]
 
 
+def _column_id(col: FieldKey | FieldSqlKey) -> str:
+    return col.leaf if isinstance(col, FieldKey) else col.field_name
+
+
 def _pair(source, col) -> Tuple[AggregateKey, AggregateKey]:
     frag = SqlFragmentKey(template="{r0} * 1", refs=(col,))
     return (AggregateKey(source=source, agg="wsum", kwargs=(("weight", col),)),
@@ -60,7 +64,7 @@ def _unsafe(agg: AggregateKey) -> bool:
 
 
 @pytest.mark.parametrize("source", SOURCES, ids=["local", "customers"])
-@pytest.mark.parametrize("col", COLUMNS, ids=lambda c: getattr(c, "leaf", None) or c.field_name)
+@pytest.mark.parametrize("col", COLUMNS, ids=_column_id)
 class TestKeyLevelVerdicts:
     def test_home(self, source, col) -> None:
         plain, frag = _pair(source, col)

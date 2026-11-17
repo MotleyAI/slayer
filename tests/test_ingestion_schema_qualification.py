@@ -33,6 +33,7 @@ from slayer.core.query import SlayerQuery
 from slayer.live_schema import ingestion as mod
 from slayer.live_schema import schema_drift as drift_mod
 from slayer.live_schema.ingestion import (
+    IngestionScanReport,
     _print_ingest_addition,
     ingest_datasource_idempotent,
     introspect_table_to_dataset,
@@ -292,7 +293,7 @@ async def _idempotent(*, datasource: DatasourceConfig, storage: YAMLStorage, **k
         return await ingest_datasource_idempotent(datasource=datasource, storage=storage, client=client, **kwargs)
 
 
-def _sql_tables(report) -> dict[str, str]:
+def _sql_tables(report: IngestionScanReport) -> dict[str, str | None]:
     return {m.name: m.sql_table for m in report.datasets}
 
 
