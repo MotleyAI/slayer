@@ -130,8 +130,8 @@ def bind_aggregation_params(
         if name not in defaults:
             raise SqlTemplateError(
                 f"Aggregation '{agg}' requires parameter '{name}'. "
-                f"Set it in the model's aggregation definition or at query time "
-                f"(e.g., '{agg}(measure, {name}=column)')."
+                f"Set it in the dataset's aggregation definition or at query time "
+                f"(e.g., '{agg}(amount, {name}=field)')."
             )
         out.append((name, _bind_text(
             text=defaults[name], name=name, ctx=ctx, resolve=ctx.resolve_default)))
@@ -141,7 +141,7 @@ def bind_aggregation_params(
 def _reads(
     *, agg: str, definition: Optional[Aggregation], bundle: ResolvedSourceBundle,
 ) -> frozenset[str]:
-    """The parameters ``agg`` reads, its formula parsed (an invalid one fails here)."""
+    """The parameters ``agg`` reads, its expression parsed (an invalid one fails here)."""
     formula = rendered_expression(agg=agg, definition=definition)
     if formula is None:
         return frozenset(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
@@ -195,7 +195,7 @@ def _bind_quoted(*, text: str, name: str, ctx: _Ctx, bind: QuotedArgumentBinder)
 def _bind_text(
     *, text: str, name: str, ctx: _Ctx, resolve: Callable[[Tuple[str, ...]], ValueKey],
 ) -> object:
-    """A definition default's Mode-A text → a column key, a scalar, or a ``SqlFragmentKey``."""
+    """A definition default's Mode-A text → a field key, a scalar, or a ``SqlFragmentKey``."""
     tree = _parse(text=text, name=name, ctx=ctx)
     scalar = _scalar(tree)
     if scalar is not _NOT_SCALAR:
@@ -204,7 +204,7 @@ def _bind_text(
     keys = [resolve((*quals, leaf)) for _node, quals, leaf in sites]
     for key in keys:
         if not isinstance(key, (FieldKey, FieldSqlKey)):
-            raise _unanalysable(text=text, name=name, ctx=ctx, reason="it names a measure, not a column")
+            raise _unanalysable(text=text, name=name, ctx=ctx, reason="it names a metric, not a field")
     if len(sites) == 1 and sites[0][0] is tree:
         return keys[0]
     sentinel = _fresh_sentinel(text)
@@ -277,13 +277,13 @@ def _field_key(
     if terminal is None:
         raise UnresolvableDimensionRelationshipError(
             reference=spelled, root_dataset=root.name,
-            reason="its join path does not resolve from the query root.",
+            reason="its relationship path does not resolve from the query root.",
         )
     col = resolve_generated_field(dataset=terminal, name=leaf)
     if col is None:
         raise UnknownReferenceError(
-            name=spelled, scope_kind="ModelScope",
-            scope_summary=f"model {terminal.name!r} columns: {[c.name for c in terminal.fields]}",
+            name=spelled, scope_kind="DatasetScope",
+            scope_summary=f"dataset {terminal.name!r} fields: {[c.name for c in terminal.fields]}",
             suggestion=None,
         )
     if col.needs_expansion:
@@ -314,7 +314,7 @@ def resolve_default_path(
         )
         raise UnresolvableDimensionRelationshipError(
             reference=".".join((*qualifiers, leaf)), root_dataset=root_dataset.name,
-            reason="not reachable forward from the owning model or the query root.",
+            reason="not reachable forward from the owning dataset or the query root.",
         )
     return abs_path
 
@@ -330,7 +330,7 @@ def resolve_default_qualifier_path(
     """Owner-first resolution of a default's qualifier chain with reverse-hop
     cancellation, from ``root_dataset`` walked along ``owner_path``: the absolute path, or
     ``None`` on a clean first-token miss (the caller retries at the root). A revisit
-    through an edge name fails closed with the circular-join error, and a chain whose
+    through an edge name fails closed with the circular-relationship-path error, and a chain whose
     first token resolves but a later one misses as unresolvable."""
     quals = tuple(qualifiers)
     if not quals:
@@ -363,7 +363,7 @@ def resolve_default_qualifier_path(
     )
     raise UnresolvableDimensionRelationshipError(
         reference=".".join((*quals, leaf)), root_dataset=root_dataset.name,
-        reason=f"'{failing}' is not a joined model on the preceding hop.",
+        reason=f"'{failing}' is not a joined dataset on the preceding hop.",
     )
 
 

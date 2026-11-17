@@ -116,7 +116,7 @@ class TestModelCollision:
         model = _model("Orders", table="second")
         with pytest.raises(IdCollisionError) as exc_info:
             await storage.save_dataset(model)
-        assert exc_info.value.kind == "model"
+        assert exc_info.value.kind == "dataset"
         assert exc_info.value.new_id == "Orders"
         assert exc_info.value.existing_id == "orders"
         assert exc_info.value.data_source == "db"

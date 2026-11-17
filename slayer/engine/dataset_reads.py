@@ -1,4 +1,4 @@
-"""The models a model or a query reads: stage sources, query-written joins, and every hop of every reference path."""
+"""The datasets a dataset or a query reads: stage sources, query-written relationships, and every hop of every reference path."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ Identity = tuple[str, str]
 def datasets_read_by(
     subject: SlayerDataset | SlayerQuery, *, datasets: Sequence[SlayerDataset], data_source: str | None = None,
 ) -> frozenset[Identity]:
-    """``(data_source, name)`` of every stored model ``subject`` reads, resolved against ``datasets``."""
+    """``(data_source, name)`` of every stored dataset ``subject`` reads, resolved against ``datasets``."""
     reads = _Reads(datasets)
     if isinstance(subject, SlayerDataset):
         reads.dataset(subject)
@@ -30,7 +30,7 @@ def datasets_read_by(
 
 
 def datasets_read_closure(query: SlayerQuery, *, host: SlayerDataset, datasets: Sequence[SlayerDataset]) -> list[SlayerDataset]:
-    """``host`` and every model ``query``, rooted at ``host``, reads — directly or through what it reads."""
+    """``host`` and every dataset ``query``, rooted at ``host``, reads — directly or through what it reads."""
     reads = _Reads(datasets)
     reads.dataset(host)
     scope = reads.stored_scope(host)
@@ -48,7 +48,7 @@ def datasets_read_closure(query: SlayerQuery, *, host: SlayerDataset, datasets: 
 
 
 def placeholder(identity: Identity) -> SlayerDataset:
-    """Stand-in for a stored model that cannot be loaded: no source, columns or joins, so a path can only end on it."""
+    """Stand-in for a stored dataset that cannot be loaded: no source, fields or relationships, so a path can only end on it."""
     data_source, name = identity
     return SlayerDataset.model_construct(name=name, data_source=data_source)
 
@@ -58,7 +58,7 @@ def _is_placeholder(dataset: SlayerDataset) -> bool:
 
 
 def narrowing_datasets(datasets: Sequence[SlayerDataset]) -> dict[Identity, list[Identity]]:
-    """Each narrowed model's transitively read tagged models whose tags do not cover its own (any, when it is untagged)."""
+    """Each narrowed dataset's transitively read tagged datasets whose tags do not cover its own (any, when it is untagged)."""
     by_id = {(m.data_source, m.name): m for m in datasets}
     reads = {key: datasets_read_by(m, datasets=datasets) for key, m in by_id.items()}
     out: dict[Identity, list[Identity]] = {}
@@ -107,12 +107,12 @@ class _Reads:
         for m in datasets:
             self.by_ds.setdefault(m.data_source, {})[m.name] = m
         self.out: set[Identity] = set()
-        # Keyed by host object, not name: two stages' overlays of one model may define a field differently.
+        # Keyed by host object, not name: two stages' overlays of one dataset may define a field differently.
         self._seen: set[tuple[int, str]] = set()
         self._hosts: list[SlayerDataset] = []  # keeps each visited host alive, so its id is never reused
 
     def stored_scope(self, dataset: SlayerDataset) -> QueryScope:
-        """The scope a stored definition of ``dataset`` reads in: its datasource's models."""
+        """The scope a stored definition of ``dataset`` reads in: its datasource's datasets."""
         return QueryScope.model_construct(data_source=dataset.data_source, host=dataset, datasets={
             **self.by_ds.get(dataset.data_source, {}), dataset.name: dataset})
 
@@ -169,7 +169,7 @@ class _Reads:
             self.ref((*quals, leaf), host=host, scope=scope)
 
     def path(self, hops: Sequence[str], *, host: SlayerDataset, scope: QueryScope) -> SlayerDataset | None:
-        """The model ``hops`` lands on from ``host``, recording each hop; ``None`` when unresolvable."""
+        """The dataset ``hops`` lands on from ``host``, recording each hop; ``None`` when unresolvable."""
         if not drop_root_hop(hops, host.spelling, head_quoted=False):
             return host
         peers = {**scope.datasets, host.name: host}
@@ -188,8 +188,8 @@ class _Reads:
             self.read(edge.to, scope=scope)
 
     def ref(self, parts: Sequence[str], *, host: SlayerDataset, scope: QueryScope) -> None:
-        """A reference rooted at ``host``: its hops, then the definition of a derived column or saved measure it names;
-        one no path reaches from ``host`` is a product read of the model it names."""
+        """A reference rooted at ``host``: its hops, then the definition of a derived field or saved metric it names;
+        one no path reaches from ``host`` is a product read of the dataset it names."""
         terminal = self.path(tuple(parts[:-1]), host=host, scope=scope)
         if terminal is None:
             if parts[0] != host.spelling:
@@ -205,7 +205,7 @@ class _Reads:
                 self.stage(query, scope=scope)
 
     def stage(self, query: SlayerQuery, *, scope: QueryScope) -> None:
-        """What one query object reads in ``scope``: its source, the models its extensions name, what their own
+        """What one query object reads in ``scope``: its source, the datasets its extensions name, what their own
         definitions read, every reference, and each INNER join's population filter."""
         query = scope.query or query
         self.sources(query, scope=scope)
@@ -220,7 +220,7 @@ class _Reads:
                 self.product_ref(parts, scope=scope)
 
     def sources(self, query: SlayerQuery, *, scope: QueryScope) -> None:
-        """The stored models ``query`` names as its source and its extensions."""
+        """The stored datasets ``query`` names as its source and its extensions."""
         names = list(extension_dataset_names(query))
         if query.population is not None:
             names.append(query.population)
@@ -228,7 +228,7 @@ class _Reads:
             self.read(name, scope=scope)
 
     def extension_fields(self, query: SlayerQuery, *, scope: QueryScope) -> None:
-        """What each of ``query``'s extension measures reads, over the model it extends."""
+        """What each of ``query``'s extension metrics reads, over the dataset it extends."""
         for extension in query.extensions or []:
             extended = scope.datasets.get(extension.source_name)
             if extended is None:
@@ -238,7 +238,7 @@ class _Reads:
                 self.metric(host=extended, name=name, scope=scope)
 
     def product_ref(self, parts: tuple[str, ...], *, scope: QueryScope) -> None:
-        """A reference rooted at the model of the scope its head names."""
+        """A reference rooted at the dataset of the scope its head names."""
         root = scope.datasets.get(parts[0]) if len(parts) > 1 else None
         if root is not None:
             self.read(root.name, scope=scope)

@@ -2,7 +2,7 @@
 
 dbt entities define the grain (primary) and join relationships (foreign) between
 semantic models. This module scans all models to build an entity→model mapping,
-then generates SLayer ModelJoin objects for foreign entity references.
+then generates SLayer DatasetRelationship objects for foreign entity references.
 """
 
 import logging
@@ -73,15 +73,15 @@ class EntityRegistry:
         return min(entries, key=lambda e: e[0])
 
     def resolve_relationships_for_model(self, model: DbtSemanticModel) -> list[DatasetRelationship]:
-        """For each foreign entity in the model, generate a ModelJoin to the primary model.
+        """For each foreign entity in the model, generate a DatasetRelationship to the primary model.
 
-        Returns a list of ModelJoin objects. Skips entities whose primary model
+        Returns a list of DatasetRelationship objects. Skips entities whose primary model
         is the same as the current model (self-joins are not useful).
         """
         relationships: list[DatasetRelationship] = []
         # Dedupe by full join signature (target + FK columns) so distinct FKs
         # to the same target — e.g. buyer_id -> users.id AND seller_id -> users.id —
-        # each get their own ModelJoin instead of silently collapsing.
+        # each get their own DatasetRelationship instead of silently collapsing.
         seen_signatures: set = set()
 
         for entity in model.entities:
@@ -116,7 +116,7 @@ class EntityRegistry:
                     cardinality=RelationshipCardinality.MANY_TO_ONE,
                 ))
 
-        # Peer joins: models sharing the same primary/unique entity are joinable.
+        # Peer relationships: models sharing the same primary/unique entity are joinable.
         # Declared once per unordered pair (smaller name wins) — reverse
         # traversal is automatic (DEV-1853), and the exact-inverse twin would
         # be rejected at save time.

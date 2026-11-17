@@ -4,7 +4,7 @@ A ranked aggregate is "the value from the row that sorts first (or last) within
 each grain". That is two SELECTs: an inner one that ranks the rows it is allowed
 to see, and an outer one that picks rank 1 per group. This module owns that
 shape, so every route into it — host-rooted, target-rooted, and the collapsed
-sub-plan a re-rooted cross-model CTE emits — produces the same SQL.
+sub-plan a re-rooted cross-dataset CTE emits — produces the same SQL.
 
 Two choices are load-bearing and neither is arbitrary:
 
@@ -13,7 +13,7 @@ v END) … GROUP BY grain`` rather than ``SELECT v … WHERE rn = 1``. The two a
 on every non-empty grain and disagree on the empty one: over a source with no
 rows the aggregate form returns ONE row holding NULL and the filter form returns
 none. An empty grain is joined back with a CROSS JOIN, so a zero-row CTE erases
-the entire result rather than yielding a NULL measure — and returning one NULL
+the entire result rather than yielding a NULL metric — and returning one NULL
 row is what ``sum(amount)`` does over the same empty source.
 
 **The inner SELECT projects a NAMED list, never ``source.*``.** Re-exporting the
@@ -53,7 +53,7 @@ __all__ = [
     "ranked_ordered",
 ]
 
-#: CTE-name prefix, alongside ``_cm_`` (cross-model) and ``_wm_`` (windowed).
+#: CTE-name prefix, alongside ``_cm_`` (cross-dataset) and ``_wm_`` (windowed).
 RANKED_CTE_PREFIX = "_rk_"
 #: Alias of the inner ranked subquery. DEV-1835 — ranked computation kernels now
 #: render producer-internal under the uniform ``_cm_`` producer naming, so their

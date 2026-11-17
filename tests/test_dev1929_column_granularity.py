@@ -592,7 +592,7 @@ class TestMCPSurfaces:
             await _call(server, name="edit_model", arguments={
                 "model_name": "orders", "columns": [{"name": "created_at", "granularity": "month"}]})
             out = await _call(server, name="inspect", arguments={
-                "entity_type": "model", "reference": "orders", "compact": False, "format": "json"})
+                "entity_type": "dataset", "reference": "orders", "compact": False, "format": "json"})
             cols = {c["name"]: c for c in json.loads(out)["columns"]}
             assert cols["created_at"].get("granularity") == "month"
             assert "granularity" not in cols["note"]

@@ -3,7 +3,7 @@
 The last stage stays root / sink. Cycles, self-references, duplicate names, and
 a root referenced by another stage raise ``ValueError`` naming the offending
 stage; forward references are reordered, not rejected. Sibling refs are walked
-through ``source_model``, extensions' ``joins[].target_model`` and extensions'
+through ``population``, extensions' ``relationships[].to`` and extensions'
 ``source_name``.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from slayer.core.models import DatasetRelationship
 from slayer.core.query import DatasetExtension, SlayerQuery, SourceSpec, extension_dataset_names
 from slayer.core.scope import StageDisplay
 
-#: Minted identity prefixes; model names never carry them (``__slayer_`` is reserved).
+#: Minted identity prefixes; dataset names never carry them (``__slayer_`` is reserved).
 USER_STAGE_PREFIX = "__slayer_stage_"
 SPLICED_STAGE_PREFIX = "__slayer_qb__"
 
@@ -62,9 +62,9 @@ def localize_stages(
     queries: List[SlayerQuery], *, dataset: Optional[str] = None,
 ) -> "Tuple[List[SlayerQuery], Dict[str, StageDisplay]]":
     """Give every named non-root stage a minted identity and respell the references the
-    list itself writes (sources, extended models, extension join targets); stored
-    definitions are untouched. Under ``dataset`` (a spliced stored query-backed model)
-    the final stage takes the model's name. Returns the stages and ``{identity: display}``."""
+    list itself writes (sources, extended datasets, extension relationship targets); stored
+    definitions are untouched. Under ``dataset`` (a spliced stored query-backed dataset)
+    the final stage takes the dataset's name. Returns the stages and ``{identity: display}``."""
     if not queries:
         return [], {}
     rest, root = queries[:-1], queries[-1]
@@ -180,7 +180,7 @@ def _kahn_sort(
 
 def topologically_order_stages(queries: List[Any]) -> List[Any]:
     """Re-order a query list so every stage appears after the siblings it
-    references via ``source_model`` or ``joins[].target_model``.
+    references via ``population`` or ``relationships[].to``.
 
     The final entry is the entry point / DAG root: it stays last. Only
     the non-final entries are reordered. Stages that aren't reachable

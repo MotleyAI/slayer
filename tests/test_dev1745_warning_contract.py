@@ -148,8 +148,8 @@ def _two_plan_query() -> SlayerQuery:
         population="orders",
         dimensions=[{"formula": "status", "name": "status"}],
         metrics=[
-            {"formula": "sum(customers.revenue)"},
-            {"formula": "sum(shippers.cost)"},
+            {"expression": "sum(customers.revenue)"},
+            {"expression": "sum(shippers.cost)"},
         ],
         filter=["customers.revenue > 0 or shippers.cost > 0"],
     )

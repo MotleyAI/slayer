@@ -11,7 +11,7 @@ persistence — write-side hooks (``upsert_memory``,
 retriever overrides the create/refresh ones to maintain its sidecar
 table. The ``delete_*`` hooks default to no-op for every shipping
 retriever this PR — :class:`StorageBackend` owns embedding-row cascade
-transactionally with the model/datasource/memory row delete; the
+transactionally with the dataset/datasource/memory row delete; the
 hooks live on the ABC so future persistent retrievers (e.g.
 persistent tantivy) can override them without an ABC change.
 
@@ -44,7 +44,7 @@ class RetrievalResult(BaseModel):
       tantivy hit text in ``MemoryHit.text`` instead of always
       falling back to ``Memory.learning``.
     * ``entity_ranking`` — canonical entity ids best-first
-      (``"<ds>"`` / ``"<ds>.<model>"`` / ``"<ds>.<model>.<leaf>"``).
+      (``"<ds>"`` / ``"<ds>.<dataset>"`` / ``"<ds>.<dataset>.<leaf>"``).
     * ``warnings`` — per-call warnings the orchestrator should
       surface to the caller (e.g. "embedding channel skipped:
       query embedding failed").
@@ -103,7 +103,7 @@ class Retriever(ABC):
     #
     # All three shipping retrievers no-op these hooks this PR.
     # :class:`StorageBackend` owns embedding-row cascade transactionally
-    # with the model / datasource / memory row delete. The hooks live
+    # with the dataset / datasource / memory row delete. The hooks live
     # on the ABC so future persistent retrievers (persistent tantivy,
     # third-party vector DBs) can override them without an ABC change.
     # ------------------------------------------------------------------

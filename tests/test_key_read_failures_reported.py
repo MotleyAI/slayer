@@ -220,7 +220,7 @@ class TestIngestResults:
                 raise ValueError("synthetic per-object failure")
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(ingestion, "_columns_to_model", _refuse_customers)
+        monkeypatch.setattr(ingestion, "_fields_to_dataset", _refuse_customers)
         report = await _scan(shop)
         assert [s.table_name for s in report.skipped] == ["customers"]
         _assert_one_lost_primary_key(report.key_read_failures)

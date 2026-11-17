@@ -79,7 +79,7 @@ def mcp_server():
                 descriptions_max_chars: Any = None) -> str:
         if B["mcp"] == "inspect_hang":
             time.sleep(3600)
-        return json.dumps({{"name": "orders", "entity_type": "model", "joins_to": B["mcp_joins"]}})
+        return json.dumps({{"name": "orders", "entity_type": "dataset", "joins_to": B["mcp_joins"]}})
 
     server.run()
 
@@ -103,7 +103,7 @@ def main():
         print({{"rows": json.dumps(ROWS), "empty": "[]", "non_json": "| a |\\n|---|\\n| 1 |",
                "object": json.dumps({{"rows": 1}})}}[B["cli_query"]])
     elif command == "inspect":
-        print(json.dumps({{"name": "orders", "entity_type": "model", "joins_to": B["cli_joins"]}}))
+        print(json.dumps({{"name": "orders", "entity_type": "dataset", "joins_to": B["cli_joins"]}}))
     elif command == "mcp":
         mcp_server()
     return 0

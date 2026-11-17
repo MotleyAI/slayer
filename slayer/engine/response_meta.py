@@ -49,7 +49,7 @@ def _infer_aggregated_format(
     aggregation: str,
     source_type: Optional[DataType] = None,
 ) -> Optional[NumberFormat]:
-    """Display NumberFormat for an aggregated measure; ``source_type`` defaults to the column's type."""
+    """Display NumberFormat for an aggregated metric; ``source_type`` defaults to the field's type."""
     source_col = dataset.get_field(metric_name)
     source_type = source_type or (source_col.datatype if source_col is not None else None)
     cls = classify_aggregation(metric_name=metric_name, aggregation=aggregation, source_type=source_type)
@@ -95,7 +95,7 @@ def projection_result_keys(*, root_planned: PlannedQuery) -> List[str]:
 def _dataset_for_path(
     *, bundle: ResolvedSourceBundle, path: Tuple[str, ...]
 ) -> Optional[SlayerDataset]:
-    """The model a bound (possibly composed) join ``path`` lands on; the host source model
+    """The dataset a bound (possibly composed) relationship ``path`` lands on; the host source dataset
     for an empty or unresolvable path."""
     current = bundle.population
     if not path or current is None:
@@ -106,7 +106,7 @@ def _dataset_for_path(
 def _field_for_row_slot(
     *, slot: ValueSlot, bundle: ResolvedSourceBundle
 ) -> Optional[DatasetField]:
-    """The source ``Column`` backing a ROW slot, for label / format lookup."""
+    """The source ``DatasetField`` backing a ROW slot, for label / format lookup."""
     key = slot.key
     if isinstance(key, TimeTruncKey):
         key = key.source
@@ -124,7 +124,7 @@ def _field_for_row_slot(
 
 
 def _owning_dataset_for_agg_source(*, src, bundle: ResolvedSourceBundle):
-    """The model that owns an aggregate's source column."""
+    """The dataset that owns an aggregate's source field."""
     if isinstance(src, FieldSqlKey):
         return bundle.get_referenced_dataset(src.dataset) or bundle.population
     return _dataset_for_path(bundle=bundle, path=getattr(src, "path", ()))
@@ -133,7 +133,7 @@ def _owning_dataset_for_agg_source(*, src, bundle: ResolvedSourceBundle):
 def _metric_format(
     *, slot: ValueSlot, bundle: ResolvedSourceBundle
 ) -> Optional[NumberFormat]:
-    """Number format for a measure slot; non-aggregate slots default to FLOAT."""
+    """Number format for a metric slot; non-aggregate slots default to FLOAT."""
     key = slot.key
     if isinstance(key, AggregateKey):
         src = key.source
@@ -141,7 +141,7 @@ def _metric_format(
             measure_name: Optional[str] = "*"
         elif isinstance(src, EXPRESSION_SOURCE_KINDS):
             # An expression source classifies by its aggregation's
-            # value class alone (the derived leaf is never a real column, so
+            # value class alone (the derived leaf is never a real field, so
             # PRESERVING inherits nothing — plain numeric by default).
             measure_name = expression_source_leaf(src)
         else:
@@ -163,7 +163,7 @@ def _metric_format(
 def _metric_label(
     *, slot: ValueSlot, bundle: ResolvedSourceBundle
 ) -> Optional[str]:
-    """Label for a measure slot; inherits the source column's label when the slot has none."""
+    """Label for a metric slot; inherits the source field's label when the slot has none."""
     if slot.label:
         return slot.label
     key = slot.key
@@ -181,7 +181,7 @@ def _metric_label(
     return None
 
 
-def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classification (dimension vs measure, TimeTruncKey, label/format lookup) over one candidate-slot loop; complexity is inherent to the projection-to-metadata mapping and pre-dates this change. Splitting the loop body out would scatter the shared public_keys / source_relation state without improving readability.
+def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classification (dimension vs metric, TimeTruncKey, label/format lookup) over one candidate-slot loop; complexity is inherent to the projection-to-metadata mapping and pre-dates this change. Splitting the loop body out would scatter the shared public_keys / source_relation state without improving readability.
     *,
     root_planned: PlannedQuery,
     bundle: ResolvedSourceBundle,
@@ -211,7 +211,7 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
     for slot, rk in slot_keys:
         if rk not in public_keys:
             continue
-        # A combined regroup attach is a ROW-phase placeholder but is a measure.
+        # A combined regroup attach is a ROW-phase placeholder but is a metric.
         original = placeholder_original.get(slot.key)
         is_combined_placeholder = original is not None
         if slot.phase == Phase.ROW and not is_combined_placeholder:

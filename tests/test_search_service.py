@@ -240,7 +240,7 @@ async def test_entity_hit_id_is_canonical_string(service: SearchService) -> None
     entity_hits = [h for h in response.results if h.kind != "memory"]
     for hit in entity_hits:
         assert isinstance(hit.id, str)
-        assert hit.kind in {"datasource", "model", "column", "measure", "aggregation"}
+        assert hit.kind in {"datasource", "dataset", "field", "metric", "aggregation"}
 
 
 @pytest.mark.asyncio
@@ -592,7 +592,7 @@ async def test_search_refreshes_stale_categorical_column_hit(
         max_results=10,
         compact=False,
     )
-    column_hits = [h for h in response.results if h.kind == "column"]
+    column_hits = [h for h in response.results if h.kind == "field"]
     assert column_hits, "expected the status column to surface as a column hit"
     status_hit = next(
         h for h in column_hits if h.id == "warehouse.orders.status"
@@ -632,7 +632,7 @@ async def test_search_refreshes_stale_column_hit_via_question_corpus(
     )
     column_hits = [
         h for h in response.results
-        if h.kind == "column" and h.id == "warehouse.orders.status"
+        if h.kind == "field" and h.id == "warehouse.orders.status"
     ]
     assert column_hits, (
         "expected the status column to surface via the question/corpus path"

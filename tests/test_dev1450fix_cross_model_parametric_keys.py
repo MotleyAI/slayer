@@ -98,8 +98,8 @@ async def test_two_parametric_variants_distinct_keys(engine: SlayerQueryEngine):
             population="orders",
             dimensions=["customers.region"],
             metrics=[
-                {"formula": "percentile(customers.revenue, p=0.5)"},
-                {"formula": "percentile(customers.revenue, p=0.95)"},
+                {"expression": "percentile(customers.revenue, p=0.5)"},
+                {"expression": "percentile(customers.revenue, p=0.95)"},
             ],
         )
     )

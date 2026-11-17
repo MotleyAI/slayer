@@ -55,7 +55,7 @@ class TestSpineListedWithItsWiredModels:
         summary = await _call(server, name="models_summary", arguments={"datasource_name": "test"})
         assert "time_spine" in summary
         text = await _call(server, name="inspect", arguments={
-            "entity_type": "model", "reference": "time_spine", "compact": False,
+            "entity_type": "dataset", "reference": "time_spine", "compact": False,
         })
         assert "timestamp" in text
         assert "built-in" in text.lower()
@@ -69,17 +69,17 @@ class TestSpineListedWithItsWiredModels:
         summary = await _call(server, name="models_summary", arguments={"datasource_name": "test"})
         spine_block = summary[summary.index("## `time_spine`"):]
         assert "Built-in virtual model" in spine_block
-        assert "inspect(reference='test.time_spine', entity_type='model')" in spine_block
+        assert "inspect(reference='test.time_spine', entity_type='dataset')" in spine_block
         assert "order_date" not in spine_block
         detail = await _call(server, name="inspect", arguments={
-            "entity_type": "model", "reference": "test.time_spine", "compact": False,
+            "entity_type": "dataset", "reference": "test.time_spine", "compact": False,
         })
         assert "orders via order_date" in detail
 
     async def test_search_finds_the_spine(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
         response = await SearchService(storage=storage).search(question="time spine calendar", max_results=20)
-        assert any(h.kind == "model" and "time_spine" in h.id for h in response.results)
+        assert any(h.kind == "dataset" and "time_spine" in h.id for h in response.results)
 
     def test_rest_listing(self) -> None:
         storage = asyncio.run(_spine_storage(tempfile.mkdtemp()))

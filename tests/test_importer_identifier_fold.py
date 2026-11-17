@@ -424,7 +424,7 @@ def test_osi_quoted_lowercase_source_introspects_the_exact_schema_and_table(osi_
         seen.append(kwargs)
         raise RuntimeError("recorded")
 
-    monkeypatch.setattr(osi_converter, "introspect_table_to_model", record)
+    monkeypatch.setattr(osi_converter, "introspect_table_to_dataset", record)
     convert(db=osi_db, docs=documents(flat([ds("orders", source='"lower_schema"."lower_table"', fields=[f("id")])])),
             target_dialect="snowflake")
     (call,) = seen

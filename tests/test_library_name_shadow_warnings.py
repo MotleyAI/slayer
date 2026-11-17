@@ -162,7 +162,7 @@ class TestEverySpelling:
 
 
 def _shadow_dicts(entries: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
-    return [(w["model"], w["aggregation"], w["function"]) for w in entries if w.get("kind") == "library_name_shadow"]
+    return [(w["dataset"], w["aggregation"], w["function"]) for w in entries if w.get("kind") == "library_name_shadow"]
 
 
 class TestEverySurface:

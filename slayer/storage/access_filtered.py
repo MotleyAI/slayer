@@ -29,7 +29,7 @@ def can_access(dataset: SlayerDataset, *, tags: Iterable[str]) -> bool:
 
 
 def entity_dataset(entity: str) -> Identity | None:
-    """``(data_source, model)`` a ``<ds>.<model>[.<leaf>]`` entity names; ``None`` for datasource and memory refs."""
+    """``(data_source, dataset)`` a ``<ds>.<dataset>[.<leaf>]`` entity names; ``None`` for datasource and memory refs."""
     if entity.startswith(MEMORY_CANONICAL_PREFIX):
         return None
     parts = entity.split(".")
@@ -62,7 +62,7 @@ class _View(BaseModel):
         return entity_dataset(canonical_id) in self.hidden
 
     def hides_under(self, prefix: str) -> bool:
-        """Whether a hidden model or memory id is ``prefix`` or descends from it."""
+        """Whether a hidden dataset or memory id is ``prefix`` or descends from it."""
         hidden = [f"{ds}.{name}" for ds, name in self.hidden]
         hidden += [f"{MEMORY_CANONICAL_PREFIX}{m}" for m in self.hidden_memories]
         return any(cid == prefix or cid.startswith(f"{prefix}.") for cid in hidden)
@@ -73,7 +73,7 @@ class _View(BaseModel):
 
 
 def _prior_tags(dataset: SlayerDataset, *, view: _View) -> list[str]:
-    """The stored copy's tags; a new model, moved or copied ones included, has none."""
+    """The stored copy's tags; a new dataset, moved or copied ones included, has none."""
     stored = view.full.get((dataset.data_source, dataset.name))
     return stored.access_tags if stored is not None else []
 
@@ -81,7 +81,7 @@ def _prior_tags(dataset: SlayerDataset, *, view: _View) -> list[str]:
 def _visible_identities(
     *, full: dict[Identity, SlayerDataset], known: list[SlayerDataset], tags: frozenset[str],
 ) -> set[Identity]:
-    """Accessible models whose reads, resolved over ``known`` (loaded plus placeholders), are all visible, transitively."""
+    """Accessible datasets whose reads, resolved over ``known`` (loaded plus placeholders), are all visible, transitively."""
     reads = {key: datasets_read_by(m, datasets=known) - {key} for key, m in full.items()}
     visible = {key for key, m in full.items() if can_access(m, tags=tags)}
     while blocked := {key for key in visible if not reads[key] <= visible}:
@@ -172,7 +172,7 @@ class AccessFilteredStorage(StorageBackend):
         if close is not None:
             await close()
 
-    # ---- models -------------------------------------------------------------
+    # ---- datasets -----------------------------------------------------------
 
     async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
         if self._bypass:
@@ -194,7 +194,7 @@ class AccessFilteredStorage(StorageBackend):
     async def save_dataset(
         self, dataset: SlayerDataset, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
     ) -> None:
-        """Bypass: the inner save. Otherwise validate in the view, then save the model merged onto its full stored copy."""
+        """Bypass: the inner save. Otherwise validate in the view, then save the dataset merged onto its full stored copy."""
         if self._bypass:
             await self._inner.save_dataset(dataset, _validate=_validate, failures=failures)
             return
@@ -215,16 +215,16 @@ class AccessFilteredStorage(StorageBackend):
             # Peers the full store cannot load lie outside the view: skipped unreported.
             await self._inner.save_dataset(merged, _validate=_validate, failures=DocumentLoadFailures(report=False))
         except ValueError:  # valid in the view, so a full-store rejection stems from hidden parts
-            raise HiddenContentConflictError(kind="model", name=dataset.name) from None
+            raise HiddenContentConflictError(kind="dataset", name=dataset.name) from None
 
     def _merged(self, dataset: SlayerDataset, *, view: _View) -> SlayerDataset:
         key = (dataset.data_source, dataset.name)
         if key in view.hidden:
-            raise HiddenContentConflictError(kind="model", name=dataset.name)
+            raise HiddenContentConflictError(kind="dataset", name=dataset.name)
         stored = view.full.get(key)
         if stored is None:
             if any(n == dataset.name and m.relationships != view.datasets[(ds, n)].relationships for (ds, n), m in view.full.items()):
-                raise HiddenContentConflictError(kind="model", name=dataset.name)  # a move would drop its pruned joins
+                raise HiddenContentConflictError(kind="dataset", name=dataset.name)  # a move would drop its pruned relationships
             return dataset
         pruned = [j for j in stored.relationships if (dataset.data_source, j.to) in view.hidden]
         return dataset.model_copy(update={"relationships": [*dataset.relationships, *pruned]}) if pruned else dataset
@@ -256,7 +256,7 @@ class AccessFilteredStorage(StorageBackend):
         sampled: str | None, sampled_values: list[str] | None, distinct_count: int | None,
     ) -> None:
         if not self._bypass and not await self._visible(data_source=data_source, name=dataset_name):
-            raise ValueError(f"update_field_sampled: model {dataset_name!r} in datasource {data_source!r} not found.")
+            raise ValueError(f"update_field_sampled: dataset {dataset_name!r} in datasource {data_source!r} not found.")
         await self._inner.update_field_sampled(
             data_source=data_source, dataset_name=dataset_name, field_name=field_name,
             sampled=sampled, sampled_values=sampled_values, distinct_count=distinct_count,

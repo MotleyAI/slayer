@@ -667,8 +667,8 @@ class TestCrossModelConsistency:
             q = SlayerQuery(
                 population="orders",
                 metrics=[
-                    {"formula": "sum(amount)"},
-                    {"formula": "count(customers.id)"},
+                    {"expression": "sum(amount)"},
+                    {"expression": "count(customers.id)"},
                 ],
                 variables={"floor": 100},
             )
@@ -686,8 +686,8 @@ class TestCrossModelConsistency:
             q = SlayerQuery(
                 population="orders",
                 metrics=[
-                    {"formula": "sum(amount)"},
-                    {"formula": "count(customers.id)"},
+                    {"expression": "sum(amount)"},
+                    {"expression": "count(customers.id)"},
                 ],
                 variables={"floor": 100},
             )

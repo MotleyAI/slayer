@@ -335,8 +335,8 @@ class TestSurfaces:
             with TestClient(create_app(storage=env.storage)) as http:
                 response = http.post("/ingest", json={"datasource": "ds"})
         body = response.json()
-        entries = [e for e in body["broken_dependents"] if (e["model"], e["name"]) == ("contractors", "nt")]
+        entries = [e for e in body["broken_dependents"] if (e["dataset"], e["name"]) == ("contractors", "nt")]
         assert len(entries) == 1, body
-        assert {k: entries[0][k] for k in ("kind", "dependent_kind", "column", "error_type", "checked")} == {
-            "kind": "broken_dependent", "dependent_kind": "measure", "column": TAGS, "error_type": "ListTypeError",
+        assert {k: entries[0][k] for k in ("kind", "dependent_kind", "field", "error_type", "checked")} == {
+            "kind": "broken_dependent", "dependent_kind": "metric", "field": TAGS, "error_type": "ListTypeError",
             "checked": True}

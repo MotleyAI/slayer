@@ -191,7 +191,7 @@ def _expr_has_metric_ref(
         return True
     if isinstance(node, Ref) and node.name in metric_names:
         return True
-    # A dotted leaf resolving to a saved measure on the terminal model is a measure ref too.
+    # A dotted leaf resolving to a saved metric on the terminal dataset is a metric ref too.
     if isinstance(node, DottedRef) and _resolve_saved_metric_ref(
         scope=scope, bundle=bundle, expression=".".join(node.parts),
     ) is not None:
@@ -207,7 +207,7 @@ def _expr_has_metric_ref(
 def _reject_metric_refs_for_raw_rows(
     *, query: SlayerQuery, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> None:
-    """Raw-rows mode (``distinct_dimension_values=False``): reject any measure reference in filters/order."""
+    """Raw-rows mode (``distinct_dimension_values=False``): reject any metric reference in filters/order."""
     src = scope.population if isinstance(scope, DatasetScope) else None
     metric_names: FrozenSet[str] = frozenset(
         m.name for m in (src.metrics if src is not None else []) if m.name
@@ -271,7 +271,7 @@ def _reject_metric_refs_in_order(
             saved_name=name if name and name in metric_names else None,
             source_name=source_name,
         )
-        # A dotted ORDER BY column whose leaf is a saved measure on the terminal model is a measure ref too.
+        # A dotted ORDER BY field whose leaf is a saved metric on the terminal dataset is a metric ref too.
         full = getattr(getattr(item, "field", None), "full_name", None)
         check_raw_rows_order_metric_ref(
             saved_dotted=full if full and "." in full and _resolve_saved_metric_ref(
@@ -339,12 +339,12 @@ def _bind_inner_restriction(
         return bind_filter(parsed=node, scope=scope, bundle=bundle)
     except AmbiguousRelationshipPathError as exc:
         raise AmbiguousRelationshipPathError(
-            source_dataset=exc.source_model, target_dataset=exc.target_model, candidates=exc.candidates,
+            source_dataset=exc.source_dataset, target_dataset=exc.target_dataset, candidates=exc.candidates,
             token=exc.token, context=f"The {restriction.label}",
         ) from exc
     except (UnknownReferenceError, UnresolvableDimensionRelationshipError) as exc:
         raise QueryExtensionError(
-            f"The {restriction.label} restricts the population, but no join path reaches "
+            f"The {restriction.label} restricts the population, but no relationship path reaches "
             f"{restriction.dataset!r} from it."
         ) from exc
 
@@ -356,7 +356,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     scope: Optional[DatasetScope | StageSchema] = None,
     stage_schemas: Optional[Dict[str, StageSchema]] = None,
 ) -> PreboundQuery:
-    """Parse and bind every text surface of a ``SlayerQuery`` (the only door into the parser); returns fully-normalized keys. Model filters excluded (scope-owned)."""
+    """Parse and bind every text surface of a ``SlayerQuery`` (the only door into the parser); returns fully-normalized keys. Dataset filters excluded (scope-owned)."""
     if scope is None:
         scope = resolve_scope(
             query=query, bundle=bundle, stage_schemas=stage_schemas,
@@ -381,7 +381,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             if alias is not None:
                 declared_alias_to_bound.setdefault(alias, dm.bound)
 
-    # Declared-MEASURE aliases a filter may reference by name, interning onto the same slot as the aggregate expression.
+    # Declared-METRIC aliases a filter may reference by name, interning onto the same slot as the aggregate expression.
     n_dims = len(query.dimensions or [])
     n_tds = len(query.time_dimensions or [])
     filter_alias_map: Dict[str, ValueKey] = {}
@@ -414,7 +414,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         (td, dm.bound, "") for td, dm in zip(query.time_dimensions or [], _td_alias_dms)
     ]))
 
-    # Filter list in WHERE order: date_range, model filters (Mode-A SQL), then user query filters.
+    # Filter list in WHERE order: date_range, dataset filters (Mode-A SQL), then user query filters.
     bound_filters: List[BoundFilter] = []
     # Parallel original filter text (None for date_range bounds), for semi-join push entries.
     bound_filter_texts: List[Optional[str]] = []
@@ -424,19 +424,19 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         with stale_spelling_position(f"time_dimensions[{i}]"):
             if not td.date_range:
                 continue
-            # A stage date_range filters the stage's rows on its bare column, exactly
-            # as a model-scope range filters a model's rows.
+            # A stage date_range filters the stage's rows on its bare field, exactly
+            # as a dataset-scope range filters a dataset's rows.
             bf = _build_date_range_filter(td=td, scope=scope, bundle=bundle)
             bound_filters.append(bf)
             bound_filter_texts.append(None)
     n_date_range = len(bound_filters)
 
-    # 2. SlayerModel.filters — lifted from scope in plan_query, not here.
+    # 2. SlayerDataset.filters — lifted from scope in plan_query, not here.
 
     # 3. user query filters (Mode-B DSL). Dedupe by bound key (first wins) so the
     #    alias and aggregate-expression forms of a ref don't duplicate the HAVING clause.
     for i, f in enumerate(query.filter or []):
-        with stale_spelling_position(f"filters[{i}]"):
+        with stale_spelling_position(f"filter[{i}]"):
             if not isinstance(f, str):
                 continue
             bf = bind_filter(
@@ -468,7 +468,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
             col_name = o.field.name
             full_name = o.field.full_name
             # A ``date_trunc('<unit>', expr)`` order key sorts by the projected time
-            # dimension's bucket — resolved to its column binding.
+            # dimension's bucket — resolved to its field binding.
             gran_parts = granularity_call_parts(o.raw_expression) if o.raw_expression else None
             _order_gran = (
                 resolve_granularity(gran_parts[1], defined=bundle.granularities)
@@ -497,7 +497,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     nulls=o.nulls or "default",
                 ))
                 continue
-            # A placeholder ColumnRef means the item is an EXPRESSION: bind raw_formula, skip alias lookups.
+            # A placeholder FieldRef means the item is an EXPRESSION: bind raw_expression, skip alias lookups.
             if col_name in ORDER_PLACEHOLDER_NAMES and o.raw_expression:
                 order_specs.append(OrderSpec(
                     bound=bind_expr(
@@ -511,7 +511,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     nulls=o.nulls or "default",
                 ))
                 continue
-            # An ORDER BY over a partition_by / window= aggregate must bind raw_formula (the alias shortcut would drop the partition/window).
+            # An ORDER BY over a partition_by / window= aggregate must bind raw_expression (the alias shortcut would drop the partition/window).
             if o.raw_expression and _passes_grain_kwargs(o.raw_expression):
                 _part_bound = bind_expr(
                     parsed=parse_bound_expr(o.raw_expression, query.bound_variables),
@@ -529,12 +529,12 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                         bound=_part_bound, direction=o.direction, nulls=o.nulls or "default",
                     ))
                     continue
-            # A FOREIGN-qualified order ref must not resolve to a same-named local column via the bare-leaf shortcut.
+            # A FOREIGN-qualified order ref must not resolve to a same-named local field via the bare-leaf shortcut.
             _order_qualifier = getattr(o.field, "dataset", None)
             _order_host_local = (
                 _order_qualifier is None or _order_qualifier == _order_host_name
             )
-            # Prefer alias resolution over model-scope binding; try dotted then flattened forms, falling back to raw.
+            # Prefer alias resolution over dataset-scope binding; try dotted then flattened forms, falling back to raw.
             if _order_host_local and col_name in declared_alias_to_bound:
                 bo = declared_alias_to_bound[col_name]
             elif full_name in declared_alias_to_bound:
@@ -554,7 +554,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                     dimension_alias_map=dim_alias_map,
                 )
             else:
-                # Bind the FULL reference — a dotted ORDER ColumnRef would otherwise rebind as the wrong host column.
+                # Bind the FULL reference — a dotted ORDER FieldRef would otherwise rebind as the wrong host field.
                 bo = bind_expr(
                     parsed=parse_expr(o.field.spelling),
                     scope=scope,
@@ -719,20 +719,20 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         order_specs=order_specs,
     )
 
-    # Validate every rank-family partition_by column resolves to a query dim/td, rewriting a td source column to its bucket TimeTruncKey. Runs BEFORE interning.
+    # Validate every rank-family partition_by field resolves to a query dim/td, rewriting a td source field to its bucket TimeTruncKey. Runs BEFORE interning.
     _dim_dms, _td_dms, _ = partition_declared_metrics(
         declared_metrics=declared_measures, n_dims=n_dims, n_time_dimensions=n_tds,
     )
     _dim_key_set = {dm.bound.value_key for dm in _dim_dms}
-    # A source column at two granularities maps to two buckets — a bare partition_by is then ambiguous.
+    # A source field at two granularities maps to two buckets — a bare partition_by is then ambiguous.
     _td_by_source: Dict[ValueKey, TimeTruncKey] = {}
     _td_ambiguous_sources: set = set()
-    _td_key_set: set[TimeTruncKey] = set()  # every projected bucket, not one per column
+    _td_key_set: set[TimeTruncKey] = set()  # every projected bucket, not one per field
     for dm in _td_dms:
         vk = dm.bound.value_key
         if not isinstance(vk, TimeTruncKey):
             continue
-        # Ambiguous only if the same column already mapped to a DIFFERENT bucket.
+        # Ambiguous only if the same field already mapped to a DIFFERENT bucket.
         if vk.source in _td_by_source and _td_by_source[vk.source] != vk:
             _td_ambiguous_sources.add(vk.source)
         _td_by_source[vk.source] = vk
@@ -740,7 +740,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     _available_dims = [dm.declared_name for dm in (*_dim_dms, *_td_dms)]
 
     # Normalise transform constituents (D4b, Axiom 11.1): an ungrained, non-windowed,
-    # local inner aggregate inside a transform constituent (measure/filter/order, not
+    # local inner aggregate inside a transform constituent (metric/filter/order, not
     # dimensions) is explicitly grained at the query grain — BEFORE partition-key
     # validation, so the synthesized keys face the same attributability / resolution
     # checks as a user-written partition_by=. Every dependent set below (dim-agg,
@@ -771,7 +771,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         lenient = isinstance(key, AggregateKey) or key in _reagg_operand_keys
         new_pks = []
         for pk in key.partition_keys or ():
-            # A partition key over a join must be attributable from the root; a
+            # A partition key over a relationship must be attributable from the root; a
             # re-aggregation's outer keys are judged against its operand grain instead.
             if not is_reaggregation_key(key):
                 assert_partition_key_attributable(
@@ -874,7 +874,7 @@ def _rekeyed(dm: DeclaredMetric, key: ValueKey) -> DeclaredMetric:
 
 
 def _list_typing(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> ListTyping:
-    """The list rules' view of ``scope``: column and element types, element access, the database's list support."""
+    """The list rules' view of ``scope``: field and element types, element access, the database's list support."""
     def element_access(key: object) -> bool:
         path = tuple(getattr(key, "path", ()) or ())
         if not path or not isinstance(scope, DatasetScope) or scope.population is None:
@@ -907,7 +907,7 @@ def _retyped_after_coercion(
     declared_metrics: List[DeclaredMetric], *, n_grain: int, scope: DatasetScope | StageSchema,
     bundle: ResolvedSourceBundle,
 ) -> List[DeclaredMetric]:
-    """Inferred computed-dimension and measure types re-derived from their coerced keys."""
+    """Inferred computed-dimension and metric types re-derived from their coerced keys."""
     return [
         dm.model_copy(update={"datatype": _type_for_metric_expression(scope=scope, bound=dm.bound, bundle=bundle)})
         if dm.is_dimension or (i >= n_grain and not dm.type_is_explicit) else dm
@@ -963,7 +963,7 @@ def _opaque_dim_type(
 def _walk_dotted(
     *, source_dataset: SlayerDataset, hops: List[str], bundle: ResolvedSourceBundle,
 ) -> Optional[Tuple[SlayerDataset, Tuple[str, ...]]]:
-    """``(terminal_model, canonical hops)`` of ``hops`` from ``source_dataset`` (None on a missing/circular/ambiguous hop)."""
+    """``(terminal_dataset, canonical hops)`` of ``hops`` from ``source_dataset`` (None on a missing/circular/ambiguous hop)."""
     try:
         return walk_terminal(root=source_dataset, path=hops, datasets_by_name=bundle.datasets_by_name)
     except (AmbiguousRelationshipPathError, CircularRelationshipPathError):
@@ -973,7 +973,7 @@ def _walk_dotted(
 def _route_short_form_saved_metric(
     *, host: SlayerDataset, hops: list[str], leaf: str, bundle: ResolvedSourceBundle
 ) -> Optional[Tuple[SlayerDataset, str]]:
-    """``(terminal_model, canonical_ref)`` when a ``len==1`` unresolvable prefix
+    """``(terminal_dataset, canonical_ref)`` when a ``len==1`` unresolvable prefix
     short-form routes to its full datasource-scoped path, else None.
     Routing triggers only when the first hop resolves to no edge; an adjacent
     parallel pair is a fail-closed ambiguous hop, not a route. This
@@ -1009,10 +1009,10 @@ def _resolve_saved_metric_ref(
     bundle: ResolvedSourceBundle,
     expression: str,
 ) -> Optional[Tuple[SlayerDataset, "DatasetMetric", str]]:
-    """Return ``(terminal_model, measure, canonical_ref)`` if ``expression`` is a
-    bare/dotted saved-measure reference (binder resolution order, short-form
+    """Return ``(terminal_dataset, metric, canonical_ref)`` if ``expression`` is a
+    bare/dotted saved-metric reference (binder resolution order, short-form
     auto-routing included), else None. ``canonical_ref`` is the canonical dotted
-    path when routed or respelled, else the formula text unchanged."""
+    path when routed or respelled, else the expression text unchanged."""
     if not isinstance(scope, DatasetScope) or scope.population is None:
         return None
     host = scope.population
@@ -1048,7 +1048,7 @@ def _locate_dotted_saved_metric(
     text: str,
     bundle: ResolvedSourceBundle,
 ) -> Optional[Tuple[SlayerDataset, str]]:
-    """``(terminal_model, canonical_ref)`` for a hop-qualified saved measure."""
+    """``(terminal_dataset, canonical_ref)`` for a hop-qualified saved metric."""
     walked = _walk_dotted(source_dataset=host, hops=hops, bundle=bundle)
     if walked is None:
         return _route_short_form_saved_metric(
@@ -1076,7 +1076,7 @@ def _saved_metric_public_name(
     bundle: ResolvedSourceBundle,
     expression: str,
 ) -> Optional[str]:
-    """Implicit surfaced name for a bare/dotted saved-measure reference — the
+    """Implicit surfaced name for a bare/dotted saved-metric reference — the
     full routed dotted text (short forms surface under their routed path)."""
     ref = _resolve_saved_metric_ref(scope=scope, bundle=bundle, expression=expression)
     return ref[2] if ref is not None else None
@@ -1138,7 +1138,7 @@ def _declared_computed_dimension(
     )
 
 
-def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential projection passes (dimensions incl. computed, time dimensions, measures) building one ordered declared list; each pass is one contract and the order (dims → tds → measures) is the public projection order the function pins.
+def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential projection passes (dimensions incl. computed, time dimensions, metrics) building one ordered declared list; each pass is one contract and the order (dims → tds → metrics) is the public projection order the function pins.
     *,
     query: SlayerQuery,
     scope: DatasetScope | StageSchema,
@@ -1209,7 +1209,7 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
                 format=fmt,
                 description=desc,
             ))
-    # Time dimensions follow dimensions in the public projection. Same-column
+    # Time dimensions follow dimensions in the public projection. Same-field
     # time dimensions (distinct granularities) get granularity-suffixed public
     # names so their result keys disambiguate; a lone one keeps the
     # granularity-free key.
@@ -1243,7 +1243,7 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
         ))
     seen_metric_keys: Dict[str, Tuple[str, ValueKey, DatasetMetric]] = {}
     for i, m in enumerate(query.metrics or []):
-        with stale_spelling_position(f"measures[{i}]"):
+        with stale_spelling_position(f"metrics[{i}]"):
             formula = m.expression
             explicit_name = m.name
             parsed = parse_bound_expr(formula, query.bound_variables)
@@ -1252,16 +1252,16 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
                 dimension_alias_map=dim_alias_map,
             )
             # The parsed tree drives text-shape alias derivation, so both spellings
-            # of one formula share an alias.
+            # of one expression share an alias.
             canonical = _canonical_alias_for_expression(
                 formula, bound=bound, parsed=parsed, bundle=bundle, root=root_spelling(scope),
             )
-            # A bare/dotted saved-ModelMeasure reference surfaces under the formula text (explicit query name still wins).
+            # A bare/dotted saved-DatasetMetric reference surfaces under the expression text (explicit query name still wins).
             saved_name = _saved_metric_public_name(
                 scope=scope, bundle=bundle, expression=formula,
             )
             alias_name = explicit_name or saved_name
-            # A substituted formula is named from its template (text path: an aggregate
+            # A substituted expression is named from its template (text path: an aggregate
             # key's alias would embed the value), staying unnamed for dedupe.
             template_name = None if m.template == formula else _canonical_alias_for_expression(
                 m.template, parsed=parse_expr(m.template), root=root_spelling(scope),
@@ -1269,9 +1269,9 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
             declared_name = alias_name or template_name or canonical
             public_name = declared_name
             # Two DIFFERENT values whose DERIVED keys collide would silently share
-            # a column (e.g. ``sum(amount - cost)`` vs ``sum(amount + cost)`` both
+            # a field (e.g. ``sum(amount - cost)`` vs ``sum(amount + cost)`` both
             # sanitize to ``amount_cost_sum``) — fail loudly; the SAME
-            # value merges into one column. Scoped to unnamed entries:
+            # value merges into one field. Scoped to unnamed entries:
             # explicit-name collisions keep their dedicated declared-more-than-once
             # errors downstream.
             if alias_name is None:
@@ -1288,7 +1288,7 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
             fmt, desc = _format_description_for_metric_expression(
                 scope=scope, bound=bound, bundle=bundle,
             )
-            # Type-priority (highest wins): query m.type, saved ModelMeasure.datatype,
+            # Type-priority (highest wins): query m.type, saved DatasetMetric.datatype,
             # then aggregation-aware inference.
             explicit_type = m.datatype or _saved_dataset_metric_type(
                 scope=scope, bundle=bundle, expression=formula,
@@ -1327,19 +1327,19 @@ def _canonical_alias_for_expression(
     bundle: Optional[ResolvedSourceBundle] = None,
     root: Optional[str] = None,
 ) -> str:
-    """Canonical public alias for a measure formula: ``canonical_aggregate_alias`` for an unfiltered
-    AggregateKey root, else :func:`formula_text_alias` of ``parsed`` with its ``root`` qualifier dropped (so every
-    spelling of one formula derives one alias)."""
+    """Canonical public alias for a metric expression: ``canonical_aggregate_alias`` for an unfiltered
+    AggregateKey root, else :func:`expression_text_alias` of ``parsed`` with its ``root`` qualifier dropped (so every
+    spelling of one expression derives one alias)."""
     filtered = parsed is not None and any(
         isinstance(n, AggCall) and n.filter is not None for n in walk_parsed(parsed))
     if bound is not None and isinstance(bound.value_key, AggregateKey) and not filtered:
         spelled = bound.value_key if parsed is None or bundle is None else spelled_aggregate_key(
             parsed=parsed, key=bound.value_key, bundle=bundle)
-        # stage_formula profile prefixes the join path relative to the stage (``count(customers.*)`` → ``customers._count``).
+        # stage_formula profile prefixes the relationship path relative to the stage (``count(customers.*)`` → ``customers._count``).
         alias = canonical_aggregate_alias(spelled, profile="stage_expression")
         if alias is not None:
             return alias
-        # None means the source exposes no leaf/column name; use the text-shape path.
+        # None means the source exposes no leaf/field name; use the text-shape path.
     if parsed is None:
         return auto_name_from_expression(expression.strip())
     return expression_text_alias(root_relative(parsed, root))
@@ -1371,19 +1371,19 @@ def _td_granularity(td: TimeDimension, *, bundle: ResolvedSourceBundle) -> Granu
 
 
 def _check_field_granularities(*, bundle: ResolvedSourceBundle) -> None:
-    """Every model column's declared granularity names a known granularity."""
+    """Every dataset field's declared granularity names a known granularity."""
     for model in bundle.datasets_by_name.values():
         for column in model.fields:
             if column.granularity is not None:
                 check_granularity_known(
                     name=str(column.granularity),
                     granularity=resolve_granularity(column.granularity, defined=bundle.granularities),
-                    defined=bundle.granularities, where=f"column {column.name!r} of model {model.name!r}",
+                    defined=bundle.granularities, where=f"field {column.name!r} of dataset {model.name!r}",
                 )
 
 
 def _check_dimension_calls(query: SlayerQuery, *, bundle: ResolvedSourceBundle) -> None:
-    """An unnamed single-column call naming no aggregation or granularity fails."""
+    """An unnamed single-field call naming no aggregation or granularity fails."""
     for item in query.dimensions or []:
         if isinstance(item, ComputedDimension) and item.name == computed_dimension_name(item.template):
             _check_dimension_call(item.expression, bundle=bundle)
@@ -1468,7 +1468,7 @@ def _snap_frame_bound(
     cj: ValueKey, *, grans_by_field: Dict[ValueKey, List[Granularity]],
     field_type, now: datetime, upper_seen: set,
 ) -> ValueKey:
-    """A frame-bound conjunct on a time-dimension column snapped to a bucket boundary; others untouched."""
+    """A frame-bound conjunct on a time-dimension field snapped to a bucket boundary; others untouched."""
     if isinstance(cj, ArithmeticKey) and cj.op == "and":
         return cj.map_children(lambda c: _snap_frame_bound(
             c, grans_by_field=grans_by_field, field_type=field_type, now=now, upper_seen=upper_seen,
@@ -1502,9 +1502,9 @@ def _snap_whole_periods(
     field_type,
     now: datetime,
 ) -> Tuple[List[BoundFilter], List[Optional[str]], int, List[GranularityConflict]]:
-    """``whole_periods_only``: snap every frame bound on a time-dimension column down to the
+    """``whole_periods_only``: snap every frame bound on a time-dimension field down to the
     earliest bucket boundary, the upper bound clamped to now (added when absent); report
-    granularity pairs on one column that do not nest."""
+    granularity pairs on one field that do not nest."""
     grans_by_field: Dict[ValueKey, List[Granularity]] = {}
     for td_key in td_keys:
         if isinstance(td_key, TimeTruncKey):
@@ -1548,9 +1548,9 @@ def _snap_whole_periods(
 def _assert_equivalent_tds_agree(
     bound_tds: List[Tuple[TimeDimension, BoundExpr, str]],
 ) -> None:
-    """Time dimensions binding to one ``TimeTruncKey`` (equivalent column spellings) must
+    """Time dimensions binding to one ``TimeTruncKey`` (equivalent field spellings) must
     agree on ``date_range``/``label``; otherwise their date-range filters and shared
-    projection column silently conflict. Construction dedup catches this once the query is
+    projection field silently conflict. Construction dedup catches this once the query is
     rooted — this is the bind-time backstop for spellings that only prove equivalent here
     (full identity matching lands in DEV-1925)."""
     seen: Dict[ValueKey, TimeDimension] = {}
@@ -1680,7 +1680,7 @@ def _named_td_matches(
     *, tds: List[TimeDimension], target: str, root: Optional[str],
 ) -> Tuple[List[TimeDimension], List[TimeDimension]]:
     """(name or full-name matches, leaf matches) for ``target`` among ``tds``: a time
-    dimension's name, else a column's full or leaf name. Two same-column buckets share
+    dimension's name, else a field's full or leaf name. Two same-field buckets share
     a full name, so full matches is a list, not a single TD."""
     parts = _reference_parts(target, root=root)
     named = [td for td in tds if len(parts) == 1 and td.effective_name == parts[0]]
@@ -1695,9 +1695,9 @@ def _named_td_matches(
 def _host_local_default_td(
     *, tds: List[TimeDimension], default: str, root: Optional[str],
 ) -> Optional[TimeDimension]:
-    # The default points only at the host model; prefer a host-local TD over a same-leaf joined one.
+    # The default points only at the host dataset; prefer a host-local TD over a same-leaf joined one.
     matches = [td for td in tds if _td_field_parts(td, root=root) == (default,)]
-    # Same column at several granularities: the passive model default can't pick a
+    # Same field at several granularities: the passive dataset default can't pick a
     # bucket. Resolve to None (not raise) so no-transform queries still run; a
     # transform that needs the axis then fails via check_time_transforms_resolved.
     return matches[0] if len(matches) == 1 else None
@@ -1709,7 +1709,7 @@ def _resolve_main_time_dimension(
     dataset: Optional[SlayerDataset],
     root: Optional[str] = None,
 ) -> Optional[TimeDimension]:
-    """Resolve the active time dimension for transform/windowing: 0 TDs → None; 1 → that TD; 2+ → main_time_dimension (full_name then leaf) else the model's default_time_dimension else None. A stage has no model, so its default step is skipped."""
+    """Resolve the active time dimension for transform/windowing: 0 TDs → None; 1 → that TD; 2+ → main_time_dimension (full_name then leaf) else the dataset's default_time_dimension else None. A stage has no dataset, so its default step is skipped."""
     tds = list(query.time_dimensions or [])
     if not tds:
         return None
@@ -1723,7 +1723,7 @@ def _resolve_main_time_dimension(
         if len(full_matches) == 1:
             return full_matches[0]
         if len(full_matches) > 1:
-            # Same column, several granularities: a bare column can't pick a bucket.
+            # Same field, several granularities: a bare field can't pick a bucket.
             # Per-granularity selection (e.g. date_trunc('year', created_at)) lands in DEV-1925.
             raise AmbiguousReferenceError(
                 name=target,

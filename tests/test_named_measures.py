@@ -47,11 +47,11 @@ class TestNamedMeasureSQL:
 
         saved_query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "aov", "name": "result"}],
+            metrics=[{"expression": "aov", "name": "result"}],
         )
         inline_query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": formula, "name": "result"}],
+            metrics=[{"expression": formula, "name": "result"}],
         )
 
         saved_sql = await _generate(saved_query, with_saved)
@@ -76,13 +76,13 @@ class TestNamedMeasureSQL:
 
         saved_query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "cumsum(aov)", "name": "result"}],
-            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+            metrics=[{"expression": "cumsum(aov)", "name": "result"}],
+            time_dimensions=[{"field": "created_at", "granularity": "month"}],
         )
         inline_query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": f"cumsum({formula})", "name": "result"}],
-            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+            metrics=[{"expression": f"cumsum({formula})", "name": "result"}],
+            time_dimensions=[{"field": "created_at", "granularity": "month"}],
         )
 
         saved_sql = await _generate(saved_query, with_saved)
@@ -99,11 +99,11 @@ class TestNamedMeasureSQL:
 
         saved_query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "aov * 1.1", "name": "result"}],
+            metrics=[{"expression": "aov * 1.1", "name": "result"}],
         )
         inline_query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": f"{formula} * 1.1", "name": "result"}],
+            metrics=[{"expression": f"{formula} * 1.1", "name": "result"}],
         )
 
         saved_sql = await _generate(saved_query, with_saved)
@@ -122,7 +122,7 @@ class TestNamedMeasureSQL:
 
         chained_query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "b", "name": "result"}],
+            metrics=[{"expression": "b", "name": "result"}],
         )
         inline_query = SlayerQuery.model_validate({
             "population": "orders",
@@ -145,7 +145,7 @@ class TestNamedMeasureSQL:
         )
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "a", "name": "result"}],
+            metrics=[{"expression": "a", "name": "result"}],
         )
 
         with pytest.raises(
@@ -162,7 +162,7 @@ class TestNamedMeasureSQL:
         )
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "nonexistent", "name": "result"}],
+            metrics=[{"expression": "nonexistent", "name": "result"}],
         )
 
         with pytest.raises(
@@ -176,7 +176,7 @@ class TestNamedMeasureSQL:
         )
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "aov_nett", "name": "result"}],
+            metrics=[{"expression": "aov_nett", "name": "result"}],
         )
 
         with pytest.raises(ValueError, match="Did you mean 'aov_net'"):
@@ -200,7 +200,7 @@ class TestNamedMeasureSQL:
         model = _orders_model()
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "round(revenue, 2)", "name": "result"}],
+            metrics=[{"expression": "round(revenue, 2)", "name": "result"}],
         )
 
         with pytest.raises(
@@ -245,7 +245,7 @@ class TestNamedMeasureSQL:
 
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "aov", "name": "result"}],
+            metrics=[{"expression": "aov", "name": "result"}],
         )
 
         with pytest.raises(ValueError, match=r"duplicate measure names"):
@@ -282,7 +282,7 @@ class TestBareNamedMeasureAliasing:
             population="orders",
             dimensions=["status"],
             metrics=["companies_count"],
-            order=[{"column": "companies_count", "direction": "desc"}],
+            order=[{"field": "companies_count", "direction": "desc"}],
         )
         sql = await _generate(query, model)
         # The ORDER BY reference must point at the alias we actually emitted.

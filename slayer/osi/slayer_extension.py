@@ -38,7 +38,7 @@ class _Payload(BaseModel):
 
 
 class RelationshipDeclaration(BaseModel):
-    """One SLayer join a relationship stands for, on its declaring model."""
+    """One SLayer relationship an Ossie relationship stands for, on its declaring dataset."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -58,7 +58,7 @@ class MetricPayload(_Payload):
 
 
 class FieldContent(BaseModel):
-    """A field's SLayer column attributes; ``sql`` / ``filter`` are its value/filter split, ``datatype`` its typing."""
+    """A field's SLayer field attributes; ``sql`` / ``filter`` are its value/filter split, ``datatype`` its typing."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -78,7 +78,7 @@ class FieldPayload(_Payload):
 
 
 class SourceStructure(BaseModel):
-    """A model's source: a table or SQL with row filters, or saved queries with their variables."""
+    """A dataset's source: a table or SQL with row filters, or saved queries with their variables."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -97,7 +97,7 @@ class DatasetPayload(_Payload):
     default_time_dimension: str | None = None
     meta: dict[str, Any] | None = None
     aggregations: list[Aggregation] = []
-    #: SLayer-only content: columns reading joined models, measures Ossie cannot express.
+    #: SLayer-only content: fields reading joined datasets, metrics Ossie cannot express.
     fields: list[DatasetField] = []
     metrics: list[DatasetMetric] = []
 

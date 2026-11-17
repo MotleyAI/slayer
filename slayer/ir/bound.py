@@ -19,7 +19,7 @@ from slayer.core.keys import (
 class BoundFilter(BaseModel):
     """A bound filter predicate: ``value_key`` (like ``BoundExpr``), ``phase``
     (max phase any referenced slot reaches), and ``referenced_keys`` (every
-    ``ValueKey`` in the tree, for the cross-model planner's filter routing)."""
+    ``ValueKey`` in the tree, for the cross-dataset planner's filter routing)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
@@ -48,9 +48,9 @@ class BoundExpr(BaseModel):
 
 class BoundTimeDimension(BaseModel):
     """A bound time dimension: the wrapped ``BoundExpr`` (``bound``) plus the facts the
-    checker judges — a column's ``field_type`` (an expression is typed by the checker)
-    and ``(leaf, granularity)`` per temporal leaf a bucketed stage column or a model
-    ``Column``'s ``granularity`` records."""
+    checker judges — a field's ``field_type`` (an expression is typed by the checker)
+    and ``(leaf, granularity)`` per temporal leaf a bucketed stage field or a dataset
+    ``DatasetField``'s ``granularity`` records."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
@@ -73,7 +73,7 @@ def row_restriction_from_key(vk: ValueKey) -> BoundFilter:
 
 
 class DeclaredMetric(BaseModel):
-    """One declared measure; ``datatype`` follows the aggregation (count → INT, avg → DOUBLE, else source type)."""
+    """One declared metric; ``datatype`` follows the aggregation (count → INT, avg → DOUBLE, else source type)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -90,7 +90,7 @@ class DeclaredMetric(BaseModel):
     format: Optional[NumberFormat] = None
     description: Optional[str] = None
     # A computed dimension is a ROW-phase composite projected AND grouped; the
-    # flag distinguishes it from a bare-measure expression.
+    # flag distinguishes it from a bare-metric expression.
     is_dimension: bool = False
 
 
@@ -105,7 +105,7 @@ class OrderSpec(BaseModel):
 
 
 class GranularityConflict(BaseModel):
-    """Two ``whole_periods_only`` granularities on one column that do not nest into each other."""
+    """Two ``whole_periods_only`` granularities on one field that do not nest into each other."""
 
     model_config = ConfigDict(frozen=True)
 

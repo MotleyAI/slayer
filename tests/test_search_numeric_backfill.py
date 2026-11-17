@@ -77,7 +77,7 @@ async def test_search_backfills_numeric_column_hit_verbose(search_setup: tuple[A
     )
     amount_hits = [
         h for h in resp.results
-        if h.kind == "column" and h.id == "ds.orders.amount"
+        if h.kind == "field" and h.id == "ds.orders.amount"
     ]
     assert amount_hits, "expected the amount column as a hit"
     # Persisted min/max range — proof the numeric back-fill fired in search.
@@ -103,7 +103,7 @@ async def test_search_backfills_numeric_column_hit_compact(search_setup: tuple[A
     )
     amount_hits = [
         h for h in resp.results
-        if h.kind == "column" and h.id == "ds.orders.amount"
+        if h.kind == "field" and h.id == "ds.orders.amount"
     ]
     assert amount_hits, "expected the amount column as a hit"
     for h in amount_hits:

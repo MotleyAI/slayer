@@ -1,8 +1,8 @@
-"""Result models + rendering for ``recommend_root_model``.
+"""Result models + rendering for ``recommend_population``.
 
-Given a set of ``model.column`` / ``model.metric`` items an agent wants in
-one query, the engine recommends a root model (query ``source_model``) and
-the join-qualified reference path for each item from that root. These
+Given a set of ``dataset.field`` / ``dataset.metric`` items an agent wants in
+one query, the engine recommends a root dataset (query ``population``) and
+the relationship-qualified reference path for each item from that root. These
 models are the caller-facing shape returned by the engine and echoed
 verbatim through MCP / REST / CLI / SlayerClient.
 """
@@ -13,17 +13,17 @@ from pydantic import BaseModel
 
 
 class ItemPath(BaseModel):
-    """One input item paired with its join-qualified reference path from
+    """One input item paired with its relationship-qualified reference path from
     the recommended root (relative to the root, root name excluded — the
-    same form used inside a ``SlayerQuery`` whose ``source_model`` is the
+    same form used inside a ``SlayerQuery`` whose ``population`` is the
     root). Any aggregation suffix is preserved verbatim."""
 
     input_item: str
     path: str
-    # True for a saved measure / aggregation-suffixed item — reachable
+    # True for a saved metric / aggregation-suffixed item — reachable
     # from the root but not a determination item that steers the recommendation.
     attachment: bool = False
-    # An attachment on a dataset no join path reaches: its path is the root's product hop.
+    # An attachment on a dataset no relationship path reaches: its path is the root's product hop.
     unrelated: bool = False
 
 
@@ -40,8 +40,8 @@ class PopulationRecommendation(BaseModel):
     """Outcome of :meth:`SlayerQueryEngine.recommend_population`.
 
     When ``reachable`` is ``True``, ``population`` names the recommended
-    ``source_model`` and ``item_paths`` gives every item's path from it.
-    When ``False``, no single model reaches all items: ``population`` is
+    ``population`` and ``item_paths`` gives every item's path from it.
+    When ``False``, no single dataset reaches all items: ``population`` is
     ``None``, ``item_paths`` is empty, and ``coverage`` lists the Pareto
     frontier of partial roots so the caller can split the work into a
     multi-stage query.
@@ -58,19 +58,19 @@ class PopulationRecommendation(BaseModel):
 
 def _render_item_paths(rec: PopulationRecommendation) -> list[str]:
     lines = [
-        f"Recommended root model: `{rec.population}`",
+        f"Recommended root dataset: `{rec.population}`",
         "",
         "| Input item | Path from root |",
         "|------------|----------------|",
     ]
     for ip in rec.item_paths:
-        note = " (unrelated: no join path, aggregated over its own rows)" if ip.unrelated else ""
+        note = " (unrelated: no relationship path, aggregated over its own rows)" if ip.unrelated else ""
         lines.append(f"| `{ip.input_item}` | `{ip.path}`{note} |")
     return lines
 
 
 def _render_coverage(rec: PopulationRecommendation) -> list[str]:
-    lines = ["Recommended root model: _none_ — no single model reaches every item."]
+    lines = ["Recommended root dataset: _none_ — no single dataset reaches every item."]
     if rec.message:
         lines.extend(["", rec.message])
     if rec.coverage:

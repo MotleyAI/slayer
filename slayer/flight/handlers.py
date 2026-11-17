@@ -204,7 +204,7 @@ class FlightHandlers:
         async def fetch() -> dict[str, list[SlayerDataset]]:
             failures = DocumentLoadFailures()
             out: dict[str, list[SlayerDataset]] = {}
-            storage = self._engine.storage  # the engine's view refines stored models through its clients
+            storage = self._engine.storage  # the engine's view refines stored datasets through its clients
             for ds in await storage.list_datasources():
                 if models := failures.skip(await storage.load_datasets(data_source=ds)):
                     out[ds] = models

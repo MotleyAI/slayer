@@ -1,4 +1,4 @@
-"""Query-scoped extensions: one overlay step per stage over the models it reads, and the static scope its readers share."""
+"""Query-scoped extensions: one overlay step per stage over the datasets it reads, and the static scope its readers share."""
 
 from __future__ import annotations
 
@@ -52,12 +52,12 @@ _Lookup = Callable[[str, Dict[str, SlayerDataset]], Optional[SlayerDataset]]
 
 
 def extension_of(query: SlayerQuery, name: str) -> Optional[DatasetExtension]:
-    """``query``'s extension of model ``name``, if any."""
+    """``query``'s extension of dataset ``name``, if any."""
     return next((e for e in query.extensions or [] if e.source_name == name), None)
 
 
 def respelled(query: SlayerQuery, *, tiers: Sequence[Iterable[str]]) -> SlayerQuery:
-    """``query`` with each model name it writes — its source and its extensions' models — spelled as the first of
+    """``query`` with each dataset name it writes — its source and its extensions' datasets — spelled as the first of
     ``tiers`` that declares it (``slayer.core.names.match_name``); an undeclared name stays
     as written."""
     declared = [list(dict.fromkeys(tier)) for tier in tiers]
@@ -102,13 +102,13 @@ def _stage_tiers(*, stages: Iterable[str], datasets: Iterable[str]) -> List[List
 
 
 def with_own_extension(dataset: Optional[SlayerDataset], query: SlayerQuery) -> Optional[SlayerDataset]:
-    """``dataset`` with the measures ``query`` extends it with."""
+    """``dataset`` with the metrics ``query`` extends it with."""
     extension = extension_of(query, dataset.name) if dataset is not None else None
     return overlay_metrics(dataset, extension) if dataset is not None and extension is not None else dataset
 
 
 def query_field_texts(query: SlayerQuery) -> Iterator[Tuple[FieldKind, str]]:
-    """Every reference-bearing text of ``query`` — dimensions, time dimensions, measures, filters, order — and its kind."""
+    """Every reference-bearing text of ``query`` — dimensions, time dimensions, metrics, filters, order — and its kind."""
     yield from _dimension_texts(query)
     for measure in query.metrics or []:
         if measure.expression:
@@ -141,7 +141,7 @@ def extend_datasets(
 ) -> Tuple[Dict[str, SlayerDataset], List[InnerRestriction]]:
     """``datasets`` as ``query`` extends them, and its INNER joins' population filters.
 
-    ``lookup`` resolves a model an extension names (``None`` skips it); ``on_conflict`` sees each conflicting join.
+    ``lookup`` resolves a dataset an extension names (``None`` skips it); ``on_conflict`` sees each conflicting relationship.
     """
     out = dict(datasets)
     for extension in query.extensions or []:
@@ -164,7 +164,7 @@ def extend_datasets(
 def _merged(
     *, declaring: str, relationship: DatasetRelationship, merge: EdgeMerge, lookup: _Lookup, on_conflict: Callable[[ValueError], None],
 ) -> bool:
-    """Merge one extension join into ``merge``; whether it merged."""
+    """Merge one extension relationship into ``merge``; whether it merged."""
     if relationship.to not in merge.datasets and lookup(relationship.to, merge.datasets) is None:
         return False
     try:
@@ -188,7 +188,7 @@ def _restriction(*, declaring: str, relationship: DatasetRelationship, merge: Ed
 def declaring_dataset_path(
     restriction: InnerRestriction, *, host: Optional[SlayerDataset], datasets_by_name: Dict[str, SlayerDataset],
 ) -> Tuple[str, ...]:
-    """The population's path to ``restriction.model``: as spelled when root or adjacent, else short-form routed."""
+    """The population's path to ``restriction.dataset``: as spelled when root or adjacent, else short-form routed."""
     spelled = (restriction.dataset,)
     if host is None or not drop_root_qualifier((*spelled, restriction.key), host.spelling, quoted=())[:-1]:
         return spelled
@@ -223,9 +223,9 @@ def resolve_path(
 
 
 class QueryScope(BaseModel):
-    """One query object's models as the engine resolves them, for the static readers (decision 18).
+    """One query object's datasets as the engine resolves them, for the static readers (decision 18).
 
-    Built with ``model_construct``: its models are already validated, and a sibling stage's host has no source.
+    Built with ``model_construct``: its datasets are already validated, and a sibling stage's host has no source.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
@@ -233,14 +233,14 @@ class QueryScope(BaseModel):
     data_source: str
     # The query's source as bound; ``None`` when inferred.
     host: Optional[SlayerDataset] = None
-    # The stored model a sibling stage's chain ends on (``None``: unresolved); ``""`` keys the host's own.
+    # The stored dataset a sibling stage's chain ends on (``None``: unresolved); ``""`` keys the host's own.
     bases: Dict[str, Optional[str]] = Field(default_factory=dict)
     datasets: Dict[str, SlayerDataset] = Field(default_factory=dict)
     # Each INNER extension join's population filter reference from the host: hops, edge token, target key.
     inner_refs: Tuple[Tuple[str, ...], ...] = ()
-    # Stored model names a sibling stage stands in for.
+    # Stored dataset names a sibling stage stands in for.
     shadowed: FrozenSet[str] = frozenset()
-    # The query object with its extension model names respelled (``respelled``).
+    # The query object with its extension dataset names respelled (``respelled``).
     query: Optional[SlayerQuery] = None
 
     @property
@@ -301,7 +301,7 @@ def _chain_base(spec, *, named: Mapping[str, SlayerQuery]) -> Tuple[bool, Option
 
 
 def _stored_base(spec, *, named: Mapping[str, SlayerQuery]) -> Optional[str]:
-    """The stored model a sibling chain ends on; ``None`` for a cycle."""
+    """The stored dataset a sibling chain ends on; ``None`` for a cycle."""
     resolved, base = _chain_base(spec, named=named)
     return base if resolved else None
 
@@ -321,7 +321,7 @@ def _data_sources(
     query: SlayerQuery, *, named: Mapping[str, SlayerQuery], datasets_by_ds: Mapping[str, Mapping[str, SlayerDataset]],
     data_source: Optional[str],
 ) -> List[str]:
-    """The datasources ``query`` may read: ``data_source`` when it holds a model the query's chain names, else every
+    """The datasources ``query`` may read: ``data_source`` when it holds a dataset the query's chain names, else every
     datasource that does."""
     resolved, base = _chain_base(query.population, named=named)
     if not resolved:
@@ -361,7 +361,7 @@ def _scope(
 
 
 def _sibling_host(name: str, *, query: SlayerQuery, data_source: str) -> SlayerDataset:
-    """Sibling stage ``name`` as ``query`` reads it: the output fields its extension joins name, on either side."""
+    """Sibling stage ``name`` as ``query`` reads it: the output fields its extension relationships name, on either side."""
     keys = [
         pair[0 if e.source_name == name else 1]
         for e in query.extensions or [] for j in e.relationships or [] if name in (e.source_name, j.to)
@@ -376,7 +376,7 @@ def _inner_ref(
 ) -> Optional[Tuple[str, ...]]:
     try:
         path = declaring_dataset_path(restriction, host=host, datasets_by_name=datasets)
-    except ValueError:  # an unreachable or ambiguous declaring model fails the engine, not the static reader
+    except ValueError:  # an unreachable or ambiguous declaring dataset fails the engine, not the static reader
         return None
     return (*drop_root_hop(path, host.spelling if host is not None else None, head_quoted=False), restriction.token,
             restriction.key)
@@ -389,7 +389,7 @@ def _extended(
     if name == TIME_SPINE_DATASET or (model is not None and is_spine(model)):
         raise TimeSpineError(
             summary=f"{TIME_SPINE_DATASET!r} cannot be extended.",
-            suggestion="Bucket its timestamp in time_dimensions; add columns or joins to the dataset models instead.",
+            suggestion="Bucket its timestamp in time_dimensions; add fields or relationships to the datasets instead.",
         )
     if model is not None:
         return model
@@ -410,7 +410,7 @@ def _reserved_names(datasets: Dict[str, SlayerDataset], bundle: ResolvedSourceBu
 def apply_query_extensions(
     *, query: SlayerQuery, scope: "DatasetScope | StageSchema | None", bundle: ResolvedSourceBundle,
 ) -> "Tuple[DatasetScope | StageSchema | None, ResolvedSourceBundle]":
-    """``query``'s extensions applied to the stage's models: measures overlaid, joins merged into the join graph,
+    """``query``'s extensions applied to the stage's datasets: metrics overlaid, relationships merged into the relationship graph,
     and each INNER join recorded as a population filter."""
     if not query.extensions:
         return scope, bundle
@@ -462,6 +462,6 @@ def _extended_scope(
 
 
 def _touches(query: SlayerQuery, name: str) -> bool:
-    """Whether ``query`` extends model ``name`` or joins to it."""
+    """Whether ``query`` extends dataset ``name`` or relates to it."""
     return extension_of(query, name) is not None or any(
         j.to == name for e in query.extensions or [] for j in e.relationships or [])

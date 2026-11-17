@@ -1,6 +1,6 @@
 """The home dataset of an aggregation source (semantics Axiom 2).
 
-Resolved once, in elaboration: the deepest join path from the query root that
+Resolved once, in elaboration: the deepest relationship path from the query root that
 determines every input over provably to-one hops. Lives here — not in
 ``elaborate_env`` (THE checker) — because it needs ``join_safety``, which imports
 the checker; ``elaborate.py`` calls this and hands the checker a plain map.
@@ -51,7 +51,7 @@ def _grain_member_paths(
     member: ValueKey, *, dim_keys: List[ValueKey], td_keys: List[ValueKey],
     active_bucket: Optional[ValueKey],
 ) -> List[Path]:
-    """Home-input paths a grain member contributes: a leaf's own join path; an
+    """Home-input paths a grain member contributes: a leaf's own relationship path; an
     aggregate/transform member stands for its own grain members, recursively."""
     if isinstance(member, (AggregateKey, TransformKey)):
         return _constituent_grain_paths(
@@ -85,7 +85,7 @@ def home_path_for(
     dim_keys: List[ValueKey], td_keys: List[ValueKey],
     active_bucket: Optional[ValueKey],
 ) -> Path:
-    """The home dataset of an aggregate (Axiom 2): the deepest join path that
+    """The home dataset of an aggregate (Axiom 2): the deepest relationship path that
     determines every input — each source leaf and each row leaf of every argument
     (a bound definition default included) — over provably to-one hops. Candidates are
     the input paths and their longest common prefix, deepest first (ties prefer the
@@ -130,7 +130,7 @@ def resolve_aggregate_homes(
     active_bucket: Optional[ValueKey],
 ) -> Dict[AggregateKey, Path]:
     """Home path of every aggregate reachable from ``roots``; empty when the
-    stage has no model host (a stage query's aggregates are all host-local).
+    stage has no dataset host (a stage query's aggregates are all host-local).
 
     ``dim_keys`` / ``td_keys`` are the query's projected non-time / time
     dimension keys and ``active_bucket`` its main time bucket — an ungrained

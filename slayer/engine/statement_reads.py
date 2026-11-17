@@ -14,12 +14,12 @@ from slayer.engine.field_dependency import definition_reads
 from slayer.ir.planned import PlannedQuery, plan_value_keys_by_root
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-#: ``(declaring model, target model, edge name, join pairs)``.
+#: ``(declaring dataset, target dataset, edge name, join pairs)``.
 RelationshipRead = tuple[str, str, str | None, frozenset[tuple[str, str]]]
 
 
 class StatementReads(BaseModel):
-    """Per-model ``(model, name)`` reads; ``columns`` is closed over derived definitions and crossed join keys."""
+    """Per-dataset ``(dataset, name)`` reads; ``fields`` is closed over derived definitions and crossed relationship keys."""
 
     columns: set[tuple[str, str]] = Field(default_factory=set)
     relationships: set[RelationshipRead] = Field(default_factory=set)
@@ -38,7 +38,7 @@ def statement_reads(
         if root is None:
             continue
         models = with_list_children({**own.datasets_by_name, root.name: root})
-        # Closed in the plan's own universe: a stored model and another stage's inline namesake never mix.
+        # Closed in the plan's own universe: a stored dataset and another stage's inline namesake never mix.
         local = StatementReads()
         for root_name, root_key in plan_value_keys_by_root(plan):
             key_root = models.get(root_name, root) if root_name else root
@@ -65,7 +65,7 @@ def _add_key(reads: StatementReads, *, key: ValueKey, root: SlayerDataset, datas
 
 
 def _add_path(reads: StatementReads, *, path: tuple[str, ...], root: SlayerDataset, datasets: dict[str, SlayerDataset]) -> None:
-    """Every join ``path`` crosses, and its key columns on both sides."""
+    """Every relationship ``path`` crosses, and its key fields on both sides."""
     try:
         chain = follow(root=root, path=path, datasets_by_name=datasets) or []
     except (AmbiguousRelationshipPathError, CircularRelationshipPathError):
@@ -80,7 +80,7 @@ def _add_path(reads: StatementReads, *, path: tuple[str, ...], root: SlayerDatas
 
 
 def _close_fields(reads: StatementReads, *, datasets: dict[str, SlayerDataset]) -> None:
-    """Add every column a read derived column's definition reads, transitively."""
+    """Add every field a read derived field's definition reads, transitively."""
     pending = list(reads.columns)
     while pending:
         model_name, column_name = pending.pop()

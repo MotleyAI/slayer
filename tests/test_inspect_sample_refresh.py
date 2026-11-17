@@ -3,7 +3,7 @@ values on read, exactly like ``inspect_model`` / ``search``.
 
 Contract pinned here:
 
-* ``inspect(reference, entity_type="column", compact=False)`` on a column
+* ``inspect(reference, entity_type="field", compact=False)`` on a column
   whose persisted sample is missing/stale triggers a live profile via the
   shared ``ensure_samples_fresh`` owner, renders the fresh
   ``Sample values:`` line, AND persists the refreshed sample for later reads.
@@ -11,7 +11,7 @@ Contract pinned here:
   (distinct-value lists) AND numeric/temporal (min/max ranges) columns.
 * ``compact=True`` stays cheap/DB-free: description-only, NO refresh, NO
   profile query — the broad-exploration mode never shows ``Sample values:``.
-* Only ``entity_type="column"`` refreshes; measures / aggregations have no
+* Only ``entity_type="field"`` refreshes; measures / aggregations have no
   sample concept and never trigger a profile.
 * Engine-guarded: with ``engine=None`` the refresh is a silent no-op.
 * Hidden columns are rendered but never back-filled (system-wide
@@ -138,7 +138,7 @@ def _count_profile_calls(monkeypatch: pytest.MonkeyPatch, svc: InspectService) -
 async def test_compact_false_backfills_categorical(inspect_setup: tuple[Any, StorageBackend]) -> None:
     svc, storage = inspect_setup
     out = await svc.inspect(
-        reference="ds.orders.status", entity_type="column", compact=False,
+        reference="ds.orders.status", entity_type="field", compact=False,
     )
     assert "Sample values:" in out
     assert "paid" in out
@@ -160,7 +160,7 @@ async def test_compact_false_backfills_categorical(inspect_setup: tuple[Any, Sto
 async def test_compact_false_backfills_numeric(inspect_setup: tuple[Any, StorageBackend]) -> None:
     svc, storage = inspect_setup
     out = await svc.inspect(
-        reference="ds.orders.amount", entity_type="column", compact=False,
+        reference="ds.orders.amount", entity_type="field", compact=False,
     )
     assert "Sample values:" in out
     # Numeric render is a min .. max range.
@@ -176,7 +176,7 @@ async def test_compact_false_backfills_temporal(inspect_setup: tuple[Any, Storag
     too — full non-regression includes temporal ranges."""
     svc, storage = inspect_setup
     out = await svc.inspect(
-        reference="ds.orders.order_date", entity_type="column", compact=False,
+        reference="ds.orders.order_date", entity_type="field", compact=False,
     )
     assert "Sample values:" in out
     assert ".." in out  # min .. max range
@@ -196,7 +196,7 @@ async def test_compact_true_does_not_refresh(inspect_setup: tuple[Any, StorageBa
     svc, storage = inspect_setup
     calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
-        reference="ds.orders.status", entity_type="column", compact=True,
+        reference="ds.orders.status", entity_type="field", compact=True,
     )
     assert "Sample values:" not in out
     assert calls == [], "compact=True must not run a profile query"
@@ -215,7 +215,7 @@ async def test_compact_true_does_not_refresh_numeric(
     svc, storage = inspect_setup
     calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
-        reference="ds.orders.amount", entity_type="column", compact=True,
+        reference="ds.orders.amount", entity_type="field", compact=True,
     )
     assert "Sample values:" not in out
     assert calls == [], "compact=True must not run a profile query for numeric"
@@ -234,7 +234,7 @@ async def test_measure_does_not_refresh(inspect_setup, monkeypatch: pytest.Monke
     svc, _ = inspect_setup
     calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
-        reference="ds.orders.aov", entity_type="measure", compact=False,
+        reference="ds.orders.aov", entity_type="metric", compact=False,
     )
     assert "sum(amount) / count(*)" in out
     assert calls == [], "measures have no sample concept"
@@ -273,7 +273,7 @@ async def test_engine_none_no_refresh_attempt(inspect_setup: tuple[Any, StorageB
         "slayer.inspect.service.ensure_samples_fresh", spy,
     )
     out = await svc.inspect(
-        reference="ds.orders.status", entity_type="column", compact=False,
+        reference="ds.orders.status", entity_type="field", compact=False,
     )
     assert attempts == [], "engine=None must not attempt a refresh"
     # Renders the column header but no live samples (uncached + no engine).
@@ -304,7 +304,7 @@ async def test_inspect_model_passes_all_columns_in_one_call(
         return await real(**kwargs)
 
     monkeypatch.setattr(mr, "ensure_samples_fresh", recording)
-    await svc.inspect(reference="ds.orders", entity_type="model", compact=False)
+    await svc.inspect(reference="ds.orders", entity_type="dataset", compact=False)
 
     assert len(seen) == 1
     assert {"status", "amount", "order_date"} <= set(seen[0])
@@ -326,7 +326,7 @@ async def test_already_cached_does_not_reprofile(inspect_setup: tuple[Any, Stora
     )
     calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
-        reference="ds.orders.status", entity_type="column", compact=False,
+        reference="ds.orders.status", entity_type="field", compact=False,
     )
     assert calls == [], "a cached column must not be re-profiled"
     assert "Sample values:" in out
@@ -342,7 +342,7 @@ async def test_already_cached_does_not_reprofile(inspect_setup: tuple[Any, Stora
 async def test_json_text_carries_refreshed_samples(inspect_setup) -> None:
     svc, _ = inspect_setup
     out = await svc.inspect(
-        reference="ds.orders.status", entity_type="column", compact=False,
+        reference="ds.orders.status", entity_type="field", compact=False,
         format="json",
     )
     payload = json.loads(out)
@@ -360,7 +360,7 @@ async def test_batch_refreshes_both_members(inspect_setup: tuple[Any, StorageBac
     svc, storage = inspect_setup
     out = await svc.inspect(
         reference=["ds.orders.status", "ds.orders.amount"],
-        entity_type="column", compact=False,
+        entity_type="field", compact=False,
     )
     assert "paid" in out          # categorical block
     assert ".." in out            # numeric block (min .. max)
@@ -382,7 +382,7 @@ async def test_hidden_column_renders_without_refresh(
     svc, storage = inspect_setup
     calls = _count_profile_calls(monkeypatch, svc)
     out = await svc.inspect(
-        reference="ds.orders.secret", entity_type="column", compact=False,
+        reference="ds.orders.secret", entity_type="field", compact=False,
     )
     assert "Column: ds.orders.secret" in out
     assert calls == [], "hidden columns are never profiled"
@@ -409,7 +409,7 @@ async def test_profile_failure_renders_cleanly(inspect_setup, monkeypatch: pytes
 
     monkeypatch.setattr(svc._engine, "execute", boom)
     out = await svc.inspect(
-        reference="ds.orders.status", entity_type="column", compact=False,
+        reference="ds.orders.status", entity_type="field", compact=False,
     )
     assert invoked, "the refresh path must have executed"
     # No crash; column still renders (without fresh samples).
@@ -427,7 +427,7 @@ async def test_persist_failure_renders_cleanly(inspect_setup: tuple[Any, Storage
 
     monkeypatch.setattr(storage, "update_field_sampled", boom)
     out = await svc.inspect(
-        reference="ds.orders.status", entity_type="column", compact=False,
+        reference="ds.orders.status", entity_type="field", compact=False,
     )
     # Persist failed but the in-memory refresh surfaces this call.
     assert "Sample values:" in out
@@ -448,7 +448,7 @@ async def test_persist_failure_numeric_renders_cleanly(
 
     monkeypatch.setattr(storage, "update_field_sampled", boom)
     out = await svc.inspect(
-        reference="ds.orders.amount", entity_type="column", compact=False,
+        reference="ds.orders.amount", entity_type="field", compact=False,
     )
     assert "Sample values:" in out
     assert ".." in out  # in-memory min .. max range

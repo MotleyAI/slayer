@@ -92,7 +92,7 @@ class TestNamedEdgeTargetPathPushesDown:
         # (which is ambiguous across the billing/shipping pair).
         resp = await named_engine.execute(SlayerQuery(
             population="orders", filter=["status = 'ok'"],
-            metrics=[{"formula": "sum(billing_customer.spend)",
+            metrics=[{"expression": "sum(billing_customer.spend)",
                        "name": "cs"}]))
         assert len(resp.data) == 1
         # Billing customers with an ok order: Alice (o1) 100 + Bob (o3) 150.
@@ -105,7 +105,7 @@ class TestNamedEdgeTargetPathPushesDown:
         # bind to the reverse chain node, not resolve the token as a model.
         resp = await named_engine.execute(SlayerQuery(
             population="orders",
-            metrics=[{"formula": "sum(billing_customer.regions.pop)",
+            metrics=[{"expression": "sum(billing_customer.regions.pop)",
                        "name": "rp"}],
             filter=["billing_customer.tier = 'gold'"]))
         assert len(resp.data) == 1
@@ -143,7 +143,7 @@ class TestReverseRoundTripComposes:
             await storage.save_dataset(customers)
             query = SlayerQuery(
                 population="orders",
-                metrics=[{"formula": "customers.order_total", "name": "x"}])
+                metrics=[{"expression": "customers.order_total", "name": "x"}])
             # A second ``orders`` occurrence over every order, orphan included (mirror parity).
             resp = await engine.execute(query)
             assert resp.data[0]["orders.x"] == CHAIN_REVERSE_AGG_TOTAL

@@ -1,4 +1,4 @@
-"""The stored definitions a list re-type breaks: each dependant is planned against the models as stored and as
+"""The stored definitions a list re-type breaks: each dependant is planned against the datasets as stored and as
 re-typed, without execution."""
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class _Dependent(BaseModel):
 
 
 class FoundBreak(BaseModel):
-    """A broken dependant found before the saves, attributed to ``causes`` (re-typed ``(model, column)``), each
+    """A broken dependant found before the saves, attributed to ``causes`` (re-typed ``(dataset, field)``), each
     alone or, when ``joint``, only together."""
 
     causes: list[tuple[str, str]]
@@ -38,7 +38,7 @@ class FoundBreak(BaseModel):
 
 
 def retyped_list_fields(*, stored: SlayerDataset, final: SlayerDataset) -> list[str]:
-    """``final``'s columns that ``stored`` keeps as a non-list and ``final`` re-types to a list."""
+    """``final``'s fields that ``stored`` keeps as a non-list and ``final`` re-types to a list."""
     before = {c.name: c.datatype for c in stored.fields}
     return [c.name for c in final.fields
             if c.datatype is DataType.ARRAY and before.get(c.name, DataType.ARRAY) is not DataType.ARRAY]
@@ -61,7 +61,7 @@ def _entry_dependents(
 
 
 def _dependents(*, datasets: list[SlayerDataset], retyped: dict[str, list[str]]) -> list[_Dependent]:
-    """Each definition a delete of a re-typed column cascades to (the column itself excluded), once."""
+    """Each definition a delete of a re-typed field cascades to (the field itself excluded), once."""
     by_name = {m.name: m for m in datasets}
     out: dict[tuple[str, str, str], _Dependent] = {}
     for seed in ((m, c) for m, columns in retyped.items() for c in columns):
@@ -140,7 +140,7 @@ async def broken_dependents(
 
 
 def report_broken(found: list[FoundBreak], *, unsaved: set[str]) -> list[BrokenDependentWarning]:
-    """The breaks whose cause (all causes, when joint) was saved, each naming its first saved column and warned."""
+    """The breaks whose cause (all causes, when joint) was saved, each naming its first saved field and warned."""
     out: list[BrokenDependentWarning] = []
     for f in found:
         saved = [(m, c) for m, c in f.causes if m not in unsaved]

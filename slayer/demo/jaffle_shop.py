@@ -2,8 +2,8 @@
 
 Generates ~2 years of synthetic coffee-shop data via ``jafgen``, loads it into
 a DuckDB file under the storage directory, registers a ``jaffle_shop``
-datasource, and (optionally) auto-ingests SLayer models enriched with curated
-labels, descriptions, formats, and example measures (``DEMO_ENRICHMENT``). The default is kept
+datasource, and (optionally) auto-ingests SLayer datasets enriched with curated
+labels, descriptions, formats, and example metrics (``DEMO_ENRICHMENT``). The default is kept
 small so ``slayer serve --demo`` / ``slayer mcp --demo`` finish quickly enough
 to fit inside MCP-client startup timeouts; bump ``--years`` for a richer
 dataset (only the first four jafgen stores open within the first 2 years).
@@ -196,8 +196,8 @@ CREATE TABLE tweets (
 
 # --- curated semantic enrichment --------------------------------------------
 #
-# Hand-curated labels, descriptions, formats, and measures layered on top of
-# the bare auto-ingested models. Monetary columns are exact DECIMAL(12,2) dollars
+# Hand-curated labels, descriptions, formats, and metrics layered on top of
+# the bare auto-ingested datasets. Monetary columns are exact DECIMAL(12,2) dollars
 # (the loader converts jafgen's cents on insert — see CENTS_COLUMNS).
 
 
@@ -529,7 +529,7 @@ DEMO_ENRICHMENT = _build_demo_enrichment()
 
 def _is_auto_default_format(fmt: NumberFormat | None) -> bool:
     """True when ``fmt`` is unset or the bare INTEGER/FLOAT default that
-    auto-ingestion stamps on numeric columns (safe to override)."""
+    auto-ingestion stamps on numeric fields (safe to override)."""
     if fmt is None:
         return True
     if fmt.type not in (NumberFormatType.INTEGER, NumberFormatType.FLOAT):
@@ -538,7 +538,7 @@ def _is_auto_default_format(fmt: NumberFormat | None) -> bool:
 
 
 def _enrich_field(field: DatasetField, col_spec: _FieldEnrichment) -> bool:
-    """Fill unset label / description / db_type / auto-default format on one column."""
+    """Fill unset label / description / db_type / auto-default format on one field."""
     changed = False
     if field.label is None:
         field.label = col_spec.label
@@ -561,17 +561,17 @@ def _enrich_field(field: DatasetField, col_spec: _FieldEnrichment) -> bool:
 
 def _new_named_entries(existing: list, additions: list) -> list:
     """Deep-copied ``additions`` whose ``name`` isn't already in ``existing``.
-    Copies keep the shared spec isolated from later model mutations."""
+    Copies keep the shared spec isolated from later dataset mutations."""
     taken = {item.name for item in existing if item.name}
     return [item.model_copy(deep=True) for item in additions if item.name not in taken]
 
 
 def apply_demo_enrichment(dataset: SlayerDataset) -> bool:
-    """Additively apply the curated enrichment to an ingested demo model.
+    """Additively apply the curated enrichment to an ingested demo dataset.
 
-    Fills only unset fields and merges measures/aggregations by name, so
-    user edits survive and re-runs are no-ops. Skips models not backed by
-    ``sql_table``. Returns ``True`` if the model was modified.
+    Fills only unset fields and merges metrics/aggregations by name, so
+    user edits survive and re-runs are no-ops. Skips datasets not backed by
+    ``sql_table``. Returns ``True`` if the dataset was modified.
     """
     spec = DEMO_ENRICHMENT.get(dataset.name)
     if spec is None or dataset.sql_table is None:
@@ -1004,9 +1004,9 @@ def build_jaffle_shop(
 
 
 def ingest_demo_datasets(*, storage: StorageBackend, datasource: DatasourceConfig) -> list[SlayerDataset]:
-    """Idempotently ingest the demo models, then apply the curated enrichment; returns the stored demo models.
+    """Idempotently ingest the demo datasets, then apply the curated enrichment; returns the stored demo datasets.
 
-    Creates missing models and additively merges existing ones (missing joins
+    Creates missing datasets and additively merges existing ones (missing relationships
     reconciled in), so every user edit survives.
     """
     engine = SlayerQueryEngine(storage=storage)
@@ -1023,7 +1023,7 @@ def ingest_demo_datasets(*, storage: StorageBackend, datasource: DatasourceConfi
     missing = [t for t in TABLE_NAMES if t not in stored]
     if missing:
         causes = "; ".join(f"{e.dataset_name}: {e.error}" for e in result.errors if e.dataset_name in missing)
-        raise SlayerError(f"Demo setup did not store the models {', '.join(missing)}" + (f" ({causes})" if causes else ""))
+        raise SlayerError(f"Demo setup did not store the datasets {', '.join(missing)}" + (f" ({causes})" if causes else ""))
     datasets: list[SlayerDataset] = []
     for table in TABLE_NAMES:
         model = stored[table]
@@ -1048,9 +1048,9 @@ def ensure_demo_datasource(
     - Builds the DuckDB at ``<storage_base_dir>/demo/jaffle_shop.duckdb`` if missing or stale.
     - Registers a datasource record (``name``, default ``jaffle_shop``); an existing
       record is overwritten only with ``assume_yes``.
-    - Optionally ingests the models through ``ingest_demo_datasets``.
+    - Optionally ingests the datasets through ``ingest_demo_datasets``.
 
-    Returns ``(datasource, jaffle_models, db_built)``: the Jaffle Shop models now in
+    Returns ``(datasource, jaffle_models, db_built)``: the Jaffle Shop datasets now in
     storage, and whether the DuckDB file was generated this call.
     """
     db_path = resolve_demo_db_path(storage_path)

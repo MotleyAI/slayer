@@ -7,7 +7,7 @@ calls, and the ``iif`` → ``CASE`` chain. Extracted from ``value_expr.py`` so
 expression source without an import cycle; ``value_expr`` re-imports them.
 
 :func:`render_row_expression` renders an aggregation-free row-level tree
-(an ``AggregateKey.source`` expression), resolving column-like leaves through
+(an ``AggregateKey.source`` expression), resolving field-like leaves through
 a caller-supplied ``resolve_field`` callback — the one seam that differs
 between the ScopeFrame and the generator's spec-builder call sites.
 """
@@ -559,7 +559,7 @@ def render_row_expression(
     """Render an aggregation-free row-level ``ValueKey`` tree (an
     ``AggregateKey``'s expression source) to sqlglot AST.
 
-    Column-like leaves resolve through ``resolve_field``; composites reuse the
+    Field-like leaves resolve through ``resolve_field``; composites reuse the
     shared composers so the expression renders exactly like the same tree in
     any other row-level position.
     """

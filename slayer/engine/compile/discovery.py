@@ -58,8 +58,8 @@ class RootDisposition(BaseModel):
     root: ValueKey
     phase: RootPhase
     routing: Routing
-    #: Public measures this root answers for (a row-attach root's inputs: the
-    #: measures containing that root).
+    #: Public metrics this root answers for (a row-attach root's inputs: the
+    #: metrics containing that root).
     consumer_public_names: Tuple[str, ...] = ()
     declared_type: Optional[DataType] = None
     #: ``time_shift`` candidates only: shifts its materialised series.
@@ -158,7 +158,7 @@ class _Walker:
         self, vk: ValueKey, *, position: ConsumerPosition, name: Optional[str] = None,
         declared: Optional[DataType] = None, containing: Sequence[str] = (),
     ) -> None:
-        """Route every node of a measure / order / filter root; a row-scope reference
+        """Route every node of a metric / order / filter root; a row-scope reference
         to a dimension's own value routes nowhere."""
         opaque = self.classes.opaque(position)
         for n in walk_consumer_positions(vk, dim_keys=self.classes.dim_keys_for(position),

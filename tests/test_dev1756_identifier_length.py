@@ -721,10 +721,10 @@ class TestCteNames:
         prepared = await engine._prepare_pipeline(
             query=SlayerQuery(
                 population="ShiftOrders",
-                time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}],
+                time_dimensions=[{"field": {"name": "created_at"}, "granularity": "month"}],
                 metrics=[
-                    {"formula": "sum(revenue)"},
-                    {"formula": "time_shift(sum(revenue), -1)", "name": long_transform_name},
+                    {"expression": "sum(revenue)"},
+                    {"expression": "time_shift(sum(revenue), -1)", "name": long_transform_name},
                 ],
             ),
             named_queries={}, runtime_kwarg={},
@@ -906,8 +906,8 @@ class TestVirtualModelShorts:
             population="SandboxInvoiceV2",
             dimensions=[FieldRef(name="status")],
             metrics=[
-                {"formula": "sum(totalAmount)", "name": long_a},
-                {"formula": "avg(totalAmount)", "name": long_b},
+                {"expression": "sum(totalAmount)", "name": long_a},
+                {"expression": "avg(totalAmount)", "name": long_b},
             ],
         )
         vm = await engine._query_as_model(inner_query=query)
@@ -1026,8 +1026,8 @@ class TestSweep:
                 population="SandboxInvoiceV2",
                 dimensions=[FieldRef(name=f"{DEEP}.email")],
                 metrics=[
-                    {"formula": "sum(totalAmount)"},
-                    {"formula": "sum(totalAmount) / count(*)", "name": "avg_ticket"},
+                    {"expression": "sum(totalAmount)"},
+                    {"expression": "sum(totalAmount) / count(*)", "name": "avg_ticket"},
                 ],
             ),
             SlayerQuery.model_validate({

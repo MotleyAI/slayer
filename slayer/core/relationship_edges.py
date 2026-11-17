@@ -1,4 +1,4 @@
-"""Join-edge identity: the declaration reference and the FK relationship signature."""
+"""Relationship-edge identity: the declaration reference and the FK relationship signature."""
 
 from __future__ import annotations
 
@@ -25,12 +25,12 @@ __all__ = [
     "without_relationships",
 ]
 
-#: ``(lower model, higher model, key pairs oriented lower → higher)``.
+#: ``(lower dataset, higher dataset, key pairs oriented lower → higher)``.
 RelationshipSignature = tuple[str, str, frozenset[tuple[str, str]]]
 
 
 class RelationshipEdgeRef(BaseModel):
-    """One join declaration of a model, addressed exactly."""
+    """One relationship declaration of a dataset, addressed exactly."""
 
     to: str
     name: str | None = None
@@ -63,7 +63,7 @@ def _pair_set(pairs: list[list[str]]) -> frozenset[tuple[str, str]]:
 
 
 class ExtensionEdge(BaseModel):
-    """A query extension's join as merged: the edge oriented from its declaring model, and the token reaching it."""
+    """A query extension's relationship as merged: the edge oriented from its declaring dataset, and the token reaching it."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -72,7 +72,7 @@ class ExtensionEdge(BaseModel):
 
 
 class _Candidate(BaseModel):
-    """An edge between the declaring model and the target, read from the declaring model."""
+    """An edge between the declaring dataset and the target, read from the declaring dataset."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -94,7 +94,7 @@ def _cardinality_label(cardinality: RelationshipCardinality | None) -> str:
 
 
 class EdgeMerge:
-    """Merges query extension joins into a model universe: a join repeating an edge, in either orientation, is it."""
+    """Merges query extension relationships into a dataset universe: a relationship repeating an edge, in either orientation, is it."""
 
     def __init__(
         self, *, datasets: Mapping[str, SlayerDataset], reserved_names: Iterable[str] = (),
@@ -115,7 +115,7 @@ class EdgeMerge:
         target = self.datasets.get(relationship.to)
         label = f"extension {_describe(relationship)} of {source.spelling!r}"
         if relationship.to == declaring:
-            raise QueryExtensionError(f"The {label} joins the model to itself.")
+            raise QueryExtensionError(f"The {label} connects the dataset to itself.")
         candidates = self._candidates(source=source, target_name=relationship.to)
         pairs = _pair_set(relationship.join_pairs)
         named = [c for c in candidates if relationship.name is not None and c.relationship.name == relationship.name]
@@ -199,7 +199,7 @@ class EdgeMerge:
         if name in self._edge_names or name in self._local_names:
             raise QueryExtensionError(f"The {label} is named {name!r}, which names another edge.")
         if name in self._reserved:
-            raise QueryExtensionError(f"The {label} is named {name!r}, which names a model or stage.")
+            raise QueryExtensionError(f"The {label} is named {name!r}, which names a dataset or stage.")
         self._local_names.add(name)
 
     def _claim_alias(self, alias: str, *, edge: tuple[str, int], label: str) -> None:
@@ -217,7 +217,7 @@ class EdgeMerge:
         return relationship
 
     def _edge(self, *, declaring: str, relationship: DatasetRelationship, from_dataset: str, token: str | None) -> ExtensionEdge:
-        """``relationship`` (stored on ``declaring``) oriented from the extended model ``from_dataset``."""
+        """``relationship`` (stored on ``declaring``) oriented from the extended dataset ``from_dataset``."""
         edge = orient_relationship(
             relationship=relationship, declaring=self.datasets[declaring], other=self.datasets.get(relationship.to), from_dataset=from_dataset,
         )
@@ -229,7 +229,7 @@ def _relationships_to(dataset: SlayerDataset, target: str) -> list[DatasetRelati
 
 
 def edge_reference(*, dataset: SlayerDataset, relationship: DatasetRelationship) -> str:
-    """The target when ``relationship`` is ``dataset``'s only join to it, else the edge name."""
+    """The target when ``relationship`` is ``dataset``'s only relationship to it, else the edge name."""
     if len(_relationships_to(dataset, relationship.to)) == 1 or not relationship.name:
         return relationship.to
     return relationship.name
@@ -241,9 +241,9 @@ def is_addressable(*, dataset: SlayerDataset, relationship: DatasetRelationship)
 
 
 def is_valid_edge_name(name: str) -> bool:
-    """Whether ``name`` passes the model-name identifier rules edge names follow."""
+    """Whether ``name`` passes the dataset-name identifier rules edge names follow."""
     try:
-        _validate_dataset_name(name, "Join")
+        _validate_dataset_name(name, "Relationship")
     except ValueError:
         return False
     return bool(name)
@@ -251,11 +251,11 @@ def is_valid_edge_name(name: str) -> bool:
 
 def _describe(relationship: DatasetRelationship) -> str:
     label = f" '{relationship.name}'" if relationship.name else ""
-    return f"join{label} to '{relationship.to}' on {relationship.join_pairs}"
+    return f"relationship{label} to '{relationship.to}' on {relationship.join_pairs}"
 
 
 def resolve_relationship_ref(*, dataset: SlayerDataset, ref: str | RelationshipEdgeRef) -> DatasetRelationship:
-    """The one join of ``dataset`` that ``ref`` addresses; raises ``ValueError`` on none or several."""
+    """The one relationship of ``dataset`` that ``ref`` addresses; raises ``ValueError`` on none or several."""
     if isinstance(ref, RelationshipEdgeRef):
         hits = [j for j in dataset.relationships if ref.matches(j)]
         label = f"{ref.to!r} on {ref.join_pairs}" + (f" named {ref.name!r}" if ref.name else "")
@@ -263,18 +263,18 @@ def resolve_relationship_ref(*, dataset: SlayerDataset, ref: str | RelationshipE
         hits = [j for j in dataset.relationships if j.name == ref] or _relationships_to(dataset, ref)
         label = repr(ref)
     if not hits:
-        raise ValueError(f"Join {label} not found on model '{dataset.name}'.")
+        raise ValueError(f"Relationship {label} not found on dataset '{dataset.name}'.")
     if len(hits) > 1:
         candidates = "; ".join(_describe(j) for j in hits)
         raise ValueError(
-            f"Join {label} on model '{dataset.name}' matches {len(hits)} joins ({candidates}); "
+            f"Relationship {label} on dataset '{dataset.name}' matches {len(hits)} relationships ({candidates}); "
             f"address one by its edge name or by its exact target and join_pairs."
         )
     return hits[0]
 
 
 def resolve_relationship_refs(*, dataset: SlayerDataset, refs: Iterable[str | RelationshipEdgeRef]) -> list[DatasetRelationship]:
-    """The distinct joins ``refs`` address; raises ``ValueError`` on a missing or ambiguous one."""
+    """The distinct relationships ``refs`` address; raises ``ValueError`` on a missing or ambiguous one."""
     out: list[DatasetRelationship] = []
     for ref in refs:
         join = resolve_relationship_ref(dataset=dataset, ref=ref)
@@ -284,7 +284,7 @@ def resolve_relationship_refs(*, dataset: SlayerDataset, refs: Iterable[str | Re
 
 
 def without_relationships(*, dataset: SlayerDataset, relationships: list[DatasetRelationship]) -> list[DatasetRelationship]:
-    """``dataset``'s joins minus ``relationships`` (by identity)."""
+    """``dataset``'s relationships minus ``relationships`` (by identity)."""
     return [j for j in dataset.relationships if not any(j is r for r in relationships)]
 
 

@@ -1,8 +1,8 @@
 """The Mode-B grammar.
 
-``parse_expr(text) -> ParsedExpr`` parses a Mode-B expression (``ModelMeasure.expression``,
-query measures / dimensions / filters / order) with one SQL-compatible pyparsing grammar —
-pure syntax, no scope resolution or named-measure expansion (binder's job). Every spelling
+``parse_expr(text) -> ParsedExpr`` parses a Mode-B expression (``DatasetMetric.expression``,
+query metrics / dimensions / filters / order) with one SQL-compatible pyparsing grammar —
+pure syntax, no scope resolution or named-metric expansion (binder's job). Every spelling
 of a construct collapses to one node: CASE → ``iif``, ``EXTRACT`` → ``date_part``,
 ``count(distinct x)`` → ``count_distinct``, ``BETWEEN`` → its conjunction, ``x::t`` →
 ``Cast``, interval literals → ``date_add``, regex operators → ``regexp_like``, JSON arrows and
@@ -162,7 +162,7 @@ class TransformCall(_BaseNode):
 class ScalarCall(_BaseNode):
     name: str
     args: Tuple[Any, ...] = ()
-    # The callee and arguments as written (a function or spelling an owning model's aggregation may shadow; a
+    # The callee and arguments as written (a function or spelling an owning dataset's aggregation may shadow; a
     # spelling rewrites its arguments); not part of identity.
     written: Optional[str] = None
     written_args: Optional[Tuple[Any, ...]] = None
@@ -247,7 +247,7 @@ _VAR_NAME = r"(?a:[A-Za-z_]\w*)"
 _CODE_PLACEHOLDER_RE = re.compile(r"\{\{|\}\}|\{(" + _VAR_NAME + r")\}")
 _LITERAL_VALUES = "variables supply literal values"
 _OPTIONAL_BLOCKS = (
-    "Optional blocks '{? ... ?}' are supported only on raw-SQL model surfaces, not in Mode-B expressions."
+    "Optional blocks '{? ... ?}' are supported only on raw-SQL dataset surfaces, not in Mode-B expressions."
 )
 _DISTINCT_ONLY = "DISTINCT is supported only as count(distinct x), i.e. count_distinct(x)"
 
@@ -548,12 +548,12 @@ def _placeholder_node(s: str, loc: int, toks: pp.ParseResults) -> Placeholder:
     end = loc + len(raw)
     rest = s[end:].lstrip()
     if rest.startswith(("(", ".")) or (rest.startswith(":") and not rest.startswith("::")):
-        raise _Problem(f"{_LITERAL_VALUES}; a variable cannot name a function, column or path.")
+        raise _Problem(f"{_LITERAL_VALUES}; a variable cannot name a function, field or path.")
     return Placeholder(name=raw[1:-1], start=loc)
 
 
 def _reject_placeholder(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
-    raise _Problem(f"{_LITERAL_VALUES}; a variable cannot name a column or path segment.")
+    raise _Problem(f"{_LITERAL_VALUES}; a variable cannot name a field or path segment.")
 
 
 def _reject_placeholder_kwarg(_s: str, _loc: int, _toks: pp.ParseResults) -> None:
@@ -1624,12 +1624,12 @@ def bare_literal_text(name: str, value: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Saved-measure dependencies
+# Saved-metric dependencies
 # ---------------------------------------------------------------------------
 
 
 class _MetricScope(BaseModel):
-    """What a saved measure's names resolve against."""
+    """What a saved metric's names resolve against."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -1643,11 +1643,11 @@ def metric_dependency_problems(
     expressions: List[Tuple[Optional[str], str]], *, aggregations: frozenset[str] = frozenset(),
     fields: Optional[frozenset[str]] = None, relationship_path: Optional[Callable[[Tuple[str, ...]], bool]] = None,
 ) -> List[Optional[str]]:
-    """Per ``(name, formula)``: why the saved measure cannot resolve among its peers, else ``None``.
+    """Per ``(name, expression)``: why the saved metric cannot resolve among its peers, else ``None``.
 
-    Outside an aggregation a bare name must be a peer measure; an aggregation must be built-in
-    or one of ``aggregations``, and, given ``fields``, read only those columns or paths
-    ``relationship_path`` accepts; a measure on a cycle, or reading one that cannot resolve, cannot
+    Outside an aggregation a bare name must be a peer metric; an aggregation must be built-in
+    or one of ``aggregations``, and, given ``fields``, read only those fields or paths
+    ``relationship_path`` accepts; a metric on a cycle, or reading one that cannot resolve, cannot
     resolve either."""
     scope = _MetricScope(names=frozenset(name for name, _ in expressions if name), aggregations=aggregations,
                           fields=fields, relationship_path=relationship_path)
@@ -1673,7 +1673,7 @@ def _resolution_problem(
         return own[i]
     for dep in sorted(deps[i]):
         if dep in path:
-            return f"saved measure {dep!r} has a cyclic reference: {' → '.join((*path, dep))}"
+            return f"saved metric {dep!r} has a cyclic reference: {' → '.join((*path, dep))}"
         problem = _resolution_problem(index[dep], own=own, deps=deps, index=index, path=(*path, dep))
         if problem is not None:
             return problem if dep == path[-1] else f"{dep!r} cannot resolve: {problem}"
@@ -1681,19 +1681,19 @@ def _resolution_problem(
 
 
 def _metric_refs(node: Any, *, scope: _MetricScope) -> Tuple[set, Optional[str]]:
-    """The peer measures ``node`` reads outside aggregations, and the first problem found."""
+    """The peer metrics ``node`` reads outside aggregations, and the first problem found."""
     if isinstance(node, Ref):
         if node.name in scope.names:
             return {node.name}, None
         match = difflib.get_close_matches(word=node.name, possibilities=sorted(scope.names), n=1)
         hint = f" Did you mean '{match[0]}'?" if match else ""
         return set(), (
-            f"'{node.name}' is not a saved measure.{hint} Reference a saved measure by its bare name, or "
-            f"aggregate a column (e.g., 'sum({node.name})'). For COUNT(*), use 'count(*)'."
+            f"'{node.name}' is not a saved metric.{hint} Reference a saved metric by its bare name, or "
+            f"aggregate a field (e.g., 'sum({node.name})'). For COUNT(*), use 'count(*)'."
         )
     if isinstance(node, DottedRef):
         dotted = ".".join(node.parts)
-        return set(), f"Cross-model measure '{dotted}' must include an aggregation (e.g., 'sum({dotted})')."
+        return set(), f"Cross-dataset metric '{dotted}' must include an aggregation (e.g., 'sum({dotted})')."
     if isinstance(node, AggCall):
         known = normalize_aggregation_name(node.agg) in BUILTIN_AGGREGATIONS or node.agg in scope.aggregations
         return set(), _aggregation_input_problem(node, scope=scope) if known else f"unknown aggregation {node.agg!r}"
@@ -1708,15 +1708,15 @@ def _metric_refs(node: Any, *, scope: _MetricScope) -> Tuple[set, Optional[str]]
 
 
 def _aggregation_input_problem(node: AggCall, *, scope: _MetricScope) -> Optional[str]:
-    """The first name an aggregation reads that is neither a column nor a join path; unchecked without columns."""
+    """The first name an aggregation reads that is neither a field nor a relationship path; unchecked without fields."""
     if scope.fields is None:
         return None
     inputs = [node.source, node.filter, *node.args, *(v for _, v in node.kwargs)]
     for leaf in (ref for value in inputs if value is not None for ref in walk_parsed_refs(value)):
         if isinstance(leaf, Ref) and leaf.name not in scope.fields:
-            return f"aggregation {node.agg!r} reads {leaf.name!r}, which is not a column of the model"
+            return f"aggregation {node.agg!r} reads {leaf.name!r}, which is not a field of the dataset"
         if isinstance(leaf, DottedRef) and not (scope.relationship_path is not None and scope.relationship_path(tuple(leaf.parts))):
-            return f"aggregation {node.agg!r} reads {'.'.join(leaf.parts)!r}, which no join path reaches"
+            return f"aggregation {node.agg!r} reads {'.'.join(leaf.parts)!r}, which no relationship path reaches"
     return None
 
 
@@ -1767,7 +1767,7 @@ def walk_parsed_refs(
 # ---------------------------------------------------------------------------
 
 
-# The node kinds an ``AggCall.source`` may take: a column, star, or an aggregation-free
+# The node kinds an ``AggCall.source`` may take: a field, star, or an aggregation-free
 # scalar expression, predicates included (a bare TupleLit is not a value).
 _AGG_SOURCE_KINDS = (
     Ref, DottedRef, StarSource, Literal, TemporalLiteral, Placeholder, ScalarCall, DateTrunc, NamedArg, Cast, Arith,
@@ -1820,7 +1820,7 @@ def _validated_agg_source(source: Any, *, func_name: str, original: str) -> Any:
         raise ValueError(
             f"Invalid Mode-B expression {original!r}: {func_name!r} cannot "
             f"aggregate a {type(source).__name__}; the aggregated expression "
-            f"must be built from columns, literals, arithmetic, comparisons, "
+            f"must be built from fields, literals, arithmetic, comparisons, "
             f"and scalar functions."
         )
     return source
@@ -1844,7 +1844,7 @@ def _reject_bare_star_args(
 
 
 def _onto_path(node: Any, *, path: Tuple[str, ...], memo: Optional[Dict[int, Any]] = None) -> Any:
-    """``node`` with every column leaf (and ``*``) read under the join ``path``; ``memo`` rewrites a node shared by
+    """``node`` with every field leaf (and ``*``) read under the relationship ``path``; ``memo`` rewrites a node shared by
     ``args`` and ``written_args`` once."""
     memo = {} if memo is None else memo
     if id(node) in memo:
@@ -1894,7 +1894,7 @@ def map_refs(node: Any, fn: Callable[[Ref | DottedRef], Any]) -> Any:
 
 
 def onto_path(node: Any, path: Sequence[str]) -> Any:
-    """``node`` with every reference read under the join ``path``."""
+    """``node`` with every reference read under the relationship ``path``."""
     return map_refs(node, lambda ref: _onto_path_node(ref, path=tuple(path), memo={})) if path else node
 
 
@@ -1913,7 +1913,7 @@ def _method_call_refusal(name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tupl
     if not args:
         return "needs the aggregated value as its first argument"
     if any(isinstance(leaf, (DottedRef, AggCall, TransformCall)) for leaf in _source_leaves(args[0])):
-        return "may read only bare column names of that path"
+        return "may read only bare field names of that path"
     named = [(a.name, a.value) for a in args[1:] if isinstance(a, NamedArg)] + list(kwargs)
     if any(k.lower() == "partition_by" for k, _ in named):
         return "cannot take partition_by="
@@ -1966,8 +1966,8 @@ def _keyword_args(
 
 
 def aggregation_reading(call: ScalarCall) -> Optional[AggCall]:
-    """The aggregation call ``call`` reads as when its owning model defines ``call.written``; ``None`` when it has no
-    column-bearing value argument."""
+    """The aggregation call ``call`` reads as when its owning dataset defines ``call.written``; ``None`` when it has no
+    field-bearing value argument."""
     if call.written is None:
         return None
     args = call.written_args if call.written_args is not None else call.args
@@ -1977,7 +1977,7 @@ def aggregation_reading(call: ScalarCall) -> Optional[AggCall]:
 def _aggregation_candidate(
     func_name: str, *, args: Tuple[Any, ...], kwargs: Tuple[Tuple[str, Any], ...], error: Optional[str],
 ) -> Optional[AggCall]:
-    """``func_name(args)`` as an aggregation call over a column-bearing value, else ``None``."""
+    """``func_name(args)`` as an aggregation call over a field-bearing value, else ``None``."""
     args, kwargs = _keyword_args(args, kwargs)
     if not args or not isinstance(args[0], _AGG_SOURCE_KINDS) or _contains_agg_or_transform(args[0]):
         return None
@@ -1999,7 +1999,7 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
             raise ValueError(
                 f"Invalid Mode-B expression {original!r}: aggregation "
                 f"{func_name!r} requires a value argument, e.g. "
-                f"{func_name}(column)."
+                f"{func_name}(field)."
             )
         if canonical_agg in _SCALAR_MIN_MAX and len(args) == 2 and not any(isinstance(a, NamedArg) for a in args):
             scalar = _SCALAR_MIN_MAX[canonical_agg]
@@ -2097,7 +2097,7 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
             f"({sorted(SCALAR_FUNCTIONS)}), transforms "
             f"({sorted(ALL_TRANSFORMS)}), and aggregations "
             f"(`sum(revenue)`); custom "
-            f"aggregation names must be defined on the model."
+            f"aggregation names must be defined on the dataset."
         ),
     )
 
@@ -2297,7 +2297,7 @@ def walk_parsed(node: Any) -> Iterator[Any]:
 
 
 def drop_root_hop(hops: Sequence[str], root: Optional[str], *, head_quoted: bool) -> Tuple[str, ...]:
-    """A reference's join ``hops`` without a leading qualifier naming the query root ``root`` (exactly when
+    """A reference's relationship ``hops`` without a leading qualifier naming the query root ``root`` (exactly when
     ``head_quoted``, else in any case)."""
     hops = tuple(hops)
     return (
@@ -2622,7 +2622,7 @@ def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
     """``(prefix, agg_suffix)`` of an entity reference: ``sum(orders.amount)`` → ``("orders.amount", "sum")``,
     ``last(balance, updated_at)`` → ``("balance", "last(updated_at)")``; call-free text → ``(raw, None)``.
 
-    Raises ``ValueError`` unless the text is one aggregation over a column or star.
+    Raises ``ValueError`` unless the text is one aggregation over a field or star.
     """
     if "(" not in raw and ":" not in raw:
         return raw, None
@@ -2631,8 +2631,8 @@ def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
         parsed.source, (Ref, DottedRef, StarSource)
     ):
         raise ValueError(
-            f"{raw!r} is not a single aggregated column reference; only "
-            f"the `agg(column)` form names an entity."
+            f"{raw!r} is not a single aggregated field reference; only "
+            f"the `agg(field)` form names an entity."
         )
     source = parsed.source
     if isinstance(source, StarSource):
@@ -2645,7 +2645,7 @@ def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
 
 
 def metric_text_at_path(expression: str, *, path: Sequence[str]) -> str:
-    """``expression`` read from the model at the join ``path``, as canonical text: an aggregation's source re-rooted
+    """``expression`` read from the dataset at the relationship ``path``, as canonical text: an aggregation's source re-rooted
     (``count(*)`` → ``count(customers.*)``), any other reference prefixed."""
     node = parse_expr(expression)
     if isinstance(node, AggCall):

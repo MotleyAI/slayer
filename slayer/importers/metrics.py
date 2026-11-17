@@ -1,4 +1,4 @@
-"""Import-time validation: every measure and column resolves among its model's measures, columns and join paths, and
+"""Import-time validation: every metric and field resolves among its dataset's metrics, fields and relationship paths, and
 no aggregation reads a list SLayer refuses to aggregate."""
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from slayer.sql.dialects import SqlDialect
 
 def metric_problems(dataset: SlayerDataset, *, datasets_by_name: Mapping[str, SlayerDataset],
                      dialect: SqlDialect | None = None) -> list[str | None]:
-    """Per measure of ``dataset``: why it cannot resolve (or ``dialect``, the target's, cannot compute it), else
+    """Per metric of ``dataset``: why it cannot resolve (or ``dialect``, the target's, cannot compute it), else
     ``None``."""
     def relationship_path(parts: tuple[str, ...]) -> bool:
         return _path_field(parts, dataset=dataset, datasets_by_name=datasets_by_name) is not None
@@ -28,7 +28,7 @@ def metric_problems(dataset: SlayerDataset, *, datasets_by_name: Mapping[str, Sl
     found = {i: p for i, m in enumerate(dataset.metrics)
              if (p := _list_problem(m, dataset=dataset, datasets_by_name=datasets_by_name)
                  or expression_refusal(m.expression, dialect=dialect)) is not None}
-    while True:  # a measure reading a dropped one is dropped too
+    while True:  # a metric reading a dropped one is dropped too
         kept = [(i, m) for i, m in enumerate(dataset.metrics) if i not in found]
         problems = metric_dependency_problems(
             [(m.name, m.expression) for _, m in kept],
@@ -43,7 +43,7 @@ def metric_problems(dataset: SlayerDataset, *, datasets_by_name: Mapping[str, Sl
 
 def _list_problem(metric: DatasetMetric, *, dataset: SlayerDataset,
                   datasets_by_name: Mapping[str, SlayerDataset]) -> str | None:
-    """Why ``metric`` aggregates a list column (its own model's or a joined one's) SLayer refuses, else ``None``."""
+    """Why ``metric`` aggregates a list field (its own dataset's or a joined one's) SLayer refuses, else ``None``."""
     try:
         tree = parse_expr(metric.expression)
     except ValueError:
@@ -61,7 +61,7 @@ def _list_problem(metric: DatasetMetric, *, dataset: SlayerDataset,
 
 def unreachable_fields(dataset: SlayerDataset, *, datasets_by_name: Mapping[str, SlayerDataset], dialect: str | None,
                         dropped: frozenset[str] = frozenset(), prepare: Callable[[str], str] = str) -> dict[str, str]:
-    """Columns of ``dataset`` reading a joined column no join reaches, or one of ``dropped`` (``dataset``'s own)."""
+    """Fields of ``dataset`` reading a joined field no relationship reaches, or one of ``dropped`` (``dataset``'s own)."""
     found: dict[str, str] = {}
     for col in dataset.fields:
         if (problem := _field_problem(col, dataset=dataset, datasets_by_name=datasets_by_name, dialect=dialect,
@@ -74,15 +74,15 @@ def _field_problem(col: DatasetField, *, dataset: SlayerDataset, datasets_by_nam
                     dialect: str | None, dropped: frozenset[str], prepare: Callable[[str], str]) -> str | None:
     for parts in (p for sql in (col.sql, col.filter) for p in _root_references(sql, dialect=dialect, prepare=prepare)):
         if parts[-1] in dropped and (len(parts) == 1 or parts[:-1] == (dataset.name,)):
-            return f"it reads the dropped column {parts[-1]!r}"
+            return f"it reads the dropped field {parts[-1]!r}"
         if len(parts) > 1 and parts[:-1] != (dataset.name,) and _path_field(
                 parts, dataset=dataset, datasets_by_name=datasets_by_name) is None:
-            return f"it reads {'.'.join(parts)!r}, which no join of {dataset.name!r} reaches"
+            return f"it reads {'.'.join(parts)!r}, which no relationship of {dataset.name!r} reaches"
     return None
 
 
 def _root_references(sql: str | None, *, dialect: str | None, prepare: Callable[[str], str]) -> list[tuple[str, ...]]:
-    """Each root-scope column reference in ``sql`` as its dotted parts."""
+    """Each root-scope field reference in ``sql`` as its dotted parts."""
     try:
         tree = sqlglot.parse_one(prepare(sql), read=dialect) if sql is not None else None
     except SqlglotError:

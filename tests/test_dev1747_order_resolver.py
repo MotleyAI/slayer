@@ -72,8 +72,8 @@ _D4_SHAPES = {
         population="orders",
         dimensions=[FieldRef(name="status")],
         metrics=[
-            {"formula": "sum(amount)", "name": "rev"},
-            {"formula": "sum(customers.spend)", "name": "cs"},
+            {"expression": "sum(amount)", "name": "rev"},
+            {"expression": "sum(customers.spend)", "name": "cs"},
         ],
         order=[OrderItem(field=FieldRef(name="cs"), direction="desc")],
     ),
@@ -176,8 +176,8 @@ class TestOrderTargetMatrix:
             population="orders",
             dimensions=[FieldRef(name="status")],
             metrics=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "sum(amount)", "name": "rev_again"},
+                {"expression": "sum(amount)", "name": "rev"},
+                {"expression": "sum(amount)", "name": "rev_again"},
             ],
             order=[OrderItem(field=FieldRef(name="rev_again"), direction="desc")],
         ))
@@ -261,8 +261,8 @@ class TestOrderTargetMatrix:
             population="orders",
             dimensions=[FieldRef(name="status")],
             metrics=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "sum(customers.spend)", "name": "cs"},
+                {"expression": "sum(amount)", "name": "rev"},
+                {"expression": "sum(customers.spend)", "name": "cs"},
             ],
             order=[OrderItem(field=FieldRef(name="cs"), direction="desc")],
         ))
@@ -276,8 +276,8 @@ class TestOrderTargetMatrix:
             population="orders",
             dimensions=[FieldRef(name="name", dataset="customers.regions")],
             metrics=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "sum(customers.spend)", "name": "cs"},
+                {"expression": "sum(amount)", "name": "rev"},
+                {"expression": "sum(customers.spend)", "name": "cs"},
             ],
             order=[OrderItem(field=FieldRef(name="cs"), direction="desc")],
         ))
@@ -390,8 +390,8 @@ class TestNullOrdering:
                 population="orders",
                 dimensions=[FieldRef(name="status")],
                 metrics=[
-                    {"formula": "sum(amount)", "name": "rev"},
-                    {"formula": "sum(customers.spend)", "name": "cs"},
+                    {"expression": "sum(amount)", "name": "rev"},
+                    {"expression": "sum(customers.spend)", "name": "cs"},
                 ],
                 order=[OrderItem(field=FieldRef(name="cs"), direction="desc")],
             ),
@@ -448,8 +448,8 @@ class TestSingleResolver:
                 population="orders",
                 dimensions=[FieldRef(name="status")],
                 metrics=[
-                    {"formula": "sum(amount)", "name": "rev"},
-                    {"formula": "sum(customers.spend)", "name": "cs"},
+                    {"expression": "sum(amount)", "name": "rev"},
+                    {"expression": "sum(customers.spend)", "name": "cs"},
                 ],
                 order=[OrderItem(field=FieldRef(name="rev"), direction="desc")],
             )),

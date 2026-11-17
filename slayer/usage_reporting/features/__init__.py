@@ -87,7 +87,7 @@ def _stage_flags(stage: SlayerQuery) -> set[str]:
 
 
 def _expressions(stage: SlayerQuery) -> Iterator[str]:
-    """Every Mode B text of a stage: measures, dimensions, time dimensions, filters, order and extension measures."""
+    """Every Mode B text of a stage: metrics, dimensions, time dimensions, filters, order and extension metrics."""
     yield from (m.expression for m in stage.metrics or [] if m.expression)
     yield from (d.expression for d in stage.dimensions or [] if isinstance(d, ComputedDimension))
     yield from (td.field for td in stage.time_dimensions or [] if isinstance(td.field, str))

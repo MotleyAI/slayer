@@ -247,7 +247,7 @@ async def test_entity_hits_appear_in_flat_list(service: SearchService) -> None:
         max_results=20,
     )
     entity_kinds = {h.kind for h in response.results if h.kind != "memory"}
-    valid_kinds = {"datasource", "model", "column", "measure", "aggregation"}
+    valid_kinds = {"datasource", "dataset", "field", "metric", "aggregation"}
     assert entity_kinds & valid_kinds, "expected at least one entity hit"
 
 
@@ -361,7 +361,7 @@ async def test_naive_cypher_single_model_label_filters_results(
         max_results=20,
     )
     for hit in response.results:
-        assert hit.kind == "model", (
+        assert hit.kind == "dataset", (
             f"expected only model hits; got kind={hit.kind!r}, id={hit.id!r}"
         )
 
@@ -379,7 +379,7 @@ async def test_naive_cypher_multi_label_colon_separated(
         max_results=20,
     )
     for hit in response.results:
-        assert hit.kind in ("memory", "model"), (
+        assert hit.kind in ("memory", "dataset"), (
             f"expected only memory/model hits; got kind={hit.kind!r}"
         )
 
@@ -412,7 +412,7 @@ async def test_naive_cypher_case_insensitive(
         max_results=20,
     )
     for hit in response.results:
-        assert hit.kind == "model"
+        assert hit.kind == "dataset"
 
 
 @pytest.mark.asyncio

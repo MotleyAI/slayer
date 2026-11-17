@@ -1003,7 +1003,7 @@ class TestSQLServerStatAggregations:
     async def test_stddev_pop_native_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "stddev_pop(total)"}],
+            metrics=[{"expression": "stddev_pop(total)"}],
         )
         result = await sqlserver_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1040,7 +1040,7 @@ class TestSQLServerStatAggregations:
     async def test_var_pop_uses_canonical_tsql_name(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "var_pop(total)"}],
+            metrics=[{"expression": "var_pop(total)"}],
         )
         result = await sqlserver_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1111,7 +1111,7 @@ class TestSQLServerStatAggregations:
     async def test_covar_pop_variance_decomposition_sqlserver(self, sqlserver_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "covar_pop(total, other=customer_id)"}],
+            metrics=[{"expression": "covar_pop(total, other=customer_id)"}],
         )
         result = await sqlserver_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]

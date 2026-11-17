@@ -2,7 +2,7 @@
 
 Assigns every ``ValueSlot`` in a plan exactly one ``Stage`` (which relation in
 the emitted pipeline it materialises in), a ``needs_field`` flag (must it be
-projected as a column for a later stage / consumer), and — for a transform —
+projected as a field for a later stage / consumer), and — for a transform —
 its ``series`` regime. Producer bodies are staged by their own compilation,
 so this pass never recurses into them; it reads the
 attach plans only to classify placeholders and join-back keys.
@@ -159,8 +159,8 @@ class _SlotStager:
         # the same value is also combined-attached (dual role): _base is the
         # earliest relation it materialises in. A combined-only placeholder is
         # joined at the combined SELECT (PRODUCER). An externally-provided
-        # carrier column (answered by the enclosing producer, absent from
-        # this plan's own attaches) is likewise a base column (BASE).
+        # carrier field (answered by the enclosing producer, absent from
+        # this plan's own attaches) is likewise a base field (BASE).
         if key in self._row_ph:
             return Stage(kind=StageKind.BASE)
         if key in self._combined_ph:
@@ -246,7 +246,7 @@ def _direct_deps(slot: ValueSlot, *, by_key: Dict[ValueKey, ValueSlot]) -> List[
     materialised value is referenced as a whole, not through its internals
     (F7: a computed dimension resolves by its grouped alias). An aggregate's
     internals are its own business (like ``_iter_slot_deps``), so its source
-    columns are never consumer deps."""
+    fields are never consumer deps."""
     if isinstance(slot.key, AggregateKey):
         return []
     out: List[ValueSlot] = []
@@ -271,7 +271,7 @@ def _later_stage_reads(
     by_key: Dict[ValueKey, ValueSlot],
     stages: Dict[SlotId, Stage],
 ) -> Set[SlotId]:
-    """A value read by a strictly-later stage must be a column of its own relation."""
+    """A value read by a strictly-later stage must be a field of its own relation."""
     needs: Set[SlotId] = set()
     for slot in all_slots:
         for dep in _direct_deps(slot, by_key=by_key):
@@ -286,9 +286,9 @@ def _metric_mask_deps(
     by_id: Dict[SlotId, ValueSlot],
     by_key: Dict[ValueKey, ValueSlot],
 ) -> Set[SlotId]:
-    """A measure-typed mask renders in HAVING, which reads its aggregates by base
+    """A metric-typed mask renders in HAVING, which reads its aggregates by base
     alias, so those deps need columns. A field-typed mask renders inline in
-    WHERE — its column deps are referenced directly, never projected."""
+    WHERE — its field deps are referenced directly, never projected."""
     needs: Set[SlotId] = set()
     for mask in masks:
         if mask.typing is not MaskTyping.METRIC:
@@ -323,7 +323,7 @@ def _grouped_order_targets(
     *,
     stages: Dict[SlotId, Stage],
 ) -> Set[SlotId]:
-    """Order targets in a grouped query resolve to a hidden column of the relation
+    """Order targets in a grouped query resolve to a hidden field of the relation
     their stage names (BASE / DERIVED); a PRODUCER / COMBINED value renders
     inline in the ORDER BY."""
     needs: Set[SlotId] = set()
@@ -346,12 +346,12 @@ def _compute_needs_field(
     attach_plans: List[RegroupAttachPlan],
     grain: Optional[List[SlotId]],
 ) -> Set[SlotId]:
-    """Slot ids that must be projected as a column of their own relation (D4)."""
+    """Slot ids that must be projected as a field of their own relation (D4)."""
     needs: Set[SlotId] = set(projection)
     needs |= _later_stage_reads(all_slots, by_key=by_key, stages=stages)
     needs |= _metric_mask_deps(masks, by_id=by_id, by_key=by_key)
     needs |= _attach_join_keys(attach_plans, by_key=by_key)
-    # Raw rows: row-column order targets resolve inline via split emission.
+    # Raw rows: row-field order targets resolve inline via split emission.
     if grain is not None:
         needs |= _grouped_order_targets(order, stages=stages)
     return needs

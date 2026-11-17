@@ -151,11 +151,11 @@ def _validate_hop_chain(*, hops: Tuple["RelationshipHop", ...]) -> None:
     still fails closed rather than reaching SQL generation.
     """
     if not hops:
-        raise ValueError("JoinFilterRule.relationship_path must be non-empty")
+        raise ValueError("RelationshipFilterRule.relationship_path must be non-empty")
     for prev, cur in zip(hops, hops[1:]):
         if cur.from_table.casefold() != prev.to_table.casefold():
             raise ValueError(
-                "JoinFilterRule.relationship_path hops must chain: hop from_table "
+                "RelationshipFilterRule.relationship_path hops must chain: hop from_table "
                 f"{cur.from_table!r} must equal the previous hop's to_table "
                 f"{prev.to_table!r}"
             )
@@ -209,8 +209,8 @@ class RelationshipFilterRule(BaseModel):
         if _table_names_match(end, self.target_table):
             return tuple(_reverse_hop(h) for h in reversed(hops))
         raise ValueError(
-            f"JoinFilterRule.target_table ({self.target_table!r}) is not an "
-            f"endpoint of join_path (endpoints {start!r}, {end!r})"
+            f"RelationshipFilterRule.target_table ({self.target_table!r}) is not an "
+            f"endpoint of relationship_path (endpoints {start!r}, {end!r})"
         )
 
     @field_validator("target_table")
@@ -224,7 +224,7 @@ class RelationshipFilterRule(BaseModel):
         if isinstance(v, str):
             # Would otherwise be iterated into a tuple of single characters.
             raise ValueError(
-                "JoinFilterRule.relationship_path must be a list of hop strings, not a "
+                "RelationshipFilterRule.relationship_path must be a list of hop strings, not a "
                 "single string"
             )
         if isinstance(v, list):
@@ -242,8 +242,8 @@ class RelationshipFilterRule(BaseModel):
             or _table_names_match(end, self.target_table)
         ):
             raise ValueError(
-                "JoinFilterRule.target_table "
-                f"({self.target_table!r}) must be one of the join_path "
+                "RelationshipFilterRule.target_table "
+                f"({self.target_table!r}) must be one of the relationship_path "
                 f"endpoints ({start!r}, {end!r})"
             )
         return self
@@ -262,7 +262,7 @@ def _validate_relationship_rule_anchor(
     terminal = oriented[-1].to_table
     if not _reaches_anchor(terminal, anchor):
         raise ValueError(
-            f"RelationshipFilterRule for target '{rule.target_table}': the join_path "
+            f"RelationshipFilterRule for target '{rule.target_table}': the relationship_path "
             f"must reach the anchor table '{anchor}' at its non-target endpoint, "
             f"qualified at least as fully as the anchor (got '{terminal}')."
         )
@@ -330,7 +330,7 @@ class RelationshipFilterRuleset(BaseModel):
             _validate_relationship_rule_anchor(rule, master)
             if any(_table_names_match(rule.target_table, t) for t in seen_targets):
                 raise ValueError(
-                    f"Duplicate JoinFilterRule target '{rule.target_table}' "
+                    f"Duplicate RelationshipFilterRule target '{rule.target_table}' "
                     "(one path per target)."
                 )
             seen_targets.append(rule.target_table)

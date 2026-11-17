@@ -306,7 +306,7 @@ async def test_d_cross_cross_model_derived_time_arg(
             granularity=TimeGranularity.DAY,
         )],
         metrics=[{
-            "formula": "last(customers.amount, customers.signup_at_alias)",
+            "expression": "last(customers.amount, customers.signup_at_alias)",
         }],
         to_many_handling="broadcast",
     ))
@@ -675,7 +675,7 @@ class TestTimeArgJoinDiscovery:
             SlayerQuery(
                 population="orders", dimensions=["status"],
                 metrics=[{
-                    "formula": "last(amount, customers.signup_at) + 1", "name": "plus1",
+                    "expression": "last(amount, customers.signup_at) + 1", "name": "plus1",
                 }],
             ),
             _u_orders(),

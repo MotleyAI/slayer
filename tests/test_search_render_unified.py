@@ -118,13 +118,13 @@ def test_collect_model_entity_pairs_visible_model_produces_full_subtree() -> Non
     # measure, every aggregation. Hidden column + unnamed measure
     # excluded.
     assert "warehouse.orders" in canonicals
-    assert kinds["warehouse.orders"] == "model"
+    assert kinds["warehouse.orders"] == "dataset"
     assert "warehouse.orders.id" in canonicals
-    assert kinds["warehouse.orders.id"] == "column"
+    assert kinds["warehouse.orders.id"] == "field"
     assert "warehouse.orders.amount" in canonicals
     assert "warehouse.orders.internal_token" not in canonicals
     assert "warehouse.orders.aov" in canonicals
-    assert kinds["warehouse.orders.aov"] == "measure"
+    assert kinds["warehouse.orders.aov"] == "metric"
     assert "warehouse.orders.paid_only_sum" in canonicals
     assert kinds["warehouse.orders.paid_only_sum"] == "aggregation"
 
@@ -281,10 +281,10 @@ async def test_render_datasource_pair_used_by_index_and_embedding_paths(
 def test_rendered_entity_is_pydantic_model_with_expected_fields() -> None:
     assert issubclass(RenderedEntity, BaseModel)
     re = RenderedEntity(
-        canonical_id="warehouse.orders", kind="model", text="…",
+        canonical_id="warehouse.orders", kind="dataset", text="…",
     )
     assert re.canonical_id == "warehouse.orders"
-    assert re.kind == "model"
+    assert re.kind == "dataset"
     assert re.text == "…"
 
 
@@ -301,13 +301,13 @@ def test_index_corpus_path_actually_calls_collect_model_entity_pairs(
     looks it up: if the corpus dispatch still has a private duplicate,
     the sentinel never appears in the output."""
     sentinel = RenderedEntity(
-        canonical_id="SENTINEL.x", kind="model", text="SENTINEL_TEXT",
+        canonical_id="SENTINEL.x", kind="dataset", text="SENTINEL_TEXT",
     )
 
     def stub(*, model: SlayerDataset) -> list[RenderedEntity]:  # noqa: ARG001
         return [sentinel]
 
-    monkeypatch.setattr(index_mod, "collect_model_entity_pairs", stub)
+    monkeypatch.setattr(index_mod, "collect_dataset_entity_pairs", stub)
     pairs = index_mod._collect_render_pairs(
         memories=[],
         visible_datasets=[_model_with_full_subtree()],
@@ -330,13 +330,13 @@ async def test_embedding_path_actually_calls_collect_model_entity_pairs(
     the sentinel text never reaches the embedding batch."""
     sentinel_text = "SENTINEL_EMB_TEXT"
     sentinel = RenderedEntity(
-        canonical_id="SENTINEL.x", kind="model", text=sentinel_text,
+        canonical_id="SENTINEL.x", kind="dataset", text=sentinel_text,
     )
 
     def stub(*, model: SlayerDataset) -> list[RenderedEntity]:  # noqa: ARG001
         return [sentinel]
 
-    monkeypatch.setattr(emb_mod, "collect_model_entity_pairs", stub)
+    monkeypatch.setattr(emb_mod, "collect_dataset_entity_pairs", stub)
 
     captured: list[str] = []
 

@@ -13,7 +13,7 @@ its own idea of what a slot id resolves to. They disagreed on three things:
   paths.
 * **How the reference is qualified.** A five-way precedence chain over four
   alias maps decided between a bare alias, a ``_base.``-qualified one, a
-  CTE-qualified one, and an inline expression — and a projected cross-model
+  CTE-qualified one, and an inline expression — and a projected cross-dataset
   aggregate came out named by its CTE column while the SELECT projected it
   under the user's alias, so the term resolved only by falling through to an
   input column of the FROM.

@@ -119,7 +119,7 @@ class TestCircularErrorVocabulary:
         exc = _circular()
         assert isinstance(exc, CircularRelationshipPathError)
         assert exc.dataset == "ROOT"
-        assert exc.dataset == exc.root_model
+        assert exc.dataset == exc.root_dataset
         assert not hasattr(exc, "kind")
 
     def test_model_is_read_only(self) -> None:
@@ -228,7 +228,7 @@ class TestEngineDoorCrossModelAttribution:
         exc = ei.value
         assert exc.field == "bad"
         assert exc.dataset == "customers"
-        assert exc.root_model == "customers"
+        assert exc.root_dataset == "customers"
         assert exc.reference == "regions.customers.spend"
         assert exc.revisited == "customers"
         msg = str(exc)

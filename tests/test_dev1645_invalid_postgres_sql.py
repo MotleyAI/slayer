@@ -242,7 +242,7 @@ class TestFlavorAOrderByUnprojected:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "sum(amount)", "name": "rev"}],
+            metrics=[{"expression": "sum(amount)", "name": "rev"}],
             order=[OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         )
         sql = _norm(await _engine_generate(
@@ -284,7 +284,7 @@ class TestFlavorAOrderByUnprojected:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            metrics=[{"formula": "cumsum(sum(amount))", "name": "cs"}],  # windowed -> combined CTE path
+            metrics=[{"expression": "cumsum(sum(amount))", "name": "cs"}],  # windowed -> combined CTE path
             filter=["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
             order=[OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         )

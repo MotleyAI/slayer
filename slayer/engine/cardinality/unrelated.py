@@ -1,4 +1,4 @@
-"""Unrelated datasets: what a query frame names that no join path reaches from its population."""
+"""Unrelated datasets: what a query frame names that no relationship path reaches from its population."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def first_hop_names(query: SlayerQuery) -> set[str]:
 
 
 def _named(token: str, datasets: Iterable[SlayerDataset]) -> Optional[SlayerDataset]:
-    """The dataset ``token`` names: a query stage's spelling first, then a model name."""
+    """The dataset ``token`` names: a query stage's spelling first, then a dataset name."""
     datasets = list(datasets)
     return next((m for m in datasets if m.explicit_spelling == token), None) or next(
         (m for m in datasets if m.explicit_spelling is None and m.name == token), None,
@@ -85,7 +85,7 @@ def stamp_unrelated(
     *, query: SlayerQuery, bundle: ResolvedSourceBundle, host: SlayerDataset, extra: Iterable[SlayerDataset] = (),
 ) -> SlayerDataset:
     """``host`` as ``query``'s population, carrying the unrelated datasets the frame names
-    among the bundle's models plus ``extra`` (unspliced query-backed placeholders)."""
+    among the bundle's datasets plus ``extra`` (unspliced query-backed placeholders)."""
     models = {**bundle.datasets_by_name, **{m.name: m for m in extra}}
     found = unrelated_targets(host=host, names=first_hop_names(query), datasets_by_name=models)
     return host.with_unrelated(found) if found != host.unrelated_datasets else host
@@ -169,7 +169,7 @@ def _leaf_path(leaf: ValueKey) -> Tuple[str, ...]:
 
 
 def _row_leaves(node: ValueKey) -> Iterator[ValueKey]:
-    """Column leaves outside aggregates and transforms (attached values belong to no side)."""
+    """Field leaves outside aggregates and transforms (attached values belong to no side)."""
     if isinstance(node, (AggregateKey, TransformKey)):
         return
     if isinstance(node, TimeTruncKey):

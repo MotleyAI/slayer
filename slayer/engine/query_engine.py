@@ -221,14 +221,14 @@ REFINE_REQUIRES_NAME = (
 
 
 class SavedQueryRun(BaseModel):
-    """A run-by-name input: a query-backed model's name and an optional refinement of its final stage."""
+    """A run-by-name input: a query-backed dataset's name and an optional refinement of its final stage."""
 
     name: str
     refinement: QueryRefinement | None = None
 
 
 def _read_dataset_collisions(*, reads: StatementReads, bundle: ResolvedSourceBundle) -> List[NameCollisionWarning]:
-    """A ``NameCollisionWarning`` per case collision of each model the statement reads."""
+    """A ``NameCollisionWarning`` per case collision of each dataset the statement reads."""
     read = {m for m, _ in (*reads.columns, *reads.metrics, *reads.aggregations)}
     models = {**bundle.datasets_by_name, **({bundle.population.name: bundle.population} if bundle.population else {})}
     variants = [w for m in models.values() if m.name in read or m is bundle.population for w in spine_variant_warnings(m)]
@@ -270,13 +270,13 @@ class _ResolvedItem(BaseModel):
     dataset: str
     leaf: str
     suffix: str | None = None
-    # Measures / aggregation-suffixed items attach (reachability-only)
-    # and never steer the recommendation; columns are determination items.
+    # Metrics / aggregation-suffixed items attach (reachability-only)
+    # and never steer the recommendation; fields are determination items.
     attachment: bool = False
 
 
 def _emit_recommend_path(hops: list[str], item: "_ResolvedItem") -> str:
-    """Join-qualified path to ``item`` from a root over ``hops`` (root excluded), re-aggregated functionally."""
+    """Relationship-qualified path to ``item`` from a root over ``hops`` (root excluded), re-aggregated functionally."""
     core = item.leaf if not hops else ".".join(hops) + "." + item.leaf
     return core if item.suffix is None else functional_agg_text(source=core, suffix=item.suffix)
 
@@ -284,7 +284,7 @@ def _emit_recommend_path(hops: list[str], item: "_ResolvedItem") -> str:
 def _resolve_root_hint(
     raw_hint: str | None, *, data_source: str, all_names: list[str]
 ) -> tuple[str, str] | None:
-    """Resolve ``root_hint`` to ``(model, display)`` (display verbatim in diagnostics); raises if malformed."""
+    """Resolve ``root_hint`` to ``(dataset, display)`` (display verbatim in diagnostics); raises if malformed."""
     if raw_hint is None:
         return None
     display = raw_hint.strip()
@@ -296,14 +296,14 @@ def _resolve_root_hint(
             model = segs[1]
         else:
             raise ValueError(
-                f"root_hint '{display}' must be a bare model name or "
-                f"'{data_source}.<model>' within datasource '{data_source}'."
+                f"root_hint '{display}' must be a bare dataset name or "
+                f"'{data_source}.<dataset>' within datasource '{data_source}'."
             )
     else:
         model = display
     if model not in all_names:
         raise ValueError(
-            f"root_hint '{display}' is not a model in datasource '{data_source}'."
+            f"root_hint '{display}' is not a dataset in datasource '{data_source}'."
         )
     return model, display
 
@@ -392,7 +392,7 @@ def _with_default_order(query: SlayerQuery) -> SlayerQuery:
 
 
 def _sql_safety_reject_reason(safety: str) -> str | None:
-    """Save-time reject reason for a classified ``model.sql``, or None to admit it."""
+    """Save-time reject reason for a classified ``dataset.sql``, or None to admit it."""
     if safety == "modifying":
         return "dataset SQL must be a read-only query; it is not a plain SELECT"
     if safety == "unparseable":
@@ -409,8 +409,8 @@ def _substitute_dataset_sql_surfaces(
 
 
 def _render_probe_dataset(dataset: SlayerDataset, *, dialect: SqlDialect) -> SlayerDataset:
-    """Substitute a template model's own ``query_variables`` defaults for type-probing (raises on
-    an undefaulted Mode-A variable); measures are dropped, since the probe reads columns only."""
+    """Substitute a template dataset's own ``query_variables`` defaults for type-probing (raises on
+    an undefaulted Mode-A variable); metrics are dropped, since the probe reads fields only."""
     dataset = dataset.model_copy(update={"metrics": []}) if dataset.metrics else dataset
     if dataset.source_dataset_origin is None and (
         dataset.query_variables or dataset_needs_substitution_pass(dataset)
@@ -445,7 +445,7 @@ def _semi_join_filter_texts(planned_list) -> List[str]:
 def _collect_broadcast_warnings(
     *, planned_list, stages=None, displays=None, labels=None,
 ) -> List[BroadcastGrainWarningPayload]:
-    """One broadcast payload per ``(stage location, measure label, fallback reason)``; dimensions unioned."""
+    """One broadcast payload per ``(stage location, metric label, fallback reason)``; dimensions unioned."""
     dims_by_key: "dict[tuple[str, str, Optional[str]], list[tuple[str, str]]]" = {}
     if labels is None:
         labels = _stage_labels(stages=stages, displays=displays)
@@ -472,7 +472,7 @@ def _collect_broadcast_warnings(
 def _collect_associated_warnings(
     *, planned_list, stages=None, displays=None, labels=None,
 ) -> List[AssociatedWarningPayload]:
-    """One associated payload per ``(stage location, measure label)``; dimensions unioned."""
+    """One associated payload per ``(stage location, metric label)``; dimensions unioned."""
     dims_by_key: "dict[tuple[str, str], list[str]]" = {}
     if labels is None:
         labels = _stage_labels(stages=stages, displays=displays)
@@ -492,7 +492,7 @@ def _collect_associated_warnings(
 
 
 def _collect_unrelated_warnings(*, planned_list, labels) -> List[UnrelatedDatasetWarningPayload]:
-    """One unrelated-dataset payload per ``(stage location, dataset)``; measures unioned."""
+    """One unrelated-dataset payload per ``(stage location, dataset)``; metrics unioned."""
     found: "dict[tuple[str, str], tuple[str, list[str]]]" = {}
     for planned, location in zip(planned_list, labels):
         for attach in _walk_regroup_attaches(planned):
@@ -511,7 +511,7 @@ def _collect_unrelated_warnings(*, planned_list, labels) -> List[UnrelatedDatase
 def _collect_degenerate_warnings(
     *, planned_list, stages=None, displays=None, labels=None,
 ) -> List[DegenerateReaggregationWarningPayload]:
-    """One degenerate-re-aggregation payload per ``(location, measure)``."""
+    """One degenerate-re-aggregation payload per ``(location, metric)``."""
     seen: set = set()
     out: List[DegenerateReaggregationWarningPayload] = []
     if labels is None:
@@ -548,7 +548,7 @@ def _attach_semi_join_texts(attach) -> Iterator[str]:
 
 def _population_pushed_entries(planned) -> Iterator[Tuple[Optional[str], str]]:
     """The population's own restriction: a top-level plan's semi-join groups name
-    no aggregate (measure=None)."""
+    no aggregate (metric=None)."""
     for group in getattr(planned, "semi_join_filters", None) or ():
         for text in group.filter_texts:
             if text:
@@ -556,8 +556,8 @@ def _population_pushed_entries(planned) -> Iterator[Tuple[Optional[str], str]]:
 
 
 def _attach_pushed_entries(planned) -> Iterator[Tuple[str, str]]:
-    """Semi-join-pushed entries for each regroup attach, one per (public measure,
-    filter text) — a producer may carry several public measures under one push."""
+    """Semi-join-pushed entries for each regroup attach, one per (public metric,
+    filter text) — a producer may carry several public metrics under one push."""
     for attach in _walk_regroup_attaches(planned):
         measures = attach.population_semi_join_metrics or [
             attach.semi_join_metric or attach.broadcast_metric
@@ -603,7 +603,7 @@ def _raise_on_error_events(
         reason = w.dimensions[0].reason if w.dimensions else ""
         raise SlayerError(
             f"error mode: metric {w.metric!r} would broadcast across "
-            f"unattributable dimension(s) {dims} ({reason}); declare join "
+            f"unattributable dimension(s) {dims} ({reason}); declare relationship "
             f"cardinality, a covering unique key, omit to_many_handling to "
             f"associate, or remove the dimension."
         )
@@ -651,7 +651,7 @@ class SlayerResponse(BaseModel):
     attributes: ResponseAttributes = PydanticField(default_factory=ResponseAttributes)
     # Query advisories, discriminated on ``kind``; empty for a clean query.
     warnings: List[AnySlayerWarning] = PydanticField(default_factory=list)
-    # The effective population model and whether it was inferred.
+    # The effective population dataset and whether it was inferred.
     population: Optional[str] = None
     population_inferred: bool = False
     # The datasource the query ran on; never serialized.
@@ -700,9 +700,9 @@ class _Prepared(BaseModel):
     resolved_data_source: Optional[str] = None
     attributes: Any
     expected_columns: List[str]
-    # The persisted models the statement reads (drift-attribution scope).
+    # The persisted datasets the statement reads (drift-attribution scope).
     touched: Set[str]
-    # The elements of those models it reads (drift attribution).
+    # The elements of those datasets it reads (drift attribution).
     reads: StatementReads = PydanticField(default_factory=StatementReads)
     dataset: SlayerDataset
     slack_warnings: List[Any] = PydanticField(default_factory=list)
@@ -725,9 +725,9 @@ class _Rendered(BaseModel):
     # The stages the SQL emits (a spliced stage nothing reads is pruned).
     emitted_list: List[PlannedQuery]
     dataset: SlayerDataset
-    # Models whose relations the final statement contains, plus the spliced ones.
+    # Datasets whose relations the final statement contains, plus the spliced ones.
     reads: Set[str] = PydanticField(default_factory=set)
-    # Models whose filters the statement restricts by a correlated subquery.
+    # Datasets whose filters the statement restricts by a correlated subquery.
     associated: Set[str] = PydanticField(default_factory=set)
     element_reads: StatementReads = PydanticField(default_factory=StatementReads)
     warnings: List[Any] = PydanticField(default_factory=list)
@@ -740,18 +740,18 @@ class _Rendered(BaseModel):
 
 
 class _QueryBackedExpansion(BaseModel):
-    """A query-backed model planned as one statement tree, read as a virtual model over its root stage."""
+    """A query-backed dataset planned as one statement tree, read as a virtual dataset over its root stage."""
 
     model_config = PydanticConfigDict(arbitrary_types_allowed=True)
 
     name: str
     rendered: _Rendered
     stage_schema: StageSchema
-    #: Canonical column name → its length-fitted alias.
+    #: Canonical field name → its length-fitted alias.
     fit_map: Dict[str, str]
 
     def virtual_dataset(self, *, sql: Optional[str] = None) -> SlayerDataset:
-        """The virtual model over the root stage, reading ``sql`` (else the stage relation)."""
+        """The virtual dataset over the root stage, reading ``sql`` (else the stage relation)."""
         source = self.rendered.bundle.population
         assert source is not None
         return dataset_from_stage_schema(
@@ -798,7 +798,7 @@ def _reject_expressions_unparseable_everywhere(dataset: SlayerDataset) -> None:
             continue
         if agg.name in RANKED_AGGREGATIONS:
             raise AggregationArgumentError(
-                f"Model '{dataset.name}', aggregation '{agg.name}': a ranked aggregation cannot take a formula."
+                f"Dataset '{dataset.name}', aggregation '{agg.name}': a ranked aggregation cannot take an expression."
             )
         errors: list[SqlTemplateError] = []
         for dialect in SQLGLOT_NAMES:
@@ -808,7 +808,7 @@ def _reject_expressions_unparseable_everywhere(dataset: SlayerDataset) -> None:
             except SqlTemplateError as e:
                 errors.append(e)
         else:
-            raise SqlTemplateError(f"Model '{dataset.name}', aggregation '{agg.name}': {errors[0]}")
+            raise SqlTemplateError(f"Dataset '{dataset.name}', aggregation '{agg.name}': {errors[0]}")
 
 
 class SlayerQueryEngine:
@@ -902,16 +902,16 @@ class SlayerQueryEngine:
         self, *, dialect: str, datasource: DatasourceConfig, planned_list, statement: Expr, associated: Set[str],
     ) -> None:
         """Fail closed when this user cannot run a correlated ``EXISTS``: a semi-join pushdown, or a
-        model filter read across an unproven hop."""
+        dataset filter read across an unproven hop."""
         sql_dialect = get_dialect(dialect)
         if not sql_dialect.correlated_subqueries_gated:
             return
         texts = _semi_join_filter_texts(planned_list)
         named = f" (filter(s): {', '.join(repr(t) for t in texts)})" if texts else ""
         lead = (
-            f"This query pushes a filter into a related model as a correlated EXISTS semi-join{named}."
+            f"This query pushes a filter into a related dataset as a correlated EXISTS semi-join{named}."
             if texts or not associated else
-            f"This query reads model(s) {sorted(associated)} whose filters read a joined model across a hop not "
+            f"This query reads dataset(s) {sorted(associated)} whose filters read a joined dataset across a hop not "
             f"proven to-one, restricted by a correlated EXISTS."
         )
         try:
@@ -1080,10 +1080,10 @@ class SlayerQueryEngine:
         deprecations_out: Optional[List[DeprecatedInputWarning]] = None,
     ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str], Tuple[str, ...]]":
         """Resolve the user input union into ``(main_query, named_queries, prefer_data_source,
-        splice_chain)``; running a query-backed model by name seeds the chain with it.
+        splice_chain)``; running a query-backed dataset by name seeds the chain with it.
         The deprecations of the query objects and refinement it consumed go to ``deprecations_out``."""
         out = deprecations_out if deprecations_out is not None else []
-        # Run-by-name: ``execute("model_name", ...)`` runs the backing query.
+        # Run-by-name: ``execute("dataset_name", ...)`` runs the backing query.
         if isinstance(query, str):
             query = SavedQueryRun(name=query)
         if isinstance(query, SavedQueryRun):
@@ -1134,11 +1134,11 @@ class SlayerQueryEngine:
         name = run.name
         model = await self.storage.get_dataset(name, data_source=prefer_data_source)
         if model is None:
-            raise ValueError(f"Model '{name}' not found")
+            raise ValueError(f"Dataset '{name}' not found")
         if not model.source_queries:
             raise ValueError(
-                f"Model '{name}' is not query-backed; pass a SlayerQuery "
-                f"with source_model='{name}'."
+                f"Dataset '{name}' is not query-backed; pass a SlayerQuery "
+                f"with population='{name}'."
             )
         deprecations_out.extend(deprecated_inputs_of([*model.source_queries, run.refinement]))
         prefer_data_source = model.data_source or prefer_data_source
@@ -1156,16 +1156,16 @@ class SlayerQueryEngine:
     def _stages_of_dataset(
         *, dataset: SlayerDataset, runtime_kwarg: Dict[str, Any],
     ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery]]":
-        """A query-backed model's stages as ``(main_query, named_queries)``, variables layered."""
+        """A query-backed dataset's stages as ``(main_query, named_queries)``, variables layered."""
         # Stored ``source_queries`` may be non-topological for
-        # ``joins[].target_model`` deps; topo-sort to match save-time semantics.
+        # ``relationships[].to`` deps; topo-sort to match save-time semantics.
         stages = topologically_order_stages(list(dataset.source_queries or []))
         if not stages:
-            raise ValueError(f"Model {dataset.name!r} has no source_queries")
+            raise ValueError(f"Dataset {dataset.name!r} has no source_queries")
         main_query = stages[-1]
         named_queries = {q.name: q for q in stages[:-1] if q.name}
         # Precedence ``runtime > stage > model_defaults`` (no outer query here,
-        # so ``model.query_variables`` is the lowest layer).
+        # so ``dataset.query_variables`` is the lowest layer).
         merged = _merge_query_variables(
             outer=dataset.query_variables,
             stage=main_query.variables,
@@ -1255,7 +1255,7 @@ class SlayerQueryEngine:
         result_order: bool = False,
         type_probe: bool = False,
     ) -> _Rendered:
-        """Plan one statement and compose its tree, splicing the stored query-backed models
+        """Plan one statement and compose its tree, splicing the stored query-backed datasets
         it reads; warnings come from the stages the statement emits. ``result_order`` marks a
         request's result (default-ordered); ``type_probe`` bounds it as a type probe."""
         # Stage names are query-local: mint identities before anything resolves a name.
@@ -1266,7 +1266,7 @@ class SlayerQueryEngine:
         query = localized[-1]
         named_queries = {q.name: q for q in localized[:-1] if q.name}
         # Infer the population of any rootless stage (main + each named
-        # stage independently) BEFORE prefix-strip, so the chosen model flows
+        # stage independently) BEFORE prefix-strip, so the chosen dataset flows
         # through the untouched pipeline byte-identically to its explicit twin.
         query, named_queries, population, population_inferred, inferred_data_source = (
             await self._infer_populations(
@@ -1277,8 +1277,8 @@ class SlayerQueryEngine:
             )
         )
         # Pin bundle resolution to the inferred datasource (anchor voting already
-        # fixed exactly one), so the winning bare model name can't re-resolve to a
-        # same-named model in another datasource.
+        # fixed exactly one), so the winning bare dataset name can't re-resolve to a
+        # same-named dataset in another datasource.
         if inferred_data_source is not None:
             prefer_data_source = inferred_data_source
 
@@ -1297,7 +1297,7 @@ class SlayerQueryEngine:
             failures=failures,
             respelled_spine=respelled_spine,
         )
-        # Plan the stages as the bundle resolved them (extension model names respelled).
+        # Plan the stages as the bundle resolved them (extension dataset names respelled).
         query, named_queries = bundle.query or query, bundle.named_queries
         # ``build_resolved_source_bundle`` raises if unresolved, so it's populated.
         model = bundle.population
@@ -1307,16 +1307,16 @@ class SlayerQueryEngine:
         # re-run against the exact datasource the entry was cached under, so a
         # same-name repoint can't migrate the entry. Resolved here (before Mode-A
         # substitution) because escaping is dialect-aware; safe since substitution
-        # never touches ``model.data_source``.
+        # never touches ``dataset.data_source``.
         datasource = override_datasource or await self._resolve_datasource(dataset=model)
         dialect = self._dialect_for_type(datasource.type)
         bundle = bundle.model_copy(update={"dialect": dialect, "datasource_type": datasource.type})
 
-        # Substitute {var} into the direct source model's Mode-A surfaces before
-        # anything parses them; the substituted copy replaces the model as both
-        # ``source_model`` and its ``referenced_models`` entry. Rendered virtual
-        # models are skipped. Called unconditionally: a no-op for a variable-free,
-        # block-free model, but a block-bearing model must run so its ``{? ?}``
+        # Substitute {var} into the direct source dataset's Mode-A surfaces before
+        # anything parses them; the substituted copy replaces the dataset as both
+        # ``population`` and its ``referenced_datasets`` entry. Rendered virtual
+        # datasets are skipped. Called unconditionally: a no-op for a variable-free,
+        # block-free dataset, but a block-bearing dataset must run so its ``{? ?}``
         # collapse to ``(1=1)`` even on a zero-variable call.
         if model.source_dataset_origin is None and not model.source_queries:
             substituted = _substitute_dataset_sql_surfaces(
@@ -1336,8 +1336,8 @@ class SlayerQueryEngine:
             model = substituted
 
         # Slack-normalization: rewrite slack-but-unambiguous input (func-style
-        # aggs, misplaced measures) to canonical form, each stage against its
-        # own resolved model.
+        # aggs, misplaced metrics) to canonical form, each stage against its
+        # own resolved dataset.
         sibling_names = set(named_queries)
         query, _norm_warnings = self._normalize_stage(
             query=query, bundle=bundle, sibling_names=sibling_names,
@@ -1358,13 +1358,13 @@ class SlayerQueryEngine:
             variables=bundle.query_variables,
         )
         root_vars = query.variables
-        # Sibling-sourced stages fall back to the root model's defaults (a
+        # Sibling-sourced stages fall back to the root dataset's defaults (a
         # query-backed root's own defaults layer only its spliced stages).
         fallback_vars = {} if model.source_queries else model.query_variables
         stage_sources = dict(bundle.stage_source_datasets)
         for nm, nq in list(normed_named.items()):
             source = stage_sources.get(nm)
-            # Lowest layer: the stage's own source-model defaults.
+            # Lowest layer: the stage's own source-dataset defaults.
             stage_vars = {
                 **((source.query_variables if source is not None else fallback_vars) or {}),
                 **(root_vars or {}),
@@ -1426,7 +1426,7 @@ class SlayerQueryEngine:
         warnings.extend(stale_spelling_warnings(list(dict.fromkeys([
             *(s for p in plans for s in p.stale_spellings), *render_stale_spellings,
         ]))))
-        # Stored query-backed models the statement reads: their stages' input deprecations.
+        # Stored query-backed datasets the statement reads: their stages' input deprecations.
         warnings.extend(deprecated_inputs_of(
             stage for name in sorted(reads) if name in bundle.query_backed
             for stage in bundle.query_backed[name].source_queries or []
@@ -1440,7 +1440,7 @@ class SlayerQueryEngine:
     async def _respell_spine(
         self, *, queries: List[SlayerQuery], stage_names: Set[str], data_source: Optional[str],
     ) -> "tuple[List[SlayerQuery], frozenset[str]]":
-        """Each query reaching the spine in any case; a stage's name or a stored model's exact name keeps its spelling
+        """Each query reaching the spine in any case; a stage's name or a stored dataset's exact name keeps its spelling
         (the pinned datasource's, else any's). Also the spellings respelled."""
         candidates: Set[str] = set()
 
@@ -1465,13 +1465,13 @@ class SlayerQueryEngine:
         prefer_data_source: Optional[str],
         stage_displays: "Dict[str, StageDisplay]",
     ) -> "tuple[SlayerQuery, Dict[str, SlayerQuery], Optional[str], bool, Optional[str]]":
-        """Fill in an omitted ``source_model`` on the main query and each named stage.
+        """Fill in an omitted ``population`` on the main query and each named stage.
 
         Runs before prefix-strip (design §1). Sibling checks compare user spellings;
-        identities are minted, so an inferred model name never resolves to a stage. Returns the (possibly rewritten) main query and
+        identities are minted, so an inferred dataset name never resolves to a stage. Returns the (possibly rewritten) main query and
         stages, the main query's effective population + inferred flag, and the
-        inferred datasource (pins bundle resolution so the winning model name can't
-        resolve ambiguously to a same-named model in another datasource).
+        inferred datasource (pins bundle resolution so the winning dataset name can't
+        resolve ambiguously to a same-named dataset in another datasource).
         """
         inferred = query.population is None
         stage_names = {*named_queries, *(d.name for d in stage_displays.values())}
@@ -1490,7 +1490,7 @@ class SlayerQueryEngine:
                 sibling_stage_names={d.name for ident, d in stage_displays.items() if ident != name},
             )
             # Pin bundle resolution even when only a stage was rootless, so its bare
-            # model name can't resolve to a same-named model in another datasource.
+            # dataset name can't resolve to a same-named dataset in another datasource.
             inferred_data_source = inferred_data_source or stage_data_source
 
         population = query.population_name
@@ -1518,7 +1518,7 @@ class SlayerQueryEngine:
         return query, None
 
     async def _spine_list_datasource(self, *, queries: List[SlayerQuery], stage_names: Set[str]) -> Optional[str]:
-        """The one datasource every model a spine-reading query list names lives in, if there is one."""
+        """The one datasource every dataset a spine-reading query list names lives in, if there is one."""
         try:
             return await spine_datasource(
                 queries=queries, storage=self.storage, data_source=None, sibling_stage_names=stage_names,
@@ -1544,7 +1544,7 @@ class SlayerQueryEngine:
     async def ingest(
         self, datasource: DatasourceConfig, **scope: Unpack[IngestScopeArgs],
     ) -> List[SlayerDataset]:
-        """The models a scan of ``datasource`` finds, read through this engine's client."""
+        """The datasets a scan of ``datasource`` finds, read through this engine's client."""
         return await ingestion.ingest_datasource_async(datasource, client=self.client_for(datasource), **scope)
 
     def ingest_sync(self, datasource: DatasourceConfig, **scope: Unpack[IngestScopeArgs]) -> List[SlayerDataset]:
@@ -1959,12 +1959,12 @@ class SlayerQueryEngine:
         bundle: ResolvedSourceBundle,
         sibling_names: "set[str]",
     ) -> "tuple[SlayerQuery, list[NormalizationWarning]]":
-        """Slack-normalize one stage against its resolved model (sibling-sourced → ``model=None``)."""
+        """Slack-normalize one stage against its resolved dataset (sibling-sourced → ``dataset=None``)."""
         sm = query.population
         dataset: Optional[SlayerDataset] = None
         if query.name and query.name in bundle.stage_source_datasets:
-            # A named non-root stage normalizes against its own source model, not
-            # the root; sibling-sourced stages fall through to model=None.
+            # A named non-root stage normalizes against its own source dataset, not
+            # the root; sibling-sourced stages fall through to dataset=None.
             dataset = bundle.stage_source_datasets[query.name]
         elif isinstance(sm, str):
             if sm not in sibling_names:
@@ -1986,7 +1986,7 @@ class SlayerQueryEngine:
         self, *, datasource: DatasourceConfig, read_set: "Set[str]",
         findings_out: "Optional[List[schema_drift.RetypeFinding]]" = None,
     ) -> "List[schema_drift.ToDeleteEntry]":
-        """Drift entries for the read persisted models of ``datasource``, over reused live facts."""
+        """Drift entries for the read persisted datasets of ``datasource``, over reused live facts."""
         identities = await self.storage._list_all_dataset_identities()
         available = {n for d, n in identities if d == datasource.name}
         datasets: List[SlayerDataset] = []
@@ -2041,7 +2041,7 @@ class SlayerQueryEngine:
             )
 
     def _build_type_probe_query(self, dataset: SlayerDataset) -> SlayerQuery:
-        """SlayerQuery type-probing a model's columns (prefers ``max``, skips identifiers)."""
+        """SlayerQuery type-probing a dataset's fields (prefers ``max``, skips identifiers)."""
         metrics: List[DatasetMetric] = []
         for c in dataset.fields:
             if c.hidden or is_identifier(field=c, fields=dataset.fields):
@@ -2060,7 +2060,7 @@ class SlayerQueryEngine:
         self, *, stored: SlayerDataset, dataset: SlayerDataset, datasource: DatasourceConfig,
     ) -> "tuple[PlannedStatement, str, PlannedQuery]":
         """The type probe of ``dataset`` as a statement tree, its dialect and root plan. A query-backed
-        ``stored`` model is probed by one more stage over its own stages, as run-by-name splices them."""
+        ``stored`` dataset is probed by one more stage over its own stages, as run-by-name splices them."""
         probe_query = self._build_type_probe_query(dataset=dataset)
         if stored.source_queries:
             main_query, named_queries = self._stages_of_dataset(dataset=stored, runtime_kwarg={})
@@ -2071,7 +2071,7 @@ class SlayerQueryEngine:
                 runtime_kwarg={}, prefer_data_source=None, type_probe=True,
             )
             return rendered.built, rendered.dialect, rendered.planned_list[-1]
-        # Render a template model's Mode-A {var} surfaces from its own
+        # Render a template dataset's Mode-A {var} surfaces from its own
         # defaults before probe SQL; an undefaulted {var} degrades to {}.
         dataset = _render_probe_dataset(dataset, dialect=dialect_for_ds_type(datasource.type))
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
@@ -2100,13 +2100,13 @@ class SlayerQueryEngine:
         dataset_name: str,
         data_source: Optional[str] = None,
     ) -> Dict[str, ResultColumnType]:
-        """The probed SLayer type and database type name of each non-identifier column of a model."""
+        """The probed SLayer type and database type name of each non-identifier field of a dataset."""
         stored = await self.storage.get_dataset(dataset_name, data_source=data_source)
         if stored is None:
             return {}
 
-        # Expand query-backed models first so the resolved virtual model (fresh
-        # data_source + inner columns) drives datasource + probeable-columns, not
+        # Expand query-backed datasets first so the resolved virtual dataset (fresh
+        # data_source + inner fields) drives datasource + probeable-fields, not
         # a stale stored value.
         model = stored
         if stored.source_queries:
@@ -2117,7 +2117,7 @@ class SlayerQueryEngine:
                 raise
             except Exception:
                 logger.warning(
-                    "get_result_column_types: failed to resolve query-backed model '%s'",
+                    "get_result_column_types: failed to resolve query-backed dataset '%s'",
                     dataset_name,
                 )
                 return {}
@@ -2146,7 +2146,7 @@ class SlayerQueryEngine:
             probe = built.model_copy(update={"statement": statement}).mint_probe(policy_scoped=self.policy is not None)
         except Exception:
             logger.warning(
-                "get_result_column_types plan/generate failed for model '%s'",
+                "get_result_column_types plan/generate failed for dataset '%s'",
                 dataset_name,
             )
             return {}
@@ -2155,7 +2155,7 @@ class SlayerQueryEngine:
             raw_types = await client.get_result_column_types(probe)
         except Exception:
             logger.warning(
-                "get_result_column_types probe failed for model '%s'", dataset_name,
+                "get_result_column_types probe failed for dataset '%s'", dataset_name,
             )
             return {}
 
@@ -2165,7 +2165,7 @@ class SlayerQueryEngine:
             [raw_types], aliases=projection_result_keys(root_planned=root),
         )[0]
 
-        # Map qualified aliases back to bare measure names.
+        # Map qualified aliases back to bare metric names.
         result: Dict[str, ResultColumnType] = {}
         source_relation = root.source_relation
         for slot in root.aggregate_slots:
@@ -2178,7 +2178,7 @@ class SlayerQueryEngine:
             full = f"{source_relation}.{public}"
             if full in raw_types:
                 result[bare] = raw_types[full]
-        # A measure answered by a regroup producer surfaces as a placeholder ROW
+        # A metric answered by a regroup producer surfaces as a placeholder ROW
         # slot; its source lives on the substitution's original key.
         slot_by_key = {s.key: s for s in root.row_slots}
         for attach in root.regroup_attach_plans:
@@ -2215,15 +2215,15 @@ class SlayerQueryEngine:
     async def _scope_bare_name_to_datasource(
         self, *, raw: str, name: str, data_source: str
     ) -> "tuple[str, str, str]":
-        """Resolve a dotless item within one datasource → ``(ds, model, leaf)``."""
+        """Resolve a dotless item within one datasource → ``(ds, dataset, leaf)``."""
         models = await _all_datasets_in_datasource(self.storage, data_source)
         if any(m.name == name for m in models):
             raise ValueError(
-                f"'{raw}' resolves to model '{name}' in '{data_source}', which "
-                f"is not a column or metric. recommend_root_model needs "
-                f"'model.column' / 'model.metric' items."
+                f"'{raw}' resolves to dataset '{name}' in '{data_source}', which "
+                f"is not a field or metric. recommend_population needs "
+                f"'dataset.field' / 'dataset.metric' items."
             )
-        # Ownership is column/metric only; a same-named custom aggregation drives
+        # Ownership is field/metric only; a same-named custom aggregation drives
         # only the aggregation-specific error below, never ambiguity.
         owners = [
             m for m in models
@@ -2235,23 +2235,23 @@ class SlayerQueryEngine:
             names = sorted(m.name for m in owners)
             raise ValueError(
                 f"'{raw}' is ambiguous in datasource '{data_source}' — matches "
-                f"{names}. Qualify it as '<model>.{name}'."
+                f"{names}. Qualify it as '<dataset>.{name}'."
             )
         if any(m.get_aggregation(name) is not None for m in models):
             raise ValueError(
                 f"'{raw}' names a custom aggregation in datasource "
                 f"'{data_source}'. Aggregations are operators applied to "
-                f"columns, not join-path targets — pass the column."
+                f"fields, not relationship-path targets — pass the field."
             )
         raise ValueError(
-            f"'{raw}' does not name a column or metric in datasource "
+            f"'{raw}' does not name a field or metric in datasource "
             f"'{data_source}'."
         )
 
     async def _resolve_recommend_item(
         self, *, raw: str, data_source: str | None
     ) -> "tuple[_ResolvedItem, list[str]]":
-        """Resolve + validate one recommend_root_model item; must be a column or metric."""
+        """Resolve + validate one recommend_population item; must be a field or metric."""
         entity_ref, suffix = split_entity_agg_ref(raw)
         warnings: list[str] = []
         if data_source and "." not in entity_ref:
@@ -2260,7 +2260,7 @@ class SlayerQueryEngine:
             )
         else:
             # Force a dotted item into ``data_source`` unless it already leads
-            # with it, so a model colliding with a datasource name still resolves
+            # with it, so a dataset colliding with a datasource name still resolves
             # and a foreign-datasource ref fails as cross-datasource.
             resolution_input = entity_ref
             if data_source and entity_ref.split(".")[0] != data_source:
@@ -2271,28 +2271,28 @@ class SlayerQueryEngine:
             if len(segs) < 3:
                 raise ValueError(
                     f"'{raw}' resolves to '{res.canonical_forms[0]}', which is "
-                    f"not a column or metric. recommend_root_model needs "
-                    f"'model.column' / 'model.metric' items."
+                    f"not a field or metric. recommend_population needs "
+                    f"'dataset.field' / 'dataset.metric' items."
                 )
             ds, model_name, leaf = segs[0], segs[1], segs[2]
         owning = await self.storage.get_dataset(model_name, data_source=ds)
         if owning is None:
             raise ValueError(
-                f"'{raw}' resolves to model '{model_name}' in '{ds}', which "
-                f"is not a saved model."
+                f"'{raw}' resolves to dataset '{model_name}' in '{ds}', which "
+                f"is not a saved dataset."
             )
         if owning.get_field(leaf) is None and owning.get_metric(leaf) is None:
             if owning.get_aggregation(leaf) is not None:
                 raise ValueError(
                     f"'{raw}' names the custom aggregation '{leaf}' on "
                     f"'{model_name}'. Aggregations are operators applied to "
-                    f"columns, not join-path targets — pass the column."
+                    f"fields, not relationship-path targets — pass the field."
                 )
             raise ValueError(
-                f"'{raw}' does not name a column or metric on '{model_name}'."
+                f"'{raw}' does not name a field or metric on '{model_name}'."
             )
-        # An aggregation suffix or a saved-measure leaf makes this an
-        # attachment (reachability-only); a plain column is a determination item.
+        # An aggregation suffix or a saved-metric leaf makes this an
+        # attachment (reachability-only); a plain field is a determination item.
         attachment = suffix is not None or (
             owning.get_field(leaf) is None and owning.get_metric(leaf) is not None
         )
@@ -2344,11 +2344,11 @@ class SlayerQueryEngine:
         data_source: str | None = None,
         root_hint: str | None = None,
     ) -> PopulationRecommendation:
-        """Recommend the query root for ``model.column`` / ``model.metric`` items, plus each item's path.
+        """Recommend the query root for ``dataset.field`` / ``dataset.metric`` items, plus each item's path.
 
         Selection uses the population rule — the root must *determine*
-        every column item along provably to-one paths (fewest total hops); saved
-        measures and aggregation-suffixed items are attachments, needing only
+        every field item along provably to-one paths (fewest total hops); saved
+        metrics and aggregation-suffixed items are attachments, needing only
         (cardinality-blind) reachability, and never steer the choice. No common
         determiner ⇒ ``reachable=False`` with a Pareto ``coverage`` over the
         determination items. A feasible ``root_hint`` overrides the auto-pick; an
@@ -2366,11 +2366,11 @@ class SlayerQueryEngine:
         det = [r for r in resolved if not r.attachment]
         attach = [r for r in resolved if r.attachment]
         mentioned = {r.dataset for r in resolved}
-        # Columns: the population probe; attachments: the shortest route. ``lenient`` adds the
+        # Fields: the population probe; attachments: the shortest route. ``lenient`` adds the
         # fan-out-free path of an item blocked only by ambiguity (used when nothing is viable, or by a hint).
         strict: dict[str, dict[str, tuple[str, ...]]] = {}
         lenient: dict[str, dict[str, tuple[str, ...]]] = {}
-        # With determination items, an attachment no join path reaches meets the root as a product.
+        # With determination items, an attachment no relationship path reaches meets the root as a product.
         unrelated: dict[str, set[str]] = {}
         for name in all_names:
             routed = shortest_routes(root=models_by_name[name], datasets_by_name=models_by_name)
@@ -2463,15 +2463,15 @@ class SlayerQueryEngine:
             missing = ", ".join(unmet(hint_model))
             warnings.append(
                 f"root_hint '{hint_display}' cannot reach {{{missing}}}; "
-                f"no single model reaches every item — see coverage."
+                f"no single dataset reaches every item — see coverage."
             )
         return PopulationRecommendation(
             data_source=ds, population=None, reachable=False, item_paths=[],
             coverage=coverage, warnings=warnings,
             message=(
-                "No single model determines every requested item. See 'coverage' "
+                "No single dataset determines every requested item. See 'coverage' "
                 "for the best partial roots — split the request into a "
-                "multi-stage query rooted at those models."
+                "multi-stage query rooted at those datasets."
             ),
         )
 
@@ -2498,18 +2498,18 @@ class SlayerQueryEngine:
         remove_filters: Optional[List[str]] = None,
         remove_relationship_edges: Optional[List[RelationshipEdgeRef]] = None,
     ) -> SlayerDataset:
-        """Apply surgical removals (by name; joins by edge reference or exact ref; filters verbatim) to a persisted model."""
+        """Apply surgical removals (by name; relationships by edge reference or exact ref; filters verbatim) to a persisted dataset."""
         existing = await self.storage.get_dataset(dataset_name, data_source=data_source)
         if existing is None:
             raise ValueError(
-                f"Model {dataset_name!r} not found in datasource {data_source!r}."
+                f"Dataset {dataset_name!r} not found in datasource {data_source!r}."
             )
         if existing.source_queries:
-            # Query-backed models manage columns as cache; bypassing save_model
+            # Query-backed datasets manage fields as cache; bypassing save_dataset
             # would persist a stale, mismatched cache.
             raise ValueError(
-                f"edit_dataset_remove() does not support query-backed models "
-                f"({dataset_name!r}); edit source_queries via engine.save_model() "
+                f"edit_dataset_remove() does not support query-backed datasets "
+                f"({dataset_name!r}); edit source_queries via engine.save_dataset() "
                 f"instead."
             )
         cols_to_remove = set(remove_fields or [])
@@ -2539,7 +2539,7 @@ class SlayerQueryEngine:
         )
         SlayerDataset.model_validate(updated.model_dump())
         await self.storage.save_dataset(updated)
-        # Cascade-strip dropped leaves from memory entity tags. Joins/filters
+        # Cascade-strip dropped leaves from memory entity tags. Relationships/filters
         # don't cascade (a joined-leaf ref canonicalizes to the target's own id).
         existing_ds = existing.data_source
         for removed in (
@@ -2555,7 +2555,7 @@ class SlayerQueryEngine:
     async def delete_dataset_by_name(
         self, *, dataset_name: str, data_source: Optional[str]
     ) -> bool:
-        """Delete a persisted model by name. Returns True if the model existed."""
+        """Delete a persisted dataset by name. Returns True if the dataset existed."""
         return await self.storage.delete_dataset(dataset_name, data_source=data_source)
 
     async def apply_drift_deletes(
@@ -2619,7 +2619,7 @@ class SlayerQueryEngine:
                 )
             except Exception as inner:
                 logger.debug(
-                    "post-apply validate_models failed for ds=%r: %s",
+                    "post-apply validate_datasets failed for ds=%r: %s",
                     ds_name,
                     inner,
                 )
@@ -2636,9 +2636,9 @@ class SlayerQueryEngine:
         dataset: str | None = None,
         persist: bool = False,
     ) -> RelationshipCardinalityReport:
-        """Profile each join's two sides and classify its cardinality (report-only unless ``persist``).
+        """Profile each relationship's two sides and classify its cardinality (report-only unless ``persist``).
 
-        Only ``sql_table`` models with bare-column join keys are profiled; the rest
+        Only ``sql_table`` datasets with bare-field relationship keys are profiled; the rest
         report ``SKIPPED_UNSUPPORTED``.
         """
         ds_names = (
@@ -2666,7 +2666,7 @@ class SlayerQueryEngine:
         return RelationshipCardinalityReport(findings=findings)
 
     async def _resolve_detection_scope(self, *, ds_name, dataset):
-        """In-scope models + a whole-datasource name lookup (join targets must still resolve)."""
+        """In-scope datasets + a whole-datasource name lookup (relationship targets must still resolve)."""
         all_models = await _all_datasets_in_datasource(self.storage, ds_name)
         by_name = {m.name: m for m in all_models}
         if dataset is None:
@@ -2676,7 +2676,7 @@ class SlayerQueryEngine:
     async def _detect_datasource_relationships(
         self, *, ds_name, dataset,
     ) -> "tuple[list[RelationshipCardinalityFinding], list[tuple]]":
-        """Profile every join of every in-scope model → ``(findings, persist_entries)``."""
+        """Profile every relationship of every in-scope dataset → ``(findings, persist_entries)``."""
         scope, by_name = await self._resolve_detection_scope(
             ds_name=ds_name, dataset=dataset,
         )
@@ -2702,7 +2702,7 @@ class SlayerQueryEngine:
                     # Fail-closed: a report line would leak unscoped stats.
                     raise
                 except Exception as exc:  # noqa: BLE001
-                    # Contain per join: one unreadable table mustn't fail all.
+                    # Contain per relationship: one unreadable table mustn't fail all.
                     findings.append(
                         _scan_failed_finding(
                             data_source=ds_name, dataset=m, relationship=join, exc=exc,
@@ -2817,7 +2817,7 @@ class SlayerQueryEngine:
     async def _side_stats(
         self, *, client, table, key_cols, sqlglot_name, datasource,
     ) -> SideStats:
-        """Full-scan one side of a join: non-null key rows vs distinct key-tuples."""
+        """Full-scan one side of a relationship: non-null key rows vs distinct key-tuples."""
         rows_q, dist_q = self._side_stats_sql(
             table=table, key_cols=key_cols, sqlglot_name=sqlglot_name,
         )
@@ -2857,11 +2857,11 @@ class SlayerQueryEngine:
     async def validate_datasets(
         self, data_source: Optional[str] = None
     ) -> "List[schema_drift.DriftReportEntry]":
-        """Diff persisted models against live schemas → minimal deletes (read-only; ``None`` = all datasources)."""
+        """Diff persisted datasets against live schemas → minimal deletes (read-only; ``None`` = all datasources)."""
         ds_names = [data_source] if data_source is not None else await self.storage.list_datasources()
         if not ds_names:
             return []
-        everything, _ = await self.storage.load_datasets()  # a reader's narrowing models may live elsewhere
+        everything, _ = await self.storage.load_datasets()  # a reader's narrowing datasets may live elsewhere
         narrowed = narrowing_datasets(everything)
         if data_source is not None:
             return await self._validate_datasource(data_source, narrowed=narrowed)
@@ -2880,7 +2880,7 @@ class SlayerQueryEngine:
     async def _validate_datasource(
         self, data_source: str, *, narrowed: Dict[Tuple[str, str], List[Tuple[str, str]]],
     ) -> "List[schema_drift.DriftReportEntry]":
-        """One datasource's drift deletes, unloadable models and narrowed-access findings."""
+        """One datasource's drift deletes, unloadable datasets and narrowed-access findings."""
         ds = await self.storage.get_datasource(data_source)
         if ds is None:
             return []
@@ -2906,7 +2906,7 @@ class SlayerQueryEngine:
         access_tags: Optional[List[str]] = None,
         warnings_out: Optional[List[SlayerWarning]] = None,
     ) -> SlayerDataset:
-        """Synchronous wrapper for create_model_from_query()."""
+        """Synchronous wrapper for create_dataset_from_query()."""
 
         return self.run_sync(
             self.create_dataset_from_query(
@@ -2928,7 +2928,7 @@ class SlayerQueryEngine:
         prefer_data_source: Optional[str] = None,
     ) -> "_QueryBackedExpansion":
         """Plan a query-backed ``dataset``'s stages as a run-by-name statement tree, read as a
-        virtual model over its root stage. An undefaulted variable raises, exactly as execution does."""
+        virtual dataset over its root stage. An undefaulted variable raises, exactly as execution does."""
         main_query, named_queries = self._stages_of_dataset(
             dataset=dataset, runtime_kwarg=runtime_kwarg or {},
         )
@@ -2940,7 +2940,7 @@ class SlayerQueryEngine:
         )
         schema = rendered.planned_list[-1].stage_schema
         assert schema is not None
-        # ``Column.sql`` carries the length-fitted alias; ``Column.name`` stays canonical.
+        # ``DatasetField.sql`` carries the length-fitted alias; ``DatasetField.name`` stays canonical.
         fit_map = get_dialect(rendered.dialect).alias_rewrite_map([c.name for c in schema.fields])
         return _QueryBackedExpansion(name=dataset.name, rendered=rendered, stage_schema=schema, fit_map=fit_map)
 
@@ -2952,7 +2952,7 @@ class SlayerQueryEngine:
         prefer_data_source: Optional[str] = None,
         notices_out: Optional[List[DateOnlyMidnightWarning]] = None,
     ) -> SlayerDataset:
-        """Render a query-backed ``dataset`` as a virtual ``sql``-mode model (save-time cache): its
+        """Render a query-backed ``dataset`` as a virtual ``sql``-mode dataset (save-time cache): its
         stages, wrapped in a flat-rename SELECT, rendered once through the statement validators."""
         expansion = await self._query_backed_expansion(
             dataset=dataset, runtime_kwarg=runtime_kwarg, prefer_data_source=prefer_data_source,
@@ -2970,7 +2970,7 @@ class SlayerQueryEngine:
             expected_columns=[c.name for c in expansion.stage_schema.fields],
             dialect=dialect,
         )
-        # A flat name equals the user-authored column name, which the finishing pass exempts, so the output
+        # A flat name equals the user-authored field name, which the finishing pass exempts, so the output
         # aliases are fitted here.
         for alias in wrapped_ast.expressions:
             fitted = expansion.fit_map.get(alias.alias)
@@ -2985,7 +2985,7 @@ class SlayerQueryEngine:
         return expansion.virtual_dataset(sql=wrapped_sql)
 
     async def expand_query_backed_dataset(self, dataset: SlayerDataset) -> SlayerDataset:
-        """The sql-mode model a query-backed ``dataset`` renders as, under its default variables, in its datasource."""
+        """The sql-mode dataset a query-backed ``dataset`` renders as, under its default variables, in its datasource."""
         return await self._expand_query_backed_dataset(dataset=dataset, prefer_data_source=dataset.data_source or None)
 
     async def create_dataset_from_query(
@@ -2998,7 +2998,7 @@ class SlayerQueryEngine:
         access_tags: Optional[List[str]] = None,
         warnings_out: Optional[List[SlayerWarning]] = None,
     ) -> SlayerDataset:
-        """Create a query-backed model; cache fields come from a save-time dry-run, ``save=False`` skips persisting."""
+        """Create a query-backed dataset; cache fields come from a save-time dry-run, ``save=False`` skips persisting."""
         raw = query if isinstance(query, list) else [query]
         stages = [
             SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in raw
@@ -3017,7 +3017,7 @@ class SlayerQueryEngine:
     async def save_dataset(
         self, dataset: SlayerDataset, *, warnings_out: Optional[List[SlayerWarning]] = None,
     ) -> SlayerDataset:
-        """Persist a SlayerModel, each deprecated spelling stored as its twin; query-backed models reject cache fields and validate via dry-run.
+        """Persist a SlayerDataset, each deprecated spelling stored as its twin; query-backed datasets reject cache fields and validate via dry-run.
         The source queries' input deprecations, the spelling deprecations and narrowed-access warnings go to
         ``warnings_out`` when given; without it, narrowed-access warnings are emitted as Python warnings."""
         deprecated_inputs = deprecated_inputs_of(dataset.source_queries or [])
@@ -3031,7 +3031,7 @@ class SlayerQueryEngine:
         self, dataset: SlayerDataset, *, warnings_out: Optional[List[SlayerWarning]],
     ) -> SlayerDataset:
         notices: List[DateOnlyMidnightWarning] = []
-        # Save preserves the author's formula spelling — no slack
+        # Save preserves the author's expression spelling — no slack
         # rewriting; both aggregation spellings are first-class parser input.
         prior_data_source = await self._prior_data_source(dataset)
         # Fail fast before any trial run / expansion; storage re-checks in the saved dialect.
@@ -3039,9 +3039,9 @@ class SlayerQueryEngine:
         if dataset.source_queries:
             if dataset.fields:
                 raise ValueError(
-                    f"Model '{dataset.name}' is query-backed; columns are "
+                    f"Dataset '{dataset.name}' is query-backed; fields are "
                     f"auto-generated and must not be supplied "
-                    f"(got {len(dataset.fields)} columns)."
+                    f"(got {len(dataset.fields)} fields)."
                 )
             dataset = await self._validate_and_populate_cache(dataset, notices_out=notices)
         failures = DocumentLoadFailures()
@@ -3057,7 +3057,7 @@ class SlayerQueryEngine:
         except StoredDocumentLoadError:
             prior = None
         await self.storage.save_dataset(dataset, failures=failures)
-        # Clean up the stale entry if the model moved datasource.
+        # Clean up the stale entry if the dataset moved datasource.
         if (
             prior_data_source is not None
             and prior_data_source != dataset.data_source
@@ -3078,7 +3078,7 @@ class SlayerQueryEngine:
         return dataset
 
     async def _prior_data_source(self, dataset: SlayerDataset) -> Optional[str]:
-        """A query-backed model's stored datasource, so a move cleans up its stale entry; ``None`` when ambiguous, so
+        """A query-backed dataset's stored datasource, so a move cleans up its stale entry; ``None`` when ambiguous, so
         nothing is mass-deleted."""
         if not dataset.source_queries:
             return None
@@ -3091,7 +3091,7 @@ class SlayerQueryEngine:
     async def _narrowed_access(
         self, *, dataset: SlayerDataset, prior: Optional[SlayerDataset],
     ) -> List[NarrowedAccessWarning]:
-        """The saved model, if narrowed, and — when its tags changed — each reader it newly narrows, in any datasource."""
+        """The saved dataset, if narrowed, and — when its tags changed — each reader it newly narrows, in any datasource."""
         loaded, _ = await self.storage.load_datasets()
         retagged = prior if prior is not None and prior.access_tags != dataset.access_tags else None
         if retagged is None and not any(m.access_tags for m in loaded):
@@ -3123,7 +3123,7 @@ class SlayerQueryEngine:
         bare, blocked = extract_variable_refs(dataset.sql)
         parameterized = bool(bare or blocked)
         check_mode_a_placeholders(
-            dataset.sql, dialect=dialect_for_ds_type(ds.type if ds else None), field=f"Model {dataset.name!r} sql",
+            dataset.sql, dialect=dialect_for_ds_type(ds.type if ds else None), field=f"Dataset {dataset.name!r} sql",
         )
         # render_probe_text is SLayer's canonical Mode-A probe render (blocks → (1=1), {var} → 0).
         safety = classify_dataset_sql(render_probe_text(dataset.sql), dialect=sqlglot_name)
@@ -3137,21 +3137,21 @@ class SlayerQueryEngine:
             )
         if parameterized:
             logger.info(
-                "Skipping save-time SQL trial-execute for model %r: model.sql "
+                "Skipping save-time SQL trial-execute for dataset %r: dataset.sql "
                 "carries %d placeholder(s), which cannot be trial-filled.",
                 dataset.name, len(bare | blocked),
             )
             return
         if ds is None:
             logger.warning(
-                "Skipping save-time SQL validation for model %r: datasource "
+                "Skipping save-time SQL validation for dataset %r: datasource "
                 "%r is unset or not configured.", dataset.name, dataset.data_source,
             )
             return
         await self._trial_execute_sql_source(dataset, ds)
 
     async def _trial_execute_sql_source(self, dataset: SlayerDataset, ds: DatasourceConfig) -> None:
-        """Trial-execute read-only ``model.sql`` against ``ds``: raise on a
+        """Trial-execute read-only ``dataset.sql`` against ``ds``: raise on a
         reachable rejection, warn-and-return on an inconclusive verdict."""
         assert dataset.sql is not None
         try:
@@ -3166,7 +3166,7 @@ class SlayerQueryEngine:
                 or _is_unreachable_db_error(exc)
             ):
                 logger.warning(
-                    "Save-time SQL validation for model %r was inconclusive "
+                    "Save-time SQL validation for dataset %r was inconclusive "
                     "(datasource %r, type %r): %s. Saving anyway.",
                     dataset.name, dataset.data_source, ds.type,
                     getattr(exc, "orig", exc),
@@ -3183,9 +3183,9 @@ class SlayerQueryEngine:
         self, dataset: SlayerDataset, *, loaded: Dict[str, Optional[SlayerDataset]],
     ) -> None:
         """Reject a broken dotted chain / legacy ``__`` split-alias at save time via
-        the generator's resolver; a revisiting column surface becomes the same
-        ``DerivedColumnCircularError`` the storage door raises, while a model-level
-        filter propagates the base ``CircularJoinPathError`` (it is not a column)."""
+        the generator's resolver; a revisiting field surface becomes the same
+        ``DerivedFieldCircularError`` the storage door raises, while a dataset-level
+        filter propagates the base ``CircularRelationshipPathError`` (it is not a field)."""
 
         # Parse with the datasource's own dialect (matching generation), else
         # valid non-Postgres Mode-A SQL could be mis-rejected. Missing → postgres.
@@ -3209,11 +3209,11 @@ class SlayerQueryEngine:
                 try:
                     _expand(fragment)
                 except CircularRelationshipPathError as exc:
-                    # A revisit inside a referenced derived column names that inner
-                    # column and its declaring model.
+                    # A revisit inside a referenced derived field names that inner
+                    # field and its declaring dataset.
                     raise DerivedFieldCircularError(
                         field=exc.field or col.name,
-                        reference=exc.reference, root_dataset=exc.root_model,
+                        reference=exc.reference, root_dataset=exc.root_dataset,
                         revisited=exc.revisited, hop=exc.hop, via=exc.via,
                     ) from exc
         for sql in dataset.filters or []:
@@ -3222,7 +3222,7 @@ class SlayerQueryEngine:
     async def _preload_relationship_targets(
         self, dataset: SlayerDataset, *, failures: DocumentLoadFailures,
     ) -> Dict[str, Optional[SlayerDataset]]:
-        """The datasource's loadable models by name (``dataset`` itself in place of its stored copy) —
+        """The datasource's loadable datasets by name (``dataset`` itself in place of its stored copy) —
         the bidirectional closure is the connected component."""
         peers = failures.skip(await self.storage.load_datasets(data_source=dataset.data_source, exclude=dataset.name))
         return {**{m.name: m for m in peers}, dataset.name: dataset}
@@ -3230,7 +3230,7 @@ class SlayerQueryEngine:
     async def _validate_and_populate_cache(
         self, dataset: SlayerDataset, *, notices_out: Optional[List[DateOnlyMidnightWarning]] = None,
     ) -> SlayerDataset:
-        """Dry-run-validate a query-backed model → copy with cache fields populated (an undefaulted ``{var}`` refuses);
+        """Dry-run-validate a query-backed dataset → copy with cache fields populated (an undefaulted ``{var}`` refuses);
         its date-only notices go to ``notices_out``."""
         if not (dataset.source_queries or []):
             return dataset
@@ -3238,14 +3238,14 @@ class SlayerQueryEngine:
         virtual = await self._expand_query_backed_dataset(dataset=dataset, notices_out=notices_out)
         return dataset.model_copy(update={
             "fields": list(virtual.fields),
-            # Refreshed from the resolved virtual model: the backing query may now
+            # Refreshed from the resolved virtual dataset: the backing query may now
             # resolve through a different datasource, which downstream callers read
-            # before expanding the model.
+            # before expanding the dataset.
             "data_source": virtual.data_source,
         })
 
     async def _pin_populations(self, *, dataset: SlayerDataset, prefer_data_source: Optional[str]) -> SlayerDataset:
-        """``dataset`` with each rootless stage's inferred population written as its ``source_model``."""
+        """``dataset`` with each rootless stage's inferred population written as its ``population``."""
         stages: List[SlayerQuery] = list(dataset.source_queries or [])
         if all(stage.population is not None for stage in stages):
             return dataset
@@ -3270,7 +3270,7 @@ class SlayerQueryEngine:
                 population = inferred[id(stage)]
                 if population in stage_names:
                     raise ValueError(
-                        f"Stage {stage.name or '(final)'!r} of saved query {dataset.name!r} reads model "
+                        f"Stage {stage.name or '(final)'!r} of saved query {dataset.name!r} reads dataset "
                         f"{population!r}, which is also a stage name in that query; rename the stage "
                         f"{population!r} so the population can be saved."
                     )
@@ -3282,12 +3282,12 @@ class SlayerQueryEngine:
         ds_name = dataset.data_source
         if not ds_name:
             raise ValueError(
-                f"Model '{dataset.name}' has no data_source configured. "
-                f"Set data_source on the model or ensure the source model has one."
+                f"Dataset '{dataset.name}' has no data_source configured. "
+                f"Set data_source on the dataset or ensure the source dataset has one."
             )
         ds = await self.storage.get_datasource(ds_name)
         if ds is None:
-            raise ValueError(f"Datasource '{ds_name}' not found for model '{dataset.name}'")
+            raise ValueError(f"Datasource '{ds_name}' not found for dataset '{dataset.name}'")
         return ds
 
     @staticmethod
@@ -3319,16 +3319,16 @@ def _entry_client_key(entry: _CacheEntry) -> ClientCacheKey:
     return (entry.resolved_data_source or "", entry.ds_key)
 
 
-# Join-cardinality detection helpers
+# Relationship-cardinality detection helpers
 
 
 def _relationship_signature(relationship: DatasetRelationship) -> tuple:
-    """Stable identity for a join: (target_model, sorted key pairs)."""
+    """Stable identity for a relationship: (to, sorted key pairs)."""
     return (relationship.to, tuple(sorted((p[0], p[1]) for p in relationship.join_pairs)))
 
 
 def _scan_failed_finding(*, data_source, dataset, relationship: DatasetRelationship, exc) -> RelationshipCardinalityFinding:
-    """Report a join whose profiling scan raised, instead of aborting."""
+    """Report a relationship whose profiling scan raised, instead of aborting."""
     logger.warning(
         "detect_relationship_cardinality: %s -> %s failed: %s",
         dataset.name, relationship.to, exc,
@@ -3348,15 +3348,15 @@ def _scan_failed_finding(*, data_source, dataset, relationship: DatasetRelations
 def _detection_skip_reason(
     *, dataset: SlayerDataset, target: SlayerDataset | None, src_cols: List[str], tgt_cols: List[str],
 ) -> str | None:
-    """Why a join can't be profiled; ``None`` when it can."""
+    """Why a relationship can't be profiled; ``None`` when it can."""
     if dataset.sql_table is None:
         return (
             f"dataset {dataset.name!r} is not table-backed (sql/query-backed); "
-            f"cardinality profiling supports sql_table models only"
+            f"cardinality profiling supports sql_table datasets only"
         )
     if target is None or target.sql_table is None:
         tn = target.name if target is not None else "?"
-        return f"relationship target {tn!r} is not a table-backed model; skipped"
+        return f"relationship target {tn!r} is not a table-backed dataset; skipped"
     for mdl, cols in ((dataset, src_cols), (target, tgt_cols)):
         for c in cols:
             err = relationship_key_error(dataset=dataset.name, target=target.name, key=c,
@@ -3364,7 +3364,7 @@ def _detection_skip_reason(
             if err is not None:
                 return (
                     f"{str(err).splitlines()[0]}; cardinality profiling "
-                    f"supports declared base-column keys only"
+                    f"supports declared base-field keys only"
                 )
     return None
 
@@ -3377,7 +3377,7 @@ def _physical_keys(*, dataset: SlayerDataset, keys: List[str]) -> List[exp.Ident
 def _validate_join_keys(
     *, dataset: SlayerDataset, loaded: Dict[str, Optional[SlayerDataset]],
 ) -> None:
-    """Every join's keys name declared base columns on both sides (source re-checked for a populated query-backed model)."""
+    """Every relationship's keys name declared base fields on both sides (source re-checked for a populated query-backed dataset)."""
     _check_relationship_keys(dataset_name=dataset.name, fields=dataset.fields, relationships=dataset.relationships)
     for join in dataset.relationships:
         target = loaded.get(join.to)
@@ -3394,7 +3394,7 @@ def _unique_contradictions(
     *, dataset: SlayerDataset, target: SlayerDataset, src_cols: List[str], tgt_cols: List[str],
     src_side: SideStats, tgt_side: SideStats,
 ) -> list[str]:
-    """Single-column join keys declared unique/PK but observed to have dups."""
+    """Single-field relationship keys declared unique/PK but observed to have dups."""
     out: list[str] = []
     for mdl, cols, side in (
         (dataset, src_cols, src_side),

@@ -1,4 +1,4 @@
-"""Stored extension columns inlined where they are used: each becomes a Mode-B expression, bound against the models of
+"""Stored extension fields inlined where they are used: each becomes a Mode-B expression, bound against the datasets of
 its datasource. A stored query that cannot be converted raises ``UnconvertibleStoredQueryError``."""
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def holds_removed_forms(query: Any) -> bool:
 
 
 class _ExtensionField(BaseModel):
-    """One extension column: its own expression, read from the model or stage it extends."""
+    """One extension field: its own expression, read from the dataset or stage it extends."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -65,7 +65,7 @@ def inline_extension_fields(
     stages: Sequence[dict], *, datasets_by_ds: Mapping[str, Mapping[str, SlayerDataset]], data_source: Optional[str],
     priority: Sequence[str], document: str,
 ) -> List[SlayerQuery]:
-    """The raw stored ``stages`` (migrated, one query list) with every extension column inlined where it is used."""
+    """The raw stored ``stages`` (migrated, one query list) with every extension field inlined where it is used."""
     for stage in stages:
         if isinstance(stage.get("population"), dict):
             raise UnconvertibleStoredQueryError("an inline population")
@@ -79,14 +79,14 @@ def inline_extension_fields(
             continue
         scopes = query_scopes(queries, datasets_by_ds=datasets_by_ds, data_source=data_source)[i]
         if not scopes:
-            raise UnconvertibleStoredQueryError("extension columns over models the store does not hold")
+            raise UnconvertibleStoredQueryError("extension fields over datasets the store does not hold")
         extensions = [e for e in stages[i].get("extensions") or [] if isinstance(e, dict)]
         runs = [_Stage(query=query, raw=raw_columns[i], scope=scope, document=document)
                 for scope in _running_scopes(scopes, priority=priority)]
         converted = [run.converted(extensions=extensions) for run in runs]
         if any(c != converted[0] for c in converted[1:]):
-            raise UnconvertibleStoredQueryError("extension columns that convert differently in each datasource "
-                                                "holding their models")
+            raise UnconvertibleStoredQueryError("extension fields that convert differently in each datasource "
+                                                "holding their datasets")
         for owner, name in runs[0].fields:
             warnings.warn(SlayerExtensionFieldInlinedWarning(ExtensionFieldInlinedWarning(
                 document=document, field=f"{owner}.{name}",
@@ -143,21 +143,21 @@ class _Stage:
             raise UnconvertibleStoredQueryError("an extension without source_name")
         found = self._dataset_named(name, quoted=False)
         if found is None:
-            raise UnconvertibleStoredQueryError(f"extension columns of {name!r}, which the store does not hold")
+            raise UnconvertibleStoredQueryError(f"extension fields of {name!r}, which the store does not hold")
         return found
 
     def _dataset_named(self, name: str, *, quoted: bool) -> Optional[str]:
-        """The model or stage of the scope ``name`` reaches, matched as the engine matches a model name."""
+        """The dataset or stage of the scope ``name`` reaches, matched as the engine matches a dataset name."""
         try:
             return match_name(name=name, declared=self.scope.datasets, quoted=quoted)
         except AmbiguousReferenceError as exc:
-            raise UnconvertibleStoredQueryError(f"a reference {name!r} that names several models") from exc
+            raise UnconvertibleStoredQueryError(f"a reference {name!r} that names several datasets") from exc
 
     def _field(self, raw: Any, *, owner: str) -> _ExtensionField:
         if not isinstance(raw, dict) or not isinstance(raw.get("name"), str):
-            raise UnconvertibleStoredQueryError(f"an unnamed extension column of {owner!r}")
+            raise UnconvertibleStoredQueryError(f"an unnamed extension field of {owner!r}")
         name = raw["name"]
-        what = f"extension column {owner}.{name}"
+        what = f"extension field {owner}.{name}"
         try:
             text = extension_field_text(raw, owner=owner, what=what)
         except ValueError as exc:
@@ -166,10 +166,10 @@ class _Stage:
         stored = owner not in self.scope.siblings
         if raw.get("sql") is None:
             if stored and not _visible(model, name):
-                raise UnconvertibleStoredQueryError(f"{what}, which names no visible column of {owner!r}")
+                raise UnconvertibleStoredQueryError(f"{what}, which names no visible field of {owner!r}")
             return _ExtensionField(owner=owner, name=name, tree=Ref(name=name), derived=False, label=raw.get("label"))
         if stored and model.get_field(name) is not None:
-            raise UnconvertibleStoredQueryError(f"{what}, named like a column of {owner!r}")
+            raise UnconvertibleStoredQueryError(f"{what}, named like a field of {owner!r}")
         return _ExtensionField(owner=owner, name=name, tree=parse_expr(text), derived=True, label=raw.get("label"))
 
     def _check_relationship_keys(self, extension: dict) -> None:
@@ -179,11 +179,11 @@ class _Stage:
             target_owner = (self._dataset_named(target, quoted=False) or target) if isinstance(target, str) else target
             if any((owner, pair[0]) in self.fields or (target_owner, pair[1]) in self.fields
                    for pair in join.get("join_pairs") or []):
-                raise UnconvertibleStoredQueryError(f"an extension relationship of {owner!r} keyed on an extension column")
+                raise UnconvertibleStoredQueryError(f"an extension relationship of {owner!r} keyed on an extension field")
 
     # -- resolution ----------------------------------------------------------
     def _hit(self, ref: Any, *, root: Optional[SlayerDataset]) -> Optional[Tuple[Tuple[str, ...], Key]]:
-        """The qualifying path and extension column a reference resolves to; ``None`` for anything else."""
+        """The qualifying path and extension field a reference resolves to; ``None`` for anything else."""
         parts, quoted = _parts(ref), _quoting(ref)
         hops, leaf = tuple(parts[:-1]), parts[-1]
         start = self._start(hops, leaf=leaf, quoted=quoted, root=root)
@@ -199,7 +199,7 @@ class _Stage:
         return ((*prefix, *path), (owner, name)) if name is not None else None
 
     def _field_named(self, owner: str, *, leaf: str, quoted: bool) -> Optional[str]:
-        """The extension column of ``owner`` that ``leaf`` names, matched as the engine matches a column name."""
+        """The extension field of ``owner`` that ``leaf`` names, matched as the engine matches a field name."""
         own = [n for o, n in self.fields if o == owner]
         if not own:
             return None
@@ -208,14 +208,14 @@ class _Stage:
             found = match_name(name=leaf, declared=[*own, *(c.name for c in model.fields)] if model else own,
                                quoted=quoted)
         except AmbiguousReferenceError as exc:
-            raise UnconvertibleStoredQueryError(f"a reference {leaf!r} that matches several columns of "
+            raise UnconvertibleStoredQueryError(f"a reference {leaf!r} that matches several fields of "
                                                 f"{owner!r}") from exc
         return found if found in own else None
 
     def _start(
         self, hops: Tuple[str, ...], *, leaf: str, quoted: Tuple[bool, ...], root: Optional[SlayerDataset],
     ) -> Optional[Tuple[Tuple[str, ...], SlayerDataset, Tuple[str, ...]]]:
-        """The qualifying prefix, model and remaining hops a reference resolves from."""
+        """The qualifying prefix, dataset and remaining hops a reference resolves from."""
         if root is not None:
             return (), root, hops
         head_name = self._dataset_named(hops[0], quoted=quoted[0]) if hops else None
@@ -223,19 +223,19 @@ class _Stage:
             return (head_name,), self.scope.datasets[head_name], hops[1:]
         if not hops and any(k[1] == leaf or (not quoted[0] and k[1].casefold() == leaf.casefold())
                             for k in self.fields):
-            raise UnconvertibleStoredQueryError(f"a reference to the extension column {leaf!r} without a "
+            raise UnconvertibleStoredQueryError(f"a reference to the extension field {leaf!r} without a "
                                                 f"population to attribute it to")
         return None
 
     def expansion(self, key: Key) -> Any:
-        """Column ``key``'s expression with every extension column it reads expanded, read from its owner."""
+        """Field ``key``'s expression with every extension field it reads expanded, read from its owner."""
         if key in self._expanded:
             return self._expanded[key]
         column = self.fields[key]
         if not column.derived:
             return column.tree
         if key in self._visiting:
-            raise UnconvertibleStoredQueryError(f"a dependency cycle among extension columns through {key[1]!r}")
+            raise UnconvertibleStoredQueryError(f"a dependency cycle among extension fields through {key[1]!r}")
         self._visiting.add(key)
         tree = self._inlined(column.tree, root=self.scope.datasets[column.owner])
         self._visiting.discard(key)
@@ -250,7 +250,7 @@ class _Stage:
         return map_refs(tree, _replace)
 
     def _text(self, text: str, *, root: Optional[SlayerDataset]) -> Optional[str]:
-        """``text`` with its extension columns inlined; ``None`` when it reads none."""
+        """``text`` with its extension fields inlined; ``None`` when it reads none."""
         try:
             parsed = parse_expr(text)
         except ValueError:
@@ -349,7 +349,7 @@ def _parts(ref: Any) -> Tuple[str, ...]:
 
 
 def _quoting(ref: Any) -> Tuple[bool, ...]:
-    """Each segment's quoted flag of a ``Ref``, ``DottedRef`` or ``ColumnRef``."""
+    """Each segment's quoted flag of a ``Ref``, ``DottedRef`` or ``FieldRef``."""
     if isinstance(ref, FieldRef):
         return tuple(ref.quoted) if ref.quoted else (False,) * len(ref.parts)
     return dotted_quoting(ref)

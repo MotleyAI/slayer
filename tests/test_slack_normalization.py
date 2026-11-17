@@ -1,4 +1,4 @@
-"""Stage 6 (DEV-1450) — slack normalization layer (MISPLACED_MEASURE).
+"""Stage 6 (DEV-1450) — slack normalization layer (MISPLACED_METRIC).
 
 FUNC_STYLE_AGG is RETIRED (DEV-1826): the parser accepts functional
 aggregations natively, so
@@ -59,7 +59,7 @@ class TestFunctionalSpellingFirstClass:
     def test_sum_not_rewritten_no_warning(self):
         q = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "sum(revenue)"}],
+            metrics=[{"expression": "sum(revenue)"}],
         )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -73,7 +73,7 @@ class TestFunctionalSpellingFirstClass:
         assert slack == []
 
     def test_count_star_not_rewritten(self):
-        q = SlayerQuery(population="orders", metrics=[{"formula": "count(*)"}])
+        q = SlayerQuery(population="orders", metrics=[{"expression": "count(*)"}])
         result = normalize_query(q)
         assert result.query is not None
         assert result.query.metrics
@@ -91,7 +91,7 @@ class TestFunctionalSpellingFirstClass:
 
 
 # ---------------------------------------------------------------------------
-# MISPLACED_MEASURE
+# MISPLACED_METRIC
 # ---------------------------------------------------------------------------
 
 
@@ -99,7 +99,7 @@ class TestMisplacedMeasure:
     def test_bare_column_in_measures_moves_to_dimensions(self):
         q = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "status"}],
+            metrics=[{"expression": "status"}],
         )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -108,10 +108,10 @@ class TestMisplacedMeasure:
         assert result.query.metrics == []
         dim_names = [getattr(d, "name", d) for d in result.query.dimensions]
         assert "status" in dim_names
-        assert any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+        assert any(w.rule_id == "MISPLACED_METRIC" for w in result.warnings)
         assert any(
             isinstance(c.message, SlayerNormalizationWarning)
-            and c.message.payload.rule_id == "MISPLACED_MEASURE"
+            and c.message.payload.rule_id == "MISPLACED_METRIC"
             for c in caught
         )
 
@@ -121,7 +121,7 @@ class TestMisplacedMeasure:
         m = _orders().model_copy(update={
             "metrics": [DatasetMetric(name="aov", expression="avg(revenue)")],
         })
-        q = SlayerQuery(population="orders", metrics=[{"formula": "aov"}])
+        q = SlayerQuery(population="orders", metrics=[{"expression": "aov"}])
         result = normalize_query(q, dataset=m)
         assert result.query is not None
         assert result.query.metrics
@@ -131,21 +131,21 @@ class TestMisplacedMeasure:
     def test_unknown_bare_token_left_alone(self):
         # Not a column and not a measure — the resolver will error later,
         # but normalization does not preemptively rewrite.
-        q = SlayerQuery(population="orders", metrics=[{"formula": "noseucha"}])
+        q = SlayerQuery(population="orders", metrics=[{"expression": "noseucha"}])
         result = normalize_query(q, dataset=_orders())
         assert result.query is not None
         assert result.query.metrics
         assert result.query.metrics[0].expression == "noseucha"
 
     def test_no_model_means_no_move(self):
-        # MISPLACED_MEASURE needs model context to classify.
-        q = SlayerQuery(population="orders", metrics=[{"formula": "status"}])
+        # MISPLACED_METRIC needs model context to classify.
+        q = SlayerQuery(population="orders", metrics=[{"expression": "status"}])
         result = normalize_query(q, dataset=None)
         # Without a model the rule no-ops.
         assert result.query is not None
         assert result.query.metrics
         assert result.query.metrics[0].expression == "status"
-        assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+        assert not any(w.rule_id == "MISPLACED_METRIC" for w in result.warnings)
 
     def test_formula_with_call_not_moved(self):
         # Anything containing parens is treated as a formula, even if the
@@ -153,7 +153,7 @@ class TestMisplacedMeasure:
         # aggregations are first-class, so no warning of any kind fires.
         q = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "sum(revenue)"}],
+            metrics=[{"expression": "sum(revenue)"}],
         )
         result = normalize_query(q, dataset=_orders())
         assert result.query is not None
@@ -171,7 +171,7 @@ class TestMisplacedMeasure:
         result = normalize_query(q, dataset=_orders())
         assert len(result.query.metrics) == 2
         assert not result.query.dimensions
-        assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+        assert not any(w.rule_id == "MISPLACED_METRIC" for w in result.warnings)
 
     # DEV-1484 backfill from TestAutoMoveDimensions.test_arithmetic_kept
     def test_arithmetic_formula_kept(self):
@@ -179,12 +179,12 @@ class TestMisplacedMeasure:
         q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(revenue) / count(*)"}]})
         result = normalize_query(q, dataset=_orders())
         assert len(result.query.metrics) == 1
-        assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+        assert not any(w.rule_id == "MISPLACED_METRIC" for w in result.warnings)
 
     # DEV-1484 backfill from TestAutoMoveDimensions.test_invalid_cross_model_path_kept
     def test_dotted_cross_model_ref_kept(self):
         # A dotted cross-model ref (`customers.nonexistent`) is NOT a bare
-        # local column, so MISPLACED_MEASURE leaves it in measures (the
+        # local column, so MISPLACED_METRIC leaves it in measures (the
         # binder errors later if the path is invalid). This also covers the
         # legacy dotted-named-measure case — every dotted ref is kept.
         q = SlayerQuery.model_validate({
@@ -193,13 +193,13 @@ class TestMisplacedMeasure:
         })
         result = normalize_query(q, dataset=_orders())
         assert len(result.query.metrics) == 2
-        assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+        assert not any(w.rule_id == "MISPLACED_METRIC" for w in result.warnings)
 
     # DEV-1484 backfill from
     # TestAutoMoveDimensions.test_dotted_named_measure_not_moved_via_named_queries
     def test_dotted_named_measure_ref_kept(self):
         # A dotted ref to a named ModelMeasure on a joined model
-        # (`customers.name_count`) is dotted, so MISPLACED_MEASURE keeps it
+        # (`customers.name_count`) is dotted, so MISPLACED_METRIC keeps it
         # in measures rather than moving it to dimensions.
         q = SlayerQuery.model_validate({
             "population": "orders",
@@ -207,7 +207,7 @@ class TestMisplacedMeasure:
         })
         result = normalize_query(q, dataset=_orders())
         assert len(result.query.metrics) == 2
-        assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+        assert not any(w.rule_id == "MISPLACED_METRIC" for w in result.warnings)
 
     # DEV-1484 backfill from TestAutoMoveDimensions.test_no_fields_noop
     def test_no_measures_is_noop(self):
@@ -217,7 +217,7 @@ class TestMisplacedMeasure:
         result = normalize_query(q, dataset=_orders())
         assert not result.query.metrics
         assert [getattr(d, "name", d) for d in result.query.dimensions] == ["status"]
-        assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+        assert not any(w.rule_id == "MISPLACED_METRIC" for w in result.warnings)
 
     # DEV-1484 backfill from TestAutoMoveDimensions.test_appends_to_existing_dimensions
     def test_moved_column_appends_to_existing_dimensions(self):
@@ -239,7 +239,7 @@ class TestMisplacedMeasure:
         dim_names = [getattr(d, "name", d) for d in result.query.dimensions]
         assert "status" in dim_names
         assert "customer_id" in dim_names
-        assert any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
+        assert any(w.rule_id == "MISPLACED_METRIC" for w in result.warnings)
 
     def test_moved_column_is_a_column_ref(self):
         # A bare string here fails in the planner on ``.full_name``.
@@ -287,7 +287,7 @@ class TestEngineWiring:
 
             q = SlayerQuery(
                 population="orders",
-                metrics=[{"formula": "sum(revenue)"}],
+                metrics=[{"expression": "sum(revenue)"}],
                 dimensions=["status"],
             )
             resp = await engine.execute(q, dry_run=True)
@@ -348,7 +348,7 @@ class TestEngineWiring:
 
             q = SlayerQuery(
                 population="orders",
-                metrics=[{"formula": "custom_sum(revenue)"}],
+                metrics=[{"expression": "custom_sum(revenue)"}],
             )
             resp = await engine.execute(q, dry_run=True)
             assert resp.warnings == []
@@ -356,7 +356,7 @@ class TestEngineWiring:
 
     # DEV-1484 backfill from TestAutoMoveDimensions.test_cross_model_dimension_moved
     async def test_cross_model_column_in_measures_is_a_typing_error(self):
-        # MISPLACED_MEASURE moves only bare local columns; a dotted ref left in
+        # MISPLACED_METRIC moves only bare local columns; a dotted ref left in
         # measures never changes the grain, so it is a typing error.
         with tempfile.TemporaryDirectory() as td:
             storage = YAMLStorage(base_dir=str(Path(td) / "models"))
@@ -503,7 +503,7 @@ class TestJoinedCustomAggFunctional:
             await storage.save_dataset(_orders_joining_customers())
             q = SlayerQuery(
                 population="orders",
-                metrics=[{"formula": "rolling_avg(customers.score)"}],
+                metrics=[{"expression": "rolling_avg(customers.score)"}],
                 dimensions=["status"],
             )
             resp = await engine.execute(q, dry_run=True)
@@ -531,7 +531,7 @@ class TestJoinedCustomAggFunctional:
             resp = await engine.execute(
                 SlayerQuery(
                     population="orders",
-                    metrics=[{"formula": "ravg"}],
+                    metrics=[{"expression": "ravg"}],
                     dimensions=["status"],
                 ),
                 dry_run=True,
@@ -553,7 +553,7 @@ class TestJoinedCustomAggFunctional:
                 population="orders",
                 dimensions=["status"],
                 metrics=[
-                    {"formula": "rolling_avg(customers.score)", "name": "ravg"},
+                    {"expression": "rolling_avg(customers.score)", "name": "ravg"},
                 ],
             )
             root = SlayerQuery.model_validate({
@@ -593,7 +593,7 @@ class TestJoinedCustomAggFunctional:
             await storage.save_dataset(_chain_model("a", joins=["b"]))
             q = SlayerQuery(
                 population="a",
-                metrics=[{"formula": "rolling_avg(b.c.d.e.score)"}],
+                metrics=[{"expression": "rolling_avg(b.c.d.e.score)"}],
             )
             resp = await engine.execute(q, dry_run=True)
             assert not _slack_rewrite_warnings(resp.warnings), resp.warnings
@@ -633,12 +633,12 @@ class TestJoinedCustomAggFunctional:
             reachable = SlayerQuery(
                 name="reachable",
                 population="widgets",
-                metrics=[{"formula": "rolling_avg(value)"}],
+                metrics=[{"expression": "rolling_avg(value)"}],
                 dimensions=["id"],
             )
             unreachable = SlayerQuery(
                 population="gadgets",
-                metrics=[{"formula": "rolling_avg(qty)"}],
+                metrics=[{"expression": "rolling_avg(qty)"}],
                 dimensions=["id"],
             )
             with pytest.raises(ValueError, match="Unknown function 'rolling_avg'"):

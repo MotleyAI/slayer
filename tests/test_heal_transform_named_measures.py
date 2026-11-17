@@ -72,7 +72,7 @@ class TestQueryMeasureNamedAfterTransform:
         assert [m.name for m in query.metrics or []] == [name]
 
     def test_refinement_measure_accepted(self) -> None:
-        refinement = QueryRefinement.model_validate({"metrics": [{"formula": "count(*)", "name": "rank"}]})
+        refinement = QueryRefinement.model_validate({"metrics": [{"expression": "count(*)", "name": "rank"}]})
         assert [m.name for m in refinement.metrics or []] == ["rank"]
 
 

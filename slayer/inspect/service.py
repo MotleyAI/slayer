@@ -1,6 +1,6 @@
 """Shared entity-inspection service behind the MCP, REST, CLI and client ``inspect`` surfaces.
 
-``entity_type`` is required: it disambiguates a 3-part canonical id shared by, e.g., a column and an aggregation.
+``entity_type`` is required: it disambiguates a 3-part canonical id shared by, e.g., a field and an aggregation.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from slayer.search.render import (
 )
 from slayer.storage.base import StorageBackend
 
-try:  # SlayerQueryEngine is only needed for the model sample-data path.
+try:  # SlayerQueryEngine is only needed for the dataset sample-data path.
     from slayer.engine.query_engine import SlayerQueryEngine
 except Exception:  # pragma: no cover - engine import always succeeds in-repo
     SlayerQueryEngine = None  # type: ignore[assignment, misc]
@@ -75,10 +75,10 @@ class _OneResult(NamedTuple):
 
 
 def _warn_line(*, arg: str, entity_type: str) -> str:
-    """Model-only-arg warning text (the ``> Warning:`` prefix is added at render time)."""
+    """Dataset-only-arg warning text (the ``> Warning:`` prefix is added at render time)."""
     return (
         f"'{arg}' is ignored for entity_type "
-        f"'{entity_type}' (only applies to models)."
+        f"'{entity_type}' (only applies to datasets)."
     )
 
 
@@ -108,7 +108,7 @@ class InspectService:
     ) -> str:
         """Inspect one entity (``str``), a same-kind batch (list), or the collection (``None``/``[]``).
 
-        Batch blocks keep input order with per-id errors isolated; collections support model/datasource only.
+        Batch blocks keep input order with per-id errors isolated; collections support dataset/datasource only.
         """
         if entity_type not in VALID_ENTITY_TYPES:
             raise ValueError(
@@ -200,7 +200,7 @@ class InspectService:
                 descriptions_max_chars=descriptions_max_chars,
                 warnings=warnings,
             )
-        # column / measure / aggregation
+        # field / metric / aggregation
         return await self._inspect_leaf(
             reference=reference, entity_type=entity_type, compact=compact,
             fmt=fmt, descriptions_max_chars=descriptions_max_chars,
@@ -300,7 +300,7 @@ class InspectService:
     # Collection views (null / [] reference)
 
     async def _load_visible_datasets(self, ds_name: str) -> list[SlayerDataset]:
-        """Visible, name-sorted models of one datasource, built-in models included."""
+        """Visible, name-sorted datasets of one datasource, built-in datasets included."""
         models = await load_visible_datasets(self._storage, ds_name)
         models.extend(await self._storage.builtin_datasets(ds_name))
         models.sort(key=lambda m: m.name)
@@ -322,9 +322,9 @@ class InspectService:
                     "datasources": [],
                     "warnings": [],
                 }, indent=2)
-            return "No models found."
+            return "No datasets found."
 
-        # Build per-DS groups; ``models is None`` marks an invalid-config DS.
+        # Build per-DS groups; ``datasets is None`` marks an invalid-config DS.
         groups: list[tuple[str, list[SlayerDataset] | None]] = []
         for ds in ds_names:
             try:
@@ -535,7 +535,7 @@ class InspectService:
                 reference, storage=self._storage, source_dataset=None,
             )
         except (EntityResolutionError, AmbiguousDatasetError) as exc:
-            # AmbiguousModelError is not an EntityResolutionError subclass.
+            # AmbiguousDatasetError is not an EntityResolutionError subclass.
             return _OneResult(None, True, str(exc))
         warnings = warnings + list(res.warnings)
         if len(res.canonical_forms) != 1:
@@ -662,15 +662,15 @@ class InspectService:
             canonical = f"{spine.data_source}.{TIME_SPINE_DATASET}" if spine is not None else None
         if canonical is None:
             return _OneResult(None, True, (
-                f"'{reference}' does not resolve to a model. Pass a "
-                f"datasource-qualified model id (e.g. '<ds>.<model>') or a "
-                f"bare model name."
+                f"'{reference}' does not resolve to a dataset. Pass a "
+                f"datasource-qualified dataset id (e.g. '<ds>.<dataset>') or a "
+                f"bare dataset name."
             ))
         ds_name, model_name = canonical.split(".", 1)
         model = await self._storage.get_dataset_or_builtin(model_name, data_source=ds_name)
         if model is None:
             return _OneResult(None, True, (
-                f"Model '{canonical}' not found "
+                f"Dataset '{canonical}' not found "
                 f"(reference '{reference}')."
             ))
         if compact:
@@ -716,7 +716,7 @@ class InspectService:
         )
 
     async def _resolve_dataset_canonical(self, reference: str) -> str | None:
-        """Resolve ``reference`` to a ``<ds>.<model>`` id, even when the resolver picked a same-named datasource."""
+        """Resolve ``reference`` to a ``<ds>.<dataset>`` id, even when the resolver picked a same-named datasource."""
         try:
             res = await resolve_entity(
                 reference, storage=self._storage, source_dataset=None,
@@ -729,7 +729,7 @@ class InspectService:
             canonical = res.canonical_forms[0]
             if canonical.count(".") == 1:
                 return canonical
-        # Only the whole reference is a model candidate, never a dotted ref's last segment.
+        # Only the whole reference is a dataset candidate, never a dotted ref's last segment.
         try:
             ident = await self._storage.resolve_dataset_identity(reference)
         except AmbiguousDatasetError:
@@ -759,13 +759,13 @@ class InspectService:
         if canonical.count(".") != 2:
             return _OneResult(canonical, True, (
                 f"'{reference}' resolved to '{canonical}', which is not a "
-                f"{entity_type} (expected a '<ds>.<model>.<leaf>' id)."
+                f"{entity_type} (expected a '<ds>.<dataset>.<leaf>' id)."
             ))
         ds_name, model_name, leaf = canonical.split(".", 2)
         model = await self._storage.get_dataset(model_name, data_source=ds_name)
         if model is None:
             return _OneResult(None, True, (
-                f"Model '{ds_name}.{model_name}' not found "
+                f"Dataset '{ds_name}.{model_name}' not found "
                 f"(reference '{reference}')."
             ))
 
@@ -800,9 +800,9 @@ class InspectService:
         compact: bool,
         leaf: str,
     ) -> SlayerDataset:
-        """Lazily back-fill a column's sample on a ``compact=False`` column read (engine-guarded).
+        """Lazily back-fill a field's sample on a ``compact=False`` field read (engine-guarded).
 
-        Returns ``dataset`` unchanged when nothing changed, else a copy with the returned column.
+        Returns ``dataset`` unchanged when nothing changed, else a copy with the returned field.
         """
         if entity_type != "field" or compact or self._engine is None:
             return dataset
@@ -839,7 +839,7 @@ class InspectService:
         full_text = self._truncate_description_field(
             text=entry.text, max_chars=descriptions_max_chars,
         )
-        # Measure/aggregation text is essential and sample-free, so shown even when compact.
+        # Metric/aggregation text is essential and sample-free, so shown even when compact.
         show_full = bool(full_text) and (
             not compact or entity_type in {"metric", "aggregation"}
         )
@@ -882,6 +882,6 @@ class InspectService:
                 f"{entity_type}. Available here: {', '.join(other_kinds)}."
             )
         return (
-            f"No {entity_type} '{leaf}' found on model "
+            f"No {entity_type} '{leaf}' found on dataset "
             f"'{ds_name}.{dataset_name}'."
         )

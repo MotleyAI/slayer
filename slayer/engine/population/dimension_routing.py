@@ -1,7 +1,7 @@
 """Pure route resolver for short-form dotted-dimension auto-routing.
 
-A short-form dotted ref names only ``Target.column``; this module resolves the
-join route from the query root to ``Target`` over the datasource's bidirectional
+A short-form dotted ref names only ``Target.field``; this module resolves the
+relationship route from the query root to ``Target`` over the datasource's bidirectional
 multigraph (:mod:`slayer.core.relationship_search`). Trichotomy from route counting:
 unreachable, unique route, or ambiguous (>=2 routes). Ambiguity resolves iff
 exactly one addressable route is fan-out-free — every hop provably many-to-one on
@@ -80,7 +80,7 @@ def route_dotted_target(
     datasets_by_name: dict[str, SlayerDataset],
 ) -> list[str]:
     """Like :func:`short_form_route_or_none`, but raise
-    :class:`UnresolvableDimensionJoinError` (route-aware ``suggested_path``
+    :class:`UnresolvableDimensionRelationshipError` (route-aware ``suggested_path``
     including ``leaf``) on an ambiguous or unreachable target."""
     route, status = resolve_route(
         root=root, target_dataset=target_dataset, datasets_by_name=datasets_by_name

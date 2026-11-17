@@ -95,7 +95,7 @@ class TestNamedTerminalMetadata:
     ) -> None:
         resp = await named_engine.execute(SlayerQuery(
             population="orders", dimensions=["billing_customer.tier"],
-            metrics=[{"formula": "sum(billing_customer.spend)",
+            metrics=[{"expression": "sum(billing_customer.spend)",
                        "name": "cs"}]))
         got = {r["orders.billing_customer.tier"]: r["orders.cs"]
                for r in resp.data}
@@ -107,7 +107,7 @@ class TestNamedEdgeInRankedProducer:
     async def test_last_transform_over_the_named_edge(self, named_engine) -> None:
         resp = await named_engine.execute(SlayerQuery(
             population="orders",
-            metrics=[{"formula":
+            metrics=[{"expression":
                        "last(billing_customer.spend, billing_customer.signup_at)",
                        "name": "l"}]))
         assert len(resp.data) == 1
@@ -159,7 +159,7 @@ class TestNamedEdgeValidationConsumers:
         await self._augment_customers(named_engine)
         resp = await named_engine.execute(SlayerQuery(
             population="orders",
-            metrics=[{"formula": "sum(billing_customer.gold_spend)",
+            metrics=[{"expression": "sum(billing_customer.gold_spend)",
                        "name": "g"}]))
         # Gold customers only (Alice 100 + Cara 60), not the full 310.
         assert resp.data[0]["orders.g"] == 160.0
@@ -181,7 +181,7 @@ class TestNamedEdgeValidationConsumers:
         await self._augment_customers(named_engine)
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "billing_customer.total_b", "name": "r"}])
+            metrics=[{"expression": "billing_customer.total_b", "name": "r"}])
         # A second ``orders`` occurrence over every order (10 + 20 + 30), as from ``customers``.
         resp = await named_engine.execute(query)
         assert resp.data[0]["orders.r"] == 60.0

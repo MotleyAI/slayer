@@ -74,7 +74,7 @@ class TestCollectionSurfaceListsReverseNeighbors:
         with tempfile.TemporaryDirectory() as d:
             storage = await _storage(d)
             out = await InspectService(storage=storage).inspect(
-                reference=None, entity_type="model", format="json")
+                reference=None, entity_type="dataset", format="json")
             data = json.loads(out)
             ds = next(x for x in data["datasources"] if x["data_source"] == "ds")
             customers = next(m for m in ds["models"] if m["name"] == "customers")

@@ -1,5 +1,5 @@
 """Shared identifier and aggregation-suffix definitions for SLayer references (single source
-of truth). Depends only on ``slayer.core.keys`` so model/query validators avoid circular imports."""
+of truth). Depends only on ``slayer.core.keys`` so dataset/query validators avoid circular imports."""
 from __future__ import annotations
 
 import hashlib
@@ -37,7 +37,7 @@ from slayer.core.keys import (
 # A bare SQL identifier; the dunder restriction is applied at user-input time.
 IDENTIFIER_RE = re.compile(r"^[a-zA-Z_]\w*$")
 
-# An identifier or dotted path; used to scan formula text for reference candidates.
+# An identifier or dotted path; used to scan expression text for reference candidates.
 IDENT_OR_PATH_RE = re.compile(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*")
 
 
@@ -61,7 +61,7 @@ def auto_name_from_expression(expression: str) -> str:
 
 
 # The row-level ``ValueKey`` kinds an ``AggregateKey.source`` may take when it
-# is a same-model scalar EXPRESSION rather than a column / star.
+# is a same-dataset scalar EXPRESSION rather than a field / star.
 EXPRESSION_SOURCE_KINDS = (
     ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, TimePointCmpKey, CastKey, ListSetKey,
 )
@@ -314,7 +314,7 @@ def first_bucket_remedy(keys: Any) -> str | None:
 
 
 def key_display(key: ValueKey) -> str:
-    """User-facing formula text of any key kind."""
+    """User-facing expression text of any key kind."""
     shown = _leaf_display(key) or _listed_display(key)
     if shown is not None:
         return shown
@@ -355,8 +355,8 @@ def _decimal_to_plain_str(value: Decimal) -> str:
 
 def agg_kwarg_canonical_str(value: Any) -> str:
     """Canonicalize an AggregateKey kwarg/arg value to the SQL-string form the generator's
-    ``_validate_agg_param_value`` accepts (so a ``ColumnKey`` never leaks as Pydantic repr).
-    ``bool``/``None`` raise (kept distinct from numerics to fail loudly); ``ColumnKey`` → ``[path.]leaf``."""
+    ``_validate_agg_param_value`` accepts (so a ``FieldKey`` never leaks as Pydantic repr).
+    ``bool``/``None`` raise (kept distinct from numerics to fail loudly); ``FieldKey`` → ``[path.]leaf``."""
     if isinstance(value, bool):
         # bool is-a int, must check first.
         raise TypeError(
@@ -399,7 +399,7 @@ def sql_fragment_digest(value: SqlFragmentKey) -> str:
 
 def _agg_key_canonical_str(value: AggregateKey) -> str:
     """Canonical fragment for an aggregate-valued parameter (alias/identity only;
-    render-time reads the picked ``_p<i>`` column). Ordered positional args are
+    render-time reads the picked ``_p<i>`` field). Ordered positional args are
     included so aggregates differing only in positionals (a ranked ``first``'s
     ranking key) never collapse to the same fragment."""
     parts = [value.agg]
@@ -422,7 +422,7 @@ def _agg_key_canonical_str(value: AggregateKey) -> str:
 
 def _time_aware_key_display(key: ValueKey) -> str:
     """A partition/time key's display with a ``TimeTruncKey``'s granularity kept, so
-    the same column bucketed month vs year yields distinct fragments (identity)."""
+    the same field bucketed month vs year yields distinct fragments (identity)."""
     display = _partition_key_display(key)
     if isinstance(key, TimeTruncKey):
         return f"{display}_{key.granularity}"
@@ -431,7 +431,7 @@ def _time_aware_key_display(key: ValueKey) -> str:
 
 def _transform_key_canonical_str(value: TransformKey) -> str:
     """Canonical fragment for a transform-valued parameter (alias/identity
-    only — render reads the picked column). Op, its scalar kwargs, the input
+    only — render reads the picked field). Op, its scalar kwargs, the input
     fragment, its rank partition keys, and the resolved time key — every time key
     carrying its granularity (a bucketed ``cumsum`` differs from an unbucketed one)."""
     parts = [value.op]
@@ -455,7 +455,7 @@ def canonical_agg_name(
     agg_args: list[str] | None = None,
     agg_kwargs: dict | None = None,
 ) -> str:
-    """Canonical hidden-column name for an aggregated measure ref (``sum(revenue)`` → ``revenue_sum``, ``count(*)`` → ``_count``)."""
+    """Canonical hidden-field name for an aggregated metric ref (``sum(revenue)`` → ``revenue_sum``, ``count(*)`` → ``_count``)."""
     suffix = agg_signature_suffix(agg_args, agg_kwargs)
     if metric_name == "*":
         return f"_{aggregation_name}{suffix}"

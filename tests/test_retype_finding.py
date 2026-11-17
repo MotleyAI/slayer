@@ -401,7 +401,7 @@ class TestSqliteProbe:
             calls.append(kwargs["datasource"].name)
             return await probe(**kwargs)
 
-        monkeypatch.setattr(schema_drift, "_sqlite_probe_drifts_for_models", counting)
+        monkeypatch.setattr(schema_drift, "_sqlite_probe_drifts_for_datasets", counting)
         client = SlayerSQLClient(datasource=ds)
         try:
             await schema_drift.validate_datasource(datasource=ds, datasets=[model], client=client)

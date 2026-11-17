@@ -172,7 +172,7 @@ class TestMCPModelToolsDataSourceArg:
         result = await _call_mcp(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "db_a.users", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "db_a.users", "compact": False},
         )
         # Output identifies the datasource so the agent can verify it picked
         # the right one.
@@ -211,7 +211,7 @@ class TestMCPModelToolsDataSourceArg:
         await _call_mcp(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "db_a.users", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "db_a.users", "compact": False},
         )
 
         # Helpers should have called engine.execute at least once on the

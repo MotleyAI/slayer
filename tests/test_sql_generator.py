@@ -342,7 +342,7 @@ class TestBasicQueries:
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             dimensions=[FieldRef(name="status")],
-            order=[{"column": "status", "direction": "ASCENDING"}],
+            order=[{"field": "status", "direction": "ASCENDING"}],
         )
         sql = await _generate(generator, query, orders_model)
         assert "ORDER BY" in sql
@@ -747,7 +747,7 @@ class TestFields:
             population="orders",
             dimensions=[FieldRef(name="status")],
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            metrics=[{"formula": "consecutive_periods(sum(revenue) > 0)", "name": "positive_streak"}],
+            metrics=[{"expression": "consecutive_periods(sum(revenue) > 0)", "name": "positive_streak"}],
         )
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
@@ -869,8 +869,8 @@ class TestFields:
             dimensions=[FieldRef(name="status")],  # local to orders — no join needed
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[
-                {"formula": "sum(revenue, window='90d')", "name": "revenue_90d"},
-                {"formula": "count_distinct(customers.id)", "name": "n_customers"},
+                {"expression": "sum(revenue, window='90d')", "name": "revenue_90d"},
+                {"expression": "count_distinct(customers.id)", "name": "n_customers"},
             ],
         )
         sql = (await engine.execute(query, dry_run=True)).sql
@@ -1028,8 +1028,8 @@ class TestFields:
             dimensions=[FieldRef(name="status")],
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[
-                {"formula": "sum(revenue, window='90d')", "name": "rev_90d"},
-                {"formula": "avg(revenue, window='30d')", "name": "rev_30d"},
+                {"expression": "sum(revenue, window='90d')", "name": "rev_90d"},
+                {"expression": "avg(revenue, window='30d')", "name": "rev_30d"},
             ],
         )
         sql = await _generate(generator=generator, query=query, model=orders_model)
@@ -1248,8 +1248,8 @@ class TestFields:
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[
-                {"formula": "sum(revenue, window='90d')", "name": "rev_a"},
-                {"formula": "sum(revenue, window='90d')", "name": "rev_b"},
+                {"expression": "sum(revenue, window='90d')", "name": "rev_a"},
+                {"expression": "sum(revenue, window='90d')", "name": "rev_b"},
             ],
         )
         sql = await _generate(generator=generator, query=query, model=orders_model)
@@ -9740,7 +9740,7 @@ class TestBigQueryAliasMangling:
             population="orders",
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(revenue)")],
             dimensions=[FieldRef(name="status")],
-            order=[{"column": "count", "direction": "desc"}],
+            order=[{"field": "count", "direction": "desc"}],
         )
         sql = await _generate(gen, query, orders_model)
         # Every backtick-quoted column alias must not contain a dot (BigQuery rejects it). Scope to AS `...` and ORDER/GROUP BY so dotted table FQ refs (backticked segments) don't trip the check.
@@ -10187,8 +10187,8 @@ class TestWindowedMeasureGuards:
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[
-                {"formula": "sum(revenue, window='90d')", "name": "rev_w"},
-                {"formula": "time_shift(sum(revenue), -1)", "name": "rev_prev"},
+                {"expression": "sum(revenue, window='90d')", "name": "rev_w"},
+                {"expression": "time_shift(sum(revenue), -1)", "name": "rev_prev"},
             ],
         )
         # A windowed measure coexisting with a transform sibling now renders; the SQL must be scope-closed with __regroup__ lowered away.
@@ -10235,7 +10235,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            metrics=[{"formula": "sum(revenue, window='90d')", "name": "rev_w"}],
+            metrics=[{"expression": "sum(revenue, window='90d')", "name": "rev_w"}],
             filter=["sum(revenue, window='90d') > 100 and sum(revenue) > 50"],
         )
         # A filter mixing a windowed and a plain aggregate now renders instead of raising; scope-closed and fully lowered.
@@ -10384,8 +10384,8 @@ class TestWindowedMeasureGuards:
             model = _plain()
             model.default_time_dimension = "created_at"
             q = SlayerQuery(population="orders", time_dimensions=td, metrics=[
-                {"formula": "sum(revenue, window='90d')", "name": "rev_w"},
-                {"formula": "time_shift(sum(revenue), -1)", "name": "rev_prev"},
+                {"expression": "sum(revenue, window='90d')", "name": "rev_w"},
+                {"expression": "time_shift(sum(revenue), -1)", "name": "rev_prev"},
             ])
             # G4 dissolved — this now plans instead of raising.
             bundle, exc, match = _bundle(model), None, None

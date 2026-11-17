@@ -72,7 +72,7 @@ async def test_verbose_markdown_dumps_full_learning(
     )
     mcp = create_mcp_server(storage=yaml_storage)
     result = await _call(mcp, name="inspect", arguments={
-        "entity_type": "model", "reference": "orders", "compact": False,
+        "entity_type": "dataset", "reference": "orders", "compact": False,
     })
     assert "first paragraph." in result
     assert "second paragraph body." in result
@@ -89,7 +89,7 @@ async def test_verbose_json_learnings_keeps_full_learning(
     )
     mcp = create_mcp_server(storage=yaml_storage)
     result = await _call(mcp, name="inspect", arguments={
-        "entity_type": "model", "reference": "orders", "compact": False, "format": "json",
+        "entity_type": "dataset", "reference": "orders", "compact": False, "format": "json",
     })
     payload = json.loads(result)
     entry = payload["learnings"][0]

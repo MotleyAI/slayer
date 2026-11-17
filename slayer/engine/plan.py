@@ -2,7 +2,7 @@
 
 ``plan_query`` is the planning door — it elaborates (bind + type + typing
 environment) and compiles the result; ``plan_stages`` orders and threads a
-multi-stage DAG through it, splicing the stored query-backed models its stages read.
+multi-stage DAG through it, splicing the stored query-backed datasets its stages read.
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ def _stage_scope_and_bundle(
     stage_dataset: Optional[SlayerDataset],
     placeholders: List[SlayerDataset],
 ) -> "Tuple[DatasetScope | StageSchema, ResolvedSourceBundle]":
-    """Resolve one DAG stage's ``(scope, per-stage bundle)``; each stage binds against its OWN source, with sibling synthetic models threaded in."""
+    """Resolve one DAG stage's ``(scope, per-stage bundle)``; each stage binds against its OWN source, with sibling synthetic datasets threaded in."""
     scope, sb = _stage_scope_and_bundle_unframed(
         query=query, bundle=bundle, stage_schemas=stage_schemas, data_source=data_source,
         stage_dataset=stage_dataset,
@@ -112,7 +112,7 @@ def _framed(
     placeholders: List[SlayerDataset],
 ) -> "Tuple[DatasetScope | StageSchema | None, ResolvedSourceBundle]":
     """The frame's population stamped with the unrelated datasets ``query`` names (unspliced
-    placeholders included, so a product hop to one is walked); dots need a model scope."""
+    placeholders included, so a product hop to one is walked); dots need a dataset scope."""
     host = bundle.population
     if host is None:
         return scope, bundle
@@ -147,7 +147,7 @@ def _stage_scope_and_bundle_unframed(
             return DatasetScope(population=synth), sb
         return stage_schemas[src], sb
 
-    # 2. Model-scoped: the stage's own resolved source model.
+    # 2. Dataset-scoped: the stage's own resolved source dataset.
     assert stage_dataset is not None
     sb = stage_bundle_with_siblings(
         bundle=bundle, source_dataset=stage_dataset,
@@ -157,7 +157,7 @@ def _stage_scope_and_bundle_unframed(
 
 
 class _Splice(BaseModel):
-    """One spliced stored query-backed model: its stage identities and variable context."""
+    """One spliced stored query-backed dataset: its stage identities and variable context."""
 
     dataset: str
     identities: List[str] = Field(default_factory=list)
@@ -183,7 +183,7 @@ class _State(BaseModel):
 
 
 class _StagePlanner:
-    """Plans a stage list, splicing each stored query-backed model a stage reads
+    """Plans a stage list, splicing each stored query-backed dataset a stage reads
     before that stage (design decision 6): a stage is planned in attempts, and an
     attempt whose traversals touched an unspliced placeholder splices it and retries."""
 
@@ -194,7 +194,7 @@ class _StagePlanner:
         self.outer_variables = outer_variables
         self.state = _State(displays=dict(bundle.stage_displays))
         self.inert: Set[str] = set()
-        # A merely touched model that failed to splice: its error, raised if it is read.
+        # A merely touched dataset that failed to splice: its error, raised if it is read.
         self.failures: Dict[str, Exception] = {}
         self.data_source = (
             (bundle.population.data_source if bundle.population else None) or "_stage"
@@ -205,7 +205,7 @@ class _StagePlanner:
         self, query: SlayerQuery, *, chain: Tuple[str, ...], stage_dataset: Optional[SlayerDataset],
         single: bool = False, owner: Optional[str] = None,
     ) -> None:
-        """Plan ``query`` after every query-backed model it names or reads is spliced."""
+        """Plan ``query`` after every query-backed dataset it names or reads is spliced."""
         for name in self._explicit_demands(query, chain=chain):
             self.ensure(name, chain=chain, explicit=True)
         for name in self._spine_demands(query):
@@ -243,7 +243,7 @@ class _StagePlanner:
         return planned, failure, seen, stamped
 
     def _splice_demand(self, seen: Dict[str, bool], *, chain: Tuple[str, ...]) -> bool:
-        """Splice every unspliced query-backed model an attempt touched; ``True`` if any was."""
+        """Splice every unspliced query-backed dataset an attempt touched; ``True`` if any was."""
         demand = sorted(
             n for n in seen
             if n in self.bundle.query_backed and n not in chain
@@ -259,11 +259,11 @@ class _StagePlanner:
         chain: Tuple[str, ...],
     ) -> NoReturn:
         if unspliceable:
-            # The stage reads a query-backed model that cannot be spliced: its error is the cause.
+            # The stage reads a query-backed dataset that cannot be spliced: its error is the cause.
             raise self.failures[unspliceable[0]] from failure
         if on_chain:
             failure.add_note(
-                f"(it reads query-backed model(s) {on_chain} still being planned: "
+                f"(it reads query-backed dataset(s) {on_chain} still being planned: "
                 f"{' -> '.join(chain)})"
             )
         raise failure
@@ -322,7 +322,7 @@ class _StagePlanner:
             n for n, strict in seen.items()
             if strict and (n in self.state.spliced or n in self.state.schemas)
         }
-        # A read of a model still in flight, or one that failed to splice, stays in the
+        # A read of a dataset still in flight, or one that failed to splice, stays in the
         # universe in stored form so its emission raises the cause.
         if raw:
             stamped = stamped.model_copy(update={"referenced_datasets": [
@@ -355,7 +355,7 @@ class _StagePlanner:
         return [n for n in dict.fromkeys(names) if n in chain or n in self.bundle.query_backed]
 
     def _spine_demands(self, query: SlayerQuery) -> List[str]:
-        """Query-backed models a spine query names: the spine reaches them through their axes,
+        """Query-backed datasets a spine query names: the spine reaches them through their axes,
         known only once spliced."""
         if not is_spine_query(query):
             return []
@@ -368,7 +368,7 @@ class _StagePlanner:
         return [n for n in self.bundle.query_backed if n in heads]
 
     def ensure(self, name: str, *, chain: Tuple[str, ...], explicit: bool) -> bool:
-        """Splice query-backed model ``name`` under ``chain``; ``False`` if it stays a placeholder."""
+        """Splice query-backed dataset ``name`` under ``chain``; ``False`` if it stays a placeholder."""
         if name in chain:
             if explicit:
                 raise QueryBackedCycleError(path=[*chain[chain.index(name):], name])
@@ -386,7 +386,7 @@ class _StagePlanner:
         if model.data_source and model.data_source != self.data_source:
             if explicit:
                 raise ValueError(
-                    f"Query-backed model {name!r} is in datasource {model.data_source!r}; "
+                    f"Query-backed dataset {name!r} is in datasource {model.data_source!r}; "
                     f"a statement reads one datasource ({self.data_source!r})."
                 )
             self.inert.add(name)
@@ -429,7 +429,7 @@ class _StagePlanner:
         self, stage: SlayerQuery, *, chain: Tuple[str, ...], private: Set[str],
     ) -> "Tuple[SlayerQuery, Optional[SlayerDataset], Set[str]]":
         """A spliced stage, normalized and with its lexically layered variables
-        substituted; its own source model with its Mode-A surfaces substituted
+        substituted; its own source dataset with its Mode-A surfaces substituted
         (``None`` when it reads a sibling); and the placeholders that source reads."""
         base_name = stage.population_name
         source = None
@@ -457,12 +457,12 @@ class _StagePlanner:
         ), dataset_placeholder_names(source)
 
     def _resolve_stage_dataset(self, spec) -> Optional[SlayerDataset]:
-        """A spliced stage's own source model; ``None`` when it reads a sibling."""
+        """A spliced stage's own source dataset; ``None`` when it reads a sibling."""
         if source_name_if_sibling(spec=spec, sibling_names=set(self.state.schemas)) is not None:
             return None
         base = self.bundle.datasets_by_name.get(spec) if isinstance(spec, str) else None
         if base is None or base.source_queries:
-            raise ValueError(f"Model {spec!r} not found")
+            raise ValueError(f"Dataset {spec!r} not found")
         return base
 
     def _base_time_dimension(self, name: str) -> Optional[str]:
@@ -476,7 +476,7 @@ class _StagePlanner:
         return base.effective_default_time_dimension if base is not None else None
 
     def _chain_variables(self, chain: Tuple[str, ...]) -> Dict[str, Any]:
-        """The enclosing query-backed models' variables, outer ones overriding inner."""
+        """The enclosing query-backed datasets' variables, outer ones overriding inner."""
         out: Dict[str, Any] = {}
         for name in reversed(chain):
             model = self.bundle.query_backed.get(name)
@@ -487,14 +487,14 @@ class _StagePlanner:
         return {**self._chain_variables(chain), **self.outer_variables, **self.bundle.runtime_variables}
 
     def _check_context(self, spliced: _Splice, context: Dict[str, Any]) -> None:
-        """A model spliced once must not be reached under disagreeing variables."""
+        """A dataset spliced once must not be reached under disagreeing variables."""
         differing = sorted(
             k for k in spliced.footprint if spliced.context.get(k) != context.get(k)
         )
         if not differing:
             return
         message = (
-            f"Query-backed model {spliced.dataset!r} is read under conflicting values of "
+            f"Query-backed dataset {spliced.dataset!r} is read under conflicting values of "
             f"variable(s) {differing}; one statement splices it once."
         )
         self.state.planned = [
@@ -511,8 +511,8 @@ def plan_stages(
     bundle: ResolvedSourceBundle,
 ) -> List[PlannedQuery]:
     """Plan a multi-stage DAG: topo sort, then plan each stage against its own resolved
-    source + already-planned siblings' synthetic models, splicing every stored
-    query-backed model a stage reads before it; each plan records its sibling reads
+    source + already-planned siblings' synthetic datasets, splicing every stored
+    query-backed dataset a stage reads before it; each plan records its sibling reads
     and is stamped with its per-stage bundle."""
     ordered = topologically_order_stages(queries)
     planner = _StagePlanner(bundle=bundle, outer_variables=dict(ordered[-1].variables or {}))

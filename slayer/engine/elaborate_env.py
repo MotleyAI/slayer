@@ -135,7 +135,7 @@ from slayer.ir.terms import (
 def home_dataset(
     *, scope: DatasetScope | StageSchema, dataset: Optional[SlayerDataset],
 ) -> Optional[DatasetT]:
-    """The query's root dataset: model-backed for a ModelScope, stage-backed otherwise."""
+    """The query's root dataset: dataset-backed for a DatasetScope, stage-backed otherwise."""
     if isinstance(scope, StageSchema):
         return StageDataset(stage_name=scope.relation_name)
     if dataset is not None:
@@ -212,7 +212,7 @@ def type_position_conjunct(
     position: str = "filter",
 ) -> ConjunctTyping:
     """Type one conjunct as field (aggregate-free after resolution; attached refs count
-    as row-level) else measure (every bare ref available at query grain), else raise
+    as row-level) else metric (every bare ref available at query grain), else raise
     :class:`PositionTypingError` naming both failures. Field wins a tie."""
     field_blockers, attached = _field_blockers(cj, row_agg_set)
     if not field_blockers:
@@ -223,9 +223,9 @@ def type_position_conjunct(
             return ConjunctTyping(MaskTyping.METRIC, 1)
         raise PositionTypingError(
             summary=f"This {position} expression is valid as neither a field nor a "
-            f"measure. Field typing failed: it references "
+            f"metric. Field typing failed: it references "
             f"{', '.join(_key_display(k) for k in field_blockers)}, available "
-            f"only after aggregation. Measure typing failed: it references "
+            f"only after aggregation. Metric typing failed: it references "
             f"row-level {', '.join(_key_display(k) for k in measure_blockers)}, "
             f"not available at the query grain (not among the query "
             f"dimensions).",
@@ -236,13 +236,13 @@ def type_position_conjunct(
     raise PositionTypingError(
         summary=f"This {position} expression references "
         f"{', '.join(_key_display(k) for k in field_blockers)}, so it is not a "
-        f"field, and measure typing is unavailable because the query has no "
+        f"field, and metric typing is unavailable because the query has no "
         f"metric position (distinct_dimension_values=False).",
     )
 
 
 def check_metrics_at_query_grain(prebound: PreboundQuery) -> None:
-    """Every row-level ref of a declared measure outside aggregations is a dimension value."""
+    """Every row-level ref of a declared metric outside aggregations is a dimension value."""
     if prebound.distinct_dimension_values is False:
         return
     dim_keys = position_classes(
@@ -259,7 +259,7 @@ def check_metrics_at_query_grain(prebound: PreboundQuery) -> None:
         if not any(isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(root)):
             bare = _key_display(blockers[0])
             raise PositionTypingError(
-                summary=f"'{bare}' needs an aggregation inside an expression. This measure "
+                summary=f"'{bare}' needs an aggregation inside an expression. This metric "
                 f"references row-level {names}, not available at the query grain (not "
                 f"among the query dimensions).",
                 location=f"metric {dm.public_name!r}",
@@ -267,7 +267,7 @@ def check_metrics_at_query_grain(prebound: PreboundQuery) -> None:
                 f"or add it to the query dimensions. For COUNT(*), use 'count(*)'.",
             )
         raise PositionTypingError(
-            summary=f"This measure references row-level {names}, not available at the "
+            summary=f"This metric references row-level {names}, not available at the "
             f"query grain (not among the query dimensions).",
             location=f"metric {dm.public_name!r}",
             suggestion="Add the row-level reference to the query dimensions, or aggregate it.",
@@ -364,7 +364,7 @@ class PositionClasses(BaseModel):
 
     def dim_keys_for(self, position: ConsumerPosition) -> frozenset:
         """A position's dimension values; a transform-bearing dimension is none in a
-        measure until DEV-1963 settles a measure transform's grain."""
+        metric until DEV-1963 settles a metric transform's grain."""
         return self.dim_keys - self.transform_dim_keys if position == "metric" else self.dim_keys
 
     def opaque(self, position: ConsumerPosition) -> Optional[Callable[[ValueKey], bool]]:
@@ -377,7 +377,7 @@ class PositionClasses(BaseModel):
         return None
 
     def combined_admits(self, node: ConsumerNode, *, position: ConsumerPosition, root: ValueKey) -> bool:
-        """A measure skips partition-key subtrees; a measure, a measure-typed filter and
+        """A metric skips partition-key subtrees; a metric, a metric-typed filter and
         an order target skip a dimension's grouped value; an order target that is itself
         a partitioned aggregate is its only consumer; a field-typed filter reference
         to a dimension's own aggregate is row-scope."""
@@ -444,7 +444,7 @@ def check_combined_partition_keys(
     order_texts: Sequence[Optional[str]] = (),
 ) -> None:
     """Every partition key of a combined-consumed partitioned aggregate — plain,
-    cross-model or re-aggregation — is a query dimension; judged after typing."""
+    cross-dataset or re-aggregation — is a query dimension; judged after typing."""
     n_grain = prebound.n_dims + prebound.n_time_dimensions
     classes = position_classes(prebound.declared_metrics, n_grain=n_grain)
     consumers = _combined_consumers(
@@ -473,7 +473,7 @@ def type_and_split_filters(
     crossing_root: Optional[Callable[[ValueKey], bool]] = None,
     split: bool = True,
 ) -> Tuple[PreboundQuery, List[ConjunctTyping]]:
-    """Type every filter conjunct as field or measure (raising the typing error for
+    """Type every filter conjunct as field or metric (raising the typing error for
     neither), splitting a filter string into per-conjunct masks when its conjuncts
     route differently. Returns (rebuilt prebound, typings aligned with its filters)."""
     old = list(prebound.bound_filters)
@@ -481,7 +481,7 @@ def type_and_split_filters(
     has_measure_position = prebound.distinct_dimension_values is not False
 
     def _has_partitioned_ref(vk: ValueKey) -> bool:
-        # ANY partitioned / cross-model / crossing aggregate ref forces the split so
+        # ANY partitioned / cross-dataset / crossing aggregate ref forces the split so
         # each conjunct lowers to its own placement.
         return any(
             is_local_combined_regroup_ref(k, row_agg_set=row_agg_set)
@@ -532,7 +532,7 @@ def type_and_split_filters(
 
 
 def type_order_positions(prebound: "PreboundQuery") -> None:
-    """Type every ORDER target (field / measure / typing error) — the same pass
+    """Type every ORDER target (field / metric / typing error) — the same pass
     ``build_environment`` runs; kept callable for compiler-synthesized sub-plans."""
     dim_keys, row_agg_set = position_typing_context(prebound)
     for spec in prebound.order_specs:
@@ -548,17 +548,17 @@ def type_order_positions(prebound: "PreboundQuery") -> None:
 def check_computed_dim_name_collision(
     *, name: str, dataset_name: Optional[str], query_metric_collision: bool,
 ) -> None:
-    """A computed dimension's name must not shadow a model column/measure or a query measure."""
+    """A computed dimension's name must not shadow a dataset field/metric or a query metric."""
     if dataset_name is not None:
         raise NameCollisionError(
             summary=f"The computed dimension name collides with an existing "
-            f"field or measure on model {dataset_name!r}.",
+            f"field or metric on dataset {dataset_name!r}.",
             location=f"dimension {name!r}",
             suggestion="Choose a different name.",
         )
     if query_metric_collision:
         raise NameCollisionError(
-            summary="The computed dimension name collides with a query measure "
+            summary="The computed dimension name collides with a query metric "
             "of the same name.",
             location=f"dimension {name!r}",
             suggestion="Choose a different name.",
@@ -566,12 +566,12 @@ def check_computed_dim_name_collision(
 
 
 def check_stage_flatten_collision(*, flat_name: str, collides: bool) -> None:
-    """Two projected columns must not flatten to one downstream name (both the declaration-time and stage-schema firing points)."""
+    """Two projected fields must not flatten to one downstream name (both the declaration-time and stage-schema firing points)."""
     if collides:
         raise NameCollisionError(
-            summary=f"Stage column name collision on {flat_name!r}: two projected "
+            summary=f"Stage field name collision on {flat_name!r}: two projected "
             f"fields flatten to the same downstream name.",
-            suggestion="Give one an explicit measure `name` to disambiguate.",
+            suggestion="Give one an explicit metric `name` to disambiguate.",
         )
 
 
@@ -579,16 +579,16 @@ def check_metric_dedupe_collision(
     *, prior_expression: str, expression: str, public_name: str,
     same_key: bool, same_meta: bool,
 ) -> None:
-    """Unnamed measures sharing a derived result key must be the same value with the same metadata."""
+    """Unnamed metrics sharing a derived result key must be the same value with the same metadata."""
     if not same_key:
         raise NameCollisionError(
-            summary=f"Measures {prior_expression!r} and {expression!r} both derive "
+            summary=f"Metrics {prior_expression!r} and {expression!r} both derive "
             f"the result key {public_name!r} but compute different values.",
             suggestion="Rename one (set 'name') to disambiguate.",
         )
     if not same_meta:
         raise NameCollisionError(
-            summary=f"Measures {prior_expression!r} and {expression!r} merge into "
+            summary=f"Metrics {prior_expression!r} and {expression!r} merge into "
             f"one result column {public_name!r} but declare different label/type.",
             suggestion="Rename one (set 'name') to disambiguate.",
         )
@@ -597,7 +597,7 @@ def check_metric_dedupe_collision(
 def check_metric_name_collision(
     *, name: Optional[str], dataset: str, suggestion: Optional[str] = None,
 ) -> None:
-    """A public measure name shadowing a source column raises."""
+    """A public metric name shadowing a source field raises."""
     if name is not None:
         raise MetricNameCollidesWithFieldError(name=name, dataset=dataset, suggestion=suggestion)
 
@@ -605,7 +605,7 @@ def check_metric_name_collision(
 def check_canonical_alias_shadows_field(
     *, expression: str, canonical: Optional[str], dataset: str,
 ) -> None:
-    """A renamed measure's canonical alias shadowing a source column raises."""
+    """A renamed metric's canonical alias shadowing a source field raises."""
     if canonical is not None:
         raise CanonicalAliasShadowsFieldError(
             expression=expression, canonical=canonical, dataset=dataset,
@@ -628,32 +628,32 @@ def check_result_names_case(*, names: Iterable[str]) -> None:
 
 
 def check_reserved_regroup_prefix(fields: List[str]) -> None:
-    """A real column may not carry the reserved regroup placeholder prefix while a regroup is active."""
+    """A real field may not carry the reserved regroup placeholder prefix while a regroup is active."""
     if fields:
         raise NameCollisionError(
-            summary=f"Column(s) {fields!r} use the reserved '__regroup__' prefix, which "
+            summary=f"Field(s) {fields!r} use the reserved '__regroup__' prefix, which "
             f"collides with the regroup primitive's placeholders.",
             suggestion="Rename them.",
         )
 
 
 def validate_dataset_filter(*, mf: str, references: Iterable[Tuple[SlayerDataset, str]]) -> None:
-    """Reject a model filter naming a saved measure or a windowed column, each ``(owner, leaf)`` reference judged on its owner."""
+    """Reject a dataset filter naming a saved metric or a windowed field, each ``(owner, leaf)`` reference judged on its owner."""
     for owner, col in references:
         if col in {m.name for m in owner.metrics or []}:
             raise DatasetFilterError(
-                summary=f"The model filter references measure {col!r}. "
-                f"Model filters can only reference table columns (WHERE).",
+                summary=f"The dataset filter references metric {col!r}. "
+                f"Dataset filters can only reference table columns (WHERE).",
                 location=f"dataset filter {mf!r}",
-                suggestion="Use query-level filters for measure conditions.",
+                suggestion="Use query-level filters for metric conditions.",
             )
         column = owner.get_field(col)
         if column is not None and column.sql and has_window_function(column.sql):
             raise DatasetFilterError(
-                summary=f"The model filter references column {col!r} whose "
+                summary=f"The dataset filter references field {col!r} whose "
                 f"SQL contains a window function.",
                 location=f"dataset filter {mf!r}",
-                suggestion="Factor it into a multi-stage source_queries model "
+                suggestion="Factor it into a multi-stage source_queries dataset "
                 "or use a rank-family transform at query time.",
             )
 
@@ -818,10 +818,10 @@ def check_opaque_grouping_dim(
         return
     if dim_type is not None and dim_type.is_opaque:
         raise DimensionTypeError(
-            summary="The column cannot be used as a dimension: its type does "
+            summary="The field cannot be used as a dimension: its type does "
             "not support the GROUP BY / DISTINCT this query requires.",
             location=f"dimension {full_name!r}",
-            suggestion="Define a derived column that extracts a comparable value "
+            suggestion="Define a derived field that extracts a comparable value "
             "instead, e.g. sql=\"payload->>'status'\" with type TEXT.",
         )
 
@@ -829,9 +829,9 @@ def check_opaque_grouping_dim(
 def _temporal_axis_transforms(vk: ValueKey, *, is_dimension: bool):
     """Time-ordered transforms whose grain must contain their axis: any transform
     in a dimension expression, and every transform reachable inside an
-    aggregation-source constituent of a measure/filter/order expression — nested
+    aggregation-source constituent of a metric/filter/order expression — nested
     ones included, mirroring the dimension arm, so a nested time transform cannot
-    evade Axiom 11.5 (a top-level transform measure carries its bucket through the
+    evade Axiom 11.5 (a top-level transform metric carries its bucket through the
     windowed producer instead)."""
     if is_dimension:
         yield from (k for k in walk_value_keys(vk) if isinstance(k, TransformKey))
@@ -850,7 +850,7 @@ def check_dimension_temporal_axis(
     declared_metrics, *, bound_filters=(), order_specs=(),
 ) -> None:
     """Fail closed if a time-ordered transform — in a dimension, or aggregated as
-    a source constituent in a measure / filter / order expression — evaluates at a
+    a source constituent in a metric / filter / order expression — evaluates at a
     grain not containing its time axis."""
     roots = [
         (dm.bound.value_key, dm.is_dimension) for dm in declared_metrics
@@ -885,11 +885,11 @@ def with_bucket_remedy(suggestion: str, remedy: Optional[str]) -> str:
 
 
 def check_windowed_time_dimension(*, resolved: bool, remedy: Optional[str] = None) -> None:
-    """A windowed measure needs a resolvable query time dimension (both windowed guard sites)."""
+    """A windowed metric needs a resolvable query time dimension (both windowed guard sites)."""
     if resolved:
         return
     raise TimeAxisError(
-        summary="Windowed measure could not resolve its time dimension.",
+        summary="Windowed metric could not resolve its time dimension.",
         suggestion=with_bucket_remedy(_AXIS_REMEDY, remedy),
     )
 
@@ -897,21 +897,21 @@ def check_windowed_time_dimension(*, resolved: bool, remedy: Optional[str] = Non
 _SPINE_REMEDY = (
     "Use time_spine.timestamp only as a time dimension with a granularity "
     "(time_dimensions=[{dimension: time_spine.timestamp, granularity: month, date_range: [...]}]) "
-    "or inside a date_range / bound filter; for other date logic use the fact's own time column."
+    "or inside a date_range / bound filter; for other date logic use the fact's own time field."
 )
 
 
 def check_unrelated_row_read(
     *, reference: Optional[ValueKey], dataset: str, population: SlayerDataset, location: str,
 ) -> None:
-    """A row-level read of a dataset no join path reaches, outside an aggregation's inputs, raises."""
+    """A row-level read of a dataset no relationship path reaches, outside an aggregation's inputs, raises."""
     if reference is None:
         return
     column = reference.source if isinstance(reference, TimeTruncKey) else reference
     ref = key_display(column)
     spelling = population.spelling
     raise UnrelatedDatasetError(
-        summary=f"{ref} reads {dataset}, which no join path reaches from the population "
+        summary=f"{ref} reads {dataset}, which no relationship path reaches from the population "
         f"{spelling}: it meets {spelling} as a product, so it is read only through aggregates.",
         location=location,
         suggestion=_unrelated_read_remedy(column, ref=ref, population=population),
@@ -919,14 +919,14 @@ def check_unrelated_row_read(
 
 
 def _unrelated_read_remedy(field: ValueKey, *, ref: str, population: SlayerDataset) -> str:
-    """Aggregate the read, led by the population's column its tokens spell when joined with ``__``."""
+    """Aggregate the read, led by the population's field its tokens spell when joined with ``__``."""
     aggregate = f"Aggregate it, e.g. max({ref})."
     if not isinstance(field, (FieldKey, FieldSqlKey)):
         return aggregate
     flat = peek_dataset_field(dataset=population, name="__".join((*field_path(field), field_leaf(field))))
     if flat is None:
         return aggregate
-    return f"Read the population's column {flat.name!r}, or aggregate it, e.g. max({ref})."
+    return f"Read the population's field {flat.name!r}, or aggregate it, e.g. max({ref})."
 
 
 def check_unrelated_filter_sides(
@@ -937,18 +937,18 @@ def check_unrelated_filter_sides(
         return
     raise UnrelatedDatasetError(
         summary=f"The filter condition {key_display(conjunct)} reads {', '.join(sorted(datasets))} "
-        f"together with another dataset, but no join path reaches {', '.join(sorted(datasets))} "
+        f"together with another dataset, but no relationship path reaches {', '.join(sorted(datasets))} "
         f"from the population {population}: each condition must read one side alone.",
         suggestion="Split it into AND-ed conditions that each read one dataset.",
     )
 
 
 def check_spine_clash(*, clash: bool) -> None:
-    """A stored model named ``time_spine`` shadows the built-in spine."""
+    """A stored dataset named ``time_spine`` shadows the built-in spine."""
     if clash:
         raise TimeSpineError(
-            summary="A stored model is named 'time_spine', the built-in time spine's reserved name.",
-            suggestion="Rename the stored model; the built-in time_spine cannot be shadowed.",
+            summary="A stored dataset is named 'time_spine', the built-in time spine's reserved name.",
+            suggestion="Rename the stored dataset; the built-in time_spine cannot be shadowed.",
         )
 
 
@@ -967,12 +967,12 @@ def check_spine_aggregation(*, offender: Optional[str]) -> None:
         raise TimeSpineError(
             summary=f"`{offender}` aggregates over time_spine, which has no countable rows.",
             location=offender,
-            suggestion="Aggregate a fact's own columns; group by time_spine.timestamp as a time dimension.",
+            suggestion="Aggregate a fact's own fields; group by time_spine.timestamp as a time dimension.",
         )
 
 
 def check_spine_plain_use(*, offender: Optional[str], position: str, remedy: Optional[str] = None) -> None:
-    """The spine column appears only bucketed by a granularity, or in a bound."""
+    """The spine field appears only bucketed by a granularity, or in a bound."""
     if offender is not None:
         raise TimeSpineError(
             summary=f"time_spine.timestamp in {position} `{offender}` is not a bucketed time dimension.",
@@ -983,12 +983,12 @@ def check_spine_plain_use(*, offender: Optional[str], position: str, remedy: Opt
 
 _SPINE_AXIS_REMEDY = (
     "Bucket time_spine.timestamp itself (time_dimensions=[{dimension: time_spine.timestamp, granularity: month, "
-    "date_range: [...]}]) and compute other date logic from the fact's own column."
+    "date_range: [...]}]) and compute other date logic from the fact's own field."
 )
 
 
 def check_spine_time_dimension(*, offender: Optional[str], remedy: Optional[str] = None) -> None:
-    """An expression is never an axis: a time dimension reads the spine column only as the bare column."""
+    """An expression is never an axis: a time dimension reads the spine field only as the bare field."""
     if offender is not None:
         raise TimeSpineError(
             summary=f"Time dimension `{offender}` reads time_spine.timestamp inside an expression; "
@@ -999,13 +999,13 @@ def check_spine_time_dimension(*, offender: Optional[str], remedy: Optional[str]
 
 
 def check_spine_filter(*, offender: Optional[str]) -> None:
-    """A filter on the spine column must be a frame bound."""
+    """A filter on the spine field must be a frame bound."""
     if offender is not None:
         raise TimeSpineError(
             summary=f"Filter `{offender}` on time_spine.timestamp is not a lower or upper bound.",
             location=offender,
-            suggestion="Filter the fact's own time column instead, or add it as a time dimension "
-            "(time_dimensions) on that column.",
+            suggestion="Filter the fact's own time field instead, or add it as a time dimension "
+            "(time_dimensions) on that field.",
         )
 
 
@@ -1031,7 +1031,7 @@ def check_granularity_known(
 
 
 def check_dimension_call_known(*, entry: str, defined: Mapping[str, CustomGranularity]) -> NoReturn:
-    """A single-column dimension call naming no granularity, scalar, transform or built-in aggregation."""
+    """A single-field dimension call naming no granularity, scalar, transform or built-in aggregation."""
     raise UnknownGranularityError(
         summary=unknown_granularity_message(name=entry, defined=defined.values(), where="dimensions"),
         suggestion="For a time bucket write date_trunc('<unit>', expr); a custom aggregation used as a "
@@ -1047,9 +1047,9 @@ def check_time_dimension_field(
     bucketed_leaves: Sequence[Tuple[str, Granularity]] = (),
     is_expression: bool = False,
 ) -> None:
-    """A time dimension must be temporal (DATE / TIMESTAMP); every bucketed leaf — stage, query-backed cache, or hand-set ``Column.granularity`` — re-buckets only to the same or a nesting-coarser granularity (closure Axiom 9). One message for all three origins."""
+    """A time dimension must be temporal (DATE / TIMESTAMP); every bucketed leaf — stage, query-backed cache, or hand-set ``DatasetField.granularity`` — re-buckets only to the same or a nesting-coarser granularity (closure Axiom 9). One message for all three origins."""
     if field_type not in (DataType.DATE, DataType.TIMESTAMP):
-        kind = "expression" if is_expression else "column"
+        kind = "expression" if is_expression else "field"
         raise TimeDimensionFieldError(
             summary=f"A time dimension must reference a temporal {kind} "
             f"(DATE / TIMESTAMP); got {kind} type {field_type!r}.",
@@ -1060,14 +1060,14 @@ def check_time_dimension_field(
     for leaf, upstream in bucketed_leaves:
         if requested_granularity == upstream or nests_into(upstream, requested_granularity):
             continue
-        column = "column" if leaf == name else f"field {leaf!r}"
+        column = "field" if leaf == name else f"field {leaf!r}"
         raise TimeDimensionFieldError(
             summary=f"Cannot re-bucket to '{requested_granularity}': the "
             f"{column} is already bucketed at '{upstream}', which "
             f"does not nest into '{requested_granularity}'.",
             location=f"time dimension {name!r}",
             suggestion="Request the same or a nesting-coarser granularity, or "
-            "bucket the raw column instead.",
+            "bucket the raw field instead.",
         )
 
 
@@ -1077,7 +1077,7 @@ def check_time_dimension_row_level(*, name: str, source: ValueKey) -> None:
         raise TimeDimensionFieldError(
             summary="A time dimension is row-level; its expression reads an aggregate or transform.",
             location=f"time dimension {name!r}",
-            suggestion="Bucket a column or a row-level expression of columns.",
+            suggestion="Bucket a field or a row-level expression of fields.",
         )
 
 
@@ -1095,8 +1095,8 @@ def check_time_dimension_home(*, name: str, crossing: Optional[Tuple[str, Option
         check_input_dependencies_analyzable(alias=name, field=leaf)
         return
     raise UnsafeRelationshipInputError(
-        summary=f"The time dimension reads {leaf}, which crosses an unproven or fanning join hop "
-        f"to {hop} from {anchor}: no dataset determines every column the expression reads.",
+        summary=f"The time dimension reads {leaf}, which crosses an unproven or fanning relationship hop "
+        f"to {hop} from {anchor}: no dataset determines every field the expression reads.",
         location=f"time dimension {name!r}",
         suggestion=_RELATIONSHIP_REMEDY,
     )
@@ -1187,7 +1187,7 @@ def _require_temporal(fn: str, operand: object, *, field_type: FieldTypeFn) -> N
     raise DateOperandTypeError(
             summary=f"{fn}() needs a DATE or TIMESTAMP operand; "
             f"`{_operand_display(operand)}` is not one.",
-            suggestion="Pass a column declared DATE / TIMESTAMP (set Column.datatype), "
+            suggestion="Pass a field declared DATE / TIMESTAMP (set DatasetField.datatype), "
             "min/max/first/last of one, a date function, now() / current_date(), "
             "or an ISO literal such as '2024-01-31' or '2024-01-31 10:00:00'.",
         )
@@ -1202,7 +1202,7 @@ def _check_date_call(key: ScalarCallKey, *, field_type: FieldTypeFn) -> None:
     if _count_type(count, field_type=field_type) in _NON_NUMERIC_TYPES:
         raise DateOperandTypeError(
             summary=f"date_add() count `{_operand_display(count)}` is not numeric.",
-            suggestion="Pass an integer, or a numeric column or expression "
+            suggestion="Pass an integer, or a numeric field or expression "
             "(it is truncated toward zero).",
         )
 
@@ -1210,7 +1210,7 @@ def _check_date_call(key: ScalarCallKey, *, field_type: FieldTypeFn) -> None:
 def check_date_operands(*, roots: Sequence[ValueKey], field_type: FieldTypeFn) -> None:
     """Every date-function and ``date_trunc`` operand must be DATE/TIMESTAMP and every ``date_add`` count numeric."""
     keys = [key for root in roots for key in walk_value_keys(root)]
-    for key in keys:  # innermost first: a ``date_trunc`` inside a date function names its column
+    for key in keys:  # innermost first: a ``date_trunc`` inside a date function names its field
         if isinstance(key, TimeTruncKey):
             _require_temporal(str(key.granularity), key.source, field_type=field_type)
     for key in keys:
@@ -1259,7 +1259,7 @@ _ANNOUNCED_OPS = frozenset({"<=", ">", "=", "!="})
 
 
 def _field_parts(key: object) -> Optional[Tuple[str, ...]]:
-    """A column operand's join path plus its leaf; ``None`` for anything else."""
+    """A field operand's relationship path plus its leaf; ``None`` for anything else."""
     if isinstance(key, FieldKey):
         return (*key.path, key.leaf)
     if isinstance(key, FieldSqlKey):
@@ -1307,7 +1307,7 @@ def date_only_notices(
 def saved_date_only_notices(
     dataset: SlayerDataset, *, datasets_by_name: Mapping[str, Optional[SlayerDataset]],
 ) -> List[DateOnlyMidnightWarning]:
-    """The notices for ``dataset``'s saved measures and column filters, typed through its joins to ``datasets_by_name``."""
+    """The notices for ``dataset``'s saved metrics and field filters, typed through its relationships to ``datasets_by_name``."""
     models = {n: m for n, m in datasets_by_name.items() if m is not None}
     out: Dict[str, DateOnlyMidnightWarning] = {}
     texts = [*(m.expression for m in dataset.metrics), *(c.filter for c in dataset.fields if c.filter)]
@@ -1325,7 +1325,7 @@ def saved_date_only_notices(
 def _saved_field_type(
     dataset: SlayerDataset, *, parts: Sequence[str], datasets_by_name: Dict[str, SlayerDataset],
 ) -> Optional[DataType]:
-    """The type of the column ``parts`` names from ``dataset`` (names matched as references are); ``None`` when
+    """The type of the field ``parts`` names from ``dataset`` (names matched as references are); ``None`` when
     unresolvable."""
     quals, leaf = list(parts[:-1]), parts[-1]
     if quals and match_name(name=quals[0], declared=[dataset.name], quoted=False) is not None:
@@ -1488,7 +1488,7 @@ def _raise_sub_day(key: TimePointCmpKey) -> NoReturn:
     raise TimeLiteralError(
         summary=f"`{_operand_display(key.operand)}` has day resolution (DATE), "
         f"so the sub-day time point '{key.point}' cannot bound it.",
-        suggestion="Use a day-or-coarser time point, or compare a TIMESTAMP column.",
+        suggestion="Use a day-or-coarser time point, or compare a TIMESTAMP field.",
     )
 
 
@@ -1500,7 +1500,7 @@ def _non_temporal_comparison(key: TimePointCmpKey, *, units: Mapping[str, Custom
         raise DateOperandTypeError(
             summary=f"'{key.point}' is a time point, but `{_operand_display(key.operand)}` "
             f"is not a DATE or TIMESTAMP operand.",
-            suggestion="Declare the column's type as DATE or TIMESTAMP (set Column.datatype), "
+            suggestion="Declare the field's type as DATE or TIMESTAMP (set DatasetField.datatype), "
             "or compare it with a plain value.",
         )
     op = _arith_op(key.op)
@@ -1601,7 +1601,7 @@ _ZONED_COMPARED_OPS = frozenset({"==", "=", "!=", "<>", "<", "<=", ">", ">=", *N
 def coerce_zoned_comparisons(
     key: ValueKey, *, zoned: Callable[[object], bool], field_type: FieldTypeFn,
 ) -> ValueKey:
-    """A naive timestamp compared with a zoned-instant column converts to the column's type; the column stays bare."""
+    """A naive timestamp compared with a zoned-instant field converts to the field's type; the field stays bare."""
     rebuilt = cast(ValueKey, key.map_children(
         lambda c: coerce_zoned_comparisons(c, zoned=zoned, field_type=field_type)))
     if not (isinstance(rebuilt, ArithmeticKey) and rebuilt.op in _ZONED_COMPARED_OPS and len(rebuilt.operands) == 2):
@@ -1609,7 +1609,7 @@ def coerce_zoned_comparisons(
     left, right = rebuilt.operands
 
     def naive(k: ValueKey) -> bool:
-        # A temporal literal renders as ISO text, which already reads as the column's type.
+        # A temporal literal renders as ISO text, which already reads as the field's type.
         literal = isinstance(k, LiteralKey) and isinstance(k.value, date)
         return not literal and not zoned(k) and temporal_type(k, field_type=field_type) is DataType.TIMESTAMP
 
@@ -1712,7 +1712,7 @@ _TYPE_FAMILIES: Mapping[DataType, str] = MappingProxyType({
 
 
 class ListTyping(BaseModel):
-    """What the list rules read about a scope: column types and element types, and whether ``key``'s join path
+    """What the list rules read about a scope: field types and element types, and whether ``key``'s relationship path
     reaches a list's elements."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
@@ -1731,7 +1731,7 @@ class ListTyping(BaseModel):
 
 
 def _list_display(key: object) -> str:
-    """``L.value``, the element spelling of a list column; else the key's display."""
+    """``L.value``, the element spelling of a list field; else the key's display."""
     return f"{_operand_display(key)}.value" if isinstance(key, (FieldKey, FieldSqlKey)) else _operand_display(key)
 
 
@@ -1740,7 +1740,7 @@ def _check_native_lists(key: ValueKey, *, typing: ListTyping) -> None:
     if construct is not None and not typing.native_lists:
         raise ListTypeError(
             summary=f"{construct} needs a database with native lists; {typing.database} has none.",
-            suggestion="Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, "
+            suggestion="Run the query on a database with list fields (Postgres, DuckDB, BigQuery, Snowflake, "
             "ClickHouse, Trino or Presto).",
         )
 
@@ -1825,7 +1825,7 @@ def _check_known_elements(key: ValueKey, *, typing: ListTyping, reading: str) ->
     if element is not None and element.is_opaque:
         raise ListTypeError(
             summary=f"`{_operand_display(key)}` holds opaque (UNKNOWN) elements, which cannot be {reading}.",
-            suggestion="Declare the column's element_type.",
+            suggestion="Declare the field's element_type.",
         )
 
 
@@ -1866,7 +1866,7 @@ def _check_list_call(key: ScalarCallKey, *, typing: ListTyping) -> None:
     if element is not None and element.is_opaque:
         raise ListTypeError(
             summary=f"`{_operand_display(values)}` holds opaque (UNKNOWN) elements, which {key.name}() cannot read.",
-            suggestion="Declare the column's element_type.",
+            suggestion="Declare the field's element_type.",
         )
     if key.name == "length":
         return
@@ -1918,7 +1918,7 @@ def _check_list_aggregation(key: AggregateKey, *, typing: ListTyping) -> None:
         if source_type is not None and source_type.is_opaque:
             raise ListTypeError(
                 summary=f"{key.agg}() cannot collect the opaque (UNKNOWN) values of `{_operand_display(source)}`.",
-                suggestion="Collect a column with a scalar type.",
+                suggestion="Collect a field with a scalar type.",
             )
 
 
@@ -1949,7 +1949,7 @@ def check_list_dimension(*, name: str, key: ValueKey, typing: ListTyping, will_g
         raise ListTypeError(
             summary=f"Grouping by the list dimension {name!r} needs a database with native lists; "
             f"{typing.database} has none.",
-            suggestion="Run the query on a database with list columns (Postgres, DuckDB, BigQuery, Snowflake, "
+            suggestion="Run the query on a database with list fields (Postgres, DuckDB, BigQuery, Snowflake, "
             "ClickHouse, Trino or Presto).",
         )
     _check_known_elements(key, typing=typing, reading="grouped on")
@@ -1960,7 +1960,7 @@ def check_list_order_key(*, key: ValueKey, typing: ListTyping) -> None:
     if typing.is_list(key):
         raise ListTypeError(
             summary=f"Order key {_list_display(key)} is a list, which has no sort order.",
-            suggestion="Order by a scalar column, or by length(...) of the list.",
+            suggestion="Order by a scalar field, or by length(...) of the list.",
         )
 
 
@@ -2013,7 +2013,7 @@ def whole_list_reads(*, dimensions: Sequence[ValueKey], roots: Sequence[ValueKey
 
 
 def coerce_list_arguments(key: ValueKey, *, typing: ListTyping) -> ValueKey:
-    """TEXT meeting a list of numbers reads as a number: literals convert, a column is read with TRY_CAST; a second
+    """TEXT meeting a list of numbers reads as a number: literals convert, a field is read with TRY_CAST; a second
     list of another element type is compared one element at a time."""
     rebuilt = cast(ValueKey, key.map_children(lambda c: coerce_list_arguments(c, typing=typing)))
     if not (isinstance(rebuilt, ScalarCallKey) and rebuilt.name in ("contains", "contains_any", "contains_all")
@@ -2137,7 +2137,7 @@ def _first_opaque_row_leaf(key: ValueKey, *, exempt: frozenset) -> Optional[Valu
     return None
 
 
-_RELATIONSHIP_REMEDY = "Declare join cardinality or a covering unique key on the target."
+_RELATIONSHIP_REMEDY = "Declare relationship cardinality or a covering unique key on the target."
 
 #: Per-op input rules beyond the total row-leaf rule: ops rejecting a boolean input.
 _TRANSFORM_INPUT_RULES = {"reject_boolean": frozenset({"change", "change_pct"})}
@@ -2173,7 +2173,7 @@ def check_transform_inputs(*, roots, projected_grain_keys: frozenset) -> None:
                 suggestion=f"Aggregate the leaf — e.g. "
                 f"{k.op}(sum({disp})) — project '{disp}' as a query dimension, "
                 f"or compute it in an earlier stage of a multi-stage "
-                f"`source_queries` model.",
+                f"`source_queries` dataset.",
             )
 
 
@@ -2181,12 +2181,12 @@ def check_partition_key_resolves(
     *, label: str, pk: ValueKey, is_query_dim: bool, ambiguous: bool,
     maps_to_bucket: bool, lenient: bool, available_dims: Sequence[str],
 ) -> None:
-    """Every rank-family partition_by column resolves to a query dim/td; a lenient key declares a finer producer grain."""
+    """Every rank-family partition_by field resolves to a query dim/td; a lenient key declares a finer producer grain."""
     if is_query_dim:
         return
     if ambiguous:
         raise PartitionKeyError(
-            summary=f"The partition_by column '{dotted_key_display(pk)}' is "
+            summary=f"The partition_by field '{dotted_key_display(pk)}' is "
             f"ambiguous — it is a time dimension at multiple granularities.",
             location=label,
             suggestion="Partition by a single query dimension instead.",
@@ -2201,7 +2201,7 @@ def check_partition_key_resolves(
         return
     is_column = isinstance(pk, (FieldKey, FieldSqlKey))
     raise PartitionKeyError(
-        summary=f"The partition_by {'column' if is_column else 'key'} '{dotted_key_display(pk)}' is not a "
+        summary=f"The partition_by {'field' if is_column else 'key'} '{dotted_key_display(pk)}' is not a "
         f"query dimension.",
         location=label,
         suggestion=f"Add it to dimensions/time_dimensions{'' if is_column else ' (as a computed dimension)'}, "
@@ -2225,7 +2225,7 @@ def check_transform_partition_keys_in_operand_grain(
                     continue
                 members = ", ".join(sorted(dotted_key_display(m) for m in operand))
                 raise PartitionKeyError(
-                    summary=f"The partition_by column "
+                    summary=f"The partition_by field "
                     f"'{dotted_key_display(pk)}' is not a member of the transform's "
                     f"operand grain ({members}); a rank-family transform partitions "
                     f"its operand's cells.",
@@ -2238,11 +2238,11 @@ def check_transform_partition_keys_in_operand_grain(
 def check_partition_key_attributable(
     *, label: str, pk: ValueKey, attributable: bool, reason: Optional[str],
 ) -> None:
-    """A partition key reached over a join must be attributable from the aggregate's root; the compiler resolves ``attributable``/``reason``."""
+    """A partition key reached over a relationship must be attributable from the aggregate's root; the compiler resolves ``attributable``/``reason``."""
     if attributable:
         return
     raise PartitionKeyError(
-        summary=f"The partition_by column '{dotted_key_display(pk)}' {reason}; "
+        summary=f"The partition_by field '{dotted_key_display(pk)}' {reason}; "
         f"every partition key must be attributable from the aggregate's root.",
         location=label,
         suggestion=_RELATIONSHIP_REMEDY,
@@ -2260,34 +2260,34 @@ def check_local_producer_inputs_safe(
         leaf, hop = ranked_crossings[0]
         raise UnsafeRelationshipInputError(
             summary=f"The aggregate ranks/reads by {leaf}, which crosses an "
-            f"unproven join hop to {hop} from {host}.",
+            f"unproven relationship hop to {hop} from {host}.",
             location=f"metric {alias!r}",
             suggestion=_RELATIONSHIP_REMEDY,
         )
     if gated_crossings:
         raise UnsafeRelationshipInputError(
-            summary=f"The aggregate reads an input across an unproven join "
+            summary=f"The aggregate reads an input across an unproven relationship "
             f"hop to {gated_crossings[0]} from {host}.",
             location=f"metric {alias!r}",
             suggestion=_RELATIONSHIP_REMEDY,
         )
     if source_crossings:
         raise UnsafeRelationshipInputError(
-            summary=f"The aggregate reads its source across an unproven or fanning join "
-            f"hop to {source_crossings[0]} from {host}: a column of {host} cannot be "
+            summary=f"The aggregate reads its source across an unproven or fanning relationship "
+            f"hop to {source_crossings[0]} from {host}: a field of {host} cannot be "
             f"aggregated across a to-many target.",
             location=f"metric {alias!r}",
-            suggestion=f"Aggregate the target column directly "
-            f"(<aggregation>({source_crossings[0]}.<column>)), or declare a to-one "
+            suggestion=f"Aggregate the target field directly "
+            f"(<aggregation>({source_crossings[0]}.<field>)), or declare a to-one "
             f"cardinality or a covering unique key if the hop is to-one.",
         )
 
 
 def check_cross_dataset_source_resolves(*, target_path, host_name: str) -> NoReturn:
-    """An unresolvable cross-model source path; bind resolves the path first, so the compiler calls this only on that invariant's breach."""
+    """An unresolvable cross-dataset source path; bind resolves the path first, so the compiler calls this only on that invariant's breach."""
     raise UnsafeRelationshipInputError(  # pragma: no cover — bind resolved the path already
-        summary=f"Cross-model aggregate source path {target_path!r} does not resolve "
-        f"to a model from {host_name}.",
+        summary=f"Cross-dataset aggregate source path {target_path!r} does not resolve "
+        f"to a dataset from {host_name}.",
     )
 
 
@@ -2295,12 +2295,12 @@ def check_cross_dataset_partition_keys_attributable(
     *, alias: Optional[str], root_name: str, explicit: bool,
     unattributable: Sequence[Tuple[str, str]],
 ) -> None:
-    """An unattributable EXPLICIT partition key on a cross-model aggregate is a hard error; an implicit grain broadcasts instead. ``unattributable`` = compiler-resolved (name, reason) pairs."""
+    """An unattributable EXPLICIT partition key on a cross-dataset aggregate is a hard error; an implicit grain broadcasts instead. ``unattributable`` = compiler-resolved (name, reason) pairs."""
     if not explicit or not unattributable:
         return
     name, reason = unattributable[0]
     raise PartitionKeyError(
-        summary=f"The cross-model aggregate declares partition_by={name}, which "
+        summary=f"The cross-dataset aggregate declares partition_by={name}, which "
         f"{reason}; every explicit partition key must be attributable from {root_name}.",
         location=f"metric {alias!r}",
         suggestion=_RELATIONSHIP_REMEDY,
@@ -2322,7 +2322,7 @@ def check_windowed_time_axis_attributable(
         raise TimeAxisError(
             summary=f"The windowed aggregate needs the query's active time "
             f"dimension ('{active_td_name}') attributable from {root_name}, but "
-            f"it crosses a fanning join.",
+            f"it crosses a fanning relationship.",
             location=f"metric {alias!r}",
             suggestion=_RELATIONSHIP_REMEDY,
         )
@@ -2333,19 +2333,19 @@ def check_cross_dataset_inputs_safe(
     unsafe_input_hops: Sequence[str],
     unattributable_arg_leaves: Sequence[Tuple[str, str]],
 ) -> None:
-    """Every input of a cross-model aggregate must be attributable from its root; hops / (leaf, reason) pairs are the compiler-resolved violations, an explicit argument's reported first."""
+    """Every input of a cross-dataset aggregate must be attributable from its root; hops / (leaf, reason) pairs are the compiler-resolved violations, an explicit argument's reported first."""
     if unattributable_arg_leaves:
         leaf, reason = unattributable_arg_leaves[0]
         raise UnsafeRelationshipInputError(
-            summary=f"The cross-model aggregate ranks/reads by {leaf}, which is not "
+            summary=f"The cross-dataset aggregate ranks/reads by {leaf}, which is not "
             f"attributable from {root_name} ({reason}).",
             location=f"metric {alias!r}",
             suggestion=_RELATIONSHIP_REMEDY,
         )
     if unsafe_input_hops:
         raise UnsafeRelationshipInputError(
-            summary=f"The cross-model aggregate reads an input across an unproven "
-            f"join hop to {unsafe_input_hops[0]} from {root_name}.",
+            summary=f"The cross-dataset aggregate reads an input across an unproven "
+            f"relationship hop to {unsafe_input_hops[0]} from {root_name}.",
             location=f"metric {alias!r}",
             suggestion=_RELATIONSHIP_REMEDY,
         )
@@ -2354,50 +2354,50 @@ def check_cross_dataset_inputs_safe(
 def check_input_dependencies_analyzable(
     *, alias: Optional[str], field: Optional[str],
 ) -> None:
-    """An aggregate input whose dependency no dialect can analyse for join
+    """An aggregate input whose dependency no dialect can analyse for relationship
     dependencies is unsafe, never 'crosses nothing'. Callers invoke
     this ONLY once the input closure has come back unanalysable, so it always
-    raises; ``field`` names the offending derived column when one can be
+    raises; ``field`` names the offending derived field when one can be
     identified (the common case), else ``None`` (e.g. an unresolvable
     expression-default qualifier), which still fails closed."""
     if field is None:
         raise UnanalyzableDependencyError(
             summary="The aggregate has an input dependency whose definition no "
-            "supported dialect can analyse for join dependencies; an "
+            "supported dialect can analyse for relationship dependencies; an "
             "unanalyzable dependency is unsafe.",
             location=f"metric {alias!r}",
             suggestion="Fix the input's SQL, or remove it from the aggregate.",
         )
     raise UnanalyzableDependencyError(
-        summary=f"The aggregate names derived column {field!r}, whose definition "
-        f"no supported dialect can analyse for join dependencies; an unanalyzable "
+        summary=f"The aggregate names derived field {field!r}, whose definition "
+        f"no supported dialect can analyse for relationship dependencies; an unanalyzable "
         f"dependency is unsafe.",
         location=f"metric {alias!r}",
-        suggestion="Fix the column's SQL, or remove it from the aggregate.",
+        suggestion="Fix the field's SQL, or remove it from the aggregate.",
     )
 
 
 def check_filter_dependencies_analyzable(
     *, filter_text: str, field: Optional[str],
 ) -> NoReturn:
-    """A filter conjunct whose dependency closure no dialect can analyse for join
+    """A filter conjunct whose dependency closure no dialect can analyse for relationship
     dependencies is unsafe, never 'crosses nothing'. ``field`` names the
-    offending derived column (the common case for a filter, which references
-    columns by name), else ``None``."""
+    offending derived field (the common case for a filter, which references
+    fields by name), else ``None``."""
     if field is None:
         raise UnanalyzableDependencyError(
             summary="The filter has a dependency whose definition no "
-            "supported dialect can analyse for join dependencies; an "
+            "supported dialect can analyse for relationship dependencies; an "
             "unanalyzable dependency is unsafe.",
             location=f"filter {filter_text!r}",
-            suggestion="Fix the referenced column's SQL, or remove the filter.",
+            suggestion="Fix the referenced field's SQL, or remove the filter.",
         )
     raise UnanalyzableDependencyError(
-        summary=f"The filter names derived column {field!r}, whose "
-        f"definition no supported dialect can analyse for join dependencies; an "
+        summary=f"The filter names derived field {field!r}, whose "
+        f"definition no supported dialect can analyse for relationship dependencies; an "
         f"unanalyzable dependency is unsafe.",
         location=f"filter {filter_text!r}",
-        suggestion="Fix the column's SQL, or remove the filter.",
+        suggestion="Fix the field's SQL, or remove the filter.",
     )
 
 
@@ -2418,7 +2418,7 @@ def check_parameter_determined(
 ) -> None:
     """One rule for every aggregation parameter: it must be determined by the
     grain of the dataset the aggregation runs over — a grain member, a cell of
-    that dataset (an aggregate grained within it), or a column the grain pins
+    that dataset (an aggregate grained within it), or a field the grain pins
     over to-one hops. The residue names the parameter, the grain, and the
     remedy."""
     if determined:
@@ -2478,17 +2478,17 @@ def check_reaggregation_outer_keys_determined(
 
 
 _RAW_ROW_FIX_HINT = (
-    "Either remove the measure reference, or set "
+    "Either remove the metric reference, or set "
     "distinct_dimension_values=True (the default) to keep the "
     "auto-aggregating behaviour."
 )
 
 
 def check_raw_rows_filter_metric_ref(*, offending: Optional[str]) -> None:
-    """Raw-rows mode (distinct_dimension_values=False) rejects measure references in filters; ``offending`` = the raw filter string when one does."""
+    """Raw-rows mode (distinct_dimension_values=False) rejects metric references in filters; ``offending`` = the raw filter string when one does."""
     if offending is not None:
         raise DistinctDimensionValuesError(
-            summary="distinct_dimension_values=False rejects measure references, "
+            summary="distinct_dimension_values=False rejects metric references, "
             "but the filter contains one.",
             location=f"filter {offending!r}",
             suggestion=_RAW_ROW_FIX_HINT,
@@ -2499,35 +2499,35 @@ def check_raw_rows_order_metric_ref(
     *, contains: Optional[str] = None, saved_name: Optional[str] = None,
     source_name: Optional[str] = None, saved_dotted: Optional[str] = None,
 ) -> None:
-    """Raw-rows mode rejects measure references in ORDER BY; at most one offense per call, resolution stays compiler-side."""
+    """Raw-rows mode rejects metric references in ORDER BY; at most one offense per call, resolution stays compiler-side."""
     if contains is not None:
         raise DistinctDimensionValuesError(
-            summary="distinct_dimension_values=False rejects measure references, "
+            summary="distinct_dimension_values=False rejects metric references, "
             "but the order item contains one.",
             location=f"order item {contains!r}",
             suggestion=_RAW_ROW_FIX_HINT,
         )
     if saved_name is not None:
         raise DistinctDimensionValuesError(
-            summary=f"distinct_dimension_values=False rejects measure references, "
-            f"but the order item resolves to a saved measure on "
-            f"{source_name or 'the source model'!r}.",
+            summary=f"distinct_dimension_values=False rejects metric references, "
+            f"but the order item resolves to a saved metric on "
+            f"{source_name or 'the source dataset'!r}.",
             location=f"order item {saved_name!r}",
             suggestion=_RAW_ROW_FIX_HINT,
         )
     if saved_dotted is not None:
         raise DistinctDimensionValuesError(
-            summary="distinct_dimension_values=False rejects measure references, "
-            "but the order item resolves to a saved measure.",
+            summary="distinct_dimension_values=False rejects metric references, "
+            "but the order item resolves to a saved metric.",
             location=f"order item {saved_dotted!r}",
             suggestion=_RAW_ROW_FIX_HINT,
         )
 
 
 def check_raw_rows_no_aggregate_slots(*, offender: str) -> NoReturn:
-    """An aggregate-phase slot under raw-rows mode came from a filter or order item (measures were rejected upstream)."""
+    """An aggregate-phase slot under raw-rows mode came from a filter or order item (metrics were rejected upstream)."""
     raise DistinctDimensionValuesError(
-        summary=f"distinct_dimension_values=False rejects measure references, but "
+        summary=f"distinct_dimension_values=False rejects metric references, but "
         f"this query references the aggregation {offender!r} in its "
         f"filters or order.",
         suggestion=_RAW_ROW_FIX_HINT,
@@ -2541,7 +2541,7 @@ def check_order_target_has_slot(*, type_name: str) -> NoReturn:
         f"materialisable slot.",
         suggestion="Order by an aggregate, a transform, a composite "
         "arithmetic / scalar expression, a dimension, or declare the "
-        "expression as a measure and order by its name.",
+        "expression as a metric and order by its name.",
     )
 
 

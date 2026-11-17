@@ -2,7 +2,7 @@
 
 Everything the converter cannot map cleanly is recorded as a
 ``CubeConversionIssue`` rather than silently dropped or raised. The full
-``CubeConversionResult`` (models + report) is returned by the converter and the
+``CubeConversionResult`` (datasets + report) is returned by the converter and the
 report is also written to JSON by the CLI.
 """
 

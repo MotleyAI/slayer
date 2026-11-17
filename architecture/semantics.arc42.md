@@ -65,7 +65,7 @@ principles every layer obeys.
      row (`a.b.a ≡ a`) rather than re-joining, any other unreachable qualifier
      anchored at the query root. Only definition defaults cancel — a revisiting
      query path is refused (its root qualifier is no revisit, Principle 1), a revisiting
-     `Column.sql` likewise.
+     `DatasetField.sql` likewise.
      It is counted over that
      dataset's rows. The ordering key of a ranked aggregation must be determined by the
      home and never widens it; the aggregation's own `partition_by=` is not an input.
@@ -326,7 +326,7 @@ All code, old and new, MUST obey these.
    [enforced: test:tests/test_dev1743_resolution.py]
    [enforced: test:tests/test_dev1954_canonical_paths.py]
    [enforced: test:tests/test_dev2187_root_qualifier.py]
-2. **Two expression layers**: Mode A free SQL (`Column.sql`, model `filters`)
+2. **Two expression layers**: Mode A free SQL (`DatasetField.sql`, model `filters`)
    vs Mode B, a SQL-compatible grammar (formulas, query fields) — one
    canonical function library, extended never forked. [review]
    - **2.1** Every Mode B construct means the same on every dialect.
@@ -337,7 +337,7 @@ All code, old and new, MUST obey these.
    - **2.3** A query carries no Mode A: Mode A is written only in a stored model's definition, and a value a query supplies enters it only as a literal. [enforced: test:tests/test_dev2021_queries_carry_no_mode_a.py]
 3. **Logical names, physical once**: every model-level column reference —
    query fields, `join_pairs`, unique-key sets — names a column by
-   `Column.name`; the physical spelling (`Column.physical_name`: a base
+   `DatasetField.name`; the physical spelling (`DatasetField.physical_name`: a base
    column's bare `sql`, else its name) is applied once, where a reference
    becomes SQL or meets the live schema, and is never the key two references
    are matched on.

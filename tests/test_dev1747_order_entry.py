@@ -130,8 +130,8 @@ class TestScopeClassification:
             population="orders",
             dimensions=[FieldRef(name="status")],
             metrics=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "sum(customers.spend)", "name": "cs"},
+                {"expression": "sum(amount)", "name": "rev"},
+                {"expression": "sum(customers.spend)", "name": "cs"},
             ],
             order=[OrderItem(field=FieldRef(name="cs"), direction="desc")],
         ))
@@ -359,8 +359,8 @@ _HOST_GRAIN_WITH_PATH = SlayerQuery(
 _TARGET_GRAIN_WITH_PATH = SlayerQuery(
     **_GROUPED_HEAD,
     metrics=[
-        {"formula": "sum(amount)", "name": "rev"},
-        {"formula": "sum(customers.spend)", "name": "cs"},
+        {"expression": "sum(amount)", "name": "rev"},
+        {"expression": "sum(customers.spend)", "name": "cs"},
     ],
 )
 

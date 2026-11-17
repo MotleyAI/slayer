@@ -152,7 +152,7 @@ class QueryResult(TranslatorResult):
     """Translated SlayerQuery for engine execution.
 
     ``field_name_mapping`` (ordered to match the projection list) rewrites the
-    response's ``model.column`` keys back to the BI tool's flat names.
+    response's ``dataset.field`` keys back to the BI tool's flat names.
     ``projection_types`` is the catalog-declared ``DataType`` per item, ``None``
     → text at wire-schema build time.
     """
@@ -162,7 +162,7 @@ class QueryResult(TranslatorResult):
     facade_table: FacadeTable
     schema_name: str
     projection_types: "list[DataType | None]"
-    # Datasource to execute against, from the FROM (and joined) table's model;
+    # Datasource to execute against, from the FROM (and joined) table's dataset;
     # ``None`` → facade falls back to its connection datasource.
     data_source: str | None = None
 
@@ -211,7 +211,7 @@ def _expand_select_star(
 ) -> list[Expression]:
     """Replace each top-level ``exp.Star`` with one column ref per non-hidden
     column on ``table``, preserving the order of any non-Star projections.
-    Only row-preserving dims expand — a fan-out join path would multiply the
+    Only row-preserving dims expand — a fan-out relationship path would multiply the
     browse-mode row grain; those dims stay individually addressable."""
     column_names = [d.name for d in table.dimensions if d.row_preserving]
     out: list[Expression] = []
@@ -226,9 +226,9 @@ def _expand_select_star(
 
 
 AGG_OVER_METRIC_MESSAGE = (
-    "Aggregating over a saved measure or a non-column expression is not "
+    "Aggregating over a saved metric or a non-column expression is not "
     "supported yet (only aggregates over base/joined columns are mapped). "
-    "Project the saved measure by its name instead."
+    "Project the saved metric by its name instead."
 )
 
 
@@ -359,7 +359,7 @@ def _field_to_dotted(
     ``strip_prefix=(schema, table)`` drops a leading ``schema.table.`` qualifier
     (case-insensitive, ``public`` accepted) so ``"public"."orders"."customer_id"``
     resolves to bare ``customer_id``. ``alias_map`` rewrites a leading join-alias
-    qualifier to its SLayer model name first (``"Stores"."name"`` → ``stores.name``).
+    qualifier to its SLayer dataset name first (``"Stores"."name"`` → ``stores.name``).
     """
     parts: list[str] = []
     for key in ("catalog", "db", "table"):
@@ -377,7 +377,7 @@ def _apply_alias_remap(
     parts: list[str], alias_map: dict[str, str] | None,
 ) -> list[str]:
     """Rewrite the table-qualifier (2nd-to-last part) to its ``alias_map`` target
-    model name (case-insensitive), mapping ``<JoinAlias>.<col>`` → ``<model>.<col>``;
+    dataset name (case-insensitive), mapping ``<JoinAlias>.<col>`` → ``<dataset>.<col>``;
     return ``parts`` unchanged if no entry matches."""
     if not alias_map or len(parts) < 2:
         return parts
@@ -631,7 +631,7 @@ def _detect_aggregate(  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; s
     """If ``node`` is a SQL aggregate call, classify it into an ``_AggCall``; else
     ``None``. ``COUNT(*)`` → count/no ref; ``COUNT(DISTINCT col)`` → count_distinct;
     ``SUM/AVG/MIN/MAX(col)`` → the matching agg. A non-column argument sets
-    ``inner_is_column=False`` (caller raises the saved-measure error). ``strip_prefix``
+    ``inner_is_field=False`` (caller raises the saved-metric error). ``strip_prefix``
     / ``alias_map`` normalise the inner column ref as in ``_field_to_dotted``.
     """
     def _dot(col: exp.Column) -> str:
@@ -667,28 +667,28 @@ def _detect_aggregate(  # NOSONAR(S3776) — flat per-aggregate-kind dispatch; s
 
 
 def _agg_expression(call: _AggCall) -> str:
-    """The functional measure formula for a recognised aggregate."""
+    """The functional metric expression for a recognised aggregate."""
     if call.is_count_star:
         return "count(*)"
     return functional_agg_text(source=call.inner_ref or "", suffix=call.agg)
 
 
 def _saved_metric_names(table: FacadeTable) -> set[str]:
-    """Names of saved ``ModelMeasure`` metrics (formula == name)."""
+    """Names of saved ``DatasetMetric`` metrics (expression == name)."""
     return {m.name for m in table.metrics if m.metric_expression == m.name}
 
 
 def _assert_local_metric(metric: FacadeMetric) -> None:
-    """Reject cross-model metric projection (dotted name) in a flat SELECT.
+    """Reject cross-dataset metric projection (dotted name) in a flat SELECT.
 
-    The catalog pre-expands cross-model metrics into dotted-name entries a
+    The catalog pre-expands cross-dataset metrics into dotted-name entries a
     hand-written ref can still resolve to; letting one into
     ``SlayerQuery.metrics[*].name`` trips the validator or mis-keys the engine
     result. Guard mirrors ``catalog.py:local_metrics``.
     """
     if "." in metric.name:
         raise TranslationError(
-            f"Cross-model metric {metric.name!r} cannot be projected in "
+            f"Cross-dataset metric {metric.name!r} cannot be projected in "
             f"a flat SELECT. Use a saved metric or rewrite as a multi-"
             f"stage query."
         )
@@ -698,7 +698,7 @@ def _metric_for_aggregate(
     call: _AggCall, table: FacadeTable, metrics_by_expression: dict[str, FacadeMetric],
 ) -> FacadeMetric:
     """Resolve an aggregate call to its catalog ``FacadeMetric``. The catalog
-    pre-expands every eligible column × aggregation, so a formula lookup
+    pre-expands every eligible column × aggregation, so an expression lookup
     validates column existence + aggregation eligibility in one step; failures
     raise ``TranslationError``.
     """
@@ -711,7 +711,7 @@ def _metric_for_aggregate(
     if metric is not None:
         _assert_local_metric(metric)
         return metric
-    # Distinguish the saved-measure case for a clearer message.
+    # Distinguish the saved-metric case for a clearer message.
     if call.inner_ref is not None and call.inner_ref in _saved_metric_names(table):
         raise TranslationError(AGG_OVER_METRIC_MESSAGE)
     raise TranslationError(
@@ -724,7 +724,7 @@ def _metric_for_aggregate(
 
 
 def _flatten_catalog(catalog: FacadeCatalog) -> dict[str, list[tuple[str, FacadeTable]]]:
-    """Build a (model_name → [(schema, table), …]) index for bare-name lookup."""
+    """Build a (dataset_name → [(schema, table), …]) index for bare-name lookup."""
     by_name: dict[str, list[tuple[str, FacadeTable]]] = {}
     for sch in catalog.schemas:
         for tbl in sch.tables:
@@ -845,7 +845,7 @@ class _ProjectionItem(BaseModel):
     # A date-part extraction of ``time_grain_underlying`` (``month``, …).
     extraction: str | None = None
     # CAST(<column> AS <type>) target: overrides projection_types[i], leaving
-    # the engine alias and SlayerQuery measure/dimension untouched.
+    # the engine alias and SlayerQuery metric/dimension untouched.
     cast_target: DataType | None = None
 
 
@@ -1285,7 +1285,7 @@ def _metric_filter(
     temporal_fields: AbstractSet[str] = frozenset(),
 ) -> str | None:
     """``conj`` as an aggregate filter, each metric reference (projected aggregate alias or catalog metric) replaced
-    by its measure formula and each time bound's literals as instants; ``None`` when it names no metric.
+    by its metric expression and each time bound's literals as instants; ``None`` when it names no metric.
 
     Metabase compiles post-aggregation filters to alias-bearing SQL (``WHERE "count" > 1``).
     """
@@ -1413,7 +1413,7 @@ def _normalise_predicate_fields(
     alias_map: dict[str, str] | None = None,
 ) -> Expression:
     """Walk ``node`` and rewrite every ``exp.Column``: apply ``alias_map``
-    first (so ``<JoinAlias>.<col>`` becomes ``<model>.<col>``), then
+    first (so ``<JoinAlias>.<col>`` becomes ``<dataset>.<col>``), then
     ``strip_prefix`` (so the parent table's ``schema.table.`` qualifier
     drops), then ALWAYS emit the identifiers UNQUOTED.
 
@@ -1685,7 +1685,7 @@ def _resolve_order_by_item(
     ``_order_by_name``); on miss, fallback maps a literal aggregate
     call (``ORDER BY SUM(revenue)``) to the projection registered under a
     different alias (``SELECT SUM(revenue) AS "rev"``) by matching on the
-    aggregate's canonical ``measure_formula``. Returns ``(item, name)`` so
+    aggregate's canonical ``metric_expression``. Returns ``(item, name)`` so
     the lossy-CAST check downstream has both the resolved item and
     the user-visible name for error messaging. Raises ``TranslationError``
     if neither path resolves.
@@ -1746,9 +1746,9 @@ def _translate_order_by(
         if item.metric is not None:
             # use the projection's SELECT alias, not the catalog
             # ``FacadeMetric.name``. ``_record_metric`` registered the SLayer
-            # measure under ``projected_name``, so the OrderItem must point
-            # at the same name. Pre-fix the engine saw ``ColumnRef("row_count")``
-            # against a measure named ``"count"`` and DuckDB rejected with
+            # metric under ``projected_name``, so the OrderItem must point
+            # at the same name. Pre-fix the engine saw ``FieldRef("row_count")``
+            # against a metric named ``"count"`` and DuckDB rejected with
             # ``Referenced column "orders.row_count" not found``.
             ref = FieldRef(name=item.projected_name)
         else:
@@ -1869,8 +1869,8 @@ def _reject_lossy_cast_in_implicit_grouping(
 ) -> None:
     """When the user omits an explicit GROUP BY
     but projects at least one dimension, SLayer auto-groups (dim-only-dedup
-    when there are no measures, mandatory dim-group when there are
-    measures). The auto-grouping is by the bare engine column, so a
+    when there are no metrics, mandatory dim-group when there are
+    metrics). The auto-grouping is by the bare engine column, so a
     CAST-projected dimension with a lossy (source, target) pair has the
     same correctness gap as an explicit ``GROUP BY <alias>`` would. Run
     the same lossy check the explicit-GROUP-BY path runs, on each
@@ -2599,7 +2599,7 @@ def _resolve_join_subquery_target(
     if inner_from is None:
         raise TranslationError(
             "LEFT JOIN subquery body must have a FROM clause naming a "
-            "single SLayer model."
+            "single SLayer dataset."
         )
     # Reject inner comma-join shape (FROM a, b).
     inner_table = inner_from.this
@@ -2625,7 +2625,7 @@ def _parse_on_clause(
     qualified column and a join-alias-qualified column.
 
     Returns ``(source_col, target_col)`` in the canonical case used by
-    the underlying ``SlayerModel.fields[]`` (case-insensitive ON-column
+    the underlying ``SlayerDataset.fields[]`` (case-insensitive ON-column
     lookup catches hand-written UPPERCASE refs that Postgres folds to
     lowercase). Hidden columns counted.
     """
@@ -2692,28 +2692,28 @@ def _leaf(col: exp.Column) -> str:
 def _canonical_field_or_raise(
     table: FacadeTable, col_name: str, *, role: str,
 ) -> str:
-    """Lookup ``col_name`` against the underlying ``SlayerModel.fields[]``
+    """Lookup ``col_name`` against the underlying ``SlayerDataset.fields[]``
     (hidden cols counted). Returns the canonical column name; raises
     ``TranslationError`` on no match OR on case-insensitive ambiguity.
 
     Resolution order (Codex round 2):
       1. Exact (case-sensitive) match — preferred so user intent wins
-         when the model has two columns differing only by case
+         when the dataset has two fields differing only by case
          (``store_id`` and ``Store_ID``).
       2. Case-insensitive match — used when no exact match exists.
          Raises if multiple columns match case-insensitively (Postgres
          folds unquoted identifiers; sqlglot preserves what's written,
          so a hand-written ``ON ... = STORE_ID`` should pick the lower-
          case canonical column when that's the only match, but error
-         loudly if the model carries both cases).
+         loudly if the dataset carries both cases).
 
     Postgres folds unquoted identifiers to lowercase but
     sqlglot preserves what was written, so hand-written SQL like
     ``ON ORDERS.STORE_ID = STORES.ID`` would otherwise fail to match
-    against a model whose ``Column.name`` is ``store_id``. The canonical
-    return propagates the model-side casing to every downstream
+    against a dataset whose ``DatasetField.name`` is ``store_id``. The canonical
+    return propagates the dataset-side casing to every downstream
     comparison (the configured-join existence check, the dynamic-join
-    ``ModelExtension`` build).
+    ``DatasetExtension`` build).
     """
     if table.dataset_ref is None:
         return col_name
@@ -2748,7 +2748,7 @@ def _match_parent_join(
     the emitted ON columns; ``None`` when no edge reaches the target (dynamic fallback).
 
     Raises when edges reach the target but none — or several — match the ON columns
-    (an additive ModelExtension would duplicate an existing join).
+    (an additive DatasetExtension would duplicate an existing relationship).
     """
     same_target = [j for j in parent_table.relationships if j.to == target_name]
     if not same_target:
@@ -2757,12 +2757,12 @@ def _match_parent_join(
     if len(matching) == 1:
         return matching[0]
     configured = [j.join_pairs for j in same_target]
-    problem = "match several configured joins" if matching else "do not match the configured join_pairs"
+    problem = "match several configured relationships" if matching else "do not match the configured join_pairs"
     raise TranslationError(
         f"LEFT JOIN to {target_name!r} uses ON columns "
         f"({source_col!r}, {target_col!r}) which {problem} ({configured}) on "
-        f"{parent_table.name!r}. ModelExtension cannot override an existing join — "
-        f"adjust the emitted SQL to match a configured join, or update the model joins."
+        f"{parent_table.name!r}. DatasetExtension cannot override an existing relationship — "
+        f"adjust the emitted SQL to match a configured relationship, or update the dataset relationships."
     )
 
 
@@ -2806,8 +2806,8 @@ def _materialise_dynamic_join_lookups(
 def _extensions_from_join(
     *, parent_name: str, plan: _JoinPlan,
 ) -> list[DatasetExtension]:
-    """The query extensions the join plan needs: none when an existing configured join matched, else one
-    ``ModelExtension`` of the parent carrying the dynamically-built ``ModelJoin``."""
+    """The query extensions the join plan needs: none when an existing configured relationship matched, else one
+    ``DatasetExtension`` of the parent carrying the dynamically-built ``DatasetRelationship``."""
     if not plan.is_dynamic:
         return []
     return [DatasetExtension(
@@ -2840,14 +2840,14 @@ def _emit_join_warnings(plan: _JoinPlan, parent_name: str) -> None:
     if plan.is_dynamic:
         logger.warning(
             "pg-facade: dynamic join from %r to %r on %r=%r — no configured "
-            "join matched in parent.joins[]; using a ModelExtension to honor "
+            "relationship matched in parent.relationships[]; using a DatasetExtension to honor "
             "the emitted ON clause.",
             parent_name, plan.target_table.name, plan.source_col, plan.target_col,
         )
     elif plan.warn_cardinality:
         logger.warning(
-            "pg-facade: LEFT JOIN to %r matched a configured non-LEFT join "
-            "(join_type=INNER on %r.joins) — using the configured join_type "
+            "pg-facade: LEFT JOIN to %r matched a configured non-LEFT relationship "
+            "(join_type=INNER on %r.relationships) — using the configured join_type "
             "but cardinality semantics differ from the emitted SQL.",
             plan.target_table.name, parent_name,
         )

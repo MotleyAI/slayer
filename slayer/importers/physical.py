@@ -1,4 +1,4 @@
-"""Which logical column, if any, reads each physical column an importer's SQL names."""
+"""Which logical field, if any, reads each physical column an importer's SQL names."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ class UndecidableIdentifierCaseError(Exception):
 
 
 def physical_identifier(col: DatasetField, *, dialect: str | None) -> exp.Identifier:
-    """The identifier a base column's SQL reads (its name when it has none)."""
+    """The identifier a base field's SQL reads (its name when it has none)."""
     try:
         node = sqlglot.parse_one(col.sql, read=dialect) if col.sql is not None else None
     except SqlglotError:  # a reserved word such as `from`
@@ -56,7 +56,7 @@ def case_insensitive(dialect: str | None) -> bool:
 
 
 class PhysicalIndex:
-    """A model's columns plus the physical columns known to exist, matched in one dialect."""
+    """A dataset's fields plus the physical columns known to exist, matched in one dialect."""
 
     def __init__(self, fields: Iterable[DatasetField], *, dialect: str | None, live: Iterable[str] = ()) -> None:
         self.dialect = dialect
@@ -95,7 +95,7 @@ class PhysicalIndex:
         return bool(self._matches(ident, {self._spelling(exp.to_identifier(col.name))[0]: True}))
 
     def reader(self, ident: exp.Identifier) -> DatasetField | None:
-        """The unfiltered base column reading ``ident``'s physical column, a same-named one first."""
+        """The unfiltered base field reading ``ident``'s physical column, a same-named one first."""
         targets = self._targets(ident)
         readers = [c for c in self.columns if id(c) in self._reads and self._reads[id(c)][0] in targets]
         return next((c for c in readers if self._named(ident, c)), readers[0] if readers else None)
@@ -111,7 +111,7 @@ class PhysicalIndex:
                 continue
             if col.name == owner:
                 return f"{owner!r} reads the physical column of its own name"
-            return f"physical column {ident.name!r} is masked by the column {col.name!r}"
+            return f"physical column {ident.name!r} is masked by the field {col.name!r}"
         return None
 
     def sql_problem(self, sql: str, *, owner: str | None = None, logical: frozenset[str] = frozenset()) -> str | None:
@@ -134,7 +134,7 @@ def unreadable_fields(
     fields: list[DatasetField], *, dialect: str | None, live: Iterable[str] = (), logical: frozenset[str] = frozenset(),
     prepare: Callable[[str], str] = str,
 ) -> dict[str, str]:
-    """Columns to drop, with why: self-named ones first (freeing their names), then those reading a masked column.
+    """Fields to drop, with why: self-named ones first (freeing their names), then those reading a masked column.
 
     ``prepare`` turns stored SQL into parseable SQL (placeholders rendered)."""
     live = list(live)

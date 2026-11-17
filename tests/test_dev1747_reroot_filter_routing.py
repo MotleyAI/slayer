@@ -135,7 +135,7 @@ def _classifier_spy(monkeypatch: pytest.MonkeyPatch) -> list:
         return result
 
     monkeypatch.setattr(
-        stages, "_cross_model_inherited_filters", _recording,
+        stages, "_cross_dataset_inherited_filters", _recording,
     )
     return calls
 
@@ -201,9 +201,9 @@ class TestMixedOrPushes:
             population="orders",
             dimensions=[FieldRef(name="name", dataset="customers.regions")],
             metrics=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "sum(customers.spend)", "name": "cs"},
-                {"formula": "sum(customers.regions.population)", "name": "pop"},
+                {"expression": "sum(amount)", "name": "rev"},
+                {"expression": "sum(customers.spend)", "name": "cs"},
+                {"expression": "sum(customers.regions.population)", "name": "pop"},
             ],
             filter=[FILTER_MIXED_OR],
         )
@@ -303,7 +303,7 @@ class TestInternalFailuresRaise:
             raise boom
 
         monkeypatch.setattr(
-            stages, "_cross_model_inherited_filters", _explode, raising=True,
+            stages, "_cross_dataset_inherited_filters", _explode, raising=True,
         )
         with pytest.raises(RuntimeError, match="planner exploded"):
             _attaches(FILTER_REACHABLE)
@@ -370,7 +370,7 @@ class TestFilteredLocalDispatchAccounting:
                 population="orders",
                 dimensions=[FieldRef(name="status")],
                 metrics=[
-                    {"formula": "sum(amount)", "name": "rev"},
+                    {"expression": "sum(amount)", "name": "rev"},
                     _CROSS_MODEL_MEASURE,
                 ],
             ),
@@ -567,9 +567,9 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
         population="orders",
         dimensions=[FieldRef(name="name", dataset="customers.regions")],
         metrics=[
-            {"formula": "sum(amount)", "name": "rev"},
-            {"formula": "sum(customers.spend)", "name": "cs"},
-            {"formula": "sum(customers.regions.population)", "name": "pop"},
+            {"expression": "sum(amount)", "name": "rev"},
+            {"expression": "sum(customers.spend)", "name": "cs"},
+            {"expression": "sum(customers.regions.population)", "name": "pop"},
         ],
         filter=[FILTER_REACHABLE],
     )
@@ -619,8 +619,8 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
             population="orders",
             dimensions=[FieldRef(name="status")],
             metrics=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "count(order_tags.id)", "name": "tags"},
+                {"expression": "sum(amount)", "name": "rev"},
+                {"expression": "count(order_tags.id)", "name": "tags"},
             ],
             filter=["order_tags.name == 'rush'"],
         ))

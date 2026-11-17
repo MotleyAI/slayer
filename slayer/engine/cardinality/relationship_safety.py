@@ -1,5 +1,5 @@
-"""Join-arity safety: a hop is *provably many-to-one* iff, on its traversal
-orientation, its target-side columns cover a declared PK/unique set or its
+"""Relationship-arity safety: a hop is *provably many-to-one* iff, on its traversal
+orientation, its target-side fields cover a declared PK/unique set or its
 oriented cardinality is ``many_to_one``/``one_to_one``. Unknown = unsafe.
 Both orientations of every declared edge participate; proof is per orientation,
 so one direction may be provably to-one while the other fans out."""
@@ -79,7 +79,7 @@ def may_inline_crossing_inputs(crossed_paths: Sequence[tuple]) -> bool:  # NOSON
 
 
 def provably_fans(*, edge: OrientedLike, target_dataset: SlayerDataset) -> bool:
-    """Is ``edge`` provably fanning onto ``target_model`` in its orientation?
+    """Is ``edge`` provably fanning onto ``to`` in its orientation?
     True iff it is NOT provably many-to-one and its declared cardinality is
     ``one_to_many``/``many_to_many`` — proof beats a contradictory to-many
     declaration, so a reverse-PK-covered or undeclared hop is unproven, not
@@ -141,7 +141,7 @@ def audit_relationship_safety(
     """One finding per declared edge, recording both orientations' provability.
     The forward-unproven edges carry their consequence and remedies;
     data-contradicted declarations are appended as separate error findings."""
-    # Joins resolve within the parent model's datasource — no cross-datasource shadowing.
+    # Relationships resolve within the parent dataset's datasource — no cross-datasource shadowing.
     models_by_key = {(m.data_source, m.name): m for m in datasets}
     findings: list[RelationshipSafetyFinding] = []
     for model in datasets:
@@ -162,7 +162,7 @@ def audit_relationship_safety(
 def _key_findings(
     *, dataset: SlayerDataset, relationship: DatasetRelationship, target: SlayerDataset,
 ) -> list[RelationshipSafetyFinding]:
-    """An error finding per key that is not a declared base column on its side."""
+    """An error finding per key that is not a declared base field on its side."""
     errors = [
         relationship_key_error(dataset=dataset.name, target=relationship.to, key=key,
                        side=side.name, fields=side.fields)
@@ -192,14 +192,14 @@ def _edge_finding(
     rev_ok = provably_to_one(edge=rev_edge, target_dataset=dataset)
     if fwd_ok:
         message = (
-            f"Join {dataset.name} → {relationship.to} is provably "
+            f"Relationship {dataset.name} → {relationship.to} is provably "
             f"to-one; the reverse hop "
             f"{relationship.to} → {dataset.name} "
             f"{'is provably to-one' if rev_ok else 'fans out'}."
         )
     else:
         message = (
-            f"Join {dataset.name} → {relationship.to} is unproven: "
+            f"Relationship {dataset.name} → {relationship.to} is unproven: "
             f"dimensions across it are associated (cells may overlap; "
             f"to_many_handling='broadcast' repeats the total instead) and "
             f"aggregation inputs across it are refused. Remedies: {_UNPROVEN_REMEDY}."
@@ -221,7 +221,7 @@ def _contradiction_finding(finding: RelationshipCardinalityFinding) -> Relations
         dataset=finding.dataset,
         to=finding.to,
         message=(
-            f"Join {finding.dataset} → {finding.to} declares "
+            f"Relationship {finding.dataset} → {finding.to} declares "
             f"{finding.stored}, but cardinality detection contradicts "
             f"it (observed {finding.detected})."
         ),
@@ -289,7 +289,7 @@ def spine_route_error(*, dataset: str, routes: list[list[OrientedRelationship]],
         reference=f"{dataset}.{leaf}", root_dataset=TIME_SPINE_DATASET,
         reason="equal-length routes to the time spine: " + ", ".join(
             ".".join((dataset, *canonical_path(r))) for r in routes
-        ) + "; give the model a default_time_dimension, or query its facts through one of the routes",
+        ) + "; give the dataset a default_time_dimension, or query its facts through one of the routes",
     )
 
 
@@ -357,8 +357,8 @@ def _effective_dependency_paths(
 ) -> List[Tuple[str, ...]]:
     """The paths a reference actually depends on, for attributability /
     determination: the MAXIMAL closure paths (a full derived crossing, not the
-    intermediate join prefixes the join builder needs) plus the reference's OWN
-    path always (a host-declared derived column's ``()`` host-locality, which a
+    intermediate relationship prefixes the join builder needs) plus the reference's OWN
+    path always (a host-declared derived field's ``()`` host-locality, which a
     maximal filter would swallow as a prefix)."""
     paths = set(closure)
     maximal = [
@@ -445,7 +445,7 @@ def _reroot_leaf_via_host(
     ) and hp and not _common_prefix_len(target_path, hp) and safe_reachable(
         root=root_dataset, path=hp, datasets_by_name=datasets_by_name,
     ):
-        return None  # resolved through the root's own join to the sibling
+        return None  # resolved through the root's own relationship to the sibling
     if isinstance(r, TimeTruncKey):
         return r.model_copy(update={
             "source": cast(FieldKey | FieldSqlKey, r.source).model_copy(update={"path": via_host}),
@@ -465,8 +465,8 @@ def reroot_from_root(
     tp = tuple(target_path)
     mapping: Dict[ValueKey, ValueKey] = {}
     for r in walk_value_keys(key):
-        # A column bucket reroots whole (substitute matches it pre-order, so its
-        # inner-column entry is inert); an expression bucket's leaves reroot alone.
+        # A field bucket reroots whole (substitute matches it pre-order, so its
+        # inner-field entry is inert); an expression bucket's leaves reroot alone.
         rerooted = _reroot_leaf_via_host(
             r, target_path=tp, root_dataset=root_dataset,
             datasets_by_name=datasets_by_name, host_name=host_name,
@@ -485,7 +485,7 @@ def reroot_from_root(
 def lower_axis_hops(
     key: _RerootableT, *, root_dataset: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
 ) -> _RerootableT:
-    """The spine column reached over an axis edge is the axis column itself (never a join)."""
+    """The spine field reached over an axis edge is the axis field itself (never a join)."""
     universe = _factor_free(datasets_by_name)
     root = universe.get(root_dataset.name, root_dataset)
     mapping: Dict[ValueKey, ValueKey] = {}
@@ -507,7 +507,7 @@ def lower_axis_hops(
     return substitute_value_keys(key, mapping) if mapping else key
 
 
-UNREACHABLE_NO_PATH = "unreachable from the aggregate's root (no join path from it)"
+UNREACHABLE_NO_PATH = "unreachable from the aggregate's root (no relationship path from it)"
 
 
 def _hop_walk_reason(
@@ -529,7 +529,7 @@ def _hop_walk_reason(
             return None
         if not provably_to_one(edge=edge, target_dataset=tgt):
             token = path[i] if i < len(path) else edge.to
-            return f"crosses a fanning or unproven join hop to {token}"
+            return f"crosses a fanning or unproven relationship hop to {token}"
     return None
 
 
@@ -538,7 +538,7 @@ def broadcast_reason(
     root_dataset: SlayerDataset, datasets_by_name: Dict[str, SlayerDataset],
     host_name: Optional[str] = None,
 ) -> str:
-    """Why a dimension broadcasts: crosses an unproven/fanning join hop (forward
+    """Why a dimension broadcasts: crosses an unproven/fanning relationship hop (forward
     from the root, or back through the reverse hop), or unreachable if no path."""
     tp, hp = tuple(target_path), tuple(host_path)
     if _is_product_path(hp, host_name=host_name, datasets_by_name=datasets_by_name):
@@ -567,7 +567,7 @@ def assert_partition_key_attributable(
     scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> None:
     """A partition key whose dependency closure crosses a fanning hop is unattributable; the checker raises. Path-less keys are judged from the host, path-bearing from the aggregate's root."""
-    # StageSchema binds flat stage outputs — no join graph, so no fanning closure exists.
+    # StageSchema binds flat stage outputs — no relationship graph, so no fanning closure exists.
     host_m = scope.population if isinstance(scope, DatasetScope) else None
     if host_m is None:
         return
@@ -577,7 +577,7 @@ def assert_partition_key_attributable(
         return  # a row-level read across a product hop: the checker refuses it (Axiom 3.1)
     if not hp:
         # Path-less derived key: a fan from its own host is a mode-invariant safety
-        # error; a host-safe key's cross-model-root concern stays the planner's.
+        # error; a host-safe key's cross-dataset-root concern stays the planner's.
         root, target, host_name = host_m, (), None
     else:
         target = source_anchor_path(key.source) if isinstance(key, AggregateKey) else ()
@@ -602,7 +602,7 @@ def shared_relationship_key_reroot(
     *, key: ValueKey, target_path: Tuple[str, ...], host_dataset: SlayerDataset,
     datasets_by_name: Dict[str, SlayerDataset],
 ) -> Optional[ValueKey]:
-    """A host-local dimension that IS a source-side join column of the single hop to the root: return the root's target-side key, else ``None``."""
+    """A host-local dimension that IS a source-side relationship key of the single hop to the root: return the root's target-side key, else ``None``."""
     leaf = _grain_leaf_name(key)
     if leaf is None or key_host_path(key) or len(target_path) != 1:
         return None
@@ -627,7 +627,7 @@ def grain_member_attributable(
     datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
     host_dataset: SlayerDataset, host_name: Optional[str] = None,
 ) -> bool:
-    """Is a grain member attributable from the aggregate's root? Every column it
+    """Is a grain member attributable from the aggregate's root? Every field it
     references must be — judged on its dependency closure so a derived
     fanning reference is unattributable; every nested aggregate must be too."""
     saw = False
@@ -651,7 +651,7 @@ def grain_member_attributable(
 
 
 def _grain_leaf_name(key: ValueKey) -> Optional[str]:
-    """The column name a column-ish grain member / dimension names, else None."""
+    """The field name a field-ish grain member / dimension names, else None."""
     if isinstance(key, FieldKey):
         return key.leaf
     if isinstance(key, FieldSqlKey):
@@ -730,7 +730,7 @@ def _field_pinned(
     *, key: ValueKey, grain: Grain, host_dataset: SlayerDataset,
     datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
 ) -> bool:
-    """Every dependency-closure path of a column is pinned by the grain over
+    """Every dependency-closure path of a field is pinned by the grain over
     provably to-one hops; an unanalysable closure is not."""
     closure = key_closure(
         key=key, anchor_dataset=host_dataset, anchor_relation=host_dataset.name,
@@ -739,7 +739,7 @@ def _field_pinned(
     if closure is None:
         return False
     # Each dependency is pinned at its OWN depth (reseeded per hop), so check the
-    # effective (maximal + own) paths — a join prefix is pinned implicitly by the
+    # effective (maximal + own) paths — a relationship prefix is pinned implicitly by the
     # deeper walk that passes through it, never independently.
     return all(
         _path_grain_determined(
@@ -768,7 +768,7 @@ def determination_broadcast_reason(
     ):
         return (
             f"not determined by the operand grain — add {key_display(witness)} "
-            f"(or its model's key) to the inner partition_by="
+            f"(or its dataset's key) to the inner partition_by="
         )
     return key_broadcast_reason(
         key=witness, target_path=(), root_dataset=host_dataset, datasets_by_name=datasets_by_name,
@@ -794,7 +794,7 @@ def _hop_pins(
     path: Tuple[str, ...], i: int, pinned_before: bool,
 ) -> bool:
     """The to-one target of ``edge`` stays pinned iff its own entity key is seeded,
-    its host-side FK columns are grain members, or the source was pinned and the hop
+    its host-side FK fields are grain members, or the source was pinned and the hop
     is provably to-one."""
     to_one = provably_to_one(edge=edge, target_dataset=tgt)
     src_leaves = _grain_leaves(grain=grain, at=path[:i])
@@ -834,7 +834,7 @@ def _path_grain_determined(
 def crossing_local_root_predicate(
     *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> Callable[[ValueKey], bool]:
-    """Predicate for a LOCAL plain aggregate whose inputs cross a join (desugars onto a HOST-rooted producer); windowed / ranked roots excluded."""
+    """Predicate for a LOCAL plain aggregate whose inputs cross a relationship (desugars onto a HOST-rooted producer); windowed / ranked roots excluded."""
     host_model = scope.population if isinstance(scope, DatasetScope) else None
 
     def _pred(k: ValueKey) -> bool:

@@ -119,22 +119,22 @@ async def test_collect_model_entity_pairs_propagates_each_kind(
 
     # Model node.
     model_pair = by_id["warehouse.orders"]
-    assert model_pair.kind == "model"
+    assert model_pair.kind == "dataset"
     assert model_pair.description == "Orders table desc."
 
     # Column with a description.
     col_pair = by_id["warehouse.orders.amount_paid"]
-    assert col_pair.kind == "column"
+    assert col_pair.kind == "field"
     assert col_pair.description == "amount_paid column desc."
 
     # Column without a description.
     bare_col = by_id["warehouse.orders.status"]
-    assert bare_col.kind == "column"
+    assert bare_col.kind == "field"
     assert bare_col.description is None
 
     # Measure.
     measure_pair = by_id["warehouse.orders.revenue"]
-    assert measure_pair.kind == "measure"
+    assert measure_pair.kind == "metric"
     assert measure_pair.description == "revenue measure desc."
 
     # Aggregation.

@@ -59,7 +59,7 @@ class TestFailClosed:
 
     async def test_empty_determination_set_has_dedicated_error(self, storage) -> None:
         """Only measures, no dims/field-filters ⇒ nothing to infer from."""
-        query = SlayerQuery.model_validate({"metrics": [{"formula": "sum(orders.amount)", "name": "rev"}]})
+        query = SlayerQuery.model_validate({"metrics": [{"expression": "sum(orders.amount)", "name": "rev"}]})
         with pytest.raises(PopulationInferenceError) as ei:
             await infer_population(query=query, storage=storage, data_source=DS_CHAIN)
         err = ei.value
@@ -119,7 +119,7 @@ class TestFailClosed:
     async def test_measure_only_without_datasource_is_empty_determination(self, storage) -> None:
         """A measures-only query has nothing to infer from — even with no
         data_source it is EMPTY_DETERMINATION, never a datasource error."""
-        query = SlayerQuery.model_validate({"metrics": [{"formula": "sum(orders.amount)", "name": "rev"}]})
+        query = SlayerQuery.model_validate({"metrics": [{"expression": "sum(orders.amount)", "name": "rev"}]})
         with pytest.raises(PopulationInferenceError) as ei:
             await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.EMPTY_DETERMINATION

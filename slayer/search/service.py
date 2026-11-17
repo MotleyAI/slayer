@@ -2,7 +2,7 @@
 
 A search validates inputs, resolves entities leniently (failures warn), applies the optional
 ``cypher_filter`` allowlist to every channel before the ``max_results`` cap, surfaces user-named
-entities as themselves, fans out to retrievers in parallel and refreshes surfaced column samples.
+entities as themselves, fans out to retrievers in parallel and refreshes surfaced field samples.
 Retriever rankings are never truncated, so changing ``max_results`` never reorders hits. Writes fan
 out to every retriever with failures isolated as warnings; deletes stay with ``StorageBackend``.
 """
@@ -104,7 +104,7 @@ class LookupFound(BaseModel):
 
 class LookupHidden(BaseModel):
     """The canonical resolved but is gated by a ``hidden`` flag (on the
-    model or on the column). ``reason`` is a short human-readable hint
+    dataset or on the field). ``reason`` is a short human-readable hint
     used to compose the caller-facing warning."""
 
     reason: str
@@ -112,7 +112,7 @@ class LookupHidden(BaseModel):
 
 class LookupMissing(BaseModel):
     """The canonical resolved at ``_resolve_inputs`` time but the
-    underlying datasource / model / leaf is no longer present at lookup
+    underlying datasource / dataset / leaf is no longer present at lookup
     time (race between resolve and lookup, or the entity was deleted)."""
 
     pass
@@ -433,12 +433,12 @@ async def _lookup_dataset_or_leaf_canonical(
     leaf: str | None,
     storage: StorageBackend,
 ) -> LookupResult:
-    """Render a ``<ds>.<model>[.<leaf>]`` canonical, or report it hidden / missing."""
+    """Render a ``<ds>.<dataset>[.<leaf>]`` canonical, or report it hidden / missing."""
     model = await storage.get_dataset_or_builtin(dataset_name, data_source=ds)
     if model is None:
         return LookupMissing()
     if model.hidden:
-        return LookupHidden(reason="hidden model")
+        return LookupHidden(reason="hidden dataset")
     for re in collect_dataset_entity_pairs(dataset=model):
         if re.canonical_id == canonical:
             return LookupFound(
@@ -447,7 +447,7 @@ async def _lookup_dataset_or_leaf_canonical(
     if leaf is not None:
         for column in model.fields:
             if column.name == leaf and column.hidden:
-                return LookupHidden(reason="hidden column")
+                return LookupHidden(reason="hidden field")
     return LookupMissing()
 
 
@@ -481,13 +481,13 @@ async def _lookup_named_entity(
     )
 
 
-# --- Column-hit refresh helpers ---
+# --- Field-hit refresh helpers ---
 
 
 def _group_field_hits(
     results: list[SearchHit],
 ) -> dict[tuple[str, str], list[tuple[int, SearchHit, str]]]:
-    """Group column hits by ``(data_source, model)`` as ``(result_index, hit, column_name)`` tuples."""
+    """Group field hits by ``(data_source, dataset)`` as ``(result_index, hit, column_name)`` tuples."""
     groups: dict[tuple[str, str], list[tuple[int, SearchHit, str]]] = {}
     for idx, hit in enumerate(results):
         if hit.kind != "field":
@@ -515,7 +515,7 @@ class SearchService:
         engine: SlayerQueryEngine | None = None,
         retrievers: list[Retriever] | None = None,
     ) -> None:
-        """``engine`` is optional; without one the post-fusion column-hit refresh is a no-op."""
+        """``engine`` is optional; without one the post-fusion field-hit refresh is a no-op."""
         self._storage = storage
         self._engine = engine
         self._retrievers: list[Retriever] = (
@@ -541,7 +541,7 @@ class SearchService:
         results: list[SearchHit],
         compact: bool = True,
     ) -> list[SearchHit]:
-        """Refresh column hits per ``(data_source, model)`` group, models in parallel.
+        """Refresh field hits per ``(data_source, dataset)`` group, datasets in parallel.
 
         Under ``compact=True`` only ``description`` is refreshed; ``text`` stays ``""``.
         """
@@ -573,7 +573,7 @@ class SearchService:
         refreshed_by_idx: dict[int, SearchHit],
         compact: bool = True,
     ) -> None:
-        """Profile one model's column hits in a single owner call; write changed hits into ``refreshed_by_idx``."""
+        """Profile one dataset's field hits in a single owner call; write changed hits into ``refreshed_by_idx``."""
         assert self._engine is not None  # caller-guarded
         try:
             model = await self._storage.get_dataset(
@@ -581,7 +581,7 @@ class SearchService:
             )
         except Exception as exc:  # NOSONAR(S112) — best-effort
             logger.warning(
-                "search refresh: failed to load model %s.%s: %s",
+                "search refresh: failed to load dataset %s.%s: %s",
                 ds_name, dataset_name, exc,
             )
             return
@@ -925,7 +925,7 @@ class SearchService:
         self, dataset: SlayerDataset,
     ) -> list[str]:
         return await self._fan_out_with_isolation(
-            hook_name="refresh_model_subtree",
+            hook_name="refresh_dataset_subtree",
             invoke=lambda r: r.refresh_dataset_subtree(dataset),
         )
 
@@ -1183,7 +1183,7 @@ class SearchService:
         failures: DocumentLoadFailures,
         datasource: str | None = None,
     ) -> tuple[list[SlayerDataset], list[str], dict[str, str | None]]:
-        """Return ``(models, datasources, {ds_name: description})`` for the corpus build."""
+        """Return ``(datasets, datasources, {ds_name: description})`` for the corpus build."""
         datasources = await self._storage.list_datasources()
         if datasource is not None:
             datasources = [d for d in datasources if d == datasource]
@@ -1206,7 +1206,7 @@ async def handle_edit_refresh(
     changed_fields: set[str],
     dataset_level_change: bool,
 ) -> list[str]:
-    """``edit_model`` refresh: re-sample changed columns (all on a model-level change), then re-embed; failures warn."""
+    """``edit_dataset`` refresh: re-sample changed fields (all on a dataset-level change), then re-embed; failures warn."""
     model = await storage.get_dataset(name=dataset_name, data_source=data_source)
     if model is None:
         return [f"dataset {dataset_name!r} not found in datasource {data_source!r}"]
@@ -1214,7 +1214,7 @@ async def handle_edit_refresh(
     warnings = await refresh_table_backed_dataset_sampled(
         dataset=model, engine=engine, storage=storage, only_fields=only,
     )
-    # Reload so the embedding text matches the refreshed model's content_hash.
+    # Reload so the embedding text matches the refreshed dataset's content_hash.
     reloaded = await storage.get_dataset(name=dataset_name, data_source=data_source)
     if reloaded is not None:
         warnings.extend(await SearchService(storage=storage).refresh_dataset_subtree(reloaded))

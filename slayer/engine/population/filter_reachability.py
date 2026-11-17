@@ -1,6 +1,6 @@
 """Per-filter structural summary: whether a host filter depends on anything anchored at the host root.
 
-The summary lives per-filter on ``PlannedQuery`` — not on ``ColumnSqlKey`` (interned and
+The summary lives per-filter on ``PlannedQuery`` — not on ``FieldSqlKey`` (interned and
 re-anchored by ``model_copy``, which would carry the field through rerooting stale) and not
 on ``ValueSlot`` (a filter-only derived key has no interned slot, and slots are copied into
 nested plans). Every summary is expressed in the coordinate system of the ``PlannedQuery``
@@ -37,7 +37,7 @@ Path = Tuple[str, ...]
 def _resolve_key_field(
     *, key: FieldSqlKey, anchor_dataset: SlayerDataset | None, bundle: ResolvedSourceBundle,
 ) -> tuple[SlayerDataset | None, DatasetField | None]:
-    """The (model, column) a ``ColumnSqlKey`` names, or ``(None, None)``."""
+    """The (dataset, field) a ``FieldSqlKey`` names, or ``(None, None)``."""
     model = (
         anchor_dataset if key.dataset == getattr(anchor_dataset, "name", None)
         else bundle.get_referenced_dataset(key.dataset)
@@ -63,11 +63,11 @@ def _expanded_fragment_ast(
     *, fragment: str, dataset, field_name: str, key_path: Path,
     anchor_relation: str, bundle, cache: "Optional[dict]" = None,
 ):
-    """A definition fragment (value or filter) expanded + parsed at the column's
+    """A definition fragment (value or filter) expanded + parsed at the field's
     own anchoring convention, so its refs come out already path-prefixed.
 
     Memoised through the caller-supplied plan-scoped ``cache`` — the fragment
-    string is part of the key, so a column's value and filter never collide. The
+    string is part of the key, so a field's value and filter never collide. The
     cache is passed IN, never module-global: a global keyed by ``id(bundle)`` is
     unsound (CPython reuses collected ids), so it must not outlive its bundle.
     """
@@ -86,7 +86,7 @@ def _expanded_fragment_ast(
 
 
 def _fragment_touches_anchor(parsed, *, anchor_relation: str) -> bool:
-    """Whether a parsed fragment carries a column anchored at ``anchor_relation``
+    """Whether a parsed fragment carries a field anchored at ``anchor_relation``
     (or unqualified). ``None`` (unanalysable) counts as touching — fail safe."""
     if parsed is None:
         return True
@@ -101,25 +101,25 @@ def _derived_def_touches_anchor(
     *, key: FieldSqlKey, anchor_dataset, anchor_relation: str, bundle,
     cache: "Optional[dict]" = None,
 ) -> bool:
-    """Whether a derived column's definition — its ``Column.sql`` VALUE or its
-    ``Column.filter`` (DEV-1832) — references the ANCHOR relation.
+    """Whether a derived field's definition — its ``DatasetField.sql`` VALUE or its
+    ``DatasetField.filter`` — references the ANCHOR relation.
 
     Both fragments are definition inputs (mirrors ``reference_closure``'s
-    ``_definition_fragments``): a column whose value crosses INTO a joined model
-    but whose filter reads a host-local column is STILL host-local — its mask
-    cannot move off the host, where that column is bound. Tested per fragment,
+    ``_definition_fragments``): a field whose value crosses INTO a joined dataset
+    but whose filter reads a host-local field is STILL host-local — its mask
+    cannot move off the host, where that field is bound. Tested per fragment,
     not inferred from the crossed set: ``amount * customers.rate`` crosses into
     ``customers`` yet depends on host-local ``amount``.
 
-    A column with no explicit ``sql`` masks its OWN physical column, so the value
-    fragment falls back to ``col.name`` — an implicit reference at the column's
-    own path (host-local for a ``path=()`` column), never dropped.
+    A field with no explicit ``sql`` masks its OWN physical column, so the value
+    fragment falls back to ``col.name`` — an implicit reference at the field's
+    own path (host-local for a ``path=()`` field), never dropped.
     """
     model, col = _resolve_key_field(
         key=key, anchor_dataset=anchor_dataset, bundle=bundle,
     )
     if model is None or col is None:
-        return True  # nothing resolvable — a bare column name on the anchor
+        return True  # nothing resolvable — a bare field name on the anchor
     fragments = [frag for frag in (col.sql or col.name, col.filter) if frag]
     if not fragments:
         return True
@@ -145,7 +145,7 @@ def key_has_host_local_ref(
     A host-local dependency cannot be evaluated inside a CTE rooted elsewhere,
     so a filter carrying one stays at the host even when its other dependencies
     are reachable. Distinguished from "crosses nothing" deliberately: a derived
-    column declared on the host whose ``Column.sql`` reaches INTO the target
+    field declared on the host whose ``DatasetField.sql`` reaches INTO the target
     has an empty anchored path but is NOT host-local — inside the target's
     scope its expansion resolves.
     """

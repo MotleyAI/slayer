@@ -141,11 +141,11 @@ class TestSameNameCollisionGuardLive:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                {"formula": "cumsum(sum(amount))", "name": "dup"},
-                {"formula": "cumsum(sum(amount))", "name": "dup"},
+                {"expression": "cumsum(sum(amount))", "name": "dup"},
+                {"expression": "cumsum(sum(amount))", "name": "dup"},
             ],
             time_dimensions=[
-                {"dimension": {"name": "created_at"}, "granularity": "month"},
+                {"field": {"name": "created_at"}, "granularity": "month"},
             ],
         )
         model = self._orders()

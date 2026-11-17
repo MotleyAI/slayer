@@ -139,11 +139,11 @@ class _PendingRefresh:
 class EmbeddingRetriever(Retriever):
     """Cosine-similarity retriever over a SQLite-sidecar embedding
     store, plus the refresh pipeline that keeps the sidecar in step
-    with model / memory edits.
+    with dataset / memory edits.
 
     The delete hooks intentionally default to ABC no-op:
     :class:`StorageBackend` cascade-deletes embedding rows
-    transactionally with the model / datasource / memory row delete,
+    transactionally with the dataset / datasource / memory row delete,
     so the retriever has nothing to do on delete this PR."""
 
     name = "embeddings"
@@ -341,12 +341,12 @@ class EmbeddingRetriever(Retriever):
         return await self._apply_pending([pending])
 
     async def refresh_dataset_subtree(self, dataset: SlayerDataset) -> list[str]:
-        """Refresh the model doc + every visible column + named measures
+        """Refresh the dataset doc + every visible field + named metrics
         + custom aggregations in a single batch call.
 
         Routes through the unified :func:`collect_model_entity_pairs` so
         the "what counts as an indexable entity" filter rules (hidden
-        model -> empty; hidden column skipped; unnamed measure skipped)
+        dataset -> empty; hidden field skipped; unnamed metric skipped)
         live in exactly one place (DEV-1513).
         """
         if not embedding_client.is_available():

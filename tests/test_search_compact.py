@@ -323,7 +323,7 @@ async def test_entity_hit_compact_surfaces_entity_description(
     resp = await service.search(question="amount paid net usd", compact=True)
     column_hits = [
         h for h in resp.results
-        if h.kind == "column" and h.id == "warehouse.orders.amount_paid"
+        if h.kind == "field" and h.id == "warehouse.orders.amount_paid"
     ]
     assert column_hits, "expected the amount_paid column to surface"
     hit = column_hits[0]
@@ -346,7 +346,7 @@ async def test_entity_hit_compact_description_none_when_entity_has_none(
     resp = await service.search(question="raw_amount", compact=True)
     column_hits = [
         h for h in resp.results
-        if h.kind == "column" and h.id == "warehouse.bare.raw_amount"
+        if h.kind == "field" and h.id == "warehouse.bare.raw_amount"
     ]
     assert column_hits
     hit = column_hits[0]
@@ -361,7 +361,7 @@ async def test_entity_hit_verbose_uses_full_render_text(
     resp = await service.search(question="amount paid net usd", compact=False)
     column_hits = [
         h for h in resp.results
-        if h.kind == "column" and h.id == "warehouse.orders.amount_paid"
+        if h.kind == "field" and h.id == "warehouse.orders.amount_paid"
     ]
     assert column_hits
     hit = column_hits[0]
@@ -474,7 +474,7 @@ async def test_compact_plus_lazy_column_refresh_keeps_text_empty(
     monkeypatch.setattr(svc_mod, "ensure_samples_fresh", fake_refresh)
 
     resp = await service.search(question="amount paid net", compact=True)
-    column_hits = [h for h in resp.results if h.kind == "column"]
+    column_hits = [h for h in resp.results if h.kind == "field"]
     assert column_hits, "expected at least one column hit to trigger refresh"
     assert refreshed_calls, "expected the refresh hook to fire"
     for h in column_hits:
@@ -499,7 +499,7 @@ async def test_verbose_plus_lazy_column_refresh_regenerates_text(
     monkeypatch.setattr(svc_mod, "ensure_samples_fresh", fake_refresh)
 
     resp = await service.search(question="amount paid", compact=False)
-    column_hits = [h for h in resp.results if h.kind == "column"]
+    column_hits = [h for h in resp.results if h.kind == "field"]
     assert column_hits
     # Verbose text is the full render — first line names the column.
     assert any(
@@ -581,7 +581,7 @@ async def test_compact_with_cypher_filter_excludes_non_matching(
         compact=True,
     )
     assert all(h.id != mem_id for h in filtered.results)
-    column_hits = [h for h in filtered.results if h.kind == "column"]
+    column_hits = [h for h in filtered.results if h.kind == "field"]
     assert column_hits, "expected column hits to survive the cypher filter"
     for h in column_hits:
         assert h.text == ""
@@ -618,7 +618,7 @@ async def test_compact_with_datasource_pre_filter(
     assert all(not h.id.startswith("other_ds") for h in resp.results)
     warehouse_column_hits = [
         h for h in resp.results
-        if h.kind == "column" and h.id.startswith("warehouse.")
+        if h.kind == "field" and h.id.startswith("warehouse.")
     ]
     assert warehouse_column_hits, "warehouse hits must survive the filter"
     for h in warehouse_column_hits:

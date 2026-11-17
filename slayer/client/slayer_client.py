@@ -609,8 +609,8 @@ class SlayerClient:
         self, items: list[str], *, data_source: str | None = None,
         root_hint: str | None = None,
     ) -> "PopulationRecommendation":
-        """Recommend the query root (``source_model``) for a set of
-        ``model.column``/``model.metric`` items, plus each item's path from it.
+        """Recommend the query root (``population``) for a set of
+        ``dataset.field``/``dataset.metric`` items, plus each item's path from it.
         ``root_hint`` forces the root when it reaches every item."""
         if self._engine is not None:
             return await self._engine.recommend_population(

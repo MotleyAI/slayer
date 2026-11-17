@@ -42,9 +42,9 @@ def convert_dbt_filter(
 
     Args:
         filter_str: The raw dbt filter, e.g. "{{ Dimension('claim_amount__has_loss_payment') }} = 1"
-        source_model_name: Name of the model this filter is defined on.
+        population_name: Name of the model this filter is defined on.
         entity_registry: Registry mapping entity names to primary models.
-        model_entity_names: {entity_name: entity_type} for entities defined on the source model.
+        dataset_entity_names: {entity_name: entity_type} for entities defined on the source model.
             Used to determine if an entity reference is local (primary) or remote (foreign).
         all_semantic_models: {model_name: DbtSemanticModel} for all parsed models.
             Used to verify whether a dimension actually exists on the source model when

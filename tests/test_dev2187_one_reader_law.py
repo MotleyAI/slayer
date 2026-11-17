@@ -418,7 +418,7 @@ async def test_a_quoted_parenthesis_buckets_the_whole_expression(engine: SlayerQ
 # Parity pins: the misplaced-measure check
 # --------------------------------------------------------------------------- #
 def _misplaced(resp: Any) -> list[str]:
-    return [w.original for w in resp.warnings if isinstance(w, NormalizationWarning) and w.rule_id == "MISPLACED_MEASURE"]
+    return [w.original for w in resp.warnings if isinstance(w, NormalizationWarning) and w.rule_id == "MISPLACED_METRIC"]
 
 
 async def test_a_bare_column_measure_moves_to_dimensions(engine: SlayerQueryEngine) -> None:

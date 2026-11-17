@@ -163,7 +163,7 @@ class TestArgValidation:
     async def test_invalid_format_raises(self, svc: InspectService) -> None:
         with pytest.raises(ValueError, match="format"):
             await svc.inspect(
-                reference="mydb.orders", entity_type="model", format="yaml",
+                reference="mydb.orders", entity_type="dataset", format="yaml",
             )
 
     async def test_negative_descriptions_max_chars_raises(
@@ -171,7 +171,7 @@ class TestArgValidation:
     ) -> None:
         with pytest.raises(ValueError, match="descriptions_max_chars"):
             await svc.inspect(
-                reference="mydb.orders.amount", entity_type="column",
+                reference="mydb.orders.amount", entity_type="field",
                 descriptions_max_chars=-1,
             )
 
@@ -191,7 +191,7 @@ class TestPerKindFullRender:
 
     async def test_column(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
         )
         assert "Column: mydb.orders.amount" in out
         assert "Order total in USD." in out
@@ -199,7 +199,7 @@ class TestPerKindFullRender:
 
     async def test_measure(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.aov", entity_type="measure", compact=False,
+            reference="mydb.orders.aov", entity_type="metric", compact=False,
         )
         assert "Measure: mydb.orders.aov" in out
         assert "sum(amount) / count(*)" in out
@@ -213,7 +213,7 @@ class TestPerKindFullRender:
 
     async def test_model(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=False,
+            reference="mydb.orders", entity_type="dataset", compact=False,
         )
         # Reuses the inspect_model renderer.
         assert "# Model: `orders`" in out
@@ -230,7 +230,7 @@ class TestCompact:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=True,
+            reference="mydb.orders.amount", entity_type="field", compact=True,
         )
         assert "Order total in USD." in out
         # Full-render-only fields must be absent in compact mode.
@@ -239,10 +239,10 @@ class TestCompact:
 
     async def test_compact_is_default(self, svc: InspectService) -> None:
         default = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column",
+            reference="mydb.orders.amount", entity_type="field",
         )
         explicit = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=True,
+            reference="mydb.orders.amount", entity_type="field", compact=True,
         )
         assert default == explicit
 
@@ -252,7 +252,7 @@ class TestCompact:
         # Model compact is a cheap schema *skeleton* (names
         # only, zero DB), NOT description-only and NOT the full renderer.
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=True,
+            reference="mydb.orders", entity_type="dataset", compact=True,
         )
         # Description still shown.
         assert "One row per placed order." in out
@@ -285,7 +285,7 @@ class TestNormalization:
     ) -> None:
         # orders -> customers join; region lives on customers.
         out = await svc.inspect(
-            reference="mydb.orders.customers.region", entity_type="column",
+            reference="mydb.orders.customers.region", entity_type="field",
             compact=False,
         )
         # Rendered against the OWNING model, not orders.
@@ -294,7 +294,7 @@ class TestNormalization:
 
     async def test_normalized_id_echoed_in_json(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.customers.region", entity_type="column",
+            reference="mydb.orders.customers.region", entity_type="field",
             format="json", compact=False,
         )
         payload = json.loads(out)
@@ -313,7 +313,7 @@ class TestCollision:
     ) -> None:
         # 'big' is both a column and an aggregation on orders.
         out = await svc.inspect(
-            reference="mydb.orders.big", entity_type="column", compact=False,
+            reference="mydb.orders.big", entity_type="field", compact=False,
         )
         assert "Column: mydb.orders.big" in out
         assert "Aggregation:" not in out
@@ -366,7 +366,7 @@ class TestCollision:
         ))
         svc = InspectService(storage=storage)
         as_measure = await svc.inspect(
-            reference="mydb.ma.same", entity_type="measure", compact=False,
+            reference="mydb.ma.same", entity_type="metric", compact=False,
         )
         assert "Measure: mydb.ma.same" in as_measure
         assert "Aggregation:" not in as_measure
@@ -389,7 +389,7 @@ class TestEntityTypeMismatch:
         # amount is a column; asking for measure must error and name what's
         # actually there.
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="measure", compact=False,
+            reference="mydb.orders.amount", entity_type="metric", compact=False,
         )
         assert "measure" in out.lower()
         assert "column" in out.lower()
@@ -398,7 +398,7 @@ class TestEntityTypeMismatch:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="model", compact=False,
+            reference="mydb.orders.amount", entity_type="dataset", compact=False,
         )
         assert "model" in out.lower()
 
@@ -417,7 +417,7 @@ class TestEntityTypeMismatch:
         ))
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="model", compact=False,
+            reference="mydb.orders.amount", entity_type="dataset", compact=False,
         )
         assert "UNRELATED model named amount." not in out
         assert "# Model: `amount`" not in out
@@ -439,14 +439,14 @@ class TestEntityTypeMismatch:
 class TestNotFound:
     async def test_unknown_column(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.nope", entity_type="column", compact=False,
+            reference="mydb.orders.nope", entity_type="field", compact=False,
         )
         assert "nope" in out
         assert "not" in out.lower()
 
     async def test_unknown_model(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.ghost", entity_type="model", compact=False,
+            reference="mydb.ghost", entity_type="dataset", compact=False,
         )
         assert "ghost" in out.lower()
         assert "not" in out.lower()
@@ -479,7 +479,7 @@ class TestHiddenRendered:
         ))
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="mydb.withsecret.secret", entity_type="column",
+            reference="mydb.withsecret.secret", entity_type="field",
             compact=False,
         )
         assert "Column: mydb.withsecret.secret" in out
@@ -497,7 +497,7 @@ class TestHiddenRendered:
         ))
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="mydb.hiddenmodel", entity_type="model", compact=False,
+            reference="mydb.hiddenmodel", entity_type="dataset", compact=False,
         )
         assert "hiddenmodel" in out
 
@@ -534,7 +534,7 @@ class TestDatasourceModelCollision:
         await self._seed_collision(storage)
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="shared", entity_type="model", compact=False,
+            reference="shared", entity_type="dataset", compact=False,
         )
         # entity_type=model must win over the resolver's datasource default.
         assert "# Model: `shared`" in out
@@ -551,14 +551,14 @@ class TestBareReferences:
     ) -> None:
         # '*:count' needs a model context; inspect passes source_model=None.
         out = await svc.inspect(
-            reference="count(*)", entity_type="model", compact=False,
+            reference="count(*)", entity_type="dataset", compact=False,
         )
         assert "count" in out.lower()
 
     async def test_bare_unique_leaf_resolves(self, svc: InspectService) -> None:
         # 'region' is a unique column across mydb → resolves to its owner.
         out = await svc.inspect(
-            reference="region", entity_type="column", compact=False,
+            reference="region", entity_type="field", compact=False,
         )
         assert "Column: mydb.customers.region" in out
 
@@ -627,7 +627,7 @@ class TestModelOnlyArgs:
     async def test_sections_honored_on_model(self, svc: InspectService) -> None:
         # sections=["columns"] collapses other sections; "amount" still shows.
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=False,
+            reference="mydb.orders", entity_type="dataset", compact=False,
             sections=["columns"],
         )
         assert "amount" in out
@@ -636,7 +636,7 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
             num_rows=10,
         )
         assert "num_rows" in out
@@ -646,7 +646,7 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.aov", entity_type="measure", compact=False,
+            reference="mydb.orders.aov", entity_type="metric", compact=False,
             num_rows=10,
         )
         assert "num_rows" in out
@@ -657,7 +657,7 @@ class TestModelOnlyArgs:
     ) -> None:
         # All four args are valid for a model — none must produce a warning.
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=False,
+            reference="mydb.orders", entity_type="dataset", compact=False,
             sections=["columns"], num_rows=10, show_sql=True,
             descriptions_max_chars=200,
         )
@@ -667,7 +667,7 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=False,
+            reference="mydb.orders", entity_type="dataset", compact=False,
             descriptions_max_chars=4,
         )
         assert "One row per placed order." not in out
@@ -676,7 +676,7 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
             sections=["columns"],
         )
         assert "sections" in out
@@ -686,7 +686,7 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
             show_sql=True,
         )
         # The column's SQL is intrinsic to its render; flag is a silent no-op.
@@ -704,7 +704,7 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
         )
         assert "ignored" not in out.lower()
         assert "warning" not in out.lower()
@@ -713,7 +713,7 @@ class TestModelOnlyArgs:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column", compact=False,
+            reference="mydb.orders.amount", entity_type="field", compact=False,
             descriptions_max_chars=5,
         )
         # "Order total in USD." → truncated; full text must be gone.
@@ -731,7 +731,7 @@ class TestEngineNone:
     ) -> None:
         # svc was constructed with no engine.
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=False,
+            reference="mydb.orders", entity_type="dataset", compact=False,
             sections=["samples"], num_rows=3,
         )
         # Renders the model header; sample-data is skipped (no engine).
@@ -746,7 +746,7 @@ class TestEngineNone:
 class TestJsonShapes:
     async def test_column_json_shape(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column",
+            reference="mydb.orders.amount", entity_type="field",
             format="json", compact=False,
         )
         payload = json.loads(out)
@@ -761,7 +761,7 @@ class TestJsonShapes:
         # ``text`` is present iff non-empty, so compact
         # JSON drops the key entirely (a consumer never sees ``text: ""``).
         out = await svc.inspect(
-            reference="mydb.orders.amount", entity_type="column",
+            reference="mydb.orders.amount", entity_type="field",
             format="json", compact=True,
         )
         payload = json.loads(out)
@@ -770,7 +770,7 @@ class TestJsonShapes:
 
     async def test_model_json_shape(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model",
+            reference="mydb.orders", entity_type="dataset",
             format="json", compact=False,
         )
         payload = json.loads(out)
@@ -818,7 +818,7 @@ class TestModelSamplesWithEngine:
             engine = SlayerQueryEngine(storage=st)
             svc = InspectService(storage=st, engine=engine)
             out = await svc.inspect(
-                reference="live.orders", entity_type="model", compact=False,
+                reference="live.orders", entity_type="dataset", compact=False,
                 sections=["samples"], num_rows=3,
             )
             assert "# Model: `orders`" in out
@@ -1066,7 +1066,7 @@ class TestModelSkeletonHelpers:
 class TestModelCompactSkeletonJson:
     async def test_model_compact_json_shape(self, svc: InspectService) -> None:
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model",
+            reference="mydb.orders", entity_type="dataset",
             format="json", compact=True,
         )
         p = json.loads(out)
@@ -1087,7 +1087,7 @@ class TestModelCompactSkeletonJson:
         # ``customers`` has no measures / aggregations / joins — the JSON keys
         # are still present as empty lists (stable shape).
         out = await svc.inspect(
-            reference="mydb.customers", entity_type="model",
+            reference="mydb.customers", entity_type="dataset",
             format="json", compact=True,
         )
         p = json.loads(out)
@@ -1102,7 +1102,7 @@ class TestModelCompactSkeletonJson:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.customers", entity_type="model", compact=True,
+            reference="mydb.customers", entity_type="dataset", compact=True,
         )
         assert "Columns: " in out
         assert "region" in out
@@ -1114,7 +1114,7 @@ class TestModelCompactSkeletonJson:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=True,
+            reference="mydb.orders", entity_type="dataset", compact=True,
             descriptions_max_chars=4,
         )
         assert "One row per placed order." not in out
@@ -1124,7 +1124,7 @@ class TestModelCompactSkeletonJson:
         self, svc: InspectService
     ) -> None:
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model",
+            reference="mydb.orders", entity_type="dataset",
             format="json", compact=True, descriptions_max_chars=4,
         )
         p = json.loads(out)
@@ -1376,11 +1376,11 @@ class TestSkeletonZeroDB:
 
         svc = InspectService(storage=storage, engine=_ExplodingEngine())
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=True,
+            reference="mydb.orders", entity_type="dataset", compact=True,
         )
         assert "Columns: " in out
         outj = await svc.inspect(
-            reference="mydb.orders", entity_type="model",
+            reference="mydb.orders", entity_type="dataset",
             format="json", compact=True,
         )
         assert json.loads(outj)["name"] == "orders"
@@ -1395,17 +1395,17 @@ class TestSkeletonZeroDB:
                 "render_model_inspection must not run for compact=True"
             )
 
-        monkeypatch.setattr(service_mod, "render_model_inspection", _boom)
+        monkeypatch.setattr(service_mod, "render_dataset_inspection", _boom)
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=True,
+            reference="mydb.orders", entity_type="dataset", compact=True,
         )
         assert "Columns: " in out
         # And the full path STILL uses it (guards against a stale patch /
         # wrong-symbol monkeypatch giving a false pass above).
         with pytest.raises(AssertionError, match="must not run"):
             await svc.inspect(
-                reference="mydb.orders", entity_type="model", compact=False,
+                reference="mydb.orders", entity_type="dataset", compact=False,
             )
 
 
@@ -1454,7 +1454,7 @@ class TestAmbiguousModelName:
         await self._seed_ambiguous(storage)
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="orders", entity_type="model",
+            reference="orders", entity_type="dataset",
             format="json", compact=True,
         )
         # The ambiguity message is returned as a plain string (not JSON, not a

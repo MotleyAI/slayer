@@ -1,4 +1,4 @@
-"""Mode-A ``{var}`` binding: each placeholder of a model's raw SQL binds as a literal node, never as spliced text."""
+"""Mode-A ``{var}`` binding: each placeholder of a dataset's raw SQL binds as a literal node, never as spliced text."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 LITERAL_VALUES = "variables supply literal values"
 
 SlotKind = Literal["string", "bare", "in"]
-#: Binds one Mode-A text of a model: ``(text, field) -> bound text``.
+#: Binds one Mode-A text of a dataset: ``(text, field) -> bound text``.
 ModeABinder = Callable[[str, str], str]
 
 

@@ -3251,7 +3251,7 @@ async def test_search_question_finds_column(search_env):
         question="amount",
         max_results=20,
     )
-    column_hits = [h for h in response.results if h.kind == "column"]
+    column_hits = [h for h in response.results if h.kind == "field"]
     assert column_hits, (
         "expected at least one column hit; got results="
         f"{[(h.id, h.kind) for h in response.results]}"

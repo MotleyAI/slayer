@@ -85,7 +85,7 @@ def aggregated_type(
     metric_name: Optional[str],
     aggregation: str,
 ) -> Optional[DataType]:
-    """Type for an aggregate over ``dataset``'s column ``metric_name`` (``"*"`` for ``count(*)``)."""
+    """Type for an aggregate over ``dataset``'s field ``metric_name`` (``"*"`` for ``count(*)``)."""
     col = dataset.get_field(metric_name) if metric_name is not None else None
     return aggregation_result_type(
         metric_name=metric_name, aggregation=aggregation, source_type=col.datatype if col is not None else None,
@@ -93,13 +93,13 @@ def aggregated_type(
 
 
 def _local_aggregate_source_name(key: ValueKey) -> Optional[str]:
-    """The source column name of a LOCAL aggregate, or ``None``.
+    """The source field name of a LOCAL aggregate, or ``None``.
 
     Expression sources (DEV-1826) surface their derived leaf — never a real
-    column, so PRESERVING type/format lookups miss and fall to the class
+    field, so PRESERVING type/format lookups miss and fall to the class
     default (plain numeric), per design. ``None`` for anything else that isn't
-    a bare local aggregate — a non-aggregate key or a cross-model source
-    (whose metadata is lifted by ``response_meta`` against the target model).
+    a bare local aggregate — a non-aggregate key or a cross-dataset source
+    (whose metadata is lifted by ``response_meta`` against the target dataset).
     """
     if not isinstance(key, AggregateKey):
         return None
@@ -122,7 +122,7 @@ def _dataset_types(*, dataset: SlayerDataset, bundle: Optional[ResolvedSourceBun
 
 
 def _stage_element(schema: StageSchema, key: ValueKey) -> Optional[DataType]:
-    """The element type for ``L.value`` over a stage's list column ``L``."""
+    """The element type for ``L.value`` over a stage's list field ``L``."""
     if not (isinstance(key, FieldKey) and len(key.path) == 1 and key.leaf == LIST_ELEMENT_FIELD):
         return None
     col = schema.get(key.path[0])
@@ -130,7 +130,7 @@ def _stage_element(schema: StageSchema, key: ValueKey) -> Optional[DataType]:
 
 
 def stage_field_type(schema: StageSchema) -> FieldTypeFn:
-    """Types of a stage's flat columns and of its lists' elements."""
+    """Types of a stage's flat fields and of its lists' elements."""
     def field_type(key: ValueKey) -> Optional[DataType]:
         col = schema.get(key.leaf) if isinstance(key, FieldKey) and not key.path else None
         return col.datatype if col is not None else _stage_element(schema, key)
@@ -178,7 +178,7 @@ def bundle_dialect(bundle: ResolvedSourceBundle) -> SqlDialect:
 
 
 def scope_zoned_timestamp(*, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> Callable[[object], bool]:
-    """Whether a model column leaf holds a zoned instant on the bundle's dialect (a stage column already
+    """Whether a dataset field leaf holds a zoned instant on the bundle's dialect (a stage field already
     reads naive)."""
     dialect = bundle_dialect(bundle)
     if not dialect.zoned_timestamp_db_types or isinstance(scope, StageSchema) or scope.population is None:
@@ -197,13 +197,13 @@ def date_scalar_type(key: ValueKey, *, field_type: FieldTypeFn) -> Optional[Data
 
 
 def _typed_by_value(key: ValueKey) -> bool:
-    """A bare column or a value-returning conditional, typed by its ``value_type``."""
+    """A bare field or a value-returning conditional, typed by its ``value_type``."""
     return isinstance(key, (FieldKey, FieldSqlKey)) or (
         isinstance(key, ScalarCallKey) and key.name in CONDITIONAL_SCALARS)
 
 
 def stage_metric_type(key: ValueKey, *, schema: StageSchema) -> Optional[DataType]:
-    """``type`` for a measure over a stage's flat columns."""
+    """``type`` for a metric over a stage's flat fields."""
     column_type = stage_field_type(schema)
     if list_valued(key, field_type=column_type):
         return DataType.ARRAY
@@ -221,7 +221,7 @@ def stage_metric_type(key: ValueKey, *, schema: StageSchema) -> Optional[DataTyp
 def metric_key_type(
     *, dataset: SlayerDataset, key: ValueKey, bundle: Optional[ResolvedSourceBundle] = None,
 ) -> Optional[DataType]:
-    """``type`` for a measure slot, from its bound key alone."""
+    """``type`` for a metric slot, from its bound key alone."""
     if isinstance(key, CastKey):
         return key.data_type
     if list_valued(key, field_type=_dataset_types(dataset=dataset, bundle=bundle)):
@@ -254,10 +254,10 @@ def metric_key_preserves_native_type(*, dataset: SlayerDataset, key: ValueKey) -
 def metric_key_format_description(
     *, dataset: SlayerDataset, key: ValueKey, bundle: Optional[ResolvedSourceBundle] = None,
 ) -> Tuple[Optional[NumberFormat], Optional[str]]:
-    """``format`` / ``description`` for a measure slot, from its bound key.
+    """``format`` / ``description`` for a metric slot, from its bound key.
 
     ``count(*)`` has an inferred INTEGER format but no description — there is
-    no source column to document it.
+    no source field to document it.
     """
     name = _local_aggregate_source_name(key)
     if name is None or not isinstance(key, AggregateKey):
@@ -277,10 +277,10 @@ def dimension_key_metadata(
 ) -> Tuple[Optional[DataType], Optional[NumberFormat], Optional[str]]:
     """``(type, format, description)`` for a dimension slot, from its key.
 
-    A LOCAL dimension carries the source column's full display contract; a
+    A LOCAL dimension carries the source field's full display contract; a
     JOINED one carries only its type. That asymmetry is deliberate and
     pre-existing: joined refs surface format / description through
-    ``response_meta``, which resolves them against the owning model.
+    ``response_meta``, which resolves them against the owning dataset.
     """
     if isinstance(key, CastKey):
         return key.data_type, None, None

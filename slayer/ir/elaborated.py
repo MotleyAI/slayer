@@ -1,6 +1,6 @@
 """The elaborator's output: a typing environment over the bound query (D2).
 
-Not a parallel tree — every top-level expression (measure, dimension, filter
+Not a parallel tree — every top-level expression (metric, dimension, filter
 conjunct, order target) gets one ``ExpressionEntry`` (position verdict, home,
 resolved grain, broadcast insertions at grain-union points), and every
 aggregate/transform occurrence gets one term, memoized by key identity in
@@ -25,7 +25,7 @@ PositionVerdict = Literal["field", "metric"]
 
 
 class ConjunctTyping(NamedTuple):
-    """One position expression's typing: field/measure + stratum (0 = base-row population)."""
+    """One position expression's typing: field/metric + stratum (0 = base-row population)."""
 
     typing: MaskTyping
     stratum: int

@@ -1,15 +1,15 @@
-"""Recursive expansion of derived ``Column.sql`` references.
+"""Recursive expansion of derived ``DatasetField.sql`` references.
 
-A ``Column.sql`` may reference any other column on the same
-model or on a joined model — including columns that are themselves derived
+A ``DatasetField.sql`` may reference any other field on the same
+dataset or on a joined dataset — including fields that are themselves derived
 (have their own ``sql`` expression rather than being a bare base-table
-column). The query planner had been emitting such references verbatim, which
+field). The query planner had been emitting such references verbatim, which
 fails at execution because the joined table's underlying SQL knows nothing
-about derived SLayer columns. This module walks the parsed AST of every
-``Column.sql`` we are about to embed in a query, recursively replaces each
-``<table>.<col>`` reference whose target is a derived column with the
+about derived SLayer fields. This module walks the parsed AST of every
+``DatasetField.sql`` we are about to embed in a query, recursively replaces each
+``<table>.<col>`` reference whose target is a derived field with the
 target's own SQL (qualified to the right path alias), and lets the bare
-base-column references qualify to the canonical ``__``-delimited path
+base-field references qualify to the canonical ``__``-delimited path
 alias.
 
 The expansion runs during binding/planning, so the SQL generator never sees
@@ -64,13 +64,13 @@ Path = Tuple[str, ...]
 
 
 def is_trivial_base(*, field: DatasetField) -> bool:
-    """A column is "trivial base" iff its sql is missing or is just its own
+    """A field is "trivial base" iff its sql is missing or is just its own
     bare name. These need no expansion — only re-qualification.
     """
     if field.sql is None:
         return True
     sql = field.sql.strip()
-    # A double-quoted self-identity (``"legalEntityType"`` for a column named
+    # A double-quoted self-identity (``"legalEntityType"`` for a field named
     # ``legalEntityType``) is still a bare base reference — required to point
     # at a mixed-case physical column on case-folding dialects. Strip the
     # surrounding identifier quotes before comparing so it is not mistaken
@@ -84,7 +84,7 @@ def root_scope_field_ids(*, parsed: exp.Expression) -> set[int]:
     """Return the ``id()`` set of ``exp.Column`` nodes that lexically belong
     to the root scope of ``parsed``.
 
-    Column.sql is contractually a scalar expression, not a SELECT. To re-use
+    DatasetField.sql is contractually a scalar expression, not a SELECT. To re-use
     sqlglot's scope analysis we wrap ``parsed`` in a synthetic
     ``SELECT <parsed> AS _`` so it has a real root scope. The wrapper is
     used only for scope traversal; the original ``parsed`` AST is unchanged.
@@ -93,7 +93,7 @@ def root_scope_field_ids(*, parsed: exp.Expression) -> set[int]:
     the wrapper itself. Anything nested under a ``Subquery``, CTE, set
     operation (``Union`` / ``Except`` / ``Intersect``), ``Values``, or
     other scope-producing construct returns a non-root ScopeType and is
-    skipped from derived-column inlining.
+    skipped from derived-field inlining.
 
     ``Window`` / ``OVER`` is NOT a new scope: columns inside
     ``PARTITION BY`` / ``ORDER BY`` remain root-scope.
@@ -151,7 +151,7 @@ def _comprehension_bound_ids(parsed: exp.Expr) -> set[int]:
 
 
 class _PathSink(Protocol):
-    """A duck-typed ordered collector of join-path tuples (``.add(path)``), so
+    """A duck-typed ordered collector of relationship-path tuples (``.add(path)``), so
     a caller can pass its own insertion-ordered set (``ScopeFrame.join_paths``)
     and receive the crossed paths in emission order."""
 
@@ -162,10 +162,10 @@ class _PathSink(Protocol):
 # The shared Mode-A qualifier resolver.
 #
 # The dotted-canonical flip makes ``.`` the ONLY chain separator in Mode-A free
-# SQL. A qualifier is EITHER an exact name (the host, or a directly-joined model
-# — which MAY contain ``__``) OR a dotted chain of exact join hops. User input
+# SQL. A qualifier is EITHER an exact name (the host, or a directly-joined dataset
+# — which MAY contain ``__``) OR a dotted chain of exact relationship hops. User input
 # is never split on ``__``. The legacy ``customers__regions`` split-alias
-# spelling — which does not name a real join target but whose naive split walks
+# spelling — which does not name a real relationship target but whose naive split walks
 # the graph — is a hard D2 error (:class:`LegacyDunderAliasError`).
 # ---------------------------------------------------------------------------
 
@@ -240,15 +240,15 @@ def resolve_ref_target(
     source_dataset: SlayerDataset,
     datasets_by_name: DatasetsByName,
 ) -> Optional[SlayerDataset]:
-    """Resolve a Mode-A qualifier chain to its target model for best-effort
-    save-time inspectors (schema-drift cascade, column-dependency cycle walk).
+    """Resolve a Mode-A qualifier chain to its target dataset for best-effort
+    save-time inspectors (schema-drift cascade, field-dependency cycle walk).
 
     Exact-name-first: an empty chain or the host's own name → the host; a single
     exact hop token (which MAY contain ``__``) or a dotted chain of exact hops
-    → the terminal model, in either traversal direction. Never ``__``-splits —
+    → the terminal dataset, in either traversal direction. Never ``__``-splits —
     the legacy split-alias is a hard D2 error at the runtime / save-time door,
     so here it simply fails to resolve (best-effort skip). Returns ``None``
-    when a hop is not a join / not reachable / ambiguous / revisiting.
+    when a hop is not a relationship / not reachable / ambiguous / revisiting.
     """
     quals = drop_root_hop(qualifiers, source_dataset.spelling, head_quoted=True)
     if not quals:
@@ -272,15 +272,15 @@ def _resolve_qualifiers(
     """Classify a Mode-A qualifier chain.
 
     Returns:
-      * ``()`` — the reference is anchored on the host / owner model;
-      * a non-empty path tuple — the resolved canonical join path;
+      * ``()`` — the reference is anchored on the host / owner dataset;
+      * a non-empty path tuple — the resolved canonical relationship path;
       * ``None`` — an opaque qualifier (CTE / subquery / physical
         ``schema.table.column``), left untouched.
 
     Raises :class:`LegacyDunderAliasError` (D2) for a split-alias spelling,
-    :class:`UnresolvableDimensionJoinError` for a chain with a broken hop,
-    :class:`AmbiguousJoinPathError` for an ambiguous hop, and
-    :class:`CircularJoinPathError` (re-raised with the complete pre-strip
+    :class:`UnresolvableDimensionRelationshipError` for a chain with a broken hop,
+    :class:`AmbiguousRelationshipPathError` for an ambiguous hop, and
+    :class:`CircularRelationshipPathError` (re-raised with the complete pre-strip
     ``reference`` and the ``field`` being expanded) for a revisiting hop — all
     fail closed.
     """
@@ -288,7 +288,7 @@ def _resolve_qualifiers(
     path = drop_root_hop(qualifiers, root, head_quoted=True)
     if not path:
         return ()
-    # A definition is judged from its model as stored: it never sees a query frame's product hops.
+    # A definition is judged from its dataset as stored: it never sees a query frame's product hops.
     source_dataset = source_dataset.with_unrelated(frozenset()) if source_dataset.unrelated_datasets else source_dataset
     dataset = unreachable_target(root=source_dataset, token=path[0], datasets_by_name=datasets_by_name)
     if dataset is not None:
@@ -298,7 +298,7 @@ def _resolve_qualifiers(
         )
     # A revisit surfaces either from the direct walk or from the legacy
     # ``a__b`` split-alias probe; re-raise both with the complete pre-strip
-    # reference and the column being expanded.
+    # reference and the field being expanded.
     try:
         walked = walk_terminal(root=source_dataset, path=path, datasets_by_name=datasets_by_name)
         if walked is not None:
@@ -331,9 +331,9 @@ def raise_if_legacy_split_alias(
     datasets_by_name: DatasetsByName,
 ) -> None:
     """D2 door: a single opaque qualifier ``a__b`` that naive-splits into a real
-    join walk is the legacy split-alias form — raise :class:`LegacyDunderAliasError`
+    relationship walk is the legacy split-alias form — raise :class:`LegacyDunderAliasError`
     naming the dotted replacement. A qualifier without ``__`` (or whose split is
-    not a join walk) is left opaque (no raise)."""
+    not a relationship walk) is left opaque (no raise)."""
     if "__" not in qualifier:
         return
     naive = tuple(qualifier.split("__"))
@@ -355,10 +355,10 @@ def _raise_if_broken_join_walk(
     source_dataset: SlayerDataset,
     datasets_by_name: DatasetsByName,
 ) -> None:
-    """Multi-part chain whose first hop IS a join hop but a later hop fails:
-    raise :class:`UnresolvableDimensionJoinError` naming the failing hop. A chain
-    whose first hop is NOT a join hop is opaque (physical
-    ``schema.table.column`` — join-target-beats-schema precedence) and returns
+    """Multi-part chain whose first hop IS a relationship hop but a later hop fails:
+    raise :class:`UnresolvableDimensionRelationshipError` naming the failing hop. A chain
+    whose first hop is NOT a relationship hop is opaque (physical
+    ``schema.table.column`` — relationship-target-beats-schema precedence) and returns
     without raising."""
     models = {**datasets_by_name, source_dataset.name: datasets_by_name.get(source_dataset.name, source_dataset)}
     if resolve_hop(current=source_dataset, token=path[0], datasets_by_name=models) is None:
@@ -370,8 +370,8 @@ def _raise_if_broken_join_walk(
         reference=".".join((*path, leaf)),
         root_dataset=source_dataset.name,
         reason={
-            "no_edge": f"'{miss.token}' is not a joined model on the preceding hop.",
-            "unloaded": f"joined model '{miss.token}' is not in the resolved bundle.",
+            "no_edge": f"'{miss.token}' is not a joined dataset on the preceding hop.",
+            "unloaded": f"joined dataset '{miss.token}' is not in the resolved bundle.",
             "spine": f"'{miss.token}' would cross the time spine, which a path may end at but never pass through.",
         }[miss.kind],
     )
@@ -384,7 +384,7 @@ def _lenient_path(
     owner_alias: str,
     datasets_by_name: DatasetsByName,
 ) -> Optional[Tuple[str, ...]]:
-    """LENIENT qualifier resolution for the join-path SCANNER.
+    """LENIENT qualifier resolution for the relationship-path SCANNER.
 
     Unlike :func:`_resolve_qualifiers` (STRICT — the expansion door that raises
     D2), the scanner runs over BOTH raw user forms AND already-expanded output
@@ -420,10 +420,10 @@ def collect_root_scope_joined_paths(
     source_relation: str,
     bundle: ResolvedSourceBundle,
 ) -> List[Tuple[str, ...]]:
-    """Collect the ordered de-duplicated list of join-path prefixes a parsed
+    """Collect the ordered de-duplicated list of relationship-path prefixes a parsed
     SQL fragment references in its root scope.
 
-    Each ROOT-scope reference that resolves as a join walk on ``source_dataset``
+    Each ROOT-scope reference that resolves as a relationship walk on ``source_dataset``
     contributes its prefixes (path ``("a", "b")`` yields ``("a",)`` AND
     ``("a", "b")``). Host-anchored and opaque references (CTE / subquery
     aliases, physical ``schema.table.column``) contribute nothing.
@@ -432,8 +432,8 @@ def collect_root_scope_joined_paths(
     fragments whose qualifiers are internal ``__`` join aliases, so it never
     raises D2 — that is the STRICT expansion door's job. Shared by the SQL
     generator (``SQLGenerator._joined_paths_in_sql``) and the planner-side
-    column filter discovery so the two surfaces agree on what counts as
-    "crosses a join."
+    field filter discovery so the two surfaces agree on what counts as
+    "crosses a relationship."
     """
     root_ids = root_scope_field_ids(parsed=parsed)
     models_by_name = bundle.datasets_by_name
@@ -460,14 +460,14 @@ def collect_root_scope_joined_paths(
 # ---------------------------------------------------------------------------
 #
 # The generator runs synchronously over a ``ResolvedSourceBundle`` that has
-# already loaded every referenced model (P11: storage consulted once, up
-# front), so it expands derived refs through a *sync* model resolver.
+# already loaded every referenced dataset (P11: storage consulted once, up
+# front), so it expands derived refs through a *sync* dataset resolver.
 #
-# Nothing awaits model resolution here — the expansion is fully synchronous.
+# Nothing awaits dataset resolution here — the expansion is fully synchronous.
 
-#: Maps a root-relative join-path tuple to its internal alias string. The
+#: Maps a root-relative relationship-path tuple to its internal alias string. The
 #: generator/scope pass the WP3 registry (``AliasAllocator.alias_for``) so a
-#: chain leaf and a literal ``__``-named model never share an alias; ``None``
+#: chain leaf and a literal ``__``-named dataset never share an alias; ``None``
 #: falls back to the byte-identical legacy ``"__".join`` spelling.
 AliasResolver = Callable[[Tuple[str, ...]], str]
 
@@ -520,7 +520,7 @@ def _locate_site_target(
     alias_resolver: Optional[AliasResolver],
     crossed_paths: Optional[_PathSink],
 ) -> Optional[Tuple[SlayerDataset, str]]:
-    """``(target_model, canonical_alias)`` of a resolved site path, recording crossed joins."""
+    """``(target_dataset, canonical_alias)`` of a resolved site path, recording crossed relationships."""
     if not path:
         return dataset, alias_path
     walked = walk_terminal(root=dataset, path=path, datasets_by_name=datasets_by_name)
@@ -548,12 +548,12 @@ def _process_reference_site(
     physical_read_exempt: FrozenSet[Tuple[str, str]] = frozenset(),
     site: Optional[Tuple[str, str]] = None,
 ) -> Optional[exp.Expression]:
-    """Resolve one reference site: qualify a base column in place, inline a
+    """Resolve one reference site: qualify a base field in place, inline a
     derived one, or leave an opaque reference untouched.
 
     ``owner_path`` is the ROOT-relative path of ``dataset`` (empty at the scope
     root). A resolved ref's full root-relative path is ``owner_path + path``;
-    its prefixes are added to ``crossed_paths`` so the caller learns every join
+    its prefixes are added to ``crossed_paths`` so the caller learns every relationship
     the fragment crosses WITHOUT re-scanning the (ambiguous) internal-alias
     output. Returns the replacement node when rewritten, else ``None``.
     """
@@ -574,14 +574,14 @@ def _process_reference_site(
         return None
     target_model, canonical_alias = located
     owner = visited[-1] if visited else site
-    # Mode-A SQL names a column exactly.
+    # Mode-A SQL names a field exactly.
     target_col = resolve_generated_field(
         dataset=target_model, name=leaf, location=".".join(owner) if owner else None, quoted=True,
     )
     if target_col is not None:
         leaf = target_col.name
-    # An exempt column reads physically (its filter's self-reference reads the
-    # bare column, never the masked value — matching the save-time cycle rule).
+    # An exempt field reads physically (its filter's self-reference reads the
+    # bare field, never the masked value — matching the save-time cycle rule).
     if (
         target_col is None or not target_col.needs_expansion
         or (target_model.name, leaf) in physical_read_exempt
@@ -592,8 +592,8 @@ def _process_reference_site(
         cycle_start = visited.index(key)
         cycle = (*visited[cycle_start:], key)
         raise DatasetFieldCycleError(cycle=list(cycle))
-    # A column's own-filter exemption is LOCAL to that filter's fragment — it is
-    # NOT inherited into a referenced column's definition, or a real cross-column
+    # A field's own-filter exemption is LOCAL to that filter's fragment — it is
+    # NOT inherited into a referenced field's definition, or a real cross-field
     # cycle (x.filter→y, y.sql→x) would be silently read as physical (Codex).
     value_sql = _expand_target_field(
         target_col=target_col, target_dataset=target_model,
@@ -621,8 +621,8 @@ def _expand_target_field(
     alias_resolver: Optional[AliasResolver],
     crossed_paths: Optional[_PathSink],
 ) -> Optional[str]:
-    """The expanded SQL of a derived / filtered target column: its value (the
-    qualified bare column for a filtered physical one) masked by its filter."""
+    """The expanded SQL of a derived / filtered target field: its value (the
+    qualified bare field for a filtered physical one) masked by its filter."""
     def _expand_child(
         sql: str, *, exempt: FrozenSet[Tuple[str, str]] = frozenset(),
     ) -> Optional[str]:
@@ -670,23 +670,23 @@ def expand_derived_refs_sync(
     physical_read_exempt: FrozenSet[Tuple[str, str]] = frozenset(),
     site: Optional[Tuple[str, str]] = None,
 ) -> Optional[str]:
-    """Inline every derived-column reference in ``sql`` to its definition and
+    """Inline every derived-field reference in ``sql`` to its definition and
     qualify every base reference to its internal alias.
 
     Recurses through chains (``A.ratio`` -> ``A.bar / B.foo_normalized`` -> …)
-    with cycle detection via ``visited``, raising ``ColumnCycleError`` on a
+    with cycle detection via ``visited``, raising ``DatasetFieldCycleError`` on a
     self-referential chain and ``LegacyDunderAliasError`` (D2) on a legacy
     split-alias qualifier.
 
-    ``datasets_by_name`` is the resolved model collection (typically built from
+    ``datasets_by_name`` is the resolved dataset collection (typically built from
     ``bundle.referenced_models``) — hops resolve through the shared
     bidirectional walker. ``owner_path`` is the
     ROOT-relative path of ``dataset`` (empty at the scope root). ``alias_resolver``
     threads the WP3 join-alias registry so qualifier strings match
     the emitted JOIN aliases; ``None`` falls back to the legacy ``"__".join``
-    spelling. When ``crossed_paths`` is supplied, every join-path prefix the
+    spelling. When ``crossed_paths`` is supplied, every relationship-path prefix the
     fragment (recursively) crosses is added to it — the structural alternative
-    to re-scanning the internal-alias output. ``site`` ``(model, column)`` names
+    to re-scanning the internal-alias output. ``site`` ``(dataset, field)`` names
     the definition being expanded, for stale-spelling warnings.
     """
     if not sql:
@@ -716,21 +716,21 @@ def expand_derived_refs_sync(
             site=site,
         )
         # ``node.replace`` mutates the node's PARENT. When the whole fragment is
-        # a single reference — ``Column.sql = "other_derived_col"``, an alias of
-        # another derived column — that reference IS ``parsed`` and has no
+        # a single reference — ``DatasetField.sql = "other_derived_col"``, an alias of
+        # another derived field — that reference IS ``parsed`` and has no
         # parent, so the replace is a silent no-op. Rebind the root here, or the
         # correctly-expanded SQL is computed and thrown away and the emitted
-        # query references a derived column as though it were physical.
+        # query references a derived field as though it were physical.
         if replacement is not None and node is parsed:
             parsed = replacement
     return parsed.sql(dialect=dialect)
 
 
 def wrap_field_filter(*, value_sql: str, filter_sql: Optional[str]) -> str:
-    """Desugar ``Column.filter``: ``CASE WHEN <filter> THEN <value> END`` when a
+    """Desugar ``DatasetField.filter``: ``CASE WHEN <filter> THEN <value> END`` when a
     filter is set, else the bare value. Both fragments are already expanded (and
     derived expansions self-parenthesise), so no extra parens are added — the
-    canonical single-column form stays ``SUM(CASE WHEN f THEN col END)``."""
+    canonical single-field form stays ``SUM(CASE WHEN f THEN col END)``."""
     if not filter_sql:
         return value_sql
     return f"CASE WHEN {filter_sql} THEN {value_sql} END"
@@ -748,8 +748,8 @@ def expand_field_definition_sync(
     alias_resolver: Optional[AliasResolver] = None,
     crossed_paths: Optional[_PathSink] = None,
 ) -> str:
-    """Expand a column's value SQL, wrapping it in ``CASE WHEN (<filter>) THEN
-    (<value>) END`` when the column carries a ``Column.filter``."""
+    """Expand a field's value SQL, wrapping it in ``CASE WHEN (<filter>) THEN
+    (<value>) END`` when the field carries a ``DatasetField.filter``."""
     value, filter_sql = expand_field_definition_parts_sync(
         field=field, dataset=dataset, alias_path=alias_path,
         datasets_by_name=datasets_by_name, dialect=dialect, owner_path=owner_path,
@@ -770,7 +770,7 @@ def expand_field_definition_parts_sync(
     alias_resolver: Optional[AliasResolver] = None,
     crossed_paths: Optional[_PathSink] = None,
 ) -> Tuple[str, Optional[str]]:
-    """``(value SQL, expanded filter SQL or None)`` of a column definition — the one
+    """``(value SQL, expanded filter SQL or None)`` of a field definition — the one
     door for both the scope resolver and the generator's cast-wrapping renderer.
     Value and filter expand through the same derived-refs door at the same owner
     path; a filtered physical column's value is its qualified bare name (re-entering
@@ -788,7 +788,7 @@ def expand_field_definition_parts_sync(
 
     if is_trivial_base(field=field):
         value = _qualified_base_sql(field=field, alias_path=alias_path, dialect=dialect)
-        # This column's own filter reads the physical column, never its mask.
+        # This field's own filter reads the physical column, never its mask.
         filter_exempt = frozenset({(dataset.name, field.name)})
     else:
         assert field.sql is not None  # non-trivial base ⇒ real derived sql
@@ -798,7 +798,7 @@ def expand_field_definition_parts_sync(
 
 
 def _qualified_base_sql(*, field: DatasetField, alias_path: str, dialect: str) -> str:
-    """A trivial-base column as ``alias.leaf``, parsed from its own spelling so a
+    """A trivial-base field as ``alias.leaf``, parsed from its own spelling so a
     quoted self-identity or reserved name keeps its quoting."""
     raw = prequote_reserved_identifiers(field.sql or field.name, dialect=dialect)
     node = exp.maybe_parse(raw, dialect=dialect)

@@ -253,7 +253,7 @@ class TestInspectModelEndToEnd:
 
     async def test_full_response(self, env: InspectEnv) -> None:
         server = create_mcp_server(storage=env["storage"])
-        result = await self._call(server, name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False, "num_rows": 5})
+        result = await self._call(server, name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "num_rows": 5})
 
         # Header + description + metadata
         assert result.startswith("# Model: `orders`")
@@ -309,7 +309,7 @@ class TestInspectModelEndToEnd:
 
     async def test_no_longer_json(self, env: InspectEnv) -> None:
         server = create_mcp_server(storage=env["storage"])
-        result = await self._call(server, name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False})
+        result = await self._call(server, name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False})
         with pytest.raises(_json.JSONDecodeError):
             _json.loads(result)
 
@@ -332,7 +332,7 @@ class TestInspectModelSectionGatingIntegration:
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(
             server, name="inspect",
-            arguments={"entity_type": "model", "reference": "orders", "compact": False, "sections": ["columns"]},
+            arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "sections": ["columns"]},
         )
         # Columns full table is rendered — `sampled` column populated by the
         # live profile query (proves columns-section is fully included).
@@ -355,7 +355,7 @@ class TestInspectModelSectionGatingIntegration:
         result = await self._call(
             server, name="inspect",
             arguments={
-                "entity_type": "model", "reference": "orders", "compact": False,
+                "entity_type": "dataset", "reference": "orders", "compact": False,
                 "descriptions_max_chars": 5,
                 "sections": ["columns"],
             },
@@ -406,7 +406,7 @@ class TestMeasureTypeInference:
         """The model inspect columns table includes a type column with declared types."""
         server = create_mcp_server(storage=env["storage"])
         content, _ = await server.call_tool(
-            name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False, "num_rows": 0},
+            name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "num_rows": 0},
         )
         result = content[0].text
         columns_section = result.split("## Columns")[1].split("##")[0]
@@ -569,7 +569,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
     async def _call_json(self, server, *, model_name: str) -> dict:
         content, _ = await server.call_tool(
             name="inspect",
-            arguments={"entity_type": "model", "reference": model_name, "compact": False, "format": "json"},
+            arguments={"entity_type": "dataset", "reference": model_name, "compact": False, "format": "json"},
         )
         return _json.loads(content[0].text)
 
@@ -598,7 +598,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         server = create_mcp_server(storage=env["storage"])
         content, _ = await server.call_tool(
             name="inspect",
-            arguments={"entity_type": "model", "reference": "orders", "compact": False},  # markdown by default
+            arguments={"entity_type": "dataset", "reference": "orders", "compact": False},  # markdown by default
         )
         text = content[0].text
         col_section = text.split("## Columns")[1].split("## Measures")[0]
@@ -666,7 +666,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
             name="inspect",
-            arguments={"entity_type": "model", "reference": "t", "compact": False, "format": "json"},
+            arguments={"entity_type": "dataset", "reference": "t", "compact": False, "format": "json"},
         )
         payload = _json.loads(content[0].text)
         notes = next(c for c in payload["columns"] if c["name"] == "notes")
@@ -708,7 +708,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
             name="inspect",
-            arguments={"entity_type": "model", "reference": "many_values", "compact": False},  # markdown
+            arguments={"entity_type": "dataset", "reference": "many_values", "compact": False},  # markdown
         )
         text = content[0].text
         col_section = text.split("## Columns")[1]
@@ -774,7 +774,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
             name="inspect",
-            arguments={"entity_type": "model", "reference": "orders", "compact": False},  # markdown by default
+            arguments={"entity_type": "dataset", "reference": "orders", "compact": False},  # markdown by default
         )
         text = content[0].text
         col_section = text.split("## Columns")[1]
@@ -876,7 +876,7 @@ class TestInspectModelEmptyStringSampledNotClobberedByFallback:
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
             name="inspect",
-            arguments={"entity_type": "model", "reference": "t", "compact": False, "format": "json"},
+            arguments={"entity_type": "dataset", "reference": "t", "compact": False, "format": "json"},
         )
         payload = _json.loads(content[0].text)
         notes = next(c for c in payload["columns"] if c["name"] == "notes")

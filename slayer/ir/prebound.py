@@ -1,10 +1,10 @@
 """The pre-bound planner seam (DEV-1742 §5.4, P-E).
 
 ``plan_query`` used to be the only door into binding: hand it a
-``SlayerQuery`` and it parsed every measure / filter / order string, bound
+``SlayerQuery`` and it parsed every metric / filter / order string, bound
 each against a scope, and planned the result in one pass. Re-rooting needed a
 nested plan built from keys it already held, so it SERIALIZED them back to
-formula text and let ``plan_query`` re-derive the very identities it had just
+expression text and let ``plan_query`` re-derive the very identities it had just
 thrown away.
 
 ``PreboundQuery`` is that bind product made explicit. ``bind_query_inputs``
@@ -98,7 +98,7 @@ class PreboundQuery(BaseModel):
     declared_metrics: List[DeclaredMetric] = Field(default_factory=list)
     bound_filters: List[BoundFilter] = Field(default_factory=list)
     # Parallel to ``bound_filters``: the originating user-filter text, or
-    # ``None`` for a synthesized date-range bound. Carried so the cross-model
+    # ``None`` for a synthesized date-range bound. Carried so the cross-dataset
     # routing can report a filter the way the caller wrote it.
     bound_filter_texts: List[Optional[str]] = Field(default_factory=list)
     # Every count here is a LIST SLICE bound. A negative one is not a smaller
@@ -143,10 +143,10 @@ class PreboundQuery(BaseModel):
                 f"{len(self.bound_filters)} bound filters it slices.",
             )
         # ``n_dims`` and ``n_time_dimensions`` are the DIMENSION prefix lengths
-        # of ``declared_metrics``; the rest of the list is measures. Python
+        # of ``declared_metrics``; the rest of the list is metrics. Python
         # slicing past the end returns a SHORTER list rather than raising, so
         # an over-count silently plans fewer dimensions than the caller
-        # declared — and the measures it does reach are misclassified as
+        # declared — and the metrics it does reach are misclassified as
         # dimensions on the way (CodeRabbit).
         grain = self.n_dims + self.n_time_dimensions
         if grain > len(self.declared_metrics):
@@ -154,7 +154,7 @@ class PreboundQuery(BaseModel):
                 f"PreboundQuery declares {self.n_dims} dimensions + "
                 f"{self.n_time_dimensions} time dimensions = {grain} grain "
                 f"members, but carries only {len(self.declared_metrics)} "
-                f"declared measures for them to be a prefix of.",
+                f"declared metrics for them to be a prefix of.",
             )
         return self
 
@@ -198,5 +198,5 @@ class StrictQueryCarrier(BaseModel):
 def walk_key_path(
     *, dataset: SlayerDataset, path: Tuple[str, ...], bundle: ResolvedSourceBundle,
 ) -> Optional[SlayerDataset]:
-    """The terminal model of a bound (possibly composed) key ``path`` from ``dataset``; ``None`` on any miss."""
+    """The terminal dataset of a bound (possibly composed) key ``path`` from ``dataset``; ``None`` on any miss."""
     return resolved_terminal(root=dataset, path=path, datasets_by_name=bundle.datasets_by_name)

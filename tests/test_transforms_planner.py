@@ -357,7 +357,7 @@ class TestIterSlotDepsTransformAux:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"formula": "cumsum(sum(amount), partition_by=region)"},
+                {"expression": "cumsum(sum(amount), partition_by=region)"},
             ],
             time_dimensions=[
                 TimeDimension(
@@ -468,8 +468,8 @@ class TestTransformLayersPopulation:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"formula": "rank(sum(amount), direction='desc')"},
-                {"formula": "cumsum(sum(amount))"},
+                {"expression": "rank(sum(amount), direction='desc')"},
+                {"expression": "cumsum(sum(amount))"},
             ],
             time_dimensions=[
                 TimeDimension(
@@ -529,8 +529,8 @@ class TestTransformInnerIdentity:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"formula": "sum(amount)"},
-                {"formula": "change(sum(amount))"},
+                {"expression": "sum(amount)"},
+                {"expression": "change(sum(amount))"},
             ],
             time_dimensions=[
                 TimeDimension(

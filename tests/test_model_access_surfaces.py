@@ -91,7 +91,7 @@ class TestInspect:
     @pytest.mark.parametrize("name", sorted(VISIBLE_TO_FIN))
     async def test_visible_model_never_names_hr(self, pair: Pair, name: str, compact: bool, fmt: str) -> None:
         out = await InspectService(storage=pair.fin).inspect(
-            reference=f"{DS}.{name}", entity_type="model", compact=compact, format=fmt,
+            reference=f"{DS}.{name}", entity_type="dataset", compact=compact, format=fmt,
         )
         assert name in out
         assert leaks(out) == []
@@ -99,7 +99,7 @@ class TestInspect:
     @pytest.mark.parametrize("compact", [True, False])
     @pytest.mark.parametrize("fmt", ["markdown", "json"])
     async def test_collection_lists_only_visible_models(self, pair: Pair, compact: bool, fmt: str) -> None:
-        out = await InspectService(storage=pair.fin).inspect(reference=None, entity_type="model", compact=compact, format=fmt)
+        out = await InspectService(storage=pair.fin).inspect(reference=None, entity_type="dataset", compact=compact, format=fmt)
         assert "fin_report" in out
         assert leaks(out) == []
         assert UNLOADABLE not in out
@@ -111,7 +111,7 @@ class TestInspect:
     @pytest.mark.parametrize("reference", [f"{DS}.hr", "hr", f"{DS}.hr.dept", "hr_summary", f"{DS}.fin.hr.dept"])
     async def test_hidden_reference_reads_like_a_missing_one(self, pair: Pair, reference: str) -> None:
         def inspect(storage):
-            return InspectService(storage=storage).inspect(reference=reference, entity_type="model", compact=False)
+            return InspectService(storage=storage).inspect(reference=reference, entity_type="dataset", compact=False)
 
         assert await outcome(inspect(pair.fin)) == await outcome(inspect(pair.reference.storage))
 
@@ -146,7 +146,7 @@ class TestJoinPruning:
 
     async def test_dangling_join_inspects_as_for_bypass(self, pair: Pair) -> None:
         def inspect(storage):
-            return InspectService(storage=storage).inspect(reference=f"{DS}.dangling", entity_type="model", compact=False)
+            return InspectService(storage=storage).inspect(reference=f"{DS}.dangling", entity_type="dataset", compact=False)
 
         out = await inspect(pair.fin)
         assert "ghost" in out

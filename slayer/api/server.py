@@ -54,13 +54,13 @@ class QueryRequest(BaseModel):
     # to pass through to SlayerQuery's pre-validate hook.
     model_config = ConfigDict(extra="allow")
 
-    name: str | None = None  # Run-by-name: backing query for a query-backed model
+    name: str | None = None  # Run-by-name: backing query for a query-backed dataset
     population: SourceSpec | None = None
     extensions: list[DatasetExtension] | None = None
     # ``metrics`` and ``dimensions`` accept bare strings as a shorthand,
     # mirroring the Python API: ``"count(*)"`` is lifted to
     # ``{"expression": "count(*)"}``, ``"status"`` to ``{"name": "status"}``.
-    # ``SlayerQuery``'s before-validators (``_coerce_measures`` /
+    # ``SlayerQuery``'s before-validators (``_coerce_metrics`` /
     # ``_coerce_dimensions``) do the actual lifting downstream.
     metrics: list[str | dict[str, Any]] | None = None
     dimensions: list[str | dict[str, Any]] | None = None
@@ -148,7 +148,7 @@ class QueryResponse(BaseModel):
     columns: list[str]
     sql: str | None = None
     attributes: AttributesResponse | None = None
-    # The effective population model and whether it was inferred.
+    # The effective population dataset and whether it was inferred.
     population: str | None = None
     population_inferred: bool = False
     # Advisories about the query itself — slack-normalization
@@ -167,7 +167,7 @@ class IngestRequest(BaseModel):
     schemas: list[str] | None = None
     all_schemas: bool = False
     # Ingest recognised ELT/migration internals visible rather than hidden.
-    # Governs models this call creates; unhide an existing one via edit_model.
+    # Governs datasets this call creates; unhide an existing one via edit_dataset.
     surface_internals: bool = False
 
     @model_validator(mode="after")
@@ -261,7 +261,7 @@ class InspectRequest(BaseModel):
     # A list is a homogeneous-kind batch (one ``entity_type`` for
     # every id). A single str keeps single-id behaviour byte-for-byte.
     # ``None`` / omitted (or ``[]``) renders the whole collection at
-    # ``entity_type`` (model / datasource only).
+    # ``entity_type`` (dataset / datasource only).
     reference: str | list[str] | None = None
     entity_type: str
     compact: bool = True
@@ -323,7 +323,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 ) -> FastAPI:
     # Built first: an invalid SLAYER_NOW must fail before any side effect.
     engine = SlayerQueryEngine(storage=storage, client_factory=client_factory)
-    # Every route reads models, and the live database, through the server's engine.
+    # Every route reads datasets, and the live database, through the server's engine.
     storage = engine.storage
     # Seed conceptual-help memories once here; the embedded MCP
     # server below is created with _seed_help=False so the pass never fires
@@ -367,14 +367,14 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         "/query",
         response_model=QueryResponse,
         responses={
-            400: {"description": "Invalid query payload (e.g. missing source_model/name, mutually exclusive fields, validation error)."},
+            400: {"description": "Invalid query payload (e.g. missing population/name, mutually exclusive fields, validation error)."},
             422: {
                 "description": (
-                    "Schema drift detected on models the query read — it "
+                    "Schema drift detected on datasets the query read — it "
                     "could not run against the live schema. Body shape: "
-                    "``{\"error\": \"schema_drift\", \"models\": [...], "
+                    "``{\"error\": \"schema_drift\", \"datasets\": [...], "
                     "\"to_delete\": [ToDeleteEntry], \"original\": str|null}``. "
-                    "Run validate_models for the same datasource to inspect."
+                    "Run validate_datasets for the same datasource to inspect."
                 ),
             },
         },
@@ -400,8 +400,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 explain = bool(request.explain)
                 run_query: Any = list(request.queries)
                 variables = request.variables or {}
-            # Run-by-name: ``{"name": "<model>", "refine": {...}, "variables": {...}}``
-            # runs the model's stored backing query, ``refine`` merged into its
+            # Run-by-name: ``{"name": "<dataset>", "refine": {...}, "variables": {...}}``
+            # runs the dataset's stored backing query, ``refine`` merged into its
             # final stage. Any other query field (even ``null``) is rejected.
             elif request.name is not None:
                 if request.model_fields_set - _RUN_BY_NAME_FIELDS or request.model_extra or request.deprecated_inputs:
@@ -421,10 +421,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             elif "refine" in request.model_fields_set:
                 raise HTTPException(
                     status_code=400,
-                    detail="'refine' requires 'name' (a saved query-backed model).",
+                    detail="'refine' requires 'name' (a saved query-backed dataset).",
                 )
             else:
-                # A rootless query (no name, no source_model) is valid —
+                # A rootless query (no name, no population) is valid —
                 # the engine infers the population. The query must still project
                 # something, which SlayerQuery validation enforces downstream.
                 payload = request.model_dump(exclude_none=True)
@@ -510,10 +510,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     @app.get(
         "/datasets/{name}",
         responses={
-            404: {"description": "Model not found."},
+            404: {"description": "Dataset not found."},
             409: {
                 "description": (
-                    "Model name resolves to multiple datasources. Pass "
+                    "Dataset name resolves to multiple datasources. Pass "
                     "``data_source=...`` as a query parameter, or set a "
                     "datasource priority via PUT /datasources/priority."
                 )
@@ -535,7 +535,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 ),
             )
         if model is None:
-            raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
+            raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
         data = model.model_dump(exclude_none=True)
         if "fields" in data:
             data["fields"] = [c for c in data["fields"] if not c.get("hidden")]
@@ -543,10 +543,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     @app.post(
         "/datasets",
-        responses={400: {"description": "Model failed validation (e.g. user-supplied cache fields on a query-backed model, save-time SQL generation failure)."}},
+        responses={400: {"description": "Dataset failed validation (e.g. user-supplied cache fields on a query-backed dataset, save-time SQL generation failure)."}},
     )
     async def create_dataset(dataset: SlayerDataset) -> dict[str, Any]:
-        # Route through engine.save_model so query-backed models get cache
+        # Route through engine.save_dataset so query-backed datasets get cache
         # populated (and user-supplied cache fields are rejected).
         notes: list[SlayerWarning] = []
         try:
@@ -557,7 +557,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
 
     @app.put(
         "/datasets/{name}",
-        responses={400: {"description": "Body name does not match path name, or model failed validation."}},
+        responses={400: {"description": "Body name does not match path name, or dataset failed validation."}},
     )
     async def update_dataset(name: str, dataset: SlayerDataset) -> dict[str, Any]:
         if dataset.name != name:
@@ -575,10 +575,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     @app.delete(
         "/datasets/{name}",
         responses={
-            404: {"description": "Model not found."},
+            404: {"description": "Dataset not found."},
             409: {
                 "description": (
-                    "Model name resolves to multiple datasources. Pass "
+                    "Dataset name resolves to multiple datasources. Pass "
                     "``data_source=...`` as a query parameter, or set a "
                     "datasource priority via PUT /datasources/priority."
                 )
@@ -600,7 +600,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 ),
             )
         if not deleted:
-            raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
+            raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
         return {"status": "deleted", "name": name}
 
     @app.get("/datasources/priority")
@@ -693,7 +693,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     async def validate_datasets_endpoint(
         request: ValidateDatasetsRequest,
     ) -> list[dict[str, Any]]:
-        """Diff persisted SlayerModels against live DB schemas. Read-only."""
+        """Diff persisted SlayerDatasets against live DB schemas. Read-only."""
         if request.data_source is not None:
             ds_check = await storage.get_datasource(request.data_source)
             if ds_check is None:
@@ -705,11 +705,11 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             entries = await engine.validate_datasets(data_source=request.data_source)
         except (SQLAlchemyError, SqlClientError) as exc:
             safe_ds = (request.data_source or "").replace("\r", "").replace("\n", "")
-            logger.exception("validate_models failed for datasource %r", safe_ds)
+            logger.exception("validate_datasets failed for datasource %r", safe_ds)
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"validate_models failed for datasource '{safe_ds}': {exc}"
+                    f"validate_datasets failed for datasource '{safe_ds}': {exc}"
                 ),
             )
         return [e.model_dump(mode="json") for e in entries]
@@ -722,8 +722,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         request: RecommendPopulationRequest,
     ) -> dict[str, Any]:
         """Recommend the query ``population`` (root) for a set of
-        ``model.column`` / ``model.metric`` items, plus each item's
-        join-qualified path from that root. Read-only."""
+        ``dataset.field`` / ``dataset.metric`` items, plus each item's
+        relationship-qualified path from that root. Read-only."""
         try:
             rec = await engine.recommend_population(
                 request.items, data_source=request.data_source,
@@ -805,7 +805,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 detail=f"Ingest failed for datasource '{safe_ds_name}': {exc}",
             )
         if result.errors:
-            # Partial failure — at least one model failed to persist.
+            # Partial failure — at least one dataset failed to persist.
             # Mirror the CLI's exit-1 behaviour by surfacing 422 with the
             # full IdempotentIngestResult body (additions/to_delete/errors).
             #
@@ -864,7 +864,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
     # ---------- Semantic search -----------------------------
 
     # Pass the engine so the search service's post-fusion
-    # column-hit hook can auto-refresh stale categorical columns.
+    # field-hit hook can auto-refresh stale categorical fields.
     search_service = SearchService(storage=storage, engine=engine)
 
     @app.post(

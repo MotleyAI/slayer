@@ -219,7 +219,7 @@ class TestMcpPrefix:
 
     @pytest.mark.parametrize("exc", (
         TimeAxisError(summary="S.", location="measure 'm'"),
-        UnknownReferenceError(name="x", scope_kind="model", scope_summary="orders"),
+        UnknownReferenceError(name="x", scope_kind="dataset", scope_summary="orders"),
     ), ids=lambda e: type(e).__name__)
     async def test_class_name_once(self, exc, tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
         async def _raise(self, *, identifier):  # noqa: ARG001

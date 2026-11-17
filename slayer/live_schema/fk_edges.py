@@ -15,7 +15,7 @@ _STEM_SUFFIX_RE = re.compile(r"_(id|fk)$", re.IGNORECASE)
 
 
 class FkEdgePlan(BaseModel):
-    """Every model after planning, plus what the plan changed per declaring model."""
+    """Every dataset after planning, plus what the plan changed per declaring dataset."""
 
     datasets: dict[str, SlayerDataset]
     added: dict[str, list[DatasetRelationship]] = Field(default_factory=dict)
@@ -103,7 +103,7 @@ def _assign_names(
 
 
 def plan_fk_edges(*, datasets: dict[str, SlayerDataset], candidates: dict[str, list[DatasetRelationship]]) -> FkEdgePlan:
-    """Add each unrepresented live FK in ``candidates`` to its declaring model, then name parallel FK sets."""
+    """Add each unrepresented live FK in ``candidates`` to its declaring dataset, then name parallel FK sets."""
     live = {
         relationship_signature(dataset_name=m, relationship=j)
         for m, js in candidates.items() for j in js if j.to in datasets

@@ -29,7 +29,7 @@ _TRAILING = re.compile(r"^(?:$|[),]|(?:and|or|then|else|end|when)\b)", re.IGNORE
 
 
 class DateOnlySite(BaseModel):
-    """A changed date-only comparison at ``text[start:end]`` of the column ``operand`` (``parts``) with ``date``, and its
+    """A changed date-only comparison at ``text[start:end]`` of the field ``operand`` (``parts``) with ``date``, and its
     whole-day ``twin``."""
 
     model_config = ConfigDict(frozen=True)
@@ -43,7 +43,7 @@ class DateOnlySite(BaseModel):
 
 
 class DateOnlyScan(BaseModel):
-    """A text's changed date-only comparisons: those located on a column (``sites``) and how many others there are."""
+    """A text's changed date-only comparisons: those located on a field (``sites``) and how many others there are."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -93,7 +93,7 @@ def normal_op(op: str) -> str:
 
 
 def date_comparisons(text: str) -> List[Tuple[Optional[Tuple[str, ...]], str, str, bool]]:
-    """``(operand column parts or None, operand-left op, date, literal on the left)`` per changed comparison in
+    """``(operand field parts or None, operand-left op, date, literal on the left)`` per changed comparison in
     ``text``; none when it does not parse."""
     try:
         return _comparisons(parse_template(text))
@@ -102,7 +102,7 @@ def date_comparisons(text: str) -> List[Tuple[Optional[Tuple[str, ...]], str, st
 
 
 def _candidates(parsed: object) -> List[Tuple[Optional[Tuple[str, ...]], str, str]]:
-    """``(operand column parts or None, operand-left op, date)`` per changed comparison in the tree."""
+    """``(operand field parts or None, operand-left op, date)`` per changed comparison in the tree."""
     return [(parts, op, date) for parts, op, date, _ in _comparisons(parsed)]
 
 

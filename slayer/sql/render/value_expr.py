@@ -1,5 +1,5 @@
 """The single ``ValueKey`` → sqlglot-AST renderer, parameterised by :class:`RenderContext`
-rather than by call site so one key can't render two ways. Column-like leaves anchor through
+rather than by call site so one key can't render two ways. Field-like leaves anchor through
 ``ScopeFrame.resolve``; a missing facility raises instead of degrading quietly."""
 
 from __future__ import annotations
@@ -111,8 +111,8 @@ def keeps_native_type(*, col: DatasetField | None, dialect: SqlDialect) -> bool:
 
 
 def _filter_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
-    """CAST target for a derived column inside WHERE/HAVING; temporal types suppressed
-    (``CAST(text AS TIMESTAMP)`` truncates on SQLite, and a base column here isn't cast either)."""
+    """CAST target for a derived field inside WHERE/HAVING; temporal types suppressed
+    (``CAST(text AS TIMESTAMP)`` truncates on SQLite, and a base field here isn't cast either)."""
     if dt in (DataType.DATE, DataType.TIMESTAMP):
         return None
     return dt
@@ -183,7 +183,7 @@ class RenderContext(BaseModel):
     filters: Optional[FilterFacilities] = None
     composites: Optional[CompositeFacilities] = None
     aliases: Optional[AliasFacilities] = None
-    #: Declared column types for date-function operands; defaults to ``scope.column_type``.
+    #: Declared field types for date-function operands; defaults to ``scope.field_type``.
     field_type: Optional[FieldTypeFn] = None
     #: Grouped SELECT: each dimension's key → its GROUP BY expression.
     dimension_values: Optional[Dict[Any, Expression]] = None
@@ -289,7 +289,7 @@ def _render_aggregate(key: AggregateKey, ctx: RenderContext) -> Expression:
 def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guards over the built-in agg contract (mechanism gate, then the FIELD guards that keep a filtered / parametric / cross-star aggregate from silently rendering as a plain SUM). Each guard IS a distinct wrong-number-vs-error boundary; merging them hides which one fired.
     key: AggregateKey, ctx: RenderContext,
 ) -> Expression:
-    """Render a simple / distinct built-in aggregate; anything it can't faithfully emit (custom mechanisms, filtered / parametric sources, cross-model stars) refuses."""
+    """Render a simple / distinct built-in aggregate; anything it can't faithfully emit (custom mechanisms, filtered / parametric sources, cross-dataset stars) refuses."""
     if not is_builtin_agg(key.agg):
         raise RenderContextMissingFacilityError(
             key_kind=type(key).__name__,
@@ -306,7 +306,7 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
                 f"mechanism, which needs the generator's builder"
             ),
         )
-    # A Column.filter on the source rides its ColumnSqlKey (CASE WHEN baked into
+    # A DatasetField.filter on the source rides its FieldSqlKey (CASE WHEN baked into
     # the source's scope resolution), so no separate guard is needed.
     if key.kwargs or key.args:
         raise RenderContextMissingFacilityError(
@@ -325,7 +325,7 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
                 key_kind=type(key).__name__,
                 facility=_AGG_BUILDER,
                 detail=(
-                    f"cross-model star over path {star_path!r} needs the "
+                    f"cross-dataset star over path {star_path!r} needs the "
                     f"generator's join-graph routing"
                 ),
             )
@@ -387,7 +387,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
                 key_kind=type(key).__name__,
                 facility=_AGG_BUILDER,
                 detail=(
-                    f"cross-model star over path {key.path!r} needs the "
+                    f"cross-dataset star over path {key.path!r} needs the "
                     f"generator's join-graph routing"
                 ),
             )
@@ -508,7 +508,7 @@ def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
 
 
 def _known_field_types(ctx: RenderContext) -> FieldTypeFn:
-    """Declared column types where the context knows them; otherwise every column is untyped."""
+    """Declared field types where the context knows them; otherwise every field is untyped."""
     if ctx.field_type is not None:
         return ctx.field_type
     if ctx.scope is not None:
@@ -529,7 +529,7 @@ def _field_types(ctx: RenderContext, key: ScalarCallKey) -> FieldTypeFn:
 
 def contains_aggregate(key: ValueKey) -> bool:
     """Whether ``key``'s tree contains an ``AggregateKey`` (decides GROUP BY / HAVING). A structural
-    walk over ``children()``, NOT ``phase >= AGGREGATE``: every ``TransformKey`` is POST phase, which would route a transform over a raw column into HAVING."""
+    walk over ``children()``, NOT ``phase >= AGGREGATE``: every ``TransformKey`` is POST phase, which would route a transform over a raw field into HAVING."""
     if isinstance(key, AggregateKey):
         return True
     return any(contains_aggregate(c) for c in key.children())

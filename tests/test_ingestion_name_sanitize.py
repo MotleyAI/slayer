@@ -306,7 +306,7 @@ class TestSkipBackstop:
                 raise ValueError("synthetic per-object failure")
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(ingestion_module, "_columns_to_model", _explode)
+        monkeypatch.setattr(ingestion_module, "_fields_to_dataset", _explode)
 
         report = await _report(ds)
         names = {m.name for m in report.datasets}

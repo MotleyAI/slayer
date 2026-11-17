@@ -33,7 +33,7 @@
 
   Re-execute the edited notebooks. Verify that a word-boundary sweep for the old words finds hits only inside the carve-outs.
 - [x] 3.4 Respell the literal identifiers in `openspec/specs/` by a scripted direct edit (design decision 18). Show the owner the substitution table and the diff before committing.
-- [ ] 3.5 Apply the three approved arc42 edits verbatim (design decisions 4–6), extend `compatibility.touches` in `architecture/index.yaml` (design decision 19), and run `la-arch-diagrams`. Verify `la-arch-check` passes.
+- [x] 3.5 Apply the three approved arc42 edits verbatim (design decisions 4–6), extend `compatibility.touches` in `architecture/index.yaml` (design decision 19), and run `la-arch-diagrams`. Verify `la-arch-check` passes.
 - [ ] 3.6 Commit phase 1. Verify that ruff, `la-typecheck` (no new errors) and `la-arch-check` pass. Old-spelling tests may still fail; phase 2 fixes them.
 
 ## 4. Phase 2: translate old to new
@@ -49,7 +49,8 @@
   - help: `help.models` and `help.joins` added to `RETIRED_HELP_IDS`;
   - search: old kind filters and Cypher labels converted;
   - the HTTP client reads `attributes.metrics`;
-  - `ResponseAttributes.measures` becomes a deprecated, never-serialized property.
+  - `ResponseAttributes.measures` becomes a deprecated, never-serialized property;
+  - environment: `SLAYER_METRIC_EXPANSION_DEPTH`, with the old `SLAYER_MEASURE_EXPANSION_DEPTH` read with a deprecation until 3.0.
 
   Verify the surface, search and response-attribute tests pass.
 - [ ] 4.6 Move the Ossie `SLAYER` payload to version 2. The version-1 reader verifies the fingerprint over the content as written, then converts silently. Verify the export and import tests pass.
@@ -65,5 +66,5 @@
 
 - [ ] 6.1 Run the local test scope (`la-affected-tests --base main`, plus goldens, fixtures and conftests this change reaches) and fix every failure.
 - [ ] 6.2 Verify that ruff, `la-typecheck` (no new errors, baseline not rewritten), `la-arch-check` and LikeC4 validation pass.
-- [ ] 6.3 Run a final word-boundary sweep for `model`, `column`, `measure`, `join` and `formula` over `slayer/`, `tests/`, `docs/` and `examples/`. Every hit is inside a carve-out, an upgrade path or a back-compat test.
+- [ ] 6.3 Run a final word-boundary sweep for `model`, `column`, `measure`, `join` and `formula` over `slayer/`, `tests/`, `docs/` and `examples/`. Every hit is inside a carve-out, an upgrade path, a back-compat test, or (in `tests/` only) a test function name, test class name or test-local variable.
 - [ ] 6.4 Post a comment on DEV-1607 noting that its Ossie payload becomes version 3 and that it keeps the Ossie datatype values (design decision 20).

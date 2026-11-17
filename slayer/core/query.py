@@ -1076,7 +1076,7 @@ def _extension_fields_removed(data: dict) -> str:
     ] if isinstance(columns, list) else []
     example = f" ({'; '.join(written)})" if written else ""
     return (
-        "Extension columns were removed: write a per-query field as an expression in the position that uses "
+        "Extension fields were removed: write a per-query field as an expression in the position that uses "
         f"it — a computed dimension, a filter, an aggregation's argument{example}."
     )
 
@@ -1347,7 +1347,7 @@ class SlayerQuery(BaseModel):
             "\"date_trunc('month', created_at)\"; the field may be any DATE/TIMESTAMP expression, with an "
             "optional name. Buckets without rows are absent. To return every bucket, "
             "empty ones included, bucket time_spine.timestamp with a lower date_range bound and "
-            "measure datasets by dotted path: "
+            "aggregate datasets by dotted path: "
             '{"field": "time_spine.timestamp", "granularity": "month", "date_range": "2025"} '
             "with sum(orders.amount) returns all twelve months. It also lines several datasets up "
             "on one time axis."

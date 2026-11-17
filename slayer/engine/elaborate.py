@@ -93,7 +93,7 @@ def _check_product_hops(
         return
     population = sides.host
     roots: List[Tuple[ValueKey, str]] = [
-        (dm.bound.value_key, f"{'dimension' if dm.is_dimension else 'measure'} {dm.public_name!r}")
+        (dm.bound.value_key, f"{'dimension' if dm.is_dimension else 'metric'} {dm.public_name!r}")
         for dm in prebound.declared_metrics
     ]
     roots += [(sp.bound.value_key, "order") for sp in prebound.order_specs]

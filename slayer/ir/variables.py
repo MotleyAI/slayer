@@ -3,11 +3,11 @@
 - :func:`merge_query_variables` collapses the four variable layers into the
   effective dict (runtime > stage > outer > model_defaults).
 - :func:`apply_variables_to_query` binds ``{var}`` as literals into a query's
-  filters, measure formulas, computed- and time-dimension expressions and
+  filters, metric expressions, computed- and time-dimension expressions and
   order expressions, and substitutes its ``date_range`` bounds.
-- :func:`substitute_dataset_sql_surfaces` binds a model's four Mode-A
-  surfaces (as literals, by the caller's dialect binder) and its saved measure formulas;
-  :func:`bind_extension_metrics` binds a query's extension measures.
+- :func:`substitute_dataset_sql_surfaces` binds a dataset's four Mode-A
+  surfaces (as literals, by the caller's dialect binder) and its saved metric expressions;
+  :func:`bind_extension_metrics` binds a query's extension metrics.
 """
 
 from __future__ import annotations
@@ -120,7 +120,7 @@ def apply_variables_to_query(
 ) -> SlayerQuery:
     """A fresh copy of ``query`` with ``{var}`` substituted on every Mode-B surface.
 
-    Changed measures and computed dimensions keep their template in ``_template``;
+    Changed metrics and computed dimensions keep their template in ``_template``;
     the query is rebuilt so construction validators re-run on the substituted text.
     """
     effective: Dict[str, Any] = dict(variables or {})
@@ -173,13 +173,13 @@ def _carrying(query: SlayerQuery, variables: Dict[str, Any]) -> SlayerQuery:
 _SENTINELS = ("0001-01-01", "0001-01-02", "0001-01-03")
 
 
-#: ``(operand column path as spelled, operand-left op, date, literal on the left)`` → the variables binding it there.
+#: ``(operand field path as spelled, operand-left op, date, literal on the left)`` → the variables binding it there.
 DateVariables = Dict[Tuple[Tuple[str, ...], str, str, bool], Tuple[str, ...]]
 
 
 def _date_variables(query: SlayerQuery, variables: Dict[str, Any]) -> DateVariables:
     """Each changed comparison a date-only variable binds, mapped to every variable binding it; a qualifier naming the
-    query's source model is dropped."""
+    query's source dataset is dropped."""
     dated = {n: v.strip() for n, v in variables.items() if isinstance(v, str) and is_date_only(v)}
     roots = [query.population] if isinstance(query.population, str) else []
     texts = [*((t, None) for t in _texts(query)),
@@ -194,8 +194,8 @@ def _date_variables(query: SlayerQuery, variables: Dict[str, Any]) -> DateVariab
 
 
 def _from_root(parts: Tuple[str, ...], *, owner: Optional[str], roots: List[str]) -> Tuple[str, ...]:
-    """``parts`` as a path from the query's source model: an extension's own qualifier replaced by its owner, a
-    qualifier naming the source model dropped."""
+    """``parts`` as a path from the query's source dataset: an extension's own qualifier replaced by its owner, a
+    qualifier naming the source dataset dropped."""
     if owner is not None:
         own = len(parts) > 1 and match_name(name=parts[0], declared=[owner], quoted=False) is not None
         parts = (owner, *(parts[1:] if own else parts))
@@ -206,7 +206,7 @@ def _from_root(parts: Tuple[str, ...], *, owner: Optional[str], roots: List[str]
 def _variable_slots(
     text: str, *, name: str, variables: Dict[str, Any],
 ) -> List[Tuple[Tuple[str, ...], str, bool]]:
-    """``(operand column parts, operand-left op, literal on the left)`` per changed comparison of ``text`` with
+    """``(operand field parts, operand-left op, literal on the left)`` per changed comparison of ``text`` with
     ``'{name}'``."""
     taken = {*(str(v).strip() for v in variables.values())}
     marker = next((s for s in _SENTINELS if s not in text and s not in taken), None)
@@ -229,7 +229,7 @@ def _metric_needs_pass(metric: DatasetMetric) -> bool:
 
 def dataset_needs_substitution_pass(dataset: SlayerDataset) -> bool:
     """True if substitution must run with no variables (a Mode-A ``{? ?}`` block, declared
-    variables, or any ``{...}`` token in a saved measure formula)."""
+    variables, or any ``{...}`` token in a saved metric expression)."""
     return (
         any(s and _contains_block_delimiter(s) for s in _mode_a_surfaces(dataset))
         or declares_variables(dataset)
@@ -238,7 +238,7 @@ def dataset_needs_substitution_pass(dataset: SlayerDataset) -> bool:
 
 
 def dataset_placeholder_names(dataset: SlayerDataset) -> set:
-    """Every ``{var}`` a model's Mode-A surfaces and saved measure formulas read."""
+    """Every ``{var}`` a dataset's Mode-A surfaces and saved metric expressions read."""
     out: set = {name for m in dataset.metrics for name in variable_names(m.expression)}
     for text in _mode_a_surfaces(dataset):
         if text:
@@ -255,7 +255,7 @@ def substitute_dataset_sql_surfaces(
     *, dataset: SlayerDataset, variables: Dict[str, Any], bind_mode_a: ModeABind,
 ) -> SlayerDataset:
     """Copy of ``dataset`` with ``{var}`` bound as literals into its four Mode-A surfaces by ``bind_mode_a``
-    and into its saved measure formulas; no-op when unneeded."""
+    and into its saved metric expressions; no-op when unneeded."""
     if not variables and not dataset_needs_substitution_pass(dataset):
         return dataset
     variables = coerce_declared_list_variables(
@@ -267,9 +267,9 @@ def substitute_dataset_sql_surfaces(
 
     update: Dict[str, Any] = {"fields": _substituted_fields(dataset.fields, _sub)}
     if dataset.sql is not None:
-        update["sql"] = _sub(dataset.sql, f"Model {dataset.name!r} sql")
+        update["sql"] = _sub(dataset.sql, f"Dataset {dataset.name!r} sql")
     if dataset.filters:
-        update["filters"] = [_sub(f, f"Model {dataset.name!r} filters[{i}]") for i, f in enumerate(dataset.filters)]
+        update["filters"] = [_sub(f, f"Dataset {dataset.name!r} filters[{i}]") for i, f in enumerate(dataset.filters)]
     if dataset.metrics:
         update["metrics"] = _substituted_metrics(dataset.metrics, variables)
     return dataset.model_copy(update=update)
@@ -280,9 +280,9 @@ def _substituted_fields(fields: List[DatasetField], sub: Callable[[str, str], st
     for col in fields:
         updates: Dict[str, Any] = {}
         if col.sql is not None:
-            updates["sql"] = sub(col.sql, f"Column {col.name!r} sql")
+            updates["sql"] = sub(col.sql, f"Field {col.name!r} sql")
         if col.filter is not None:
-            updates["filter"] = sub(col.filter, f"Column {col.name!r} filter")
+            updates["filter"] = sub(col.filter, f"Field {col.name!r} filter")
         out.append(col.model_copy(update=updates) if updates else col)
     return out
 
@@ -295,7 +295,7 @@ def _substituted_metrics(metrics: List[DatasetMetric], variables: Dict[str, Any]
 
 
 def bind_extension_metrics(*, query: SlayerQuery, variables: Dict[str, Any]) -> SlayerQuery:
-    """``query`` with ``{var}`` bound into its extensions' measures."""
+    """``query`` with ``{var}`` bound into its extensions' metrics."""
     if not any(e.metrics for e in query.extensions or []):
         return query
     extensions = [

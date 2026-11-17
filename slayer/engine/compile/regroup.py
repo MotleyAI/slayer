@@ -22,7 +22,7 @@ __all__ = [
 
 
 def reserved_prefix_fields(dataset: SlayerDataset | StageSchema | None) -> list[str]:
-    """``dataset`` columns colliding with the reserved regroup placeholder prefix."""
+    """``dataset`` fields colliding with the reserved regroup placeholder prefix."""
     if dataset is None:
         return []
     if isinstance(dataset, StageSchema):
@@ -33,7 +33,7 @@ def reserved_prefix_fields(dataset: SlayerDataset | StageSchema | None) -> list[
 
 
 class RegroupPlaceholderRegistry:
-    """Mints a distinct reserved-leaf ``ColumnKey`` per structural aggregate, keyed
+    """Mints a distinct reserved-leaf ``FieldKey`` per structural aggregate, keyed
     by ``AggregateKey`` identity NOT canonical alias (which two distinct aggregates
     can share); a monotonic index guarantees distinct leaves, skipping ``reserved``
     (an enclosing plan's placeholders a sub-plan may read)."""

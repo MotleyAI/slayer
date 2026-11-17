@@ -94,7 +94,7 @@ async def test_import_yields_expected_variable_contract(imported):
 async def test_count_with_optional_omitted_is_unfiltered(imported):
     engine, _ = imported
     q = SlayerQuery(
-        population="RrDrivers", metrics=[{"formula": "count"}], variables=_FULL_VARS,
+        population="RrDrivers", metrics=[{"expression": "count"}], variables=_FULL_VARS,
     )
     resp = await engine.execute(q)
     assert _sole_value(resp) == 3
@@ -103,7 +103,7 @@ async def test_count_with_optional_omitted_is_unfiltered(imported):
 async def test_count_with_brand_pushdown(imported):
     engine, _ = imported
     q = SlayerQuery(
-        population="RrDrivers", metrics=[{"formula": "count"}],
+        population="RrDrivers", metrics=[{"expression": "count"}],
         variables={**_FULL_VARS, "brand": ["Acme"]},
     )
     resp = await engine.execute(q)
@@ -118,7 +118,7 @@ async def test_count_with_scalar_brand_pushdown(imported):
     unknown column reference."""
     engine, _ = imported
     q = SlayerQuery(
-        population="RrDrivers", metrics=[{"formula": "count"}],
+        population="RrDrivers", metrics=[{"expression": "count"}],
         variables={**_FULL_VARS, "brand": "Acme"},
     )
     resp = await engine.execute(q)
@@ -130,7 +130,7 @@ async def test_scalar_and_list_pushdowns_agree(imported):
 
     async def _count(brand):
         q = SlayerQuery(
-            population="RrDrivers", metrics=[{"formula": "count"}],
+            population="RrDrivers", metrics=[{"expression": "count"}],
             variables={**_FULL_VARS, "brand": brand},
         )
         return _sole_value(await engine.execute(q))
@@ -142,7 +142,7 @@ async def test_grouped_max_measure(imported):
     engine, _ = imported
     q = SlayerQuery(
         population="RrDrivers", dimensions=["category"],
-        metrics=[{"formula": "qty_ty"}], variables=_FULL_VARS,
+        metrics=[{"expression": "qty_ty"}], variables=_FULL_VARS,
     )
     resp = await engine.execute(q)
     by_cat = {}
@@ -156,7 +156,7 @@ async def test_grouped_max_measure(imported):
 async def test_required_filter_omitted_raises_and_names_variable(imported):
     engine, _ = imported
     q = SlayerQuery(
-        population="RrDrivers", metrics=[{"formula": "count"}],
+        population="RrDrivers", metrics=[{"expression": "count"}],
         variables={"brand": ["Acme"]},  # required date vars omitted
     )
     with pytest.raises(Exception, match="fulfillment_date_from"):

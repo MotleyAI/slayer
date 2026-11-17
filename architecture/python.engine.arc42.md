@@ -158,7 +158,7 @@ elaborate→compile and `query_engine.py` orchestrates.
    precedence. [enforced: test:tests/test_dev1964_dual_phase_consumption.py]
 5. **Stages compose only through schemas**: every stage emits an explicit flat
    `StageSchema` downstream stages bind against; the two scope kinds
-   (`ModelScope`: dots walk joins; `StageSchema`: flat names, plus a list
+   (`DatasetScope`: dots walk joins; `StageSchema`: flat names, plus a list
    column's elements `L.value` / `L.*`) are distinct types, never a flag. [review]
 6. **Phase and stage are properties of the value**: phase (ROW / AGGREGATE /
    POST — when the value exists relative to aggregation) is intrinsic to the
@@ -172,11 +172,11 @@ elaborate→compile and `query_engine.py` orchestrates.
    schema, once at that stage boundary; every rewrite surfaces as a structured
    warning on the response; a slack rule retires by promotion to first-class
    grammar, never by accumulating rewrites. [review]
-8. **Models persist verbatim**: `save_model` stores the author's spelling
+8. **Models persist verbatim**: `save_dataset` stores the author's spelling
    unchanged, a deprecated spelling excepted, which is stored as its canonical
    twin; normalization applies to queries at execute time only. The one
    exception: a saved query stores each stage's inferred population as its
-   `source_model`. [review]
+   `population`. [review]
 9. **The term-interface boundary**: `binding`, `bind_inputs`,
    `elaborate`, `elaborate_env` (THE checker), `compile` and `plan` are
    declared children with only the modeled arrows among them — the compiler

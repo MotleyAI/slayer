@@ -169,7 +169,7 @@ async def test_named_column_surfaces_in_entities_bucket(
     assert len(entity_hits) == 1
     hit = entity_hits[0]
     assert hit.id == "warehouse.orders.amount"
-    assert hit.kind == "column"
+    assert hit.kind == "field"
     assert "amount" in hit.text
 
 
@@ -185,7 +185,7 @@ async def test_named_model_surfaces_in_entities_bucket(
     assert len(entity_hits) == 1
     hit = entity_hits[0]
     assert hit.id == "warehouse.orders"
-    assert hit.kind == "model"
+    assert hit.kind == "dataset"
     assert "orders" in hit.text
 
 
@@ -217,7 +217,7 @@ async def test_named_measure_surfaces_in_entities_bucket(
     assert len(entity_hits) == 1
     hit = entity_hits[0]
     assert hit.id == "warehouse.orders.aov"
-    assert hit.kind == "measure"
+    assert hit.kind == "metric"
     assert "aov" in hit.text
 
 
@@ -624,7 +624,7 @@ async def test_named_hit_with_question_active_reuses_corpus_path(
     hit = next(
         h for h in entity_hits if h.id == "warehouse.orders.amount"
     )
-    assert hit.kind == "column"
+    assert hit.kind == "field"
     assert "amount" in hit.text
 
 

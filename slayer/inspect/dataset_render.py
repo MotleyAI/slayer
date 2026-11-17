@@ -1,4 +1,4 @@
-"""Model-render core shared by the ``inspect`` surfaces.
+"""Dataset-render core shared by the ``inspect`` surfaces.
 
 Must NOT import ``slayer.mcp`` — ``mcp/server.py`` imports from here (circular).
 """
@@ -31,7 +31,7 @@ from slayer.storage.document_loading import DocumentLoadFailures
 
 logger = logging.getLogger(__name__)
 
-# Zero-arg aggregations needing no time-column context.
+# Zero-arg aggregations needing no time-field context.
 _SAFE_SAMPLE_AGGS = frozenset({"avg", "sum", "min", "max", "count", "count_distinct", "median"})
 
 # Deliberately narrow: other failures must keep their own cause, not be relabeled as a type problem.
@@ -194,7 +194,7 @@ def _markdown_table(rows: list[dict[str, Any]], fields: list[str]) -> str:
 
 
 def _render_field_type(field: DatasetField) -> str:
-    """``type`` cell; opaque columns get their raw DB type and a not-queryable marker, a list its operations."""
+    """``datatype`` cell; opaque fields get their raw DB type and a not-queryable marker, a list its operations."""
     if not field.datatype.is_opaque:
         return field_type_text(field)
     detail = field.db_type or "unrecognized DB type"
@@ -204,13 +204,13 @@ def _render_field_type(field: DatasetField) -> str:
 def _choose_sample_dims(
     dataset: SlayerDataset,
 ) -> tuple[list[dict[str, str]], set]:
-    """Up to two visible categorical non-identifier columns to group the sample by (not also aggregated)."""
+    """Up to two visible categorical non-identifier fields to group the sample by (not also aggregated)."""
     dims: list[dict[str, str]] = []
     dim_names: set = set()
     for c in dataset.fields:
         if c.hidden or is_identifier(field=c, fields=dataset.fields):
             continue
-        # Also excludes opaque columns, which can't be GROUP BY'd.
+        # Also excludes opaque fields, which can't be GROUP BY'd.
         if c.datatype not in (DataType.TEXT, DataType.BOOLEAN):
             continue
         dims.append({"name": c.name})
@@ -228,7 +228,7 @@ def _choose_sample_agg(
     """Pick a sample aggregation for ``field``, or ``None`` to skip it.
 
     Restricted aggs without ``avg`` → first zero-arg-safe one, else the first allowed (intentional).
-    Opaque columns are skipped: no equality operator, so they'd sink the whole profile query.
+    Opaque fields are skipped: no equality operator, so they'd sink the whole profile query.
     """
     if field.datatype.is_opaque:
         return None
@@ -253,7 +253,7 @@ def _build_sample_query_args(
     num_rows: int,
     metric_types: dict[str, ResultColumnType] | None = None,
 ) -> dict[str, Any]:
-    """Sample-data query: ``count(*)`` plus one aggregation per visible ungrouped non-identifier column."""
+    """Sample-data query: ``count(*)`` plus one aggregation per visible ungrouped non-identifier field."""
     metric_types = metric_types or {}
     dims, dim_names = _choose_sample_dims(dataset)
 
@@ -279,7 +279,7 @@ def _strip_dataset_prefix(
     data: list[dict[str, Any]],
     dataset_name: str,
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """Drop the redundant ``{model_name}.`` prefix from sample-data column keys."""
+    """Drop the redundant ``{dataset_name}.`` prefix from sample-data column keys."""
     prefix = f"{dataset_name}."
 
     def _strip(key: str) -> str:
@@ -295,7 +295,7 @@ async def _get_row_count(
 ) -> int | None:
     """Row count via a bare ``count(*)`` query, or ``None`` on any failure.
 
-    Read positionally: the no-dimensions column is named ``{model}._count``, not ``{model}.count``.
+    Read positionally: the no-dimensions column is named ``{dataset}._count``, not ``{dataset}.count``.
     """
     try:
         q = SlayerQuery.model_validate({
@@ -317,12 +317,12 @@ async def _get_row_count(
 
 
 def _build_backing_query_info(dataset: SlayerDataset) -> dict | None:
-    """``{variables, required_variables, stages}`` for a query-backed model, else ``None``."""
+    """``{variables, required_variables, stages}`` for a query-backed dataset, else ``None``."""
     if not dataset.source_queries:
         return None
     all_placeholders: set = set()
     stage_dicts: list[dict] = []
-    # Required = no default in model.query_variables nor in the stage's own variables.
+    # Required = no default in dataset.query_variables nor in the stage's own variables.
     defaulted: set = set(dataset.query_variables.keys())
     for q in dataset.source_queries:
         all_placeholders |= extract_placeholder_names(q) | extension_variable_refs(q)
@@ -338,7 +338,7 @@ def _build_backing_query_info(dataset: SlayerDataset) -> dict | None:
 
 
 def _render_field_value(v: Any) -> str:
-    """Most descriptive label of a query-stage field value (name, formula, wrapped name, else ``str``)."""
+    """Most descriptive label of a query-stage field value (name, expression, wrapped name, else ``str``)."""
     if not isinstance(v, dict):
         return str(v)
     name = v.get("name")
@@ -356,19 +356,19 @@ def _render_field_value(v: Any) -> str:
 
 
 def _render_stage_field_list(key: str, val: list) -> str:
-    """Render a stage's field list (dimensions / measures / filters / etc.)."""
+    """Render a stage's field list (dimensions / metrics / filters / etc.)."""
     if key == "filter":
         return "; ".join(f"`{f}`" for f in val)
     return "; ".join(_render_field_value(v) for v in val)
 
 
 def _render_source_dataset(src: Any) -> str | None:
-    """Render a stage's ``source_model``."""
-    return f"- source_model: `{src}`" if isinstance(src, str) else None
+    """Render a stage's ``population``."""
+    return f"- population: `{src}`" if isinstance(src, str) else None
 
 
 def _render_extensions(extensions: Any) -> str | None:
-    """Render a stage's ``extensions`` as the models they extend."""
+    """Render a stage's ``extensions`` as the datasets they extend."""
     names = [e["source_name"] for e in extensions or [] if isinstance(e, dict) and e.get("source_name")]
     return f"- extensions: {', '.join(f'`{n}`' for n in names)}" if names else None
 
@@ -406,7 +406,7 @@ def _backing_query_markdown_section(info: dict) -> str:
 
 
 def _source_type_for(dataset: SlayerDataset) -> str:
-    """Classify a model's source mode for summary/inspect output."""
+    """Classify a dataset's source mode for summary/inspect output."""
     if dataset.source_queries:
         return "query"
     if dataset.sql_table:
@@ -419,7 +419,7 @@ def _source_type_for(dataset: SlayerDataset) -> str:
 async def load_visible_datasets(
     storage: StorageBackend, ds_name: str, *, failures: DocumentLoadFailures | None = None,
 ) -> list[SlayerDataset]:
-    """Visible, name-sorted models of one datasource; unloadable models are skipped with a warning."""
+    """Visible, name-sorted datasets of one datasource; unloadable datasets are skipped with a warning."""
     loaded = (failures or DocumentLoadFailures()).skip(await storage.load_datasets(data_source=ds_name))
     return sorted((m for m in loaded if not m.hidden), key=lambda m: m.name)
 
@@ -427,12 +427,12 @@ async def load_visible_datasets(
 def saved_queries_index(
     datasets: Iterable[SlayerDataset], *, max_chars: int | None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Model name → the visible saved queries (``name``, ``description``) any of whose stages read it."""
+    """Dataset name → the visible saved queries (``name``, ``description``) any of whose stages read it."""
     index: dict[str, list[dict[str, Any]]] = {}
     for m in datasets:
         if m.hidden or not m.source_queries:
             continue
-        # Stage names are query-local, so a source naming one is not a model.
+        # Stage names are query-local, so a source naming one is not a dataset.
         local = {s.name for s in m.source_queries if s.name} | {m.name}
         for target in dict.fromkeys(s.population_name for s in m.source_queries):
             if target is not None and target not in local:
@@ -442,14 +442,14 @@ def saved_queries_index(
     return index
 
 
-# Model schema skeleton
+# Dataset schema skeleton
 def dataset_skeleton_fields(
     *,
     dataset: SlayerDataset,
     max_chars: int | None = None,
     saved_queries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Cheap, DB-free structured skeleton of a model.
+    """Cheap, DB-free structured skeleton of a dataset.
 
     ``canonical_id`` falls back to the bare name when ``data_source`` is unset.
     """
@@ -507,7 +507,7 @@ def _saved_queries_markdown(saved_queries: list[dict[str, Any]]) -> str:
 
 
 def _render_variables_line(variables: dict[str, list[str]]) -> str | None:
-    """``Variables:`` skeleton line, or ``None`` when the model takes no variables."""
+    """``Variables:`` skeleton line, or ``None`` when the dataset takes no variables."""
     required = variables.get("required") or []
     optional = variables.get("optional") or []
     if not required and not optional:
@@ -535,7 +535,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
     sections: list[str] | None = None,
     descriptions_max_chars: int | None = None,
 ) -> str:
-    """Render a complete-yet-compact view of an already-resolved model.
+    """Render a complete-yet-compact view of an already-resolved dataset.
 
     ``engine=None`` skips the DB-hitting blocks (row count, profiling, sample data).
     """
@@ -561,7 +561,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
     ]
 
     truncated_model_desc = _truncate_description(dataset.description, descriptions_max_chars)
-    out_sections: list[str] = [f"# Model: `{dataset.name}`"]
+    out_sections: list[str] = [f"# Dataset: `{dataset.name}`"]
     if truncated_model_desc:
         out_sections.append(truncated_model_desc)
 
@@ -593,14 +593,14 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
 
     if show_sql and dataset.filters:
         filter_lines = "\n".join(f"- `{f}`" for f in dataset.filters)
-        out_sections.append(f"## Filters (model-level)\n\n{filter_lines}")
+        out_sections.append(f"## Filters (dataset-level)\n\n{filter_lines}")
 
     # Backing-query structure is always on; only its SQL is gated by show_sql.
     backing_info = _build_backing_query_info(dataset)
     if backing_info is not None:
         out_sections.append(_backing_query_markdown_section(backing_info))
 
-    # Rendered samples come only from the profiling owner's returned columns.
+    # Rendered samples come only from the profiling owner's returned fields.
     sampled_by_name: dict[str, DatasetField] = {}
     if engine is not None and "fields" in included_set:
         outcome = await ensure_samples_fresh(
@@ -645,13 +645,13 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         if not show_sql:
             col_columns = [c for c in col_columns if c not in ("sql", "filter")]
         out_sections.append(
-            f"## Columns ({len(col_rows)})\n\n"
+            f"## Fields ({len(col_rows)})\n\n"
             + _markdown_table(rows=col_rows, fields=col_columns)
         )
     elif visible_columns:
         csv = ", ".join(_md_code_span(c.name) for c in visible_columns)
         out_sections.append(
-            f"## Columns ({len(visible_columns)} — names only)\n\n{csv}"
+            f"## Fields ({len(visible_columns)} — names only)\n\n{csv}"
         )
 
     if "metrics" in included_set:
@@ -665,7 +665,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 "meta": _format_meta(mm.meta),
             })
         out_sections.append(
-            f"## Measures ({len(measure_rows)})\n\n"
+            f"## Metrics ({len(measure_rows)})\n\n"
             + _markdown_table(
                 rows=measure_rows,
                 fields=["name", "expression", "label", "description", "meta"],
@@ -674,7 +674,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
     elif dataset.metrics:
         csv = ", ".join(_md_code_span(mm.name) for mm in dataset.metrics)
         out_sections.append(
-            f"## Measures ({len(dataset.metrics)} — names only)\n\n{csv}"
+            f"## Metrics ({len(dataset.metrics)} — names only)\n\n{csv}"
         )
 
     if "aggregations" in included_set:
@@ -722,7 +722,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 "cardinality": str(h.cardinality) if h.cardinality else "",
             })
         out_sections.append(
-            f"## Joins ({len(join_rows)})\n\n"
+            f"## Relationships ({len(join_rows)})\n\n"
             + _markdown_table(
                 rows=join_rows,
                 fields=["name", "to", "join_pairs", "cardinality"],
@@ -731,7 +731,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
     elif hops:
         csv = ", ".join(_md_code_span(canonical_token(h)) for h in hops)
         out_sections.append(
-            f"## Joins ({len(hops)} — names only)\n\n{csv}"
+            f"## Relationships ({len(hops)} — names only)\n\n{csv}"
         )
 
     sample_sql: str | None = None
@@ -743,7 +743,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         query_args = _build_sample_query_args(
             dataset=dataset, num_rows=num_rows, metric_types=metric_types,
         )
-        # Older models may hold ungroupable types as TEXT: retry count-only, but ONLY on that failure.
+        # Older datasets may hold ungroupable types as TEXT: retry count-only, but ONLY on that failure.
         note = ""
         try:
             try:
@@ -766,7 +766,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                     # Report the original cause, not this second failure.
                     raise exc
                 sample_reduced_reason = (
-                    "at least one column's type does not support the "
+                    "at least one field's type does not support the "
                     "grouping/DISTINCT this profile uses"
                 )
                 note = f"\n\n_Reduced to a row count: {sample_reduced_reason}._"
@@ -861,7 +861,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         if show_sql:
             payload["filter"] = dataset.filters
 
-        # Columns
+        # Fields
         if "fields" in included_set:
             col_payloads: list[dict[str, Any]] = []
             for c in visible_columns:
@@ -870,7 +870,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                     "name": c.name,
                     "datatype": str(c.datatype),
                     **({"element_type": str(c.element_type)} if c.element_type is not None else {}),
-                    # Opaque columns only (see _render_column_type).
+                    # Opaque fields only (see _render_field_type).
                     **(
                         {"db_type": c.db_type, "queryable": False}
                         if c.datatype.is_opaque else {}
@@ -895,7 +895,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         elif visible_columns:
             payload["columns_names"] = [c.name for c in visible_columns]
 
-        # Measures
+        # Metrics
         if "metrics" in included_set:
             payload["metrics"] = [
                 {
@@ -932,7 +932,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         elif dataset.aggregations:
             payload["aggregations_names"] = [a.name for a in dataset.aggregations]
 
-        # Joins — declared outgoing plus reverse-reachable incoming, oriented.
+        # Relationships — declared outgoing plus reverse-reachable incoming, oriented.
         if "relationships" in included_set:
             payload["relationships"] = [
                 {

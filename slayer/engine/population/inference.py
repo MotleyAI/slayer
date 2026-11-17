@@ -1,10 +1,10 @@
 """Dimension-determined population inference.
 
-The population of a rootless query is the model with the fewest routed join hops
+The population of a rootless query is the dataset with the fewest routed relationship hops
 that determines every queried dimension along provably to-one paths, read from
-the dimensions and field-typed (aggregate-free) filters only — never measures,
-so adding a measure can never re-quantify the rows. The same to-one determination
-core backs ``recommend_root_model``.
+the dimensions and field-typed (aggregate-free) filters only — never metrics,
+so adding a metric can never re-quantify the rows. The same to-one determination
+core backs ``recommend_population``.
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ _NO_EDGE = "no_edge"
 
 
 class PopulationChoice(BaseModel):
-    """The inferred population: the chosen model and its datasource."""
+    """The inferred population: the chosen dataset and its datasource."""
 
     dataset_name: str
     data_source: str
@@ -97,7 +97,7 @@ def _computed_dimension_refs(expression: str, *, root: str | None) -> list[str]:
 def _walk_terminal_dataset(
     path: list[str], *, datasets_by_name: dict[str, SlayerDataset]
 ) -> SlayerDataset | None:
-    """Model at the end of a dotted ``path`` (a model name then join tokens), or None."""
+    """Dataset at the end of a dotted ``path`` (a dataset name then relationship tokens), or None."""
     root = datasets_by_name.get(path[0]) if path else None
     if root is None:
         return None
@@ -105,12 +105,12 @@ def _walk_terminal_dataset(
 
 
 def _is_saved_metric_ref(ref: str, *, datasets_by_name: dict[str, SlayerDataset]) -> bool:
-    """Whether ``ref`` resolves to a saved measure / custom aggregation (dropped from determination).
+    """Whether ``ref`` resolves to a saved metric / custom aggregation (dropped from determination).
 
-    The owner is the model the join path lands on — walked, not guessed from a
-    segment name — so a measure reached through a named join is recognised too.
-    A real column always wins: aggregation names share no namespace with columns,
-    so a column that happens to share an aggregation's name stays a determination item.
+    The owner is the dataset the relationship path lands on — walked, not guessed from a
+    segment name — so a metric reached through a named relationship is recognised too.
+    A real field always wins: aggregation names share no namespace with fields,
+    so a field that happens to share an aggregation's name stays a determination item.
     """
     parts = ref.split(".")
     owner = _walk_terminal_dataset(parts[:-1], datasets_by_name=datasets_by_name)
@@ -150,7 +150,7 @@ def _all_filter_refs(filter_str: str, *, root: str | None) -> tuple[list[str], b
 def _filter_refs(
     filter_str: str, *, root: str | None, dataset_scopes: list[dict[str, SlayerDataset]]
 ) -> list[str]:
-    """Field references of one query filter; drops aggregate-bearing filters and saved-measure refs.
+    """Field references of one query filter; drops aggregate-bearing filters and saved-metric refs.
 
     All ``{var}`` are masked to a neutral literal first, so a reference introduced
     only by a variable value never participates.
@@ -181,7 +181,7 @@ def _query_dimension_refs(query: SlayerQuery) -> list[str]:
 
 
 def _restriction_refs(query: SlayerQuery) -> list[str]:
-    """Each query-declared INNER join, read as a field filter on its declaring model's key."""
+    """Each query-declared INNER join, read as a field filter on its declaring dataset's key."""
     return [
         f"{e.source_name}.{j.join_pairs[0][0]}"
         for e in query.extensions or [] for j in e.relationships or [] if j.join_type is JoinType.INNER
@@ -196,11 +196,11 @@ def determination_items(
 ) -> list[str]:
     """The dimensions + time dimensions + field-typed filter refs that the population must determine.
 
-    Measures, measure-typed filters, saved-measure refs, order entries, and
-    model-level filters contribute nothing. Deduped, preserving first occurrence.
+    Metrics, metric-typed filters, saved-metric refs, order entries, and
+    dataset-level filters contribute nothing. Deduped, preserving first occurrence.
     Runtime variable values never participate — a filter's ``{var}`` is masked to a
     neutral literal before parsing, so an injected value can't introduce a ref.
-    ``dataset_scopes`` widens saved-measure classification beyond ``datasets_by_name``
+    ``dataset_scopes`` widens saved-metric classification beyond ``datasets_by_name``
     (the anchors-fold scopes), so items and anchors can't disagree.
     """
     scopes = dataset_scopes if dataset_scopes is not None else [datasets_by_name]
@@ -228,7 +228,7 @@ def determination_items(
 def _walk_to_one(
     *, start: SlayerDataset, tokens: list[str], datasets_by_name: dict[str, SlayerDataset]
 ) -> tuple[SlayerDataset | None, str, tuple[str, ...]]:
-    """Walk ``tokens`` from ``start``; ``(terminal model, verdict, canonical path)``.
+    """Walk ``tokens`` from ``start``; ``(terminal dataset, verdict, canonical path)``.
 
     Every oriented hop must be provably to-one; ``_NO_EDGE`` distinguishes a path
     that does not resolve from a resolved-but-unsafe (``_UNREACHABLE``) one.
@@ -273,7 +273,7 @@ def probe_item(*, root: str, item: str, datasets_by_name: dict[str, SlayerDatase
     anchor with no literal edge falls back to short-form routing — the same route
     enumeration binding applies — viable only when every hop of the selected route
     is provably to-one, with hops counted along it. Verdict is ``_OK`` when the
-    walk succeeds and the leaf is a column on the terminal model, ``_AMBIGUOUS``
+    walk succeeds and the leaf is a field on the terminal dataset, ``_AMBIGUOUS``
     when a hop spans parallel edges (or the routed probe finds two safe routes),
     else ``_UNREACHABLE``. A leading self-prefix (``root.``) is stripped first.
     """
@@ -304,7 +304,7 @@ def determined_path(*, root: str, item: str, datasets_by_name: dict[str, SlayerD
 
 
 def ambiguity_resolved_path(*, root: str, item: str, datasets_by_name: dict[str, SlayerDataset]) -> tuple[str, ...] | None:
-    """For a ``model.leaf`` item whose probe fails only on ambiguity, its tie-break-best fan-out-free canonical path."""
+    """For a ``dataset.leaf`` item whose probe fails only on ambiguity, its tie-break-best fan-out-free canonical path."""
     if probe_item(root=root, item=item, datasets_by_name=datasets_by_name)[0] != _AMBIGUOUS:
         return None
     *path, leaf = item.split(".")
@@ -329,7 +329,7 @@ def item_blockers(*, root: str, item: str, datasets_by_name: dict[str, SlayerDat
             return []
     except AmbiguousRelationshipPathError as e:
         return [p for p in unaddressable_pairs(datasets_by_name=datasets_by_name)
-                if {p.source_dataset, p.to} == {e.source_model, e.target_model}]
+                if {p.source_dataset, p.to} == {e.source_dataset, e.target_dataset}]
     except CircularRelationshipPathError:
         return []
     return blocking_pairs(root=start, target=path[0], datasets_by_name=datasets_by_name)
@@ -392,10 +392,10 @@ def select_from_verdicts(verdicts: list[CandidateVerdict]) -> tuple[str | None, 
 def _saved_metric_in_every_scope(
     ref: str, *, dataset_scopes: list[dict[str, SlayerDataset]]
 ) -> bool:
-    """Whether ``ref`` resolves to a saved measure in every scope holding its anchor model.
+    """Whether ``ref`` resolves to a saved metric in every scope holding its anchor dataset.
 
-    A scope where the anchor model is absent abstains; a real column in any scope
-    keeps the reference (column-wins precedence, extended across datasources).
+    A scope where the anchor dataset is absent abstains; a real field in any scope
+    keeps the reference (field-wins precedence, extended across datasources).
     """
     scopes = [s for s in dataset_scopes if ref.split(".")[0] in s]
     return bool(scopes) and all(
@@ -409,10 +409,10 @@ def _anchor_names(
     """First segments of the dotted references that drive inference — dimensions,
     time dimensions, and field-typed filters only.
 
-    Measures are excluded (they must never influence the population, datasource
+    Metrics are excluded (they must never influence the population, datasource
     scoping, or sibling detection); references are read from the parser, so string
     literals never surface as anchors. With ``dataset_scopes`` (phase 2 of the fold),
-    a filter reference resolving to a saved measure is excluded too — the same
+    a filter reference resolving to a saved metric is excluded too — the same
     classification :func:`determination_items` applies.
     """
     refs = _query_dimension_refs(query)
@@ -425,16 +425,16 @@ def _anchor_names(
         )
     refs.extend(_restriction_refs(query))
     root = query.population_name
-    # A root-relative bare reference is the root's own column.
+    # A root-relative bare reference is the root's own field.
     return {ref.split(".")[0] if root is None or "." in ref else root for ref in refs if ref}
 
 
 async def _classification_scopes(
     *, storage: StorageBackend, data_source: str | None, anchors: set[str]
 ) -> tuple[dict[str, dict[str, SlayerDataset]], dict[str, set[str]]]:
-    """``(models-by-name per candidate datasource, datasources per model name)``.
+    """``(datasets-by-name per candidate datasource, datasources per dataset name)``.
 
-    Candidates are the datasources holding at least one syntactic anchor model —
+    Candidates are the datasources holding at least one syntactic anchor dataset —
     or just the explicit ``data_source``, which pins scoping before anchor voting.
     """
     ds_by_dataset: dict[str, set[str]] = {}
@@ -455,7 +455,7 @@ async def _classification_scopes(
 def _resolve_datasource(
     *, ds_by_dataset: dict[str, set[str]], data_source: str | None, anchors: set[str]
 ) -> str:
-    """The single datasource holding every referenced anchor model, or fail closed."""
+    """The single datasource holding every referenced anchor dataset, or fail closed."""
     if data_source is not None:
         return data_source
     relevant = [a for a in anchors if a in ds_by_dataset]
@@ -478,7 +478,7 @@ def _resolve_datasource(
 # The spine factor (queries/time-spine).
 # --------------------------------------------------------------------------- #
 def spine_factor_out(query: SlayerQuery) -> SlayerQuery:
-    """``query``'s P factor: its spine time dimensions and spine filters removed (measures too)."""
+    """``query``'s P factor: its spine time dimensions and spine filters removed (metrics too)."""
     root = query.population_name
     return query.model_copy(update={
         "dimensions": [
@@ -549,7 +549,7 @@ async def spine_datasource(
     data_source: str | None,
     sibling_stage_names: set[str] | None = None,
 ) -> str:
-    """The datasource of spine-rooted queries: pinned, else the one holding every model they name."""
+    """The datasource of spine-rooted queries: pinned, else the one holding every dataset they name."""
     if data_source is not None:
         return data_source
     anchors: set[str] = set()
@@ -579,13 +579,13 @@ async def infer_population(
     """Infer a rootless query's population, or raise :class:`PopulationInferenceError`."""
     siblings = sibling_stage_names or set()
 
-    # Nothing to infer from (e.g. a measures-only query) — a dedicated error,
+    # Nothing to infer from (e.g. a metrics-only query) — a dedicated error,
     # checked before datasource resolution so it never masquerades as NO_DATASOURCE.
     if not (query.dimensions or query.time_dimensions or query.filter):
         raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
 
-    # Phase 1 — syntactic anchors only pick the model scopes to classify against;
-    # every verdict below re-runs on the model-aware classification.
+    # Phase 1 — syntactic anchors only pick the dataset scopes to classify against;
+    # every verdict below re-runs on the dataset-aware classification.
     syntactic = _anchor_names(query)
 
     # No dimensions and only aggregate-bearing filters ⇒ nothing to infer from;
@@ -598,7 +598,7 @@ async def infer_population(
         storage=storage, data_source=data_source, anchors=syntactic
     )
 
-    # Phase 2 — anchors reclassified saved-measure-excluding, precedence re-run:
+    # Phase 2 — anchors reclassified saved-metric-excluding, precedence re-run:
     # EMPTY_DETERMINATION, then SIBLING_STAGE, then datasource resolution.
     anchors = _anchor_names(query, dataset_scopes=list(scopes.values()))
     if not anchors:
@@ -612,7 +612,7 @@ async def infer_population(
             candidates=sorted(anchored_siblings),
             detail=(
                 f"dimensions anchor at sibling stage {name!r}; name it as the "
-                f"stage's source_model"
+                f"stage's population"
             ),
         )
 
@@ -646,7 +646,7 @@ async def infer_population(
             PopulationErrorReason.AMBIGUOUS_PATH,
             candidates=[v.dataset_name for v in blocked],
             detail="; ".join([
-                f"from candidate {first.dataset_name!r}, the join path to "
+                f"from candidate {first.dataset_name!r}, the relationship path to "
                 f"{first.ambiguous_item!r} is ambiguous", *pairs,
             ]),
         )

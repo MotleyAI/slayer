@@ -826,7 +826,7 @@ class TestRegularModelConversion:
         project = _project_with_orphan()
         fake_model = _sample_slayer_model(name="raw_events")
 
-        with patch.object(converter_module, "introspect_table_to_model", new=AsyncMock(return_value=fake_model)):
+        with patch.object(converter_module, "introspect_table_to_dataset", new=AsyncMock(return_value=fake_model)):
             result = _convert_hidden(project)
 
         hidden = [m for m in result.datasets if m.hidden]
@@ -845,7 +845,7 @@ class TestRegularModelConversion:
         def raise_err(**_kwargs):
             raise SQLAlchemyError("table not found")
 
-        with patch.object(converter_module, "introspect_table_to_model", new=AsyncMock(side_effect=raise_err)):
+        with patch.object(converter_module, "introspect_table_to_dataset", new=AsyncMock(side_effect=raise_err)):
             result = _convert_hidden(project)
 
         # Semantic model still came through
@@ -859,7 +859,7 @@ class TestRegularModelConversion:
         project = _project_with_orphan(orphan_name="orders")
         fake_model = _sample_slayer_model(name="orders")
 
-        with patch.object(converter_module, "introspect_table_to_model", new=AsyncMock(return_value=fake_model)):
+        with patch.object(converter_module, "introspect_table_to_dataset", new=AsyncMock(return_value=fake_model)):
             result = _convert_hidden(project)
 
         # Only the semantic (visible) model survives under the name 'orders'
@@ -871,7 +871,7 @@ class TestRegularModelConversion:
         project.semantic_models[0].name = "order_facts"
         project.regular_models.append(DbtRegularModel(name="orders", schema_name="staging", alias="orders"))
 
-        with patch.object(converter_module, "introspect_table_to_model",
+        with patch.object(converter_module, "introspect_table_to_dataset",
                           new=AsyncMock(side_effect=lambda **kw: _sample_slayer_model(name=kw["table_name"]))):
             result = _convert_hidden(project)
 
@@ -891,7 +891,7 @@ class TestHiddenModelDescriptionPrecedence:
             DatasetField(name="db_only", sql="db_only", datatype=DataType.TEXT,
                    description="db comment only")
         )
-        with patch.object(converter_module, "introspect_table_to_model", new=AsyncMock(return_value=fake_model)):
+        with patch.object(converter_module, "introspect_table_to_dataset", new=AsyncMock(return_value=fake_model)):
             result = _convert_hidden(project)
         return next(m for m in result.datasets if m.hidden)
 

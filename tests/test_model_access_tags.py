@@ -108,7 +108,7 @@ class TestInspectAndSearch:
         await storage.save_dataset(_model(access_tags=[SECRET_TAG]))
         for fmt in ("markdown", "json"):
             out = await InspectService(storage=storage).inspect(
-                reference=f"{DS}.items", entity_type="model", compact=False, format=fmt,
+                reference=f"{DS}.items", entity_type="dataset", compact=False, format=fmt,
             )
             assert SECRET_TAG in out
 

@@ -188,7 +188,7 @@ class TestCrossModelFragmentJoins:
                 population="orders",
                 dimensions=[{"formula": "status", "name": "status"}],
                 metrics=[{
-                    "formula": "wscaled_sum(customers.spend)", "name": "m0",
+                    "expression": "wscaled_sum(customers.spend)", "name": "m0",
                 }],
             ),
             model=_orders(),
@@ -210,8 +210,8 @@ class TestCrossModelFragmentJoins:
                 population="orders",
                 dimensions=[{"formula": "status", "name": "status"}],
                 metrics=[
-                    {"formula": "wscaled_sum(customers.spend)", "name": "m0"},
-                    {"formula": "sum(amount)", "name": "m1"},
+                    {"expression": "wscaled_sum(customers.spend)", "name": "m0"},
+                    {"expression": "sum(amount)", "name": "m1"},
                 ],
             ),
             model=_orders(),
@@ -248,7 +248,7 @@ class TestHostPathFragmentJoinsStillWork:
                 population="orders",
                 dimensions=[{"formula": "status", "name": "status"}],
                 metrics=[{
-                    "formula": "wscaled_sum(amount, w='customers.regions.weight')",
+                    "expression": "wscaled_sum(amount, w='customers.regions.weight')",
                     "name": "m0",
                 }],
             ),

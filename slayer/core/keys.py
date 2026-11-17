@@ -54,8 +54,8 @@ from slayer.core.granularity import CustomGranularity, Granularity
 from slayer.core.time_points import parse_temporal_value
 
 
-# Regroup-consumed aggregates are substituted by a ColumnKey with this leaf
-# prefix; a source model may not declare a real column with it during regroup.
+# Regroup-consumed aggregates are substituted by a FieldKey with this leaf
+# prefix; a source dataset may not declare a real field with it during regroup.
 REGROUP_LEAF_PREFIX = "__regroup__"
 
 
@@ -307,11 +307,11 @@ def _typed_kwargs(kwargs):
 
 
 class FieldKey(_LeafKey, frozen=True):
-    """Row-level reference to a base column on a model.
+    """Row-level reference to a base field on a dataset.
 
-    ``path`` is the join walk from the query's source model to the terminal
-    model — empty for local refs, non-empty for joined refs; ``leaf`` is the
-    column name. Local and cross-model refs share this shape (P3).
+    ``path`` is the relationship walk from the query's source dataset to the terminal
+    dataset — empty for local refs, non-empty for joined refs; ``leaf`` is the
+    field name. Local and cross-dataset refs share this shape (P3).
     """
 
     path: Tuple[str, ...] = ()
@@ -323,10 +323,10 @@ class FieldKey(_LeafKey, frozen=True):
 
 
 class FieldSqlKey(_LeafKey, frozen=True):
-    """Reference to a derived column (whose ``Column.sql`` is set).
+    """Reference to a derived field (whose ``DatasetField.sql`` is set).
 
-    The expansion AST is recovered from the model at binding time — the key only
-    carries identity. ``path`` works like ``ColumnKey.path``.
+    The expansion AST is recovered from the dataset at binding time — the key only
+    carries identity. ``path`` works like ``FieldKey.path``.
     """
 
     path: Tuple[str, ...] = ()
@@ -340,7 +340,7 @@ class FieldSqlKey(_LeafKey, frozen=True):
 
 class SqlFragmentKey(_FrozenKey, frozen=True):
     """A bound aggregation-parameter expression: canonical Mode-A ``template`` whose
-    ``{r<i>}`` placeholders stand for ``refs[i]`` (absolute column keys). Phase ROW."""
+    ``{r<i>}`` placeholders stand for ``refs[i]`` (absolute field keys). Phase ROW."""
 
     template: str
     refs: Tuple[FieldKey | FieldSqlKey, ...] = ()
@@ -363,7 +363,7 @@ class SqlFragmentKey(_FrozenKey, frozen=True):
 class TimeTruncKey(_FrozenKey, frozen=True):
     """A row-level value truncated to a granularity, keyed by (source, granularity).
 
-    ``source`` is any row-level key, a column being the one-leaf case.
+    ``source`` is any row-level key, a field being the one-leaf case.
     ``granularity`` is resolved: built-in, or a datasource definition.
     """
 
@@ -386,20 +386,20 @@ class TimeTruncKey(_FrozenKey, frozen=True):
 
 
 def field_leaf(col: FieldKey | FieldSqlKey) -> str:
-    """Leaf column name of a ``TimeTruncKey.source`` regardless of kind."""
+    """Leaf field name of a ``TimeTruncKey.source`` regardless of kind."""
     return getattr(col, "leaf", None) or getattr(col, "field_name")
 
 
 def field_path(col: FieldKey | FieldSqlKey) -> Tuple[str, ...]:
-    """Join path of a ``TimeTruncKey.source`` regardless of kind."""
+    """Relationship path of a ``TimeTruncKey.source`` regardless of kind."""
     return col.path
 
 
 class StarKey(_LeafKey, frozen=True):
     """Sentinel source for ``count(*)`` aggregations.
 
-    ``path`` is empty for the local star and non-empty for a cross-model star
-    (``count(customers.*)`` → ``path=("customers",)``), mirroring ``ColumnKey.path``.
+    ``path`` is empty for the local star and non-empty for a cross-dataset star
+    (``count(customers.*)`` → ``path=("customers",)``), mirroring ``FieldKey.path``.
     """
 
     path: Tuple[str, ...] = ()
@@ -437,8 +437,8 @@ class LiteralKey(_LeafKey, frozen=True):
 # ---------------------------------------------------------------------------
 
 
-# Beyond column / star sources, an aggregate may take a row-level
-# same-model EXPRESSION source (``sum(amount - cost)``) — the bound tree reuses
+# Beyond field / star sources, an aggregate may take a row-level
+# same-dataset EXPRESSION source (``sum(amount - cost)``) — the bound tree reuses
 # the existing row-level composites, so hash/equality/serialization come from
 # the canonical tree and formatting variants intern to one key.
 # A re-aggregation's source resolves entirely to attached values, so
@@ -450,7 +450,7 @@ AggregateSource = Union[
     "InKey", "TimePointCmpKey", "CastKey", "ListSetKey",
 ]
 # Positional and kwarg arg values share one union: `last(amount, created_at)` binds a
-# ranking column, `weighted_avg(weight=qty * 2)` a row-level expression,
+# ranking field, `weighted_avg(weight=qty * 2)` a row-level expression,
 # `weighted_avg(weight=count(id, partition_by=…))` an aggregate, and
 # `weighted_avg(weight=rank(sum(amount, partition_by=…), direction='desc'))` a grained transform —
 # all via `_bind_agg_arg`.
@@ -472,14 +472,14 @@ def _sort_kwargs_tuple(v):
 class AggregateKey(_FrozenKey, frozen=True):
     """Identity for an aggregation slot (P3).
 
-    Local and cross-model aggregates share this shape: ``source.path`` empty for
+    Local and cross-dataset aggregates share this shape: ``source.path`` empty for
     local, non-empty for joined. ``args``/``kwargs`` carry parameters (numeric
     scalars pre-normalized to Decimal; identifier kwargs arrive as
     ``FieldKey``/``FieldSqlKey``; kwargs canonicalized to sorted order). A
-    ``Column.filter`` rides its source ``FieldSqlKey``, not the
+    ``DatasetField.filter`` rides its source ``FieldSqlKey``, not the
     aggregate.
 
-    ``locus`` names where a cross-model aggregate is evaluated:
+    ``locus`` names where a cross-dataset aggregate is evaluated:
     ``"target"`` (default) rooted at the target, one value per target row-group;
     ``"host"`` rooted at the host, one value per host group (needed by the
     order wrap). It participates in identity — the two are different
@@ -496,7 +496,7 @@ class AggregateKey(_FrozenKey, frozen=True):
     # The ``FILTER (WHERE …)`` condition; a built-in lowers it as an input mask, any other aggregation as its
     # producer's row restriction.
     filter: Optional["ValueKey"] = None
-    # The built-in aggregation's semantics (its owner declares no formula for ``agg``); not part of identity.
+    # The built-in aggregation's semantics (its owner declares no expression for ``agg``); not part of identity.
     builtin: bool = Field(default=True, repr=False)
 
     @field_validator("kwargs", mode="before")
@@ -562,12 +562,12 @@ class AggregateKey(_FrozenKey, frozen=True):
         )
 
 
-# Rerooting is type-preserving — a ColumnKey in, a ColumnKey out.
+# Rerooting is type-preserving — a FieldKey in, a FieldKey out.
 _RerootableT = TypeVar("_RerootableT")
 
 
 def _map_path_ref(ref, *, map_path):
-    """Apply ``map_path`` to a single embedded reference's join ``path``.
+    """Apply ``map_path`` to a single embedded reference's relationship ``path``.
 
     Per-leaf half of the path-map visitor: ``FieldKey``/``FieldSqlKey``/
     ``StarKey`` carry a ``path``; other fields ride along via ``model_copy``. A
@@ -586,10 +586,10 @@ def _map_path_ref(ref, *, map_path):
 def reroot_aggregate_key(
     key: "AggregateKey", *, target_path: Tuple[str, ...],
 ) -> "AggregateKey":
-    """Re-anchor a cross-model ``AggregateKey`` into its target's local scope.
+    """Re-anchor a cross-dataset ``AggregateKey`` into its target's local scope.
 
-    A thin alias for :func:`reroot_value_key`; a ``Column.filter`` rides its
-    source ``FieldSqlKey``, recovered from the model at expansion.
+    A thin alias for :func:`reroot_value_key`; a ``DatasetField.filter`` rides its
+    source ``FieldSqlKey``, recovered from the dataset at expansion.
     """
     return reroot_value_key(key, target_path=target_path)
 
@@ -838,7 +838,7 @@ class TimePointCmpKey(_FrozenKey, frozen=True):
 class InKey(_FrozenKey, frozen=True):
     """Typed identity for a ``col IN (lit, …)`` / ``NOT IN`` predicate.
 
-    A column LHS and a fixed tuple of ``LiteralKey``
+    A field LHS and a fixed tuple of ``LiteralKey``
     RHS operands (LiteralKey so equality is type-stable). ``negated`` flips IN vs
     NOT IN. Phase is the max of child phases (P8); the renderer emits
     ``exp.In`` (wrapped in ``exp.Not``).
@@ -1098,7 +1098,7 @@ SLOT_COMPOSITE_KINDS: Tuple[type, ...] = tuple(k for k, p in KIND_POLICY.items()
 
 
 def _map_value_key(key: _RerootableT, *, map_path) -> _RerootableT:
-    """Rewrite every embedded join ``path`` in ``key`` through ``map_path``.
+    """Rewrite every embedded relationship ``path`` in ``key`` through ``map_path``.
 
     Total & fail-closed behind :func:`reroot_value_key` / :func:`prepend_value_key`:
     path-carrying leaves map here, every other kind routes through
@@ -1291,7 +1291,7 @@ def reroot_value_key(
 def prepend_value_key(
     key: _RerootableT, *, host_path: Tuple[str, ...],
 ) -> _RerootableT:
-    """Prefix every embedded join ``path`` with ``host_path`` (PREPEND direction),
+    """Prefix every embedded relationship ``path`` with ``host_path`` (PREPEND direction),
     re-anchoring a target-local bound tree into the host's coordinate system.
 
     Inverse of ``reroot_value_key(key, target_path=host_path)``. ``host_path == ()``
@@ -1409,12 +1409,12 @@ def _is_null_arg(arg: object) -> bool:
     return arg is None or (isinstance(arg, LiteralKey) and arg.value is None)
 
 
-# The declared type of a column leaf (``FieldKey`` / ``FieldSqlKey``), ``None`` when unknown.
+# The declared type of a field leaf (``FieldKey`` / ``FieldSqlKey``), ``None`` when unknown.
 FieldTypeFn = Callable[[Any], Optional[DataType]]
 
 
 def temporal_type(key: object, *, field_type: FieldTypeFn) -> Optional[DataType]:
-    """DATE / TIMESTAMP when ``key`` is provably temporal, else ``None``; column leaves type via ``field_type``."""
+    """DATE / TIMESTAMP when ``key`` is provably temporal, else ``None``; field leaves type via ``field_type``."""
     if isinstance(key, (FieldKey, FieldSqlKey)):
         t = field_type(key)
         return t if t in TEMPORAL_TYPES else None
@@ -1466,7 +1466,7 @@ _BOOLEAN_BRANCH_SCALARS: Mapping[str, Optional[Tuple[int, ...]]] = MappingProxyT
 
 
 def boolean_valued(key: object, *, field_type: FieldTypeFn) -> bool:
-    """Whether ``key``'s value is certainly boolean; column leaves type via ``field_type``."""
+    """Whether ``key``'s value is certainly boolean; field leaves type via ``field_type``."""
     if isinstance(key, (FieldKey, FieldSqlKey)):
         return field_type(key) is DataType.BOOLEAN
     if isinstance(key, LiteralKey):
@@ -1649,7 +1649,7 @@ def _scalar_numeric_booleans(key: ScalarCallKey, *, field_type: FieldTypeFn) -> 
 
 
 def numeric_boolean_positions(key: object, *, field_type: FieldTypeFn) -> FrozenSet[int]:
-    """Child positions of ``key`` (operands, arguments, an IN column at 0) holding a boolean read as a number."""
+    """Child positions of ``key`` (operands, arguments, an IN field at 0) holding a boolean read as a number."""
     if isinstance(key, ArithmeticKey):
         return _arithmetic_numeric_booleans(key, field_type=field_type)
     if isinstance(key, InKey):
@@ -1682,7 +1682,7 @@ def _boolean_int_expression(key: object, *, field_type: FieldTypeFn) -> bool:
 
 def aggregation_source_type(source: object, *, field_type: FieldTypeFn) -> Optional[DataType]:
     """The type an aggregation reads from ``source``: BOOLEAN when boolean-valued, INT when built from booleans and
-    integer literals, ARRAY for an element set, a column's, cast's or conditional's type, else ``None``."""
+    integer literals, ARRAY for an element set, a field's, cast's or conditional's type, else ``None``."""
     if isinstance(source, ListSetKey):
         return DataType.ARRAY
     if boolean_valued(source, field_type=field_type):
@@ -1695,7 +1695,7 @@ def aggregation_source_type(source: object, *, field_type: FieldTypeFn) -> Optio
     return None
 
 
-# The element type of a list-typed column leaf (``None`` when the leaf is not a list or unknown).
+# The element type of a list-typed field leaf (``None`` when the leaf is not a list or unknown).
 FieldElementFn = Callable[[Any], Optional[DataType]]
 # Transforms whose value is one of their operand's values.
 _VALUE_PRESERVING_TRANSFORMS = frozenset({"lag", "lead", "time_shift", "first", "last"})
@@ -1930,7 +1930,7 @@ def is_local_partitioned_agg(k: ValueKey) -> bool:
 
 
 def is_cross_dataset_agg(k: ValueKey) -> bool:
-    """A cross-model AggregateKey (source lives on another model); a host-grain wrap (locus="host") is excluded."""
+    """A cross-dataset AggregateKey (source lives on another dataset); a host-grain wrap (locus="host") is excluded."""
     return (
         isinstance(k, AggregateKey)
         and bool(source_anchor_path(k.source))
@@ -1942,7 +1942,7 @@ def is_local_combined_regroup_ref(
     k: ValueKey, *, row_agg_set: frozenset = frozenset(),
 ) -> bool:
     """A LOCAL aggregate attached at the COMBINED SELECT (explicit ``partition_by=``
-    or a bare windowed/first/last measure); ``row_agg_set`` aggregates excluded."""
+    or a bare windowed/first/last metric); ``row_agg_set`` aggregates excluded."""
     return (
         isinstance(k, AggregateKey)
         and not source_anchor_path(k.source)
@@ -2096,7 +2096,7 @@ def operand_constituents(source: ValueKey) -> List[ValueKey]:
 
 
 def source_row_leaves(source: ValueKey) -> List[ValueKey]:
-    """The top-level ROW-level column leaves of an aggregation source (not
+    """The top-level ROW-level field leaves of an aggregation source (not
     descending through an attached constituent — a nested aggregate or a grained
     transform — whose own leaves are opaque)."""
     out: List[ValueKey] = []
@@ -2115,7 +2115,7 @@ def source_row_leaves(source: ValueKey) -> List[ValueKey]:
 
 
 def parameter_row_leaves(value) -> List[ValueKey]:
-    """The row-level column leaves of an aggregation parameter value; a scalar, a
+    """The row-level field leaves of an aggregation parameter value; a scalar, a
     marker string or an attached value (aggregate / transform) has none."""
     if not isinstance(value, _FrozenKey) or isinstance(value, (AggregateKey, TransformKey)):
         return []
@@ -2123,7 +2123,7 @@ def parameter_row_leaves(value) -> List[ValueKey]:
 
 
 def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
-    """Join paths of the row-level column/star leaves of an aggregation source.
+    """Relationship paths of the row-level field/star leaves of an aggregation source.
 
     Attached constituents — nested aggregates and grained transforms — are opaque
     (they contribute their grain, not a source leaf); a literal-only source yields
@@ -2145,7 +2145,7 @@ def source_leaf_paths(source: ValueKey) -> List[Tuple[str, ...]]:
 
 def source_anchor_path(source: ValueKey) -> Tuple[str, ...]:
     """Where an aggregation source lives: the longest common prefix of its
-    row-level leaves' paths. A bare column/star yields its own path; a
+    row-level leaves' paths. A bare field/star yields its own path; a
     literal-only or fully-attached source yields ``()`` (the root)."""
     paths = source_leaf_paths(source)
     if not paths:
@@ -2165,7 +2165,7 @@ def _grain_transform_inner_aggregates(
     t: TransformKey, *, query_grain: Grain,
 ) -> TransformKey:
     """Grain every ungrained, non-windowed, LOCAL aggregate under ``t.input`` at
-    ``query_grain`` — a cross-model or windowed or already-explicit inner is left
+    ``query_grain`` — a cross-dataset or windowed or already-explicit inner is left
     untouched. Post-order over ``map_children``."""
     def _grain(node: ValueKey) -> ValueKey:
         rebuilt = node.map_children(_grain)

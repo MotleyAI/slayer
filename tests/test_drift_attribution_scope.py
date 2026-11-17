@@ -187,7 +187,7 @@ def spies(env: _Env) -> Any:
     ) as introspect, patch.object(
         ingestion, "list_ingestable_objects", wraps=ingestion.list_ingestable_objects,
     ) as listing, patch.object(
-        schema_drift, "_live_columns_for_sql_model", wraps=schema_drift._live_columns_for_sql_dataset,
+        schema_drift, "_live_columns_for_sql_dataset", wraps=schema_drift._live_columns_for_sql_dataset,
     ) as trial, patch.object(
         sqlite_introspect, "probe_sqlite_integer_column",
         wraps=sqlite_introspect.probe_sqlite_integer_column,
@@ -731,7 +731,7 @@ class TestUnreachableDatasource:
                 SlayerSQLClient, "_metadata", autospec=True,
                 side_effect=SlayerSQLClient._metadata,
             ) as connect, patch.object(
-                schema_drift, "_live_columns_for_sql_model",
+                schema_drift, "_live_columns_for_sql_dataset",
                 wraps=schema_drift._live_columns_for_sql_dataset,
             ) as trial:
                 await _fails_unwrapped(engine, query, expected=DatabaseUnavailable)

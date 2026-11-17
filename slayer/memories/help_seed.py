@@ -2,7 +2,7 @@
 ``help_content/NN_name.md`` (``NN_`` fixes teaching order, stripped for the
 topic key) and read via ``inspect(entity_type="memory")`` / ``search``.
 Seeding is idempotent (upsert, skip-if-unchanged) and seeds no entities, so
-help never surfaces in a model's Learnings section."""
+help never surfaces in a dataset's Learnings section."""
 
 from __future__ import annotations
 

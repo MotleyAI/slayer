@@ -625,7 +625,7 @@ class TestFrameBoundEquivalenceValues:
                     date_range=date_range,
                 )],
                 metrics=[{
-                    "formula": "time_shift(sum(revenue), -1, 'month')", "name": "prev",
+                    "expression": "time_shift(sum(revenue), -1, 'month')", "name": "prev",
                 }],
                 filter=filters,
             )

@@ -1,6 +1,6 @@
-"""The shared bidirectional join walker.
+"""The shared bidirectional relationship walker.
 
-Every declared join is a symmetric edge between its two models. Traversing it
+Every declared relationship is a symmetric edge between its two datasets. Traversing it
 against the declared direction *orients* it — join pairs swap and the
 cardinality label inverts — so which side stores the declaration is storage
 trivia. This module is the one traversal substrate: binding, reroot, safety,
@@ -11,10 +11,10 @@ Two faces:
 * total enumeration (:func:`edges_between`, :func:`neighbors`) — never errors;
   used by route counting, closures, and rendering;
 * strict resolution (:func:`resolve_hop`, :func:`walk`) — a path token matches
-  an incident edge's name, else the opposite-endpoint model name; ``None`` only on
+  an incident edge's name, else the opposite-endpoint dataset name; ``None`` only on
   an unknown/unloaded hop so callers keep their own errors, raises
-  :class:`AmbiguousJoinPathError` when two or more edges span the hop, and
-  :class:`CircularJoinPathError` when a hop revisits a model already on the path;
+  :class:`AmbiguousRelationshipPathError` when two or more edges span the hop, and
+  :class:`CircularRelationshipPathError` when a hop revisits a dataset already on the path;
   :func:`follow` walks an already-resolved composed key path, where a revisit is
   a separate occurrence (revisits are frame-local).
 """
@@ -73,16 +73,16 @@ __all__ = [
 
 
 #: A product hop's kind: the population to its spine, the spine to a dataset with no axis route,
-#: or the population to a dataset no join path reaches (minted only by strict resolution).
+#: or the population to a dataset no relationship path reaches (minted only by strict resolution).
 ProductKind = Literal["spine", "detached", "unrelated"]
 
 
 class OrientedRelationship(BaseModel):
-    """A declared join viewed from a chosen traversal source.
+    """A declared relationship viewed from a chosen traversal source.
 
-    ``source_model``/``target_model`` are the traversal direction; ``join_pairs``
-    and ``cardinality`` are oriented to match it. ``declaring_dataset`` is the model
-    that stores the underlying :class:`ModelJoin` (storage trivia, kept for
+    ``source_dataset``/``to`` are the traversal direction; ``join_pairs``
+    and ``cardinality`` are oriented to match it. ``declaring_dataset`` is the dataset
+    that stores the underlying :class:`DatasetRelationship` (storage trivia, kept for
     diagnostics). Frozen so a resolved hop cannot be mutated in place.
     """
 
@@ -95,12 +95,12 @@ class OrientedRelationship(BaseModel):
     cardinality: RelationshipCardinality | None
     name: str | None
     declaring_dataset: str
-    # A query stage's user spelling of an endpoint (``None`` for an ordinary model).
+    # A query stage's user spelling of an endpoint (``None`` for an ordinary dataset).
     source_spelling: str | None = None
     target_spelling: str | None = None
-    # A keyless hop pairing every source row with every target row; ``None`` for a declared join.
+    # A keyless hop pairing every source row with every target row; ``None`` for a declared relationship.
     product: ProductKind | None = None
-    # A list column's hop between its model and its element child (the list column's name); ``None`` otherwise.
+    # A list field's hop between its dataset and its element child (the list field's name); ``None`` otherwise.
     lateral: str | None = None
     # A query object's local aliases of the edge.
     aliases: tuple[str, ...] = ()
@@ -113,7 +113,7 @@ _traversals: ContextVar[Optional[Dict[str, bool]]] = ContextVar(
 
 @contextmanager
 def observe_traversals() -> Generator[Dict[str, bool], None, None]:
-    """Record every model a traversal in the block yields: name → strictly resolved
+    """Record every dataset a traversal in the block yields: name → strictly resolved
     (a hop walked) rather than only enumerated. Output-only; never feeds resolution."""
     sink: Dict[str, bool] = {}
     token = _traversals.set(sink)
@@ -152,7 +152,7 @@ def reverse_token(edge: OrientedRelationship) -> str:
 
 
 def _spellings(edge: OrientedRelationship) -> tuple[tuple[str, ...], ...]:
-    """An edge's names by precedence: edge name, a query stage's spelling (it shadows a same-named model), model name
+    """An edge's names by precedence: edge name, a query stage's spelling (it shadows a same-named dataset), dataset name
     (never a stage's minted identity), then its query-local aliases."""
     model = edge.to if edge.target_spelling is None else None
     return (
@@ -223,13 +223,13 @@ def _product_edge(dataset: SlayerDataset) -> OrientedRelationship:
     )
 
 
-#: An oriented hop, or a declared join read in its declared orientation — both
+#: An oriented hop, or a declared relationship read in its declared orientation — both
 #: expose ``cardinality`` and target-side ``join_pairs``, all the proof reads.
 OrientedLike = OrientedRelationship | DatasetRelationship
 
 
 def unique_key_sets(dataset: SlayerDataset) -> list[list[str]]:
-    """``dataset``'s unique key-sets by column name: its (composite) PK, then each solo-unique column."""
+    """``dataset``'s unique key-sets by field name: its (composite) PK, then each solo-unique field."""
     pk = [c.name for c in dataset.fields if c.primary_key]
     return ([pk] if pk else []) + [[c.name] for c in dataset.fields if c.unique]
 
@@ -241,9 +241,9 @@ def _to_one(*, cardinality: RelationshipCardinality | None, target_keys: list[st
 
 
 def provably_to_one(*, edge: OrientedLike, target_dataset: SlayerDataset) -> bool:
-    """Is ``edge`` provably many-to-one onto ``target_model`` in its orientation?
-    True iff the oriented cardinality is m:1/1:1, or the traversal-target columns
-    fully cover a unique key-set of ``target_model``."""
+    """Is ``edge`` provably many-to-one onto ``target_dataset`` in its orientation?
+    True iff the oriented cardinality is m:1/1:1, or the traversal-target fields
+    fully cover a unique key-set of ``target_dataset``."""
     return _to_one(cardinality=edge.cardinality, target_keys=[p[1] for p in edge.join_pairs], target=target_dataset)
 
 
@@ -282,7 +282,7 @@ def _detached_edge(*, source: SlayerDataset, target: SlayerDataset) -> OrientedR
 
 
 def _unrelated_edge(*, source: SlayerDataset, target: SlayerDataset) -> OrientedRelationship:
-    """The population and a dataset no join path reaches, meeting only as a product."""
+    """The population and a dataset no relationship path reaches, meeting only as a product."""
     return OrientedRelationship(
         source_dataset=source.name, to=target.name, join_pairs=[],
         join_type=PRODUCT_JOIN_TYPE, cardinality=RelationshipCardinality.MANY_TO_MANY,
@@ -292,16 +292,16 @@ def _unrelated_edge(*, source: SlayerDataset, target: SlayerDataset) -> Oriented
     )
 
 
-#: The element column of a list child.
+#: The element field of a list child.
 LIST_ELEMENT_FIELD = "value"
 
 
-#: A list child's identity prefix (reserved: no stored model carries it).
+#: A list child's identity prefix (reserved: no stored dataset carries it).
 LIST_CHILD_PREFIX = "__slayer_list__"
 
 
 def list_child_name(*, parent: str, field: str) -> str:
-    """A list child's minted model identity; the length prefix keeps ``__`` in names unambiguous."""
+    """A list child's minted dataset identity; the length prefix keeps ``__`` in names unambiguous."""
     return f"{LIST_CHILD_PREFIX}{len(parent)}_{parent}__{field}"
 
 
@@ -324,7 +324,7 @@ def list_child(*, parent: SlayerDataset, field: DatasetField) -> SlayerDataset:
 
 
 def with_list_children(datasets_by_name: Dict[str, SlayerDataset]) -> Dict[str, SlayerDataset]:
-    """``datasets_by_name`` plus the element child of every list column."""
+    """``datasets_by_name`` plus the element child of every list field."""
     out = dict(datasets_by_name)
     for model in datasets_by_name.values():
         for column in model.list_fields():
@@ -363,7 +363,7 @@ def is_lateral_edge(edge: OrientedRelationship) -> bool:
 
 
 def _hop_target(*, edge: OrientedRelationship, current: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> SlayerDataset | None:
-    """The model ``edge`` reaches from ``current``; a list child is minted when the map lacks it."""
+    """The dataset ``edge`` reaches from ``current``; a list child is minted when the map lacks it."""
     target = datasets_by_name.get(edge.to)
     if target is None and edge.lateral is not None and edge.cardinality is RelationshipCardinality.ONE_TO_MANY:
         column = current.get_field(edge.lateral)
@@ -389,8 +389,8 @@ def _declared_toward(dataset: SlayerDataset, target: str, *, spine: bool) -> lis
 def edges_between(*, source: SlayerDataset, target: SlayerDataset) -> list[OrientedRelationship]:
     """Every edge connecting ``source`` and ``target``, oriented source→target.
 
-    Inspects both models' declarations (and the spine's virtual edges), so the answer
-    is independent of which side stores the join. Never raises — parallel edges
+    Inspects both datasets' declarations (and the spine's virtual edges), so the answer
+    is independent of which side stores the relationship. Never raises — parallel edges
     surface as a length-≥2 list for the caller to reject.
     """
     out: list[OrientedRelationship] = []
@@ -412,7 +412,7 @@ def edges_between(*, source: SlayerDataset, target: SlayerDataset) -> list[Orien
 def relationship_key_fields(
     *, edge: OrientedRelationship, source: SlayerDataset, target: SlayerDataset,
 ) -> list[tuple[DatasetField, DatasetField]]:
-    """``edge``'s key pairs as their declared columns; raises ``JoinKeyError`` on a non-base key."""
+    """``edge``'s key pairs as their declared fields; raises ``RelationshipKeyError`` on a non-base key."""
     declared_target = (edge.to if edge.declaring_dataset == edge.source_dataset
                        else edge.source_dataset)
 
@@ -448,7 +448,7 @@ def neighbors(
 ) -> list[OrientedRelationship]:
     """Every hop incident to ``dataset``, oriented from ``dataset``.
 
-    Outgoing declarations first, then edges declared on other models that reach
+    Outgoing declarations first, then edges declared on other datasets that reach
     ``dataset`` (inverted). Never raises.
     """
     spellings = {n: m.explicit_spelling for n, m in datasets_by_name.items()}
@@ -470,7 +470,7 @@ def neighbors(
 
 
 def incident_dataset_names(*, dataset: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> list[str]:
-    """Names of every model sharing a declared edge with ``dataset``, loaded or not."""
+    """Names of every dataset sharing a declared edge with ``dataset``, loaded or not."""
     return sorted({e.to for e in neighbors(dataset=dataset, datasets_by_name=datasets_by_name) if e.lateral is None})
 
 
@@ -484,8 +484,8 @@ def resolve_hop(
     """Resolve one path ``token`` from ``current``.
 
     A token matches an incident edge's ``name`` first, then a query stage's
-    spelling, else the opposite-endpoint model name. Returns ``None`` when nothing matches (the caller raises its own
-    reference error) and raises :class:`AmbiguousJoinPathError` when two or more
+    spelling, else the opposite-endpoint dataset name. Returns ``None`` when nothing matches (the caller raises its own
+    reference error) and raises :class:`AmbiguousRelationshipPathError` when two or more
     edges qualify.
     """
     candidates = matching_edges(neighbors(dataset=current, datasets_by_name=datasets_by_name), token, quoted=quoted)
@@ -582,8 +582,8 @@ def walk(
     """Resolve a full ``path`` of tokens spelled in one frame from ``root`` into an oriented chain.
 
     Returns the chain, ``None`` only on an unknown/unloaded hop, propagates
-    :class:`AmbiguousJoinPathError` from any ambiguous hop, and raises
-    :class:`CircularJoinPathError` when a hop revisits a model already on the path
+    :class:`AmbiguousRelationshipPathError` from any ambiguous hop, and raises
+    :class:`CircularRelationshipPathError` when a hop revisits a dataset already on the path
     (a definite malformation, not a miss).
     """
     return _walk(root=root, path=path, datasets_by_name=datasets_by_name, revisits=False, quoted=quoted)[0]
@@ -607,7 +607,7 @@ def walk_terminal(
     datasets_by_name: dict[str, SlayerDataset],
     quoted: Sequence[bool] = (),
 ) -> tuple[SlayerDataset, tuple[str, ...]] | None:
-    """``(terminal model, canonical path)`` of :func:`walk`, ``None`` where it misses; raises as it does."""
+    """``(terminal dataset, canonical path)`` of :func:`walk`, ``None`` where it misses; raises as it does."""
     models = with_list_children({**datasets_by_name, root.name: datasets_by_name.get(root.name, root)})
     chain = walk(root=root, path=path, datasets_by_name=models, quoted=quoted)
     if chain is None:
@@ -645,7 +645,7 @@ def _incident_named(
     *, current: SlayerDataset, token: str, datasets_by_name: dict[str, SlayerDataset],
 ) -> OrientedRelationship | None:
     """The incident edge of ``current`` whose declared ``name`` is ``token``, or
-    ``None``. Raises :class:`AmbiguousJoinPathError` when two share the name."""
+    ``None``. Raises :class:`AmbiguousRelationshipPathError` when two share the name."""
     named = [e for e in neighbors(dataset=current, datasets_by_name=datasets_by_name)
              if e.name == token]
     if not named:
@@ -670,13 +670,13 @@ def walk_cancelling(
     (the owner is ``root`` followed along ``owner_path``), with reverse-hop
     cancellation.
 
-    Per token, precedence is incident edge name → a model name on the path
-    (cancel) → a model-name hop: an incident edge-name token always hops and
+    Per token, precedence is incident edge name → a dataset name on the path
+    (cancel) → a dataset-name hop: an incident edge-name token always hops and
     never cancels; a token equal to a dataset already on ``root + owner_path``
     truncates the absolute path back to its innermost occurrence — keeping ``owner_path``'s spelling —
     then resolution continues forward from there. Returns the absolute canonical
     path from ``root`` (``()`` = the root itself), ``None`` on a miss or a hop
-    onto an already-visited model (see :func:`cancelling_revisit`); ambiguity raises."""
+    onto an already-visited dataset (see :func:`cancelling_revisit`); ambiguity raises."""
     path, _revisit = _cancelling_walk(
         root=root, owner_path=owner_path, tokens=tokens, datasets_by_name=datasets_by_name,
     )
@@ -691,7 +691,7 @@ def cancelling_revisit(
     datasets_by_name: dict[str, SlayerDataset],
 ) -> tuple[str, str, str] | None:
     """``(hop, revisited, via)`` when :func:`walk_cancelling` misses because a hop
-    lands on a model already on the path, else ``None``."""
+    lands on a dataset already on the path, else ``None``."""
     _path, revisit = _cancelling_walk(
         root=root, owner_path=owner_path, tokens=tokens, datasets_by_name=datasets_by_name,
     )
@@ -754,7 +754,7 @@ def terminal_dataset(
     path: Sequence[str],
     datasets_by_name: dict[str, SlayerDataset],
 ) -> SlayerDataset | None:
-    """Best-effort terminal model of ``path`` from ``root``: ``None`` on an
+    """Best-effort terminal dataset of ``path`` from ``root``: ``None`` on an
     unresolvable, revisiting, or ambiguous hop — for callers whose contract is
     to skip rather than raise (the strict doors fail closed on their own)."""
     return _terminal(root=root, path=path, datasets_by_name=datasets_by_name, revisits=False)
@@ -773,7 +773,7 @@ def resolved_terminal(
 def dataset_field(
     *, dataset: SlayerDataset, datasets_by_name: dict[str, SlayerDataset], key: object,
 ) -> Optional[DatasetField]:
-    """The column leaf ``key`` names, rooted at ``dataset``; ``None`` for anything unresolvable."""
+    """The field leaf ``key`` names, rooted at ``dataset``; ``None`` for anything unresolvable."""
     if isinstance(key, FieldSqlKey):
         owner = dataset if key.dataset == dataset.name else datasets_by_name.get(key.dataset)
         leaf = key.field_name
@@ -786,7 +786,7 @@ def dataset_field(
 
 
 def dataset_field_type(*, dataset: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> FieldTypeFn:
-    """Declared types of column leaves rooted at ``dataset``; ``None`` for anything unresolvable."""
+    """Declared types of field leaves rooted at ``dataset``; ``None`` for anything unresolvable."""
     def field_type(key: ValueKey) -> Optional[DataType]:
         col = dataset_field(dataset=dataset, datasets_by_name=datasets_by_name, key=key)
         return col.datatype if col is not None else None
@@ -794,7 +794,7 @@ def dataset_field_type(*, dataset: SlayerDataset, datasets_by_name: dict[str, Sl
 
 
 def dataset_field_element(*, dataset: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]) -> FieldElementFn:
-    """Element types of list-typed column leaves rooted at ``dataset``; ``None`` for anything else."""
+    """Element types of list-typed field leaves rooted at ``dataset``; ``None`` for anything else."""
     def field_element(key: ValueKey) -> Optional[DataType]:
         col = dataset_field(dataset=dataset, datasets_by_name=datasets_by_name, key=key)
         return col.element_type if col is not None else None
@@ -804,7 +804,7 @@ def dataset_field_element(*, dataset: SlayerDataset, datasets_by_name: dict[str,
 def aggregation_owner(
     *, root: SlayerDataset | None, source: ValueKey, datasets_by_name: dict[str, SlayerDataset],
 ) -> SlayerDataset | None:
-    """The model declaring ``source``'s aggregation: ``root`` walked along the source
+    """The dataset declaring ``source``'s aggregation: ``root`` walked along the source
     anchor; ``None`` with no root or an unresolvable hop."""
     if root is None:
         return None

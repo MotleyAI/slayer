@@ -1,4 +1,4 @@
-"""Join-graph search over the walker's edges: reachability, shortest routes, route enumeration.
+"""Relationship-graph search over the walker's edges: reachability, shortest routes, route enumeration.
 
 Every emitting search walks *addressable* hops only — an edge whose canonical token
 resolves back to exactly that edge — and spells each hop canonically. No search
@@ -59,7 +59,7 @@ class Route(BaseModel):
 
 
 class UnaddressablePair(BaseModel):
-    """A model pair with edges no token addresses (an unnamed edge in a parallel set)."""
+    """A dataset pair with edges no token addresses (an unnamed edge in a parallel set)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -82,7 +82,7 @@ class _Hop(BaseModel):
 
 
 class _Graph:
-    """Per-search adjacency memo: one ``neighbors`` call per model."""
+    """Per-search adjacency memo: one ``neighbors`` call per dataset."""
 
     def __init__(self, datasets_by_name: dict[str, SlayerDataset]) -> None:
         self.datasets = datasets_by_name
@@ -113,8 +113,8 @@ class _Graph:
         return name == root or not is_spine(self.datasets[name])
 
     def relevant(self, *, root: str | None, target: str) -> set[str]:
-        """Models a simple route ``root → target`` can visit (reverse BFS, never through the root or spine);
-        with no ``root``, every model with a route to ``target``."""
+        """Datasets a simple route ``root → target`` can visit (reverse BFS, never through the root or spine);
+        with no ``root``, every dataset with a route to ``target``."""
         seen = {target}
         frontier = deque([target])
         while frontier:
@@ -142,7 +142,7 @@ def addressable_hops(
 
 
 def unaddressable_pairs(*, datasets_by_name: dict[str, SlayerDataset]) -> list[UnaddressablePair]:
-    """Every model pair with an unaddressable edge, one entry per unordered pair."""
+    """Every dataset pair with an unaddressable edge, one entry per unordered pair."""
     graph = _Graph(datasets_by_name)
     out: dict[frozenset[str], UnaddressablePair] = {}
     for name in sorted(datasets_by_name):
@@ -175,7 +175,7 @@ def blocking_pairs(
 def distances(
     *, root: SlayerDataset, datasets_by_name: dict[str, SlayerDataset], hop_filter: HopFilter = HopFilter.ALL,
 ) -> dict[str, int]:
-    """BFS hop distance from ``root`` to every model it reaches over any edge (addressable or not)."""
+    """BFS hop distance from ``root`` to every dataset it reaches over any edge (addressable or not)."""
     graph = _Graph({**datasets_by_name, root.name: root})
     dist = {root.name: 0}
     frontier = deque([root.name])
@@ -194,14 +194,14 @@ def distances(
 def reachable(
     *, root: SlayerDataset, datasets_by_name: dict[str, SlayerDataset], hop_filter: HopFilter = HopFilter.ALL,
 ) -> set[str]:
-    """Every model ``root`` reaches over any edge, ``root`` included."""
+    """Every dataset ``root`` reaches over any edge, ``root`` included."""
     return set(distances(root=root, datasets_by_name=datasets_by_name, hop_filter=hop_filter))
 
 
 def shortest_routes(
     *, root: SlayerDataset, datasets_by_name: dict[str, SlayerDataset], hop_filter: HopFilter = HopFilter.ALL,
 ) -> dict[str, Route]:
-    """The tie-break-best shortest addressable route from ``root`` to every model it routes to."""
+    """The tie-break-best shortest addressable route from ``root`` to every dataset it routes to."""
     graph = _Graph({**datasets_by_name, root.name: root})
     best: dict[str, Route] = {root.name: Route()}
     layer = [root.name]
@@ -220,7 +220,7 @@ def shortest_routes(
 def _successors(
     graph: _Graph, *, node: str, route: Route, root: str, hop_filter: HopFilter, admit: Callable[[str], bool],
 ) -> Iterator[tuple[str, Route]]:
-    """``route`` extended by each filtered addressable hop off ``node`` into a model ``admit`` accepts."""
+    """``route`` extended by each filtered addressable hop off ``node`` into a dataset ``admit`` accepts."""
     if not graph.passes(node, root=root):
         return
     for hop in graph.hops(node, hop_filter):
@@ -300,7 +300,7 @@ def paths_from(
     *, root: SlayerDataset, datasets_by_name: dict[str, SlayerDataset], depth: int,
     hop_filter: HopFilter = HopFilter.ALL, passable: Callable[[SlayerDataset], bool] | None = None,
 ) -> list[Route]:
-    """Every simple route of 1..``depth`` hops from ``root`` into models ``passable`` admits, by token order."""
+    """Every simple route of 1..``depth`` hops from ``root`` into datasets ``passable`` admits, by token order."""
     graph = _Graph({**datasets_by_name, root.name: root})
     out: list[Route] = []
 
@@ -320,7 +320,7 @@ def paths_from(
 
 
 def unreachable_target(*, root: SlayerDataset, token: str, datasets_by_name: dict[str, SlayerDataset]) -> str | None:
-    """The model ``token`` names when neither an incident edge nor a route reaches it from ``root``."""
+    """The dataset ``token`` names when neither an incident edge nor a route reaches it from ``root``."""
     target = datasets_by_name.get(token)
     if target is None or token == root.name or is_spine(target):
         return None

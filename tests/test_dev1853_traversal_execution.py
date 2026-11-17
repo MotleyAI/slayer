@@ -188,7 +188,7 @@ class TestOrientedCardinalityValues:
         # regions crosses two fan-out orientations.
         resp = await fwd_engine.execute(SlayerQuery(
             population="customers", dimensions=["orders.status"],
-            metrics=[{"formula": "sum(regions.pop)", "name": "rp"}], to_many_handling="broadcast"))
+            metrics=[{"expression": "sum(regions.pop)", "name": "rp"}], to_many_handling="broadcast"))
         assert broadcast_warnings(resp)
         values = {r["customers.rp"] for r in resp.data}
         assert values == {CHAIN_POP_BROADCAST_TOTAL}
@@ -251,7 +251,7 @@ class TestReverseClosure:
             await storage.save_dataset(orders)
             resp = await engine.execute(SlayerQuery(
                 population="customers", dimensions=["name"],
-                metrics=[{"formula": "orders.total_amount", "name": "t"}]))
+                metrics=[{"expression": "orders.total_amount", "name": "t"}]))
             got = {r["customers.name"]: r["customers.t"] for r in resp.data}
             assert got == CHAIN_AMOUNT_BY_NAME
 

@@ -1,4 +1,4 @@
-"""SQLite-based storage for models and datasources.
+"""SQLite-based storage for datasets and datasources.
 
 v4: the ``models`` table has a composite ``(data_source, name)``
 primary key so two datasources can share a table name without collision. A
@@ -371,7 +371,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             ).fetchone()
             if not row:
                 raise ValueError(
-                    f"update_field_sampled: model {dataset_name!r} in datasource "
+                    f"update_field_sampled: dataset {dataset_name!r} in datasource "
                     f"{data_source!r} not found."
                 )
             data = json.loads(row[0])
@@ -389,8 +389,8 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                     break
             else:
                 raise ValueError(
-                    f"update_field_sampled: column {field_name!r} not found "
-                    f"on model {dataset_name!r} in datasource {data_source!r}."
+                    f"update_field_sampled: field {field_name!r} not found "
+                    f"on dataset {dataset_name!r} in datasource {data_source!r}."
                 )
             conn.execute(
                 "UPDATE models SET data = ? WHERE data_source = ? AND name = ?",

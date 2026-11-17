@@ -364,8 +364,8 @@ class TestVirtualModelColumns:
                     # rank uses *:count as a hidden inner; intern order
                     # hoists *:count hidden first, then the public
                     # *:count entry promotes the same slot.
-                    {"formula": "rank(count(*), direction='desc')", "name": "ranked"},
-                    {"formula": "count(*)"},
+                    {"expression": "rank(count(*), direction='desc')", "name": "ranked"},
+                    {"expression": "count(*)"},
                 ],
             )],
         )
@@ -401,7 +401,7 @@ class TestVirtualModelColumns:
                 data_source="ds",
                 source_queries=[SlayerQuery(
                     population="orders",
-                    metrics=[{"formula": "adjusted_total"}],
+                    metrics=[{"expression": "adjusted_total"}],
                     dimensions=["status"],
                 )],
             )
@@ -444,7 +444,7 @@ class TestVirtualModelColumns:
                     # Bare-ref + explicit ``name="rounded_total"`` keeps
                     # the column alias as the user-chosen name so the
                     # test can look it up unambiguously.
-                    metrics=[{"formula": "rounded_total", "name": "rounded_total"}],
+                    metrics=[{"expression": "rounded_total", "name": "rounded_total"}],
                     dimensions=["status"],
                 )],
             )

@@ -36,7 +36,7 @@ __all__ = [
 
 
 class InnerRestriction(BaseModel):
-    """A query-declared INNER join: the field filter ``<model>.<token>.<key> IS NOT NULL``."""
+    """A query-declared INNER join: the field filter ``<dataset>.<token>.<key> IS NOT NULL``."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -57,7 +57,7 @@ class ResolvedSourceBundle(BaseModel):
     named_queries: Dict[str, SlayerQuery] = Field(default_factory=dict)
     # The root query as resolved; with ``named_queries``, the stages the planner reads.
     query: Optional[SlayerQuery] = None
-    # Per-named-stage source model (sibling-sourced stages omitted).
+    # Per-named-stage source dataset (sibling-sourced stages omitted).
     stage_source_datasets: Dict[str, SlayerDataset] = Field(default_factory=dict)
     query_variables: Dict[str, Any] = Field(default_factory=dict)
     datasource_hint: Optional[str] = None
@@ -66,20 +66,20 @@ class ResolvedSourceBundle(BaseModel):
     datasource_type: Optional[str] = None
     # Minted stage identity → its user-facing spelling.
     stage_displays: Dict[str, StageDisplay] = Field(default_factory=dict)
-    # Stored query-backed models the statement may splice, including result joins.
+    # Stored query-backed datasets the statement may splice, including result joins.
     query_backed: Dict[str, SlayerDataset] = Field(default_factory=dict)
-    # Query-backed models whose stages are being planned, outermost first.
+    # Query-backed datasets whose stages are being planned, outermost first.
     splice_chain: Tuple[str, ...] = ()
     runtime_variables: Dict[str, Any] = Field(default_factory=dict)
-    # Query-backed models this stage reads that could not be spliced, with the cause.
+    # Query-backed datasets this stage reads that could not be spliced, with the cause.
     splice_failures: Dict[str, Exception] = Field(default_factory=dict)
     # The one clock reading every time point in this execution resolves against.
     now: datetime = Field(default_factory=datetime.now)
     # The datasource's custom granularities, keyed by ``granularity_key``.
     granularities: Dict[str, CustomGranularity] = Field(default_factory=dict)
-    # A stored model shadows the built-in ``time_spine``.
+    # A stored dataset shadows the built-in ``time_spine``.
     spine_clash: bool = False
-    # The datasource's model names and stored edge names (what a query-local edge must not be named).
+    # The datasource's dataset names and stored edge names (what a query-local edge must not be named).
     datasource_dataset_names: FrozenSet[str] = frozenset()
     datasource_edge_names: FrozenSet[str] = frozenset()
     # The stage's query-declared INNER joins, read as population filters.
@@ -124,9 +124,9 @@ class ResolvedSourceBundle(BaseModel):
 
     @property
     def datasets_by_name(self) -> Dict[str, SlayerDataset]:
-        """The host-inclusive model map every walker and scanner consumes: the
-        source model first (so a source→host reverse hop resolves deterministically,
-        not incidentally), then the referenced models, de-duplicated by name with
+        """The host-inclusive dataset map every walker and scanner consumes: the
+        source dataset first (so a source→host reverse hop resolves deterministically,
+        not incidentally), then the referenced datasets, de-duplicated by name with
         the source winning. Production bundles already list the source among
         ``referenced_datasets``; a hand-built bundle that omits it still exposes it."""
         out: Dict[str, SlayerDataset] = {}
@@ -138,7 +138,7 @@ class ResolvedSourceBundle(BaseModel):
 
 
 def overlay_metrics(base: SlayerDataset, ext: DatasetExtension) -> SlayerDataset:
-    """``base`` with ``ext``'s measures, marked query-local."""
+    """``base`` with ``ext``'s metrics, marked query-local."""
     measures = list(ext.metrics or [])
     if not measures:
         return base
@@ -150,7 +150,7 @@ def overlay_metrics(base: SlayerDataset, ext: DatasetExtension) -> SlayerDataset
 
 
 def apply_extension_overlay(base: SlayerDataset, ext: DatasetExtension) -> SlayerDataset:
-    """``base`` extended by ``ext`` alone: its joins merged with ``base``'s own edges."""
+    """``base`` extended by ``ext`` alone: its relationships merged with ``base``'s own edges."""
     merge = EdgeMerge(datasets={base.name: overlay_metrics(base, ext)})
     for join in ext.relationships or []:
         merge.add(declaring=base.name, relationship=join)
@@ -167,7 +167,7 @@ def source_name_if_sibling(
 def follow_sibling_chain(
     spec: SourceSpec | None, named_queries: Dict[str, SlayerQuery]
 ) -> SourceSpec | None:
-    """Resolve a sibling-pointing ``source_model`` to the real base spec (cycle raises ``ValueError``)."""
+    """Resolve a sibling-pointing ``population`` to the real base spec (cycle raises ``ValueError``)."""
     seen: List[str] = []
     while True:
         sib = source_name_if_sibling(spec, named_queries)
@@ -192,10 +192,10 @@ def dataset_from_stage_schema(
     default_time_dimension: Optional[str] = None,
     saved: Optional[SlayerDataset] = None,
 ) -> SlayerDataset:
-    """The model a stage's output is read as: over its CTE (``sql=None``) or over ``sql``,
-    with the joins and filters of ``saved``, the stored query-backed model it reads as.
+    """The dataset a stage's output is read as: over its CTE (``sql=None``) or over ``sql``,
+    with the relationships and filters of ``saved``, the stored query-backed dataset it reads as.
 
-    A single-column grain is stamped ``unique``; a composite grain ``primary_key`` on each member.
+    A single-field grain is stamped ``unique``; a composite grain ``primary_key`` on each member.
     """
     grain = schema.grain or []
     composite = len(grain) > 1
@@ -222,7 +222,7 @@ def dataset_from_stage_schema(
         ],
     )
     joins = list(saved.relationships) if saved is not None else []
-    # Joins attach after the rename (validators skip model_copy), so check their keys here.
+    # Relationships attach after the rename (validators skip model_copy), so check their keys here.
     _check_relationship_keys(dataset_name=name, fields=model.fields, relationships=joins)
     # A minted stage identity carries the reserved prefix the name validator rejects.
     return model.model_copy(update={
@@ -240,13 +240,13 @@ def stage_bundle_with_siblings(
     sibling_schemas: Dict[str, "StageSchema"],
     data_source: str,
 ) -> ResolvedSourceBundle:
-    """Per-stage bundle: ``source_model`` is the stage's own host; synthetic
-    sibling models (one per emitted ``StageSchema``) are threaded into
-    ``referenced_datasets`` so a join / cross-model ref to a sibling resolves.
+    """Per-stage bundle: ``population`` is the stage's own host; synthetic
+    sibling datasets (one per emitted ``StageSchema``) are threaded into
+    ``referenced_datasets`` so a relationship / cross-dataset ref to a sibling resolves.
 
     Order: host first, then synthetic siblings, then the original bundle's
-    referenced models minus the host's own entry. A sibling identity meeting a
-    referenced model is an invariant violation (identities are minted unique).
+    referenced datasets minus the host's own entry. A sibling identity meeting a
+    referenced dataset is an invariant violation (identities are minted unique).
     """
     synths = [
         dataset_from_stage_schema(
@@ -257,8 +257,8 @@ def stage_bundle_with_siblings(
     clashes = sorted({s.name for s in synths} & {m.name for m in bundle.referenced_datasets})
     if clashes:
         raise ValueError(
-            f"Stage identities {clashes} collide with models in the source bundle; "
-            f"stage identities must be minted apart from model names."
+            f"Stage identities {clashes} collide with datasets in the source bundle; "
+            f"stage identities must be minted apart from dataset names."
         )
     referenced = (
         [source_dataset]
@@ -278,7 +278,7 @@ def resolve_scope(
     bundle: "ResolvedSourceBundle",
     stage_schemas: Optional[Dict[str, "StageSchema"]],
 ):
-    """The scope a query binds against: its named sibling stage's schema, else the bundle's model."""
+    """The scope a query binds against: its named sibling stage's schema, else the bundle's dataset."""
     source = query.population
     if isinstance(source, str) and source in (stage_schemas or {}):
         return (stage_schemas or {})[source]

@@ -242,7 +242,7 @@ class TestExpressionSql:
             name="stage1",
             population="orders",
             dimensions=["status"],
-            metrics=[{"formula": "sum(amount - cost)"}],
+            metrics=[{"expression": "sum(amount - cost)"}],
         )
         root = SlayerQuery.model_validate({
             "population": "stage1",

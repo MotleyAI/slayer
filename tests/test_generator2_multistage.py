@@ -226,16 +226,16 @@ async def test_mixed_local_and_cross_model_intermediate_matches_legacy(harness: 
         population="orders",
         dimensions=["status"],
         metrics=[
-            {"formula": "sum(amount)"},
-            {"formula": "sum(customers.revenue)"},
+            {"expression": "sum(amount)"},
+            {"expression": "sum(customers.revenue)"},
         ],
     )
     root = SlayerQuery(
         population="stage1",
         dimensions=["status"],
         metrics=[
-            {"formula": "max(amount_sum)"},
-            {"formula": "max(customers__revenue_sum)"},
+            {"expression": "max(amount_sum)"},
+            {"expression": "max(customers__revenue_sum)"},
         ],
     )
     legacy = await engine.execute([stage1, root])

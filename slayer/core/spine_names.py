@@ -1,4 +1,4 @@
-"""The built-in time spine's name and its one column."""
+"""The built-in time spine's name and its one field."""
 
 from slayer.core.enums import DataType
 

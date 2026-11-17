@@ -580,7 +580,7 @@ examples:
     query_parser.add_argument(
         "query_json",
         help=(
-            "JSON query (e.g. '{\"source_model\": ...}'), @file.json to read "
+            "JSON query (e.g. '{\"population\": ...}'), @file.json to read "
             "from a file, or a dataset name to run a query-backed dataset's "
             "stored backing query."
         ),
@@ -670,7 +670,7 @@ examples:
             "Ingest recognised ELT/migration housekeeping tables (_dlt_*, "
             "_airbyte_*, alembic_version, flyway_schema_history, …) visible "
             "instead of hidden. Affects datasets this run CREATES; to unhide "
-            "one an earlier run already created, use edit_model(hidden=false)."
+            "one an earlier run already created, use edit_dataset(hidden=false)."
         ),
     )
     _add_storage_arg(ingest_parser)
@@ -703,15 +703,15 @@ examples:
         "--cardinality",
         action="store_true",
         help=(
-            "Also profile each join's arity from the data. Full-scans both "
-            "sides of every join, so it is off by default."
+            "Also profile each relationship's arity from the data. Full-scans both "
+            "sides of every relationship, so it is off by default."
         ),
     )
     validate_parser.add_argument(
         "--persist-cardinality",
         action="store_true",
         help=(
-            "Write the detected cardinality back onto each matching join. "
+            "Write the detected cardinality back onto each matching relationship. "
             "Implies --cardinality."
         ),
     )
@@ -719,14 +719,14 @@ examples:
         "--format",
         default="text",
         choices=["text", "json"],
-        help="Output format. json emits one {drift, join_safety, cardinality} document.",
+        help="Output format. json emits one {drift, relationship_safety, cardinality} document.",
     )
     validate_parser.add_argument(
         "--force-clean",
         action="store_true",
         help=(
             "After printing the diff, prompt to apply each delete via "
-            "edit_model / delete_model. Destructive; opt-in only."
+            "edit_dataset / delete_dataset. Destructive; opt-in only."
         ),
     )
     validate_parser.add_argument(
@@ -1169,7 +1169,7 @@ examples:
         nargs="*",
         help=(
             "Entity reference(s): canonical id (mydb.orders.amount), bare "
-            "name, join path, or memory:<id>. Pass two or more for a "
+            "name, relationship path, or memory:<id>. Pass two or more for a "
             "homogeneous-kind batch (one --type for all). Omit entirely to "
             "list the whole collection at --type (dataset / datasource only)."
         ),
@@ -2045,7 +2045,7 @@ async def _collect_drift(
     """``(entries, failures)`` for the requested scope, filtered by ``--dataset``.
 
     Datasources are validated concurrently but attributed one by one:
-    ``validate_models(None)`` swallows a per-datasource failure, and a
+    ``validate_datasets(None)`` swallows a per-datasource failure, and a
     validation command must not report a clean bill for a datasource it never
     reached.
     """
@@ -2075,7 +2075,7 @@ def _filter_entries_by_dataset(entries: list[_DriftEntryT], dataset: str | None)
 
 
 async def _collect_cardinality_report(args: argparse.Namespace, engine: SlayerQueryEngine):
-    """Profile join arity, or ``None`` when neither cardinality flag is set."""
+    """Profile relationship arity, or ``None`` when neither cardinality flag is set."""
     persist = bool(getattr(args, "persist_cardinality", False))
     if not (persist or getattr(args, "cardinality", False)):
         return None
@@ -2097,7 +2097,7 @@ async def _collect_all_datasets(args: argparse.Namespace, storage: StorageBacken
 
 
 async def _collect_relationship_safety_findings(args: argparse.Namespace, storage: StorageBackend) -> list[RelationshipSafetyFinding]:
-    """Joins whose arity is neither declared m:1/1:1 nor structurally proven —
+    """Relationships whose arity is neither declared m:1/1:1 nor structurally proven —
     metrics crossing them broadcast."""
     findings = audit_relationship_safety(datasets=await _collect_all_datasets(args=args, storage=storage))
     if getattr(args, "dataset", None):
@@ -2122,7 +2122,7 @@ def _exit_on_scan_failures(report) -> None:
     ]
     if failed:
         print(
-            f"{len(failed)} join(s) could not be profiled; see scan_failed above.",
+            f"{len(failed)} relationship(s) could not be profiled; see scan_failed above.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -2186,7 +2186,7 @@ def _run_validate_datasets(args):
 
 
 async def _validate_datasets_workflow(args, engine: SlayerQueryEngine) -> None:
-    """Drift, join safety, the optional clean and cardinality profiling, all in one event loop."""
+    """Drift, relationship safety, the optional clean and cardinality profiling, all in one event loop."""
     storage = engine.storage
     entries, failures = await _collect_drift(args, engine, storage)
     as_json = getattr(args, "format", "text") == "json"
@@ -2286,7 +2286,7 @@ async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
     visible_count = len(result.datasets) - hidden_count
     unconverted, dropped = result.tally()
     print(
-        f"\nDone: {visible_count} models, {hidden_count} hidden, "
+        f"\nDone: {visible_count} datasets, {hidden_count} hidden, "
         f"{unconverted} unconverted, {dropped} dropped"
     )
 
@@ -2477,7 +2477,7 @@ async def _import_osi_workflow(args, engine: SlayerQueryEngine) -> None:
 
     unconverted, dropped = result.tally()
     print(
-        f"\nDone: {len(result.datasets)} models, "
+        f"\nDone: {len(result.datasets)} datasets, "
         f"{unconverted} unconverted, {dropped} dropped"
     )
 

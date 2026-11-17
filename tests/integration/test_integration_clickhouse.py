@@ -726,8 +726,8 @@ class TestClickHouseMedianPercentile:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                {"formula": "percentile(total, p=0.25)"},
-                {"formula": "percentile(total, p=0.75)"},
+                {"expression": "percentile(total, p=0.25)"},
+                {"expression": "percentile(total, p=0.75)"},
             ],
         )
         dry = await clickhouse_env.execute(query=query, dry_run=True)
@@ -752,8 +752,8 @@ class TestClickHouseMedianPercentile:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                {"formula": "percentile(total, p=0.25)"},
-                {"formula": "percentile(total, p=0.75)"},
+                {"expression": "percentile(total, p=0.25)"},
+                {"expression": "percentile(total, p=0.75)"},
             ],
         )
         result = await clickhouse_env.execute(query=query)
@@ -811,7 +811,7 @@ class TestClickHouseStatAggregations:
     async def test_stddev_pop_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "stddev_pop(total)"}],
+            metrics=[{"expression": "stddev_pop(total)"}],
         )
         result = await clickhouse_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -830,7 +830,7 @@ class TestClickHouseStatAggregations:
     async def test_var_pop_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "var_pop(total)"}],
+            metrics=[{"expression": "var_pop(total)"}],
         )
         result = await clickhouse_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -869,7 +869,7 @@ class TestClickHouseStatAggregations:
     async def test_covar_pop_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "covar_pop(total, other=customer_id)"}],
+            metrics=[{"expression": "covar_pop(total, other=customer_id)"}],
         )
         result = await clickhouse_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1324,7 +1324,7 @@ class TestClickHouseDecimalPreservation:
     async def test_inferred_decimal_sum_preserves_exact_value(
         self, clickhouse_decimal_env: SlayerQueryEngine, measure, result_key, expected
     ) -> None:
-        query = SlayerQuery(population="decimal_orders", metrics=[{"formula": measure}])
+        query = SlayerQuery(population="decimal_orders", metrics=[{"expression": measure}])
         result = await clickhouse_decimal_env.execute(query=query)
         sql = (await clickhouse_decimal_env.execute(query=query, dry_run=True)).sql
 

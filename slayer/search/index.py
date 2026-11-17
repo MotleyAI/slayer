@@ -89,8 +89,8 @@ def build_in_memory_index(
 ) -> tantivy.Index:
     """Build a fresh in-RAM tantivy index covering the corpus.
 
-    Hidden models and hidden columns are skipped entirely. The caller is
-    expected to pass datasource names + every model in scope; this
+    Hidden datasets and hidden fields are skipped entirely. The caller is
+    expected to pass datasource names + every dataset in scope; this
     function does *not* call into storage.
 
     DEV-1549: ``datasource_descriptions`` mirrors the symmetric kwarg on
@@ -138,7 +138,7 @@ def _collect_render_pairs(
     """Return ``[(canonical_id, kind, rendered_text, description), ...]``
     for every doc that goes into the index. Routes through the unified
     dispatch helpers in ``slayer.search.render`` (DEV-1513). Hidden
-    models and hidden columns are skipped inside the helpers.
+    datasets and hidden fields are skipped inside the helpers.
 
     DEV-1549: the fourth tuple element carries the entity's structured
     ``description`` field (``None`` when absent) so callers can build a

@@ -1,11 +1,11 @@
-"""Convert parsed OSI documents into SLayer models.
+"""Convert parsed OSI documents into SLayer datasets.
 
-Each OSI dataset becomes one ``SlayerModel`` over its live-introspected source.
-A current-spec model exposes exactly its declared fields; a legacy model
+Each OSI dataset becomes one ``SlayerDataset`` over its live-introspected source.
+A current-spec dataset exposes exactly its declared fields; a legacy dataset
 overlays its fields on every introspected column. Relationships become
-``ModelJoin`` entries within their own document; metrics become
-``ModelMeasure`` formulas — a dataset-scoped metric on its dataset, a
-model-scoped one on the model that reaches every dataset it references.
+``DatasetRelationship`` entries within their own document; metrics become
+``DatasetMetric`` expressions — a dataset-scoped metric on its dataset, a
+model-scoped one on the dataset that reaches every dataset it references.
 Constructs that cannot be expressed exactly are reported in the
 ``ConversionResult``, never silently lost.
 """
@@ -69,7 +69,7 @@ _TIME_DIMENSION_TYPES = (DataType.DATE, DataType.TIMESTAMP)
 
 def _typed_field(*, name: str, data_type: DataType, sql: str | None = None, element: DataType | None = None,
                   hidden: bool = False, db_type: str | None = None) -> DatasetField:
-    """A column of a probed type; a list's elements are ``element``, else UNKNOWN (a probe cannot see them)."""
+    """A field of a probed type; a list's elements are ``element``, else UNKNOWN (a probe cannot see them)."""
     if data_type is not DataType.ARRAY:
         return DatasetField(name=name, sql=sql, datatype=data_type, hidden=hidden, db_type=db_type)
     return DatasetField(name=name, sql=sql, datatype=data_type, element_type=element or DataType.UNKNOWN, hidden=hidden,
@@ -91,7 +91,7 @@ def _repeated_names(names: list[str]) -> list[list[str]]:
     return [g for g in groups.values() if len(g) > 1]
 
 
-# Unsafe in a model name, which becomes a YAML storage filename. ``__`` is allowed.
+# Unsafe in a dataset name, which becomes a YAML storage filename. ``__`` is allowed.
 _UNSAFE_DATASET_NAME_CHARS = (".", ":", "/", "\\", "\x00")
 
 
@@ -120,7 +120,7 @@ def _bare_field(tree: exp.Expr) -> exp.Identifier | None:
 def _missing_expr_fields(tree: exp.Expr, known: Callable[[exp.Identifier], bool], self_name: str) -> list[str]:
     """Unqualified and self-qualified column names in ``tree`` no source column has.
 
-    Other qualifiers are cross-model refs, checked after joins exist.
+    Other qualifiers are cross-dataset refs, checked after relationships exist.
     """
     missing = []
     for col in tree.find_all(exp.Column):
@@ -164,7 +164,7 @@ def _match_name(ident: exp.Identifier, names: list[str]) -> str:
 
 
 def _ref_owner(col: exp.Column, *, qual: list[exp.Identifier], home: str | None, doc_datasets: list[str]) -> str:
-    """The model whose field ``col`` (qualified by ``qual``) reads; raises ``LookupError`` on a scope violation."""
+    """The dataset whose field ``col`` (qualified by ``qual``) reads; raises ``LookupError`` on a scope violation."""
     if home is not None:
         if qual:
             raise LookupError(f"qualified reference {col.sql()!r}; dataset-scoped metrics "
@@ -281,23 +281,23 @@ _EXTENSION = "extension"
 _REEXPORT_CURRENT = "Re-export the document from SLayer to write the current key."
 _EDITED ="The Ossie content was edited after export, so it wins; re-export from SLayer to restore the rest."
 _REEXPORT = "Re-export the document from SLayer."
-_IMPORT_INPUTS = "Import every model it reads."
+_IMPORT_INPUTS = "Import every dataset it reads."
 
 
 class OsiConversionResult(ConversionResult):
-    """The converted models, plus query-backed restorations to save through the engine after them."""
+    """The converted datasets, plus query-backed restorations to save through the engine after them."""
     query_backed: list[SlayerDataset] = Field(default_factory=list)
 
 
 class _PendingMetric(BaseModel):
-    """A measure restored from a ``SLAYER`` payload, added once everything it references exists."""
+    """A metric restored from a ``SLAYER`` payload, added once everything it references exists."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     dataset: str
     metric: DatasetMetric
     label: str
-    #: The metric to convert from its SQL instead, when the restored formula does not validate.
+    #: The metric to convert from its SQL instead, when the restored expression does not validate.
     osi_metric: Optional[OSIMetric] = None
     doc: Optional[OSIDocument] = None
     home: Optional[str] = None
@@ -308,7 +308,7 @@ class _MetadataUnavailable(Exception):
 
 
 class OsiToSlayerConverter:
-    """Convert OSI documents into SLayer models: ``collect_metadata`` reads the database, ``convert`` is pure."""
+    """Convert OSI documents into SLayer datasets: ``collect_metadata`` reads the database, ``convert`` is pure."""
 
     def __init__(
         self,
@@ -329,7 +329,7 @@ class OsiToSlayerConverter:
         self._target = self._dialect.sqlglot_name
         # Every dataset's name: a column a dataset name qualifies is a logical reference.
         self._dataset_names = {ds.name for doc in documents for ds in doc.datasets}
-        # Live metadata from ``collect_metadata``: per dataset its introspected model (or the failure); the
+        # Live metadata from ``collect_metadata``: per dataset its introspected dataset (or the failure); the
         # source queries' column types and the derived expressions' probes.
         self._tables: dict[str, SlayerDataset | str] = {}
         self._datasource = LiveDatasource(offline_reason=None, data_source=data_source, db_type=target_dialect,
@@ -338,12 +338,12 @@ class OsiToSlayerConverter:
 
     def _reset(self) -> None:
         self._models: dict[str, SlayerDataset] = {}
-        # Introspected source columns per model, for field validation.
+        # Introspected source columns per dataset, for field validation.
         self._physical: dict[str, dict[str, DatasetField]] = {}
         self._live: dict[str, LiveSource | None] = {}
         self._warnings: list[ConversionWarning] = list(self._extension_notes)
         self._unconverted: list[ConversionWarning] = []
-        # (model, column) -> the introspected Column a legacy derived overlay replaced,
+        # (dataset, field) -> the introspected DatasetField a legacy derived overlay replaced,
         # so an invalidated overlay reverts to the physical column.
         self._shadowed: dict[tuple[str, str], DatasetField] = {}
         # Decoded SLAYER payloads (with whether their fingerprint matches), applied after the plain import.
@@ -461,7 +461,7 @@ class OsiToSlayerConverter:
             self._metric(metric=metric, doc=doc, home=None, doc_datasets=doc_models)
 
     def _metric(self, metric: OSIMetric, *, doc: OSIDocument, home: str | None, doc_datasets: list[str]) -> None:
-        """Restore ``metric``'s SLayer measure when its payload matches, else convert its SQL."""
+        """Restore ``metric``'s SLayer metric when its payload matches, else convert its SQL."""
         found = self._payload(metric.nonportable_extensions, kind="metric", entity=metric.name,
                               label=f"metric {metric.name!r}", dataset_name=home,
                               ossie=ext.expression_digest(metric.expression))
@@ -500,7 +500,7 @@ class OsiToSlayerConverter:
         if dupes:
             raise OsiConversionError(
                 f"Duplicate dataset names across the OSI import set: "
-                f"{sorted(dupes)}. Dataset names map to SLayer model names and "
+                f"{sorted(dupes)}. Dataset names map to SLayer dataset names and "
                 f"must be unique within a datasource."
             )
 
@@ -518,12 +518,12 @@ class OsiToSlayerConverter:
                 "case; repeated in " + "; ".join(clashes) + "."
             )
 
-    # ---- datasets -> models ----
+    # ---- Ossie datasets -> SLayer datasets ----
 
     def _build_dataset(self, ds: OSIDataset, doc: OSIDocument) -> None:
         if not _legal_dataset_name(ds.name):
             self._warn(
-                f"Dataset name {ds.name!r} is not a safe SLayer model name "
+                f"Dataset name {ds.name!r} is not a safe SLayer dataset name "
                 f"(empty, surrounding whitespace, or a forbidden character such "
                 f"as '.', ':', '/', '\\\\', NUL); skipping.",
                 dataset_name=ds.name, category="illegal_name",
@@ -583,9 +583,9 @@ class OsiToSlayerConverter:
                            fields=columns)
 
     def _declare_fields(self, dataset: SlayerDataset, ds: OSIDataset) -> None:
-        """Current spec: the model's columns are exactly the declared fields."""
+        """Current spec: the dataset's fields are exactly the declared fields."""
         if not ds.fields:
-            self._warn(f"Dataset {ds.name!r} declares no fields; its model exposes no columns.",
+            self._warn(f"Dataset {ds.name!r} declares no fields; its SLayer dataset exposes none.",
                        dataset_name=ds.name, category="missing_column", severity="info")
         fields: list[DatasetField] = []
         for field in ds.fields or []:
@@ -615,7 +615,7 @@ class OsiToSlayerConverter:
     def _apply_primary_key(self, dataset: SlayerDataset, ds: OSIDataset) -> None:
         """A valid declared key replaces the inherited flags; an empty or unresolved one clears them."""
         if ds.primary_key is None:
-            return  # renamed introspected key columns keep their flag
+            return  # renamed introspected key fields keep their flag
         declared = {c.name for c in dataset.fields}
         missing = [k for k in ds.primary_key if k not in declared]
         if not ds.primary_key:
@@ -629,7 +629,7 @@ class OsiToSlayerConverter:
             col.primary_key = col.name in key
 
     def _overlay_fields(self, dataset: SlayerDataset, ds: OSIDataset) -> None:
-        """Legacy: overlay each field on the introspected columns."""
+        """Legacy: overlay each field on the introspected fields."""
         by_name = {c.name: c for c in dataset.fields}
         for field in ds.fields or []:
             col = self._field_field(field=field, ds=ds, dataset=dataset)
@@ -703,7 +703,7 @@ class OsiToSlayerConverter:
         return _bottom_up(tree, lambda node: _list_call(node, dialect=self._dialect, is_list=is_list))
 
     def _field_field(self, field: OSIField, ds: OSIDataset, dataset: SlayerDataset) -> DatasetField | None:
-        """The Column one field maps to, or ``None`` on a reported clean-fail."""
+        """The DatasetField one field maps to, or ``None`` on a reported clean-fail."""
         if not _legal_field_name(field.name):
             self._warn(
                 f"Field name {field.name!r} on dataset {ds.name!r} contains "
@@ -818,7 +818,7 @@ class OsiToSlayerConverter:
             col.meta = {**(col.meta or {}), **meta}
 
     def _probe_expression_type(self, dataset: SlayerDataset, expr: str) -> ResultColumnType | None:
-        """A derived expression's type from a zero-row probe of the model's source, or ``None``."""
+        """A derived expression's type from a zero-row probe of the dataset's source, or ``None``."""
         if dataset.name not in self._live:
             found = self._datasource.source(sql_table=dataset.sql_table, sql=dataset.sql) \
                 if dataset.sql_table or dataset.sql else None
@@ -853,7 +853,7 @@ class OsiToSlayerConverter:
             dataset.meta = {**(dataset.meta or {}), **meta}
 
     def _unique_keys(self, dataset: SlayerDataset, ds: OSIDataset) -> list[list[str]]:
-        """Non-empty entries naming only the model's columns (declared fields; legacy: plus source columns)."""
+        """Non-empty entries naming only the dataset's fields (declared fields; legacy: plus source columns)."""
         names = {c.name for c in dataset.fields}
         kept: list[list[str]] = []
         for key in ds.unique_keys or []:
@@ -861,14 +861,14 @@ class OsiToSlayerConverter:
             if not key or missing:
                 self._warn(
                     f"Dataset {ds.name!r} unique_keys entry {key} is empty or names "
-                    f"{missing}, which are not columns of the model; ignoring it.",
+                    f"{missing}, which are not fields of the dataset; ignoring it.",
                     dataset_name=ds.name, category="unique_keys",
                 )
                 continue
             kept.append(key)
         return kept
 
-    # ---- relationships -> joins ----
+    # ---- Ossie relationships -> SLayer relationships ----
 
     def _build_relationship(self, rel: OSIRelationship, doc: OSIDocument) -> None:
         src = rel.from_dataset
@@ -914,12 +914,12 @@ class OsiToSlayerConverter:
         if found is not None and found[1] and self._restore_declarations(rel, payload=found[0]):
             return
 
-        # ModelJoin keys only on target_model, so a second join to one target is unreachable.
+        # DatasetRelationship keys only on ``to``, so a second relationship to one target is unreachable.
         if any(j.to == rel.to for j in self._models[src].relationships):
             self._warn(
-                f"Relationship {rel.name!r} is a second join from {src!r} to "
-                f"{rel.to!r}; SLayer cannot disambiguate multiple joins to one "
-                f"dataset (no join aliases). Keeping the first; skipping this one.",
+                f"Relationship {rel.name!r} is a second relationship from {src!r} to "
+                f"{rel.to!r}; SLayer cannot disambiguate multiple relationships to one "
+                f"dataset (no relationship aliases). Keeping the first; skipping this one.",
                 dataset_name=src, category="relationship",
             )
             return
@@ -935,9 +935,9 @@ class OsiToSlayerConverter:
         ))
 
     def _validate_cross_dataset_field_refs(self) -> None:
-        """Drop columns whose cross-model refs don't resolve through the join graph.
+        """Drop fields whose cross-dataset refs don't resolve through the relationship graph.
 
-        Fixed-point: a dropped column can invalidate another column or a join.
+        Fixed-point: a dropped field can invalidate another field or a relationship.
         """
         while True:
             if not (self._drop_invalid_cross_dataset_fields()
@@ -971,7 +971,7 @@ class OsiToSlayerConverter:
             dataset.fields[dataset.fields.index(col)] = original
             self._warn(
                 f"Derived overlay for {col.name!r} on {dataset.name!r} references "
-                f"unresolvable cross-model column(s) {bad}; reverting to the "
+                f"unresolvable cross-dataset field(s) {bad}; reverting to the "
                 f"physical column.",
                 dataset_name=dataset.name, category="missing_column",
             )
@@ -980,13 +980,13 @@ class OsiToSlayerConverter:
             if dataset.default_time_dimension == col.name:
                 dataset.default_time_dimension = _first_time_dimension(dataset)
             self._warn(
-                f"Column {col.name!r} on {dataset.name!r} references unresolvable "
-                f"cross-model column(s) {bad}; dropping.",
+                f"Field {col.name!r} on {dataset.name!r} references unresolvable "
+                f"cross-dataset field(s) {bad}; dropping.",
                 dataset_name=dataset.name, category="missing_column",
             )
 
     def _drop_stale_relationships(self) -> bool:
-        """Drop joins whose key columns were removed by column validation."""
+        """Drop relationships whose key fields were removed by field validation."""
         dropped = False
         for model in self._models.values():
             stale = [j for j in model.relationships if self._relationship_fields_missing(dataset=model, relationship=j)]
@@ -994,8 +994,8 @@ class OsiToSlayerConverter:
                 model.relationships.remove(join)
                 dropped = True
                 self._warn(
-                    f"Join from {model.name!r} to {join.to!r} "
-                    f"references a column removed during validation; dropping.",
+                    f"Relationship from {model.name!r} to {join.to!r} "
+                    f"references a field removed during validation; dropping.",
                     dataset_name=model.name, category="relationship",
                 )
         return dropped
@@ -1007,7 +1007,7 @@ class OsiToSlayerConverter:
             return None
 
     def _type_cross_dataset_fields(self) -> None:
-        """Type a derived column that is exactly one cross-model ref from the column its chain of such refs ends at."""
+        """Type a derived field that is exactly one cross-dataset ref from the field its chain of such refs ends at."""
         for model in self._models.values():
             for col in model.fields:
                 end = self._ref_chain_end(dataset=model, col=col)
@@ -1015,7 +1015,7 @@ class OsiToSlayerConverter:
                     col.datatype, col.element_type = end.datatype, end.element_type
 
     def _ref_chain_end(self, *, dataset: SlayerDataset, col: DatasetField) -> DatasetField | None:
-        """The column a chain of single cross-model refs from ``col`` ends at; ``None`` without a ref or on a cycle."""
+        """The field a chain of single cross-dataset refs from ``col`` ends at; ``None`` without a ref or on a cycle."""
         seen = {id(col)}
         end: DatasetField | None = None
         while col.sql and (hop := self._single_cross_dataset_ref(dataset=dataset, sql=col.sql)) is not None:
@@ -1027,7 +1027,7 @@ class OsiToSlayerConverter:
         return end
 
     def _single_cross_dataset_ref(self, dataset: SlayerDataset, sql: str) -> tuple[SlayerDataset, DatasetField] | None:
-        """The model and column ``sql`` names when it is exactly one cross-model ref."""
+        """The dataset and field ``sql`` names when it is exactly one cross-dataset ref."""
         tree = self._parse_target(sql)
         if not isinstance(tree, exp.Column):
             return None
@@ -1052,8 +1052,8 @@ class OsiToSlayerConverter:
         return False
 
     def _is_physical_multihop_ref(self, *, dataset: SlayerDataset, quals: list[str]) -> bool:
-        """True for a multi-hop qualifier whose first hop is not a join hop (a physical
-        ``schema.table.column`` ref). An ambiguous hop IS a join hop."""
+        """True for a multi-hop qualifier whose first hop is not a relationship hop (a physical
+        ``schema.table.column`` ref). An ambiguous hop IS a relationship hop."""
         if len(quals) < 2:
             return False
         try:
@@ -1064,8 +1064,8 @@ class OsiToSlayerConverter:
             return False
 
     def _unresolvable_cross_dataset_refs(self, dataset: SlayerDataset, sql: str) -> list[str]:
-        """Root-scope cross-model column refs in ``sql`` that don't resolve to a joined
-        model + existing column; physical multi-part refs are skipped."""
+        """Root-scope cross-dataset field refs in ``sql`` that don't resolve to a joined
+        dataset + existing field; physical multi-part refs are skipped."""
         tree = self._parse_target(sql)
         if not isinstance(tree, Expression):
             return []
@@ -1073,7 +1073,7 @@ class OsiToSlayerConverter:
         bad = []
         for col in tree.find_all(exp.Column):
             if id(col) not in root_ids:
-                continue  # nested-scope alias (CTE / sub-query) — not a join ref
+                continue  # nested-scope alias (CTE / sub-query) — not a relationship ref
             parts = [p.name for p in col.parts]
             quals, leaf = parts[:-1], parts[-1]
             if not quals or quals == [dataset.name]:
@@ -1086,7 +1086,7 @@ class OsiToSlayerConverter:
         return bad
 
     def _walk_join_alias(self, host: SlayerDataset, alias: str) -> SlayerDataset | None:
-        """Resolve a dotted join qualifier to its terminal joined model, or None (never ``__``-split)."""
+        """Resolve a dotted relationship qualifier to its terminal joined dataset, or None (never ``__``-split)."""
         return resolve_ref_target(
             qualifiers=tuple(alias.split(".")),
             source_dataset=host,
@@ -1098,14 +1098,14 @@ class OsiToSlayerConverter:
         return model is not None and name_taken(field, (c.name for c in model.fields))
 
     def _dataset_has_name(self, dataset_name: str, name: str) -> bool:
-        """Whether ``name`` is taken by a column or measure (one shared namespace)."""
+        """Whether ``name`` is taken by a field or metric (one shared namespace)."""
         model = self._models.get(dataset_name)
         if model is None:
             return False
         return name_taken(name, [*(c.name for c in model.fields), *(m.name for m in model.metrics if m.name)])
 
     def _missing_relationship_fields(self, rel: OSIRelationship) -> list[str]:
-        """Qualified relationship key names that are not plain base columns of their model."""
+        """Qualified relationship key names that are not plain base fields of their dataset."""
         sides = ((rel.from_dataset, rel.from_columns), (rel.to, rel.to_columns))
         return [
             f"{name}.{c}" for name, cols in sides for c in cols
@@ -1113,7 +1113,7 @@ class OsiToSlayerConverter:
                               fields=self._models[name].fields) is not None
         ]
 
-    # ---- metrics -> measures ----
+    # ---- Ossie metrics -> SLayer metrics ----
 
     def _metric_tree(self, metric: OSIMetric) -> exp.Expr | None:
         """The metric's selected expression, parsed; ``None`` when reported."""
@@ -1133,7 +1133,7 @@ class OsiToSlayerConverter:
     def _canonicalize_refs(self, tree: exp.Expr, *, doc_datasets: list[str], home: str | None,
                            helpers: dict[str, DatasetField], metric: str) -> exp.Expr:
         """``tree`` with current-spec metric refs rewritten to declared names, and ``source.column`` refs to the
-        column reading it (a new hidden one added to ``helpers``); raises ``LookupError`` on a scope violation."""
+        field reading it (a new hidden one added to ``helpers``); raises ``LookupError`` on a scope violation."""
         def canonical(col: exp.Expr) -> exp.Expr:
             if not isinstance(col, exp.Column):
                 return col
@@ -1150,7 +1150,7 @@ class OsiToSlayerConverter:
 
     def _source_field_ref(self, leaf: exp.Identifier, *, home: str, helpers: dict[str, DatasetField],
                            metric: str) -> exp.Column:
-        """A ref to the column of ``home`` reading the source column ``leaf`` unchanged; raises ``LookupError``."""
+        """A ref to the field of ``home`` reading the source column ``leaf`` unchanged; raises ``LookupError``."""
         source = self._source_field(leaf, home=home)
         if source.name not in helpers:
             reader = self._source_reader(source, leaf=leaf, home=home)
@@ -1182,7 +1182,7 @@ class OsiToSlayerConverter:
         return found[0]
 
     def _source_reader(self, source: DatasetField, *, leaf: exp.Identifier, home: str) -> DatasetField | None:
-        """The model column reading ``source`` unchanged, or ``None``; raises when a field's name masks it."""
+        """The dataset field reading ``source`` unchanged, or ``None``; raises when a field's name masks it."""
         live_names = self._live_names(home)
         exact = exp.to_identifier(next(live_exact_name(n, dialect=self._dialect) for n, c in live_names if c is source),
                                   quoted=True)
@@ -1224,7 +1224,7 @@ class OsiToSlayerConverter:
 
     def _convert_metric(self, metric: OSIMetric, *, tree: exp.Expr, home: str | None,
                          doc_datasets: list[str]) -> DatasetMetric | None:
-        """The measure ``tree`` converts to on its anchor, or ``None`` when reported."""
+        """The metric ``tree`` converts to on its anchor, or ``None`` when reported."""
         scope = [home] if home is not None else doc_datasets
         owner_of = self._make_owner_of(scope)
         anchor = home or self._select_anchor(metric_name=metric.name, tree=tree,
@@ -1232,18 +1232,18 @@ class OsiToSlayerConverter:
         if anchor is None:
             return None  # already reported
 
-        # Measures and columns share one namespace on the anchor model.
+        # Metrics and fields share one namespace on the anchor dataset.
         anchor_model = self._models[anchor]
         if name_taken(metric.name, (m.name for m in anchor_model.metrics if m.name)):
             self._unconv(
-                f"Metric {metric.name!r} duplicates an existing measure on "
+                f"Metric {metric.name!r} duplicates an existing metric on "
                 f"dataset {anchor!r}.",
                 metric_name=metric.name, category="duplicate_measure",
             )
             return None
         if self._dataset_has_field(dataset_name=anchor, field=metric.name):
             self._unconv(
-                f"Metric {metric.name!r} collides with a column name on model "
+                f"Metric {metric.name!r} collides with a field name on dataset "
                 f"{anchor!r}.",
                 metric_name=metric.name, category="name_collision",
             )
@@ -1261,7 +1261,7 @@ class OsiToSlayerConverter:
             )
             return None
 
-        # Build the measure before materializing columns, so a rejected metric leaves no orphans.
+        # Build the metric before materializing fields, so a rejected metric leaves no orphans.
         try:
             parse_expr(result.expression)
             measure = DatasetMetric(
@@ -1273,8 +1273,8 @@ class OsiToSlayerConverter:
             )
         except Exception as exc:  # noqa: BLE001 — any parse/validation error -> report
             self._unconv(
-                f"Metric {metric.name!r}: emitted formula {result.expression!r} is "
-                f"not a valid SLayer measure ({exc}).",
+                f"Metric {metric.name!r}: emitted expression {result.expression!r} is "
+                f"not a valid SLayer metric ({exc}).",
                 metric_name=metric.name,
             )
             return None
@@ -1303,29 +1303,29 @@ class OsiToSlayerConverter:
                     for p in blocking_pairs(root=self._models[c], target=m, datasets_by_name=self._models)
                 }
                 self._unconv(
-                    f"Metric {metric_name!r} references models {sorted(owners)} "
-                    f"with no single model reaching all of them via joins."
+                    f"Metric {metric_name!r} references datasets {sorted(owners)} "
+                    f"with no single dataset reaching all of them via relationships."
                     + "".join(f" {d}." for d in pairs),
                     metric_name=metric_name, category="no_join_path",
                     suggestion="Add the required relationship(s), or split the "
                                "metric across a multi-stage query.",
                 )
             return anchor
-        # No column refs (e.g. COUNT(*)): the unique fact table, else an orphan of ambiguous grain.
+        # No field refs (e.g. COUNT(*)): the unique fact table, else an orphan of ambiguous grain.
         anchor = self._fact_root(doc_datasets)
         if anchor is None:
             self._unconv(
-                f"Metric {metric_name!r} has no column references and the "
+                f"Metric {metric_name!r} has no field references and the "
                 f"semantic model has no unique fact table to attribute it to; "
                 f"its grain is ambiguous.",
                 metric_name=metric_name, category="orphan_metric",
-                suggestion="Aggregate over an explicit column, or ensure the "
+                suggestion="Aggregate over an explicit field, or ensure the "
                            "semantic model has a single fact dataset.",
             )
         return anchor
 
     def _fact_root(self, doc_datasets: list[str]) -> str | None:
-        """The unique dataset that is never a join target, or ``None``."""
+        """The unique dataset that is never a relationship target, or ``None``."""
         targets = {j.to for name in doc_datasets for j in self._models[name].relationships}
         non_targets = [n for n in doc_datasets if n not in targets]
         return non_targets[0] if len(non_targets) == 1 else None
@@ -1347,7 +1347,7 @@ class OsiToSlayerConverter:
         return is_list
 
     def _min_hops_root(self, *, candidates: list[str], mentioned: set[str], to_one: set[str]) -> str | None:
-        """Among ``candidates`` routing to every ``mentioned`` model (``to_one`` ones without
+        """Among ``candidates`` routing to every ``mentioned`` dataset (``to_one`` ones without
         fanning): prefer no fanning hop, then the fewest total hops, a mentioned candidate, the smallest name."""
         keyed = []
         for c in candidates:
@@ -1417,7 +1417,7 @@ class OsiToSlayerConverter:
         return payload, ext.matches(payload, ossie=ossie)
 
     def _restore_declarations(self, rel: OSIRelationship, *, payload: ext.Payload) -> bool:
-        """Add the SLayer joins ``rel`` stands for, when every endpoint and key validates."""
+        """Add the SLayer relationships ``rel`` stands for, when every endpoint and key validates."""
         assert isinstance(payload, ext.RelationshipPayload)
         built = _build_meta(ctx=rel.ai_context, extensions=rel.nonportable_extensions)
         relationships: list[tuple[SlayerDataset, DatasetRelationship]] = []
@@ -1426,9 +1426,9 @@ class OsiToSlayerConverter:
             target = self._models.get(join.to)
             problem = None
             if model is None or target is None:
-                problem = f"relationships {declaration.dataset!r} to {join.to!r}, which are not both imported"
+                problem = f"joins {declaration.dataset!r} to {join.to!r}, which are not both imported"
             elif any(j.to == join.to and j.name == join.name for j in model.relationships):
-                problem = f"duplicates a join from {model.name!r} to {join.to!r}"
+                problem = f"duplicates a relationship from {model.name!r} to {join.to!r}"
             else:
                 errors = [relationship_key_error(dataset=model.name, target=target.name, key=a, side=model.name,
                                          fields=model.fields) or
@@ -1437,9 +1437,9 @@ class OsiToSlayerConverter:
                           for a, b in join.join_pairs]
                 problem = next((str(e).splitlines()[0] for e in errors if e is not None), None)
             if problem is not None:
-                self._warn(f"Relationship {rel.name!r}: its SLayer join {problem}; imported as a plain "
-                           f"many-to-one join.", dataset_name=rel.from_dataset, category=_EXTENSION,
-                           suggestion="Import every model the join connects.")
+                self._warn(f"Relationship {rel.name!r}: its SLayer relationship {problem}; imported as a plain "
+                           f"many-to-one relationship.", dataset_name=rel.from_dataset, category=_EXTENSION,
+                           suggestion="Import every dataset the relationship connects.")
                 return False
             assert model is not None
             relationships.append((model, join.model_copy(update={"meta": {**(built or {}), **(join.meta or {})} or None})))
@@ -1448,7 +1448,7 @@ class OsiToSlayerConverter:
         return True
 
     def _restore_dataset_attributes(self) -> None:
-        """Model attributes Ossie has no place for, and the SLayer-only columns, from each dataset payload."""
+        """Dataset attributes Ossie has no place for, and the SLayer-only fields, from each dataset payload."""
         for name, (payload, _) in self._dataset_payloads.items():
             model = self._models.get(name)
             if model is None:
@@ -1466,17 +1466,17 @@ class OsiToSlayerConverter:
         bad = [] if not field.sql else self._unresolvable_cross_dataset_refs(dataset=dataset, sql=field.sql)
         if self._dataset_has_name(dataset.name, field.name) or bad:
             reason = f"reads {bad}, which do not resolve" if bad else "collides with an imported name"
-            self._warn(f"SLayer-only column {field.name!r} on {dataset.name!r} {reason}; skipping it.",
+            self._warn(f"SLayer-only field {field.name!r} on {dataset.name!r} {reason}; skipping it.",
                        dataset_name=dataset.name, category=_EXTENSION, suggestion=_IMPORT_INPUTS)
             return
         dataset.fields.append(field)
 
     def _restore_metrics(self) -> None:
-        """Add restored and SLayer-only measures once everything they reference exists; a remaining one falls back."""
+        """Add restored and SLayer-only metrics once everything they reference exists; a remaining one falls back."""
         for name, (payload, _) in self._dataset_payloads.items():
             for measure in payload.metrics:
                 self._pending.append(_PendingMetric(dataset=name, metric=measure,
-                                                     label=f"SLayer-only measure {measure.name or measure.expression!r}"))
+                                                     label=f"SLayer-only metric {measure.name or measure.expression!r}"))
         pending, errors = list(self._pending), {}
         while pending:
             remaining = []
@@ -1494,7 +1494,7 @@ class OsiToSlayerConverter:
     def _add_metric(self, item: _PendingMetric) -> str | None:
         model = self._models.get(item.dataset)
         if model is None:
-            return f"its model {item.dataset!r} is not imported"
+            return f"its dataset {item.dataset!r} is not imported"
         if item.metric.name and self._dataset_has_name(item.dataset, item.metric.name):
             return f"its name collides on {item.dataset!r}"
         model.metrics.append(item.metric)
@@ -1512,13 +1512,13 @@ class OsiToSlayerConverter:
                        dataset_name=item.dataset, metric_name=item.metric.name, category=_EXTENSION,
                        suggestion=_IMPORT_INPUTS)
             return
-        self._warn(f"{item.label}: its SLayer measure does not validate ({error}); imported from its SQL.",
+        self._warn(f"{item.label}: its SLayer metric does not validate ({error}); imported from its SQL.",
                    dataset_name=item.dataset, metric_name=item.osi_metric.name, category=_EXTENSION, severity="info",
                    suggestion=_IMPORT_INPUTS)
         self._build_metric(metric=item.osi_metric, doc=item.doc, home=item.home, doc_datasets=self._doc_datasets(item.doc))
 
     def _restore_fields(self) -> None:
-        """Column attributes; the value/filter split only where the field's fingerprint matches."""
+        """Field attributes; the value/filter split only where the field's fingerprint matches."""
         for (name, field), (payload, matched) in self._field_payloads.items():
             model = self._models.get(name)
             column = model.get_field(field) if model is not None else None

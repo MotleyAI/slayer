@@ -108,7 +108,7 @@ class ValueRegistry:
         # Every alias name already taken (public names + each slot's declared_name);
         # hidden slots are uniquified against it so no alias maps to two expressions.
         self._taken_names: set = set()
-        # Multiset of reserved names, so a collision suggestion can discount the colliding measure's own.
+        # Multiset of reserved names, so a collision suggestion can discount the colliding metric's own.
         self._reserved: Counter[str] = Counter()
 
     def _next_id(self) -> SlotId:
@@ -125,7 +125,7 @@ class ValueRegistry:
     def _collision_suggestion(
         self, *, declared_name: str, public_name: Optional[str], canonical_alias: Optional[str],
     ) -> str:
-        """``rename it, e.g. to '<free name>'`` — free of source columns and every other name in the query."""
+        """``rename it, e.g. to '<free name>'`` — free of source fields and every other name in the query."""
         own = Counter(n for n in (declared_name, public_name, canonical_alias) if n)
         taken = (
             self._source_columns
@@ -152,7 +152,7 @@ class ValueRegistry:
         public_name: Optional[str],
         canonical_alias: Optional[str],
     ) -> None:
-        """Alias-collision validations (P4): a public name or renamed canonical alias shadowing a source column raises; self-named dimensions are exempt."""
+        """Alias-collision validations (P4): a public name or renamed canonical alias shadowing a source field raises; self-named dimensions are exempt."""
         if isinstance(key, ListSetKey):
             key = key.source
         is_self_named_dimension = (
@@ -170,13 +170,13 @@ class ValueRegistry:
             and public_name == field_leaf(key.source)
         )
         # An unnamed ``<agg>(*)`` (StarKey) is exempt: its canonical alias (``_count``)
-        # is a structural marker, not a column ref. An explicit user name still raises.
+        # is a structural marker, not a field ref. An explicit user name still raises.
         is_unnamed_star_agg = (
             isinstance(key, AggregateKey)
             and isinstance(getattr(key, "source", None), StarKey)
             and canonical_alias is None
         )
-        # A pathed column ref only flattens to a ``__`` name at a stage boundary;
+        # A pathed field ref only flattens to a ``__`` name at a stage boundary;
         # that collision is owned by the stage-schema guard, so exempt it here.
         is_pathed_projection = (
             isinstance(key, (FieldKey, FieldSqlKey)) and key.path != ()
@@ -392,8 +392,8 @@ _SLOTTABLE_KIND = tuple(k for k in VALUE_KEY_TYPES if KIND_POLICY[k].slottable)
 def _iter_slot_deps(key: ValueKey):
     """Yield only ``ValueKey``s needing a materialised slot. Deliberately
     asymmetric kind-dispatch (any unclassified kind raises): stops at
-    ``AggregateKey``, and yields ``TimeTruncKey`` without its inner column (a
-    time dimension must not auto-add the raw column)."""
+    ``AggregateKey``, and yields ``TimeTruncKey`` without its inner field (a
+    time dimension must not auto-add the raw field)."""
     if isinstance(key, AggregateKey):
         yield key
         return
@@ -435,7 +435,7 @@ def _regroup_substituted_composite_phase(value_key: ValueKey) -> Optional[Phase]
 
 
 class ProjectionPlanner:
-    """Allocate slots for declared measures + hidden slots for order/filter-only refs."""
+    """Allocate slots for declared metrics + hidden slots for order/filter-only refs."""
 
     @staticmethod
     def _intern_hidden(registry: "ValueRegistry", key: ValueKey) -> None:
@@ -448,7 +448,7 @@ class ProjectionPlanner:
                 phase=key.phase,
             )
 
-    def plan(  # NOSONAR(S3776) — one sequential allocation pass (reserve names → intern measures → filter/order deps) sharing the same registry + hidden-slot rule; splitting the loops scatters that shared mutation invariant.
+    def plan(  # NOSONAR(S3776) — one sequential allocation pass (reserve names → intern metrics → filter/order deps) sharing the same registry + hidden-slot rule; splitting the loops scatters that shared mutation invariant.
         self,
         *,
         metrics: List[DeclaredMetric],
@@ -470,7 +470,7 @@ class ProjectionPlanner:
         )
         public_projection: List[SlotId] = []
         for m in metrics:
-            # An all-placeholder regroup composite measure is AGGREGATE-phase, not
+            # An all-placeholder regroup composite metric is AGGREGATE-phase, not
             # the ROW phase its leaves imply; a computed dimension is excluded.
             phase = m.bound.phase
             if not m.is_dimension:
@@ -496,8 +496,8 @@ class ProjectionPlanner:
             if m.name_is_explicit and m.public_name is not None:
                 registry.mark_explicit(sid, m.public_name)
             public_projection.append(sid)
-            # Materialise the measure's aux deps (inner aggregate, partition/time
-            # columns) as hidden slots — rendered but not publicly projected.
+            # Materialise the metric's aux deps (inner aggregate, partition/time
+            # fields) as hidden slots — rendered but not publicly projected.
             for dep in _iter_slot_deps(m.bound.value_key):
                 if dep != m.bound.value_key:
                     self._intern_hidden(registry, dep)
@@ -536,7 +536,7 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
         # Granularity lives in the SQL DATE_TRUNC, not the alias.
         return _canonical_name(key.source)
     if isinstance(key, AggregateKey):
-        # Include args/kwargs so parametric aggregates over one column
+        # Include args/kwargs so parametric aggregates over one field
         # (``percentile(revenue, p=0.5)`` vs ``p=0.95``) get distinct names.
         alias = canonical_aggregate_alias(key, profile="declared_name")
         # declared_name profile always yields a name.
@@ -564,7 +564,7 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
 ProjectionPlan.model_rebuild()
 
 
-# Filter → slot id mapping for cross-model planner routing
+# Filter → slot id mapping for cross-dataset planner routing
 
 
 def filter_referenced_slot_ids(

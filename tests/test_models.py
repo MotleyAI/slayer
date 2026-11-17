@@ -143,7 +143,7 @@ class TestOrderShorthandHealing:
     def test_shorthand_equals_canonical(self) -> None:
         shorthand = SlayerQuery(population="orders", order=[{"status": "desc"}])
         canonical = SlayerQuery(
-            population="orders", order=[{"column": "status", "direction": "desc"}]
+            population="orders", order=[{"field": "status", "direction": "desc"}]
         )
         assert shorthand.order == canonical.order
 
@@ -228,7 +228,7 @@ class TestOrderShorthandHealing:
     # --- canonical preserved; latent uppercase-direction bug fixed ---
 
     def test_canonical_unchanged(self) -> None:
-        q = SlayerQuery(population="orders", order=[{"column": "status", "direction": "desc"}])
+        q = SlayerQuery(population="orders", order=[{"field": "status", "direction": "desc"}])
         assert q.order is not None
         assert q.order[0].field.name == "status"
         assert q.order[0].direction == "desc"
@@ -237,14 +237,14 @@ class TestOrderShorthandHealing:
         # Pre-existing latent bug: SQL generator compares ``direction == "asc"`` strictly,
         # so a stored "ASCENDING"/"ASC" used to silently emit DESC. Now normalized.
         q = SlayerQuery(
-            population="orders", order=[{"column": "status", "direction": "ASCENDING"}]
+            population="orders", order=[{"field": "status", "direction": "ASCENDING"}]
         )
         assert q.order[0].direction == "asc"
 
     def test_canonical_column_named_like_direction_word(self) -> None:
         # Single reserved 'column' key whose value happens to be a direction word
         # stays canonical (order by a column literally named "desc").
-        q = SlayerQuery(population="orders", order=[{"column": "desc"}])
+        q = SlayerQuery(population="orders", order=[{"field": "desc"}])
         assert q.order is not None
         assert q.order[0].field.name == "desc"
         assert q.order[0].direction == "asc"
@@ -257,16 +257,16 @@ class TestOrderShorthandHealing:
 
     def test_invalid_direction_value_canonical_raises(self) -> None:
         with pytest.raises(ValidationError):
-            SlayerQuery(population="orders", order=[{"column": "status", "direction": "sideways"}])
+            SlayerQuery(population="orders", order=[{"field": "status", "direction": "sideways"}])
 
     def test_mixed_canonical_and_stray_direction_key_raises(self) -> None:
         # extra='forbid' rejects the stray 'b' rather than silently dropping it.
         with pytest.raises(ValidationError):
-            SlayerQuery(population="orders", order=[{"column": "status", "b": "asc"}])
+            SlayerQuery(population="orders", order=[{"field": "status", "b": "asc"}])
 
     def test_mixed_canonical_and_stray_nondirection_key_raises(self) -> None:
         with pytest.raises(ValidationError):
-            SlayerQuery(population="orders", order=[{"column": "status", "b": "downward"}])
+            SlayerQuery(population="orders", order=[{"field": "status", "b": "downward"}])
 
     def test_direction_only_key_raises(self) -> None:
         # {"direction": "desc"} is a malformed canonical item (no column), not shorthand.
@@ -297,7 +297,7 @@ class TestOrderShorthandHealing:
             population="orders",
             order=[
                 {"a": "desc"},
-                {"column": "b", "direction": "asc"},
+                {"field": "b", "direction": "asc"},
                 {"c": "asc", "d": "desc"},
             ],
         )
@@ -317,7 +317,7 @@ class TestOrderShorthandHealing:
     def test_tuple_input_accepted(self) -> None:
         q = SlayerQuery(
             population="orders",
-            order=({"a": "desc"}, {"column": "b", "direction": "asc"}),
+            order=({"a": "desc"}, {"field": "b", "direction": "asc"}),
         )
         assert [(o.field.name, o.direction) for o in q.order] == [("a", "desc"), ("b", "asc")]
 

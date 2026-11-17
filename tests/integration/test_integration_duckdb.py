@@ -537,8 +537,8 @@ class TestDuckDBMedianPercentile:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                {"formula": "percentile(total, p=0.25)"},
-                {"formula": "percentile(total, p=0.75)"},
+                {"expression": "percentile(total, p=0.25)"},
+                {"expression": "percentile(total, p=0.75)"},
             ],
         )
         result = await duckdb_env.execute(query=query)
@@ -619,7 +619,7 @@ class TestDuckDBStatAggregations:
     async def test_covar_pop_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "covar_pop(total, other=customer_id)"}],
+            metrics=[{"expression": "covar_pop(total, other=customer_id)"}],
         )
         result = await duckdb_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]

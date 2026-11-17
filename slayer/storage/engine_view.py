@@ -104,7 +104,7 @@ class EngineStorage(StorageBackend):
     async def delete_memory(self, memory_id: str) -> None:
         await self._sourced(self._inner.delete_memory(memory_id))
 
-    # ---- models -------------------------------------------------------------
+    # ---- datasets -----------------------------------------------------------
 
     async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         return await self._sourced(self._inner.get_dataset(name, data_source=data_source))

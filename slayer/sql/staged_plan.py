@@ -1,7 +1,7 @@
 """Stage partitioning of a ``PlannedQuery`` (DEV-1800 D3/D8).
 
 The SQL generator reads a value's placement from the planner-assigned
-``ValueSlot.stage`` / ``needs_column`` rather than re-deriving it from key shape.
+``ValueSlot.stage`` / ``needs_field`` rather than re-deriving it from key shape.
 These pure helpers turn those facts into the slot-id sets each render phase
 consumes — the host ``_base`` column set, the combined-SELECT expressions, the
 post step — so both render paths share one derivation instead of the several
@@ -67,7 +67,7 @@ def base_render_order(
 
 
 def combined_composite_slot_ids(planned_query: PlannedQuery) -> Set[str]:
-    """Composite (``SLOT_COMPOSITE_KINDS``) measure or order slots the planner
+    """Composite (``SLOT_COMPOSITE_KINDS``) metric or order slots the planner
     staged at COMBINED — they render at the combined SELECT reading producer
     columns. A DERIVED composite (one reading a transform) renders in the
     transform chain instead and is not returned here; a computed dimension

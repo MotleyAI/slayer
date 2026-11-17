@@ -51,8 +51,8 @@ _CHAIN_QUERY = SlayerQuery(
         granularity=TimeGranularity.MONTH,
     )],
     metrics=[
-        {"formula": "sum(amount)", "name": "rev"},
-        {"formula": "cumsum(sum(amount))", "name": "cs"},
+        {"expression": "sum(amount)", "name": "rev"},
+        {"expression": "cumsum(sum(amount))", "name": "cs"},
     ],
 )
 
@@ -65,9 +65,9 @@ _MULTI_STEP_QUERY = SlayerQuery(
         granularity=TimeGranularity.MONTH,
     )],
     metrics=[
-        {"formula": "sum(amount)", "name": "rev"},
-        {"formula": "cumsum(sum(amount))", "name": "cs"},
-        {"formula": "change(sum(amount))", "name": "ch"},
+        {"expression": "sum(amount)", "name": "rev"},
+        {"expression": "cumsum(sum(amount))", "name": "cs"},
+        {"expression": "change(sum(amount))", "name": "ch"},
     ],
 )
 

@@ -1,4 +1,4 @@
-"""Join-cardinality inference helpers and the detection report.
+"""Relationship-cardinality inference helpers and the detection report.
 
 Uniqueness is asymmetric evidence: a scan disproves it with one duplicate, but
 can never prove it.
@@ -66,7 +66,7 @@ class CardinalityVerdict(StrEnum):
     #: Profiled fine but the key population was empty — an empty scan is no
     #: evidence of arity. Unlike SKIPPED_UNSUPPORTED, worth re-running later.
     NO_EVIDENCE = "no_evidence"
-    #: The scan itself failed; the message is in ``note``. Contained per join
+    #: The scan itself failed; the message is in ``note``. Contained per relationship
     #: so one unreadable table cannot abort the whole report.
     SCAN_FAILED = "scan_failed"
 

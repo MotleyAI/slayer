@@ -129,7 +129,7 @@ class TestErrorVocabulary:
         assert isinstance(exc, ValueError)
         assert isinstance(exc, SlayerError)
         assert exc.reference == "A.B.leaf"
-        assert exc.root_model == "ROOT"
+        assert exc.root_dataset == "ROOT"
         assert exc.revisited == "REV"
         assert exc.hop == "HOP"
         assert exc.via == "VIA"
@@ -157,7 +157,7 @@ class TestErrorVocabulary:
         assert exc.field == "revisit_spend"
         assert exc.dataset == "customers"
         assert exc.reference == "regions.customers.spend"
-        assert exc.root_model == "customers"
+        assert exc.root_dataset == "customers"
         assert exc.revisited == "customers"
         assert exc.hop == "customers"
         assert exc.via == "regions"
@@ -208,7 +208,7 @@ class TestWalkerRaisesOnRevisit:
         assert exc.revisited == "regions"
         assert exc.hop == "regions"
         assert exc.via == "customers"
-        assert exc.root_model == "regions"
+        assert exc.root_dataset == "regions"
         assert exc.reference == "customers.regions"
 
     def test_walk_returns_none_on_unknown_token(self) -> None:

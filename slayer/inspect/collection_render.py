@@ -2,7 +2,7 @@
 
 A null/omitted ``reference`` on ``inspect`` renders the *collection* at an
 ``entity_type``. These pure renderers are the single code path shared by the
-``inspect`` collection dispatch AND the ``models_summary`` / ``list_datasources``
+``inspect`` collection dispatch AND the ``datasets_summary`` / ``list_datasources``
 MCP tools (kept as thin aliases), guaranteeing byte-identical output.
 
 ``slayer.inspect`` must NOT import ``slayer.mcp`` (cycle avoidance); the shared
@@ -62,7 +62,7 @@ def _relationship_targets(
 
 
 # ---------------------------------------------------------------------------
-# models_summary — extracted verbatim from the MCP tool (byte-identical)
+# datasets_summary — extracted verbatim from the MCP tool (byte-identical)
 # ---------------------------------------------------------------------------
 
 
@@ -74,10 +74,10 @@ def render_datasets_summary(
     compact: bool,
     descriptions_max_chars: int | None = None,
 ) -> str:
-    """Render a datasource's (already hidden-filtered + name-sorted) models.
+    """Render a datasource's (already hidden-filtered + name-sorted) datasets.
 
-    Extracted from ``mcp/server.py::models_summary`` so both the tool and the
-    ``inspect`` model collection (compact=False) render through one path. With
+    Extracted from ``mcp/server.py::datasets_summary`` so both the tool and the
+    ``inspect`` dataset collection (compact=False) render through one path. With
     ``descriptions_max_chars=None`` the output is byte-identical to the tool.
     """
     if not datasets:
@@ -88,7 +88,7 @@ def render_datasets_summary(
                 {"datasource_name": datasource_name, "dataset_count": 0, "datasets": []},
                 indent=2,
             )
-        return f"Datasource '{datasource_name}' has no models."
+        return f"Datasource '{datasource_name}' has no datasets."
     desc = _desc_fn(descriptions_max_chars)
     if fmt == "json":
         return _datasets_summary_json(
@@ -161,7 +161,7 @@ def _datasets_summary_markdown(
     *, datasource_name: str, datasets: list[SlayerDataset], compact: bool, desc,
 ) -> str:
     sections: list[str] = [
-        f"# Datasource: `{datasource_name}` — {len(datasets)} model(s)"
+        f"# Datasource: `{datasource_name}` — {len(datasets)} dataset(s)"
     ]
     for m in datasets:
         model_lines: list[str] = [f"## `{m.name}`"]
@@ -183,15 +183,15 @@ def _append_compact_dataset_lines(
     *, dataset_lines: list[str], m: SlayerDataset,
     all_datasets: list[SlayerDataset] | None = None,
 ) -> None:
-    dataset_lines.append(f"Columns: {_visible_field_count(m)}")
+    dataset_lines.append(f"Fields: {_visible_field_count(m)}")
     measure_names = ", ".join(mm.name for mm in m.metrics if mm.name is not None)
-    dataset_lines.append(f"Measures: {measure_names}")
+    dataset_lines.append(f"Metrics: {measure_names}")
     targets = _relationship_targets(m, all_datasets)
     if targets:
         rendered = ", ".join(f"`{t}`" for t in targets)
-        dataset_lines.append(f"Joins to: {rendered}")
+        dataset_lines.append(f"Relationships to: {rendered}")
     else:
-        dataset_lines.append("Joins to: _(none)_")
+        dataset_lines.append("Relationships to: _(none)_")
 
 
 def _append_verbose_dataset_lines(
@@ -202,7 +202,7 @@ def _append_verbose_dataset_lines(
         {"name": c.name, "datatype": field_type_text(c), "description": desc(c.description)}
         for c in m.fields if not c.hidden
     ]
-    dataset_lines.append(f"**Columns ({len(col_rows)}):**")
+    dataset_lines.append(f"**Fields ({len(col_rows)}):**")
     dataset_lines.append("")
     dataset_lines.append(
         _markdown_table(rows=col_rows, fields=["name", "datatype", "description"])
@@ -213,7 +213,7 @@ def _append_verbose_dataset_lines(
         {"name": mm.name, "expression": mm.expression, "description": desc(mm.description)}
         for mm in m.metrics
     ]
-    dataset_lines.append(f"**Measures ({len(measure_rows)}):**")
+    dataset_lines.append(f"**Metrics ({len(measure_rows)}):**")
     dataset_lines.append("")
     dataset_lines.append(
         _markdown_table(rows=measure_rows, fields=["name", "expression", "description"])
@@ -223,16 +223,16 @@ def _append_verbose_dataset_lines(
     targets = _relationship_targets(m, all_datasets)
     if targets:
         rendered = ", ".join(f"`{t}`" for t in targets)
-        dataset_lines.append(f"**Joins to:** {rendered}")
+        dataset_lines.append(f"**Relationships to:** {rendered}")
     else:
-        dataset_lines.append("**Joins to:** _(none)_")
+        dataset_lines.append("**Relationships to:** _(none)_")
 
 
 # ---------------------------------------------------------------------------
-# Model collection — compact=True one-liner index
+# Dataset collection — compact=True one-liner index
 # ---------------------------------------------------------------------------
 
-# A per-DS group is (data_source, models) where ``models is None`` marks a
+# A per-DS group is (data_source, datasets) where ``datasets is None`` marks a
 # datasource whose config failed to load (invalid-config tolerance).
 DatasetGroup = tuple[str, list[SlayerDataset] | None]
 
@@ -243,8 +243,8 @@ def render_dataset_oneliner_index(
     fmt: str,
     warnings: list[str],
 ) -> str:
-    """The compact=True model collection: one terse line per model, grouped by
-    datasource. Deliberately terser than ``models_summary`` (scales to large
+    """The compact=True dataset collection: one terse line per dataset, grouped by
+    datasource. Deliberately terser than ``datasets_summary`` (scales to large
     catalogs)."""
     if fmt == "json":
         return _oneliner_index_json(groups=groups, warnings=warnings)
@@ -289,15 +289,15 @@ def _oneliner_index_markdown(
         if models is None:
             blocks.append(f"# Datasource: `{ds}` — (ERROR: invalid config)")
             continue
-        lines = [f"# Datasource: `{ds}` — {len(models)} model(s)"]
+        lines = [f"# Datasource: `{ds}` — {len(models)} dataset(s)"]
         for m in models:
             joins = _relationship_targets(m, models)
             joins_str = (
                 ", ".join(f"`{t}`" for t in joins) if joins else "_(none)_"
             )
             lines.append(
-                f"- `{m.name}` ({_visible_field_count(m)} cols; "
-                f"joins: {joins_str})"
+                f"- `{m.name}` ({_visible_field_count(m)} fields; "
+                f"relationships: {joins_str})"
             )
         blocks.append("\n".join(lines))
     body = "\n\n".join(blocks)
@@ -356,7 +356,7 @@ def datasource_skeleton_fields(
     descriptions_max_chars: int | None,
 ) -> dict[str, Any]:
     """The datasource compact=False JSON per-DS element: name + description +
-    per-model skeletons."""
+    per-dataset skeletons."""
     saved = saved_queries_index(datasets, max_chars=descriptions_max_chars)
     return {
         "name": name,

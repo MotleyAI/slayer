@@ -26,7 +26,7 @@ def _carriers() -> list[UserWarning]:
         rule_id="FUNC_STYLE_AGG",
         original="SUM(revenue)",
         normalized="sum(revenue)",
-        location="measures[0].formula",
+        location="metrics[0].expression",
     )
     return [
         BroadcastGrainWarning(metric="orders.revenue_sum", reason="no join path"),

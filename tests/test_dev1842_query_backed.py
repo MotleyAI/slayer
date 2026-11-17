@@ -104,7 +104,7 @@ class TestExtensionMeasuresOverQueryBacked:
                                            expression="sum(amount_sum) * 2")],
                 )],
                 dimensions=["status"],
-                metrics=[{"formula": "doubled", "name": "r"}],
+                metrics=[{"expression": "doubled", "name": "r"}],
             )
             resp = await engine.execute(query, dry_run=True)
             assert resp.sql is not None
@@ -122,7 +122,7 @@ class TestExtensionMeasuresOverQueryBacked:
                 source_name="t",
                 metrics=[DatasetMetric(name="scaled", expression="sum(amount) * 100")],
             )],
-            metrics=[{"formula": "scaled", "name": "r"}],
+            metrics=[{"expression": "scaled", "name": "r"}],
         )
         sql = await _engine_generate(
             query=query, model=base, dialect="duckdb", validate=False,
@@ -147,7 +147,7 @@ class TestExtensionMeasuresOverQueryBacked:
                     metrics=[DatasetMetric(name="ext_aov", expression="customers.aov")],
                 )],
                 dimensions=["customers.tier"],
-                metrics=[{"formula": "ext_aov", "name": "r"}],
+                metrics=[{"expression": "ext_aov", "name": "r"}],
             )
             resp = await engine.execute(query, dry_run=True)
             assert resp.sql is not None
@@ -169,7 +169,7 @@ class TestSameNameExtensionRejected:
                 source_name="t",
                 metrics=[DatasetMetric(name="sh", expression="sum(amount) * 100")],
             )],
-            metrics=[{"formula": "sh", "name": "r"}],
+            metrics=[{"expression": "sh", "name": "r"}],
         )
         with pytest.raises(ValueError, match=r"duplicate measure names"):
             await _engine_generate(
@@ -228,7 +228,7 @@ class TestStageExtensionMeasuresOverQueryBacked:
                                            expression="sum(amount_sum) * 2")],
                 )],
                 dimensions=["status"],
-                metrics=[{"formula": "doubled", "name": "r"}],
+                metrics=[{"expression": "doubled", "name": "r"}],
             )
             root = SlayerQuery(population="orders", dimensions=["status"])
             bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(

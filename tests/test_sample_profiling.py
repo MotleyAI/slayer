@@ -288,7 +288,7 @@ async def test_healthy_model_parity_across_read_paths(env) -> None:
     await _reset_samples(storage, names=names)
     inspect_svc = InspectService(storage=storage, engine=SlayerQueryEngine(storage=storage))
     for n in names:
-        await inspect_svc.inspect(reference=f"{DS}.orders.{n}", entity_type="column", compact=False)
+        await inspect_svc.inspect(reference=f"{DS}.orders.{n}", entity_type="field", compact=False)
     via_inspect_column = {n: _triple(await _stored(storage, column=n)) for n in names}
 
     await _reset_samples(storage, names=names)
@@ -371,10 +371,10 @@ async def test_all_null_numeric_is_cached_via_inspect_column(env, monkeypatch: p
     engine, storage = env
     await _save(storage, _orders(extra=[DatasetField(name="empty_num", datatype=DataType.DOUBLE)]))
     svc = InspectService(storage=storage, engine=engine)
-    await svc.inspect(reference=f"{DS}.orders.empty_num", entity_type="column", compact=False)
+    await svc.inspect(reference=f"{DS}.orders.empty_num", entity_type="field", compact=False)
     assert (await _stored(storage, column="empty_num")).sampled == "all NULL"
     log = _record(engine=engine, monkeypatch=monkeypatch)
-    await svc.inspect(reference=f"{DS}.orders.empty_num", entity_type="column", compact=False)
+    await svc.inspect(reference=f"{DS}.orders.empty_num", entity_type="field", compact=False)
     assert log == []
 
 
@@ -540,7 +540,7 @@ async def test_search_hits_on_failing_model(env, monkeypatch: pytest.MonkeyPatch
         entities=[f"{DS}.ghost.status", f"{DS}.ghost.channel", f"{DS}.ghost.amount"],
         max_results=10, compact=False,
     )
-    assert {h.id for h in resp.results if h.kind == "column"} >= {
+    assert {h.id for h in resp.results if h.kind == "field"} >= {
         f"{DS}.ghost.status", f"{DS}.ghost.channel", f"{DS}.ghost.amount",
     }
     assert len(log) == 2
@@ -558,7 +558,7 @@ async def test_inspect_service_model_makes_one_owner_call(env, monkeypatch: pyte
 
     monkeypatch.setattr(dataset_render, "ensure_samples_fresh", spy)
     await InspectService(storage=storage, engine=engine).inspect(
-        reference=f"{DS}.orders", entity_type="model", compact=False,
+        reference=f"{DS}.orders", entity_type="dataset", compact=False,
     )
     assert len(calls) == 1
     assert {"status", "channel", "amount", "qty", "ordered_at"} <= set(calls[0])
@@ -816,7 +816,7 @@ async def test_persist_failure_renders_fresh_value_in_inspect(env: tuple[SlayerQ
 
     monkeypatch.setattr(storage, "update_field_sampled", boom)
     out = await InspectService(storage=storage, engine=engine).inspect(
-        reference=f"{DS}.orders.status", entity_type="column", compact=False,
+        reference=f"{DS}.orders.status", entity_type="field", compact=False,
     )
     assert "paid" in out
 
@@ -957,7 +957,7 @@ async def test_inspect_column_under_policy_renders_scoped_samples(env) -> None:
     await _save(storage, _orders())
     await _store_status(storage)
     out = await InspectService(storage=storage, engine=_policy_engine(storage)).inspect(
-        reference=f"{DS}.orders.status", entity_type="column", compact=False,
+        reference=f"{DS}.orders.status", entity_type="field", compact=False,
     )
     assert "paid" in out
     assert "STORED" not in out
@@ -969,7 +969,7 @@ async def test_search_hit_text_under_policy(env) -> None:
     await _store_status(storage)
     svc = SearchService(storage=storage, engine=_policy_engine(storage))
     resp = await svc.search(entities=[f"{DS}.orders.status"], max_results=10, compact=False)
-    hits = [h for h in resp.results if h.kind == "column" and h.id == f"{DS}.orders.status"]
+    hits = [h for h in resp.results if h.kind == "field" and h.id == f"{DS}.orders.status"]
     assert hits
     assert all("STORED" not in h.text for h in hits)
     assert any("paid" in h.text for h in hits)
@@ -981,6 +981,6 @@ async def test_search_hit_text_under_policy_when_profiling_fails(env) -> None:
     await _store_status(storage, model="ghost")
     svc = SearchService(storage=storage, engine=_policy_engine(storage))
     resp = await svc.search(entities=[f"{DS}.ghost.status"], max_results=10, compact=False)
-    hits = [h for h in resp.results if h.kind == "column" and h.id == f"{DS}.ghost.status"]
+    hits = [h for h in resp.results if h.kind == "field" and h.id == f"{DS}.ghost.status"]
     assert hits
     assert all("STORED" not in h.text for h in hits)

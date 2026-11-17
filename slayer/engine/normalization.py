@@ -6,14 +6,14 @@ typed pipeline sees it, returning every rewrite as a typed
 
 Active rules:
 
-- ``MISPLACED_MEASURE`` (query shape): bare column-looking entries in
-  ``SlayerQuery.metrics`` that resolve as a column (not a named
-  ``ModelMeasure``) move to ``SlayerQuery.dimensions``. Mirrors the
+- ``MISPLACED_METRIC`` (query shape): bare field-looking entries in
+  ``SlayerQuery.metrics`` that resolve as a field (not a named
+  ``DatasetMetric``) move to ``SlayerQuery.dimensions``. Mirrors the
   existing ``_auto_move_fields_to_dimensions`` heuristic but emits a
   structured warning.
 
 - ``STALE_PATH_SPELLING`` (stage boundary): a flat name written against a
-  non-canonical path spelling binds to its canonical upstream column; recorded
+  non-canonical path spelling binds to its canonical upstream field; recorded
   at binding, surfaced via :func:`stale_spelling_warnings`.
 
 Retired rules: ``FUNC_STYLE_AGG`` (the parser accepts the functional
@@ -63,12 +63,12 @@ class NormalizationResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Rule: MISPLACED_MEASURE
+# Rule: MISPLACED_METRIC
 # ---------------------------------------------------------------------------
 
 
 def _bare_name(expression: str, *, root: str) -> Optional[str]:
-    """The column-or-measure name ``expression`` is when it is a lone reference, else ``None``."""
+    """The field-or-metric name ``expression`` is when it is a lone reference, else ``None``."""
     try:
         node = root_relative(parse_expr(expression), root)
     except ValueError:
@@ -81,9 +81,9 @@ def _apply_misplaced_metric(
     *,
     dataset: Optional[SlayerDataset],
 ) -> tuple[SlayerQuery, List[NormalizationWarning]]:
-    """Move bare (non-aggregate, non-call) entries from ``query.measures`` to
-    ``query.dimensions`` when they name a column on the model that isn't
-    a ``ModelMeasure`` formula.
+    """Move bare (non-aggregate, non-call) entries from ``query.metrics`` to
+    ``query.dimensions`` when they name a field on the dataset that isn't
+    a ``DatasetMetric`` expression.
 
     Mirrors the existing ``_auto_move_fields_to_dimensions`` heuristic but
     emits a structured warning. When ``dataset`` is None we can't classify,
@@ -106,18 +106,18 @@ def _apply_misplaced_metric(
             kept.append(m)
             continue
         bare = _bare_name(formula, root=dataset.spelling)
-        # A bare name of a saved measure stays a measure; of a column, it moves to dimensions.
+        # A bare name of a saved metric stays a metric; of a field, it moves to dimensions.
         if bare is None or bare in measure_formula_names:
             kept.append(m)
             continue
         if bare in column_names:
             moved_dims.append(FieldRef.from_string(bare))
             emitted.append(NormalizationWarning(
-                rule_id="MISPLACED_MEASURE",
+                rule_id="MISPLACED_METRIC",
                 original=bare,
                 normalized=f"dimensions += {bare!r}",
-                location=f"measures[{i}].formula",
-                rule_doc_url="docs/agent_input_slack.md#misplaced-measure",
+                location=f"metrics[{i}].expression",
+                rule_doc_url="docs/agent_input_slack.md#misplaced-metric",
             ))
             _warnings_module.warn(
                 SlayerNormalizationWarning(emitted[-1]), stacklevel=2,
@@ -129,7 +129,7 @@ def _apply_misplaced_metric(
     if not emitted:
         return query, []
 
-    # model_copy skips validation, so build the ColumnRef here.
+    # model_copy skips validation, so build the FieldRef here.
     # A raw string reaches the planner and fails on ``.full_name``.
     new_dimensions = list(query.dimensions or []) + moved_dims
     return (
@@ -151,12 +151,12 @@ def normalize_query(
     """Apply all enabled slack rules to a ``SlayerQuery``.
 
     Returns the (possibly rewritten) query and the structured warnings.
-    Formula TEXT is never rewritten — both aggregation spellings are
+    Expression TEXT is never rewritten — both aggregation spellings are
     first-class parser input.
     """
     all_warnings: List[NormalizationWarning] = []
 
-    # Rule 1: MISPLACED_MEASURE.
+    # Rule 1: MISPLACED_METRIC.
     query, ws = _apply_misplaced_metric(query, dataset=dataset)
     all_warnings.extend(ws)
 

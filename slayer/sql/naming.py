@@ -114,7 +114,7 @@ class AliasAllocator(BaseModel):
         self, *, root: str, path: Tuple[str, ...], limit: Optional[int] = None,
     ) -> str:
         """JOIN alias for cumulative ``path`` under ``root``, memoized so a chain leaf
-        (``("a","b")``→``a__b``) stays distinct from a model literally named ``a__b``."""
+        (``("a","b")``→``a__b``) stays distinct from a dataset literally named ``a__b``."""
         if not path:
             return root
         key = (root, path)
@@ -172,7 +172,7 @@ def time_trunc_result_key(
     declared_name: str,
 ) -> str:
     """Dotted result key for a joined time-trunc slot, appending ``.<granularity>``
-    when a same-column collision suffixed its declared name. Shared by
+    when a same-field collision suffixed its declared name. Shared by
     the response-metadata and SQL-alias paths so the two never diverge."""
     base = result_key(source_relation=source_relation, path=path, leaf=leaf)
     suffix = f".{granularity}"
@@ -180,7 +180,7 @@ def time_trunc_result_key(
 
 
 def _joined_row_path(slot: "ValueSlot") -> Optional[Tuple[Tuple[str, ...], str]]:
-    """``(path, leaf)`` of a ROW slot reading a joined column, else ``None``."""
+    """``(path, leaf)`` of a ROW slot reading a joined field, else ``None``."""
     if slot.phase != Phase.ROW:
         return None
     key = slot.key.source if isinstance(slot.key, ListSetKey) else slot.key
@@ -241,7 +241,7 @@ def flat_name(dotted: str, *, strip_relation: Optional[str] = None) -> str:
 
 OUTER_WRAP_ALIAS = "_outer"
 STAGE_INNER_ALIAS = "_stage_inner"
-#: A keyless association home's per-query row number (``__slayer_`` is reserved at save time: no model column collides).
+#: A keyless association home's per-query row number (``__slayer_`` is reserved at save time: no dataset field collides).
 ROW_IDENTITY_FIELD = "__slayer_row_id"
 
 
@@ -289,7 +289,7 @@ AggAliasProfile = Literal[
     "cte_schema",
     # A hidden slot's declared name: bare; no leaf → explicit ``_agg_<name>``, not a star.
     "declared_name",
-    # A formula's public alias: path relative to the stage; DECLINES (None) on a no-leaf source.
+    # An expression's public alias: path relative to the stage; DECLINES (None) on a no-leaf source.
     "stage_expression",
 ]
 
@@ -297,7 +297,7 @@ _PROFILES_WITHOUT_RELATION = ("cte_schema", "declared_name", "stage_expression")
 
 
 def _strip_anchor(key: ValueKey, anchor: Tuple[str, ...]) -> ValueKey:
-    """``key`` with ``anchor`` removed from its row-level column paths; attached constituents untouched."""
+    """``key`` with ``anchor`` removed from its row-level field paths; attached constituents untouched."""
     if isinstance(key, (AggregateKey, TransformKey)):
         return key
     if isinstance(key, (FieldKey, FieldSqlKey)):
@@ -306,7 +306,7 @@ def _strip_anchor(key: ValueKey, anchor: Tuple[str, ...]) -> ValueKey:
 
 
 def expression_source_leaf(source: ValueKey) -> str:
-    """Result-key leaf of an expression aggregate source: its formula text relative to its home path."""
+    """Result-key leaf of an expression aggregate source: its expression text relative to its home path."""
     anchor = source_anchor_path(source)
     rendered = _strip_anchor(source, anchor) if anchor else source
     return auto_name_from_expression(key_display(rendered))
@@ -317,8 +317,8 @@ _PLAIN_NAME_RE = re.compile(r"[a-zA-Z_]\w*")
 
 
 def expression_text_alias(parsed: object) -> str:
-    """The public alias of a parsed measure formula: ``<source>_<agg>`` for a bare aggregation of a plainly named
-    column or star, else the sanitised legacy naming seed."""
+    """The public alias of a parsed metric expression: ``<source>_<agg>`` for a bare aggregation of a plainly named
+    field or star, else the sanitised legacy naming seed."""
     if (isinstance(parsed, AggCall) and not parsed.args and not parsed.kwargs and parsed.filter is None
             and isinstance(parsed.source, (Ref, DottedRef, StarSource)) and _PLAIN_NAME_RE.fullmatch(parsed.agg)):
         base = canonical_metric_text(parsed.source)

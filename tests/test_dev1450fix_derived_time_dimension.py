@@ -247,8 +247,8 @@ async def test_derived_td_cumsum_over_order(engine: tuple[SlayerQueryEngine, str
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                {"formula": "count(*)"},
-                {"formula": "cumsum(count(*))", "name": "cs"},
+                {"expression": "count(*)"},
+                {"expression": "cumsum(count(*))", "name": "cs"},
             ],
             order=[OrderItem(field=FieldRef(name="effective_at"), direction="asc")],
         )
@@ -268,8 +268,8 @@ async def test_derived_td_time_shift(engine: tuple[SlayerQueryEngine, str]) -> N
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                {"formula": "sum(amount)"},
-                {"formula": "time_shift(sum(amount), periods=-1)", "name": "prev"},
+                {"expression": "sum(amount)"},
+                {"expression": "time_shift(sum(amount), periods=-1)", "name": "prev"},
             ],
             order=[OrderItem(field=FieldRef(name="effective_at"), direction="asc")],
         )
@@ -290,8 +290,8 @@ async def test_derived_td_change(engine: tuple[SlayerQueryEngine, str]) -> None:
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                {"formula": "sum(amount)"},
-                {"formula": "change(sum(amount))", "name": "chg"},
+                {"expression": "sum(amount)"},
+                {"expression": "change(sum(amount))", "name": "chg"},
             ],
             order=[OrderItem(field=FieldRef(name="effective_at"), direction="asc")],
         )
@@ -311,7 +311,7 @@ async def test_derived_td_consecutive_periods(engine: tuple[SlayerQueryEngine, s
                 granularity=TimeGranularity.MONTH,
             )],
             metrics=[
-                {"formula": "consecutive_periods(sum(amount) > 5)", "name": "streak"},
+                {"expression": "consecutive_periods(sum(amount) > 5)", "name": "streak"},
             ],
             order=[OrderItem(field=FieldRef(name="effective_at"), direction="asc")],
         )

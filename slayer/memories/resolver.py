@@ -1,7 +1,7 @@
 """Entity resolution for the unified Memory surface.
 
 Maps every input form valid inside a ``SlayerQuery`` to the canonical
-``<datasource>.<model>[.<leaf>]`` string described in the spec, §3-4. The
+``<datasource>.<dataset>[.<leaf>]`` string described in the spec, §3-4. The
 canonical form is what the storage layer indexes against, so two callers
 referencing the same entity in different shapes (``sum(revenue)`` and
 ``customers.revenue``) end up keyed by the same string.
@@ -9,21 +9,21 @@ referencing the same entity in different shapes (``sum(revenue)`` and
 The leaf rule (§3.2):
 
 * Strip aggregation suffix; the aggregation itself is never an entity.
-* ``count(*)`` collapses to the source model.
-* For dotted paths through joins, only the leaf segment is tagged; the
+* ``count(*)`` collapses to the source dataset.
+* For dotted paths through relationships, only the leaf segment is tagged; the
   intermediates are discarded.
-* The named-entity SQL (``Column.sql`` or ``ModelMeasure.expression``) is
+* The named-entity SQL (``DatasetField.sql`` or ``DatasetMetric.expression``) is
   opaque — we never recurse into it, except for a query's own extension
   fields, which stand for the stored entities their definitions read.
 
 Two public entry points:
 
-* ``resolve_entity(raw, *, storage, source_model=None)`` — single-token
+* ``resolve_entity(raw, *, storage, source_dataset=None)`` — single-token
   resolution; used by ``save_memory`` (entity-list path) and as the
   backbone of ``extract_entities_from_query``.
 * ``extract_entities_from_query(query, *, storage)`` — walks every
-  field of a ``SlayerQuery`` (source_model, dimensions, time_dimensions,
-  measures, filters) and returns the deduplicated canonical entity set
+  field of a ``SlayerQuery`` (population, dimensions, time_dimensions,
+  metrics, filters) and returns the deduplicated canonical entity set
   plus any non-fatal warnings.
 """
 
@@ -79,7 +79,7 @@ def canonical_id_rooted_at(canonical_id: str, datasource: str) -> bool:
     a canonical id is rooted at ``datasource`` when it is exactly the
     datasource name, OR a strict dotted-path descendant
     (``<datasource>.<...>``). Datasource names cannot contain ``.``
-    (enforced by ``DatasourceConfig.name`` and ``SlayerModel.data_source``
+    (enforced by ``DatasourceConfig.name`` and ``SlayerDataset.data_source``
     validators), so the prefix match is unambiguous.
 
     ``memory:<int>`` canonical ids are datasource-agnostic — they never
@@ -106,8 +106,8 @@ class EntityResolution(BaseModel):
     ``canonical_forms`` is a list (not a set) so the order is stable —
     callers that union resolutions from multiple inputs can still
     deduplicate. ``warnings`` carries non-fatal diagnostics like the
-    Case A model-vs-column collision and the Case D
-    datasource-vs-model collision; fatal failures raise instead.
+    Case A dataset-vs-field collision and the Case D
+    datasource-vs-dataset collision; fatal failures raise instead.
     """
 
     canonical_forms: list[str]
@@ -115,7 +115,7 @@ class EntityResolution(BaseModel):
 
 
 def _dataset_has_leaf(dataset: SlayerDataset, leaf: str) -> bool:
-    """``True`` if ``leaf`` is a column / named measure / custom
+    """``True`` if ``leaf`` is a field / named metric / custom
     aggregation on ``dataset``."""
     if dataset.get_field(leaf) is not None:
         return True
@@ -129,7 +129,7 @@ def _dataset_has_leaf(dataset: SlayerDataset, leaf: str) -> bool:
 async def _all_datasets_in_datasource(
     storage: StorageBackend, data_source: str
 ) -> list[SlayerDataset]:
-    """Every model of ``data_source``; an unloadable one fails closed."""
+    """Every dataset of ``data_source``; an unloadable one fails closed."""
     return all_or_raise(await storage.load_datasets(data_source=data_source))
 
 
@@ -137,8 +137,8 @@ async def _find_leaf_in_priority_winner(
     storage: StorageBackend, leaf: str
 ) -> tuple[str | None, list[SlayerDataset]]:
     """Walk the priority list; return ``(data_source, matches)`` for the
-    first datasource that has ≥1 model carrying ``leaf`` as a column /
-    measure / custom aggregation. ``matches`` may have multiple models
+    first datasource that has ≥1 dataset carrying ``leaf`` as a field /
+    metric / custom aggregation. ``matches`` may have multiple datasets
     (Case B1, ambiguous).
     """
     priority = await storage.get_datasource_priority()
@@ -161,9 +161,9 @@ async def _datasource_datasets(storage: StorageBackend, dataset: SlayerDataset) 
 def _walk_relationship_path(
     starting_dataset: SlayerDataset, path: list[str], *, datasets_by_name: dict[str, SlayerDataset],
 ) -> SlayerDataset:
-    """Walk a chain of join targets over ``datasets_by_name``, returning the leaf model.
+    """Walk a chain of relationship targets over ``datasets_by_name``, returning the leaf dataset.
 
-    Raises ``EntityResolutionError`` when a segment doesn't match any join on the current model.
+    Raises ``EntityResolutionError`` when a segment doesn't match any relationship on the current dataset.
     """
     try:
         walked = walk_terminal(root=starting_dataset, path=path, datasets_by_name=datasets_by_name)
@@ -175,7 +175,7 @@ def _walk_relationship_path(
     assert miss is not None
     via = walk_terminal(root=starting_dataset, path=path[:miss.index], datasets_by_name=datasets_by_name)
     raise EntityResolutionError(
-        f"'{miss.token}' is not a join target on model "
+        f"'{miss.token}' is not a relationship target on dataset "
         f"'{via[0].name if via is not None else starting_dataset.name}'."
     )
 
@@ -188,19 +188,19 @@ def _dotted_canonical(
     if not rest:
         return f"{starting_dataset.data_source}.{starting_dataset.name}"
     # Try interpreting the last segment as a leaf attribute on the
-    # model reached by walking the rest.
+    # dataset reached by walking the rest.
     leaf_segment = rest[-1]
     try:
         leaf_model = _walk_relationship_path(starting_dataset, rest[:-1], datasets_by_name=datasets_by_name)
     except EntityResolutionError:
         # The walk failed before reaching the last segment — fall
-        # through to the "every segment is a join" interpretation
+        # through to the "every segment is a relationship" interpretation
         # below.
         leaf_model = None
     if leaf_model is not None and _dataset_has_leaf(leaf_model, leaf_segment):
         return f"{leaf_model.data_source}.{leaf_model.name}.{leaf_segment}"
-    # No leaf attribute — every segment must be a join target, with
-    # the path terminating at the join'd model itself (§3.2 step 3).
+    # No leaf attribute — every segment must be a relationship target, with
+    # the path terminating at the joined dataset itself (§3.2 step 3).
     final_model = _walk_relationship_path(starting_dataset, rest, datasets_by_name=datasets_by_name)
     return f"{final_model.data_source}.{final_model.name}"
 
@@ -221,12 +221,12 @@ async def resolve_entity(
     """Resolve a single entity reference.
 
     Accepts every input form valid inside a ``SlayerQuery``:
-    bare names, dotted paths through joins, datasource-qualified paths,
+    bare names, dotted paths through relationships, datasource-qualified paths,
     aggregations (``sum(x)``, ``weighted_avg(x, weight=qty)``), and
     ``count(*)``.
 
     With ``source_dataset`` set, bare-name resolution prefers attributes
-    on the given source model — matching the engine's runtime behaviour
+    on the given source dataset — matching the engine's runtime behaviour
     inside a query body.
     """
     raw = raw.strip()
@@ -265,21 +265,21 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
 ) -> EntityResolution:
     """Resolve the reference ``prefix`` (aggregated by ``agg``, if any) written as ``raw``."""
 
-    # ``count(*)`` special case (§3.1): collapses to the source model.
+    # ``count(*)`` special case (§3.1): collapses to the source dataset.
     # Only ``count`` is valid for the wildcard; ``sum(*)`` etc. would
-    # silently get tagged as the model and corrupt the canonical-entity
+    # silently get tagged as the dataset and corrupt the canonical-entity
     # index, so reject them explicitly.
     if prefix == "*":
         if agg != "count":
             raise EntityResolutionError(
                 f"'{raw}' is not a valid entity reference; use 'count(*)' "
-                "to refer to a model's row count."
+                "to refer to a dataset's row count."
             )
         if source_dataset is None:
             raise EntityResolutionError(
-                "'count(*)' requires a model context: write "
-                "'count(<model>.*)' or invoke from a query that has "
-                "a source_model."
+                "'count(*)' requires a dataset context: write "
+                "'count(<dataset>.*)' or invoke from a query that has "
+                "a population."
             )
         return EntityResolution(
             canonical_forms=[
@@ -287,13 +287,13 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
             ]
         )
 
-    # Detect ``count(<model>.*)`` shape — collapse to the model.
+    # Detect ``count(<dataset>.*)`` shape — collapse to the dataset.
     # Same wildcard rule as above: only ``count`` is valid here.
     if prefix.endswith(".*"):
         if agg != "count":
             raise EntityResolutionError(
                 f"'{raw}' is not a valid entity reference; use the "
-                f"'count(<model>.*)' form."
+                f"'count(<dataset>.*)' form."
             )
         model_part = prefix[:-2]
         return await resolve_entity(
@@ -303,7 +303,7 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
     segments = prefix.split(".")
     # Hyphens are permitted in a segment: a datasource name may embed a UUID
     # (e.g. ``source_019f4323-cb59-77c3-...``), so the datasource segment can
-    # contain hyphens. Model/leaf segments that don't match a stored entity
+    # contain hyphens. Dataset/leaf segments that don't match a stored entity
     # simply resolve to not-found below, so allowing the character is safe.
     if not all(re.match(r"^[a-zA-Z_][\w-]*$", s) for s in segments):
         raise EntityResolutionError(
@@ -316,19 +316,19 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
     # ----- step 3: datasource-prefix detection ---------------------------
     if segments[0] in known_dses:
         ds = segments[0]
-        # Case D: same name is also a model in some other datasource. This
+        # Case D: same name is also a dataset in some other datasource. This
         # probe is best-effort (it only drives a warning) — an *ambiguous*
-        # model leg (same name in ≥2 datasources, no priority winner) must
+        # dataset leg (same name in ≥2 datasources, no priority winner) must
         # NOT abort a perfectly valid datasource-prefixed reference, so we
-        # treat the ambiguity as "yes, also a model" and keep going.
+        # treat the ambiguity as "yes, also a dataset" and keep going.
         try:
             ds_as_model = await storage.resolve_dataset_identity(ds)
         except AmbiguousDatasetError:
             ds_as_model = (ds, ds)
         if ds_as_model is not None:
             warnings.append(
-                f"'{ds}' is both a datasource and a model; interpreted "
-                f"as datasource. To force the model interpretation, "
+                f"'{ds}' is both a datasource and a dataset; interpreted "
+                f"as datasource. To force the dataset interpretation, "
                 f"qualify as <other_ds>.{ds}..."
             )
         rest = segments[1:]
@@ -338,7 +338,7 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
         model = await storage.get_dataset(model_name, data_source=ds)
         if model is None:
             raise EntityResolutionError(
-                f"No model '{model_name}' in datasource '{ds}'."
+                f"No dataset '{model_name}' in datasource '{ds}'."
             )
         canonical = await _resolve_dotted_against_dataset(
             storage, model, rest[1:]
@@ -351,7 +351,7 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
     if len(segments) == 1:
         leaf = segments[0]
 
-        # source_model context → prefer attributes on the source model.
+        # source_dataset context → prefer attributes on the source dataset.
         if source_dataset is not None and _dataset_has_leaf(source_dataset, leaf):
             return EntityResolution(
                 canonical_forms=[
@@ -359,12 +359,12 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
                 ]
             )
 
-        # Try as a model first (§4.3 step 5).
+        # Try as a dataset first (§4.3 step 5).
         identity = await storage.resolve_dataset_identity(leaf)
         if identity is not None:
             ds_winner, model_name = identity
-            # Case A: any other model in the priority-winner ds with
-            # this name as a column / measure / custom-agg?
+            # Case A: any other dataset in the priority-winner ds with
+            # this name as a field / metric / custom-agg?
             other_models = [
                 m
                 for m in await _all_datasets_in_datasource(storage, ds_winner)
@@ -373,16 +373,16 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
             if other_models:
                 names = sorted(m.name for m in other_models)
                 warnings.append(
-                    f"'{leaf}' is both a model and a column on "
-                    f"{names}; resolved as the model. Qualify as "
-                    f"<model>.{leaf} to refer to the column."
+                    f"'{leaf}' is both a dataset and a field on "
+                    f"{names}; resolved as the dataset. Qualify as "
+                    f"<dataset>.{leaf} to refer to the field."
                 )
             return EntityResolution(
                 canonical_forms=[f"{ds_winner}.{model_name}"],
                 warnings=warnings,
             )
 
-        # No model match → search for column / measure / custom-agg in
+        # No dataset match → search for field / metric / custom-agg in
         # priority-winner datasource.
         ds_match, matches = await _find_leaf_in_priority_winner(
             storage, leaf
@@ -395,9 +395,9 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
         if len(matches) > 1:
             names = sorted(m.name for m in matches)
             raise EntityResolutionError(
-                f"Ambiguous bare name '{leaf}' matches columns / "
-                f"measures / aggregations on {names} in datasource "
-                f"'{ds_match}'. Qualify as '<model>.{leaf}'."
+                f"Ambiguous bare name '{leaf}' matches fields / "
+                f"metrics / aggregations on {names} in datasource "
+                f"'{ds_match}'. Qualify as '<dataset>.{leaf}'."
             )
         owner = matches[0]
         return EntityResolution(
@@ -411,11 +411,11 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
     if identity is None:
         raise EntityResolutionError(
             f"'{head}' is neither a known datasource nor a saved "
-            f"model. (segment of '{raw}')."
+            f"dataset. (segment of '{raw}')."
         )
     ds_winner, model_name = identity
     model = await storage.get_dataset(model_name, data_source=ds_winner)
-    assert model is not None, "resolve_model_identity returned a stale match"
+    assert model is not None, "resolve_dataset_identity returned a stale match"
     canonical = await _resolve_dotted_against_dataset(
         storage, model, segments[1:]
     )
@@ -454,14 +454,14 @@ def _agg_call_tokens(node: AggCall) -> Iterable[EntityToken]:
 
 
 def _expression_entity_tokens(parsed: ParsedExpr) -> Iterable[EntityToken]:
-    """Yield every entity *token* referenced by a parsed Mode-B formula.
+    """Yield every entity *token* referenced by a parsed Mode-B expression.
 
     Aggregations surface as ``(source, agg)`` (``("*", "count")`` included), bare and dotted refs as their
     textual form. Each token is resolved downstream (the aggregation dropped, ``count(*)`` collapsed to the
-    model, dotted join paths walked). No binding — the resolver does its own resolution.
+    dataset, dotted relationship paths walked). No binding — the resolver does its own resolution.
 
     Aggregation args / kwargs (e.g. ``weighted_avg(weight=quantity)``) and
-    transform partition columns are opaque (legacy parity) — only the
+    transform partition fields are opaque (legacy parity) — only the
     aggregated source / inner value surfaces.
     """
     for node in walk_parsed_refs(parsed):
@@ -472,7 +472,7 @@ def _expression_entity_tokens(parsed: ParsedExpr) -> Iterable[EntityToken]:
 
 
 def _field_entity_tokens(kind: FieldKind, text: str) -> list[EntityToken]:
-    """Entity tokens of one query field; an unparseable formula is a single token."""
+    """Entity tokens of one query field; an unparseable expression is a single token."""
     if kind == "ref":
         return [text]
     try:
@@ -495,7 +495,7 @@ class _ExtensionScope(BaseModel):
     expanded: set[tuple[str, str, str]] = set()
 
     def _extended(self, name: str) -> SlayerDataset | None:
-        """Model ``name`` when the query changes it (stored models resolve through storage, as outside a query)."""
+        """Dataset ``name`` when the query changes it (stored datasets resolve through storage, as outside a query)."""
         model = self.scope.datasets.get(name)
         return model if model is not None and model is not self.stored.get(name) else None
 
@@ -513,7 +513,7 @@ class _ExtensionScope(BaseModel):
         return [await resolve_entity(source, storage=self.storage, source_dataset=host)]
 
     def _extension_field(self, source: str, *, host: SlayerDataset) -> tuple[SlayerDataset, str] | None:
-        """``(extended model, field)`` when ``source`` names a field the query's extensions add."""
+        """``(extended dataset, field)`` when ``source`` names a field the query's extensions add."""
         *prefix, leaf = source.split(".")
         if not any(leaf in m.query_local_names for m in self.scope.datasets.values()):
             return None
@@ -527,8 +527,8 @@ class _ExtensionScope(BaseModel):
             return None
 
     def _dataset(self, path: list[str], *, host: SlayerDataset) -> SlayerDataset | None:
-        """The model ``path`` names: edge tokens from ``host`` (a lone hop short-form routed, as the binder does),
-        else a model the query extends and its edge tokens."""
+        """The dataset ``path`` names: edge tokens from ``host`` (a lone hop short-form routed, as the binder does),
+        else a dataset the query extends and its edge tokens."""
         path = list(drop_root_hop(path, host.spelling, head_quoted=False))
         if not path:
             return host
@@ -543,7 +543,7 @@ class _ExtensionScope(BaseModel):
 
     def _scoped_form(self, source: str, *, agg: str | None, host: SlayerDataset) -> str | None:
         """Canonical form of a dotted ``source`` over the scope — its head an edge token from ``host`` or short-form
-        routed from it, else a model the query extends — or ``None``."""
+        routed from it, else a dataset the query extends — or ``None``."""
         star = source.endswith(".*")
         segments = source.removesuffix(".*").split(".")
         if (star and agg != "count") or (not star and len(segments) < 2):
@@ -588,7 +588,7 @@ class _ExtensionScope(BaseModel):
 
 
 async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[SlayerQuery, SlayerDataset]:
-    """``query`` with its source model; a rootless query is rooted at the population the engine infers."""
+    """``query`` with its source dataset; a rootless query is rooted at the population the engine infers."""
     src = query.population
     data_source = None
     if src is None:
@@ -601,16 +601,16 @@ async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[Slaye
         query = query.model_copy(update={"population": src})
     model = await stored_dataset(storage, name=src, data_source=data_source)
     if model is None:
-        raise EntityResolutionError(f"Source model not found: {src!r}.")
+        raise EntityResolutionError(f"Source dataset not found: {src!r}.")
     return query, model
 
 
-async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk over each SlayerQuery field (source_model → dimensions → time_dimensions → measures → filters); each branch is independently simple and parallels the SlayerQuery shape
+async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk over each SlayerQuery field (population → dimensions → time_dimensions → metrics → filters); each branch is independently simple and parallels the SlayerQuery shape
     query: SlayerQuery,
     *,
     storage: StorageBackend,
 ) -> EntityResolution:
-    """Extract every canonical entity referenced by ``query``: the source model, then each token of each field ``query_field_texts`` yields. Resolution failures bubble up unchanged."""
+    """Extract every canonical entity referenced by ``query``: the source dataset, then each token of each field ``query_field_texts`` yields. Resolution failures bubble up unchanged."""
     canonical: list[str] = []
     warnings: list[str] = []
     seen: set[str] = set()
@@ -621,7 +621,7 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
                 seen.add(f)
                 canonical.append(f)
 
-    # 1. source_model — a saved model name or the population the engine infers — then the models
+    # 1. population — a saved dataset name or the population the engine infers — then the datasets
     # its extensions name.
     query, source_model = await _rooted(query, storage=storage)
     ds = source_model.data_source

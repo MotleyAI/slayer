@@ -411,8 +411,8 @@ class TestBidirectionalAndParallelEdges:
         q = _root_q(dimensions=["Leaf.x"])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await _cols_sql(engine, q)
-        assert ei.value.source_model == "Root"
-        assert ei.value.target_model == "Leaf"
+        assert ei.value.source_dataset == "Root"
+        assert ei.value.target_dataset == "Leaf"
         assert {c.name for c in ei.value.candidates} == {"a_leaf", "b_leaf"}
 
 
@@ -489,7 +489,7 @@ class TestRejectionTaxonomy:
             await _cols_sql(engine, q)
         assert ei.value.suggested_path == "Customer.Consumer.name"
         assert ei.value.reference == "Consumer.name"
-        assert ei.value.root_model == "Invoice"
+        assert ei.value.root_dataset == "Invoice"
         assert "Consumer.name" in str(ei.value)
 
     async def test_unreachable_target_has_no_suggestion(self, tmp_path) -> None:
@@ -661,7 +661,7 @@ class TestSavedMeasureRouting:
         engine = await _chain_engine(tmp_path)
         qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery(
             population="Invoice", dimensions=["status"],
-            metrics=[{"formula": "Consumer.aov"}],
+            metrics=[{"expression": "Consumer.aov"}],
         )])
         saved = await engine.save_dataset(qb)
         measure_cols = [c for c in saved.fields if c.name != "status"]
@@ -689,7 +689,7 @@ class TestSavedMeasureRouting:
         engine = await _chain_engine(tmp_path)
         qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery(
             population="Invoice", dimensions=["status"],
-            metrics=[{"formula": "Consumer.aov", "name": "a"}],
+            metrics=[{"expression": "Consumer.aov", "name": "a"}],
         )])
         await engine.save_dataset(qb)
         resp = await engine.execute(

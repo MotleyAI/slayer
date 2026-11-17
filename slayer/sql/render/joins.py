@@ -1,7 +1,7 @@
 """The one grain join-back builder (P-I).
 
 Every place a scope's rows are joined back to another scope on the query grain
-builds its ``ON`` predicate here: the cross-model (``_cm_``) join-back, the
+builds its ``ON`` predicate here: the cross-dataset (``_cm_``) join-back, the
 windowed (``_wm_``) join-back and its inner ``_src`` join, and the time-shift
 ``sjoin_`` pair.
 

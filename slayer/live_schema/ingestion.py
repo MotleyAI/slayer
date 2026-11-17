@@ -1,4 +1,4 @@
-"""Auto-ingestion: introspect a database and generate SlayerModels with FK joins."""
+"""Auto-ingestion: introspect a database and generate SlayerDatasets with FK relationships."""
 
 import logging
 import sys
@@ -99,7 +99,7 @@ def _is_id_field(name: str) -> bool:
     return lower == "id" or lower.endswith(_ID_SUFFIXES)
 
 
-# --- Join generation from FK relationships ---
+# --- Relationship generation from FKs ---
 
 
 def _is_cross_schema_fk(
@@ -161,7 +161,7 @@ def _solo_unique_fields(keys: TableKeys) -> set[str]:
 
 
 def _logical_field_name(live_name: str) -> str:
-    """A live column's model name: ``_count`` would shadow the COUNT(*) alias."""
+    """A live column's field name: ``_count`` would shadow the COUNT(*) alias."""
     return "count_col" if live_name == "_count" else live_name
 
 
@@ -184,9 +184,9 @@ async def _generate_relationships(
     default_schema: str | None | _Unread = _UNREAD,
     lost: list[TableKeyReadFailure] | None = None,
 ) -> list[DatasetRelationship]:
-    """Direct ModelJoins from the table's own FKs; one grouped join per composite FK.
+    """Direct DatasetRelationships from the table's own FKs; one grouped relationship per composite FK.
 
-    Joins name the MODEL (via ``dataset_name_by_table``); a target with no model is dropped.
+    Relationships name the DATASET (via ``dataset_name_by_table``); a target with no dataset is dropped.
     ``keys_by_table`` memoizes each table's keys across calls; ``default_schema`` is read when not given;
     ``lost`` collects each key read that fails.
     """
@@ -217,7 +217,7 @@ async def _generate_relationships(
     joins = []
     seen_signatures: set[tuple] = set()
     for ref_table, pairs in groups:
-        # Model names strip `__`, so the live name is not always the model name.
+        # Dataset names strip `__`, so the live name is not always the dataset name.
         target_name = (
             ref_table if dataset_name_by_table is None
             else dataset_name_by_table.get(ref_table)
@@ -279,7 +279,7 @@ async def _introspect_table_columns(
     if primary_key is None:
         primary_key = (await reflect_table_keys(client=client, table_name=table_name, ref=ref)).primary_key
     pk_columns = set(primary_key)
-    # Dotted names (BigQuery STRUCT subfields, quoted dotted identifiers) cannot be model columns.
+    # Dotted names (BigQuery STRUCT subfields, quoted dotted identifiers) cannot be dataset fields.
     columns = [
         _introspected_field(col, name=col.name, primary_key=col.name in pk_columns)
         for col in await reflect_columns(client=client, table_name=table_name, ref=ref)
@@ -436,8 +436,8 @@ async def sql_result_types(*, sql: str, client: SqlClient) -> SqlResultTypes:
 
 
 def retyped_sql_columns(dataset: SlayerDataset, *, lists: dict[str, ResultList]) -> tuple[SlayerDataset, list[str]]:
-    """``dataset`` with each stale non-list base column whose result column is a list re-typed to it, and the
-    re-typed column names."""
+    """``dataset`` with each stale non-list base field whose result column is a list re-typed to it, and the
+    re-typed field names."""
     fields: list[DatasetField] = []
     retyped: list[str] = []
     for column in dataset.fields:
@@ -451,7 +451,7 @@ def retyped_sql_columns(dataset: SlayerDataset, *, lists: dict[str, ResultList])
     return (dataset.model_copy(update={"fields": fields}) if retyped else dataset), retyped
 
 
-# --- Model generation from introspected columns ---
+# --- Dataset generation from introspected columns ---
 
 
 def case_distinct_names(names: list[str]) -> list[str]:
@@ -502,7 +502,7 @@ def _fields_to_dataset(
     meta: dict[str, Any] | None = None,
     description: str | None = None,
 ) -> SlayerDataset:
-    """Generate a SlayerModel with one Column per introspected column."""
+    """Generate a SlayerDataset with one field per introspected column."""
     cols: list[DatasetField] = []
     unique_set = unique_fields or set()
 
@@ -551,7 +551,7 @@ async def _sqlite_probe_integer_columns(
     sql_table: str,
     columns: list[IntrospectedColumn],
 ) -> list[IntrospectedColumn]:
-    """Widen declared-INT base columns whose stored values aren't integers (integer-affinity dialects).
+    """Widen declared-INT base fields whose stored values aren't integers (integer-affinity dialects).
 
     A ``None`` probe verdict keeps the declared INT.
     """
@@ -611,7 +611,7 @@ async def introspect_table_to_dataset(
     dataset_name: str | None = None,
     source_kind: ObjectKind | None = None,
 ) -> SlayerDataset:
-    """Introspect a single table (no joins) into a SlayerModel.
+    """Introspect a single table (no relationships) into a SlayerDataset.
 
     ``ref=None`` probes the catalog-qualified default (a bare token lets DuckDB
     sweep an attached twin) while ``sql_table`` stays bare.
@@ -658,9 +658,9 @@ class IngestableObject(BaseModel):
 
 
 class SkippedTable(BaseModel):
-    """A live object that could not be turned into a model.
+    """A live object that could not be turned into a dataset.
 
-    Distinct from ``IngestionError`` ("this model failed to persist"): separate
+    Distinct from ``IngestionError`` ("this dataset failed to persist"): separate
     cause, separate fix, reported separately.
     """
 
@@ -672,11 +672,11 @@ class SkippedTable(BaseModel):
 class InternalTable(BaseModel):
     """A live object recognised as ELT/migration bookkeeping.
 
-    Unlike ``SkippedTable`` the model exists and stays queryable; ``hidden``
+    Unlike ``SkippedTable`` the dataset exists and stays queryable; ``hidden``
     only keeps it off the listing surfaces (False only when surfaced). Both
     names are kept because ``__``-sanitization makes them differ (live
-    ``_dlt_loads__x`` → model ``_dlt_loads_x``): the report needs the table name
-    to locate the object and the model name to un-hide it, and carrying both
+    ``_dlt_loads__x`` → dataset ``_dlt_loads_x``): the report needs the table name
+    to locate the object and the dataset name to un-hide it, and carrying both
     spares consumers re-deriving the live name from ``sql_table`` (lossy for a
     dotted ``--schema``).
     """
@@ -693,7 +693,7 @@ class IngestionScanReport(BaseModel):
 
     datasets: list[SlayerDataset] = Field(default_factory=list)
     skipped: list[SkippedTable] = Field(default_factory=list)
-    # Every recognised internal that produced a model, regardless of ``surface_internals``.
+    # Every recognised internal that produced a dataset, regardless of ``surface_internals``.
     internal_tables: list[InternalTable] = Field(default_factory=list)
     # Every object discovered, modelled or not.
     objects: list[IngestableObject] = Field(default_factory=list)
@@ -796,7 +796,7 @@ def _resolve_scanned_collisions(
                     table_name=label,
                     kind=obj.kind,
                     reason=(
-                        f"name collision: resolves to model '{model_name}', "
+                        f"name collision: resolves to dataset '{model_name}', "
                         f"already taken by '{winner_label}'"
                     ),
                 )
@@ -821,7 +821,7 @@ async def _build_one_dataset(
     default_schema: str | None | _Unread = _UNREAD,
     lost: list[TableKeyReadFailure] | None = None,
 ) -> SlayerDataset:
-    """Introspect one live object into a model; raises on failure.
+    """Introspect one live object into a dataset; raises on failure.
 
     A set ``internal_tool`` builds it ``hidden`` with a ``meta.internal_table`` breadcrumb.
     ``keys_by_table`` memoizes each table's keys across the schema's objects; ``lost`` collects failed key reads.
@@ -900,7 +900,7 @@ async def _scan_one_schema(
     data_source: str,
     surface_internals: bool,
 ) -> tuple[list[SlayerDataset], list[SkippedTable], list[InternalTable], list[TableKeyReadFailure]]:
-    """Build every winning model for one schema, and every failed key read; joins resolve within this schema only."""
+    """Build every winning dataset for one schema, and every failed key read; relationships resolve within this schema only."""
     table_set = {obj.name for _, obj in entries}
     name_by_object = {obj.name: mn for mn, obj in entries}
 
@@ -968,7 +968,7 @@ def _each_once(failures: list[TableKeyReadFailure]) -> list[TableKeyReadFailure]
 
 
 def _plan_scanned_edges(datasets: list[SlayerDataset]) -> list[SlayerDataset]:
-    """The scanned models with their FK joins planned as a first ingest (no stored models)."""
+    """The scanned datasets with their FK relationships planned as a first ingest (no stored datasets)."""
     plan = plan_fk_edges(
         datasets={m.name: m.model_copy(update={"relationships": []}) for m in datasets},
         candidates={m.name: m.relationships for m in datasets},
@@ -988,7 +988,7 @@ async def ingest_datasource_report_async(
     include_views: bool = True,
     surface_internals: bool = False,
 ) -> IngestionScanReport:
-    """Introspect ``datasource``, returning models plus everything skipped.
+    """Introspect ``datasource``, returning datasets plus everything skipped.
 
     Scope: ``all_schemas`` → ``schemas``/``schema`` → ``datasource.schema_name`` → default.
     ELT bookkeeping is modelled ``hidden`` unless ``surface_internals``, even if in ``include_tables``.
@@ -1074,7 +1074,7 @@ async def ingest_datasource_async(
     include_views: bool = True,
     surface_internals: bool = False,
 ) -> list[SlayerDataset]:
-    """Models only, for callers that don't need the skip report."""
+    """Datasets only, for callers that don't need the skip report."""
     return (await ingest_datasource_report_async(
         datasource=datasource,
         client=client,
@@ -1194,9 +1194,9 @@ def _relationship_sig(j: DatasetRelationship) -> tuple:
 def _repair_legacy_relationship_targets(
     persisted: SlayerDataset, fresh: SlayerDataset,
 ) -> tuple[SlayerDataset, bool]:
-    """Rewrite legacy join targets that name the live object instead of the model.
+    """Rewrite legacy relationship targets that name the live object instead of the dataset.
 
-    Requires a full signature match against a fresh join, so hand-authored joins never move.
+    Requires a full signature match against a fresh relationship, so hand-authored relationships never move.
     """
     fresh_sigs = {_relationship_sig(j) for j in fresh.relationships}
     claimed = {
@@ -1226,7 +1226,7 @@ def _repair_legacy_relationship_targets(
 def _merge_stored_relationships(
     persisted: SlayerDataset, fresh: SlayerDataset,
 ) -> tuple[list[DatasetRelationship], bool]:
-    """Stored joins with legacy targets repaired and unset ``cardinality`` filled from the matching fresh join."""
+    """Stored relationships with legacy targets repaired and unset ``cardinality`` filled from the matching fresh one."""
     persisted, changed = _repair_legacy_relationship_targets(persisted=persisted, fresh=fresh)
     fresh_by_sig = {_relationship_sig(j): j for j in fresh.relationships}
     relationships: list[DatasetRelationship] = []
@@ -1247,11 +1247,11 @@ class AdditiveMergeResult(BaseModel):
     new_fields: list[str] = Field(default_factory=list)
     widened_fields: list[str] = Field(default_factory=list)
     kind_changed: bool = False
-    #: A metadata-only fill (join cardinality / column unique) that still
-    #: has to be saved even when no column or join was added.
+    #: A metadata-only fill (relationship cardinality / field unique) that still
+    #: has to be saved even when no field or relationship was added.
     metadata_changed: bool = False
-    #: Existing columns whose empty description was filled from a
-    #: DB comment, and whether the model-level description was filled.
+    #: Existing fields whose empty description was filled from a
+    #: DB comment, and whether the dataset-level description was filled.
     described_fields: list[str] = Field(default_factory=list)
     dataset_described: bool = False
 
@@ -1264,7 +1264,7 @@ class AdditiveMergeResult(BaseModel):
 
 
 def _retyped_list(*, persisted: DatasetField, fresh: DatasetField) -> DatasetField | None:
-    """A stored non-list column whose live column is a list, re-typed to it (live_schema P1's exception); a stored list's
+    """A stored non-list field whose live column is a list, re-typed to it (live_schema P1's exception); a stored list's
     UNKNOWN elements re-inferred for an untyped live list (Snowflake ``ARRAY``). ``None`` when nothing changes."""
     if fresh.datatype is not DataType.ARRAY:
         return None
@@ -1291,7 +1291,7 @@ def _merge_one_field(
     dataset_name: str,
     sqlite_widen_enabled: bool,
 ) -> tuple[DatasetField, bool, bool, bool]:
-    """Merge one persisted column against its fresh one → ``(merged, did_widen, unique_filled, described)``."""
+    """Merge one persisted field against its fresh one → ``(merged, did_widen, unique_filled, described)``."""
     merged_col, did_widen = _merge_persisted_field_with_probe(
         persisted_col=persisted_col,
         fresh_col=fresh_col,
@@ -1316,7 +1316,7 @@ def _merge_one_field(
 
 
 class _FieldsMerge(BaseModel):
-    """The persisted columns merged with the live columns they read."""
+    """The persisted fields merged with the live columns they read."""
 
     fields: list[DatasetField]
     widened: list[str] = Field(default_factory=list)
@@ -1334,7 +1334,7 @@ def _reads(persisted_col: DatasetField, fresh_col: DatasetField) -> bool:
 
 
 def _live_key_lands_whole(*, persisted: SlayerDataset, fresh: SlayerDataset, live_name: dict[str, str]) -> bool:
-    """Whether a keyless model takes the live primary key: each member is a stored base column reading it, or new."""
+    """Whether a keyless dataset takes the live primary key: each member is a stored base field reading it, or new."""
     if any(c.primary_key for c in persisted.fields):
         return False
     readers = {c.physical_name for c in persisted.fields if c.is_base}
@@ -1349,7 +1349,7 @@ def _merge_persisted_fields(
     *, persisted: SlayerDataset, fresh: SlayerDataset, live_name: dict[str, str], sqlite_widen_enabled: bool,
     fill_key: bool,
 ) -> _FieldsMerge:
-    """Each persisted column merged with the live column of its spelling."""
+    """Each persisted field merged with the live column of its spelling."""
     fresh_by_spelling = {_spelling(c): c for c in fresh.fields}
     out = _FieldsMerge(fields=[])
     for persisted_col in persisted.fields:
@@ -1373,14 +1373,14 @@ def _merge_persisted_fields(
 
 
 def _case_free_new_fields(fields: list[DatasetField], *, taken: list[str], dataset: str) -> list[DatasetField]:
-    """``fields``, each whose name a model name takes in another case renamed ``<name>_<n>`` (smallest free n)."""
+    """``fields``, each whose name a dataset name takes in another case renamed ``<name>_<n>`` (smallest free n)."""
     out: list[DatasetField] = []
     for column in fields:
         name, n = column.name, 2
         while name_taken(name, taken):
             name, n = f"{column.name}_{n}", n + 1
         if name != column.name:
-            logger.warning("dataset %r: live column %r differs from a model name only in case; ingested as %r",
+            logger.warning("dataset %r: live column %r differs from a dataset name only in case; ingested as %r",
                            dataset, column.name, name)
             column = column.model_copy(update={"name": name, "sql": column.sql or column.name})
         taken.append(name)
@@ -1396,16 +1396,16 @@ def _additive_merge_existing(
 ) -> AdditiveMergeResult:
     """Merge ``fresh`` into ``persisted`` additively: existing entries are never overwritten.
 
-    Exceptions: SQLite INT→DOUBLE/TEXT widening, a TEXT column re-typed to its live list, empty-field
+    Exceptions: SQLite INT→DOUBLE/TEXT widening, a TEXT field re-typed to its live list, empty-field
     gap-fills, and a non-None ``source_kind`` refresh.
     """
     persisted_names = {c.name for c in persisted.fields}
-    # A live column is the persisted column it is the physical spelling of, else the one named like it.
+    # A live column matches the persisted field it is the physical spelling of, else the one named like it.
     live_name = {
         c.name: c.physical_name if c.is_base and c.physical_name not in persisted_names - {c.name} else c.name
         for c in persisted.fields
     }
-    # The primary key is gap-filled whole or not at all; a key the model has is never changed.
+    # The primary key is gap-filled whole or not at all; a key the dataset has is never changed.
     fill_key = _live_key_lands_whole(persisted=persisted, fresh=fresh, live_name=live_name)
     columns = _merge_persisted_fields(
         persisted=persisted, fresh=fresh, live_name=live_name, sqlite_widen_enabled=sqlite_widen_enabled,
@@ -1465,11 +1465,11 @@ def _additive_merge_existing(
 
 
 class _TableMerge(BaseModel):
-    """One fresh table merged into its stored model, before FK edges are planned."""
+    """One fresh table merged into its stored dataset, before FK edges are planned."""
 
     table_name: str
     fresh: SlayerDataset
-    base: SlayerDataset  # stored joins only; the edge plan adds the fresh FKs
+    base: SlayerDataset  # stored relationships only; the edge plan adds the fresh FKs
     created: bool = False
     merge: AdditiveMergeResult | None = None
     sql_table_change: str | None = None
@@ -1487,7 +1487,7 @@ def _qualifier_repair_allowed(
     default_schema_name: str | None,
     default_objects: set[str] | None,
 ) -> bool:
-    """May a persisted BARE model be healed to a fresh QUALIFIED ``sql_table``?
+    """May a persisted BARE dataset be healed to a fresh QUALIFIED ``sql_table``?
 
     Always for a default-schema twin; for another schema only if the bare name
     isn't a default-schema table. Unknown membership fails closed.
@@ -1509,7 +1509,7 @@ def _merge_one_table(
     default_schema_name: str | None = None,
     default_objects: set[str] | None = None,
 ) -> _TableMerge | SkippedTable | None:
-    """Merge one fresh model into its stored twin (``None``: a sql/query-backed model, left alone).
+    """Merge one fresh dataset into its stored twin (``None``: a sql/query-backed dataset, left alone).
 
     A BARE persisted ``sql_table`` is healed to the qualified one when safe; a
     qualified one is never rewritten.
@@ -1593,7 +1593,7 @@ async def _stored_sanitized_identity_map(
     default_schema: str | None,
     failures: DocumentLoadFailures,
 ) -> tuple[set[str], dict[str, _Identity | None]]:
-    """Stored model names for ``datasource`` plus each loadable one's live-object identity."""
+    """Stored dataset names for ``datasource`` plus each loadable one's live-object identity."""
     identities = await storage._list_all_dataset_identities()
     stored_names = {n for d, n in identities if d == datasource.name}
     stored_identity: dict[str, _Identity | None] = {
@@ -1616,7 +1616,7 @@ def _sanitized_rename_map(
     rename_map: dict[str, str] = {}
     for name, fresh in fresh_by_name.items():
         if name in stored_names:
-            continue  # exact stored model — additive pass matches it directly
+            continue  # exact stored dataset — additive pass matches it directly
         sanitized = sanitize_dataset_name(name)
         if sanitized == name or sanitized not in stored_names:
             continue
@@ -1638,9 +1638,9 @@ async def _adopt_stored_sanitized_names(
     default_schema: str | None,
     failures: DocumentLoadFailures,
 ) -> tuple[dict[str, "SlayerDataset"], dict[str, str]]:
-    """Rename fresh ``a__b`` models onto a stored sanitized ``a_b`` of the same object.
+    """Rename fresh ``a__b`` datasets onto a stored sanitized ``a_b`` of the same object.
 
-    Renames cascade into join targets; returns ``(adopted_models, rename_map)``.
+    Renames cascade into relationship targets; returns ``(adopted_models, rename_map)``.
     """
     stored_names, stored_identity = await _stored_sanitized_identity_map(
         storage=storage, datasource=datasource, default_schema=default_schema, failures=failures,
@@ -1673,8 +1673,8 @@ async def _adopt_stored_sanitized_names(
 async def _retype_sql_datasets(
     *, datasource: DatasourceConfig, storage: StorageBackend, client: SqlClient, failures: DocumentLoadFailures,
 ) -> tuple[dict[str, list[str]], dict[str, str]]:
-    """Re-type each stored ``sql``-mode model's stale non-list columns to the lists its query returns (live_schema P2):
-    ``({model: re-typed columns}, {model: error})``."""
+    """Re-type each stored ``sql``-mode dataset's stale non-list fields to the lists its query returns (live_schema P2):
+    ``({dataset: re-typed fields}, {dataset: error})``."""
     retyped: dict[str, list[str]] = {}
     errors: dict[str, str] = {}
     # A parameterized query only runs with its variables bound.
@@ -1695,7 +1695,7 @@ async def _retype_sql_datasets(
             if columns:
                 await storage.save_dataset(updated)
                 retyped[model.name] = columns
-        except Exception as exc:  # noqa: BLE001 — one model's failure must not abort the pass
+        except Exception as exc:  # noqa: BLE001 — one dataset's failure must not abort the pass
             errors[model.name] = f"sql-mode re-type: {exc}"
     return retyped, errors
 
@@ -1707,7 +1707,7 @@ async def _scoped_datasets_for_validation(
     in_scope_table_names: set[str],
     failures: DocumentLoadFailures,
 ) -> list[SlayerDataset]:
-    """Persisted models to validate: in-scope ``sql_table`` models plus all sql/query-backed ones."""
+    """Persisted datasets to validate: in-scope ``sql_table`` datasets plus all sql/query-backed ones."""
     return [
         m for m in failures.skip(await storage.load_datasets(data_source=datasource.name))
         if not m.sql_table
@@ -1722,7 +1722,7 @@ async def _effective_hidden_internals(
     storage: StorageBackend,
     failures: DocumentLoadFailures,
 ) -> list[InternalTable]:
-    """Narrow scan-time internal classifications to models actually hidden in storage."""
+    """Narrow scan-time internal classifications to datasets actually hidden in storage."""
     effective: list[InternalTable] = []
     for entry in candidates:
         try:
@@ -1785,7 +1785,7 @@ def _merge_fresh_tables(
     default_schema_name: str | None,
     default_objects: set[str] | None,
 ) -> tuple[dict[str, _TableMerge], list[SkippedTable]]:
-    """Merge every fresh model into storage's view; a table named like a stored edge is skipped."""
+    """Merge every fresh dataset into storage's view; a table named like a stored edge is skipped."""
     edge_owner = {j.name: m.name for m in stored.values() for j in m.relationships if j.name}
     merges: dict[str, _TableMerge] = {}
     skipped: list[SkippedTable] = []
@@ -1844,7 +1844,7 @@ async def _run_additive_pass(
     failures: DocumentLoadFailures,
     client: SqlClient,
 ):
-    """Save / merge every fresh model, FK edges planned datasource-wide → ``(additions, errors, merge_skipped,
+    """Save / merge every fresh dataset, FK edges planned datasource-wide → ``(additions, errors, merge_skipped,
     broken_dependents)``.
 
     Every name is computed before the first save, and name-only updates save first; the stored definitions a
@@ -1871,7 +1871,7 @@ async def _run_additive_pass(
     for name in [*name_only, *rest]:
         try:
             await storage.save_dataset(plan.datasets[name], failures=failures)
-        except Exception as exc:  # noqa: BLE001 — best-effort per-model isolation
+        except Exception as exc:  # noqa: BLE001 — best-effort per-dataset isolation
             errors.append(schema_drift.IngestionError(dataset_name=name, data_source=datasource.name, error=str(exc)))
     failed = {e.dataset_name for e in errors}
     broken = dependents.report_broken(found, unsaved=failed)
@@ -1902,9 +1902,9 @@ async def ingest_datasource_idempotent(
     include_views: bool = True,
     surface_internals: bool = False,
 ) -> "schema_drift.IdempotentIngestResult":
-    """Idempotent re-ingestion: create missing models, additively merge existing ones.
+    """Idempotent re-ingestion: create missing datasets, additively merge existing ones.
 
-    User-authored sql/query-backed models are skipped. Then validates the same
+    User-authored sql/query-backed datasets are skipped. Then validates the same
     scope so drift and dropped tables show up in ``to_delete``.
     """
     validate_scope_args(schema=schema, schemas=schemas, all_schemas=all_schemas)
@@ -1939,7 +1939,7 @@ async def ingest_datasource_idempotent(
             if e.dataset_name in adopted_renames else e
             for e in scan.internal_tables
         ]
-    # Live object names, not model names (the two can differ).
+    # Live object names, not dataset names (the two can differ).
     in_scope_table_names: set[str] = {
         _bare_table_name(m.sql_table, dialect=dialect_for_ds_type(datasource.type))
         for m in fresh_models if m.sql_table
@@ -1993,7 +1993,7 @@ async def ingest_datasource_idempotent(
         datasource=datasource, datasets=scoped_models, client=client,
     )
 
-    # No sample profiling here (a full scan per column); read paths refresh on cache miss.
+    # No sample profiling here (a full scan per field); read paths refresh on cache miss.
 
     embedding_errors = await _refresh_datasource_embeddings(
         datasource_name=datasource.name, storage=storage, failures=failures,
@@ -2151,15 +2151,15 @@ def _print_report_section(
 
 
 def _hidden_internal_line(entry: InternalTable) -> str:
-    """``<table>: <tool>``, appending the model name (needed to un-hide) when it differs."""
+    """``<table>: <tool>``, appending the dataset name (needed to un-hide) when it differs."""
     target = entry.table_name
     if entry.dataset_name != entry.table_name:
-        target = f"{entry.table_name} (model: {entry.dataset_name})"
+        target = f"{entry.table_name} (dataset: {entry.dataset_name})"
     return f"{target}: {entry.tool}"
 
 
 def key_read_failures_header(count: int) -> str:
-    return f"Lost key reads ({count}) — ingested without these keys (their joins and uniqueness); re-ingest to read them:"
+    return f"Lost key reads ({count}) — ingested without these keys (their relationships and uniqueness); re-ingest to read them:"
 
 
 def key_read_failure_line(entry: TableKeyReadFailure) -> str:
@@ -2170,10 +2170,10 @@ def key_read_failure_line(entry: TableKeyReadFailure) -> str:
 
 
 def _unhide_hint(data_source: str | None = None) -> str:
-    """The ``edit_model`` call that un-hides an internal (qualified: internals collide across datasources)."""
+    """The ``edit_dataset`` call that un-hides an internal (qualified: internals collide across datasources)."""
     if data_source:
-        return f'edit_model("<model>", data_source="{data_source}", hidden=false)'
-    return 'edit_model("<model>", hidden=false)'
+        return f'edit_dataset("<dataset>", data_source="{data_source}", hidden=false)'
+    return 'edit_dataset("<dataset>", hidden=false)'
 
 
 def _print_ingest_drift_and_errors(
@@ -2189,7 +2189,7 @@ def _print_ingest_drift_and_errors(
     to_delete: list[schema_drift.ToDeleteEntry] = getattr(result, "to_delete", None) or []
     _print_report_section(
         entries=to_delete,
-        header="\nPending drift (run `slayer validate-models` to inspect):",
+        header="\nPending drift (run `slayer validate-datasets` to inspect):",
         line=lambda e: f"{e.tool}: {e.dataset_name}",
         out=out,
     )
@@ -2220,11 +2220,11 @@ def _print_ingest_drift_and_errors(
         entries=hidden_internals,
         header=(
             f"\nHidden ({len(hidden_internals)}) — recognised ELT/migration "
-            f"internals (excluded from models_summary; still queryable by "
+            f"internals (excluded from datasets_summary; still queryable by "
             f"name):"
         ),
         line=_hidden_internal_line,
-        # The flag only governs models this run creates, so mention un-hiding.
+        # The flag only governs datasets this run creates, so mention un-hiding.
         footer=(
             "  --surface-internals ingests NEW internals visible; use "
             f"{_unhide_hint(data_source)} to unhide an existing one."
@@ -2349,7 +2349,7 @@ async def _refresh_datasets_for_datasource(
     search: "SearchService",
     failures: DocumentLoadFailures,
 ) -> tuple[list[tuple[str, str]], list[SlayerDataset]]:
-    """Refresh every loadable model's embeddings → ``(warnings tagged <ds>.<name>, models_in_ds)``."""
+    """Refresh every loadable dataset's embeddings → ``(warnings tagged <ds>.<name>, models_in_ds)``."""
     warnings: list[tuple[str, str]] = []
     try:
         models_in_ds = failures.skip(await storage.load_datasets(data_source=datasource_name))
@@ -2359,7 +2359,7 @@ async def _refresh_datasets_for_datasource(
         tag = f"{m.data_source}.{m.name}"
         try:
             subtree_warnings = await search.refresh_dataset_subtree(m)
-        except Exception as exc:  # noqa: BLE001 — defensive per-model
+        except Exception as exc:  # noqa: BLE001 — defensive per-dataset
             subtree_warnings = [str(exc)]
         for w in subtree_warnings:
             warnings.append((tag, w))
@@ -2396,7 +2396,7 @@ async def _entity_ref_exists(
         except Exception:  # noqa: BLE001 — transient
             return None
         return row is not None
-    # ``<ds>[.<model>[.<leaf>]]``
+    # ``<ds>[.<dataset>[.<leaf>]]``
     try:
         datasources = set(await storage.list_datasources())
     except Exception:  # noqa: BLE001 — transient
@@ -2493,7 +2493,7 @@ async def _refresh_memories_for_datasource(  # NOSONAR(S3776) — straight-line 
 async def _refresh_datasource_embeddings(
     *, datasource_name: str, storage: StorageBackend, failures: DocumentLoadFailures | None = None,
 ) -> list[tuple[str, str]]:
-    """Refresh embeddings for the datasource's models, doc and memories.
+    """Refresh embeddings for the datasource's datasets, doc and memories.
 
     Never raises; returns ``(entity_tag, error_text)`` tuples.
     """

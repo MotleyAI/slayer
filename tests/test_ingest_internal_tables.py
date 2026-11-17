@@ -361,7 +361,7 @@ class TestSkipAndHideAreDisjoint:
                 raise RuntimeError("introspection exploded")
             return real(**kwargs)
 
-        monkeypatch.setattr(ing, "_build_one_model", _boom)
+        monkeypatch.setattr(ing, "_build_one_dataset", _boom)
 
         _, ds = _ds(workspace, _MIXED)
         report = run_sync(_with_client(ing.ingest_datasource_report_async, datasource=ds))

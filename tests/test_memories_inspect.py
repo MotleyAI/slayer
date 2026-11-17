@@ -143,7 +143,7 @@ class TestInspectModelLearningsSection:
         result = await _call(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "mydb.orders", "compact": False},
         )
         assert "Learnings" in result or "learnings" in result.lower()
         assert "orders.amount in cents not dollars" in result
@@ -163,7 +163,7 @@ class TestInspectModelLearningsSection:
         result = await _call(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "mydb.orders", "compact": False},
         )
         assert "## Learnings" not in result
         assert "example query" not in result
@@ -178,7 +178,7 @@ class TestInspectModelLearningsSection:
         result = await _call(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "mydb.orders", "compact": False},
         )
         assert "customer-only note" not in result
         # Pin the section header itself — an empty "## Learnings"
@@ -191,7 +191,7 @@ class TestInspectModelLearningsSection:
         result = await _call(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "mydb.orders", "compact": False},
         )
         assert "## Learnings" not in result
         assert "## learnings" not in result.lower()
@@ -206,7 +206,7 @@ class TestInspectModelLearningsSection:
         result = await _call(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "mydb.orders", "compact": False},
         )
         assert "aov measure excludes refunded orders" in result
 
@@ -220,7 +220,7 @@ class TestInspectModelLearningsSection:
         result = await _call(
             mcp_server,
             name="inspect",
-            arguments={"entity_type": "model", "reference": "mydb.orders", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "mydb.orders", "compact": False},
         )
         assert "orders is the canonical revenue table" in result
 
@@ -235,7 +235,7 @@ class TestInspectModelLearningsSection:
             mcp_server,
             name="inspect",
             arguments={
-                "entity_type": "model", "reference": "mydb.orders", "compact": False,
+                "entity_type": "dataset", "reference": "mydb.orders", "compact": False,
                 "sections": ["columns"],
             },
         )
@@ -254,7 +254,7 @@ class TestInspectModelLearningsSection:
             mcp_server,
             name="inspect",
             arguments={
-                "entity_type": "model", "reference": "mydb.orders",
+                "entity_type": "dataset", "reference": "mydb.orders",
                 "format": "json",
                 "sections": ["learnings"],
                 "compact": False,

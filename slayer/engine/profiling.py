@@ -1,8 +1,8 @@
-"""Sample-value profiling of ``Column.sampled`` / ``sampled_values`` / ``distinct_count``.
+"""Sample-value profiling of ``DatasetField.sampled`` / ``sampled_values`` / ``distinct_count``.
 
 :func:`ensure_samples_fresh` is the one owner every read path and forced refresh goes through.
-Categorical columns: top 50 values by frequency in one scan (overflow keeps the top 50, total
-unknown). Numeric/temporal columns: one batched min/max query. Failures are classified by a
+Categorical fields: top 50 values by frequency in one scan (overflow keeps the top 50, total
+unknown). Numeric/temporal fields: one batched min/max query. Failures are classified by a
 row-count probe plus a consecutive-failure breaker and cached per engine; under a session policy
 samples live only in the engine, never in storage.
 """
@@ -55,7 +55,7 @@ _NO_SAMPLE = _Sample()
 
 
 class ProfileOutcome(BaseModel):
-    """The input columns (refreshed where profiled, in input order) plus error strings."""
+    """The input fields (refreshed where profiled, in input order) plus error strings."""
 
     columns: list[DatasetField]
     errors: list[str] = Field(default_factory=list)
@@ -114,17 +114,17 @@ def _first_line(exc: BaseException) -> str:
 
 
 def _profile_type(field: DatasetField) -> DataType | None:
-    """The type a column is profiled as: a list's element type (its elements are sampled), else its own."""
+    """The type a field is profiled as: a list's element type (its elements are sampled), else its own."""
     return field.element_type if field.datatype is DataType.ARRAY else field.datatype
 
 
 def _values_ref(field: DatasetField) -> str:
-    """The reference whose values profile ``field``: a list's ``<column>.value``."""
+    """The reference whose values profile ``field``: a list's ``<field>.value``."""
     return f"{field.name}.value" if field.datatype is DataType.ARRAY else field.name
 
 
 def _is_sample_cached(field: DatasetField, *, dataset: SlayerDataset) -> bool:
-    """True when the persisted sample needs no re-profile; never-profiled columns count as cached."""
+    """True when the persisted sample needs no re-profile; never-profiled fields count as cached."""
     if not _is_profilable(field, dataset=dataset):
         return True
     if _profile_type(field) in _CATEGORICAL_TYPES:
@@ -142,7 +142,7 @@ def _is_profilable(field: DatasetField, *, dataset: SlayerDataset) -> bool:
 
 
 def _is_table_backed(dataset: SlayerDataset) -> bool:
-    """Only ``sql_table`` models take part in forced refresh."""
+    """Only ``sql_table`` datasets take part in forced refresh."""
     return bool(dataset.sql_table) and not dataset.sql and not dataset.source_queries
 
 
@@ -202,7 +202,7 @@ async def _profile_numeric_temporal(
 
 
 async def _probe(*, dataset: SlayerDataset, engine: SlayerQueryEngine) -> Exception | None:
-    """Row-count the model; the exception when it fails, else ``None``."""
+    """Row-count the dataset; the exception when it fails, else ``None``."""
     q = SlayerQuery.model_validate({"population": dataset.name, "metrics": [{"expression": "count(*)"}]})
     try:
         await engine.execute(query=q, data_source=dataset.data_source or None)
@@ -268,7 +268,7 @@ class _Run:
             samples = await _profile_numeric_temporal(
                 dataset=self.dataset, fields=[t.field for t in targets], engine=self.engine,
             )
-        except Exception as exc:  # NOSONAR(S112) — classified, then isolated per column
+        except Exception as exc:  # NOSONAR(S112) — classified, then isolated per field
             await self._on_failure(target=None, exc=exc)
             for t in targets:
                 if self.model_failed:
@@ -304,7 +304,7 @@ class _Run:
         self.streak.clear()
         self.state.failures[self.model_key] = _Entry(expires_at=self._expiry(), error=msg)
         logger.warning(
-            "sample profiling: model %s.%s unavailable (%d columns skipped): %s",
+            "sample profiling: dataset %s.%s unavailable (%d fields skipped): %s",
             self.dataset.data_source, self.dataset.name, self.pending, msg,
         )
         self.errors.append(f"{self.dataset.name}: profiling unavailable: {msg}")
@@ -314,7 +314,7 @@ class _Run:
             msg = _first_line(exc)
             self.state.failures[target.key] = _Entry(expires_at=self._expiry(), error=msg)
             logger.warning(
-                "sample profiling: column %s.%s.%s failed: %s",
+                "sample profiling: field %s.%s.%s failed: %s",
                 self.dataset.data_source, self.dataset.name, target.field.name, msg,
             )
             self.errors.append(f"{self.dataset.name}.{target.field.name}: {msg}")
@@ -394,7 +394,7 @@ async def ensure_samples_fresh(
             if not _served_from_cache(target=t, dataset=dataset, state=state, result=result, now=now, scoped=scoped)
         ]
         if targets and state.live(table=state.failures, key=dataset_key, now=now) is not None:
-            logger.debug("sample profiling: %s.%s skipped (cached model failure)", dataset.data_source, dataset.name)
+            logger.debug("sample profiling: %s.%s skipped (cached dataset failure)", dataset.data_source, dataset.name)
             return ProfileOutcome(columns=result)
     if not targets:
         return ProfileOutcome(columns=result)
@@ -413,7 +413,7 @@ async def refresh_table_backed_dataset_sampled(
     storage: StorageBackend,
     only_fields: set[str] | None = None,
 ) -> list[str]:
-    """Force-refresh samples of a table-backed model (others skipped); returns error strings."""
+    """Force-refresh samples of a table-backed dataset (others skipped); returns error strings."""
     if not _is_table_backed(dataset):
         return []
     columns = [c for c in dataset.fields if only_fields is None or c.name in only_fields]
@@ -429,7 +429,7 @@ async def refresh_all_table_backed_sampled(
     storage: StorageBackend,
     data_source: str,
 ) -> list[str]:
-    """Force-refresh every table-backed model in ``data_source``; returns error strings."""
+    """Force-refresh every table-backed dataset in ``data_source``; returns error strings."""
     errors: list[str] = []
     for model in DocumentLoadFailures().skip(await storage.load_datasets(data_source=data_source)):
         errors.extend(await refresh_table_backed_dataset_sampled(dataset=model, engine=engine, storage=storage))

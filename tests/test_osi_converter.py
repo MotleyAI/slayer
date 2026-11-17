@@ -151,7 +151,7 @@ def test_db_comments_fill_gaps_curated_wins(shop_engine, monkeypatch: pytest.Mon
         return model
 
     monkeypatch.setattr(
-        osi_converter_module, "introspect_table_to_model", _with_db_comments
+        osi_converter_module, "introspect_table_to_dataset", _with_db_comments
     )
     orders = _by_name(_shop_result(shop_engine))["orders"]
     cols = {c.name: c for c in orders.fields}

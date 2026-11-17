@@ -307,7 +307,7 @@ class TestCompositeInFilterAndOrder:
         resp = await attr_engine.execute(SlayerQuery(
             population="orders", time_dimensions=signup_td(),
             metrics=[DatasetMetric(expression="sum(amount)", name="a")],
-            order=[{"column": f"change({CM}) + sum(amount)", "direction": "desc"}],  # pyright: ignore[reportArgumentType] — expression order targets enter via the shorthand coercion
+            order=[{"field": f"change({CM}) + sum(amount)", "direction": "desc"}],  # pyright: ignore[reportArgumentType] — expression order targets enter via the shorthand coercion
         ))
         signup_col = next(k for k in resp.data[0] if k.endswith("signup_at"))
         months = [month_key(r[signup_col]) for r in resp.data]

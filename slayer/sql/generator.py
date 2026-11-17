@@ -221,7 +221,7 @@ def _key_equality(left: Expression, right: Expression) -> exp.EQ:
 
 
 def _strip_declared_cast(expr: Expression) -> Expression:
-    """Unwrap one declared-type ``CAST`` a derived-column expansion added."""
+    """Unwrap one declared-type ``CAST`` a derived-field expansion added."""
     return expr.this if isinstance(expr, exp.Cast) else expr
 
 
@@ -361,7 +361,7 @@ def _ranked_emission_from_kernel(*, planned_query, kernel) -> _RankedEmission:
 # ---------------------------------------------------------------------------
 
 
-#: Test hook: force measure masks onto the general materialize-and-filter path
+#: Test hook: force metric masks onto the general materialize-and-filter path
 #: (outer WHERE over hidden columns) instead of the HAVING lowering.
 _FORCE_MASK_FALLBACK = False
 
@@ -382,7 +382,7 @@ class _LoweredPositions(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     filters: List["_LoweredFilter"]
-    #: Measure masks that resolve only after attachment (combined placeholders) —
+    #: Metric masks that resolve only after attachment (combined placeholders) —
     #: rendered at the outer WHERE, never HAVING in a ``_cm_*`` CTE (the LEFT JOIN
     #: would resurface a NULL-aggregate host row).
     outer_where_ids: List[str]
@@ -414,7 +414,7 @@ def _combined_attached_slot_ids(planned_query, slot_id_by_key) -> Set[str]:
 
 
 def _lower_positions(planned_query) -> _LoweredPositions:
-    """Placement from the planner stage (D5): field → base WHERE; measure →
+    """Placement from the planner stage (D5): field → base WHERE; metric →
     HAVING at BASE, the combined outer WHERE at PRODUCER / COMBINED (or reading
     a combined-attached dual-role value), the outer wrapper at DERIVED or when
     any transform is present."""
@@ -690,7 +690,7 @@ def _effective_src_filters(*, lowered_filters, plan) -> list:
 
 
 
-# A bare-identifier Column.sql renames a physical column; dots are rejected (a dotted ref is a crossing, not a column
+# A bare-identifier DatasetField.sql renames a physical column; dots are rejected (a dotted ref is a crossing, not a column
 # here).
 _BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
@@ -896,9 +896,9 @@ class SQLGenerator:
             self._dialect = get_dialect(dialect)
         # Synthetic fusion blocker for lowering-soundness parity tests.
         self._force_unfused = force_unfused
-        # Never inline a model filter's joined reads (lowering-soundness parity tests).
+        # Never inline a dataset filter's joined reads (lowering-soundness parity tests).
         self._force_association_filters = force_association_filters
-        # Models whose filtered datasets are being emitted (innermost last).
+        # Datasets whose filtered datasets are being emitted (innermost last).
         self._gen_filter_stack: Tuple[str, ...] = ()
         self._gen_allocator: Optional[AliasAllocator] = None
         self._gen_rendered_producers: Optional[
@@ -910,7 +910,7 @@ class SQLGenerator:
         #: {cte name -> declared deps}, one per statement being rendered, so a
         #: later split recovers a hoisted producer's edges (never AST-scanned).
         self._gen_dep_stack: List[Dict[str, List[str]]] = []
-        #: Column-type resolvers of the planned queries being rendered (innermost last).
+        #: Field-type resolvers of the planned queries being rendered (innermost last).
         self._gen_column_types: List[FieldTypeFn] = []
         #: Per planned query: its placeholders' types and their list element types.
         self._gen_placeholder_types: List[Tuple[Dict[Any, DataType], Dict[Any, DataType]]] = []
@@ -949,7 +949,7 @@ class SQLGenerator:
         return self._dialect.declared_cast_type(dt)
 
     def _field_cast_type(self, col: DatasetField) -> Optional[DataType]:
-        """The CAST target for derived column ``col``; none when it keeps its native type."""
+        """The CAST target for derived field ``col``; none when it keeps its native type."""
         if keeps_native_type(col=col, dialect=self._dialect):
             return None
         return self._dialect.declared_cast_type(col.datatype)
@@ -989,7 +989,7 @@ class SQLGenerator:
         )
 
     def _current_field_types(self) -> Optional[FieldTypeFn]:
-        """The active ``generate()`` call's column types; ``None`` outside one (untyped)."""
+        """The active ``generate()`` call's field types; ``None`` outside one (untyped)."""
         return self._gen_column_types[-1] if self._gen_column_types else None
 
     def _alias_render_ctx(self, *, slot_id_by_key, available_alias_by_slot_id):
@@ -1071,7 +1071,7 @@ class SQLGenerator:
 
 
     def _embed_dataset_sql(self, *, sql: str, alias: str) -> Expression:
-        """A model's own ``sql`` as an aliased subquery, its CTEs renamed through the
+        """A dataset's own ``sql`` as an aliased subquery, its CTEs renamed through the
         generation allocator so a later hoist never meets another statement's names."""
         statement = self._parse(sql)
         allocator = self._gen_allocator or self._new_allocator()
@@ -1289,7 +1289,7 @@ class SQLGenerator:
     def _generate_from_planned_impl(
         self, planned_query, *, bundle: ResolvedSourceBundle, as_cte_body: bool = False, producer_kernel=None,
     ) -> exp.Select:
-        """Compose one planned query with its root's column types in reach of alias-mode renders."""
+        """Compose one planned query with its root's field types in reach of alias-mode renders."""
         source_model = bundle.population
         if source_model is None:
             raise ValueError(
@@ -1343,7 +1343,7 @@ class SQLGenerator:
     def _placeholder_elements(self) -> Dict[Any, DataType]:
         return dict(self._gen_placeholder_types[-1][1]) if self._gen_placeholder_types else {}
 
-    def _generate_from_planned_body(  # NOSONAR(S3776) — top-level dispatch over cross-model / transform-chain / plain branches plus the conditional outer-trim wrap. Each branch is a coherent compilation strategy; extracting would scatter the shared planned_query / slots_by_id / aliases_by_slot_id state across helpers without simplifying anything.
+    def _generate_from_planned_body(  # NOSONAR(S3776) — top-level dispatch over cross-dataset / transform-chain / plain branches plus the conditional outer-trim wrap. Each branch is a coherent compilation strategy; extracting would scatter the shared planned_query / slots_by_id / aliases_by_slot_id state across helpers without simplifying anything.
         self,
         planned_query,
         *,
@@ -1396,7 +1396,7 @@ class SQLGenerator:
             )
         }
 
-        # _base projects every BASE ∧ needs_column value in plan order;
+        # _base projects every BASE ∧ needs_field value in plan order;
         # this path carries no combined attaches, so nothing is isolated.
         base_render_order = staged_plan.base_render_order(planned_query)
 
@@ -1703,7 +1703,7 @@ class SQLGenerator:
     ) -> List[ValueSlot]:
         """DERIVED composite slots needing a column, not yet materialised —
         every level fused into the one trailing step (D8, sql P11). A mask-only
-        value has ``needs_column=False`` and renders as a predicate."""
+        value has ``needs_field=False`` and renders as a predicate."""
         return [
             cslot
             for cslot in planned_query.combined_expression_slots
@@ -1912,7 +1912,7 @@ class SQLGenerator:
                     op=layer.op, inner=slot.key.input,
                 )
 
-    def _resolve_agg_inputs_via_scope(  # NOSONAR(S3776) — one cohesive Law-1 discovery pass: three ordered sub-passes (Column.filter → source → kwargs) over the local aggregates via small closures sharing scope/resolved. Extracting them would scatter the ordered-registration contract that keeps the base FROM byte-identical.
+    def _resolve_agg_inputs_via_scope(  # NOSONAR(S3776) — one cohesive Law-1 discovery pass: three ordered sub-passes (DatasetField.filter → source → kwargs) over the local aggregates via small closures sharing scope/resolved. Extracting them would scatter the ordered-registration contract that keeps the base FROM byte-identical.
         self, *, base_render_order, slots_by_id, scope: ScopeFrame,
         skip_cross_dataset_aggs: bool = False,
     ) -> "Dict[Any, Dict[str, ResolvedAggKwarg]]":
@@ -1944,7 +1944,7 @@ class SQLGenerator:
                     _walk(slot.key, fn)
 
         def _resolve_source(key) -> None:
-            # Expression sources resolve too: a ColumnSqlKey operand
+            # Expression sources resolve too: a FieldSqlKey operand
             # whose derived SQL crosses joins must register them (Law 1).
             if isinstance(
                 key.source, (FieldSqlKey, *_EXPRESSION_SOURCE_KINDS),
@@ -2220,7 +2220,7 @@ class SQLGenerator:
                         continue
                     if not _is_host_grain(key):
                         raise NotImplementedError(
-                            f"cross-model aggregate (source.path={agg_path!r}) "
+                            f"cross-dataset aggregate (source.path={agg_path!r}) "
                             f"reached the local base SELECT path; the regroup "
                             f"desugar should have isolated it into a producer "
                             f"CTE."
@@ -2249,7 +2249,7 @@ class SQLGenerator:
                 )
 
         dimension_values = {slots_by_id[sid].key: display_by_sid.get(sid, gb) for sid, gb in group_by_keys.items()}
-        # No dimension and no aggregate: every measure is the single grand-total cell.
+        # No dimension and no aggregate: every metric is the single grand-total cell.
         grand_total = not group_by_keys and not has_aggregation and bool(deferred_composites)
         for idx, slot, full_alias in deferred_composites:
             composite = render_value_key(
@@ -2320,11 +2320,11 @@ class SQLGenerator:
 
         def build(agg_key) -> Expression:
             if source_anchor_path(agg_key.source):
-                # Internal invariant: cross-model operands desugar to regroup
+                # Internal invariant: cross-dataset operands desugar to regroup
                 # placeholders before phase classification, so none reaches
                 # this seam.
                 raise RuntimeError(
-                    f"cross-model aggregate operand {agg_key!r} reached the "
+                    f"cross-dataset aggregate operand {agg_key!r} reached the "
                     f"AGGREGATE-phase composite seam; the regroup desugar "
                     f"should have replaced it with a placeholder."
                 )
@@ -2356,7 +2356,7 @@ class SQLGenerator:
         regroup_env: Optional[Dict[Any, Expression]] = None,
         regroup_join_specs: Optional[List[Tuple[str, List[Tuple[Any, str]]]]] = None,
     ) -> Tuple[exp.Select, List[str]]:
-        """Render one duration-windowed-measure CTE."""
+        """Render one duration-windowed-metric CTE."""
 
         key = agg_slot.key
         assert isinstance(key, AggregateKey)
@@ -2427,12 +2427,12 @@ class SQLGenerator:
         src_cols.append(raw_time.copy().as_("_w_time"))
         grain_aliases.append(wtd_alias)
 
-        # A Column.filter on the source is baked into its ColumnSqlKey (CASE WHEN),
+        # A DatasetField.filter on the source is baked into its FieldSqlKey (CASE WHEN),
         # so a first/last picked value is masked while ranking spans all rows:
         # the latest row's value may be NULL if it fails the filter.
         # ``count(*)`` projects a literal so the outer COUNT(_w_value) counts interval
         # rows (0, not 1, on an empty interval) — the star never enters resolve.
-        # The custom-aggregation definition lives on the source's owning model,
+        # The custom-aggregation definition lives on the source's owning dataset,
         # which a parameter may widen the home above (D4) — resolve it there.
         definition = self._resolve_aggregation_def(
             key=key,
@@ -2450,7 +2450,7 @@ class SQLGenerator:
             # aggregation over the star would silently become ``<agg>(1)``.
             if key.agg != "count":
                 raise ValueError(
-                    f"Aggregation {key.agg!r} not allowed with measure "
+                    f"Aggregation {key.agg!r} not allowed with metric "
                     f"'*' — use 'count(*)' for COUNT(*)."
                 )
             # ``count(*)`` takes no inputs but its own ``window=`` (plain-path guard);
@@ -2467,7 +2467,7 @@ class SQLGenerator:
             src_cols.append(src_scope.resolve(key.source).as_("_w_value"))
 
         # Reference-bearing parameters read per interval row (D4): each _w_p<i> is
-        # rendered through the _src scope so its join paths register for discovery.
+        # rendered through the _src scope so its relationship paths register for discovery.
         picked_kwarg_exprs: Dict[str, ResolvedAggKwarg] = {}
         for _i, _pp in enumerate(plan.picked_params):
             _p_alias = f"_w_p{_i}"
@@ -2635,7 +2635,7 @@ class SQLGenerator:
         )
         agg_expr, _ = self._build_agg(level2_spec)
         if definition is not None and definition.expression is not None:
-            # A defined aggregation's empty value is NULL (semantics Axiom 4), whatever its formula yields.
+            # A defined aggregation's empty value is NULL (semantics Axiom 4), whatever its expression yields.
             agg_expr = exp.Case(ifs=[exp.If(
                 this=exp.EQ(this=exp.Count(this=_src_col("_w_time")), expression=exp.Literal.number(0)),
                 true=exp.Null(),
@@ -2715,7 +2715,7 @@ class SQLGenerator:
         )
         if expr is None:
             raise ValueError(
-                f"Derived column {key.field_name!r} on model "
+                f"Derived field {key.field_name!r} on dataset "
                 f"{key.path[-1] if key.path else root_dataset.name!r} is not "
                 f"in the resolved source bundle.",
             )
@@ -2727,7 +2727,7 @@ class SQLGenerator:
     def _register_ranked_paths(
         self, expr: Expression, path: Tuple[str, ...], *, root_dataset, root_relation: str, bundle, scope: ScopeFrame,
     ) -> None:
-        """Record the join paths ``expr`` reads (``path`` included) in the ranked CTE's scope."""
+        """Record the relationship paths ``expr`` reads (``path`` included) in the ranked CTE's scope."""
         if path:
             scope.join_paths.add(path)
         for p in self._joined_paths_in_sql(
@@ -2744,7 +2744,7 @@ class SQLGenerator:
         source = key.source
         if isinstance(source, StarKey):
             raise ValueError(
-                f"Aggregation {key.agg!r} not allowed with measure "
+                f"Aggregation {key.agg!r} not allowed with metric "
                 f"'*' — use 'count(*)' for COUNT(*)."
             )
         if not isinstance(source, (FieldKey, FieldSqlKey)):
@@ -2756,11 +2756,11 @@ class SQLGenerator:
         col = next((c for c in root_dataset.fields if c.name == leaf), None)
         if col is None:
             raise ValueError(
-                f"Aggregate source column {leaf!r} not found on model "
+                f"Aggregate source field {leaf!r} not found on dataset "
                 f"{root_dataset.name!r}",
             )
         if isinstance(source, FieldSqlKey):
-            # The value (and any Column.filter CASE) with its type CAST baked in —
+            # The value (and any DatasetField.filter CASE) with its type CAST baked in —
             # parse without re-casting the whole expression.
             expr = self._parse(self._expand_derived_field_sql(
                 source_dataset=root_dataset, source_relation=root_relation,
@@ -2945,8 +2945,8 @@ class SQLGenerator:
     ) -> List[Expression]:
         """Every predicate a ranked CTE applies to the rows it ranks.
 
-        A ``Column.filter`` on the ranked column is NOT a WHERE here — it masks the
-        picked value (baked into the source's ColumnSqlKey CASE), so ranking spans
+        A ``DatasetField.filter`` on the ranked field is NOT a WHERE here — it masks the
+        picked value (baked into the source's FieldSqlKey CASE), so ranking spans
         every row and the latest row's value may be NULL."""
         parts: List[Expression] = []
         skip_ids = {
@@ -3148,7 +3148,7 @@ class SQLGenerator:
                 alias=exp.to_identifier(picked_alias),
             ))
         elif not is_star:
-            # Discovery runs over the FULL key so a parameter's join path (e.g.
+            # Discovery runs over the FULL key so a parameter's relationship path (e.g.
             # weight=customers.regions.pop) is registered in the scope; the source
             # spec is built from the parameter-stripped key so a parameter path
             # that extends the source path is not rejected.
@@ -3176,8 +3176,8 @@ class SQLGenerator:
                 ),
             )
 
-        # Pick each legal parameter once per cell as _p<i>. A Column.filter masks
-        # only its own column (baked into that column's ColumnSqlKey CASE), never
+        # Pick each legal parameter once per cell as _p<i>. A DatasetField.filter masks
+        # only its own field (baked into that field's FieldSqlKey CASE), never
         # the source's filter.
         picked_kwarg_exprs: Dict[str, ResolvedAggKwarg] = {}
         for _i, _pp in enumerate(picked_params):
@@ -3269,7 +3269,7 @@ class SQLGenerator:
             assert spec is not None  # set in both non-star arms above
             level2_spec = AggRenderSpec(
                 # ``count`` counts cells with a NON-NULL picked value (COUNT(_v)),
-                # never the cells (COUNT(*)): a Column.filter masks non-matching
+                # never the cells (COUNT(*)): a DatasetField.filter masks non-matching
                 # rows to NULL, so a filtered association count must skip them.
                 # Other families already read _base._v via the
                 # sql=None branch, so only count must name _v here.
@@ -3465,7 +3465,7 @@ class SQLGenerator:
         outer_composite_slot_ids: Set[str] = staged_plan.combined_composite_slot_ids(
             planned_query,
         )
-        # _base projects every BASE ∧ needs_column value in plan order; a dual-role
+        # _base projects every BASE ∧ needs_field value in plan order; a dual-role
         # placeholder joined at the combined SELECT is read from its _cm_ CTE.
         base_render_order = staged_plan.base_render_order(
             planned_query, isolated_slot_ids=isolated_slot_ids,
@@ -3547,7 +3547,7 @@ class SQLGenerator:
             base_group_by: Dict[str, Expression] = {}
         else:
             # Skip only the host filters _base cannot apply: a _cm_ CTE is LEFT-joined on grain, so a predicate applied
-            # only there blanks a row's measure instead of excluding the row; ROW-phase filters apply in both places.
+            # only there blanks a row's metric instead of excluding the row; ROW-phase filters apply in both places.
             routed_ids: Set[str] = set(outer_where_filter_ids)
             (
                 base_select,
@@ -3777,7 +3777,7 @@ class SQLGenerator:
                 )
 
         if outer_where_filters:
-            # Map every cross-model aggregate slot (filtered-local AND forward) to its _cm_ column: a mixed AGGREGATE
+            # Map every cross-dataset aggregate slot (filtered-local AND forward) to its _cm_ column: a mixed AGGREGATE
             # filter resolves both operands outer, so mapping only filtered-local ones makes the forward operand raise.
             cross_model_agg_slot_to_cm: Dict[str, AttachedValue] = {}
             for _ph_key, _cm in regroup_placeholder_to_cm.items():
@@ -3852,7 +3852,7 @@ class SQLGenerator:
             external_names=self._external_cte_names(),
         )
 
-        # Emit ORDER BY/LIMIT/OFFSET at the combined level through one resolver: naming a projected cross-model
+        # Emit ORDER BY/LIMIT/OFFSET at the combined level through one resolver: naming a projected cross-dataset
         # aggregate by its CTE column picks the wrong column once two scopes project the same name.
         order_env = OrderEnv(dialect=self._dialect)
         for _ph_key, _attached in regroup_placeholder_to_cm.items():
@@ -3900,13 +3900,13 @@ class SQLGenerator:
         source_relation: str,
         key,
     ) -> str:
-        """Build the canonical result-key alias for a cross-model"""
+        """Build the canonical result-key alias for a cross-dataset"""
         # The kwarg suffix is part of the CTE name so two parametric aggregates (p=0.5 vs p=0.95) get distinct
         # names/aliases instead of colliding.
         alias = canonical_aggregate_alias(
             key, profile="cross_dataset_cte", source_relation=source_relation,
         )
-        assert alias is not None  # the cross_model_cte profile never declines
+        assert alias is not None  # the cross_dataset_cte profile never declines
         return alias
 
     def _public_aliases_for_cross_dataset_agg(
@@ -3916,7 +3916,7 @@ class SQLGenerator:
         source_relation: str,
         canonical_alias: str,
     ) -> List[str]:
-        """User-facing combined-SELECT aliases for this cross-model slot."""
+        """User-facing combined-SELECT aliases for this cross-dataset slot."""
         if not slot.public_aliases:
             return [canonical_alias]
         return [f"{source_relation}.{a}" for a in slot.public_aliases]
@@ -3930,8 +3930,8 @@ class SQLGenerator:
         root = bundle.get_referenced_dataset(root_name)
         if root is None:
             raise RuntimeError(
-                f"Target-rooted regroup producer names root model {root_name!r}, "
-                f"absent from the bundle's referenced models."
+                f"Target-rooted regroup producer names root dataset {root_name!r}, "
+                f"absent from the bundle's referenced datasets."
             )
         kernel = getattr(attach, "kernel", None)
         if isinstance(kernel, AssociationProducerKernel) and any(map(is_row_identity, kernel.entity_keys)):
@@ -4377,14 +4377,14 @@ class SQLGenerator:
     def _oriented_hop_chain(
         self, *, source_dataset: SlayerDataset, path, bundle: ResolvedSourceBundle,
     ) -> List[Tuple[OrientedRelationship, SlayerDataset]]:
-        """``(OrientedJoin, next_model)`` hops of a bound (possibly composed) join ``path``;
-        ``ValueError`` when it does not resolve, ``AmbiguousJoinPathError`` on an ambiguous hop."""
+        """``(OrientedRelationship, next_dataset)`` hops of a bound (possibly composed) relationship ``path``;
+        ``ValueError`` when it does not resolve, ``AmbiguousRelationshipPathError`` on an ambiguous hop."""
         models_by_name = bundle.datasets_by_name
         models_by_name.setdefault(source_dataset.name, source_dataset)
         chain = follow(root=source_dataset, path=tuple(path), datasets_by_name=models_by_name)
         if chain is None:
             raise ValueError(
-                f"Joined path {tuple(path)!r} does not resolve from model {source_dataset.name!r}.",
+                f"Joined path {tuple(path)!r} does not resolve from dataset {source_dataset.name!r}.",
             )
         return [(edge, models_by_name[edge.to]) for edge in chain]
 
@@ -4502,7 +4502,7 @@ class SQLGenerator:
         source_relation: str,
         bundle,
     ) -> Expression:
-        """Resolve a dimension column expression on either the host"""
+        """Resolve a dimension field expression on either the host"""
         if not path:
             return self._dim_field_expr_from_planned(
                 source_dataset=source_dataset,
@@ -4524,7 +4524,7 @@ class SQLGenerator:
         )
         if col_def is None:
             raise ValueError(
-                f"Column {leaf!r} not found on joined model "
+                f"Field {leaf!r} not found on joined dataset "
                 f"{current_model.name!r}.",
             )
         column = exp.Column(this=exp.to_identifier(leaf), table=exp.to_identifier(current_alias))
@@ -4562,7 +4562,7 @@ class SQLGenerator:
 
     @staticmethod
     def _transform_grain_slot_ids(*, planned_query, slots_by_id, axis: object = None) -> List[str]:
-        """The transform auto-grain: every grain dimension, and every grain time dimension off the axis's column."""
+        """The transform auto-grain: every grain dimension, and every grain time dimension off the axis's field."""
         axis_column = axis.source if isinstance(axis, TimeTruncKey) else None
         combined_placeholders = {
             sub.placeholder
@@ -4579,13 +4579,13 @@ class SQLGenerator:
 
     @staticmethod
     def _in_transform_grain(*, slot, axis_field: object) -> bool:
-        """A row slot's grain membership: a dimension, or a time dimension off the axis's column."""
+        """A row slot's grain membership: a dimension, or a time dimension off the axis's field."""
         key = slot.key
         if isinstance(key, TimeTruncKey):
             return axis_field is not None and key.source != axis_field
         return isinstance(key, (FieldKey, FieldSqlKey)) or slot.is_dimension
 
-    def _render_window_transform_sql(  # NOSONAR(S3776) — one per-op dispatch over the window-transform vocabulary, sharing the resolved measure / frame / partition state every arm reads. Each arm is one line; splitting the dispatch scatters that state without simplifying it.
+    def _render_window_transform_sql(  # NOSONAR(S3776) — one per-op dispatch over the window-transform vocabulary, sharing the resolved metric / frame / partition state every arm reads. Each arm is one line; splitting the dispatch scatters that state without simplifying it.
         self,
         *,
         slot,
@@ -4624,7 +4624,7 @@ class SQLGenerator:
                 available_alias_by_slot_id[tk_sid], quoted=True,
             )
 
-        # Explicit partition_keys win; otherwise auto-partition by query dimension slots (ColumnKey row-phase), never
+        # Explicit partition_keys win; otherwise auto-partition by query dimension slots (FieldKey row-phase), never
         # TimeTruncKey.
         partition_members: list[Tuple[str, Any]] = []
         if key.partition_keys:
@@ -5207,7 +5207,7 @@ class SQLGenerator:
         source_dataset, bundle, scope: ScopeFrame,
         order_slot_ids: Optional[List[str]] = None,
     ) -> Dict[str, Expression]:
-        """Pre-expand derived (``ColumnSqlKey``) ROW dimensions and derived TIME"""
+        """Pre-expand derived (``FieldSqlKey``) ROW dimensions and derived TIME"""
 
         def _add(path: Tuple[str, ...]) -> None:
             if path:
@@ -5243,7 +5243,7 @@ class SQLGenerator:
                 continue
             if not isinstance(key, FieldSqlKey):
                 continue
-            # A cross-model derived dim expands rooted at the owning join's __ alias with is_root=False, so a
+            # A cross-dataset derived dim expands rooted at the owning join's __ alias with is_root=False, so a
             # further-joined ref carries the full prefix (B reaching C -> B__C).
             crossed: Set[Tuple[str, ...]] = set()
             expr = self._derived_field_expr(
@@ -5254,7 +5254,7 @@ class SQLGenerator:
             if expr is None:
                 continue
             derived_expr_by_sid[sid] = expr
-            _add(key.path)  # the join to the owning model itself (cross-model)
+            _add(key.path)  # the join to the owning dataset itself (cross-dataset)
             for p in sorted(crossed, key=lambda t: (len(t), t)):
                 _add(p)
         return derived_expr_by_sid
@@ -5263,7 +5263,7 @@ class SQLGenerator:
         self, *, key: FieldSqlKey, source_dataset: SlayerDataset, source_relation: str, bundle: ResolvedSourceBundle,
         crossed_paths: "Optional[Set[Tuple[str, ...]]]" = None,
     ) -> "Optional[Expression]":
-        """The rendered expression for a derived (``ColumnSqlKey``) column."""
+        """The rendered expression for a derived (``FieldSqlKey``) field."""
         if key.path:
             owner_model = self._walk_join_path_dataset(
                 source_dataset=source_dataset, path=key.path, bundle=bundle,
@@ -5290,7 +5290,7 @@ class SQLGenerator:
 
 
     def _emit_relation(self, *, dataset: SlayerDataset, alias: str, bundle) -> Expression:
-        """The one door a model reaches the SQL through (FROM, join target, semi-join
+        """The one door a dataset reaches the SQL through (FROM, join target, semi-join
         hop, list parent), always as its filtered dataset (python.sql P13)."""
         if is_spine(dataset):
             return self._spine_relation(alias=alias)
@@ -5346,7 +5346,7 @@ class SQLGenerator:
             chain = self._gen_splice_chain
             raise QueryBackedCycleError(path=[*chain[chain.index(dataset.name):], dataset.name])
         raise ValueError(
-            f"Model {dataset.name!r} has neither sql_table nor sql: a query-backed "
+            f"Dataset {dataset.name!r} has neither sql_table nor sql: a query-backed "
             f"dataset reaches the renderer only as its spliced stages."
         )
 
@@ -5367,7 +5367,7 @@ class SQLGenerator:
         association: List[Expression] = []
         for text in filters:
             frame = self._scope_frame(dataset=dataset, relation=rows, bundle=bundle, allocator=allocator)
-            predicate = frame.enter_predicate(text, location=f"dataset filter {text!r} on model {dataset.name!r}")
+            predicate = frame.enter_predicate(text, location=f"dataset filter {text!r} on dataset {dataset.name!r}")
             paths = _prefix_closed(frame.join_paths.as_list())
             chains = {p: self._oriented_hop_chain(source_dataset=dataset, path=p, bundle=bundle) for p in paths}
             proven = all(
@@ -5494,7 +5494,7 @@ class SQLGenerator:
         )
         if col is None:
             raise ValueError(
-                f"Column {leaf!r} not found on model "
+                f"Field {leaf!r} not found on dataset "
                 f"{source_dataset.name!r}",
             )
         resolved = self._resolve_sql(sql=col.sql, name=col.name, dataset_name=source_relation, type=col.datatype)
@@ -5515,7 +5515,7 @@ class SQLGenerator:
     def _raw_time_col_expr_for_planned(
         self, *, time_field, source_dataset: SlayerDataset, source_relation: str, bundle: ResolvedSourceBundle,
     ) -> Expression:
-        """Untruncated value of a column bucket source."""
+        """Untruncated value of a field bucket source."""
 
         if isinstance(time_field, FieldKey):
             return self._joined_or_local_dim_expr(
@@ -5533,8 +5533,8 @@ class SQLGenerator:
                 )
                 if joined_model is None:
                     raise ValueError(
-                        f"Time dimension references derived column "
-                        f"{time_field.field_name!r} over join path "
+                        f"Time dimension references derived field "
+                        f"{time_field.field_name!r} over relationship path "
                         f"{'.'.join(time_field.path)!r} which does not "
                         f"resolve from the source bundle.",
                     )
@@ -5564,7 +5564,7 @@ class SQLGenerator:
                 self._parse(expanded_sql), zoned=self._dialect.is_zoned_db_type(getattr(declared, "db_type", None)),
             )
         raise NotImplementedError(
-            f"Unsupported TimeTruncKey column type: {type(time_field).__name__}",
+            f"Unsupported TimeTruncKey field type: {type(time_field).__name__}",
         )
 
     def _expand_derived_field_sql(
@@ -5574,8 +5574,8 @@ class SQLGenerator:
         crossed_paths: "Optional[Set[Tuple[str, ...]]]" = None,
         cast: bool = True,
     ) -> str:
-        """Expand a ``ColumnSqlKey`` target to SQL, casting the value to its
-        declared type (a bare column is skipped) and desugaring any ``Column.filter``
+        """Expand a ``FieldSqlKey`` target to SQL, casting the value to its
+        declared type (a bare field is skipped) and desugaring any ``DatasetField.filter``
         to ``CASE WHEN <filter> THEN <value> END``. The type CAST rides
         the VALUE, so the filter CASE needs no outer cast. ``cast=False`` skips the
         type CAST for a raw-time expression (``DATE_TRUNC`` needs the untruncated
@@ -5585,7 +5585,7 @@ class SQLGenerator:
         )
         if col is None:
             raise ValueError(
-                f"Derived column {field_name!r} not found on model "
+                f"Derived field {field_name!r} not found on dataset "
                 f"{source_dataset.name!r}",
             )
         resolver_root = root_relation if root_relation is not None else source_relation
@@ -5605,7 +5605,7 @@ class SQLGenerator:
         self, *, sql_expr: Expression, source_relation: str, source_dataset,
         bundle,
     ) -> List[Tuple[str, ...]]:
-        """Collect the join paths referenced by table qualifiers inside an"""
+        """Collect the relationship paths referenced by table qualifiers inside an"""
         return collect_root_scope_joined_paths(
             parsed=sql_expr,
             source_dataset=source_dataset,
@@ -5637,7 +5637,7 @@ class SQLGenerator:
     def _value_key_join_paths(  # NOSONAR(S3776) — one cohesive recursive ValueKey-tree walk; complexity is the per-key-type dispatch.
         self, *, key, source_dataset, source_relation: str, bundle,
     ) -> List[Tuple[str, ...]]:
-        """Join paths a typed filter ``ValueKey`` tree references"""
+        """Relationship paths a typed filter ``ValueKey`` tree references"""
 
         out: List[Tuple[str, ...]] = []
 
@@ -5697,7 +5697,7 @@ class SQLGenerator:
         source_dataset,
         src_leaf: str,
     ):
-        """Look up the model-level ``Aggregation`` definition for ``key.agg``,"""
+        """Look up the dataset-level ``Aggregation`` definition for ``key.agg``,"""
         agg_def = aggregation_definition(owner=source_dataset, agg=key.agg)
         if agg_def is None and key.agg not in _BUILTIN_BAREARG_AGGS_LOCAL_SLICE:
             raise AggregationNotAllowedError(
@@ -5718,7 +5718,7 @@ class SQLGenerator:
         source,
         src_leaf: str,
     ) -> None:
-        """Reject CROSS-MODEL aggregates' kwarg column refs whose join path"""
+        """Reject CROSS-DATASET aggregates' kwarg field refs whose relationship path"""
 
         # A host-locus aggregate's inputs are certified from the home by the
         # compiler and the scope registers each kwarg's join; the gate keeps
@@ -5738,8 +5738,8 @@ class SQLGenerator:
                         f"kwarg {kname!r} references "
                         f"{type(leaf).__name__} with path {leaf.path!r}; "
                         f"aggregate source path is {source.path!r}. "
-                        f"Cross-model kwargs must share the source's "
-                        f"join path."
+                        f"Cross-dataset kwargs must share the source's "
+                        f"relationship path."
                     ),
                 )
 
@@ -5778,7 +5778,7 @@ class SQLGenerator:
         return out
 
     def _expression_reads(self, *, agg: str, expression: Optional[str]) -> frozenset:
-        """The parameter names ``agg`` reads: its formula's placeholders, else a built-in's own."""
+        """The parameter names ``agg`` reads: its expression's placeholders, else a built-in's own."""
         if expression is None:
             return frozenset(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
         return self._expression_template(agg_name=agg, expression=expression).placeholder_names
@@ -5786,14 +5786,14 @@ class SQLGenerator:
     def _walk_join_path_dataset(
         self, *, source_dataset: SlayerDataset, path: Sequence[str], bundle: ResolvedSourceBundle,
     ) -> Optional[SlayerDataset]:
-        """The terminal model of a join ``path`` walked from ``source_dataset``
+        """The terminal dataset of a relationship ``path`` walked from ``source_dataset``
         via the shared walker (tokens may be edge names or reverse hops)."""
         return resolved_terminal(
             root=source_dataset, path=tuple(path),
             datasets_by_name=bundle.datasets_by_name,
         )
 
-    def _build_agg_render_spec_from_planned(  # NOSONAR(S3776) — sequential isinstance dispatch over StarKey / ColumnKey / ColumnSqlKey with helper extractions for aggregation-def lookup, kwarg path validation, and explicit-time-arg resolution. Further splitting would scatter the per-source-kind contract.
+    def _build_agg_render_spec_from_planned(  # NOSONAR(S3776) — sequential isinstance dispatch over StarKey / FieldKey / FieldSqlKey with helper extractions for aggregation-def lookup, kwarg path validation, and explicit-time-arg resolution. Further splitting would scatter the per-source-kind contract.
         self,
         *,
         slot: Optional[ValueSlot],
@@ -5820,7 +5820,7 @@ class SQLGenerator:
             # emitted.
             if key.agg != "count":
                 raise ValueError(
-                    f"Aggregation {key.agg!r} not allowed with measure "
+                    f"Aggregation {key.agg!r} not allowed with metric "
                     f"'*' — use 'count(*)' for COUNT(*)."
                 )
             owner = (
@@ -5903,11 +5903,11 @@ class SQLGenerator:
             )
             if col is None:
                 raise ValueError(
-                    f"Aggregate source column {src_leaf!r} not found "
-                    f"on model {source_dataset.name!r}",
+                    f"Aggregate source field {src_leaf!r} not found "
+                    f"on dataset {source_dataset.name!r}",
                 )
-            # A ColumnSqlKey source expands its value (inner bare refs qualify to
-            # source_relation) and desugars any Column.filter to CASE WHEN here;
+            # A FieldSqlKey source expands its value (inner bare refs qualify to
+            # source_relation) and desugars any DatasetField.filter to CASE WHEN here;
             # a plain physical column stays bare for the aggregate.
             if isinstance(source, FieldSqlKey) and bundle is not None:
                 sql_text = self._expand_derived_field_sql(
@@ -5949,16 +5949,16 @@ class SQLGenerator:
                 time_field=None,
             )
         if isinstance(source, _EXPRESSION_SOURCE_KINDS):
-            # Same-model expression source — render the row-level
+            # Same-dataset expression source — render the row-level
             # expression to SQL text; every dispatch kind downstream
-            # (simple / distinct / percentile / dialect hook / formula
-            # ``{value}``) receives it exactly like a derived-column body.
+            # (simple / distinct / percentile / dialect hook / expression
+            # ``{value}``) receives it exactly like a derived-field body.
             assert not isinstance(source, TimePointCmpKey)  # lowered by the checker before planning
             expr_leaf = expression_source_leaf(source)
             agg_def = self._resolve_aggregation_def(
                 key=key, source_dataset=source_dataset, src_leaf=expr_leaf,
             )
-            # One resolver for leaves, attached placeholders, derived columns and join registration.
+            # One resolver for leaves, attached placeholders, derived fields and join registration.
             value = apply_ast_rewrites(
                 tree=param_scope.resolve(source), target_dialect=self._dialect, parse_dialect=self._dialect,
             )
@@ -6158,7 +6158,7 @@ class SQLGenerator:
                     f"unsupported filter phase "
                     f"{fp.phase!r}. filter id={fp.id!r}."
                 )
-            # An AGGREGATE-phase filter on a LOCAL aggregate renders as HAVING; a cross-model ref raises in the walker
+            # An AGGREGATE-phase filter on a LOCAL aggregate renders as HAVING; a cross-dataset ref raises in the walker
             # (it routes via the per-plan CTE).
             having = fp.phase == Phase.AGGREGATE
             if having and dimension_values is None:
@@ -6182,7 +6182,7 @@ class SQLGenerator:
 
     @staticmethod
     def _is_nontrivial_derived(dataset: SlayerDataset, name: str) -> bool:
-        """True iff ``name`` is a column on ``dataset`` whose ``Column.sql`` is a"""
+        """True iff ``name`` is a field on ``dataset`` whose ``DatasetField.sql`` is a"""
         col = next((c for c in dataset.fields if c.name == name), None)
         return col is not None and col.sql is not None and not is_trivial_base(
             field=col,
@@ -6197,7 +6197,7 @@ class SQLGenerator:
             anchor = source_anchor_path(agg_key.source)
             if anchor:
                 raise NotImplementedError(
-                    f"cross-model aggregate ref in filter (path={anchor!r}) "
+                    f"cross-dataset aggregate ref in filter (path={anchor!r}) "
                     f"routes via the per-plan CTE, not inline HAVING."
                 )
             having_kwargs = self._resolve_agg_kwargs_for_key(key=agg_key, scope=scope)
@@ -6527,18 +6527,18 @@ def _user_authored_exemptions(
     *, bundle: ResolvedSourceBundle, dialect: "str | SqlDialect",
 ) -> frozenset[str]:
     """Over-limit identifier-shaped tokens from every user-authored raw-SQL surface
-    in ``bundle`` — model ``sql``/``sql_table``/``filters`` and per-column
+    in ``bundle`` — dataset ``sql``/``sql_table``/``filters`` and per-field
     ``name``/``sql``/``filter`` across the source, referenced, per-stage source and
-    inline-extension models. These pass through emission
-    unfitted; SLayer-generated query-backed model SQL and synthetic stage-schema
-    models (built later) are deliberately excluded."""
+    inline-extension datasets. These pass through emission
+    unfitted; SLayer-generated query-backed dataset SQL and synthetic stage-schema
+    datasets (built later) are deliberately excluded."""
     d = dialect if isinstance(dialect, SqlDialect) else get_dialect(dialect)
     limit = d.max_identifier_bytes
     if limit is None:
         return frozenset()
 
     def _col_surfaces(col) -> list[str]:
-        # ext.columns may still be raw dicts (not yet coerced to Column).
+        # ``fields`` entries may still be raw dicts (not yet coerced to DatasetField).
         get = col.get if isinstance(col, dict) else lambda k: getattr(col, k, None)
         return [s for s in (get("name"), get("sql"), get("filter")) if s]
 
@@ -6587,7 +6587,7 @@ def _stamp_dataset(relation: Expression, *, dataset) -> Expression:
 
 
 def read_datasets(statement: Expression) -> Set[str]:
-    """Names of the models whose relations ``statement`` contains."""
+    """Names of the datasets whose relations ``statement`` contains."""
     return {
         stamp for node in statement.find_all(exp.Table, exp.Subquery)
         if (stamp := node.meta.get(_DATASET_STAMP)) is not None
@@ -6604,7 +6604,7 @@ def _stamp_association(exists: Expression, *, dataset) -> Expression:
 
 
 def association_datasets(statement: Expression) -> Set[str]:
-    """Models whose filters ``statement`` restricts by a correlated ``EXISTS``."""
+    """Datasets whose filters ``statement`` restricts by a correlated ``EXISTS``."""
     return {
         stamp for node in statement.find_all(exp.Exists)
         if (stamp := node.meta.get(_ASSOCIATION_STAMP)) is not None
@@ -6630,7 +6630,7 @@ class PlannedStatement(BaseModel):
     aliases: List[str] = Field(default_factory=list)
     exempt: FrozenSet[str] = frozenset()
     kept_stages: Set[str] = Field(default_factory=set)
-    #: Models whose filters the statement restricts by a correlated subquery.
+    #: Datasets whose filters the statement restricts by a correlated subquery.
     associated: Set[str] = Field(default_factory=set)
 
     def render(self, *, policy_scoped: bool = False) -> str:
@@ -6698,7 +6698,7 @@ def generate_planned_stages(
     associated: "Optional[Set[str]]" = None,
 ) -> str:
     """Render a multi-stage DAG (``plan_stages`` output) to one SQL string; the stage relations
-    emitted land in ``kept_stages``, the models the statement reads in ``read_set``, those whose
+    emitted land in ``kept_stages``, the datasets the statement reads in ``read_set``, those whose
     filters it restricts by a correlated subquery in ``associated``."""
     built = build_planned_statement(
         planned_queries, bundle=bundle, dialect=dialect, projection_aliases=projection_aliases,

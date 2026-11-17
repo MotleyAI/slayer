@@ -1,14 +1,14 @@
-"""Convert a parsed DbtProject into SLayer models.
+"""Convert a parsed DbtProject into SLayer datasets.
 
 Orchestrates the full pipeline: entity resolution, dimension/measure
-conversion, measure consolidation (one ``Column`` per unique expr +
-one ``ModelMeasure`` per dbt measure), and folding of metric definitions
-(simple-with-filter / derived / ratio / cumulative) into ``ModelMeasure``
+conversion, measure consolidation (one ``DatasetField`` per unique expr +
+one ``DatasetMetric`` per dbt measure), and folding of metric definitions
+(simple-with-filter / derived / ratio / cumulative) into ``DatasetMetric``
 entries on the source semantic model.
 
 The converter never emits ``SlayerQuery`` definitions: every dbt artefact
-that produces a query-shaped result is expressed as a named formula on a
-model. Constructs that cannot be expressed exactly (conversion metrics,
+that produces a query-shaped result is expressed as a named expression on a
+dataset. Constructs that cannot be expressed exactly (conversion metrics,
 windowed / grain-to-date cumulatives, semi-additive measures, …) are *failed
 cleanly*: routed to the structured ``ConversionResult`` report with a precise
 reason + workaround, and the raw construct is stashed into the owning entity's
@@ -110,7 +110,7 @@ _STANDARD_GRAINS: frozenset = frozenset({
 })
 
 # Dialects with no GROUP-BY percentile / median aggregate. A percentile/median
-# measure imports fine but fails at query time on these, so the converter emits
+# metric imports fine but fails at query time on these, so the converter emits
 # an info-level caveat when ``target_dialect`` is one of them.
 
 # Shared workaround text for an unreachable cross-model filter (used by the
@@ -146,20 +146,20 @@ def _entity_column(expr: str) -> str | None:
 
 
 def _key_field(*, expr: str, cols: list[DatasetField]) -> DatasetField | None:
-    """The unfiltered base column reading the column entity ``expr`` names (a same-named one first)."""
+    """The unfiltered base field reading the column entity ``expr`` names (a same-named one first)."""
     phys = _entity_column(expr)
     owners = [c for c in cols if c.is_base and c.filter is None and c.physical_name == phys]
     return next((c for c in owners if c.name == phys), owners[0] if owners else None)
 
 
 def _free_key_name(*, expr: str, cols: list[DatasetField], taken: set) -> str | None:
-    """The name for a new column reading entity ``expr``, unless non-bare or already taken."""
+    """The name for a new field reading entity ``expr``, unless non-bare or already taken."""
     phys = _entity_column(expr)
     return phys if phys and not name_taken(phys, [*taken, *(c.name for c in cols)]) else None
 
 
 def _aggregated_field(expression: str) -> tuple[str, str] | None:
-    """``(column, aggregation)`` of a single-aggregation formula over one column."""
+    """``(field, aggregation)`` of a single-aggregation expression over one field."""
     try:
         parsed = parse_expr(expression)
     except ValueError:
@@ -177,7 +177,7 @@ def _meta_of(config: DbtConfig | None) -> dict[str, Any] | None:
 
 
 def _convert_dimension(dim: DbtDimension) -> DatasetField:
-    """Convert a dbt dimension to a SLayer column."""
+    """Convert a dbt dimension to a SLayer field."""
     if dim.type == "time":
         data_type = DataType.TIMESTAMP
     else:
@@ -205,7 +205,7 @@ def _alloc_field_name(base: str, *, taken: set[str]) -> str:
 
 
 def _declare_primary_entity(*, sm: DbtSemanticModel, primary_entity: str, cols: list[DatasetField]) -> None:
-    """Mark the column reading ``sm``'s primary entity as PK, adding one when the name is free."""
+    """Mark the field reading ``sm``'s primary entity as PK, adding one when the name is free."""
     pe_expr = next((e.expr or e.name for e in sm.entities if e.name == primary_entity), primary_entity)
     pk = _key_field(expr=pe_expr, cols=cols)
     if pk is None and (name := _free_key_name(expr=pe_expr, cols=cols, taken=set())):
@@ -216,7 +216,7 @@ def _declare_primary_entity(*, sm: DbtSemanticModel, primary_entity: str, cols: 
 
 
 class DbtToSlayerConverter:
-    """Convert a DbtProject into SLayer models."""
+    """Convert a DbtProject into SLayer datasets."""
 
     def __init__(
         self,
@@ -230,10 +230,10 @@ class DbtToSlayerConverter:
         self.project = project
         self.data_source = data_source
         self.include_hidden_models = include_hidden_datasets
-        # Regular-model tables read by ``collect_metadata``: the model, or why it could not be read.
+        # Regular-model tables read by ``collect_metadata``: the dataset, or why it could not be read.
         self._introspected: dict[str, SlayerDataset | str] | None = None
         # When set to a dialect that lacks percentile/median
-        # (mysql / tsql), the converter emits info caveats for those measures.
+        # (mysql / tsql), the converter emits info caveats for those metrics.
         self.target_dialect = target_dialect
         self._live = LiveDatasource(offline_reason=offline_reason, data_source=data_source,
                                     db_type=target_dialect, dialect=None)
@@ -245,11 +245,11 @@ class DbtToSlayerConverter:
         self.entity_registry = EntityRegistry()
         self._warnings: list[ConversionWarning] = []
         self._unconverted: list[ConversionWarning] = []
-        # {model_name: SlayerModel} for metric resolution
+        # {model_name: SlayerDataset} for metric resolution
         self._datasets_by_name: dict[str, SlayerDataset] = {}
         # {model_name: DbtSemanticModel} for looking up entities
         self._dbt_models_by_name: dict[str, DbtSemanticModel] = {}
-        # Filtered-column dedup: {(model, column_expr, normalized_filter): col_name}
+        # Filtered-field dedup: {(model, column_expr, normalized_filter): col_name}
         self._filtered_columns: dict[tuple[str, str, str | None], str] = {}
         # {regular_model_name: raw_code} — used to inline SQL into semantic
         # models whose underlying dbt model is a query rather than a table.
@@ -442,16 +442,16 @@ class DbtToSlayerConverter:
             "entities": kept("Entity", sm.entities)})
 
     def _prune_dangling_metrics(self) -> None:
-        """Drop+report any ``ModelMeasure`` whose formula references a name that
-        does not resolve on its model (robust validation pass).
+        """Drop+report any ``DatasetMetric`` whose expression references a name that
+        does not resolve on its dataset (robust validation pass).
 
         A derived / ratio metric whose input metric was itself clean-failed
         (measure-less, time-spine gap-fill, unreachable filter, filtered-leaf
-        clean-fail, or a transitively-dropped dependency) leaves a bare formula
-        reference to a measure that was never materialized. Rather than predict
+        clean-fail, or a transitively-dropped dependency) leaves a bare expression
+        reference to a metric that was never materialized. Rather than predict
         every such case inline at conversion time, this final pass validates the
-        emitted formulas against the actual model and removes the ones that
-        can't resolve — running to a fixpoint so a measure depending on a
+        emitted expressions against the actual dataset and removes the ones that
+        can't resolve — running to a fixpoint so a metric depending on a
         just-dropped one is dropped too.
         """
         for model in self._datasets_by_name.values():
@@ -467,15 +467,15 @@ class DbtToSlayerConverter:
                     category="dangling_reference",
                     severity="dropped",
                     message=(
-                        f"Measure '{m.name}' references a name that does not resolve "
-                        f"on model '{dataset.name}' and was dropped: {problem}"
+                        f"Metric '{m.name}' references a name that does not resolve "
+                        f"on dataset '{dataset.name}' and was dropped: {problem}"
                     ),
                     suggestion="Ensure every referenced metric/measure converts successfully.",
                 ))
         dataset.metrics = [m for m, problem in zip(dataset.metrics, problems) if problem is None]
 
     def _convert_regular_models(self, existing_names: set) -> list[SlayerDataset]:
-        """Convert orphan dbt models (not wrapped by semantic_models) to hidden SLayer models."""
+        """Convert orphan dbt models (not wrapped by semantic_models) to hidden SLayer datasets."""
         if self._introspected is None:
             self._warnings.append(ConversionWarning(
                 category="hidden_models",
@@ -498,7 +498,7 @@ class DbtToSlayerConverter:
         return results
 
     def _convert_regular_model(self, rm: DbtRegularModel) -> SlayerDataset | None:
-        """Wrap a regular dbt model's introspected table as a hidden SlayerModel."""
+        """Wrap a regular dbt model's introspected table as a hidden SlayerDataset."""
         assert self._introspected is not None
         introspected = self._introspected.get(rm.name)
         if not isinstance(introspected, SlayerDataset):
@@ -526,11 +526,11 @@ class DbtToSlayerConverter:
         return model
 
     def _convert_semantic_model(self, sm: DbtSemanticModel) -> SlayerDataset:
-        """Convert a single dbt semantic model to a SlayerModel.
+        """Convert a single dbt semantic model to a SlayerDataset.
 
         Hard-fails (DbtConversionError) when the same name appears as both a
         dimension and a measure on this semantic model — ambiguous, since v2
-        SLayer columns and measures share a namespace per model.
+        SLayer fields and metrics share a namespace per dataset.
         """
         # Q-G: hard-fail on dim/measure name collisions before doing any work.
         measure_names = [m.name for m in sm.measures]
@@ -538,14 +538,14 @@ class DbtToSlayerConverter:
         if collisions:
             raise DbtConversionError(
                 f"Semantic model '{sm.name}': dimension and measure share name(s) "
-                f"{collisions}. SLayer columns and measures occupy a single "
-                f"namespace per model — rename one side in the dbt project."
+                f"{collisions}. SLayer fields and metrics occupy a single "
+                f"namespace per dataset — rename one side in the dbt project."
             )
 
         sql_table, sql_source = self._sources[sm.name]
         default_time_dim = sm.defaults.agg_time_dimension if sm.defaults else None
 
-        # Accumulate model-level meta (config.meta + label + any
+        # Accumulate dataset-level meta (config.meta + label + any
         # clean-fail raw stashes added during measure conversion).
         model_meta: dict[str, Any] = dict(_meta_of(sm.config) or {})
         if sm.label:
@@ -603,7 +603,7 @@ class DbtToSlayerConverter:
     def _settle_fields(
         self, *, sm: DbtSemanticModel, cols: list[DatasetField], metrics: list[DatasetMetric], live: LiveSource | None,
     ) -> tuple[list[DatasetField], list[DatasetMetric]]:
-        """Drop columns reading a masked physical column, type the rest, and drop measures SLayer cannot read."""
+        """Drop fields reading a masked physical column, type the rest, and drop metrics SLayer cannot read."""
         cols = self._drop_masked(sm, cols, live=live)
         dbt_aggs = {m.name: m.agg.lower() for m in sm.measures}
         sources = {m.name or "": src for m in metrics if (src := _aggregated_field(m.expression)) is not None}
@@ -631,12 +631,12 @@ class DbtToSlayerConverter:
         return [c for c in cols if c.name not in untyped or c.name in used], kept
 
     def _drop_masked(self, sm: DbtSemanticModel, cols: list[DatasetField], *, live: LiveSource | None) -> list[DatasetField]:
-        """``cols`` without those reading a physical column another column's name holds (or their own name)."""
+        """``cols`` without those reading a physical column another field's name holds (or their own name)."""
         dropped = unreadable_fields(cols, dialect=self._dialect, live=live.names if live is not None else ())
         for name, problem in dropped.items():
             self._warnings.append(ConversionWarning(
                 dataset_name=sm.name, category="masked_column", severity="dropped",
-                message=f"Column {name!r} on '{sm.name}' dropped: {problem}."))
+                message=f"Field {name!r} on '{sm.name}' dropped: {problem}."))
         return [c for c in cols if c.name not in dropped]
 
     def _type_field(self, *, sm: DbtSemanticModel, col: DatasetField, live: LiveSource | None, aggs: list[str],
@@ -695,11 +695,11 @@ class DbtToSlayerConverter:
         self, *, sm_name: str, cols: list[DatasetField], metric_names: set,
         joins: list[DatasetRelationship], unkeyable: list[str],
     ) -> list[DatasetRelationship]:
-        """Keep joins whose source keys are base columns, synthesising a hidden one for an uncovered foreign entity."""
+        """Keep relationships whose source keys are base fields, synthesising a hidden one for an uncovered foreign entity."""
         for expr in unkeyable:
             self._warnings.append(ConversionWarning(
                 dataset_name=sm_name, category="join", severity="dropped",
-                message=f"Foreign entity expr {expr!r} is not a single column identifier; its join is skipped.",
+                message=f"Foreign entity expr {expr!r} is not a single column identifier; its relationship is skipped.",
                 suggestion="Expose the key as a column and name that column in the entity expr.",
             ))
         kept: list[DatasetRelationship] = []
@@ -715,7 +715,7 @@ class DbtToSlayerConverter:
         return kept
 
     def _resolve_target_keys(self) -> None:
-        """Rewrite each join's physical target key to the target column's name, dropping unresolvable joins."""
+        """Rewrite each relationship's physical target key to the target field's name, dropping unresolvable ones."""
         for model in self._datasets_by_name.values():
             kept: list[DatasetRelationship] = []
             for join in model.relationships:
@@ -733,12 +733,12 @@ class DbtToSlayerConverter:
     def _warn_dropped_relationship(self, *, dataset_name: str, target: str, key: str) -> None:
         self._warnings.append(ConversionWarning(
             dataset_name=dataset_name, category="join", severity="dropped",
-            message=(f"Join to '{target}' skipped: key {key!r} is not read by a base "
-                     f"column of its model."),
+            message=(f"Relationship to '{target}' skipped: key {key!r} is not read by a base "
+                     f"field of its dataset."),
         ))
 
     def _declare_primary_key(self, *, sm_name: str, entity, cols: list[DatasetField]) -> None:
-        """Mark the column reading the entity's physical column as PK, adding one when the name is free."""
+        """Mark the field reading the entity's physical column as PK, adding one when the name is free."""
         expr = entity.expr or entity.name
         col = _key_field(expr=expr, cols=cols)
         if col is None:
@@ -753,7 +753,7 @@ class DbtToSlayerConverter:
             col = DatasetField(name=name, datatype=DataType.DOUBLE)
             cols.append(col)
         col.primary_key = True
-        # Keep what the column already has.
+        # Keep what the field already has.
         if col.description is None:
             col.description = entity.description
         if col.label is None:
@@ -764,7 +764,7 @@ class DbtToSlayerConverter:
 
     @staticmethod
     def _declare_key(*, key: str, cols: list[DatasetField], metric_names: set) -> str | None:
-        """The name of the column reading physical ``key``, adding a hidden one when the name is free."""
+        """The name of the field reading physical ``key``, adding a hidden one when the name is free."""
         col = _key_field(expr=key, cols=cols)
         if col is not None:
             return col.name
@@ -775,7 +775,7 @@ class DbtToSlayerConverter:
 
     @staticmethod
     def _entity_meta(entity) -> dict[str, Any] | None:
-        """Build a PK-column meta blob from an entity's config.meta + role."""
+        """Build a PK-field meta blob from an entity's config.meta + role."""
         meta = _meta_of(getattr(entity, "config", None)) or {}
         role = getattr(entity, "role", None)
         if role:
@@ -792,14 +792,14 @@ class DbtToSlayerConverter:
         existing_field_names: set,
         dataset_meta: dict[str, Any],
     ) -> tuple[list[DatasetField], list[DatasetMetric]]:
-        """Convert dbt measures into a (Columns, ModelMeasures) pair.
+        """Convert dbt measures into a (fields, metrics) pair.
 
-        Each unique measure expression yields a single ``Column``; each dbt
-        measure yields one ``ModelMeasure`` whose formula is ``<agg>(<col>)``.
+        Each unique measure expression yields a single ``DatasetField``; each dbt
+        measure yields one ``DatasetMetric`` whose expression is ``<agg>(<col>)``.
         Special handling:
 
         * ``sum_boolean`` → a dedicated ``CASE WHEN (<expr>) THEN 1 ELSE 0 END``
-          ``INT`` column aggregated with ``sum`` (cross-DB safe; null bool → 0).
+          ``INT`` field aggregated with ``sum`` (cross-DB safe; null bool → 0).
         * ``percentile`` → ``percentile(<col>, p=<value>)``; clean-fails when the
           value is absent or discrete/approximate flags are set.
         * ``non_additive_dimension`` (semi-additive) → clean-fail.
@@ -868,7 +868,7 @@ class DbtToSlayerConverter:
     def _measure_expression(
         self, m: DbtMeasure, col_name: str, sm_name: str, dataset_meta: dict[str, Any]
     ) -> str | None:
-        """Build the ``<agg>(<col>)`` formula for a dbt measure, or ``None`` if
+        """Build the ``<agg>(<col>)`` expression for a dbt measure, or ``None`` if
         it clean-fails (percentile without a value / discrete-approx flags)."""
         mapped = _map_agg(m.agg)
         suffix = mapped
@@ -905,7 +905,7 @@ class DbtToSlayerConverter:
     def _emit_dataset_metric(
         self, metrics: list[DatasetMetric], m: DbtMeasure, expression: str, sm_name: str
     ) -> None:
-        """Append a ``ModelMeasure`` for a dbt measure, routing validation failures to the report."""
+        """Append a ``DatasetMetric`` for a dbt measure, routing validation failures to the report."""
         try:
             metrics.append(DatasetMetric(
                 name=m.name,
@@ -922,7 +922,7 @@ class DbtToSlayerConverter:
                 severity="unconverted",
                 message=(
                     f"dbt measure '{m.name}' could not be converted to a "
-                    f"ModelMeasure: {exc}"
+                    f"DatasetMetric: {exc}"
                 ),
             ))
 
@@ -991,7 +991,7 @@ class DbtToSlayerConverter:
     def _convert_metric(self, metric: DbtMetric) -> None:
         """Route a dbt metric to the appropriate handler.
 
-        All handlers fold their output into a ``ModelMeasure`` on the source
+        All handlers fold their output into a ``DatasetMetric`` on the source
         semantic model (or route to the report on failure). No ``SlayerQuery``
         is produced.
         """
@@ -1040,10 +1040,10 @@ class DbtToSlayerConverter:
         metric: DbtMetric,
         expression: str,
     ) -> None:
-        """Append a ``ModelMeasure`` to ``slayer_dataset``.
+        """Append a ``DatasetMetric`` to ``slayer_dataset``.
 
         Routes validation failures to ``unconverted_metrics``; skips with a
-        warning if the name collides with a column or measure on the model.
+        warning if the name collides with a field or metric on the dataset.
         """
         if self._metric_name_collides(metric.name, slayer_dataset):
             return
@@ -1063,12 +1063,12 @@ class DbtToSlayerConverter:
                 severity="unconverted",
                 message=(
                     f"Metric '{metric.name}' could not be converted to a "
-                    f"ModelMeasure: {exc}"
+                    f"DatasetMetric: {exc}"
                 ),
             ))
 
     def _metric_name_collides(self, name: str, slayer_dataset: SlayerDataset) -> bool:
-        """Whether ``name`` collides with a column/measure on ``slayer_dataset``.
+        """Whether ``name`` collides with a field/metric on ``slayer_dataset``.
         Emits a collision warning when it does."""
         existing_names = {c.name for c in slayer_dataset.fields}
         existing_names.update(m.name for m in slayer_dataset.metrics if m.name is not None)
@@ -1079,8 +1079,8 @@ class DbtToSlayerConverter:
                 category="collision",
                 severity="info",
                 message=(
-                    f"Metric '{name}' collides with an existing column or "
-                    f"measure on model '{slayer_dataset.name}'. Skipped."
+                    f"Metric '{name}' collides with an existing field or "
+                    f"metric on dataset '{slayer_dataset.name}'. Skipped."
                 ),
             ))
             return True
@@ -1134,9 +1134,9 @@ class DbtToSlayerConverter:
         """A simple metric is a (filtered) re-aggregation of a single measure.
 
         Without a filter (or fill): nothing to do — the underlying measure is already
-        addressable as a ModelMeasure. With a filter: push it down into a leaf
-        Column carrying the CASE-WHEN ``filter`` and reference it from a
-        ModelMeasure.
+        addressable as a DatasetMetric. With a filter: push it down into a leaf
+        DatasetField carrying the CASE-WHEN ``filter`` and reference it from a
+        DatasetMetric.
         """
         tp = metric.type_params
         measure_name = self._simple_metric_measure_name(metric, tp)
@@ -1224,7 +1224,7 @@ class DbtToSlayerConverter:
         self._add_dataset_metric(slayer_dataset=slayer_model, metric=metric, expression=self._with_fill(base, fill))
 
     def _convert_derived_metric(self, metric: DbtMetric) -> None:
-        """A derived metric expresses a formula over other metrics/measures.
+        """A derived metric expresses an expression over other metrics/measures.
 
         Input references are substituted in the ``expr``; an ``offset_window``
         on a single-aggregate input is lowered to a ``time_shift`` call.
@@ -1353,7 +1353,7 @@ class DbtToSlayerConverter:
     def _derived_input_replacement(
         self, metric: DbtMetric, m_input: DbtMetricInput
     ) -> tuple[str | None, bool]:
-        """Resolve one derived-metric input to its formula replacement.
+        """Resolve one derived-metric input to its expression replacement.
 
         Returns ``(replacement, clean_failed)``. ``clean_failed=True`` means a
         report entry was emitted and the whole metric should be abandoned;
@@ -1394,8 +1394,8 @@ class DbtToSlayerConverter:
             rep = self._derived_filtered_input_ref(metric, m_input)
             return rep, rep is None
         # A plain reference to an input metric that was itself clean-failed (and
-        # so never materialized) leaves a dangling bare name in the formula; the
-        # post-conversion _prune_dangling_measures pass catches and reports it.
+        # so never materialized) leaves a dangling bare name in the expression; the
+        # post-conversion _prune_dangling_metrics pass catches and reports it.
         return self._resolve_metric_to_name(m_input.name), False
 
     def _derived_filtered_input_ref(
@@ -1412,7 +1412,7 @@ class DbtToSlayerConverter:
                     f"Derived metric '{metric.name}': input '{m_input.name}' carries a "
                     f"filter but is not a single aggregate; not exactly expressible."
                 ),
-                suggestion="Filter a simple-aggregate input, or use a multi-stage model.",
+                suggestion="Filter a simple-aggregate input, or use a multi-stage dataset.",
             )
             return None
         return self._pushed_input_ref(
@@ -1503,12 +1503,12 @@ class DbtToSlayerConverter:
     def _ratio_side_ref(
         self, metric: DbtMetric, side: DbtMetricInput, slayer_dataset: SlayerDataset
     ) -> str | None:
-        """Resolve one ratio side to a formula reference, pushing down the
+        """Resolve one ratio side to an expression reference, pushing down the
         combined (metric-level + per-input) filter into a leaf when present."""
         raw_filter = self._combine_filters(metric.filter, side.filter)
         if not raw_filter:
             # A ratio side referencing a clean-failed (non-materialized) metric
-            # leaves a dangling formula name that _prune_dangling_measures drops.
+            # leaves a dangling expression name that _prune_dangling_metrics drops.
             return self._resolve_metric_to_name(side.name) or side.name
 
         leaf = self._resolve_input_to_leaf_filtered(side.name)
@@ -1520,7 +1520,7 @@ class DbtToSlayerConverter:
                     f"ratio/derived (multi-aggregate) metric carrying a filter; "
                     f"filtering after metric calculation is not exactly expressible."
                 ),
-                suggestion="Restructure as a multi-stage source_queries model.",
+                suggestion="Restructure as a multi-stage source_queries dataset.",
             )
             return None
 
@@ -1533,7 +1533,7 @@ class DbtToSlayerConverter:
         """A cumulative metric is a running total of one underlying measure.
 
         Only the *unbounded* form (``period_agg=first``, no window, no
-        grain_to_date) maps to ``cumsum(measure)``. Windowed / grain-to-date /
+        grain_to_date) maps to ``cumsum(metric)``. Windowed / grain-to-date /
         non-default-period-agg variants are query-grain-dependent and clean-fail.
         """
         tp = metric.type_params
@@ -1586,7 +1586,7 @@ class DbtToSlayerConverter:
     def _cumulative_source_dataset(
         self, metric: DbtMetric, metric_name: str
     ) -> SlayerDataset | None:
-        """Resolve the SlayerModel a cumulative metric folds into, routing the
+        """Resolve the SlayerDataset a cumulative metric folds into, routing the
         not-found / not-converted cases to the report (returns ``None``)."""
         source_model_name = self._find_metric_source_model(metric)
         if source_model_name is None:
@@ -1623,7 +1623,7 @@ class DbtToSlayerConverter:
 
         Returns ``True`` (and emits a report entry) for a rolling window,
         grain-to-date reset, or non-default ``period_agg``; ``False`` when the
-        cumulative is the unbounded form SLayer maps to ``cumsum(measure)``.
+        cumulative is the unbounded form SLayer maps to ``cumsum(metric)``.
         """
         if window is not None:
             self._fail_metric(
@@ -1632,7 +1632,7 @@ class DbtToSlayerConverter:
                     f"Cumulative metric '{metric.name}' has a rolling window; a windowed "
                     f"running total with period re-aggregation is not exactly expressible."
                 ),
-                suggestion="Use cumsum(measure) for an unbounded running total.",
+                suggestion="Use cumsum(metric) for an unbounded running total.",
                 raw={"window": window.model_dump()},
             )
             return True
@@ -1641,9 +1641,9 @@ class DbtToSlayerConverter:
                 metric, category="grain_to_date_cumulative", severity="dropped",
                 message=(
                     f"Cumulative metric '{metric.name}' uses grain_to_date; reset-at-grain "
-                    f"can't bake into a saved measure (it is query-grain-dependent)."
+                    f"can't bake into a saved metric (it is query-grain-dependent)."
                 ),
-                suggestion="Use cumsum(measure) and put the grain dimension in the query.",
+                suggestion="Use cumsum(metric) and put the grain dimension in the query.",
                 raw={"grain_to_date": grain_to_date},
             )
             return True
@@ -1654,7 +1654,7 @@ class DbtToSlayerConverter:
                     f"Cumulative metric '{metric.name}' uses period_agg='{period_agg}'; "
                     f"only the default (first) running total is exactly expressible."
                 ),
-                suggestion="Use the default period_agg (first) for cumsum(measure).",
+                suggestion="Use the default period_agg (first) for cumsum(metric).",
                 raw={"period_agg": period_agg},
             )
             return True
@@ -1695,7 +1695,7 @@ class DbtToSlayerConverter:
         resolves when that model is **directly** joined to the source model —
         i.e. the entity is declared on the source model itself. A multi-hop
         filter (e.g. ``orders → customers → regions``) would need the full
-        ``customers__regions.dim`` join path, which the dbt filter converter
+        ``customers__regions.dim`` relationship path, which the dbt filter converter
         cannot produce, so it is clean-failed rather than emitted as a broken
         one-hop path. (Full multi-hop cross-model filter support is tracked
         separately.)
@@ -1766,14 +1766,14 @@ class DbtToSlayerConverter:
         dbt_measure: DbtMeasure,
         raw_filter: str,
     ) -> str | None:
-        """Get-or-create the filtered leaf Column for ``(model, expr, filter)``
-        and return the aggregate formula over it (or ``None`` on a
+        """Get-or-create the filtered leaf DatasetField for ``(model, expr, filter)``
+        and return the aggregate expression over it (or ``None`` on a
         clean-fail that has already been routed to the report).
 
         Dedup key is ``(model, column_expr, normalized_filter)`` — the
-        aggregation lives on the formula, so multiple aggregations over the
-        same filtered column share one Column. Special measure forms are
-        preserved exactly: ``sum_boolean`` builds the CASE-WHEN INT column and
+        aggregation lives on the expression, so multiple aggregations over the
+        same filtered field share one DatasetField. Special measure forms are
+        preserved exactly: ``sum_boolean`` builds the CASE-WHEN INT field and
         aggregates with ``sum``; ``percentile`` keeps its ``p=`` argument
         (and clean-fails on a missing value / discrete / approximate flags).
         """
@@ -1997,7 +1997,7 @@ class DbtToSlayerConverter:
                 sources |= self._collect_metric_sources(metric_ref, _seen=seen)
 
     def _resolve_metric_to_name(self, metric_name: str) -> str | None:
-        """Resolve a metric name to a formula reference (bare ModelMeasure name).
+        """Resolve a metric name to an expression reference (bare DatasetMetric name).
 
         For a *plain unfiltered* simple metric — which the converter does not
         materialize — resolves to the backing dbt measure name instead. Falls
@@ -2015,13 +2015,13 @@ class DbtToSlayerConverter:
     @staticmethod
     def _simple_metric_is_plain(m: DbtMetric) -> bool:
         """Whether a simple metric is a *plain* re-aggregation that the
-        converter does NOT materialize as its own ``ModelMeasure`` (so a
+        converter does NOT materialize as its own ``DatasetMetric`` (so a
         reference collapses to the backing measure).
 
         It is plain only when it carries no filter at all — neither
         ``metric.filter`` NOR ``type_params.measure.filter`` — and no
         ``join_to_timespine`` / ``fill_nulls_with``. Any of those materializes a
-        ModelMeasure under the metric's own name, so the reference must stay the
+        DatasetMetric under the metric's own name, so the reference must stay the
         metric name, not the unfiltered base measure.
         """
         tp = m.type_params
@@ -2033,7 +2033,7 @@ class DbtToSlayerConverter:
         return True
 
     def _resolve_measure_to_name(self, metric_name: str) -> str | None:
-        """Resolve a dbt measure name to a formula reference (bare name)."""
+        """Resolve a dbt measure name to an expression reference (bare name)."""
         sm = self._find_measure_model(metric_name)
         if sm is None:
             return None

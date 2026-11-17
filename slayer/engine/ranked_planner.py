@@ -1,7 +1,7 @@
 """Ranking-key resolution for ``first`` / ``last``: WHAT a ranked aggregate's
 ``ROW_NUMBER`` orders by, settled at plan time — the explicit ranking key, else the
 first DATE/TIMESTAMP row-level dimension, else the first time dimension's untruncated
-source (never the bucket, which ties every row), else the model default.
+source (never the bucket, which ties every row), else the dataset default.
 A target-rooted producer passes its already-re-rooted aggregate, so it resolves
 host-style on its own root."""
 
@@ -80,8 +80,8 @@ def resolve_ranking_time_key(
 ) -> ValueKey:
     """What a ranked aggregate's ``ROW_NUMBER`` orders by, in the producer's root
     coordinates: the explicit ranking key, else the first temporal row-level dimension,
-    else the first time dimension's untruncated source, else the model ``default_time_dimension``
-    (typed via ``column_default_key`` so a derived default's crossings close). A
+    else the first time dimension's untruncated source, else the dataset ``default_time_dimension``
+    (typed via ``field_default_key`` so a derived default's crossings close). A
     target-rooted producer passes its already-re-rooted aggregate, so this is host-style."""
     arg = explicit_ranking_key(key)
     if arg is not None:
@@ -98,10 +98,10 @@ def resolve_ranking_time_key(
     if default:
         return field_default_key(path=(), leaf=default, base=root_dataset)
     raise ValueError(
-        "first/last aggregation requires a ranking time column "
+        "first/last aggregation requires a ranking time field "
         "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
-        "model's default_time_dimension); none is resolvable for "
-        f"model {root_dataset.name!r}."
+        "dataset's default_time_dimension); none is resolvable for "
+        f"dataset {root_dataset.name!r}."
     )
 
 

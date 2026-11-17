@@ -386,7 +386,7 @@ class TestNoticeRendering:
     ) -> None:
         server = await _make_server(tmp_path)
         norm = NormalizationWarning(
-            rule_id="R1", original="a", normalized="b", location="filters[0]",
+            rule_id="R1", original="a", normalized="b", location="filter[0]",
         )
         _patch_execute(
             monkeypatch,

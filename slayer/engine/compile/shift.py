@@ -56,7 +56,7 @@ def _series_flags(node: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> T
 def _series_mode(inner: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> bool:
     """Whether a transform shifts its materialised series (True) or re-aggregates
     (False) — a nested transform, a predicate root, or a composite carrying a
-    transform or cross-model aggregate leaf."""
+    transform or cross-dataset aggregate leaf."""
     if isinstance(inner, TransformKey) or is_boolean_shaped(inner):
         return True
     if isinstance(inner, (ArithmeticKey, ScalarCallKey, CastKey, ListSetKey)):

@@ -835,8 +835,8 @@ class TestPostgresMedianPercentile:
         query = SlayerQuery(
             population="orders",
             metrics=[
-                {"formula": "percentile(total, p=0.25)"},
-                {"formula": "percentile(total, p=0.75)"},
+                {"expression": "percentile(total, p=0.25)"},
+                {"expression": "percentile(total, p=0.75)"},
             ],
         )
         result = await pg_env.execute(query=query)
@@ -881,7 +881,7 @@ class TestPostgresStatAggregations:
     async def test_stddev_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "stddev_pop(total)"}],
+            metrics=[{"expression": "stddev_pop(total)"}],
         )
         result = await pg_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -900,7 +900,7 @@ class TestPostgresStatAggregations:
     async def test_var_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "var_pop(total)"}],
+            metrics=[{"expression": "var_pop(total)"}],
         )
         result = await pg_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -941,7 +941,7 @@ class TestPostgresStatAggregations:
     async def test_covar_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "covar_pop(total, other=customer_id)"}],
+            metrics=[{"expression": "covar_pop(total, other=customer_id)"}],
         )
         result = await pg_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1182,7 +1182,7 @@ class TestPostgresDev1576Heals:
     ) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "round(sum(amount_d) / 8.0)", "name": "r"}],
+            metrics=[{"expression": "round(sum(amount_d) / 8.0)", "name": "r"}],
         )
         result = await pg_env.execute(query=query)
         assert float(result.data[0]["orders.r"]) == pytest.approx(109.0)
@@ -1205,7 +1205,7 @@ class TestPostgresDev1576Heals:
     async def test_stddev_alias_executes(self, pg_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
-            metrics=[{"formula": "stddev(total)"}],
+            metrics=[{"expression": "stddev(total)"}],
         )
         result = await pg_env.execute(query=query)
         # Sample stddev of [100,200,50,150,75,300] (mean 145.83) ≈ 92.76.

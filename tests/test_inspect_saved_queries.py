@@ -73,7 +73,7 @@ async def storage(tmp_path) -> YAMLStorage:
 
 
 async def _inspect(storage: YAMLStorage, model: str, **kwargs: Any) -> str:
-    return await InspectService(storage=storage).inspect(reference=f"test.{model}", entity_type="model", **kwargs)
+    return await InspectService(storage=storage).inspect(reference=f"test.{model}", entity_type="dataset", **kwargs)
 
 
 def _listed(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -128,12 +128,12 @@ class TestModelViews:
     async def test_inspect_model_tool(self, storage: YAMLStorage) -> None:
         server = create_mcp_server(storage=storage)
         payload = await call_tool_json(
-            server, name="inspect", arguments={"entity_type": "model", "reference": "orders", "compact": False, "format": "json", "sections": ["columns"]},
+            server, name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "format": "json", "sections": ["columns"]},
         )
         assert "saved_queries" not in payload
         payload = await call_tool_json(
             server, name="inspect",
-            arguments={"entity_type": "model", "reference": "orders", "compact": False, "format": "json", "sections": ["saved_queries"]},
+            arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "format": "json", "sections": ["saved_queries"]},
         )
         assert _listed(payload) == ON_ORDERS
 

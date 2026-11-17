@@ -129,7 +129,7 @@ def test_join_rule_construction():
     assert rule.relationship_path == ("orders.customer_id = customers.id",)
     assert isinstance(rule.relationship_path, tuple)
     # no kind on the nested rule; no column/value/name
-    assert not hasattr(rule, "column")
+    assert not hasattr(rule, "field")
     assert not hasattr(rule, "value")
 
 
@@ -617,7 +617,7 @@ def test_policy_unknown_version_rejected():
 
 
 def test_policy_column_dict_with_kind():
-    policy = SessionPolicy(ruleset={"kind": "column", "column": "org", "value": "x"})
+    policy = SessionPolicy(ruleset={"kind": "column", "field": "org", "value": "x"})
     assert isinstance(policy.ruleset, FieldFilterRuleset)
 
 

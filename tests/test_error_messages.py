@@ -64,36 +64,36 @@ class TestUnknownReferenceError:
     def test_minimal(self):
         e = UnknownReferenceError(
             name="revenoo",
-            scope_kind="ModelScope",
+            scope_kind="DatasetScope",
             scope_summary="orders",
         )
         s = str(e)
         assert s == (
             "UnknownReferenceError: Cannot resolve reference 'revenoo'.\n"
-            "  scope: ModelScope: orders"
+            "  scope: DatasetScope: orders"
         )
 
     def test_with_suggestion(self):
         e = UnknownReferenceError(
             name="revenoo",
-            scope_kind="ModelScope",
+            scope_kind="DatasetScope",
             scope_summary="orders",
             suggestion="did you mean 'revenue'?",
         )
         s = str(e)
         assert s == (
             "UnknownReferenceError: Cannot resolve reference 'revenoo'.\n"
-            "  scope: ModelScope: orders\n"
+            "  scope: DatasetScope: orders\n"
             "  suggestion: did you mean 'revenue'?"
         )
 
     def test_carries_fields(self):
         e = UnknownReferenceError(
-            name="x", scope_kind="ModelScope", scope_summary="orders",
+            name="x", scope_kind="DatasetScope", scope_summary="orders",
             suggestion="hint",
         )
         assert e.name == "x"
-        assert e.scope_kind == "ModelScope"
+        assert e.scope_kind == "DatasetScope"
         assert e.scope_summary == "orders"
         assert e.suggestion == "hint"
 
@@ -131,13 +131,13 @@ class TestIllegalScopeReferenceError:
         # a legacy persisted column literal name).
         e = IllegalScopeReferenceError(
             name="customers__regions",
-            scope_kind="ModelScope",
+            scope_kind="DatasetScope",
             reason="`__` in Mode-B is reserved for SQL aliases; use dotted form (e.g. 'customers.regions').",
         )
         assert str(e) == (
             "IllegalScopeReferenceError: Reference 'customers__regions' is not legal "
             "in this scope.\n"
-            "  scope: ModelScope\n"
+            "  scope: DatasetScope\n"
             "  reason: `__` in Mode-B is reserved for SQL aliases; use dotted form "
             "(e.g. 'customers.regions')."
         )

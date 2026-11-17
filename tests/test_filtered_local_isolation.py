@@ -178,7 +178,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery(
             population="claim_amount",
-            metrics=[{"formula": "sum(paid_amount)"}],
+            metrics=[{"expression": "sum(paid_amount)"}],
             dimensions=["claim.claim_number"],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -488,7 +488,7 @@ def _s5_bundle(host: SlayerDataset | None = None) -> ResolvedSourceBundle:
 def _s5_plans(formula: str, *, dimensions=None, **plan_kwargs):
     q = SlayerQuery(
         population="orders",
-        metrics=[{"formula": formula, "name": "m0"}],
+        metrics=[{"expression": formula, "name": "m0"}],
         dimensions=dimensions,
     )
     planned = plan_query(query=q, bundle=_s5_bundle(), **plan_kwargs)
@@ -662,8 +662,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"formula": "sum(region_pay)"},
-                {"formula": "sum(region_pay) + sum(amount)", "name": "combo"},
+                {"expression": "sum(region_pay)"},
+                {"expression": "sum(region_pay) + sum(amount)", "name": "combo"},
             ],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())
@@ -680,8 +680,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"formula": "sum(region_pay)"},
-                {"formula": "sum(cust_weight_d)"},
+                {"expression": "sum(region_pay)"},
+                {"expression": "sum(cust_weight_d)"},
             ],
         )
         planned = plan_query(query=q, bundle=_s5_bundle())

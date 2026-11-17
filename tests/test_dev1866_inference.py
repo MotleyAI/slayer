@@ -226,7 +226,7 @@ class TestDeterminationItems:
     def test_order_entries_do_not_participate(self) -> None:
         items = self._items(SlayerQuery(
             dimensions=["customers.region"],
-            order=[{"column": "orders.amount", "direction": "desc"}],
+            order=[{"field": "orders.amount", "direction": "desc"}],
         ))
         assert items == {"customers.region"}
 

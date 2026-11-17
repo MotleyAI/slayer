@@ -85,8 +85,8 @@ AGG_REGISTRY: Dict[str, AggEntry] = {
 }
 
 # Every built-in must be in the table, or a lookup would fall through to the
-# custom-formula path and render a built-in as if it were user-defined.
-# Checked BOTH ways: a missing built-in would fall through to the custom-formula
+# custom-expression path and render a built-in as if it were user-defined.
+# Checked BOTH ways: a missing built-in would fall through to the custom-expression
 # path, and a registry key that is NOT a built-in (a typo such as sumn) would
 # make is_builtin_agg accept it and route it away from that path.
 _registered = set(AGG_REGISTRY)
@@ -102,7 +102,7 @@ if _missing or _unknown:  # pragma: no cover — import-time invariant
 def resolve_agg_entry(name: str) -> AggEntry:
     """Return the registry entry for a BUILT-IN aggregation.
 
-    Raises ``ValueError`` for anything else. Custom model-level aggregations
+    Raises ``ValueError`` for anything else. Custom dataset-level aggregations
     are deliberately not registered: they carry their own ``expression`` and take
     the template path, so callers check :func:`is_builtin_agg` first.
     """
@@ -111,7 +111,7 @@ def resolve_agg_entry(name: str) -> AggEntry:
         raise ValueError(
             f"Unknown aggregation {name!r}. Built-ins: "
             f"{sorted(AGG_REGISTRY)}; anything else must be defined as a "
-            f"model-level aggregation with a formula.",
+            f"dataset-level aggregation with an expression.",
         )
     return entry
 
@@ -193,8 +193,8 @@ def _param(spec: AggregateSpec, name: str) -> Expression:
         agg_name = spec.aggregation
         raise ValueError(
             f"Aggregation '{agg_name}' requires parameter '{name}'. "
-            f"Set it in the model's aggregation definition or at query time "
-            f"(e.g., '{agg_name}(measure, {name}=column)')."
+            f"Set it in the dataset's aggregation definition or at query time "
+            f"(e.g., '{agg_name}(metric, {name}=field)')."
         )
     return value.copy()
 
@@ -210,8 +210,8 @@ def _expression_aggregate(spec: AggregateSpec, *, dialect: SqlDialect) -> Expres
     agg_name = spec.aggregation
     if spec.expression is None:
         raise ValueError(
-            f"Aggregation '{agg_name}' has no formula. "
-            f"Custom aggregations must define a formula."
+            f"Aggregation '{agg_name}' has no expression. "
+            f"Custom aggregations must define an expression."
         )
     if VALUE_PLACEHOLDER in spec.bindings:
         raise SqlTemplateError(reserved_value_param_message(agg_name))
@@ -222,7 +222,7 @@ def _expression_aggregate(spec: AggregateSpec, *, dialect: SqlDialect) -> Expres
     bindings = {
         name: _param(spec, name) for name in template.placeholder_names if name != VALUE_PLACEHOLDER
     }
-    # A source ``Column.filter`` is already baked into the value.
+    # A source ``DatasetField.filter`` is already baked into the value.
     bindings[VALUE_PLACEHOLDER] = exp.Star() if spec.value is None else _read_value(spec)
     try:
         return template.render(bindings)

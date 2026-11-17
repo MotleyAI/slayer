@@ -282,31 +282,31 @@ def _insert_contains_edges(
         ds = canonical_model.split(".", 1)[0]
         if ds in ds_set:
             conn.execute(
-                "MATCH (d:Datasource {id: $ds}), (m:Dataset {id: $model}) "
+                "MATCH (d:Datasource {id: $ds}), (m:Dataset {id: $dataset}) "
                 "CREATE (d)-[:CONTAINS]->(m)",
-                {"ds": ds, "model": canonical_model},
+                {"ds": ds, "dataset": canonical_model},
             )
         for col in model.fields:
             if col.hidden:
                 continue
             conn.execute(
-                "MATCH (m:Dataset {id: $model}), (c:DatasetField {id: $col}) "
+                "MATCH (m:Dataset {id: $dataset}), (c:DatasetField {id: $field}) "
                 "CREATE (m)-[:CONTAINS]->(c)",
-                {"model": canonical_model, "col": f"{canonical_model}.{col.name}"},
+                {"dataset": canonical_model, "field": f"{canonical_model}.{col.name}"},
             )
         for measure in model.metrics:
             if not measure.name:
                 continue
             conn.execute(
-                "MATCH (m:Dataset {id: $model}), (ms:Metric {id: $ms}) "
+                "MATCH (m:Dataset {id: $dataset}), (ms:Metric {id: $ms}) "
                 "CREATE (m)-[:CONTAINS]->(ms)",
-                {"model": canonical_model, "ms": f"{canonical_model}.{measure.name}"},
+                {"dataset": canonical_model, "ms": f"{canonical_model}.{measure.name}"},
             )
         for agg in model.aggregations:
             conn.execute(
-                "MATCH (m:Dataset {id: $model}), (a:Aggregation {id: $agg}) "
+                "MATCH (m:Dataset {id: $dataset}), (a:Aggregation {id: $agg}) "
                 "CREATE (m)-[:CONTAINS]->(a)",
-                {"model": canonical_model, "agg": f"{canonical_model}.{agg.name}"},
+                {"dataset": canonical_model, "agg": f"{canonical_model}.{agg.name}"},
             )
 
 
@@ -383,7 +383,7 @@ def _build_valid_entity_sets(
     visible_datasets: dict[str, SlayerDataset],
     memories: list,
 ) -> tuple[set[str], set[str], set[str], set[str]]:
-    """Build (valid_columns, valid_measures, valid_aggs, valid_memory_canonicals)."""
+    """Build (valid_fields, valid_metrics, valid_aggs, valid_memory_canonicals)."""
     valid_fields: set[str] = set()
     valid_metrics: set[str] = set()
     valid_aggs: set[str] = set()
@@ -426,7 +426,7 @@ def _insert_mentions_edges(
 async def build_graph(storage: StorageBackend, *, failures: DocumentLoadFailures | None = None) -> tuple[Any, Any]:
     """Build an ephemeral in-memory LadybugDB graph from ``storage``.
 
-    Returns ``(db, conn)``. Hidden models and hidden columns are excluded.
+    Returns ``(db, conn)``. Hidden datasets and hidden fields are excluded.
     Memory canonical IDs are stored in ``memory:<id>`` form.
     """
     mod = _import_graph_module()

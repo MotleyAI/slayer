@@ -189,7 +189,7 @@ class TransformLayer(BaseModel):
 
 
 class MaskTyping(str, Enum):
-    """How a position expression evaluates: field (row-level) or measure (query grain)."""
+    """How a position expression evaluates: field (row-level) or metric (query grain)."""
 
     FIELD = "field"
     METRIC = "metric"
@@ -212,7 +212,7 @@ class MaskEntry(BaseModel):
     """One typed filter conjunct compiled to a hidden slot; the value masks, is never returned.
 
     ``stratum`` 0 = aggregate-free field conjunct defining the row population every
-    producer sees; 1 = masks at its own grain (attached-ref field / measure)."""
+    producer sees; 1 = masks at its own grain (attached-ref field / metric)."""
 
     slot_id: SlotId
     typing: MaskTyping
@@ -254,13 +254,13 @@ class EmptyBaseGrainPlan(BaseModel):
 class SemiJoinHop(BaseModel):
     """One node of a semi-join correlation tree, joined from its parent node (the
     producer root for a first hop) on oriented PHYSICAL ``join_pairs`` (parent_col, hop_col).
-    ``node_path`` is the node's identity — repeated models bind distinct aliases."""
+    ``node_path`` is the node's identity — repeated datasets bind distinct aliases."""
 
     model_config = ConfigDict(frozen=True)
 
     to: str
     join_pairs: Tuple[Tuple[str, str], ...]
-    #: Per pair, whether each key's stored SQL quotes its physical name (``Column.physical_quoted``).
+    #: Per pair, whether each key's stored SQL quotes its physical name (``DatasetField.physical_quoted``).
     quoted: Tuple[Tuple[bool, bool], ...] = ()
     node_path: Tuple[str, ...]
     #: The declared edge is LEFT (default) rather than INNER — the null-rejection
@@ -269,7 +269,7 @@ class SemiJoinHop(BaseModel):
     #: The hop renders LEFT-joined from a one-row spine (its NULL extension can
     #: satisfy the predicate); otherwise today's inner correlation.
     null_extended: bool = False
-    #: A list child hop: the parent node's list column, unnested from the parent's row.
+    #: A list child hop: the parent node's list field, unnested from the parent's row.
     lateral: Optional[str] = None
 
     @property
@@ -346,10 +346,10 @@ class TrailingWindowProducerKernel(BaseModel):
     #: ROW filters inherited into ``_src`` — frame bounds excluded.
     src_where_filter_ids: List[BoundFilterId] = Field(default_factory=list)
     src_filter_rewrites: List["SrcFilterRewrite"] = Field(default_factory=list)
-    #: Set for a windowed ``first``/``last``: the column ``_src`` ranks by within
+    #: Set for a windowed ``first``/``last``: the field ``_src`` ranks by within
     #: the interval (``_w_rank``); the outer picks rank 1 per bucket.
     ranking_time_key: Optional[ValueKey] = None
-    #: Reference-bearing parameters (column / attached-aggregate / column-naming
+    #: Reference-bearing parameters (field / attached-aggregate / field-naming
     #: default) read per interval row as ``_src._w_p<i>``; literals never lift.
     picked_params: List[PickedParam] = Field(default_factory=list)
     #: The population's cells at this producer's grain (a host-rooted plan): the
@@ -363,7 +363,7 @@ class AssociationProducerKernel(BaseModel):
     """A distinct-entity association producer: level 1 groups by
     (grain × the root's ``entity_keys``) picking each input once per entity;
     level 2 aggregates over the picked rows per grain. ``entity_keys`` are the
-    root's unique-key columns in the producer's coordinates.
+    root's unique-key fields in the producer's coordinates.
 
     ``null_safe`` keeps NULL entity cells as distinct cells instead of
     excluding them — a re-aggregation's entity is an inner-grain cell whose NULL
@@ -421,7 +421,7 @@ class RegroupAttachPlan(BaseModel):
     associated_metric: Optional[str] = None
     associated_dimensions: List[str] = Field(default_factory=list)
     # A producer over an unrelated dataset (its product-hop spelling), the population it
-    # meets, and the public measures reading it.
+    # meets, and the public metrics reading it.
     unrelated_dataset: Optional[str] = None
     unrelated_population: Optional[str] = None
     unrelated_metrics: List[str] = Field(default_factory=list)
@@ -430,13 +430,13 @@ class RegroupAttachPlan(BaseModel):
     # empty for association producers, so the informational entry a semi-join
     # push would raise is kept.
     association_restricted_filter_texts: List[str] = Field(default_factory=list)
-    # Public measure names for a population semi-join inherited into a host-rooted
+    # Public metric names for a population semi-join inherited into a host-rooted
     # producer: the informational entry names each of the producer's own
-    # public measures (a producer may carry several), not its internal stage alias.
+    # public metrics (a producer may carry several), not its internal stage alias.
     population_semi_join_metrics: List[str] = Field(default_factory=list)
-    # Public measure name for a semi-join pushed into a target-rooted producer whose
+    # Public metric name for a semi-join pushed into a target-rooted producer whose
     # ``alias_hint`` is the CANONICAL stage alias: the informational entry
-    # names the public measure, not that internal alias.
+    # names the public metric, not that internal alias.
     semi_join_metric: Optional[str] = None
     # Degenerate second-order aggregation: the re-aggregation whose
     # operand grain equals the outer grain (the identity), with both grains for
@@ -475,13 +475,13 @@ class PlannedQuery(BaseModel):
     stage_schema: Optional[StageSchema] = None
     # Sibling stage relations this stage's statement reads, in plan order.
     stage_reads: List[str] = Field(default_factory=list)
-    # The per-stage model universe this stage was planned (and renders) against.
+    # The per-stage dataset universe this stage was planned (and renders) against.
     stage_bundle: Optional[ResolvedSourceBundle] = None
-    # Set on a spliced model's stages read under conflicting variables; fatal if emitted.
+    # Set on a spliced dataset's stages read under conflicting variables; fatal if emitted.
     splice_conflict: Optional[str] = None
     # Stale flat-name spellings bound while planning this stage.
     stale_spellings: List[StaleSpelling] = Field(default_factory=list)
-    # ``whole_periods_only`` granularity pairs on one column that do not nest.
+    # ``whole_periods_only`` granularity pairs on one field that do not nest.
     granularity_conflicts: List[GranularityConflict] = Field(default_factory=list)
     whole_list_reads: List[WholeListRead] = Field(default_factory=list)
     date_only_notices: List[DateOnlyMidnightWarning] = Field(default_factory=list)
@@ -490,7 +490,7 @@ class PlannedQuery(BaseModel):
     render_source_dataset: Optional[SlayerDataset] = None
     # Dimension / time-dimension position slots in order; ``None`` iff raw-row mode.
     grain: Optional[List[SlotId]] = Field(default_factory=list)
-    # Time-dim columns where an explicit bound is a FRAME bound, not a population filter.
+    # Time-dim fields where an explicit bound is a FRAME bound, not a population filter.
     frame_bound_fields: List[ValueKey] = Field(default_factory=list)
     filter_reachability: List[FilterReachability] = Field(default_factory=list)
     empty_base_plan: Optional[EmptyBaseGrainPlan] = None
@@ -758,7 +758,7 @@ def _structural_fingerprint(obj) -> Hashable:
     return (type(obj).__name__, repr(obj))
 
 
-# Fields that carry models / schemas, never Mode-B value keys.
+# Fields that carry datasets / schemas, never Mode-B value keys.
 _NON_KEY_FIELDS = frozenset({"stage_bundle", "render_source_model", "stage_schema"})
 
 
@@ -854,7 +854,7 @@ def _walk_regroup_attaches(planned: PlannedQuery) -> Iterator[RegroupAttachPlan]
 
 
 def is_spliced(planned: PlannedQuery) -> bool:
-    """Whether ``planned`` is a stage spliced in from a stored query-backed model."""
+    """Whether ``planned`` is a stage spliced in from a stored query-backed dataset."""
     schema = planned.stage_schema
     return schema is not None and schema.display is not None and schema.display.dataset is not None
 

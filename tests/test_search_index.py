@@ -102,7 +102,7 @@ def test_index_has_one_doc_per_memory_and_per_entity() -> None:
     # and one memory.
     hits = search_index(index=idx, question="checkout", limit=20)
     kinds = {hit.kind for hit in hits}
-    assert "model" in kinds or "memory" in kinds
+    assert "dataset" in kinds or "memory" in kinds
 
 
 def test_english_stemmer_matches_singular_to_plural_form() -> None:
@@ -214,7 +214,7 @@ def test_kind_filter_model_returns_only_model_hits() -> None:
         index=idx, question="customer", limit=50, kind_filter="model",
     )
     assert hits, "expected at least one model hit"
-    assert all(h.kind == "model" for h in hits)
+    assert all(h.kind == "dataset" for h in hits)
 
 
 def test_exclude_kind_memory_returns_only_non_memory_hits() -> None:

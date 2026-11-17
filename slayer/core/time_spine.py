@@ -1,4 +1,4 @@
-"""The built-in time spine: a virtual per-datasource model of all instants, and its edges."""
+"""The built-in time spine: a virtual per-datasource dataset of all instants, and its edges."""
 
 from __future__ import annotations
 
@@ -13,25 +13,25 @@ from slayer.core.warnings import NameCollisionWarning
 
 
 def spine_dataset(*, data_source: str, wired: Optional[Sequence[SlayerDataset]] = None) -> SlayerDataset:
-    """The virtual ``time_spine`` model; never stored, its rows are rendered as a bucket series.
-    With ``wired`` (the datasource's models) its description is the full one naming each axis;
+    """The virtual ``time_spine`` dataset; never stored, its rows are rendered as a bucket series.
+    With ``wired`` (the datasource's datasets) its description is the full one naming each axis;
     without, a listing summary pointing at it."""
     status = (
-        f"Built-in virtual model (not stored; every datasource has one): every instant. Group by "
+        f"Built-in virtual dataset (not stored; every datasource has one): every instant. Group by "
         f"{TIME_SPINE_DATASET}.{TIME_SPINE_FIELD} at a granularity to get every bucket in range, empty ones included."
     )
     if wired is None:
         details = (
-            f" For the models wired to it and its rules: "
-            f"inspect(reference='{data_source}.{TIME_SPINE_DATASET}', entity_type='model')."
+            f" For the datasets wired to it and its rules: "
+            f"inspect(reference='{data_source}.{TIME_SPINE_DATASET}', entity_type='dataset')."
         )
     else:
         axes = [f"{m.name} via {j.join_pairs[0][0]}" for m in wired if (j := axis_relationship(m)) is not None]
         details = (
             " Needs a lower bound (a date_range or a >= filter on the timestamp); the upper bound defaults to "
-            "the current bucket. Each model is attributed through its axis — its default_time_dimension, "
-            "else its only date/time column; it has no countable rows, and coalesce(<measure>, 0) fills empty "
-            "buckets." + (f" Wired: {', '.join(axes)}." if axes else " No model is wired to it yet.")
+            "the current bucket. Each dataset is attributed through its axis — its default_time_dimension, "
+            "else its only date/time field; it has no countable rows, and coalesce(<metric>, 0) fills empty "
+            "buckets." + (f" Wired: {', '.join(axes)}." if axes else " No dataset is wired to it yet.")
         )
     return SlayerDataset(
         name=TIME_SPINE_DATASET, data_source=data_source, sql_table=TIME_SPINE_DATASET,
@@ -50,11 +50,11 @@ def is_spine_spelling(name: str) -> bool:
 
 
 def spine_variant_warnings(dataset: SlayerDataset) -> List[NameCollisionWarning]:
-    """The name-collision warning of a stored model named like the spine in another case."""
+    """The name-collision warning of a stored dataset named like the spine in another case."""
     if dataset.name == TIME_SPINE_DATASET or not is_spine_spelling(dataset.name):
         return []
     return [NameCollisionWarning(
-        dataset=dataset.name, namespace="datasource's model names", names=sorted([dataset.name, TIME_SPINE_DATASET]),
+        dataset=dataset.name, namespace="datasource's dataset names", names=sorted([dataset.name, TIME_SPINE_DATASET]),
     )]
 
 
@@ -101,7 +101,7 @@ class _SpineRespeller:
 
 
 def respell_spine(query: SlayerQuery, *, keep: Callable[[str], bool]) -> Tuple[SlayerQuery, frozenset[str]]:
-    """``query`` with each unquoted spelling of the spine in a model-name position, bar those ``keep`` holds, spelled
+    """``query`` with each unquoted spelling of the spine in a dataset-name position, bar those ``keep`` holds, spelled
     ``time_spine``; and the spellings respelled."""
     r = _SpineRespeller(keep)
     update: Dict[str, Any] = {}
@@ -126,7 +126,7 @@ def respell_spine(query: SlayerQuery, *, keep: Callable[[str], bool]) -> Tuple[S
 
 
 def axis_field(dataset: SlayerDataset) -> Optional[str]:
-    """``dataset``'s axis, a P factor's included: its default time column, else its sole one."""
+    """``dataset``'s axis, a P factor's included: its default time field, else its sole one."""
     axis = None if is_spine(dataset) else dataset.effective_default_time_dimension
     return axis if axis is not None and dataset.get_field(axis) is not None else None
 
@@ -143,7 +143,7 @@ def axis_relationship(dataset: SlayerDataset) -> Optional[DatasetRelationship]:
 
 
 def spine_relationships(dataset: SlayerDataset, *, datasets_by_name: Mapping[str, SlayerDataset]) -> list[DatasetRelationship]:
-    """``dataset``'s declared joins plus its axis edge when the spine is in the universe."""
+    """``dataset``'s declared relationships plus its axis edge when the spine is in the universe."""
     if TIME_SPINE_DATASET not in datasets_by_name:
         return list(dataset.relationships)
     axis = axis_relationship(dataset)
@@ -154,7 +154,7 @@ PRODUCT_JOIN_TYPE = JoinType.INNER
 
 
 def names_spine(ref: str) -> bool:
-    """A dotted reference into the spine model."""
+    """A dotted reference into the spine dataset."""
     return ref.split(".")[0] == TIME_SPINE_DATASET
 
 

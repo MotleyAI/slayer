@@ -44,7 +44,7 @@ def _query(*, source_model: str, measure: str, date_range: list) -> SlayerQuery:
     return SlayerQuery(
         population=source_model,
         time_dimensions=[TimeDimension(field="created_at", granularity="month", date_range=date_range)],
-        metrics=[{"formula": measure, "name": "m0"}],
+        metrics=[{"expression": measure, "name": "m0"}],
     )
 
 

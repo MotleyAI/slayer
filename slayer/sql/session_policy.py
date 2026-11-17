@@ -1,8 +1,8 @@
 """Forced-filter SQL rewrite for session-policy RLS.
 
 ``apply_session_policy`` is a pure sqlglot transform wrapping every *physical* table
-reference in the finished statement tree per the policy's ``ruleset``. A column ruleset filters each
-table having the tenant column; a join ruleset filters the anchor directly and reaches
+reference in the finished statement tree per the policy's ``ruleset``. A field ruleset filters each
+table having the tenant column; a relationship ruleset filters the anchor directly and reaches
 it from other tables via a correlated ``EXISTS`` (a null-guarded ``IN`` on dialects whose
 correlated subqueries need a server setting)::
 
@@ -120,7 +120,7 @@ def _wrap_table(table: exp.Table, predicates: list) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ColumnFilterRuleset
+# FieldFilterRuleset
 # ---------------------------------------------------------------------------
 
 
@@ -151,7 +151,7 @@ def _apply_field_ruleset(
 
 
 # ---------------------------------------------------------------------------
-# JoinFilterRuleset
+# RelationshipFilterRuleset
 # ---------------------------------------------------------------------------
 
 
@@ -288,7 +288,7 @@ def apply_session_policy(
     """A copy of ``statement`` with every physical-table ref wrapped per the policy's ``ruleset``.
 
     ``has_field`` returns ``True``/``False``/``None`` (cannot confirm) and is consulted
-    only for a ``ColumnFilterRuleset``. Raises :class:`ForcedFilterError` on any
+    only for a ``FieldFilterRuleset``. Raises :class:`ForcedFilterError` on any
     fail-closed condition.
     """
     ruleset = policy.ruleset
@@ -301,6 +301,6 @@ def apply_session_policy(
     ast = statement.copy()
     if isinstance(ruleset, FieldFilterRuleset):
         _apply_field_ruleset(ast, ruleset, has_field)
-    else:  # JoinFilterRuleset
+    else:  # RelationshipFilterRuleset
         _apply_join_ruleset(ast, ruleset, sql_dialect=sql_dialect)
     return ast

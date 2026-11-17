@@ -326,7 +326,7 @@ class TestEnumerationSurfaces:
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
     async def test_mcp_inspect_model_collection_lists_the_rest(self, bad_store: StorageBackend, recorded: list) -> None:
-        text = await _mcp_text(bad_store, tool="inspect", arguments={"entity_type": "model", "format": "json"})
+        text = await _mcp_text(bad_store, tool="inspect", arguments={"entity_type": "dataset", "format": "json"})
         listed = {f"{e['data_source']}.{m['name']}" for e in json.loads(text)["datasources"] for m in e["models"]}
         assert all(f"{DS}.{name}" in listed for name in GOOD_MODELS)
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)

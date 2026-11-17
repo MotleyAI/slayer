@@ -1,4 +1,4 @@
-"""Compact duration parsing for windowed measures (``window='90d'``).
+"""Compact duration parsing for windowed metrics (``window='90d'``).
 
 Shared by the plan-time windowed guard (engine layer) and the SQL generator's
 per-unit interval emission (sql layer). Lives in ``slayer.core`` so the engine

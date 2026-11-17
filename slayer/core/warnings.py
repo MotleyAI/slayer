@@ -86,7 +86,7 @@ def association_fallback_hint(reason: str) -> str:
 
 
 class BroadcastGrainWarningPayload(SlayerWarning):
-    """A cross-model aggregate whose implicit grain lost query dimensions to broadcasting; ``metric`` names the metric, ``dimensions`` lists each broadcast dimension and its reason, ``association_unsupported`` why the default mode could not associate."""
+    """A cross-dataset aggregate whose implicit grain lost query dimensions to broadcasting; ``metric`` names the metric, ``dimensions`` lists each broadcast dimension and its reason, ``association_unsupported`` why the default mode could not associate."""
 
     kind: Literal["broadcast"] = "broadcast"
     metric: str
@@ -127,7 +127,7 @@ class AssociatedWarningPayload(SlayerWarning):
 
 
 class UnrelatedDatasetWarningPayload(SlayerWarning):
-    """Aggregates over ``dataset``, which no join path reaches from ``population``: each is computed over the dataset's own rows and repeated on every row."""
+    """Aggregates over ``dataset``, which no relationship path reaches from ``population``: each is computed over the dataset's own rows and repeated on every row."""
 
     kind: Literal["unrelated_dataset"] = "unrelated_dataset"
     dataset: str
@@ -240,7 +240,7 @@ def _single_line(text: str) -> str:
 
 
 class ExtensionFieldInlinedWarning(SlayerWarning):
-    """A stored query's extension column was inlined where it is used; its text now reads as Mode B."""
+    """A stored query's extension field was inlined where it is used; its text now reads as Mode B."""
 
     kind: Literal["extension_field_inlined"] = "extension_field_inlined"
     document: str
@@ -248,13 +248,13 @@ class ExtensionFieldInlinedWarning(SlayerWarning):
 
     def human_message(self) -> str:
         return _single_line(
-            f"stored document {self.document!r}: extension column {self.field!r} was inlined where it is used; "
+            f"stored document {self.document!r}: extension field {self.field!r} was inlined where it is used; "
             f"its text is now read as a SLayer expression"
         )
 
 
 class UnloadableDocumentWarning(SlayerWarning):
-    """A stored model or memory that could not be loaded was skipped; ``data_source`` is ``None`` for a memory."""
+    """A stored dataset or memory that could not be loaded was skipped; ``data_source`` is ``None`` for a memory."""
 
     kind: Literal["unloadable_document"] = "unloadable_document"
     document_kind: Literal["dataset", "memory"]
@@ -268,7 +268,7 @@ class UnloadableDocumentWarning(SlayerWarning):
 
 
 class NarrowedAccessWarning(SlayerWarning):
-    """Model ``dataset`` reads tagged models (``narrowed_by``) whose tags do not cover its own, so some of its readers cannot see it."""
+    """Dataset ``dataset`` reads tagged datasets (``narrowed_by``) whose tags do not cover its own, so some of its readers cannot see it."""
 
     kind: Literal["narrowed_access"] = "narrowed_access"
     data_source: str
@@ -277,13 +277,13 @@ class NarrowedAccessWarning(SlayerWarning):
 
     def human_message(self) -> str:
         return (
-            f"narrowed access: model {self.data_source}.{self.dataset} reads {', '.join(self.narrowed_by)}, "
+            f"narrowed access: dataset {self.data_source}.{self.dataset} reads {', '.join(self.narrowed_by)}, "
             f"whose access tags do not cover its own; callers lacking those tags cannot see it"
         )
 
 
 class LibraryNameShadowWarning(SlayerWarning):
-    """Model ``dataset``'s aggregation ``aggregation`` shadows the library function written ``function`` in its own model."""
+    """Dataset ``dataset``'s aggregation ``aggregation`` shadows the library function written ``function`` in its own dataset."""
 
     kind: Literal["library_name_shadow"] = "library_name_shadow"
     dataset: str
@@ -293,7 +293,7 @@ class LibraryNameShadowWarning(SlayerWarning):
     def human_message(self) -> str:
         return (
             f"dataset {self.dataset!r} defines the aggregation {self.aggregation!r}, so {self.function}(…) over its "
-            f"columns is that aggregation, not the library function {self.function.lower()}()"
+            f"fields is that aggregation, not the library function {self.function.lower()}()"
         )
 
 
@@ -349,7 +349,7 @@ class DeprecatedInputWarning(SlayerWarning):
 
 
 class NameCollisionWarning(SlayerWarning):
-    """Stored model ``dataset`` holds ``names`` in one ``namespace``, differing only in case; each resolves only when
+    """Stored dataset ``dataset`` holds ``names`` in one ``namespace``, differing only in case; each resolves only when
     spelled exactly (or double-quoted)."""
 
     kind: Literal["name_collision"] = "name_collision"
@@ -364,15 +364,15 @@ class NameCollisionWarning(SlayerWarning):
 
 
 class SpineRelationshipDroppedWarning(SlayerWarning):
-    """A stored join of ``dataset`` into the built-in spine (``relationship``, its name or target) was dropped on load."""
+    """A stored relationship of ``dataset`` into the built-in spine (``relationship``, its name or target) was dropped on load."""
 
     kind: Literal["spine_relationship_dropped"] = "spine_relationship_dropped"
     dataset: str
     relationship: str
 
     def human_message(self) -> str:
-        return (f"dataset {self.dataset!r}: its join {self.relationship!r} into the built-in time_spine was dropped; the spine "
-                f"joins each dataset through its time axis, so a declared join to it is never needed")
+        return (f"dataset {self.dataset!r}: its relationship {self.relationship!r} into the built-in time_spine was dropped; the spine "
+                f"reaches each dataset through its time axis, so a declared relationship to it is never needed")
 
 
 class DeprecatedSpellingWarning(SlayerWarning):

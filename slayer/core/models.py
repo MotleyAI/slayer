@@ -705,7 +705,7 @@ class DatasetRelationship(BaseModel):
         for i, pair in enumerate(v):
             if len(pair) != 2 or not all(isinstance(s, str) and s for s in pair):
                 raise ValueError(
-                    f"join_pairs[{i}] must be [source_column, target_column] with non-empty strings, got {pair}"
+                    f"join_pairs[{i}] must be [source_field, target_field] with non-empty strings, got {pair}"
                 )
             for key in pair:
                 _validate_field_name(key, "join_pairs key")
@@ -863,7 +863,7 @@ class SlayerDataset(BaseModel):
     _unrelated: frozenset[str] = PrivateAttr(default=frozenset())
     # Runtime-only: a list child's ``(parent dataset, list field)``.
     _list_of: tuple[str, str] | None = PrivateAttr(default=None)
-    # Runtime-only: the list children built from this dataset (``join_walker.list_child``).
+    # Runtime-only: the list children built from this dataset (``relationship_walker.list_child``).
     _list_children: dict[tuple[str, str | None, str, DataType | None], "SlayerDataset"] = PrivateAttr(
         default_factory=dict)
     # Runtime-only: the field and metric names a query extension added.
@@ -901,8 +901,8 @@ class SlayerDataset(BaseModel):
                 f"dataset itself. Self-relationships are not supported — dotted "
                 f"references resolve by dataset name, so a self-relationship can never "
                 f"be addressed from a query. Define the second role as a "
-                f"separate dataset over the same table (or a view) and join to "
-                f"that."
+                f"separate dataset over the same table (or a view) and declare a "
+                f"relationship to that."
             )
         return self
 
@@ -1015,7 +1015,7 @@ class SlayerDataset(BaseModel):
                 f"Dataset '{self.name}': a query-backed dataset (source_queries) "
                 f"cannot declare metrics directly — they never take effect. "
                 f"Declare the metric in the backing query's final stage, or add "
-                f"it with a ModelExtension at query time."
+                f"it with a DatasetExtension at query time."
             )
         return self
 

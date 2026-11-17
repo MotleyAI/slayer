@@ -240,7 +240,7 @@ async def test_transform_wrapped_reference_follows_rename(tmp_path) -> None:
     query = SlayerQuery(
         population="orders",
         metrics=["running_orders", "order_count"],
-        time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+        time_dimensions=[{"field": "created_at", "granularity": "month"}],
     )
     resp = await engine.execute(query=query, dry_run=True)
     assert resp.sql is not None
@@ -264,7 +264,7 @@ async def test_change_pct_desugar_reference_follows_rename(tmp_path) -> None:
     query = SlayerQuery(
         population="orders",
         metrics=["mom_orders", "order_count"],
-        time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+        time_dimensions=[{"field": "created_at", "granularity": "month"}],
     )
     resp = await engine.execute(query=query, dry_run=True)
     assert resp.sql is not None
@@ -280,7 +280,7 @@ async def test_full_reported_scenario(tmp_path) -> None:
         population="orders",
         metrics=["habit_score", "order_count", "unique_customers", "total_revenue"],
         dimensions=["stores.name"],
-        order=[{"column": "habit_score", "direction": "desc"}],
+        order=[{"field": "habit_score", "direction": "desc"}],
         limit=100,
     )
     dry = await engine.execute(query=query, dry_run=True)
@@ -335,7 +335,7 @@ async def test_transform_referencing_nonexistent_measure_raises(tmp_path) -> Non
     query = SlayerQuery(
         population="orders",
         metrics=["running_bad"],
-        time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+        time_dimensions=[{"field": "created_at", "granularity": "month"}],
     )
     with pytest.raises(UnknownReferenceError) as exc:
         await engine.execute(query=query, dry_run=True)

@@ -734,8 +734,8 @@ class TestCrossStageTimeShift:
                     granularity=TimeGranularity.MONTH,
                 )],
                 metrics=[
-                    {"formula": "count(*)"},
-                    {"formula": "time_shift(count(*), -1, 'month')", "name": "prev"},
+                    {"expression": "count(*)"},
+                    {"expression": "time_shift(count(*), -1, 'month')", "name": "prev"},
                 ],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -1290,7 +1290,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 population="s1",
                 dimensions=["customers__regions__name"],
                 distinct_dimension_values=False,
-                order=[{"column": "customers__revenue_sum"}],
+                order=[{"field": "customers__revenue_sum"}],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -1332,7 +1332,7 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 population="s1",
                 dimensions=["customers__regions__name"],
                 distinct_dimension_values=False,
-                order=[{"column": "s1.customers__revenue_sum"}],
+                order=[{"field": "s1.customers__revenue_sum"}],
             )
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -1399,8 +1399,8 @@ class TestInterceptRename:
         outer = SlayerQuery(
             population="s1",
             metrics=[
-                {"formula": "sum(customers__revenue_sum) / count(*)", "name": "avg_rev"},
-                {"formula": "sum(customers__revenue_sum)", "name": "cust_rev"},
+                {"expression": "sum(customers__revenue_sum) / count(*)", "name": "avg_rev"},
+                {"expression": "sum(customers__revenue_sum)", "name": "cust_rev"},
             ],
         )
         dry = await engine.execute(query=[inner, outer], dry_run=True)

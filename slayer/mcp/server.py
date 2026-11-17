@@ -299,7 +299,7 @@ async def _empty_ingest_message(*, schema_name: str, client: SqlClient) -> str:
         schema_name=schema_name,
         client=client,
         retry_hint=(
-            "Try: ingest_datasource_models with schema_name set to one of these."
+            "Try: ingest_datasource with schema_name set to one of these."
         ),
     )
 
@@ -418,7 +418,7 @@ def _render_hidden_internals_section(
     out = [
         "",
         f"Hidden ({len(hidden)}) — recognised ELT/migration internals "
-        f"(excluded from models_summary; still queryable by name):",
+        f"(excluded from datasets_summary; still queryable by name):",
     ]
     out.extend(f"- {_hidden_internal_line(entry)}" for entry in hidden)
     out.append(f"  Use {_unhide_hint(data_source)} to surface one.")
@@ -879,7 +879,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         label = f"relationship '{name or target}'"
         if existing is None and not name and to_target:
             return (
-                f"Dataset already joins '{target}'; give the new relationship a 'name' so the "
+                f"Dataset already has a relationship to '{target}'; give the new one a 'name' so the "
                 f"parallel edges stay addressable."
             )
         try:
@@ -1405,7 +1405,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ) -> str:
         """Show datasource details: connection status, available schemas, and (by default) the tables in the given or default schema.
 
-        Use it after create_datasource to verify the connection and see what is queryable before ingest_datasource_models.
+        Use it after create_datasource to verify the connection and see what is queryable before ingest_datasource.
         """
         try:
             ds = await storage.get_datasource(name)
@@ -1580,7 +1580,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 f"recommend_population failed: unknown format '{format}'. "
                 f"Use 'markdown' or 'json'."
             )
-        # Reuse the closure engine (see validate_models above).
+        # Reuse the closure engine (see validate_datasets above).
         try:
             rec = await engine.recommend_population(
                 items, data_source=data_source, root_hint=root_hint

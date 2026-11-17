@@ -1,4 +1,4 @@
-"""The host of a ``time_spine × P`` population: its spine column, bounds and bucket series."""
+"""The host of a ``time_spine × P`` population: its spine field, bounds and bucket series."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ _SERIES_FALLBACKS = (TimeGranularity.DAY, TimeGranularity.HOUR, TimeGranularity.
 
 
 def spine_field(dataset: Optional[SlayerDataset]) -> Optional[FieldKey]:
-    """The spine column as the host reads it: its own column, or across the product hop."""
+    """The spine field as the host reads it: its own field, or across the product hop."""
     if dataset is None:
         return None
     if is_spine(dataset):
@@ -111,7 +111,7 @@ def _series_size(*, granularity: Granularity, lower: datetime, upper: datetime) 
 def plan_spine(
     *, prebound: PreboundQuery, host: SlayerDataset, spine: FieldKey, bundle: ResolvedSourceBundle,
 ) -> SpineFactor:
-    """The host's bucket series, after checking every position the spine column appears in."""
+    """The host's bucket series, after checking every position the spine field appears in."""
     check_spine_raw_rows(raw_rows=not prebound.distinct_dimension_values)
     spine_tds = _checked_spine_time_dimensions(prebound=prebound, host=host, spine=spine, bundle=bundle)
     lowers, uppers = _spine_bounds(prebound=prebound, host=host, spine=spine, bundle=bundle)
@@ -128,7 +128,7 @@ def plan_spine(
 def _checked_spine_time_dimensions(
     *, prebound: PreboundQuery, host: SlayerDataset, spine: FieldKey, bundle: ResolvedSourceBundle,
 ) -> List[TimeTruncKey]:
-    """The spine time dimensions, after checking the dimension, measure and order positions."""
+    """The spine time dimensions, after checking the dimension, metric and order positions."""
     n_dims, n_tds = prebound.n_dims, prebound.n_time_dimensions
     for dm in prebound.declared_metrics[:n_dims]:
         key = dm.bound.value_key
@@ -196,7 +196,7 @@ def check_axis_rebucket(
     *, host_key: ValueKey, rerooted: ValueKey, host: SlayerDataset, root: SlayerDataset,
     bundle: ResolvedSourceBundle,
 ) -> None:
-    """A spine bucket attributed through a fact's axis obeys that axis column's recorded granularity."""
+    """A spine bucket attributed through a fact's axis obeys that axis field's recorded granularity."""
     spine = spine_field(host)
     if not (isinstance(host_key, TimeTruncKey) and host_key.source == spine and isinstance(rerooted, TimeTruncKey)):
         return

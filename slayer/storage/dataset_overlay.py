@@ -1,4 +1,4 @@
-"""A read-only view of a store with some models replaced, for planning against models not yet saved."""
+"""A read-only view of a store with some datasets replaced, for planning against datasets not yet saved."""
 
 from __future__ import annotations
 

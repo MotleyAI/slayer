@@ -2,7 +2,7 @@
 
 Some CTEs must read rows from OUTSIDE the query's visible time frame:
 
-* a duration-windowed measure's ``_src`` subquery (``sum(revenue, window='90d')``)
+* a duration-windowed metric's ``_src`` subquery (``sum(revenue, window='90d')``)
   — the trailing window reaches back before the earliest visible bucket, or that
   bucket under-counts;
 * a ``time_shift`` shifted CTE — the shifted value for the earliest visible
@@ -12,7 +12,7 @@ This module identifies that *semantic class*, so every spelling of one intent
 (``date_range``, a time-point comparison, ``date_trunc`` against a point) agrees:
 
     A ROW-phase filter conjunct that is a relational bound, with a temporal
-    literal, on the raw column of one of the query's time dimensions is a FRAME
+    literal, on the raw field of one of the query's time dimensions is a FRAME
     bound, not a population filter. Frame bounds constrain the visible buckets
     only. Everything else is a population filter and is applied unchanged.
 
@@ -59,10 +59,10 @@ def is_temporal_literal(key: object) -> bool:
 def is_frame_bound(*, key: object, time_fields: AbstractSet[ValueKey]) -> bool:
     """Is ``key`` a single frame bound on one of ``time_fields``?
 
-    ``time_fields`` holds the RAW column keys (``ColumnKey`` / ``ColumnSqlKey``)
+    ``time_fields`` holds the RAW field keys (``FieldKey`` / ``FieldSqlKey``)
     of the query's non-hidden time dimensions. Matching is by ValueKey identity,
-    so a derived (``Column.sql``) temporal column is covered without any special
-    casing, and a same-named column on a joined model cannot collide.
+    so a derived (``DatasetField.sql``) temporal field is covered without any special
+    casing, and a same-named field on a joined dataset cannot collide.
 
     Both operand orders count — ``'2024-06-01' <= created_at`` says the same
     thing as ``created_at >= '2024-06-01'``.

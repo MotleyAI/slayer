@@ -196,7 +196,7 @@ DatasetField(name="revenue", sql="amount", description="USD", datatype=DataType.
 
 class TestInspectModel:
     async def test_not_found(self, mcp_server) -> None:
-        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "model", "reference": "nonexistent", "compact": False})
+        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "dataset", "reference": "nonexistent", "compact": False})
         assert "does not resolve to a model" in result
 
     async def test_markdown_structure(self, mcp_server, storage: YAMLStorage) -> None:
@@ -215,7 +215,7 @@ DatasetField(name="revenue", sql="amount", label="Revenue", description="USD tot
             filters=["deleted_at IS NULL"],
             relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         ))
-        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "model", "reference": "test", "compact": False, "show_sql": True})
+        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "dataset", "reference": "test", "compact": False, "show_sql": True})
 
         assert result.startswith("# Model: `test`")
         assert "A test model used in unit tests." in result
@@ -238,13 +238,13 @@ DatasetField(name="revenue", sql="amount", label="Revenue", description="USD tot
     async def test_custom_sql_section_only_when_sql_is_set(self, mcp_server, storage: YAMLStorage) -> None:
         """## SQL fenced block appears only when model.sql is populated."""
         await storage.save_dataset(SlayerDataset(name="plain", sql_table="t", data_source="test"))
-        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "model", "reference": "plain", "compact": False})
+        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "dataset", "reference": "plain", "compact": False})
         assert "## SQL" not in result
 
         await storage.save_dataset(SlayerDataset(
             name="querybacked", sql="SELECT 1 AS x", data_source="test",
         ))
-        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "model", "reference": "querybacked", "compact": False, "show_sql": True})
+        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "dataset", "reference": "querybacked", "compact": False, "show_sql": True})
         assert "## SQL" in result
         assert "```sql" in result
         assert "SELECT 1 AS x" in result
@@ -263,7 +263,7 @@ DatasetField(name="revenue", sql="amount", label="Revenue", description="USD tot
                 description="Weighted average",
             )],
         ))
-        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "model", "reference": "t", "compact": False, "show_sql": True})
+        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "dataset", "reference": "t", "compact": False, "show_sql": True})
         assert "status = 'completed'" in result  # measure filter surfaces
         assert "sum, avg" in result              # allowed_aggregations rendered
         assert "## Aggregations (1)" in result
@@ -283,7 +283,7 @@ DatasetField(name="revenue", sql="amount", label="Revenue", description="USD tot
                 DatasetRelationship(to="products", join_pairs=[["product_id", "id"]]),
             ],
         ))
-        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "model", "reference": "order_items", "compact": False})
+        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "dataset", "reference": "order_items", "compact": False})
         assert "| orders |" in result
         assert "| products |" in result
         assert "kind" not in result
@@ -297,12 +297,12 @@ DatasetField(name="revenue", sql="amount", label="Revenue", description="USD tot
             fields=[DatasetField(name="amount", datatype=DataType.DOUBLE, meta={"kb_id": 7})],
         ))
         md = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "m", "compact": False, "sections": ["columns"],
+            "entity_type": "dataset", "reference": "m", "compact": False, "sections": ["columns"],
         })
         assert "kb_id" in md
         assert "7" in md
         js = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "m", "compact": False, "sections": ["columns"], "format": "json",
+            "entity_type": "dataset", "reference": "m", "compact": False, "sections": ["columns"], "format": "json",
         })
         payload = json.loads(js)
         assert payload["columns"][0]["meta"] == {"kb_id": 7}
@@ -318,12 +318,12 @@ DatasetField(name="revenue", sql="amount", label="Revenue", description="USD tot
             )],
         ))
         md = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "m", "compact": False, "sections": ["measures"],
+            "entity_type": "dataset", "reference": "m", "compact": False, "sections": ["measures"],
         })
         assert "kb_id" in md
         assert "abc-123" in md
         js = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "m", "compact": False, "sections": ["measures"], "format": "json",
+            "entity_type": "dataset", "reference": "m", "compact": False, "sections": ["measures"], "format": "json",
         })
         payload = json.loads(js)
         assert payload["measures"][0]["meta"] == {"kb_id": "abc-123"}
@@ -339,12 +339,12 @@ DatasetField(name="revenue", sql="amount", label="Revenue", description="USD tot
             )],
         ))
         md = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "m", "compact": False, "sections": ["aggregations"], "show_sql": True,
+            "entity_type": "dataset", "reference": "m", "compact": False, "sections": ["aggregations"], "show_sql": True,
         })
         assert "owner" in md
         assert "analytics" in md
         js = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "m", "compact": False, "sections": ["aggregations"], "format": "json",
+            "entity_type": "dataset", "reference": "m", "compact": False, "sections": ["aggregations"], "format": "json",
         })
         payload = json.loads(js)
         assert payload["aggregations"][0]["meta"] == {"owner": "analytics"}
@@ -355,12 +355,12 @@ DatasetField(name="revenue", sql="amount", label="Revenue", description="USD tot
             name="m", sql_table="t", data_source="test",
             meta={"source": "CRM"},
         ))
-        md = await _call(mcp_server, name="inspect", arguments={"entity_type": "model", "reference": "m", "compact": False})
+        md = await _call(mcp_server, name="inspect", arguments={"entity_type": "dataset", "reference": "m", "compact": False})
         assert "**meta:**" in md
         assert "source" in md
         assert "CRM" in md
         js = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "m", "compact": False, "format": "json",
+            "entity_type": "dataset", "reference": "m", "compact": False, "format": "json",
         })
         payload = json.loads(js)
         assert payload["meta"] == {"source": "CRM"}
@@ -376,7 +376,7 @@ DatasetField(name="revenue", sql="amount", label="Revenue", description="USD tot
             aggregations=[Aggregation(name="my_agg", expression="SUM({expr})")],
         ))
         md = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "m", "compact": False, "sections": ["columns", "measures", "aggregations"],
+            "entity_type": "dataset", "reference": "m", "compact": False, "sections": ["columns", "measures", "aggregations"],
             "show_sql": True,
         })
         assert "| meta |" not in md
@@ -462,7 +462,7 @@ class TestInspectModelQueryBacked:
             data_source="test",
             source_queries=[SlayerQuery(
                 population="upstream",
-                metrics=[{"formula": "sum(amount)"}],
+                metrics=[{"expression": "sum(amount)"}],
                 dimensions=["region"],
                 filter=["amount > {threshold}"],
                 dry_run=True,
@@ -473,7 +473,7 @@ class TestInspectModelQueryBacked:
     async def test_json_includes_backing_query(self, mcp_server, storage: YAMLStorage) -> None:
         await self._setup(storage)
         result = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "qb", "compact": False, "format": "json",
+            "entity_type": "dataset", "reference": "qb", "compact": False, "format": "json",
         })
         parsed = json.loads(result)
         assert parsed["source_type"] == "query"
@@ -490,7 +490,7 @@ class TestInspectModelQueryBacked:
         """No backing SQL even with ``show_sql=True``; a dry run renders it."""
         await self._setup(storage)
         result = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "qb", "compact": False, "format": "json", "show_sql": True,
+            "entity_type": "dataset", "reference": "qb", "compact": False, "format": "json", "show_sql": True,
         })
         assert "backing_query_sql" not in json.loads(result)
 
@@ -509,14 +509,14 @@ class TestInspectModelQueryBacked:
             data_source="test",
             source_queries=[SlayerQuery(
                 population="upstream",
-                metrics=[{"formula": "sum(amount)"}],
+                metrics=[{"expression": "sum(amount)"}],
                 filter=["amount > {threshold}"],
                 dry_run=True,
             )],
             # No query_variables → 'threshold' is required
         ))
         result = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "qb_missing_default", "compact": False, "format": "json",
+            "entity_type": "dataset", "reference": "qb_missing_default", "compact": False, "format": "json",
         })
         parsed = json.loads(result)
         assert "threshold" in parsed["backing_query"]["required_variables"]
@@ -529,7 +529,7 @@ class TestInspectModelQueryBacked:
             fields=[DatasetField(name="x", sql="x", datatype=DataType.TEXT)],
         ))
         result = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "plain", "compact": False, "format": "json",
+            "entity_type": "dataset", "reference": "plain", "compact": False, "format": "json",
         })
         parsed = json.loads(result)
         assert parsed["source_type"] == "table"
@@ -540,7 +540,7 @@ class TestInspectModelQueryBacked:
     ) -> None:
         await self._setup(storage)
         result = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "qb", "compact": False, "format": "markdown",
+            "entity_type": "dataset", "reference": "qb", "compact": False, "format": "markdown",
         })
         assert "## Backing Query" in result
         assert "threshold" in result
@@ -558,7 +558,7 @@ DatasetField(name="m", sql="val", datatype=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "jtest", "compact": False, "format": "json",
+            "entity_type": "dataset", "reference": "jtest", "compact": False, "format": "json",
         })
         parsed = json.loads(result)
         assert "sample_data" in parsed
@@ -585,7 +585,7 @@ DatasetField(name="val", sql="val", datatype=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "sqlt", "compact": False, "num_rows": 0,
+            "entity_type": "dataset", "reference": "sqlt", "compact": False, "num_rows": 0,
         })
         assert "## SQL" not in result
         # Dimension table should not have an "sql" column header
@@ -603,7 +603,7 @@ DatasetField(name="val", sql="val", datatype=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "sqlshow", "compact": False, "num_rows": 0, "show_sql": True,
+            "entity_type": "dataset", "reference": "sqlshow", "compact": False, "num_rows": 0, "show_sql": True,
         })
         assert "## SQL" in result
         assert "SELECT id, val FROM raw_table" in result
@@ -620,7 +620,7 @@ DatasetField(name="val", sql="val", filter="val > 0", datatype=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "jsqlt", "compact": False, "format": "json", "num_rows": 0,
+            "entity_type": "dataset", "reference": "jsqlt", "compact": False, "format": "json", "num_rows": 0,
         })
         parsed = json.loads(result)
         # Model-level sql and sql_table should be absent
@@ -643,7 +643,7 @@ DatasetField(name="val", sql="val", filter="val > 0", datatype=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "jsqlshow", "compact": False, "format": "json", "num_rows": 0, "show_sql": True,
+            "entity_type": "dataset", "reference": "jsqlshow", "compact": False, "format": "json", "num_rows": 0, "show_sql": True,
         })
         parsed = json.loads(result)
         assert "sql" in parsed
@@ -687,7 +687,7 @@ class TestInspectModelSectionGating:
     async def test_default_renders_all_sections_no_footer(self, mcp_server, storage: YAMLStorage) -> None:
         """Default call (no `sections=`) emits all sections and no footer."""
         await self._save_rich_model(storage)
-        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "model", "reference": "rich", "compact": False})
+        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "dataset", "reference": "rich", "compact": False})
         assert "## Columns (3)" in result
         assert "## Measures (2)" in result
         assert "## Joins (2)" in result
@@ -703,7 +703,7 @@ class TestInspectModelSectionGating:
         await self._save_rich_model(storage)
         result = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "rich", "compact": False, "sections": ["columns"]},
+            arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["columns"]},
         )
         # Columns full
         assert "## Columns (3)" in result
@@ -732,7 +732,7 @@ class TestInspectModelSectionGating:
         ))
         result = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "bare", "compact": False, "sections": ["columns"]},
+            arguments={"entity_type": "dataset", "reference": "bare", "compact": False, "sections": ["columns"]},
         )
         assert "## Columns" in result
         # No measures, aggregations, or joins → no headings for them at all
@@ -745,7 +745,7 @@ class TestInspectModelSectionGating:
         await self._save_rich_model(storage)
         result = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "rich", "compact": False, "sections": ["columns", "fish"]},
+            arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["columns", "fish"]},
         )
         assert "> Warning: ignored unknown sections: 'fish'." in result
         assert "Valid: columns, measures, aggregations, joins, samples, learnings, saved_queries." in result
@@ -757,7 +757,7 @@ class TestInspectModelSectionGating:
         await self._save_rich_model(storage)
         result = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "rich", "compact": False, "sections": ["fish", "bird"]},
+            arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["fish", "bird"]},
         )
         assert "Warning: ignored unknown sections: 'fish', 'bird'." in result
         # Always-on header still renders
@@ -785,7 +785,7 @@ class TestInspectModelSectionGating:
         await self._save_rich_model(storage)
         result = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "rich", "compact": False, "sections": ["measures", "columns"]},
+            arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["measures", "columns"]},
         )
         assert result.find("## Columns (3)") < result.find("## Measures (2)")
 
@@ -797,7 +797,7 @@ class TestInspectModelSectionGating:
         await self._save_rich_model(storage)
         result_md = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "rich", "compact": False, "sections": ["reachable_fields"]},
+            arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["reachable_fields"]},
         )
         assert (
             "> Warning: ignored unknown sections: 'reachable_fields'. "
@@ -814,7 +814,7 @@ class TestInspectModelSectionGating:
         result_json = await _call(
             mcp_server, name="inspect",
             arguments={
-                "entity_type": "model", "reference": "rich", "compact": False,
+                "entity_type": "dataset", "reference": "rich", "compact": False,
                 "sections": ["reachable_fields"],
                 "format": "json",
             },
@@ -833,7 +833,7 @@ class TestInspectModelSectionGating:
         await self._save_rich_model(storage)
         result_md = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "rich", "compact": False, "sections": ["reachable_fields", "columns"]},
+            arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["reachable_fields", "columns"]},
         )
         # Columns table renders in full.
         assert "## Columns (3)" in result_md
@@ -844,7 +844,7 @@ class TestInspectModelSectionGating:
         result_json = await _call(
             mcp_server, name="inspect",
             arguments={
-                "entity_type": "model", "reference": "rich", "compact": False,
+                "entity_type": "dataset", "reference": "rich", "compact": False,
                 "sections": ["reachable_fields", "columns"],
                 "format": "json",
             },
@@ -861,11 +861,11 @@ class TestInspectModelSectionGating:
         await self._save_rich_model(storage)
         result_with = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "rich", "compact": False, "reachable_fields_depth": 5},
+            arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "reachable_fields_depth": 5},
         )
         result_without = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "rich", "compact": False},
+            arguments={"entity_type": "dataset", "reference": "rich", "compact": False},
         )
         assert result_with == result_without
         assert "## Reachable" not in result_with
@@ -879,7 +879,7 @@ class TestInspectModelSectionGating:
             None,
             ["columns", "measures", "aggregations", "joins", "samples", "learnings"],
         ):
-            args: dict = {"entity_type": "model", "reference": "rich", "compact": False}
+            args: dict = {"entity_type": "dataset", "reference": "rich", "compact": False}
             if sections_arg is not None:
                 args["sections"] = sections_arg
             md = await _call(mcp_server, name="inspect", arguments=args)
@@ -910,7 +910,7 @@ class TestInspectModelDescriptionsMaxChars:
     async def test_no_truncation_by_default(self, mcp_server, storage: YAMLStorage) -> None:
         """descriptions_max_chars=None leaves descriptions untouched."""
         await self._save_with_long_descriptions(storage)
-        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "model", "reference": "m", "compact": False})
+        result = await _call(mcp_server, name="inspect", arguments={"entity_type": "dataset", "reference": "m", "compact": False})
         assert "A" * 100 in result
         assert "B" * 100 in result
         assert "[truncated]" not in result
@@ -920,7 +920,7 @@ class TestInspectModelDescriptionsMaxChars:
         await self._save_with_long_descriptions(storage)
         result = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "m", "compact": False, "descriptions_max_chars": 10, "show_sql": True},
+            arguments={"entity_type": "dataset", "reference": "m", "compact": False, "descriptions_max_chars": 10, "show_sql": True},
         )
         # Marker present
         assert "[truncated]" in result
@@ -939,7 +939,7 @@ class TestInspectModelDescriptionsMaxChars:
         ))
         result = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "short", "compact": False, "descriptions_max_chars": 100},
+            arguments={"entity_type": "dataset", "reference": "short", "compact": False, "descriptions_max_chars": 100},
         )
         assert "hi" in result
         assert "ok" in result
@@ -950,7 +950,7 @@ class TestInspectModelDescriptionsMaxChars:
         await self._save_with_long_descriptions(storage)
         result = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "m", "compact": False, "descriptions_max_chars": 0},
+            arguments={"entity_type": "dataset", "reference": "m", "compact": False, "descriptions_max_chars": 0},
         )
         assert "[truncated]" in result
         assert "A" * 5 not in result
@@ -961,7 +961,7 @@ class TestInspectModelDescriptionsMaxChars:
         with pytest.raises(ToolError, match="descriptions_max_chars must be >= 0"):
             await _call(
                 mcp_server, name="inspect",
-                arguments={"entity_type": "model", "reference": "m", "compact": False, "descriptions_max_chars": -1},
+                arguments={"entity_type": "dataset", "reference": "m", "compact": False, "descriptions_max_chars": -1},
             )
 
 
@@ -984,7 +984,7 @@ class TestInspectModelAggregationsShowSql:
         await self._save_with_aggs(storage)
         result = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "m", "compact": False, "sections": ["aggregations"], "show_sql": True},
+            arguments={"entity_type": "dataset", "reference": "m", "compact": False, "sections": ["aggregations"], "show_sql": True},
         )
         assert "## Aggregations (1)" in result
         assert "SUM({sql} * {weight})" in result
@@ -995,7 +995,7 @@ class TestInspectModelAggregationsShowSql:
         await self._save_with_aggs(storage)
         result = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "m", "compact": False, "sections": ["aggregations"], "show_sql": False},
+            arguments={"entity_type": "dataset", "reference": "m", "compact": False, "sections": ["aggregations"], "show_sql": False},
         )
         assert "## Aggregations (1)" in result
         # Formula content is gone (the SQL fragment doesn't appear anywhere)
@@ -1008,7 +1008,7 @@ class TestInspectModelAggregationsShowSql:
         await self._save_with_aggs(storage)
         result = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "m", "compact": False, "sections": ["columns"]},
+            arguments={"entity_type": "dataset", "reference": "m", "compact": False, "sections": ["columns"]},
         )
         assert "## Aggregations (1 — names only)" in result
         assert "`wavg`" in result
@@ -1042,7 +1042,7 @@ class TestInspectModelJsonGating:
         await self._save_rich(storage)
         raw = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "rich", "compact": False, "sections": ["columns"], "format": "json"},
+            arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["columns"], "format": "json"},
         )
         parsed = json.loads(raw)
         # Columns key present (full)
@@ -1068,7 +1068,7 @@ class TestInspectModelJsonGating:
         await self._save_rich(storage)
         raw = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "rich", "compact": False, "sections": ["columns", "fish"], "format": "json"},
+            arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["columns", "fish"], "format": "json"},
         )
         parsed = json.loads(raw)
         assert parsed["unknown_sections"] == ["fish"]
@@ -1080,7 +1080,7 @@ class TestInspectModelJsonGating:
         raw = await _call(
             mcp_server, name="inspect",
             arguments={
-                "entity_type": "model", "reference": "rich", "compact": False,
+                "entity_type": "dataset", "reference": "rich", "compact": False,
                 "sections": ["aggregations"],
                 "show_sql": False,
                 "format": "json",
@@ -1099,7 +1099,7 @@ class TestInspectModelJsonGating:
         raw = await _call(
             mcp_server, name="inspect",
             arguments={
-                "entity_type": "model", "reference": "rich", "compact": False,
+                "entity_type": "dataset", "reference": "rich", "compact": False,
                 "sections": ["aggregations"],
                 "show_sql": True,
                 "format": "json",
@@ -1114,7 +1114,7 @@ class TestInspectModelJsonGating:
         await self._save_rich(storage)
         raw = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "rich", "compact": False, "descriptions_max_chars": 5, "format": "json"},
+            arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "descriptions_max_chars": 5, "format": "json"},
         )
         parsed = json.loads(raw)
         assert parsed["description"].startswith("XXXXX")
@@ -1125,7 +1125,7 @@ class TestInspectModelJsonGating:
         await self._save_rich(storage)
         raw = await _call(
             mcp_server, name="inspect",
-            arguments={"entity_type": "model", "reference": "rich", "compact": False, "format": "json"},
+            arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "format": "json"},
         )
         parsed = json.loads(raw)
         assert "names_only_sections" not in parsed
@@ -2020,7 +2020,7 @@ class TestEditModel:
             data_source="test",
             source_queries=[SlayerQuery(
                 population="upstream",
-                metrics=[{"formula": "sum(amount)"}],
+                metrics=[{"expression": "sum(amount)"}],
                 filter=["amount > {threshold}"],
                 dry_run=True,
             )],
@@ -2473,7 +2473,7 @@ class TestEditModelColumnsRejected:
             data_source="test",
             source_queries=[SlayerQuery(
                 population="upstream",
-                metrics=[{"formula": "sum(amount)"}],
+                metrics=[{"expression": "sum(amount)"}],
                 dry_run=True,
             )],
         ))
@@ -2516,7 +2516,7 @@ class TestInspectModelRequiredVariables:
             data_source="test",
             source_queries=[SlayerQuery(
                 population="upstream",
-                metrics=[{"formula": "sum(amount)"}],
+                metrics=[{"expression": "sum(amount)"}],
                 filter=["amount > {x}"],
                 variables={"x": 1},
                 dry_run=True,
@@ -2524,7 +2524,7 @@ class TestInspectModelRequiredVariables:
             # No model-level query_variables.
         ))
         result = await _call(mcp_server, name="inspect", arguments={
-            "entity_type": "model", "reference": "qb_stage_default", "compact": False, "format": "json",
+            "entity_type": "dataset", "reference": "qb_stage_default", "compact": False, "format": "json",
         })
         parsed = json.loads(result)
         assert "x" not in parsed["backing_query"]["required_variables"]

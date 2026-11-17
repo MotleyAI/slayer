@@ -66,7 +66,7 @@ class ConversionReport(BaseModel):
 
 
 class ConversionResult(ConversionReport):
-    """Result of converting a semantic-layer project into SLayer models."""
+    """Result of converting a semantic-layer project into SLayer datasets."""
     datasets: list[SlayerDataset] = Field(default_factory=list)
     unconverted_metrics: list[ConversionWarning] = Field(default_factory=list)
 

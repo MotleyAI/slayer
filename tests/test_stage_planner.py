@@ -133,7 +133,7 @@ class TestUserNameAlias:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"formula": "sum(customers.revenue)", "name": "rev_sum"},
+                {"expression": "sum(customers.revenue)", "name": "rev_sum"},
             ],
             dimensions=["status"],
         )
@@ -179,13 +179,13 @@ class TestDownstreamStageFlatRefs:
         stage1 = SlayerQuery(
             name="stage1",
             population="orders",
-            metrics=[{"formula": "sum(customers.revenue)",
+            metrics=[{"expression": "sum(customers.revenue)",
                        "name": "robot_details__modelseriesval"}],
             dimensions=["status"],
         )
         stage2 = SlayerQuery(
             population="stage1",
-            metrics=[{"formula": "robot_details.modelseriesval"}],
+            metrics=[{"expression": "robot_details.modelseriesval"}],
             dimensions=["status"],
         )
         bundle = _bundle()
@@ -275,8 +275,8 @@ class TestStageSchemaMultiAlias:
         q = SlayerQuery(
             population="orders",
             metrics=[
-                {"formula": "sum(amount)", "name": "rev1"},
-                {"formula": "sum(amount)", "name": "rev2"},
+                {"expression": "sum(amount)", "name": "rev1"},
+                {"expression": "sum(amount)", "name": "rev2"},
             ],
             dimensions=["status"],
         )

@@ -2,20 +2,20 @@
 
 Two scope kinds, never confused (P5):
 
-- ``DatasetScope``: joins exist; dotted refs walk the join graph rooted at
+- ``DatasetScope``: relationships exist; dotted refs walk the relationship graph rooted at
   ``population``. ``__`` in a Mode-B ref is an error unless it exact-
-  matches a column literally named that way (legacy persisted query-backed
-  columns).
-- ``StageSchema``: flat namespace; dots are not join syntax;
+  matches a field literally named that way (legacy persisted query-backed
+  fields).
+- ``StageSchema``: flat namespace; dots are not relationship syntax;
   ``__``-bearing identifiers are flat names.
 
 ``StageField`` is the typed projection element (P6): explicit ``name``
 (downstream bind name), ``sql_alias`` (emitted SQL identifier),
-``public_alias`` (result-key piece), plus the per-column metadata that
+``public_alias`` (result-key piece), plus the per-field metadata that
 downstream stages need.
 
-``ModelScope.population`` is ``Optional`` from day one so a future anchor-less
-mode is a type-additive change. The binder asserts ``source_model is not None``
+``DatasetScope.population`` is ``Optional`` from day one so a future anchor-less
+mode is a type-additive change. The binder asserts ``population is not None``
 at use sites — the type-level optionality is the extension point.
 """
 
@@ -46,12 +46,12 @@ class StageField(BaseModel):
     to ``name``, but the typed split lets the planner reserve hidden
     or alias-bearing forms without coupling them). ``public_alias`` is
     the result-key piece returned to the user — set only for non-hidden
-    columns.
+    fields.
 
     ``format`` is the typed ``NumberFormat``
-    inherited from the source ``ModelMeasure`` / ``Column`` or computed
+    inherited from the source ``DatasetMetric`` / ``DatasetField`` or computed
     by ``_infer_aggregated_format``. ``description`` propagates the source
-    column's documentation through the typed plan.
+    field's documentation through the typed plan.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -61,7 +61,7 @@ class StageField(BaseModel):
     public_alias: Optional[str] = None
     datatype: Optional[DataType] = None
     element_type: Optional[DataType] = None
-    # Set only for a column an upstream stage bucketed (a ``TimeTruncKey`` slot);
+    # Set only for a field an upstream stage bucketed (a ``TimeTruncKey`` slot);
     # ``None`` means "not truncated", so any granularity re-binds.
     granularity: CustomGranularity | GranularitySpec | None = None
     label: Optional[str] = None
@@ -77,7 +77,7 @@ class StageField(BaseModel):
 
 class StageDisplay(BaseModel):
     """A stage's user-facing spelling: its name in its own query list, plus the
-    stored query-backed model it was spliced from (``None`` for a user stage)."""
+    stored query-backed dataset it was spliced from (``None`` for a user stage)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -90,21 +90,21 @@ class StageDisplay(BaseModel):
             return f"stage {self.name!r}"
         if self.name == self.dataset:
             return f"dataset {self.dataset!r}"
-        return f"stage {self.name!r} of model {self.dataset!r}"
+        return f"stage {self.name!r} of dataset {self.dataset!r}"
 
 
 class StageSchema(BaseModel):
     """The typed projection of one query stage (P6).
 
     Downstream stages bind against this as a flat namespace (P5). They
-    never re-walk the upstream join graph through a StageSchema — the
-    only legal refs are entries in ``fields`` and a list column's
+    never re-walk the upstream relationship graph through a StageSchema — the
+    only legal refs are entries in ``fields`` and a list field's
     elements (``L.value`` / ``L.*``).
 
     ``relation_name`` is the stage's internal identity: its CTE name.
     ``display`` is its user-facing spelling (``None`` → ``relation_name``).
     ``sql`` is the emitted text of the stage's SELECT — populated by the
-    planner; left ``None`` until rendering. ``grain`` names the columns the
+    planner; left ``None`` until rendering. ``grain`` names the fields the
     stage is unique on (its dimension positions); ``None`` for a raw-rows stage.
     """
 
@@ -115,7 +115,7 @@ class StageSchema(BaseModel):
     sql: Optional[str] = None
     fields: List[StageField]
     grain: Optional[List[str]] = None
-    # A spliced query-backed model's final stage keeps its source's default time dimension.
+    # A spliced query-backed dataset's final stage keeps its source's default time dimension.
     default_time_dimension: Optional[str] = None
 
     @property
@@ -132,7 +132,7 @@ class StageSchema(BaseModel):
         missing = [g for g in self.grain or [] if g not in names]
         if missing:
             raise ValueError(
-                f"Stage {self.display_name!r} grain names unknown columns {missing}."
+                f"Stage {self.display_name!r} grain names unknown fields {missing}."
             )
         return self
 
@@ -141,7 +141,7 @@ class StageSchema(BaseModel):
             if c.name == name:
                 return c
         raise KeyError(
-            f"No column named {name!r} in stage {self.display_name!r}."
+            f"No field named {name!r} in stage {self.display_name!r}."
         )
 
     def get(self, name: str, *, quoted: bool = False) -> Optional[StageField]:
@@ -164,15 +164,15 @@ class StageSchema(BaseModel):
 
 
 class DatasetScope(BaseModel):
-    """Scope for binding Mode-B refs against a model with joins (P5).
+    """Scope for binding Mode-B refs against a dataset with relationships (P5).
 
-    Dotted refs walk the join graph rooted at ``population``;
+    Dotted refs walk the relationship graph rooted at ``population``;
     ``__``-bearing refs are flat-only and reject unless they exact-match
-    a column literally named that way on the model.
+    a field literally named that way on the dataset.
 
     I2: ``population`` is ``Optional`` from day one. The binder
-    asserts ``source_model is not None`` at use sites so behavior is
-    unchanged. A future anchor-less mode uses ``source_model=None`` and
+    asserts ``population is not None`` at use sites so behavior is
+    unchanged. A future anchor-less mode uses ``population=None`` and
     a different binder branch (DatasourceScope-style binding). Keeping
     the type optional avoids a breaking change later.
     """
@@ -181,7 +181,7 @@ class DatasetScope(BaseModel):
 
 
 def root_spelling(scope) -> Optional[str]:
-    """The name a reference writes for the scope's root: a model's spelling, a stage's display name."""
+    """The name a reference writes for the scope's root: a dataset's spelling, a stage's display name."""
     if isinstance(scope, DatasetScope) and scope.population is not None:
         return scope.population.spelling
     if isinstance(scope, StageSchema):
@@ -197,9 +197,9 @@ def host_dataset_name(scope) -> str:
 def resolve_generated_field(
     *, dataset: SlayerDataset, name: str, location: Optional[str] = None, quoted: bool = False,
 ) -> Optional[DatasetField]:
-    """``resolve_flat_name`` over ``dataset``'s columns; only generated query-backed
-    columns carry respellings, so authored columns stay exact. A stale name
-    matching several columns fails closed (never read as a physical column)."""
+    """``resolve_flat_name`` over ``dataset``'s fields; only generated query-backed
+    fields carry respellings, so authored fields stay exact. A stale name
+    matching several fields fails closed (never read as a physical column)."""
     col = resolve_flat_name(
         name=name, entries=[(c.name, c.respellings, c) for c in dataset.fields],
         location=location, quoted=quoted,
@@ -241,7 +241,7 @@ def peek_flat_name(
 
 
 def peek_dataset_field(*, dataset: SlayerDataset, name: str, quoted: bool = False) -> Optional[DatasetField]:
-    """``peek_flat_name`` over ``dataset``'s columns."""
+    """``peek_flat_name`` over ``dataset``'s fields."""
     return peek_flat_name(name=name, entries=[(c.name, c.respellings, c) for c in dataset.fields], quoted=quoted)
 
 
@@ -258,7 +258,7 @@ def _flat_hit(
 
 
 class StaleSpelling(BaseModel):
-    """One stale flat name bound to its canonical column at ``location``."""
+    """One stale flat name bound to its canonical field at ``location``."""
 
     model_config = ConfigDict(frozen=True)
 

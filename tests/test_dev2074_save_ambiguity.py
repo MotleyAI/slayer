@@ -86,8 +86,8 @@ async def _both_doors(tmp_path, model: SlayerDataset, *peers: SlayerDataset,
 
 
 def _assert_names_both_edges(exc: AmbiguousRelationshipPathError) -> None:
-    assert exc.source_model == "orders"
-    assert exc.target_model == "addresses"
+    assert exc.source_dataset == "orders"
+    assert exc.target_dataset == "addresses"
     assert sorted(tuple(map(tuple, c.join_pairs)) for c in exc.candidates) == [
         (("address_id", "id"),), (("ship_address_id", "id"),),
     ]
