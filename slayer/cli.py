@@ -19,6 +19,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 from slayer import usage_reporting
+from slayer import otel
 from slayer.async_utils import run_sync
 from slayer.core.deprecation import deprecations_on_one_line
 from slayer.core.errors import SlayerError
@@ -74,6 +75,7 @@ from slayer.live_schema.type_refinement import (
     refine_dict_with_live_schema,
 )
 from slayer.usage_reporting import control as usage_reporting_control
+from slayer.otel import control as otel_control
 
 _DATASOURCE_NAME_HELP = "Datasource name"
 _FORMAT_HELP = "Output format (default: text)."
@@ -215,11 +217,13 @@ def _run_command(
         return
     if token is not None:
         usage_reporting.start()
+        otel.start()
     try:
         with usage_reporting.counting(surface="cli", token=token):
             _guarded_dispatch(parser, args, guard=guard)
     finally:
         usage_reporting.flush()
+        otel.shutdown()
     if guard is not None:
         guard.finish()
 
@@ -1311,6 +1315,16 @@ examples:
         "disable", help="Turn usage reporting off (persisted) and delete the install ID and unsent data",
     )
     usage_reporting_subparsers.add_parser("show", help="Print the report the next send would contain, without sending")
+
+    # ── OpenTelemetry ───────────────────────────────────────────────────────
+    otel_parser = subparsers.add_parser(
+        "otel",
+        help="Inspect and check the OpenTelemetry setup",
+        epilog="docs: https://docs.motley.ai/slayer/reference/opentelemetry/",
+    )
+    otel_subparsers = otel_parser.add_subparsers(dest="otel_command", required=True)
+    otel_subparsers.add_parser("status", help="Whether OTel is on, why, and where each signal goes")
+    otel_subparsers.add_parser("test", help="Send an OTLP request per signal and one test span to the endpoint")
     return parser
 
 
@@ -1325,6 +1339,16 @@ def _run_usage_reporting(args) -> None:
         print("Usage reporting disabled; the install ID and unsent data were deleted.")
     else:
         print(usage_reporting_control.pending_report().model_dump_json(indent=2))
+
+
+def _run_otel(args) -> None:
+    if args.otel_command == "status":
+        print(otel_control.status())
+        return
+    report, exit_code = otel_control.test()
+    print(report)
+    if exit_code:
+        sys.exit(exit_code)
 
 
 _SERVER_COMMANDS = frozenset({"serve", "flight-serve", "pg-serve", "mcp"})
@@ -1378,6 +1402,8 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) 
         _run_search(args)
     elif args.command == "storage":
         _run_storage(args)
+    elif args.command == "otel":
+        _run_otel(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -1744,6 +1770,7 @@ def _read_at_file(value: str, *, label: str) -> tuple[str, bool]:
         raise SystemExit(f"Error reading {label} file: {e}") from None
 
 
+@otel.request(surface="cli", token="query")
 def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straight-line function reads better than threaded helpers
     runtime_kwarg = _parse_cli_variables(args)
 
@@ -1866,6 +1893,7 @@ def _parse_csv_arg(value):
     return [t for t in (s.strip() for s in value.split(",")) if t]
 
 
+@otel.request(surface="cli", token="ingest")
 def _run_ingest(args):
     engine = SlayerQueryEngine(storage=_resolve_storage(args))
     engine.run_sync(_ingest_workflow(args, engine))

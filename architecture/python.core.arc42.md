@@ -40,6 +40,7 @@ flowchart TD
   subgraph usage_reporting["Usage reporting"]
     usage_reporting__features["Features"]
   end
+  otel["OpenTelemetry"]
   surfaces("User-facing surfaces")
   core__models -.-> sql__dialects
   core__models -.-> sql__sql_predicate
@@ -64,8 +65,9 @@ flowchart TD
   storage --> core
   surfaces --> core
   usage_reporting__features --> core
+  otel --> core
   classDef leaf fill:none;
-  class core__query,core__models,core__syntax,sql__dialects,sql__sql_predicate,sql__window_detect,engine__binding,engine__bind_inputs,database,live_schema,ir,storage__migrations,importers,search,memories,protocols,usage_reporting__features,surfaces leaf;
+  class core__query,core__models,core__syntax,sql__dialects,sql__sql_predicate,sql__window_detect,engine__binding,engine__bind_inputs,database,live_schema,ir,storage__migrations,importers,search,memories,protocols,usage_reporting__features,otel,surfaces leaf;
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:core_focus -->

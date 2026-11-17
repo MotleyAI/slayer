@@ -87,6 +87,10 @@ Read more on how to get started with [MCP](https://docs.motley.ai/slayer/getting
 
 The `slayer` command sends anonymous, aggregated usage statistics (command, tool and query-feature counts, versions) at most once a day — never queries, names, data or credentials; library use sends nothing. Opt out with `SLAYER_USAGE_REPORTING=off`, `DO_NOT_TRACK=1` or `slayer usage-reporting disable`; see [Usage reporting](https://docs.motley.ai/slayer/reference/usage-reporting/) for every field.
 
+## OpenTelemetry
+
+SLayer can send traces, metrics and logs to any OpenTelemetry backend over OTLP. It is off by default. Install `motley-slayer[otel]`, set `SLAYER_OTEL=on` and `OTEL_EXPORTER_OTLP_ENDPOINT`, and check the connection with `slayer otel test`. No SQL text or data leaves SLayer unless you opt in. See [OpenTelemetry](https://docs.motley.ai/slayer/reference/opentelemetry/) for every signal and setting.
+
 ## License
 
 MIT

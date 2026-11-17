@@ -25,6 +25,7 @@ from pydantic import (
 )
 
 from slayer.async_utils import run_sync
+from slayer.core import stages
 from slayer.core.enums import DEFAULT_AGGREGATIONS_BY_TYPE, RANKED_AGGREGATIONS, JoinCardinality, TimeGranularity
 from slayer.core.errors import (
     AggregationArgumentError,
@@ -850,6 +851,7 @@ class SlayerQueryEngine:
     def clear_cache(self) -> None:
         self._cache.clear()
 
+    @stages.staged(name="query.policy")
     async def _apply_policy(
         self, *, statement: Expr, dialect: str, datasource: DatasourceConfig
     ) -> Expr:
@@ -1022,6 +1024,11 @@ class SlayerQueryEngine:
             self._sql_clients.clear()
             self._drift_snapshots.clear()
 
+    @stages.staged(
+        name="query",
+        params={"query.dry_run": "dry_run", "query.explain": "explain"},
+        result=lambda response: {"query.rows": len(response.data)},
+    )
     async def execute(
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str",
@@ -1062,6 +1069,7 @@ class SlayerQueryEngine:
         _emit_python_warnings(response)
         return response
 
+    @stages.staged(name="query.normalize")
     async def _normalize_input(  # NOSONAR S3776 — public dispatch over str/dict/list/SlayerQuery; splitting hides the input-shape contract
         self,
         query: "SlayerQuery | dict | list[SlayerQuery | dict] | str | SavedQueryRun",
@@ -1166,6 +1174,11 @@ class SlayerQueryEngine:
             main_query = main_query.model_copy(update={"variables": merged})
         return main_query, named_queries
 
+    @stages.staged(
+        name="query.prepare",
+        result=lambda prepared: {"datasource.name": prepared.datasource.name,
+                                 "datasource.type": prepared.datasource.type or ""},
+    )
     async def _prepare_pipeline(  # NOSONAR S3776 — linear pipeline (resolve→bind→generate→policy); breaking it up obscures the order of operations
         self,
         query: SlayerQuery,
@@ -1662,6 +1675,7 @@ class SlayerQueryEngine:
             await cache_obj.put(key, entry)
         return response
 
+    @stages.staged(name="query.run", result=lambda executed: {"query.rows": len(executed.rows)})
     async def _run_data_query(
         self, *, prepared: _Prepared, client: SqlClient
     ) -> ExecutionResult:

@@ -1,0 +1,70 @@
+name: slayer-otel
+
+x-slayer-build: &slayer-build
+  context: ../..
+  dockerfile: examples/otel/Dockerfile
+
+services:
+  # The OTLP backend. Any OTLP endpoint works: see "Use another backend" in README.md.
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:v1.1.2
+    environment:
+      ZO_ROOT_USER_EMAIL: ${ZO_ROOT_USER_EMAIL}
+      ZO_ROOT_USER_PASSWORD: ${ZO_ROOT_USER_PASSWORD}
+      ZO_DATA_DIR: /data
+    ports:
+      - "5080:5080"
+    volumes:
+      - openobserve-data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: slayer_demo
+      POSTGRES_USER: slayer
+      POSTGRES_PASSWORD: slayer
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U slayer -d slayer_demo"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  seed:
+    build: *slayer-build
+    command: python /examples/seed.py postgresql://slayer:slayer@postgres:5432/slayer_demo
+    volumes: 
+      - ../seed.py:/examples/seed.py:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  slayer:
+    build: *slayer-build
+    command: sh /examples/start.sh
+    env_file: .env
+    ports:
+      - "5143:5143"
+    volumes:
+      - ./start.sh:/examples/start.sh:ro
+      - ./prepare.py:/examples/prepare.py:ro
+      - slayer-data:/data
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+      openobserve:
+        condition: service_started
+
+  traffic:
+    build: *slayer-build
+    profiles: ["traffic"]
+    # No depends_on: traffic.py waits for SLayer itself, and a dependency would make
+    # "docker compose run" re-run seed and recreate SLayer.
+    command: python /examples/traffic.py http://slayer:5143
+    volumes:
+      - ./traffic.py:/examples/traffic.py:ro
+
+volumes:
+  openobserve-data:
+  slayer-data:

@@ -29,6 +29,7 @@ flowchart TD
   memories("Agent memories")
   protocols("BI wire protocols")
   usage_reporting["Usage reporting"]
+  otel["OpenTelemetry"]
   surfaces("User-facing surfaces")
   core -.-> sql
   core -.-> storage
@@ -87,6 +88,9 @@ flowchart TD
   surfaces --> usage_reporting
   usage_reporting --> core
   usage_reporting --> sql
+  protocols --> otel
+  surfaces --> otel
+  otel --> core
 ```
 *Dashed arrows: legacy edges slated to die.*
 <!-- /likec4:landscape -->

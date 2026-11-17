@@ -61,6 +61,7 @@ from slayer.sql.render.parse import is_read_only_query, parse_query
 from slayer.sql.reserved_keywords import prequote_reserved_identifiers
 from slayer.sql.type_probe import TypeProbe, mint_type_probe
 from slayer.core import timing
+from slayer.core import stages
 
 logger = logging.getLogger(__name__)
 
@@ -675,6 +676,27 @@ class SqlClient(Protocol):
     def close(self) -> None: ...
 
 
+def _db_stage_attributes(bound: Any) -> dict[str, Any]:
+    datasource = bound.arguments["self"].datasource
+    attributes: dict[str, Any] = {
+        "datasource.name": datasource.name,
+        "datasource.type": datasource.type or "",
+        "db.namespace": datasource.database,
+        "server.address": datasource.host,
+        "server.port": datasource.port,
+        "db.query.text": bound.arguments.get("sql"),
+    }
+    if not datasource.host and datasource.connection_string:
+        with contextlib.suppress(Exception):
+            url = make_url(datasource.connection_string)
+            attributes.update({
+                "server.address": url.host,
+                "server.port": url.port,
+                "db.namespace": url.database,
+            })
+    return attributes
+
+
 class SlayerSQLClient:
     """Executes SQL against databases via SQLAlchemy, through one driver.
 
@@ -920,6 +942,10 @@ class SlayerSQLClient:
         writes = admit_statement(sql, dialect=self._dialect, writes_allowed=self._in_memory())
         return await self._typed_execute(sql=sql, timeout_seconds=timeout_seconds, writes=writes)
 
+    @stages.staged(
+        name="db.execute", extract=_db_stage_attributes,
+        result=lambda executed: {"db.response.returned_rows": len(executed.rows)},
+    )
     async def _typed_execute(self, *, sql: str, timeout_seconds: int, writes: bool) -> ExecutionResult:
         try:
             return await self._execute(sql=sql, timeout_seconds=timeout_seconds, writes=writes)
@@ -967,6 +993,7 @@ class SlayerSQLClient:
             await self._typed(exc)
             raise
 
+    @stages.staged(name="db.explain", extract=_db_stage_attributes)
     async def _explain(self, *, statements: ExplainStatements, timeout_seconds: int) -> ExecutionResult:
         ds = self.datasource
         async_engine = self._async_engine_here()
@@ -1030,6 +1057,7 @@ class SlayerSQLClient:
 
     # Live metadata: one read on one open sync connection — the async engine's, else the sync engine's off the loop.
 
+    @stages.staged(name="db.metadata", extract=_db_stage_attributes)
     async def _metadata(self, read: Callable[[sa.Connection], _T]) -> _T:
         try:
             async_engine = self._async_engine_here()
@@ -1396,6 +1424,9 @@ def _log_transient_or_raise(*, exc: Exception, sql: str, attempt: int, delay: fl
     """Re-raise a non-transient error; log the retry of a transient one."""
     if not _is_transient_db_error(exc, writes=writes):
         raise exc
+    stages.current().add_event(
+        name="db.retry", attributes={"db.attempt": attempt + 1, "error.type": type(exc).__qualname__},
+    )
     sql_lines = (sql or "").strip().splitlines()
     sql_excerpt = sql_lines[0][:120] if sql_lines else _EMPTY_SQL_PLACEHOLDER
     logger.warning(

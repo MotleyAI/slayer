@@ -22,6 +22,7 @@ import pyarrow.flight as fl
 from google.protobuf.any_pb2 import Any as PbAny
 
 from slayer import usage_reporting
+from slayer import otel
 from slayer.core.enums import DataType
 from slayer.core.format import encode_text
 from slayer.core.models import SlayerModel
@@ -388,6 +389,7 @@ class FlightHandlers:
         self._execute(zero_query)  # only the side-effect; ignore the empty rows.
         return self._build_schema(result)
 
+    @otel.request(surface="flight", token="query")
     def _execute_full(self, result: "QueryResult") -> pa.Table:
         """Run the full query, coerce rows, return a pa.Table matching the
         catalog projection's column names."""

@@ -14,6 +14,8 @@ from pydantic import Discriminator, Field, Tag
 from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__, usage_reporting
+from slayer import otel
+from slayer.usage_reporting.payload import USAGE_KEYS
 from slayer.core.errors import (
     AmbiguousModelError,
     EntityResolutionError,
@@ -176,6 +178,17 @@ def _import_fastmcp():
     return FastMCP
 
 
+def _tool_operation(bound: Any) -> dict[str, str]:
+    name = bound.arguments["name"]
+    tool = name if f"mcp:{name}" in USAGE_KEYS else "other"
+    return {
+        "operation": tool,
+        "mcp.method.name": "tools/call",
+        "gen_ai.operation.name": "execute_tool",
+        "gen_ai.tool.name": tool,
+    }
+
+
 def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
     """``fastmcp_cls`` counting every tool call, and each session's client once."""
 
@@ -184,6 +197,7 @@ def _counted(fastmcp_cls: "type[FastMCP]") -> "type[FastMCP]":
             super().__init__(*args, **kwargs)
             self._usage_reporting_sessions: weakref.WeakSet = weakref.WeakSet()
 
+        @otel.request(surface="mcp", extract=_tool_operation)
         async def call_tool(self, name: str, arguments: dict[str, Any]):
             session = self._observe_session()
             with usage_reporting.action() as action:

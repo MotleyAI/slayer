@@ -71,6 +71,7 @@ from slayer.pg_facade.types import (
     value_to_text,
 )
 from slayer.core import timing
+from slayer import otel
 
 logger = logging.getLogger(__name__)
 
@@ -1128,6 +1129,7 @@ class PgConnection:
             self._writer.write(proto.encode_data_row(values))
         self._writer.write(proto.encode_command_complete(command="SELECT", rows=len(batch.rows)))
 
+    @otel.request(surface="pg", token="query")
     async def _run_query(
         self, result: QueryResult, result_formats: list[int] | None, send_row_description: bool,
     ) -> bool:

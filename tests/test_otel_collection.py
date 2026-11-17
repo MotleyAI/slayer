@@ -1,0 +1,241 @@
+"""What one query or ingest sends: the span tree, OTel standard attributes, and the metrics."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+import pytest
+from opentelemetry.trace import SpanKind, StatusCode
+
+from slayer import otel
+from slayer.core import stages
+from slayer.otel import adapter
+from tests._otel_helpers import OtelCapture
+from tests._saved_query_refinement_fixtures import refine_engine
+
+_REVENUE = {"source_model": "orders", "measures": ["sum(amount)"], "dimensions": ["region"]}
+_MISSING = {"source_model": "no_such_model", "measures": ["count(*)"]}
+
+
+def _run(query: dict[str, Any], **kwargs: Any) -> None:
+    async def main() -> None:
+        async with refine_engine("sqlite") as (engine, _):
+            await engine.execute(query, **kwargs)
+
+    asyncio.run(main())
+
+
+def _run_twice_cached() -> None:
+    async def main() -> None:
+        async with refine_engine("sqlite") as (engine, _):
+            await engine.execute(_REVENUE, cache=True)
+            await engine.execute(_REVENUE, cache=True)
+
+    asyncio.run(main())
+
+
+def _ingest() -> None:
+    async def main() -> None:
+        async with refine_engine("sqlite") as (engine, _):
+            datasource = await engine.storage.get_datasource("test")
+            assert datasource is not None
+            await engine.ingest_idempotent(datasource)
+
+    asyncio.run(main())
+
+
+def _failing() -> None:
+    with pytest.raises(Exception, match="no_such_model"):
+        _run(_MISSING)
+
+
+# --- traces --------------------------------------------------------------------------
+
+
+_PARENTS = [
+    ("slayer.query.normalize", "slayer.query"),
+    ("slayer.query.prepare", "slayer.query"),
+    ("slayer.query.run", "slayer.query"),
+    ("slayer.db.execute", "slayer.query.run"),
+]
+
+
+@pytest.mark.parametrize(("child", "parent"), _PARENTS)
+def test_a_query_is_one_span_tree(otel_env: OtelCapture, child: str, parent: str) -> None:
+    _run(_REVENUE)
+    assert otel_env.parent_name(child) == parent
+
+
+def test_the_query_span_carries_its_datasource_and_rows(otel_env: OtelCapture) -> None:
+    _run(_REVENUE)
+    attributes = otel_env.attributes("slayer.query")
+    assert (attributes["slayer.datasource.name"], attributes["slayer.query.rows"], attributes["slayer.query.dry_run"]) == (
+        "test", 2, False,
+    )
+
+
+def test_the_database_span_follows_the_otel_database_conventions(otel_env: OtelCapture) -> None:
+    _run(_REVENUE)
+    span = otel_env.span("slayer.db.execute")
+    attributes = dict(span.attributes or {})
+    assert (span.kind, attributes["db.system.name"], attributes["db.response.returned_rows"]) == (
+        SpanKind.CLIENT, "sqlite", 2,
+    )
+
+
+def test_a_dry_run_reaches_no_database(otel_env: OtelCapture) -> None:
+    _run(_REVENUE, dry_run=True)
+    assert ("slayer.query" in otel_env.span_names(), "slayer.db.execute" in otel_env.span_names()) == (True, False)
+
+
+def test_a_failing_query_marks_its_span_as_an_error(otel_env: OtelCapture) -> None:
+    _failing()
+    span = otel_env.span("slayer.query")
+    assert (span.status.status_code, dict(span.attributes or {}).get("error.type")) == (
+        StatusCode.ERROR, "ModelNotFoundError",
+    )
+
+
+def test_ingest_is_one_span_with_its_outcome(otel_env: OtelCapture) -> None:
+    _ingest()
+    attributes = otel_env.attributes("slayer.ingest")
+    assert (attributes["slayer.datasource.name"], attributes["slayer.ingest.models.updated"]) == ("test", 1)
+
+
+_INGEST_CHILDREN = ["slayer.ingest.scan.schema", "slayer.ingest.merge", "slayer.ingest.drift", "slayer.ingest.embeddings"]
+
+
+@pytest.mark.parametrize("child", _INGEST_CHILDREN)
+def test_ingest_steps_nest_under_the_ingest_span(otel_env: OtelCapture, child: str) -> None:
+    _ingest()
+    assert otel_env.parent_name(child) == "slayer.ingest"
+
+
+# --- metrics -------------------------------------------------------------------------
+
+
+def test_query_duration_is_a_histogram_in_seconds(otel_env: OtelCapture) -> None:
+    _run(_REVENUE)
+    (point,) = otel_env.metric("slayer.query.duration")
+    assert (point.unit, point.count, point.buckets, point.attributes) == (
+        "s", 1, adapter.QUERY_BUCKETS, {"slayer.datasource.name": "test", "slayer.datasource.type": "sqlite"},
+    )
+
+
+def test_database_duration_uses_the_standard_metric(otel_env: OtelCapture) -> None:
+    _run(_REVENUE)
+    (point,) = otel_env.metric("db.client.operation.duration")
+    assert (point.buckets, point.attributes["db.system.name"], point.attributes["slayer.datasource.name"]) == (
+        adapter.DB_BUCKETS, "sqlite", "test",
+    )
+
+
+def test_a_failing_query_is_labelled_with_its_error_type(otel_env: OtelCapture) -> None:
+    _failing()
+    (point,) = otel_env.metric("slayer.query.duration")
+    assert point.attributes == {"error.type": "ModelNotFoundError"}
+
+
+def test_cache_lookups_count_hits_and_misses(otel_env: OtelCapture) -> None:
+    _run_twice_cached()
+    lookups = {point.attributes["slayer.cache.hit"]: point.value for point in otel_env.metric("slayer.cache.lookups")}
+    assert lookups == {False: 1, True: 1}
+
+
+def test_ingest_counts_models_by_change(otel_env: OtelCapture) -> None:
+    _ingest()
+    counts = {point.attributes["slayer.ingest.change"]: point.value for point in otel_env.metric("slayer.ingest.models")}
+    assert counts == {"updated": 1}
+
+
+# --- adapter rules -------------------------------------------------------------------
+
+
+_NAMES = [
+    ("query.rows", "slayer.query.rows"),
+    ("datasource.name", "slayer.datasource.name"),
+    ("error.type", "error.type"),
+    ("db.system.name", "db.system.name"),
+    ("gen_ai.tool.name", "gen_ai.tool.name"),
+]
+
+
+@pytest.mark.parametrize(("key", "exported"), _NAMES)
+def test_only_non_standard_keys_gain_the_namespace(key: str, exported: str) -> None:
+    assert adapter.exported_name(key) == exported
+
+
+_SYSTEMS = [
+    ("postgres", "postgresql"),
+    ("sqlite", "sqlite"),
+    ("oracle", "oracle.db"),
+    ("redshift", "aws.redshift"),
+    ("mssql", "microsoft.sql_server"),
+    ("duckdb", "other_sql"),
+    ("snowflake", "other_sql"),
+]
+
+
+@pytest.mark.parametrize(("datasource_type", "system"), _SYSTEMS)
+def test_db_system_name_uses_the_standard_values(otel_env: OtelCapture, datasource_type: str, system: str) -> None:
+    with stages.stage(name="db.execute", attributes={"datasource.type": datasource_type}):
+        pass
+    assert otel_env.attributes("slayer.db.execute")["db.system.name"] == system
+
+
+def test_every_mapped_system_is_an_otel_standard_value() -> None:
+    known = pytest.importorskip("opentelemetry.semconv._incubating.attributes.db_attributes").DbSystemNameValues
+    assert set(adapter.DB_SYSTEMS.values()) - {value.value for value in known} == set()
+
+
+_KINDS = [
+    ("db.execute", {}, SpanKind.CLIENT),
+    ("request", {"surface": "pg"}, SpanKind.SERVER),
+    ("request", {"surface": "flight"}, SpanKind.SERVER),
+    ("request", {"surface": "cli"}, SpanKind.INTERNAL),
+    ("query", {}, SpanKind.INTERNAL),
+]
+
+
+@pytest.mark.parametrize(("name", "attributes", "kind"), _KINDS)
+def test_span_kind_follows_the_stage(
+    otel_env: OtelCapture, name: str, attributes: dict[str, str], kind: SpanKind,
+) -> None:
+    with stages.stage(name=name, attributes=attributes):
+        pass
+    assert otel_env.span(f"slayer.{name}").kind == kind
+
+
+def test_a_retry_is_a_span_event_and_a_counter(otel_env: OtelCapture) -> None:
+    with stages.stage(name="db.execute", attributes={"datasource.name": "shop"}):
+        stages.current().add_event(name="db.retry", attributes={"db.attempt": 2, "error.type": "OperationalError"})
+    events = [(event.name, dict(event.attributes or {})) for event in otel_env.span("slayer.db.execute").events]
+    (point,) = otel_env.metric("slayer.db.retries")
+    assert (events, point.value) == (
+        [("slayer.db.retry", {"slayer.db.attempt": 2, "error.type": "OperationalError"})], 1,
+    )
+
+
+def test_drift_entries_are_counted(otel_env: OtelCapture) -> None:
+    with stages.stage(name="ingest.drift", attributes={"datasource.name": "shop"}):
+        stages.current().set({"ingest.drift.entries": 3})
+    (point,) = otel_env.metric("slayer.ingest.drift.entries")
+    assert (point.value, point.attributes) == (3, {"slayer.datasource.name": "shop"})
+
+
+def test_spans_nest_under_the_callers_span(otel_env: OtelCapture) -> None:
+    tracer = otel_env.tracer_provider.get_tracer("host")
+    with tracer.start_as_current_span("host.handler"), stages.stage(name="query"):
+        pass
+    assert otel_env.parent_name("slayer.query") == "host.handler"
+
+
+def test_the_request_decorator_names_the_surface(otel_env: OtelCapture) -> None:
+    @otel.request(surface="cli", token="query")
+    def handler() -> int:
+        return 1
+
+    handler()
+    attributes = otel_env.attributes("slayer.request")
+    assert (attributes["slayer.surface"], attributes["slayer.operation"]) == ("cli", "query")
