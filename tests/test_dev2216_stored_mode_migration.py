@@ -75,7 +75,7 @@ class TestNestedStages:
     def test_every_stage_migrates(self, versioned: bool) -> None:
         doc = query_backed_v10(name="rev_q", version=PREVIOUS_MODEL, stages=[
             _stage(mode="broadcast", versioned=versioned, name="first"),
-            {**_stage(mode="broadcast", versioned=versioned), "population": "first"},
+            {**_stage(mode="broadcast", versioned=versioned), "source_model": "first"},
         ])
         model = SlayerDataset.model_validate(doc)
         assert [s.to_many_handling for s in model.source_queries or []] == [None, None]
@@ -83,7 +83,7 @@ class TestNestedStages:
     def test_other_modes_survive_in_stages(self) -> None:
         doc = query_backed_v10(name="rev_q", version=PREVIOUS_MODEL, stages=[
             _stage(mode="error", versioned=False, name="first"),
-            {**_stage(mode="associate", versioned=True), "population": "first"},
+            {**_stage(mode="associate", versioned=True), "source_model": "first"},
         ])
         model = SlayerDataset.model_validate(doc)
         assert [s.to_many_handling for s in model.source_queries or []] == ["error", "associate"]
@@ -94,7 +94,7 @@ class TestStorage:
     async def test_stored_stages_load_as_the_default(self, tmp_path: Path, backend: str) -> None:
         doc = query_backed_v10(name="rev_q", version=PREVIOUS_MODEL, stages=[
             _stage(mode="broadcast", versioned=True, name="first"),
-            {**_stage(mode="broadcast", versioned=False), "population": "first"},
+            {**_stage(mode="broadcast", versioned=False), "source_model": "first"},
         ])
         storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=None, models=[doc])
         model = await storage.get_dataset("rev_q", data_source=DS)

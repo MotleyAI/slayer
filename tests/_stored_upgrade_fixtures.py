@@ -116,7 +116,7 @@ def query_backed_v10(*, name: str, stages: list[dict], version: int = 10) -> dic
 
 def rev_query(**extra: Any) -> dict:
     """A 0.10.2-shaped stored source query: ``sum(amount)`` as ``rev`` over orders."""
-    return {"population": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}], **extra}
+    return {"source_model": "orders", "measures": [{"formula": "sum(amount)", "name": "rev"}], **extra}
 
 
 def year_td(date_range: list | None) -> dict:

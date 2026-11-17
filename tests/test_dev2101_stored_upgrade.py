@@ -11,6 +11,7 @@ from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
 from slayer.database import engine_factory
+from slayer.storage.document_keys import dataset_in, keys_for
 from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._stored_upgrade_fixtures import (
     BACKENDS,
@@ -50,7 +51,8 @@ TOKEN_CASES = [
 
 
 def _model_doc(*, formula: str, version: int = 15, **extra: Any) -> dict:
-    return {**orders_v10(version=version), "metrics": [{"name": "x", "expression": formula}], **extra}
+    doc = {**orders_v10(version=version), "measures": [{"name": "x", "formula": formula}], **extra}
+    return dataset_in(doc, keys_for(entity="SlayerModel", version=version))
 
 
 def _model_formula(text: str) -> str:
@@ -75,14 +77,14 @@ class TestTokenRewrite:
 
     @pytest.mark.parametrize(("stored", "loaded"), TOKEN_CASES)
     def test_query_filter(self, stored: str, loaded: str) -> None:
-        assert _query(filter=[stored]).filter == [loaded]
+        assert _query(filters=[stored]).filter == [loaded]
 
     def test_current_version_document_is_never_rewritten(self) -> None:
         text = 'sum(iif(status == "paid", amount, 0))'
         doc = _model_doc(formula=text, version=CURRENT_VERSIONS["SlayerModel"])
         assert SlayerDataset.model_validate(doc).metrics[0].expression == text
         query = SlayerQuery.model_validate(
-            {"version": CURRENT_VERSIONS["SlayerQuery"], "source_model": "orders", "filters": ['status == "paid"']})
+            {"version": CURRENT_VERSIONS["SlayerQuery"], "population": "orders", "filter": ['status == "paid"']})
         assert query.filter == ['status == "paid"']
 
     def test_post_string_rule_document_keeps_identifiers_and_drops_legacy_spellings(self) -> None:
@@ -93,10 +95,10 @@ class TestTokenRewrite:
 class TestEverySurface:
     def test_query_fields(self) -> None:
         query = _query(
-            metrics=['sum(iif(region == "EU", amount, 0))', {"expression": 'count_distinct(status | "x")', "name": "c"}],
+            measures=['sum(iif(region == "EU", amount, 0))', {"formula": 'count_distinct(status | "x")', "name": "c"}],
             dimensions=['concat(status, "!")', {"expression": 'status | "-"', "name": "tag"}],
-            filter=['status == "paid"'],
-            order=[{"field": 'sum(iif(status == "paid", amount, 0))', "direction": "desc"}],
+            filters=['status == "paid"'],
+            order=[{"column": 'sum(iif(status == "paid", amount, 0))', "direction": "desc"}],
         )
         assert [m.expression for m in query.metrics or []] == [
             "sum(iif(region = 'EU', amount, 0))", "count_distinct(status || 'x')",
@@ -107,8 +109,8 @@ class TestEverySurface:
         assert query.order[0].raw_expression == "sum(iif(status = 'paid', amount, 0))"
 
     def test_inline_extension_measures(self) -> None:
-        query = _query(population={"source_name": "orders", "metrics": [
-            {"name": "paid", "expression": 'sum(iif(status == "paid", amount, 0))'}]}, metrics=["paid"])
+        query = _query(source_model={"source_name": "orders", "measures": [
+            {"name": "paid", "formula": 'sum(iif(status == "paid", amount, 0))'}]}, measures=["paid"])
         assert query.population == "orders"
         (extension,) = query.extensions or []
         assert (extension.metrics or [])[0].expression == "sum(iif(status = 'paid', amount, 0))"
@@ -157,8 +159,8 @@ async def _store(*, tmp_path, ds, backend: str, stage: dict, memories: list[dict
 class TestStoredResultsUnchanged:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_double_quoted_filter_and_measure(self, tmp_path, shop_ds, backend: str) -> None:
-        stage = {"population": "orders", "filter": ['status == "ok"'],
-                 "metrics": [{"expression": 'sum(iif(status == "ok", amount, 0))', "name": "rev"}]}
+        stage = {"source_model": "orders", "filters": ['status == "ok"'],
+                 "measures": [{"formula": 'sum(iif(status == "ok", amount, 0))', "name": "rev"}]}
         storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend=backend, stage=stage)
         model = await storage.get_dataset("rev_q", data_source=DS)
         assert model is not None
@@ -181,8 +183,8 @@ class TestStoredResultsUnchanged:
         assert measure_total(resp, measure="rev_sum") == 200.0
 
     async def test_pipe_concatenation_returns_the_same_values(self, tmp_path, shop_ds) -> None:
-        stage = {"population": "orders", "dimensions": [{"expression": 'status | "#"', "name": "tag"}],
-                 "metrics": [{"expression": "sum(amount)", "name": "rev"}]}
+        stage = {"source_model": "orders", "dimensions": [{"expression": 'status | "#"', "name": "tag"}],
+                 "measures": [{"formula": "sum(amount)", "name": "rev"}]}
         storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", stage=stage)
         resp = await run(storage, {"population": "rev_q", "dimensions": ["tag"], "metrics": ["sum(rev)"]})
         assert {r["rev_q.tag"]: float(r["rev_q.rev_sum"]) for r in resp.data} == {
