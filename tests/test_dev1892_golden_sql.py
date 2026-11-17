@@ -36,37 +36,37 @@ def _cases() -> dict:
     return {
         "assoc/wavg_by_status": {
             "models": "orders", "source": "orders", "mode": "associate",
-            "kw": {"dimensions": ["status"], "measures": [
-                {"formula": "weighted_avg(customers.spend, weight=customers.spend)",
+            "kw": {"dimensions": ["status"], "metrics": [
+                {"expression": "weighted_avg(customers.spend, weight=customers.spend)",
                  "name": "w"}]}},
         "assoc/wsum_default": {
             "models": "orders_coldef", "source": "orders", "mode": "associate",
             "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": "wsum(customers.spend)", "name": "w"}]}},
+                   "metrics": [{"expression": "wsum(customers.spend)", "name": "w"}]}},
         "reagg/wavg_by_region": {
             "models": "sales", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "measures": [
-                {"formula": f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT})",
+            "kw": {"dimensions": ["region"], "metrics": [
+                {"expression": f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT})",
                  "name": "w"}]}},
         "reagg/degenerate_wavg": {
             "models": "sales", "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "measures": [
-                {"formula": ("weighted_avg(sum(amount, partition_by=region), "
+            "kw": {"dimensions": ["region"], "metrics": [
+                {"expression": ("weighted_avg(sum(amount, partition_by=region), "
                              "weight=count(id, partition_by=region))"),
                  "name": "w"}]}},
         "reagg/corders_toone": {
             "models": "sales", "source": "corders", "mode": None,
-            "kw": {"measures": [
-                {"formula": ("weighted_avg(sum(amount, partition_by=customer_id), "
+            "kw": {"metrics": [
+                {"expression": ("weighted_avg(sum(amount, partition_by=customer_id), "
                              "weight=customers.region_id)"), "name": "w"}]}},
         "assoc/wsum6_expr_default": {
             "models": "orders_wsum6", "source": "orders", "mode": "associate",
             "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": "wsum6(customers.spend)", "name": "w"}]}},
+                   "metrics": [{"expression": "wsum6(customers.spend)", "name": "w"}]}},
         "reagg/corders_expr_default": {
             "models": "sales_cwavg", "source": "corders", "mode": None,
-            "kw": {"measures": [
-                {"formula": "cwavg(sum(amount, partition_by=customer_id))",
+            "kw": {"metrics": [
+                {"expression": "cwavg(sum(amount, partition_by=customer_id))",
                  "name": "w"}]}},
     }
 

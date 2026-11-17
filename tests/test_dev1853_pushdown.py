@@ -52,7 +52,7 @@ class TestPushdownWithoutDeclaredReverseJoin:
         resp = await fwd_engine.execute(SlayerQuery.model_validate({
             "population": "orders",
             "filter": ["status = 'ok'"],
-            "metrics": [{"formula": "sum(customers.spend)", "name": "cs"}],
+            "metrics": [{"expression": "sum(customers.spend)", "name": "cs"}],
         }))
         assert len(resp.data) == 1
         assert resp.data[0]["orders.cs"] == pytest.approx(CHAIN_PUSHDOWN_OK_SPEND)
@@ -62,7 +62,7 @@ class TestAmbiguousCorrelationFailsClosed:
     def _query(self, *, to_many_handling: str = "broadcast") -> SlayerQuery:
         return SlayerQuery.model_validate({
             "population": "customers",
-            "metrics": [{"formula": "sum(regions.pop)", "name": "rp"}],
+            "metrics": [{"expression": "sum(regions.pop)", "name": "rp"}],
             "filter": ["orders.status = 'ok'"],
             "to_many_handling": to_many_handling,
         })
@@ -121,7 +121,7 @@ class TestNamedEdgeCarriesTheCorrelation:
         # North's pop counts once (never join-multiplied); South is excluded.
         resp = await named_engine.execute(SlayerQuery.model_validate({
             "population": "customers",
-            "metrics": [{"formula": "sum(regions.pop)", "name": "rp"}],
+            "metrics": [{"expression": "sum(regions.pop)", "name": "rp"}],
             "filter": ["billing_customer.status = 'ok'"],
         }))
         assert len(resp.data) == 1

@@ -126,7 +126,7 @@ class TestNamedMeasureSQL:
         )
         inline_query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(revenue)", "name": "result"}],
+            "metrics": [{"expression": "sum(revenue)", "name": "result"}],
         })
 
         chained_sql = await _generate(chained_query, chained)
@@ -188,7 +188,7 @@ class TestNamedMeasureSQL:
         )
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(aov)", "name": "result"}],
+            "metrics": [{"expression": "sum(aov)", "name": "result"}],
         })
 
         with pytest.raises(
@@ -224,7 +224,7 @@ class TestNamedMeasureSQL:
         model = _orders_model()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(revenu)", "name": "result"}],
+            "metrics": [{"expression": "sum(revenu)", "name": "result"}],
         })
 
         with pytest.raises(ValueError, match="Did you mean 'revenue'"):

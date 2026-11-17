@@ -304,7 +304,7 @@ def _skip_labels(report) -> list[str]:
 async def _query_count(storage: YAMLStorage, model_name: str) -> int:
     engine = SlayerQueryEngine(storage=storage)
     resp = await engine.execute(
-        SlayerQuery.model_validate({"population": model_name, "metrics": [{"formula": "count(*)", "name": "n"}]})
+        SlayerQuery.model_validate({"population": model_name, "metrics": [{"expression": "count(*)", "name": "n"}]})
     )
     assert resp.row_count == 1, resp.data
     return next(iter(resp.data[0].values()))

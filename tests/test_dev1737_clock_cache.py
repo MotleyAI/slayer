@@ -46,7 +46,7 @@ def data_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 def _q(filters: list[str], **kw) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "population": "orders", "metrics": [{"formula": "count(*)", "name": "n"}], "filter": filters, **kw,
+        "population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}], "filter": filters, **kw,
     })
 
 
@@ -60,7 +60,7 @@ class TestClockBypass:
         _q(["created_at <= now()"]),
         _q([], dimensions=[{"expression": "date_diff('day', created_at, now())", "name": "age"}]),
         SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"formula": "max(date_diff('day', created_at, current_date()))", "name": "m"}],
+            "population": "orders", "metrics": [{"expression": "max(date_diff('day', created_at, current_date()))", "name": "m"}],
         }),
     ])
     async def test_root_clock_query_never_cached(self, engine, data_calls, query) -> None:
@@ -72,7 +72,7 @@ class TestClockBypass:
     async def test_clock_inside_a_stage_never_cached(self, engine, data_calls) -> None:
         inner = SlayerQuery.model_validate({
             "name": "recent_orders", "population": "orders", "dimensions": ["status"],
-            "metrics": [{"formula": "count(*)", "name": "n"}], "filter": ["created_at <= now()"],
+            "metrics": [{"expression": "count(*)", "name": "n"}], "filter": ["created_at <= now()"],
         })
         outer = SlayerQuery.model_validate({"population": "recent_orders", "metrics": ["sum(n)"]})
         await engine.execute([inner, outer], cache=True)
@@ -91,7 +91,7 @@ class TestClockBypass:
     async def test_refresh_does_not_repopulate_a_clock_query(self, engine: SlayerQueryEngine) -> None:
         clock = _Clock()
         engine._cache = QueryCache(config=CacheConfig(ttl_seconds=100), clock=clock)
-        plain = {"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "count(*)", "name": "n"}]}
+        plain = {"population": "orders", "dimensions": ["status"], "metrics": [{"expression": "count(*)", "name": "n"}]}
         await engine.create_dataset_from_query(query=plain, name="obs")
         await engine.execute("obs", cache=True)
         assert engine.cache_size == 1

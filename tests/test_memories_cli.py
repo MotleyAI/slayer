@@ -103,8 +103,8 @@ class TestMemorySaveSubcommand:
     def test_save_with_query_inline(self, seeded_storage_path, capsys):
         query_json = json.dumps(
             {
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)"}],
             }
         )
         _run_memory(
@@ -128,8 +128,8 @@ class TestMemorySaveSubcommand:
         f.write_text(
             json.dumps(
                 {
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                 }
             )
         )

@@ -27,56 +27,56 @@ def _cases() -> dict:
         # over the population. Today: the DEV-1900 guard raises. After: EXISTS base.
         "fanning_inline/structural": {
             "source": "customers", "mode": None,
-            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
-                   "filters": [_OK]}},
+            "kw": {"metrics": [{"expression": "sum(spend)", "name": "sp"}],
+                   "filter": [_OK]}},
         "fanning_inline/derived": {
             "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula": "sum(amount)", "name": "amt"}],
-                   "filters": ["customers.regions.bad_pop > 0"]}},
+            "kw": {"metrics": [{"expression": "sum(amount)", "name": "amt"}],
+                   "filter": ["customers.regions.bad_pop > 0"]}},
         "fanning_inline/count": {
             "source": "customers", "mode": None,
             "kw": {"dimensions": ["tier"],
-                   "measures": [{"formula": "count(*)", "name": "n"}],
-                   "filters": [_OK]}},
+                   "metrics": [{"expression": "count(*)", "name": "n"}],
+                   "filter": [_OK]}},
         "fanning_inline/two_branch": {
             "source": "customers", "mode": None,
-            "kw": {"measures": [{"formula": "sum(spend)", "name": "sp"}],
-                   "filters": [_OK, "regions.region_events.value >= 50"]}},
+            "kw": {"metrics": [{"expression": "sum(spend)", "name": "sp"}],
+                   "filter": [_OK, "regions.region_events.value >= 50"]}},
         # producer/* — host-rooted regroup producers that fan silently today; after
         # the change each carries the semi-join and drops the fanning join.
         "producer/partitioned": {
             "source": "customers", "mode": None,
             "kw": {"dimensions": ["tier"],
-                   "measures": [{"formula": "sum(spend, partition_by=tier)", "name": "pt"}],
-                   "filters": [_OK]}},
+                   "metrics": [{"expression": "sum(spend, partition_by=tier)", "name": "pt"}],
+                   "filter": [_OK]}},
         "producer/windowed": {
             "source": "customers", "mode": None,
             "kw": {"time_dimensions": [
-                {"dimension": "signup_at", "granularity": "month"}],
-                   "measures": [{"formula": "sum(spend, window='1y')", "name": "w"}],
-                   "filters": [_OK]}},
+                {"field": "signup_at", "granularity": "month"}],
+                   "metrics": [{"expression": "sum(spend, window='1y')", "name": "w"}],
+                   "filter": [_OK]}},
         "producer/producer_only": {
             "source": "customers", "mode": None,
-            "kw": {"measures": [{"formula": "sum(orders.amount)", "name": "oa"}],
-                   "filters": [_OK]}},
+            "kw": {"metrics": [{"expression": "sum(orders.amount)", "name": "oa"}],
+                   "filter": [_OK]}},
         # dims_only/* — no aggregate; the host base fans today, carries the EXISTS after.
         "dims_only/fanning": {
             "source": "customers", "mode": None,
-            "kw": {"dimensions": ["tier"], "filters": [_OK]}},
+            "kw": {"dimensions": ["tier"], "filter": [_OK]}},
         # windowed over a fanning time axis (orders.ordered_at from customers):
         # its axis is not attributable from the root, so it fails closed (decision 12).
         "producer/windowed_fanning_axis": {
             "source": "customers", "mode": None,
             "kw": {"time_dimensions": [
-                {"dimension": "orders.ordered_at", "granularity": "month"}],
-                   "measures": [{"formula": "sum(spend, window='1y')", "name": "w"}],
-                   "filters": [_OK]}},
+                {"field": "orders.ordered_at", "granularity": "month"}],
+                   "metrics": [{"expression": "sum(spend, window='1y')", "name": "w"}],
+                   "filter": [_OK]}},
         # positive/* — a provably to-one filter; plain row restriction, byte-identical
         # SQL through the change.
         "positive/to_one_filter": {
             "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula": "sum(amount)", "name": "amt"}],
-                   "filters": ["customers.tier = 'gold'"]}},
+            "kw": {"metrics": [{"expression": "sum(amount)", "name": "amt"}],
+                   "filter": ["customers.tier = 'gold'"]}},
     }
 
 

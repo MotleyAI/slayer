@@ -86,7 +86,7 @@ async def test_single_cross_model_parametric_key(engine: SlayerQueryEngine):
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"formula": "percentile(customers.revenue, p=0.5)"}],
+            "metrics": [{"expression": "percentile(customers.revenue, p=0.5)"}],
         })
     )
     assert "orders.customers.revenue_percentile_p_0_5" in resp.columns

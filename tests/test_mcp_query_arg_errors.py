@@ -12,8 +12,8 @@ from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
 ONE_ERROR = re.compile(r"\b1 validation error for\b")
-_BAD_NAME_QUERY = {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "bad name"}]}
-_FIRST_STAGE = {"name": "a", "source_model": "orders", "measures": ["count(*)"]}
+_BAD_NAME_QUERY = {"population": "orders", "metrics": [{"expression": "count(*)", "name": "bad name"}]}
+_FIRST_STAGE = {"name": "a", "population": "orders", "metrics": ["count(*)"]}
 
 
 @pytest.fixture

@@ -80,7 +80,7 @@ def test_expected_columns_match_rendered_result_keys():
     q = SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"formula": "sum(amount)"}],
+        "metrics": [{"expression": "sum(amount)"}],
     })
     _attrs, cols, _sql = _meta_for(q)
     assert set(cols) == {"orders.status", "orders.amount_sum"}
@@ -90,7 +90,7 @@ def test_dimension_vs_measure_split_and_label():
     q = SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"formula": "sum(amount)"}],
+        "metrics": [{"expression": "sum(amount)"}],
     })
     attrs, _cols, _sql = _meta_for(q)
     assert "orders.status" in attrs.dimensions
@@ -100,7 +100,7 @@ def test_dimension_vs_measure_split_and_label():
 
 
 def test_sum_inherits_currency_format():
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(amount)"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
     attrs, _cols, _sql = _meta_for(q)
     fm = attrs.metrics["orders.amount_sum"]
     assert fm.format is not None
@@ -109,7 +109,7 @@ def test_sum_inherits_currency_format():
 
 
 def test_star_count_is_integer():
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "count(*)"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)"}]})
     attrs, cols, _sql = _meta_for(q)
     assert "orders._count" in cols
     fm = attrs.metrics["orders._count"]
@@ -117,7 +117,7 @@ def test_star_count_is_integer():
 
 
 def test_renamed_measure_result_key_and_format():
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(amount)", "name": "rev"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}]})
     attrs, cols, _sql = _meta_for(q)
     assert cols == ["orders.rev"]
     assert "orders.rev" in attrs.metrics
@@ -127,7 +127,7 @@ def test_joined_dimension_result_key_full_path():
     q = SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.name"],
-        "metrics": [{"formula": "sum(amount)"}],
+        "metrics": [{"expression": "sum(amount)"}],
     })
     _attrs, cols, _sql = _meta_for(q)
     assert "orders.customers.name" in cols
@@ -137,7 +137,7 @@ def test_cross_model_aggregate_format_integer_for_count():
     q = SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"formula": "sum(customers.revenue)"}],
+        "metrics": [{"expression": "sum(customers.revenue)"}],
     })
     attrs, cols, _sql = _meta_for(q)
     assert "orders.customers.revenue_sum" in cols
@@ -156,14 +156,14 @@ def test_cross_model_aggregate_format_integer_for_count():
 
 def test_float_plain_aggregation_is_plain_float():
     # var_samp is in squared units — the source currency is NOT inherited.
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "var_samp(amount)"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "var_samp(amount)"}]})
     attrs, _cols, _sql = _meta_for(q)
     fm = attrs.metrics["orders.amount_var_samp"]
     assert fm.format.type == NumberFormatType.FLOAT
 
 
 def test_avg_inherits_currency_format():
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "avg(amount)"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "avg(amount)"}]})
     attrs, _cols, _sql = _meta_for(q)
     fm = attrs.metrics["orders.amount_avg"]
     assert fm.format.type == NumberFormatType.CURRENCY
@@ -171,7 +171,7 @@ def test_avg_inherits_currency_format():
 
 
 def test_avg_unformatted_measure_is_plain_float():
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "avg(quantity)"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "avg(quantity)"}]})
     attrs, _cols, _sql = _meta_for(q)
     fm = attrs.metrics["orders.quantity_avg"]
     assert fm.format.type == NumberFormatType.FLOAT
@@ -180,7 +180,7 @@ def test_avg_unformatted_measure_is_plain_float():
 def test_preserving_unformatted_measure_omits_format_entry():
     # quantity:sum has no source format and no label → no attributes entry,
     # though the column is still projected in expected_columns.
-    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(quantity)"}]})
+    q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(quantity)"}]})
     attrs, cols, _sql = _meta_for(q)
     assert "orders.quantity_sum" in cols
     assert "orders.quantity_sum" not in attrs.metrics

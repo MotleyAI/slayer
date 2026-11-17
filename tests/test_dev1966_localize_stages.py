@@ -28,7 +28,7 @@ class TestUserScope:
         assert [d.name for d in stages[-1].dimensions or []] == ["status"]
 
     def test_extension_base_is_respelled(self) -> None:
-        root = query(source_model="x", extensions=[{"source_name": "x", "measures": [m("sum(a * 2)", "t")]}],
+        root = query(source_model="x", extensions=[{"source_name": "x", "metrics": [m("sum(a * 2)", "t")]}],
                      measures=["t"])
         stages, _ = localize_stages([_x(), root])
         assert stages[-1].population == USER_X
@@ -37,16 +37,16 @@ class TestUserScope:
         assert spec.source_name == USER_X
 
     def test_extension_join_target_is_respelled(self) -> None:
-        root = query(source_model="customers", extensions=[{"source_name": "customers", "joins": [
-            {"target_model": "x", "join_pairs": [["id", "customer_id"]]}]}], measures=[m("sum(x.a)", "t")])
+        root = query(source_model="customers", extensions=[{"source_name": "customers", "relationships": [
+            {"to": "x", "join_pairs": [["id", "customer_id"]]}]}], measures=[m("sum(x.a)", "t")])
         stages, _ = localize_stages([_x(), root])
         (spec,) = stages[-1].extensions or []
         assert isinstance(spec, DatasetExtension)
         assert [(j.to, j.name) for j in spec.relationships or []] == [(USER_X, None)]
 
     def test_a_model_name_that_is_not_a_stage_is_untouched(self) -> None:
-        root = query(source_model="orders", extensions=[{"source_name": "orders", "joins": [
-            {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}]}],
+        root = query(source_model="orders", extensions=[{"source_name": "orders", "relationships": [
+            {"to": "customers", "join_pairs": [["customer_id", "id"]]}]}],
             measures=[m("sum(amount)", "t")])
         stages, displays = localize_stages([_x(), root])
         (spec,) = stages[-1].extensions or []

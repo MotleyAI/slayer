@@ -212,10 +212,10 @@ _SEAMS = {
         measures=[{"formula": "sum(amount) / count(customers.id)", "name": "r"}],
     ),
     "multi_stage": [
-        {"name": "s1", "source_model": "orders", "dimensions": ["status"],
+        {"name": "s1", "population": "orders", "dimensions": ["status"],
          "time_dimensions": month_td(),
-         "measures": [{"formula": "covar_samp(amount, other=qty, window='90d')", "name": "cv"}]},
-        {"source_model": "s1", "dimensions": ["status"], "measures": [{"formula": "max(cv)", "name": "m"}]},
+         "metrics": [{"expression": "covar_samp(amount, other=qty, window='90d')", "name": "cv"}]},
+        {"population": "s1", "dimensions": ["status"], "metrics": [{"expression": "max(cv)", "name": "m"}]},
     ],
 }
 

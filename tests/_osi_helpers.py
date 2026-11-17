@@ -211,6 +211,6 @@ async def scalar(*, result: ConversionResult, db: Path, model: str, formula: str
                  dialect: str = "duckdb") -> Any:
     """The single value of ``formula`` over ``model``."""
     rows = await query(result=result, db=db, dialect=dialect,
-                       payload={"source_model": model, "measures": [{"formula": formula, "name": "v"}]})
+                       payload={"population": model, "metrics": [{"expression": formula, "name": "v"}]})
     assert len(rows) == 1
     return rows[0][f"{model}.v"]

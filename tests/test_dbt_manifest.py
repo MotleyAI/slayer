@@ -23,7 +23,7 @@ def _fake_manifest() -> dict:
                 "alias": "orders",
                 "description": "Orders fact table",
                 "tags": ["facts"],
-                "columns": {
+                "fields": {
                     "id": {"name": "id", "description": "Order ID", "data_type": "integer"},
                     "amount": {"name": "amount", "description": "Order amount", "data_type": "numeric"},
                 },
@@ -36,7 +36,7 @@ def _fake_manifest() -> dict:
                 "alias": "raw_events_v2",
                 "description": "Raw event log",
                 "tags": [],
-                "columns": {
+                "fields": {
                     "event_id": {"name": "event_id", "description": None, "data_type": "varchar"},
                 },
             },
@@ -70,7 +70,7 @@ class TestFindOrphanModelNodes:
     def test_semantic_model_without_depends_on_doesnt_crash(self) -> None:
         manifest = {
             "nodes": {
-                "model.p.a": {"resource_type": "model", "name": "a", "columns": {}},
+                "model.p.a": {"resource_type": "model", "name": "a", "fields": {}},
             },
             "semantic_models": {
                 "semantic_model.p.sm": {"name": "sm"},  # no depends_on

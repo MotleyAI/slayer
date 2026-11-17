@@ -62,7 +62,7 @@ from tests.pg_facade.test_connection import (
     _terminate,
 )
 
-_QUERY = {"source_model": "orders", "measures": ["sum(amount)"]}
+_QUERY = {"population": "orders", "metrics": ["sum(amount)"]}
 _PG_QUERY = "SELECT revenue_sum FROM orders"
 _FLIGHT_QUERY = "SELECT revenue_sum FROM jaffle.orders"
 
@@ -119,7 +119,7 @@ def test_parse_error_exits_before_any_usage_reporting(usage_reporting_env) -> No
 
 
 def test_cli_failure_counted_as_error(store: str) -> None:
-    cli(["query", json.dumps({"source_model": "no_such_model", "measures": ["count(*)"]}), "--storage", store])
+    cli(["query", json.dumps({"population": "no_such_model", "metrics": ["count(*)"]}), "--storage", store])
     cli(["models", "--storage", store, "show", "no_such_model"])
     report = show()
     for key in ("cli:query", "cli:models.show"):
@@ -362,7 +362,7 @@ async def test_pg_engine_error_counted(started) -> None:
 # --- MCP sessions -----------------------------------------------------------------------------------
 
 
-_FAILING_QUERY = {"source_model": "no_such_model", "measures": ["count(*)"]}
+_FAILING_QUERY = {"population": "no_such_model", "metrics": ["count(*)"]}
 _T0 = datetime.datetime(2026, 5, 4, 12, 0, tzinfo=datetime.timezone.utc)
 
 
@@ -580,7 +580,7 @@ def _unavailable() -> Exception:
 _DB_FAILURE_CALLS = [
     ("query", (SlayerQueryEngine, "execute"), {"query": _QUERY}),
     ("create_model", (SlayerQueryEngine, "save_model"),
-     {"name": "m", "sql_table": "orders", "data_source": "test", "columns": [{"name": "id", "sql": "id", "type": "number"}]}),
+     {"name": "m", "sql_table": "orders", "data_source": "test", "fields": [{"name": "id", "sql": "id", "datatype": "number"}]}),
     ("create_model", (SlayerQueryEngine, "create_model_from_query"), {"name": "m", "query": _QUERY}),
     ("validate_models", (SlayerQueryEngine, "validate_models"), {}),
     ("ingest_datasource_models", (engine_ingestion, "ingest_datasource_idempotent"), {"datasource_name": "test"}),

@@ -34,7 +34,7 @@ DS = "jaffle"
 
 def _model() -> SlayerDataset:
     return contractors_model(data_source=DS).model_copy(update={
-        "measures": [DatasetMetric(name="cities", expression="collect(city)")]})
+        "metrics": [DatasetMetric(name="cities", expression="collect(city)")]})
 
 
 class TestCatalogs:

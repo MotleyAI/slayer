@@ -145,7 +145,7 @@ class TestRestSurfaceResidue:
     async def test_residue_maps_to_400(self, sales_storage):
         """A re-aggregation column-parameter residue is a client error (400)."""
         client = TestClient(create_app(storage=sales_storage))
-        body = {"source_model": "sales", "dimensions": ["region"],
-                "measures": [{"formula": f"wavg({INNER_CR}, weight=id)", "name": "w"}]}
+        body = {"population": "sales", "dimensions": ["region"],
+                "metrics": [{"expression": f"wavg({INNER_CR}, weight=id)", "name": "w"}]}
         resp = client.post("/query", json=body)
         assert resp.status_code == 400, resp.text

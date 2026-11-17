@@ -208,7 +208,7 @@ class TestSpineOperands:
 
     async def test_extension_column_filter(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
         # Stored before extension columns were removed: the load-time conversion inlines it after this upgrade.
-        body = {**stage(version=13), "measures": [{"formula": "sum(jan_amount)", "name": "jan"}],
+        body = {**stage(version=13), "metrics": [{"expression": "sum(jan_amount)", "name": "jan"}],
                 "extensions": [{"source_name": "orders", "columns": [
                     {"name": "jan_amount", "sql": "amount", "type": "DOUBLE", "filter": SPINE_LE}]}]}
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_ext", body, version=9),))
@@ -219,8 +219,8 @@ class TestSpineOperands:
         assert SPINE_LE not in text, text
 
     async def test_extension_on_the_spine(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str) -> None:
-        body = {**stage(), "extensions": [{"source_name": "TIME_SPINE", "measures": [
-            {"name": "jan_days", "formula": f"count(*) FILTER (WHERE {TS_LE})"}]}]}
+        body = {**stage(), "extensions": [{"source_name": "TIME_SPINE", "metrics": [
+            {"name": "jan_days", "expression": f"count(*) FILTER (WHERE {TS_LE})"}]}]}
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_spine_ext", body),))
         mem = await storage.get_memory("m_spine_ext")
         assert mem.query is not None
@@ -229,7 +229,7 @@ class TestSpineOperands:
 
     async def test_spine_reached_through_an_extensions_join(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                             backend: str) -> None:
-        body = {**stage(f"customers.{SPINE_LE}"), "extensions": [{"source_name": "orders", "joins": [to_customers()]}]}
+        body = {**stage(f"customers.{SPINE_LE}"), "extensions": [{"source_name": "orders", "relationships": [to_customers()]}]}
         storage = await store(tmp_path, shop_ds, backend=backend, orders=orders_v10(version=PRE["SlayerModel"], joins=[]),
                               models=(saved("ext_join", body),))
         assert await loaded_filters(storage, "ext_join") == [f"customers.{SPINE_LT}"]

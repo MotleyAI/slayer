@@ -247,7 +247,7 @@ class SlayerClient:
         attrs_raw = result.get("attributes") or {}
         attributes = ResponseAttributes(
             dimensions=_parse_meta_dict(attrs_raw.get("dimensions")),
-            metrics=_parse_meta_dict(attrs_raw.get("measures")),
+            metrics=_parse_meta_dict(attrs_raw.get("metrics")),
         )
         return SlayerResponse(
             data=result["data"],
@@ -308,7 +308,7 @@ class SlayerClient:
             names = await self._storage.list_datasets(data_source=data_source)
             return list(names)
         params = {"data_source": data_source} if data_source else None
-        return await self._request(method="GET", path="/models", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
+        return await self._request(method="GET", path="/datasets", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
     async def get_dataset(
         self,
@@ -318,10 +318,10 @@ class SlayerClient:
         if self._storage is not None:
             return await self._storage.get_dataset(name, data_source=data_source)
         params = {"data_source": data_source} if data_source else None
-        return await self._request(method="GET", path=f"/models/{name}", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
+        return await self._request(method="GET", path=f"/datasets/{name}", params=params)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
     async def create_dataset(self, dataset: dict[str, Any]) -> dict[str, Any]:
-        return await self._request(method="POST", path="/models", json=dataset)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
+        return await self._request(method="POST", path="/datasets", json=dataset)  # NOSONAR(S1192) — REST path is the API contract; defining a constant adds indirection without value
 
     async def list_datasources(self) -> list[str]:
         return await self._request(method="GET", path="/datasources")
@@ -622,7 +622,7 @@ class SlayerClient:
         if root_hint is not None:
             body["root_hint"] = root_hint
         result = await self._request(
-            method="POST", path="/recommend-root-model", json=body
+            method="POST", path="/recommend-population", json=body
         )
         return PopulationRecommendation.model_validate(result)
 
@@ -645,7 +645,7 @@ class SlayerClient:
         return pd.DataFrame(result.data)
 
     def list_datasets_sync(self) -> list[str]:
-        return self._request_sync(method="GET", path="/models")
+        return self._request_sync(method="GET", path="/datasets")
 
     def get_dataset_sync(self, name: str) -> dict[str, Any]:
-        return self._request_sync("GET", f"/models/{name}")
+        return self._request_sync("GET", f"/datasets/{name}")

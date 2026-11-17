@@ -55,7 +55,7 @@ class TestStrictRetired:
     @pytest.mark.parametrize("version", [4, "4", 3.9])
     def test_current_or_fractional_version_with_strict_converts(self, version) -> None:
         """Fresh input — never a silent float truncation into a stale migratable version."""
-        payload = {"version": version, "population": "orders", "strict": True}
+        payload = {"version": version, "source_model": "orders", "strict": True}
         with recorded() as caught:
             query = SlayerQuery.model_validate(payload)
         assert query.to_many_handling == "error"
@@ -63,7 +63,7 @@ class TestStrictRetired:
 
     def test_unparseable_version_with_strict_fails_cleanly(self) -> None:
         """A ``ValueError``, never a ``TypeError`` from a pre-coercion comparison."""
-        payload = {"version": "bogus", "population": "orders", "strict": True}
+        payload = {"version": "bogus", "source_model": "orders", "strict": True}
         with recorded(), pytest.raises(ValueError):
             SlayerQuery.model_validate(payload)
 
@@ -118,6 +118,6 @@ class TestStorageMigration:
         """A stored v3 payload with ``strict`` loads (migration precedes the
         input-rejection validator), landing in the error mode."""
         loaded = SlayerQuery.model_validate(
-            {"version": 3, "population": "orders", "strict": True},
+            {"version": 3, "source_model": "orders", "strict": True},
         )
         assert loaded.to_many_handling == "error"

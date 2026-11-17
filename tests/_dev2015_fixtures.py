@@ -182,8 +182,8 @@ def monthly_model() -> SlayerDataset:
         name="monthly", data_source="test",
         source_queries=[SlayerQuery.model_validate({
             "population": "orders",
-            "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "time_dimensions": [{"field": "order_date", "granularity": "month"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
         })],
     )
 
@@ -289,9 +289,9 @@ def bucketed_model(*, name: str, source: str, column: str, granularity: str) -> 
     return SlayerDataset.model_validate({
         "name": name, "data_source": "test",
         "source_queries": [{
-            "source_model": source,
-            "time_dimensions": [{"dimension": column, "granularity": granularity}],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "population": source,
+            "time_dimensions": [{"field": column, "granularity": granularity}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
         }],
     })
 

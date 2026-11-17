@@ -407,7 +407,7 @@ class TestInlineScalarsAreNotReferences:
             query=SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": [{"formula": "amount", "name": "amount"}],
-                "metrics": [{"formula": "percentile(amount, p=0.9)", "name": "p90"}],
+                "metrics": [{"expression": "percentile(amount, p=0.9)", "name": "p90"}],
                 "filter": ["percentile(amount, p=0.9) > 100"],
             }),
             bundle=_bundle(),
@@ -465,7 +465,7 @@ class TestCoordinateSystemInvariant:
             query=SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": [{"formula": "amount", "name": "amount"}],
-                "metrics": [{"formula": "sum(eu_amount)", "name": "eu"}],
+                "metrics": [{"expression": "sum(eu_amount)", "name": "eu"}],
                 "filter": ["sum(eu_amount) > 100"],
             }),
             bundle=bundle,

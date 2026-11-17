@@ -32,30 +32,30 @@ MONTH_TD = {"dimension": "ordered_at", "granularity": "month"}
 Q1_RANGE = ["2025-01-01", "2025-02-28"]
 
 MONTHLY_REVENUE: Dict[str, Any] = {
-    "source_model": "orders",
+    "population": "orders",
     "time_dimensions": [MONTH_TD],
-    "measures": [REVENUE],
-    "filters": ["status = 'paid'"],
+    "metrics": [REVENUE],
+    "filter": ["status = 'paid'"],
 }
 MONTHLY_REVENUE_Q1: Dict[str, Any] = {
-    "source_model": "orders",
+    "population": "orders",
     "time_dimensions": [{**MONTH_TD, "date_range": Q1_RANGE}],
-    "measures": [REVENUE],
-    "filters": ["status = 'paid'"],
-    "order": [{"column": "revenue", "direction": "desc"}],
+    "metrics": [REVENUE],
+    "filter": ["status = 'paid'"],
+    "order": [{"field": "revenue", "direction": "desc"}],
     "limit": 2,
 }
 AVG_CUSTOMER_REVENUE: List[Dict[str, Any]] = [
     {
-        "name": "per_customer", "source_model": "orders",
-        "dimensions": ["customer_id", "region"], "measures": [REVENUE],
-        "filters": ["status = 'paid'"],
+        "name": "per_customer", "population": "orders",
+        "dimensions": ["customer_id", "region"], "metrics": [REVENUE],
+        "filter": ["status = 'paid'"],
     },
-    {"source_model": "per_customer", "measures": [{"formula": "avg(revenue)", "name": "avg_revenue"}]},
+    {"population": "per_customer", "metrics": [{"expression": "avg(revenue)", "name": "avg_revenue"}]},
 ]
 REVENUE_BY_STATUS: Dict[str, Any] = {
-    "source_model": "orders", "dimensions": ["region"], "measures": [REVENUE],
-    "filters": ["status = '{status}'"],
+    "population": "orders", "dimensions": ["region"], "metrics": [REVENUE],
+    "filter": ["status = '{status}'"],
 }
 
 MONTHLY = {"2025-01": 100.0, "2025-02": 105.0, "2025-03": 50.0}

@@ -383,7 +383,7 @@ async def test_rest_query_reports_install_hint(monkeypatch: pytest.MonkeyPatch, 
     )
     _block_modules(monkeypatch, "psycopg")
     resp = TestClient(create_app(storage=storage)).post(
-        "/query", json={"source_model": "orders", "dimensions": ["id"]},
+        "/query", json={"population": "orders", "dimensions": ["id"]},
     )
     assert resp.status_code == 400, resp.text
     assert "pip install 'motley-slayer[postgres]'" in resp.json()["detail"]

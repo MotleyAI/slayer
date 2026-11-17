@@ -96,7 +96,7 @@ def _stage1() -> SlayerQuery:
         "name": "stage1",
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"formula": "sum(amount)"}],
+        "metrics": [{"expression": "sum(amount)"}],
     })
 
 
@@ -108,7 +108,7 @@ async def test_dev1449_flat_name_resolves(engine: Tuple[SlayerQueryEngine, str])
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["customers__region"],
-        "metrics": [{"formula": "sum(amount_sum)"}],
+        "metrics": [{"expression": "sum(amount_sum)"}],
     })
     resp = await eng.execute([_stage1(), root])
     assert resp.columns == ["stage1.customers__region", "stage1.amount_sum_sum"]
@@ -134,7 +134,7 @@ async def test_dev1449_dotted_form_raises(engine: Tuple[SlayerQueryEngine, str])
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["customers.region"],
-        "metrics": [{"formula": "sum(amount_sum)"}],
+        "metrics": [{"expression": "sum(amount_sum)"}],
     })
     stage1 = _stage1()
     with pytest.raises(UnrelatedDatasetError):

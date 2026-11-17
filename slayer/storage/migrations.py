@@ -172,24 +172,25 @@ def _query_v3_to_v4(data: dict) -> dict:
 
 
 def is_legacy_root_extension(source: Any) -> bool:
-    """Whether a raw ``source_model`` is the legacy extension object."""
+    """Whether a raw population (``source_model`` before 2.0) is the legacy extension object."""
     return isinstance(source, dict) and "source_name" in source
 
 
-def hoist_root_extension(data: dict) -> dict:
-    """A query whose ``source_model`` is an extension object, as ``source_model: <base>`` plus that extension."""
-    source = data.get("source_model")
+def hoist_root_extension(data: dict, *, key: str = "source_model") -> dict:
+    """A query whose ``key`` (its population) is an extension object, as ``key: <base>`` plus that extension."""
+    source = data.get(key)
     if not isinstance(source, dict) or not is_legacy_root_extension(source):
         return data
-    return with_root_extension(data, extension=source, base=source["source_name"])
+    return with_root_extension(data, extension=source, base=source["source_name"], key=key)
 
 
-def with_root_extension(data: dict, *, extension: Any, base: Any) -> dict:
-    """``data`` sourced from ``base`` with ``extension`` first in its extensions; a non-list ``extensions`` is left to validation."""
+def with_root_extension(data: dict, *, extension: Any, base: Any, key: str = "source_model") -> dict:
+    """``data`` sourced from ``base`` (under ``key``) with ``extension`` first in its extensions; a non-list
+    ``extensions`` is left to validation."""
     extensions = data.get("extensions")
     if extensions is not None and not isinstance(extensions, list):
         return data
-    return {**data, "source_model": base, "extensions": [extension, *(extensions or [])]}
+    return {**data, key: base, "extensions": [extension, *(extensions or [])]}
 
 
 register_migration(entity="SlayerQuery", source_version=12, stored_only=True)(hoist_root_extension)

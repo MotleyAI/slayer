@@ -49,7 +49,7 @@ def td(head: str) -> dict[str, Any]:
 
 
 def sum_orders(**extra: Any) -> dict[str, Any]:
-    return {"measures": [m("sum(orders.amount)", "o")], **extra}
+    return {"metrics": [m("sum(orders.amount)", "o")], **extra}
 
 
 async def outcome(engine: SlayerQueryEngine, query: Any) -> tuple:
@@ -63,20 +63,20 @@ async def outcome(engine: SlayerQueryEngine, query: Any) -> tuple:
 
 #: Each query-written model-name position: a query builder over the spine spelling, and the canonical outcome.
 POSITIONS = {
-    "source-model": (lambda s: {"source_model": s, "time_dimensions": [td(s)], **sum_orders()}, "ok"),
+    "source-model": (lambda s: {"population": s, "time_dimensions": [td(s)], **sum_orders()}, "ok"),
     "time-dimension": (lambda s: {"time_dimensions": [td(s)], **sum_orders()}, "ok"),
     "dimension": (lambda s: {"dimensions": [f"{s}.timestamp"], **sum_orders()}, "TimeSpineError"),
-    "measure": (lambda s: {"time_dimensions": [td("time_spine")], "measures": [m(f"count({s}.timestamp)", "c")]},
+    "measure": (lambda s: {"time_dimensions": [td("time_spine")], "metrics": [m(f"count({s}.timestamp)", "c")]},
                 "TimeSpineError"),
-    "filter": (lambda s: {"time_dimensions": [td("time_spine")], "filters": [f"{s}.timestamp >= '2025-01-01'"],
+    "filter": (lambda s: {"time_dimensions": [td("time_spine")], "filter": [f"{s}.timestamp >= '2025-01-01'"],
                           **sum_orders()}, "ok"),
     "order": (lambda s: {"time_dimensions": [td("time_spine")],
-                         "order": [{"column": f"{s}.timestamp", "direction": "desc"}], **sum_orders()}, "ok"),
-    "extension-model": (lambda s: {"source_model": "time_spine", "extensions": [{"source_name": s}],
+                         "order": [{"field": f"{s}.timestamp", "direction": "desc"}], **sum_orders()}, "ok"),
+    "extension-model": (lambda s: {"population": "time_spine", "extensions": [{"source_name": s}],
                                    "time_dimensions": [td("time_spine")], **sum_orders()}, "TimeSpineError"),
-    "extension-join": (lambda s: {"source_model": {"source_name": "returns", "joins": [
-        {"target_model": s, "join_pairs": [["return_date", "timestamp"]]}]},
-        "time_dimensions": [td("time_spine")], "measures": [m("sum(amount)", "r")]}, "AmbiguousJoinPathError"),
+    "extension-join": (lambda s: {"population": {"source_name": "returns", "relationships": [
+        {"to": s, "join_pairs": [["return_date", "timestamp"]]}]},
+        "time_dimensions": [td("time_spine")], "metrics": [m("sum(amount)", "r")]}, "AmbiguousJoinPathError"),
 }
 
 

@@ -77,7 +77,7 @@ class TestReverseDimensionResolves:
         resp = await fwd_engine.execute(SlayerQuery.model_validate({
             "population": "customers",
             "dimensions": ["name"],
-            "metrics": [{"formula": "sum(orders.amount)", "name": "t"}],
+            "metrics": [{"expression": "sum(orders.amount)", "name": "t"}],
         }))
         got = {r["customers.name"]: r["customers.t"] for r in resp.data}
         assert got == CHAIN_AMOUNT_BY_NAME
@@ -125,7 +125,7 @@ class TestOrientedCardinalityValues:
             resp = await engine.execute(SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["customers.name"],
-                "metrics": [{"formula": "sum(amount)", "name": "t"}],
+                "metrics": [{"expression": "sum(amount)", "name": "t"}],
             }))
             got = {r["orders.customers.name"]: r["orders.t"] for r in resp.data}
             assert got == CHAIN_AMOUNT_BY_NAME_WITH_ORPHAN
@@ -145,7 +145,7 @@ class TestOrientedCardinalityValues:
             resp = await engine.execute(SlayerQuery.model_validate({
                 "population": "customers",
                 "dimensions": ["tier"],
-                "metrics": [{"formula": "sum(orders.amount)", "name": "t"}],
+                "metrics": [{"expression": "sum(orders.amount)", "name": "t"}],
             }))
             got = {r["customers.tier"]: r["customers.t"] for r in resp.data}
             assert got == CHAIN_AMOUNT_BY_TIER_EXACT
@@ -160,7 +160,7 @@ class TestOrientedCardinalityValues:
             resp = await engine.execute(SlayerQuery.model_validate({
                 "population": "customers",
                 "dimensions": ["tier"],
-                "metrics": [{"formula": "sum(orders.amount)", "name": "t"}],
+                "metrics": [{"expression": "sum(orders.amount)", "name": "t"}],
             }))
             assert not broadcast_warnings(resp)
             assert [w for w in resp.warnings or [] if w.kind == "associated"]
@@ -174,7 +174,7 @@ class TestOrientedCardinalityValues:
             resp = await engine.execute(SlayerQuery.model_validate({
                 "population": "customers",
                 "dimensions": ["tier"],
-                "metrics": [{"formula": "sum(orders.amount)", "name": "t"}],
+                "metrics": [{"expression": "sum(orders.amount)", "name": "t"}],
                 "to_many_handling": "broadcast",
             }))
             assert broadcast_warnings(resp)
@@ -231,7 +231,7 @@ class TestReverseClosure:
         # The source bundle from customers must include orders (reverse BFS).
         resp = await fwd_engine.execute(SlayerQuery.model_validate({
             "population": "customers",
-            "metrics": [{"formula": "sum(orders.amount)", "name": "t"}],
+            "metrics": [{"expression": "sum(orders.amount)", "name": "t"}],
         }))
         assert len(resp.data) == 1
         assert resp.data[0]["customers.t"] == \

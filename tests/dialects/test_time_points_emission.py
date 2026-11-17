@@ -28,8 +28,8 @@ async def _sql(
     if date_range is not None:
         td["date_range"] = date_range
     query = {
-        "source_model": "ev", "measures": measures or [{"formula": "count(*)", "name": "n"}],
-        "time_dimensions": [td], "filters": filters,
+        "population": "ev", "metrics": measures or [{"formula": "count(*)", "name": "n"}],
+        "time_dimensions": [td], "filter": filters,
     }
     return await _engine_generate(
         query=[query], model=ev_model(), extra_models=[customers_model()], dialect=dialect, clock=PinnedClock(),

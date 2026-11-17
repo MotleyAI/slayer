@@ -139,7 +139,7 @@ class TestFailClosed:
         choice = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "metrics": [{"formula": "sum(s1.total)", "name": "t"}],
+                "metrics": [{"expression": "sum(s1.total)", "name": "t"}],
             }),
             storage=storage,
             sibling_stage_names={"s1"},

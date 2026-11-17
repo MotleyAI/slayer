@@ -47,7 +47,7 @@ class TestCube:
     @pytest.mark.parametrize("status_first", [True, False])
     async def test_collisions_are_dropped(self, db: Path, status_first: bool) -> None:
         dims = [RENAMED_STATUS, *self.CLASHING] if status_first else [*self.CLASHING, RENAMED_STATUS]
-        cube = {"name": "orders", "sql_table": "orders", "dimensions": [ID, *dims], "measures": self.MEASURES,
+        cube = {"name": "orders", "sql_table": "orders", "dimensions": [ID, *dims], "metrics": self.MEASURES,
                 "segments": [{"name": "is_paid", "sql": "{CUBE}.status = 'paid'"}]}
         result = import_cube([cube], db=db)
         model = models_of(result)["orders"]
@@ -61,7 +61,7 @@ class TestCube:
     async def test_self_named_member_is_dropped(self, db: Path) -> None:
         cube = {"name": "orders", "sql_table": "orders",
                 "dimensions": [ID, {"name": "status", "sql": "UPPER({CUBE}.status)"}],
-                "measures": [{"name": "paid_amount", "type": "sum", "sql": "{CUBE}.amount", "filters": PAID}]}
+                "metrics": [{"name": "paid_amount", "datatype": "sum", "sql": "{CUBE}.amount", "filters": PAID}]}
         result = import_cube([cube], db=db)
         assert not has_column(result, "orders", "status")
         assert cube_issues(result, "status")
@@ -83,8 +83,8 @@ class TestCube:
         assert await by_id(models=result.datasets, db=db, model="orders", dimension="min_amount") == [5, 5, 5]
 
     async def test_view_over_a_filtered_measure(self, db: Path) -> None:
-        cube = {"name": "orders", "sql_table": "orders", "dimensions": [ID], "measures": [
-            {"name": "paid_sum", "type": "sum", "sql": "{CUBE}.amount", "filters": PAID}]}
+        cube = {"name": "orders", "sql_table": "orders", "dimensions": [ID], "metrics": [
+            {"name": "paid_sum", "datatype": "sum", "sql": "{CUBE}.amount", "filters": PAID}]}
         view = {"name": "orders_view", "cubes": [{"join_path": "orders", "includes": ["id", "paid_sum"]}]}
         result = import_cube([cube], views=[view], db=db)
         assert await value(models=result.datasets, db=db, model="orders_view", formula="paid_sum") == 30
@@ -96,7 +96,7 @@ class TestDbt:
               "entities": [{"name": "order", "type": "primary", "expr": "id"}],
               "dimensions": [{"name": "status", "type": "categorical", "expr": "state"},
                              {"name": "status_upper", "type": "categorical", "expr": "UPPER(status)"}],
-              "measures": [{"name": "paid_cnt", "agg": "sum", "expr": "CASE WHEN status = 'paid' THEN 1 ELSE 0 END"},
+              "metrics": [{"name": "paid_cnt", "agg": "sum", "expr": "CASE WHEN status = 'paid' THEN 1 ELSE 0 END"},
                            {"name": "paid_bool", "agg": "sum_boolean", "expr": "status = 'paid'"},
                            {"name": "total", "agg": "sum", "expr": "amount"}]}
         result = import_dbt([sm], db=db)

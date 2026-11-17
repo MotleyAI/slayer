@@ -13,7 +13,7 @@ from tests._time_points_fixtures import tp_engine
 async def test_unresolved_time_point_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(bind_inputs, "resolve_time_points", lambda vk, **_: vk)
     query = SlayerQuery.model_validate({
-        "population": "ev", "metrics": [{"formula": "count(*)", "name": "n"}],
+        "population": "ev", "metrics": [{"expression": "count(*)", "name": "n"}],
         "filter": ["ts >= 'last month'"],
     })
     async with tp_engine("sqlite") as engine:

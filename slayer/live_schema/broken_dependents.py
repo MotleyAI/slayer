@@ -77,10 +77,10 @@ def _probe(dependent: _Dependent) -> Any:
     if dependent.kind == "saved_query":
         return dependent.dataset
     if dependent.kind == "metric":
-        return {"source_model": dependent.dataset, "measures": [dependent.name]}
+        return {"population": dependent.dataset, "metrics": [dependent.name]}
     if dependent.kind == "field":
-        return {"source_model": dependent.dataset, "dimensions": [dependent.name]}
-    return {"source_model": dependent.dataset, "measures": ["count(*)"]}
+        return {"population": dependent.dataset, "dimensions": [dependent.name]}
+    return {"population": dependent.dataset, "metrics": ["count(*)"]}
 
 
 async def _plan(engine: query_engine.SlayerQueryEngine, dependent: _Dependent, *, data_source: str) -> None:

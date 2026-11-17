@@ -24,7 +24,7 @@ from tests._doc_examples import (
     reference_failure,
 )
 
-COUNT = {"source_model": "orders", "measures": ["count(*)"]}
+COUNT = {"population": "orders", "metrics": ["count(*)"]}
 MARKER = '!!! note "Illustrative schema"'
 NOT_A_QUERY = "<!-- doc-check: not-a-query -->"
 HYPOTHETICAL = '{"source_model": "orders", "measures": ["sum(website_visits)"]}'
@@ -59,8 +59,8 @@ class TestExtraction:
             "```",
         )
         assert _found(md) == [(3, [
-            {"name": "s", "source_model": "orders", "measures": ["count(*)"], "dimensions": ["store_id"]},
-            {"source_model": "s", "measures": ["max(_count)"]},
+            {"name": "s", "population": "orders", "metrics": ["count(*)"], "dimensions": ["store_id"]},
+            {"population": "s", "metrics": ["max(_count)"]},
         ])]
 
     def test_multiline_slayer_query(self) -> None:
@@ -80,7 +80,7 @@ class TestExtraction:
             "  }'",
             "```",
         )
-        assert _found(md) == [(5, {**COUNT, "filters": ["status = 'completed'"]})]
+        assert _found(md) == [(5, {**COUNT, "filter": ["status = 'completed'"]})]
 
     def test_slayer_query_call(self) -> None:
         md = _md(
@@ -108,7 +108,7 @@ class TestExtraction:
         )
         assert _found(md) == [
             (3, COUNT),
-            (7, [{"name": "s", **COUNT}, {"source_model": "s", "measures": ["max(_count)"]}]),
+            (7, [{"name": "s", **COUNT}, {"population": "s", "metrics": ["max(_count)"]}]),
         ]
 
     def test_mcp_query_call(self) -> None:
@@ -143,13 +143,13 @@ class TestExtraction:
             """slayer query '{"source_model": "stores", "measures": ["count(*)"]}' --format json""",
             "```",
         )
-        assert _found(md) == [(2, COUNT), (4, {"source_model": "stores", "measures": ["count(*)"]})]
+        assert _found(md) == [(2, COUNT), (4, {"population": "stores", "metrics": ["count(*)"]})]
 
     def test_placeholders_inside_strings(self) -> None:
         query = {
-            "source_model": {"name": "m", "data_source": "jaffle_shop", "sql": "SELECT 1 WHERE {? x IN ({stores}) ?}"},
-            "measures": ["count(*)"],
-            "filters": ["order_total >= {floor}"],
+            "population": {"name": "m", "data_source": "jaffle_shop", "sql": "SELECT 1 WHERE {? x IN ({stores}) ?}"},
+            "metrics": ["count(*)"],
+            "filter": ["order_total >= {floor}"],
         }
         md = _md("```text", f"query = {json.dumps(query)}", "```")
         assert _found(md) == [(2, query)]
@@ -296,7 +296,7 @@ class TestMarkersAndGuard:
 # ---------------------------------------------------------------------------
 
 COUNT_JSON = json.dumps(COUNT)
-STORES_COUNT = {"source_model": "stores", "measures": ["count(*)"]}
+STORES_COUNT = {"population": "stores", "metrics": ["count(*)"]}
 
 
 def _checked(markdown: str) -> list[tuple[int, Any]]:
@@ -316,7 +316,7 @@ class TestAltTextExtraction:
 
     def test_shortcut_reference_image(self, doc_demo_storage: YAMLStorage) -> None:
         md = _md('![Chart of {"source_model": "orders"}]', "", '[chart of {"source_model":  "orders"}]: x.png')
-        assert _checked(md) == [(1, {"source_model": "orders"})]
+        assert _checked(md) == [(1, {"population": "orders"})]
         lines = ("![Each query names a source_model]", "", "  [EACH query names a source_model]: x.png")
         assert len(_failures(doc_demo_storage, *lines)) == 1
 
@@ -425,8 +425,8 @@ class TestAltTextChecks:
 
 def test_readme_yields_its_headline_alt_text_query() -> None:
     headline = {
-        "source_model": "orders",
-        "measures": ["sum(order_total)", "change_pct(sum(order_total))"],
+        "population": "orders",
+        "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
         "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
     }
     assert headline in [q.query for q in load_page("README.md").checked_queries()]

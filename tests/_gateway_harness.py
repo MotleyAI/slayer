@@ -101,7 +101,7 @@ def paid_sql_model(*, data_source: str = DS_NAME) -> SlayerDataset:
     )
 
 
-COUNT_ORDERS_MEM = {"source_model": "t", "measures": [{"formula": "count(*)", "name": "n"}]}
+COUNT_ORDERS_MEM = {"population": "t", "metrics": [{"expression": "count(*)", "name": "n"}]}
 
 
 def mem_count_model() -> SlayerDataset:

@@ -334,7 +334,7 @@ class TestProducersInheritDisposition:
         fails closed in every mode, filter or not: its axis is not attributable
         from the population root; the error names the time dimension (decision 12)."""
         _, engine = backend
-        kw = {"filters": [OK]} if with_filter else {}
+        kw = {"filter": [OK]} if with_filter else {}
         query = cust_q(
             time_dimensions=_orders_month_td(), measures=[WINDOWED],
             to_many_handling=mode, **kw)

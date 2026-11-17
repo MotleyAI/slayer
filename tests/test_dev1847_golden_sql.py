@@ -21,28 +21,28 @@ def _cases() -> dict:
     return {
         "reagg/avg_by_region": {
             "kw": {"dimensions": ["region"],
-                   "measures": [{"formula": f"avg({INNER_CR})", "name": "acr"}]}},
+                   "metrics": [{"expression": f"avg({INNER_CR})", "name": "acr"}]}},
         "reagg/count_by_region": {
             "kw": {"dimensions": ["region"],
-                   "measures": [{"formula": f"count({INNER_CR})", "name": "nc"}]}},
+                   "metrics": [{"expression": f"count({INNER_CR})", "name": "nc"}]}},
         "reagg/degenerate": {
             "kw": {"dimensions": ["region"],
-                   "measures": [{"formula": "avg(sum(amount))", "name": "d"}]}},
+                   "metrics": [{"expression": "avg(sum(amount))", "name": "d"}]}},
         "reagg/broadcast_city": {
             "kw": {"dimensions": ["region"], "to_many_handling": "broadcast",
-                   "measures": [{"formula": "avg(sum(amount, partition_by=city))",
+                   "metrics": [{"expression": "avg(sum(amount, partition_by=city))",
                                  "name": "acc"}]}},
         "reagg/associate_city": {
             "kw": {"dimensions": ["region"], "to_many_handling": "associate",
-                   "measures": [{"formula": "avg(sum(amount, partition_by=city))",
+                   "metrics": [{"expression": "avg(sum(amount, partition_by=city))",
                                  "name": "acc"}]}},
         "reagg/explicit_grain": {
             "kw": {"dimensions": ["region", "product"],
-                   "measures": [{"formula": f"avg({INNER_CR}, partition_by=region)",
+                   "metrics": [{"expression": f"avg({INNER_CR}, partition_by=region)",
                                  "name": "acr"}]}},
         "reagg/depth3": {
             "kw": {"dimensions": ["product"],
-                   "measures": [{"formula":
+                   "metrics": [{"expression":
                                  f"max(avg({INNER_CRP}, partition_by=[region, product]))",
                                  "name": "d3"}]}},
     }

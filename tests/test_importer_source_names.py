@@ -245,7 +245,7 @@ async def _rows(live: Live, tmp_path: Path, models: Iterable[SlayerDataset],
 
 
 async def _grouped(live: Live, tmp_path: Path, models: dict[str, SlayerDataset], model: str, dimension: str) -> list[Any]:
-    rows = await _rows(live, tmp_path, models.values(), {"source_model": model, "dimensions": [dimension]})
+    rows = await _rows(live, tmp_path, models.values(), {"population": model, "dimensions": [dimension]})
     return [r[f"{model}.{dimension}"] for r in rows]
 
 
@@ -360,7 +360,7 @@ def test_source_sql_the_importer_cannot_read(live: Live, source_sql: str) -> Non
     regular = {"name": "src", "raw_code": source_sql}
     models, messages = _dbt(live, [{"name": "m", "model": "src", "dimensions": [
         {"name": "id", "type": "categorical"}],
-        "measures": [{"name": "total", "agg": "sum", "expr": "id"}]}], regular_models=[regular])
+        "metrics": [{"name": "total", "agg": "sum", "expr": "id"}]}], regular_models=[regular])
     assert _typed(models["m"], "id_col") is DataType.DOUBLE
     assert len(typing_notes(messages)) == 1
     assert live.ran("_slayer_src") == []
@@ -506,11 +506,11 @@ async def test_mixed_case_column_reads_the_folded_physical_column(pg: Live, tmp_
     models, _ = _cube(pg, {"name": "payments", "sql_table": "payments", "dimensions": [
         {"name": "id", "sql": "{CUBE}.id", "type": "number", "primary_key": True},
         {"name": "amount", "sql": "{CUBE}.OrderAmount", "type": "number"}],
-        "measures": [{"name": "total", "type": "sum", "sql": "{CUBE}.OrderAmount"}]})
+        "metrics": [{"name": "total", "datatype": "sum", "sql": "{CUBE}.OrderAmount"}]})
     assert _typed(models["payments"], "amount") is DataType.INT
     assert await _grouped(pg, tmp_path, models, "payments", "amount") == [7]
     (row,) = await _rows(pg, tmp_path / "measure", models.values(), {
-        "source_model": "payments", "measures": [{"formula": "total", "name": "v"}]})
+        "population": "payments", "metrics": [{"expression": "total", "name": "v"}]})
     assert row["payments.v"] == 7
 
 

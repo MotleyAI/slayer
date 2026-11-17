@@ -296,7 +296,7 @@ class TestAttributableKeylessHome:
     async def test_same_values_as_broadcast_without_association(self, engine) -> None:
         wavg = [measure("weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))",
                         "wv")]
-        kw = {"source_model": "orders", "dimensions": ["customers.tier"], "measures": wavg}
+        kw = {"population": "orders", "dimensions": ["customers.tier"], "metrics": wavg}
         assoc = await engine.execute(query(**kw, to_many_handling="associate"))
         bcast = await engine.execute(query(**kw, to_many_handling="broadcast"))
         assert cells(assoc, "tier", "wv") == cells(bcast, "tier", "wv")

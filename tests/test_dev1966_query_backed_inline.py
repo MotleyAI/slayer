@@ -55,8 +55,8 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 
 def _join(source: str, target: str, pairs: List[List[str]]) -> Dict[str, Any]:
-    return {"source_model": source,
-            "extensions": [{"source_name": source, "joins": [{"target_model": target, "join_pairs": pairs}]}]}
+    return {"population": source,
+            "extensions": [{"source_name": source, "relationships": [{"to": target, "join_pairs": pairs}]}]}
 
 
 async def _assert_parity(engine: SlayerQueryEngine, *, inline, splice, columns: List[str], rows: List[Dict[str, Any]]):
@@ -129,9 +129,9 @@ class TestParity:
         user_x = query(name="x", source_model="customers", dimensions=["id", "tier"],
                        measures=[m("sum(spend)", "sp")])
         root = query(
-            source_model="x", extensions=[{"source_name": "x", "joins": [
-                {"target_model": "cust_rev", "join_pairs": [["id", "customer_id"]]},
-                {"target_model": "ok_rev", "join_pairs": [["id", "customer_id"]]}]}],
+            source_model="x", extensions=[{"source_name": "x", "relationships": [
+                {"to": "cust_rev", "join_pairs": [["id", "customer_id"]]},
+                {"to": "ok_rev", "join_pairs": [["id", "customer_id"]]}]}],
             dimensions=["id", "tier", "cust_rev.rev", "ok_rev.ok_rev"], measures=[m("sum(sp)", "spend")])
         spend = {1: 100.0, 2: 150.0, 3: 60.0, 4: 40.0, 5: 80.0}
         tier = {1: "gold", 2: "silver", 3: "gold", 4: "bronze", 5: "silver"}
@@ -295,8 +295,8 @@ class TestVariableLayering:
 # --------------------------------------------------------------------------- #
 _EXT = {
     "source_name": "cust_rev",
-    "measures": [m("sum(rev * 2)", "r2")],
-    "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}],
+    "metrics": [m("sum(rev * 2)", "r2")],
+    "relationships": [{"to": "customers", "join_pairs": [["customer_id", "id"]]}],
 }
 
 
@@ -318,7 +318,7 @@ class TestExtensions:
 
     async def test_stage_level_measure_extension_executes(self, engine) -> None:
         mm = {"name": "mm", "formula": "sum(rev)"}
-        s = query(name="s", source_model="cust_rev", extensions=[{"source_name": "cust_rev", "measures": [mm]}],
+        s = query(name="s", source_model="cust_rev", extensions=[{"source_name": "cust_rev", "metrics": [mm]}],
                   dimensions=["customer_id"], measures=["mm"])
         outer = query(source_model="s", measures=[m("sum(mm)", "t")])
         await _assert_parity(

@@ -152,13 +152,13 @@ class EmbeddingRetriever(Retriever):
         self,
         *,
         storage: StorageBackend,
-        dataset_name: str | None = None,
+        model_name: str | None = None,
     ) -> None:
         self._storage = storage
-        self._model_name = dataset_name or current_model()
+        self._model_name = model_name or current_model()
 
     @property
-    def dataset_name(self) -> str:
+    def model_name(self) -> str:
         return self._model_name
 
     # ------------------------------------------------------------------

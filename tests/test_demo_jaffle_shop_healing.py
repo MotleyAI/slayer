@@ -46,8 +46,8 @@ EXPECTED_EDGES = {
 }
 
 README_QUERY = {
-    "source_model": "orders",
-    "measures": ["sum(order_total)", "change_pct(sum(order_total))"],
+    "population": "orders",
+    "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
     "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
 }
 
@@ -286,8 +286,8 @@ class TestDemoMoneyIsExact:
     def test_revenue_by_store_and_month_is_exact(self, jaffle_generator, storage, store_dir) -> None:
         _setup(storage, store_dir)
         rows = _run(storage, {
-            "source_model": "orders",
-            "measures": ["sum(order_total)"],
+            "population": "orders",
+            "metrics": ["sum(order_total)"],
             "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
         })
         assert rows

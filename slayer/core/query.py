@@ -873,10 +873,10 @@ def _advertise_string_time_dimensions(schema: dict[str, Any]) -> None:
 def _advertise_order_item(schema: dict[str, Any]) -> None:
     """Publish ``field``'s string form; hide the internal ``raw_expression``."""
     props = schema.get("properties", {})
-    props.pop("raw_formula", None)
+    props.pop("raw_expression", None)
     props.pop("implied", None)
-    if "column" in props:
-        props["column"] = {"anyOf": [{"type": "string"}, props["column"]]}
+    if "field" in props:
+        props["field"] = {"anyOf": [{"type": "string"}, props["field"]]}
 
 
 def _order_field_text(col: Any) -> str | None:
@@ -912,11 +912,11 @@ class OrderItem(BaseModel):
     def _capture_raw_expression(cls, data: Any) -> Any:
         """Capture the raw column formula before coercion normalizes it."""
         if isinstance(data, dict):
-            col = _order_field_text(data.get("column"))
+            col = _order_field_text(data.get("field"))
             if col is not None:
                 candidate = _order_expression_candidate(col)
                 if candidate is not None:
-                    data = {**data, "column": col, "raw_formula": candidate}
+                    data = {**data, "field": col, "raw_expression": candidate}
         return data
 
     @field_validator("direction")
@@ -934,12 +934,12 @@ class OrderItem(BaseModel):
 
 
 def _coerce_metrics(v: Any) -> Any:
-    """Allow plain strings in the measures list: "count" → {"formula": "count"}."""
+    """Allow plain strings in the metrics list: "count" → {"expression": "count"}."""
     if v is None:
         return v
     if not isinstance(v, (list, tuple)):
-        raise TypeError(f"'measures' must be a list, got {type(v).__name__}")
-    return [{"formula": item} if isinstance(item, str) else item for item in v]
+        raise TypeError(f"'metrics' must be a list, got {type(v).__name__}")
+    return [{"expression": item} if isinstance(item, str) else item for item in v]
 
 
 def _coerce_dimension_item(item: Any) -> Any:
@@ -1103,11 +1103,11 @@ class DatasetExtension(BaseModel):
 
 def convert_legacy_root_extension(data: dict) -> tuple[dict, DeprecatedInputWarning | None]:
     """Fresh input's legacy root extension, moved into ``extensions``, with its deprecation (none in a stored document)."""
-    source = data.get("source_model")
+    source = data.get("population")
     if isinstance(source, DatasetExtension):
-        data = with_root_extension(data, extension=source, base=source.source_name)
+        data = with_root_extension(data, extension=source, base=source.source_name, key="population")
     elif "version" not in data and is_legacy_root_extension(source):
-        data = hoist_root_extension(data)
+        data = hoist_root_extension(data, key="population")
     else:
         return data, None
     if in_stored_document():
@@ -1233,8 +1233,8 @@ class SlayerQuery(BaseModel):
             "only in this query object. A join repeating a stored relationship, in either "
             "direction, is that edge, and its name is a local alias. An `inner` join keeps only "
             "the rows with a match; it never multiplies rows. Rooted at orders: "
-            '[{"source_name": "customers", "measures": [{"name": "credit_total", "formula": '
-            '"sum(credit)"}], "joins": [{"target_model": "vip_list", "join_pairs": '
+            '[{"source_name": "customers", "metrics": [{"name": "credit_total", "expression": '
+            '"sum(credit)"}], "relationships": [{"to": "vip_list", "join_pairs": '
             '[["id", "customer_id"]], "join_type": "inner"}]}] adds customers.credit_total and '
             "keeps only the orders of customers on the vip list."
         ),
@@ -1242,7 +1242,7 @@ class SlayerQuery(BaseModel):
     metrics: MetricsField = Field(
         default=None,
         description=(
-            'Values to return: formula strings or {"formula": ..., "name": ...} (name sets the '
+            'Values to return: expression strings or {"expression": ..., "name": ...} (name sets the '
             "result key; a bare name references a saved model measure). Formulas combine "
             "aggregations with arithmetic, also across models: rooted at customers, "
             "sum(orders.amount) / count(*) divides the orders' total by the number of customers.\n"
@@ -1299,7 +1299,7 @@ class SlayerQuery(BaseModel):
             data, payloads = prepare_query_input(data)
         data = _migrate_schema(entity="SlayerQuery", data=data)
         if isinstance(data, dict):
-            if is_legacy_root_extension(data.get("source_model")):
+            if is_legacy_root_extension(data.get("population")):
                 raise ValueError(
                     "`population` names a model; put a query-scoped extension in `extensions`."
                 )
@@ -1685,7 +1685,7 @@ def _check_restatement(entry: DatasetMetric, prior: DatasetMetric) -> None:
     for field in _RESTATABLE_FIELDS:
         if field in entry.model_fields_set and getattr(entry, field) != getattr(prior, field):
             raise RefinementConflictError(
-                field="measures", key=prior.name or "", saved=_show(prior), refined=_show(entry),
+                field="metrics", key=prior.name or "", saved=_show(prior), refined=_show(entry),
                 suggestion=_ENTRY_CONFLICT_SUGGESTION,
             )
 
@@ -1767,13 +1767,13 @@ def refine_query(*, saved: SlayerQuery, refinement: QueryRefinement) -> SlayerQu
             saved.dimensions, refinement.dimensions, field="dimensions", canon=canonical_dimension,
             identity=dimension_identity,
         ),
-        "measures": _union(
-            saved.metrics, _drop_restatements(saved.metrics, refinement.metrics, root), field="measures",
+        "metrics": _union(
+            saved.metrics, _drop_restatements(saved.metrics, refinement.metrics, root), field="metrics",
             canon=canonical_metric,
-            identity=lambda m: ("name", m.name) if m.name else ("formula", _parsed_identity(m.expression, root)),
+            identity=lambda m: ("name", m.name) if m.name else ("expression", _parsed_identity(m.expression, root)),
         ),
         "time_dimensions": _merge_time_dimensions(saved.time_dimensions, refinement.time_dimensions, root),
-        "filters": _union(saved.filter, refinement.filter, field="filters", canon=str, identity=lambda f: ("filter", f)),
+        "filter": _union(saved.filter, refinement.filter, field="filter", canon=str, identity=lambda f: ("filter", f)),
     }
     data.update((name, value) for name, value in merged_lists.items() if value is not getattr(saved, name))
     for name in ("limit", "offset", "main_time_dimension", *_NON_NULLABLE_SETTINGS):

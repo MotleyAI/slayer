@@ -48,7 +48,7 @@ async def decimal_engine(tmp_path):
         ("sum(amount)", {}, [Decimal("90071992547409.93")]),
         (
             {"formula": "sum(amount, window='2d')", "name": "total"},
-            {"time_dimensions": [{"dimension": "created_at", "granularity": "day"}]},
+            {"time_dimensions": [{"field": "created_at", "granularity": "day"}]},
             [Decimal("90071992547409.91"), Decimal("90071992547409.93")],
         ),
         (
@@ -64,7 +64,7 @@ async def test_inferred_decimal_aggregates_preserve_native_precision(
     query_fields,
     expected,
 ):
-    query = {"source_model": "orders", "measures": [measure], **query_fields}
+    query = {"population": "orders", "metrics": [measure], **query_fields}
     result = await decimal_engine.execute(query=query)
     sql = (await decimal_engine.execute(query=query, dry_run=True)).sql
 
@@ -76,8 +76,8 @@ async def test_inferred_decimal_aggregates_preserve_native_precision(
 
 async def test_explicit_double_measure_still_casts(decimal_engine):
     query = {
-        "source_model": "orders",
-        "measures": [{"formula": "sum(amount)", "type": "DOUBLE"}],
+        "population": "orders",
+        "metrics": [{"expression": "sum(amount)", "datatype": "DOUBLE"}],
     }
     result = await decimal_engine.execute(query=query)
     sql = (await decimal_engine.execute(query=query, dry_run=True)).sql
@@ -87,7 +87,7 @@ async def test_explicit_double_measure_still_casts(decimal_engine):
 
 
 async def test_cross_model_decimal_aggregate_preserves_native_precision(decimal_engine):
-    query = {"source_model": "orders", "measures": ["sum(customers.amount)"]}
+    query = {"population": "orders", "metrics": ["sum(customers.amount)"]}
     result = await decimal_engine.execute(query=query)
     sql = (await decimal_engine.execute(query=query, dry_run=True)).sql
 

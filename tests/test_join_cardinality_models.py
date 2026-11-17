@@ -156,9 +156,9 @@ def test_current_version_data_without_the_new_fields_needs_no_migration() -> Non
             "name": "orders",
             "sql_table": "orders",
             "data_source": "testds",
-            "fields": [{"name": "customer_id", "datatype": "INT"}],
-            "relationships": [
-                {"to": "customers", "join_pairs": [["customer_id", "id"]]}
+            "columns": [{"name": "customer_id", "type": "INT"}],
+            "joins": [
+                {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
             ],
         }
     )
@@ -175,9 +175,9 @@ def test_pre_existing_v7_data_still_validates() -> None:
             "name": "orders",
             "sql_table": "orders",
             "data_source": "testds",
-            "fields": [{"name": "customer_id", "datatype": "INT"}],
-            "relationships": [
-                {"to": "customers", "join_pairs": [["customer_id", "id"]]}
+            "columns": [{"name": "customer_id", "type": "INT"}],
+            "joins": [
+                {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
             ],
         }
     )

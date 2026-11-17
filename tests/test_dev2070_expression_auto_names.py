@@ -215,20 +215,20 @@ def test_constituents_differing_only_in_locus_never_share_a_slot() -> None:
 # --------------------------------------------------------------------------- #
 _REFERENCED = [
     pytest.param(
-        {"source_model": "regions", "dimensions": ["name"],
-         "measures": ["sum(iif(customers.orders.order_date >= '2024-02-01', 1, 0))"]},
+        {"population": "regions", "dimensions": ["name"],
+         "metrics": ["sum(iif(customers.orders.order_date >= '2024-02-01', 1, 0))"]},
         "name", "customers.orders.iif_order_date_2024_02_01_1_0_sum",
         {"north": 3, "south": 2}, id="pathed-date-comparison",
     ),
     pytest.param(
-        {"source_model": "orders", "dimensions": ["status"],
-         "measures": ["sum(iif(ordered_at >= 'last month', 1, 0))"]},
+        {"population": "orders", "dimensions": ["status"],
+         "metrics": ["sum(iif(ordered_at >= 'last month', 1, 0))"]},
         "status", "iif_ordered_at_last_month_1_0_sum",
         {"paid": 3, "pending": 2}, id="relative-point",
     ),
     pytest.param(
-        {"source_model": "orders", "dimensions": ["customers.regions.name"],
-         "measures": ["sum(customers.spend - 1)"]},
+        {"population": "orders", "dimensions": ["customers.regions.name"],
+         "metrics": ["sum(customers.spend - 1)"]},
         "customers.regions.name", "customers.spend_1_sum",
         {"north": 148, "south": 199}, id="pathed-operand",
     ),
@@ -251,7 +251,7 @@ async def test_derived_key_in_order(engine, query, dim, key, values) -> None:
     root = query["source_model"]
     for direction, reverse in (("asc", False), ("desc", True)):
         resp = await engine.execute(SlayerQuery.model_validate(
-            {**query, "order": [{"column": key, "direction": direction}]},
+            {**query, "order": [{"field": key, "direction": direction}]},
         ))
         assert _rows(resp, root=root, dim=dim, key=key) == sorted(
             values.items(), key=lambda kv: kv[1], reverse=reverse,

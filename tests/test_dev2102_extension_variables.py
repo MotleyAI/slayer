@@ -13,8 +13,8 @@ from slayer.inspect.dataset_render import render_dataset_inspection
 from tests._dev1966_fixtures import customers_model, dev1966_engine, m, orders_model, query
 from tests._dev2102_fixtures import DS, countries, customers, ext, join, orders, q, regions
 
-_OVER = {"source_name": "orders", "measures": [
-    {"name": "rev", "formula": "sum(iif(amount >= {floor}, amount, 0))"}]}
+_OVER = {"source_name": "orders", "metrics": [
+    {"name": "rev", "expression": "sum(iif(amount >= {floor}, amount, 0))"}]}
 
 
 def _over_rev(**fields) -> SlayerDataset:
@@ -33,8 +33,8 @@ async def test_conflicting_contexts_of_an_extension_variable_fail_closed() -> No
               _wrap("wrap_a", 20), _wrap("wrap_b", 30)]
     s1 = query(name="s1", source_model="wrap_a", dimensions=["customer_id"], measures=[m("sum(r)", "a")])
     s2 = query(name="s2", source_model="wrap_b", dimensions=["customer_id"], measures=[m("sum(r)", "b")])
-    root = query(source_model="s1", extensions=[{"source_name": "s1", "joins": [
-        {"target_model": "s2", "join_pairs": [["customer_id", "customer_id"]]}]}],
+    root = query(source_model="s1", extensions=[{"source_name": "s1", "relationships": [
+        {"to": "s2", "join_pairs": [["customer_id", "customer_id"]]}]}],
         dimensions=["customer_id", "a", "s2.b"])
     async with dev1966_engine("sqlite", models=models) as e:
         with pytest.raises(ValueError, match="over_rev"):
@@ -61,8 +61,8 @@ _TO_REGIONS = join("regions", [["region_id", "id"]])
 
 
 @pytest.mark.parametrize(("source", "dimensions", "extension"), [
-    ({"source_model": "orders"}, ["customers.regions.countries.name"], ext("customers", joins=[_TO_REGIONS])),
-    ({"source_model": "orders"}, ["status"], ext("customers", joins=[_TO_REGIONS],
+    ({"population": "orders"}, ["customers.regions.countries.name"], ext("customers", joins=[_TO_REGIONS])),
+    ({"population": "orders"}, ["status"], ext("customers", joins=[_TO_REGIONS],
                                                measures=[{"name": "countries_n",
                                                           "formula": "count_distinct(regions.countries.name)"}])),
     ({}, ["customers.regions.countries.name"], ext("customers", joins=[_TO_REGIONS])),

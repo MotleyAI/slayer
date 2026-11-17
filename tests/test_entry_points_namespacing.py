@@ -198,7 +198,7 @@ class TestMCPModelToolsDataSourceArg:
 
         async def _capturing_execute(self, query: SlayerQuery, **kwargs):  # type: ignore[no-untyped-def]
             captured.append({
-                "source_model": getattr(query, "population", None) if not isinstance(query, str) else query,
+                "population": getattr(query, "population", None) if not isinstance(query, str) else query,
                 "data_source_kwarg": kwargs.get("data_source"),
             })
             # Don't actually run — return an empty response shape so the

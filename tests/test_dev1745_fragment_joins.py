@@ -235,7 +235,7 @@ class TestHostPathFragmentJoinsStillWork:
             SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": [{"formula": "status", "name": "status"}],
-                "metrics": [{"formula": "wscaled_sum(amount)", "name": "m0"}],
+                "metrics": [{"expression": "wscaled_sum(amount)", "name": "m0"}],
             }),
             model=_orders_local_agg(),
         )
@@ -265,7 +265,7 @@ async def test_cross_model_fragment_executes_on_duckdb() -> None:
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [{"formula": "status", "name": "status"}],
-            "metrics": [{"formula": "wscaled_sum(customers.spend)", "name": "m0"}],
+            "metrics": [{"expression": "wscaled_sum(customers.spend)", "name": "m0"}],
         }),
         model=_orders(), dialect="duckdb",
     )

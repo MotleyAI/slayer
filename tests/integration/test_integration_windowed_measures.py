@@ -166,7 +166,7 @@ class TestWindowedMeasureValues:
     async def test_rolling_90d_sum_by_month(self, windowed_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_90d"}]})
+            )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}]})
         result = await windowed_engine.execute(query=query)
         by_month = {
             str(r[_key(r, "created_at")])[:7]: float(r[_key(r, "rev_90d")])
@@ -180,7 +180,7 @@ class TestWindowedMeasureValues:
     async def test_rolling_90d_avg_by_month(self, windowed_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "avg(revenue, window='90d')", "name": "rev_avg"}]})
+            )], "metrics": [{"expression": "avg(revenue, window='90d')", "name": "rev_avg"}]})
         result = await windowed_engine.execute(query=query)
         by_month = {
             str(r[_key(r, "created_at")])[:7]: float(r[_key(r, "rev_avg")])
@@ -200,7 +200,7 @@ class TestWindowedMeasureValues:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-03-01", "2024-03-31"],
-            )], "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_90d"}]})
+            )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}]})
         result = await windowed_engine.execute(query=query)
         assert result.row_count == 1, result.data
         assert float(result.data[0][_key(result.data[0], "rev_90d")]) == 900.0, result.data
@@ -228,7 +228,7 @@ class TestWindowedMeasureValues:
             "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
             )],
-            "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_90d"}],
+            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}],
         })
         result = await windowed_engine.execute(query=query)
         null_rows = [r for r in result.data if r[_key(r, "region")] is None]
@@ -276,7 +276,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
     ) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "count(id)", "name": "n"}], "order": [{"column": "sum(revenue, window='90d')", "direction": "desc"}]})
+            )], "metrics": [{"expression": "count(id)", "name": "n"}], "order": [{"field": "sum(revenue, window='90d')", "direction": "desc"}]})
         result = await windowed_engine.execute(query=query)
         months = [str(r[_key(r, "created_at")])[:7] for r in result.data]
         assert months == ["2024-03", "2024-02", "2024-01"], result.data
@@ -288,7 +288,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         as a result column."""
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "count(id)", "name": "n"}], "order": [{"column": "sum(revenue, window='90d')", "direction": "desc"}]})
+            )], "metrics": [{"expression": "count(id)", "name": "n"}], "order": [{"field": "sum(revenue, window='90d')", "direction": "desc"}]})
         result = await windowed_engine.execute(query=query)
         assert all("window" not in c and "90d" not in c for c in result.columns), result.columns
         for row in result.data:
@@ -307,7 +307,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         and ``test_order_only_windowed_inside_composite`` carry that duty."""
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "count(id)", "name": "n"}], "order": [{"column": "sum(revenue, window='90d')", "direction": "asc"}], "limit": 1})
+            )], "metrics": [{"expression": "count(id)", "name": "n"}], "order": [{"field": "sum(revenue, window='90d')", "direction": "asc"}], "limit": 1})
         result = await windowed_engine.execute(query=query)
         assert result.row_count == 1, result.data
         assert str(result.data[0][_key(result.data[0], "created_at")])[:7] == "2024-01", result.data
@@ -330,7 +330,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         """
         query = SlayerQuery.model_validate({"population": "orders_c", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "count(id)", "name": "n"}], "order": [{"column": "count(id) / sum(revenue, window='90d')", "direction": "desc"}]})
+            )], "metrics": [{"expression": "count(id)", "name": "n"}], "order": [{"field": "count(id) / sum(revenue, window='90d')", "direction": "desc"}]})
         result = await windowed_engine.execute(query=query)
         months = [str(r[_key(r, "created_at")])[:7] for r in result.data]
         assert months == ["2024-03", "2024-01", "2024-02"], (
@@ -348,7 +348,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         regression."""
         query = SlayerQuery.model_validate({"population": "orders_c", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "sum(revenue, window='90d')", "name": "roll"}]})
+            )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "roll"}]})
         result = await windowed_engine.execute(query=query)
         by_month = {
             str(r[_key(r, "created_at")])[:7]: float(r[_key(r, "roll")])
@@ -366,7 +366,7 @@ class TestHiddenOrderOnlyWindowedValues(object):
         one — two windowed producer CTEs, one projected and one trimmed, both correct."""
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_90d"}], "order": [{"column": "sum(revenue, window='30d')", "direction": "desc"}]})
+            )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}], "order": [{"field": "sum(revenue, window='30d')", "direction": "desc"}]})
         result = await windowed_engine.execute(query=query)
         by_month = {
             str(r[_key(r, "created_at")])[:7]: float(r[_key(r, "rev_90d")])
@@ -403,8 +403,8 @@ class TestHiddenOrderOnlyWindowedValues(object):
             "time_dimensions": [TimeDimension(
                 field="created_at", granularity=TimeGranularity.MONTH,
             )],
-            "metrics": [{"formula": "count(id)", "name": "n"}],
-            "order": [{"column": "sum(revenue, window='90d')", "direction": "desc"}],
+            "metrics": [{"expression": "count(id)", "name": "n"}],
+            "order": [{"field": "sum(revenue, window='90d')", "direction": "desc"}],
         })
         sql = (await windowed_engine.execute(query=query, dry_run=True)).sql or ""
         assert "_w_value" in sql, (
@@ -552,7 +552,7 @@ class TestFrameBoundEquivalenceValues:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=date_range,
-            )], "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_90d"}], "filter": filters})
+            )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}], "filter": filters})
         return _by_month(await engine.execute(query=query), "rev_90d")
 
     async def test_date_range_and_explicit_filter_agree(

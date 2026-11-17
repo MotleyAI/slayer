@@ -61,7 +61,7 @@ class TestNamesAreDirectionAgnostic:
         resp = await named_engine.execute(SlayerQuery.model_validate({
             "population": "customers",
             "dimensions": ["name"],
-            "metrics": [{"formula": "sum(billing_customer.amount)", "name": "b"}],
+            "metrics": [{"expression": "sum(billing_customer.amount)", "name": "b"}],
         }))
         got = {r["customers.name"]: r["customers.b"] for r in resp.data}
         assert got == PARALLEL_BILLING_AMOUNTS
@@ -74,8 +74,8 @@ class TestNamedTerminalMetadata:
             "time_dimensions": [TimeDimension(
                 field="billing_customer.signup_at",
                 granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(amount)", "name": "t"}],
-            "order": [{"column": "billing_customer.signup_at",
+            "metrics": [{"expression": "sum(amount)", "name": "t"}],
+            "order": [{"field": "billing_customer.signup_at",
                     "direction": "asc"}],
         }))
         key = "orders.billing_customer.signup_at"
@@ -170,7 +170,7 @@ class TestNamedEdgeValidationConsumers:
         await self._augment_customers(named_engine)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "avg(billing_customer.spend)", "name": "a"}],
+            "metrics": [{"expression": "avg(billing_customer.spend)", "name": "a"}],
         })
         with pytest.raises(AggregationNotAllowedError):
             await named_engine.execute(query)
@@ -204,7 +204,7 @@ class TestNamedEdgeValidationConsumers:
             "time_dimensions": [TimeDimension(
                 field="billing_customer.signup_day",
                 granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(amount)", "name": "t"}],
+            "metrics": [{"expression": "sum(amount)", "name": "t"}],
         }))
         months = {str(r["orders.billing_customer.signup_day"])[:7]: r["orders.t"]
                   for r in resp.data}
@@ -217,8 +217,8 @@ class TestNamedEdgeValidationConsumers:
         resp = await named_engine.execute(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(amount)", "name": "t"}],
-            "order": [{"column": "billing_customer.name", "direction": "desc"}],
+            "metrics": [{"expression": "sum(amount)", "name": "t"}],
+            "order": [{"field": "billing_customer.name", "direction": "desc"}],
         }))
         # Desc by each group's max billing name: ok (Bob) before new (Alice).
         assert [r["orders.status"] for r in resp.data] == ["ok", "new"]

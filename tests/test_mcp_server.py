@@ -1440,7 +1440,7 @@ class TestCreateModel:
                 {"name": "id", "sql": "id", "type": "number", "primary_key": "true"},
                 {"name": "status", "sql": "status", "type": "string"},
             ],
-            "measures": [
+            "metrics": [
                 {"name": "revenue", "sql": "amount"},
             ],
         })
@@ -1454,8 +1454,8 @@ class TestCreateModel:
             "name": "orders",
             "sql_table": "public.orders",
             "data_source": "test_ds",
-            "columns": [
-                {"name": "revenue", "sql": "amount", "type": "number",
+            "fields": [
+                {"name": "revenue", "sql": "amount", "datatype": "number",
                  "allowed_aggregations": ["sum", "avg"]},
             ],
         })
@@ -1470,11 +1470,11 @@ class TestCreateModel:
             "name": "orders",
             "sql_table": "public.orders",
             "data_source": "test_ds",
-            "columns": [
-                {"name": "revenue", "sql": "amount", "type": "number"},
+            "fields": [
+                {"name": "revenue", "sql": "amount", "datatype": "number"},
             ],
-            "measures": [
-                {"name": "aov", "formula": "sum(revenue) / count(*)",
+            "metrics": [
+                {"name": "aov", "expression": "sum(revenue) / count(*)",
                  "meta": {"kb_id": "abc-123", "tags": ["finance", "kpi"]}},
             ],
         })
@@ -1490,7 +1490,7 @@ class TestCreateModel:
     async def test_create_from_query_rejects_mixed_params(self, mcp_server) -> None:
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "bad",
-            "query": {"source_model": "orders", "measures": ["count(*)"]},
+            "query": {"population": "orders", "metrics": ["count(*)"]},
             "sql_table": "public.orders",
         })
         assert "Error" in result
@@ -1500,7 +1500,7 @@ class TestCreateModel:
     async def test_create_from_query_rejects_data_source(self, mcp_server) -> None:
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "bad",
-            "query": {"source_model": "orders", "measures": ["count(*)"]},
+            "query": {"population": "orders", "metrics": ["count(*)"]},
             "data_source": "mydb",
         })
         assert "Error" in result
@@ -1514,7 +1514,7 @@ class TestCreateModel:
         ))
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
-            "query": {"source_model": "orders", "measures": ["sum(amount)"]},
+            "query": {"population": "orders", "metrics": ["sum(amount)"]},
             "dimensions": [],
             "measures": [],
         })
@@ -1529,7 +1529,7 @@ class TestCreateModel:
         ))
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
-            "query": {"source_model": "orders", "measures": ["sum(amount)"]},
+            "query": {"population": "orders", "metrics": ["sum(amount)"]},
         })
         # Should fail on missing datasource, not on "missing sql_table"
         assert "Datasource" in result
@@ -1549,8 +1549,8 @@ class TestCreateModel:
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
             "query": {
-                "source_model": "orders",
-                "measures": ["sum(amount)"],
+                "population": "orders",
+                "metrics": ["sum(amount)"],
             },
         })
         assert "Error" not in result, result
@@ -1990,8 +1990,8 @@ class TestEditModel:
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "source_queries": [{
-                "source_model": "orders_source",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders_source",
+                "metrics": [{"expression": "sum(amount)"}],
             }],
         })
         parsed = json.loads(result)
@@ -2232,7 +2232,7 @@ class TestEditModelDatasourceMoveSafety:
             data_source="db_a",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "sum(amount)"}],
+                "metrics": [{"expression": "sum(amount)"}],
             })],
         ))
         assert await storage.get_dataset("qb", data_source="db_a") is not None
@@ -2353,13 +2353,13 @@ class TestEditModelMultiStageRename:
             "source_queries": [
                 {
                     "name": "raw",
-                    "source_model": "orders",
+                    "population": "orders",
                     "dimensions": ["region"],
-                    "measures": [{"formula": "sum(amount)", "name": "new"}],
+                    "metrics": [{"expression": "sum(amount)", "name": "new"}],
                 },
                 {
-                    "source_model": "raw",
-                    "measures": [{"formula": "sum(new)"}],
+                    "population": "raw",
+                    "metrics": [{"expression": "sum(new)"}],
                 },
             ],
         })
@@ -2415,18 +2415,18 @@ class TestEditModelMultiStageRename:
             "source_queries": [
                 {
                     "name": "raw",
-                    "source_model": "orders",
+                    "population": "orders",
                     "dimensions": ["region"],
-                    "measures": [
-                        {"formula": "sum(amount)", "name": "rev"},
-                        {"formula": "avg(amount)", "name": "avg_amount"},
+                    "metrics": [
+                        {"expression": "sum(amount)", "name": "rev"},
+                        {"expression": "avg(amount)", "name": "avg_amount"},
                     ],
                 },
                 {
-                    "source_model": "raw",
-                    "measures": [
-                        {"formula": "sum(rev)"},
-                        {"formula": "avg(avg_amount)"},
+                    "population": "raw",
+                    "metrics": [
+                        {"expression": "sum(rev)"},
+                        {"expression": "avg(avg_amount)"},
                     ],
                 },
             ],
@@ -2547,7 +2547,7 @@ class TestRunByNamePlanFlagsMCP:
             data_source="test",
             source_queries=[SlayerQuery.model_validate({
                 "population": "upstream",
-                "metrics": [{"formula": "sum(amount)"}],
+                "metrics": [{"expression": "sum(amount)"}],
             })],
         ))
         execute_calls = 0
@@ -2588,8 +2588,8 @@ class TestQueryAcceptsInlineSourceModel:
         await self._setup_orders(storage)
         result = await _call(mcp_server, name="query", arguments={
             "query": {
-                "source_model": "orders",
-                "measures": [{"formula": "count(*)"}],
+                "population": "orders",
+                "metrics": [{"expression": "count(*)"}],
             },
             "dry_run": True,
         })
@@ -2604,14 +2604,14 @@ class TestQueryAcceptsInlineSourceModel:
         with pytest.raises(ToolError, match="columns"):
             await _call(mcp_server, name="query", arguments={
                 "query": {
-                    "source_model": "orders",
+                    "population": "orders",
                     "extensions": [{
                         "source_name": "orders",
                         "columns": [
                             {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
                         ],
                     }],
-                    "measures": [{"formula": "sum(double_amount)"}],
+                    "metrics": [{"expression": "sum(double_amount)"}],
                 },
                 "dry_run": True,
             })
@@ -2626,7 +2626,7 @@ class TestQueryAcceptsInlineSourceModel:
         with pytest.raises(ToolError, match="(?i)inline"):
             await _call(mcp_server, name="query", arguments={
                 "query": {
-                    "source_model": {
+                    "population": {
                         "name": "ad_hoc",
                         "sql_table": "things",
                         "data_source": "test",
@@ -2634,7 +2634,7 @@ class TestQueryAcceptsInlineSourceModel:
                             {"name": "x", "sql": "x", "type": "DOUBLE"},
                         ],
                     },
-                    "measures": [{"formula": "sum(x)"}],
+                    "metrics": [{"expression": "sum(x)"}],
                 },
                 "dry_run": True,
             })
@@ -2664,15 +2664,15 @@ class TestQueryListMultiStage:
             "query": [
                 {
                     "name": "monthly",
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "time_dimensions": [
-                        {"dimension": "created_at", "granularity": "month"},
+                        {"field": "created_at", "granularity": "month"},
                     ],
                 },
                 {
-                    "source_model": "monthly",
-                    "measures": [{"formula": "avg(amount_sum)"}],
+                    "population": "monthly",
+                    "metrics": [{"expression": "avg(amount_sum)"}],
                 },
             ],
             "dry_run": True,
@@ -2697,17 +2697,17 @@ class TestQueryListMultiStage:
             "query": [
                 {
                     "name": "a",
-                    "source_model": "b",
-                    "measures": [{"formula": "avg(amount_sum)"}],
+                    "population": "b",
+                    "metrics": [{"expression": "avg(amount_sum)"}],
                 },
                 {
                     "name": "b",
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                 },
                 {
-                    "source_model": "a",
-                    "measures": [{"formula": "max(amount_sum_avg)"}],
+                    "population": "a",
+                    "metrics": [{"expression": "max(amount_sum_avg)"}],
                 },
             ],
             "dry_run": True,
@@ -2721,9 +2721,9 @@ class TestQueryListMultiStage:
         with pytest.raises(ToolError, match=r"[Cc]ycle"):
             await _call(mcp_server, name="query", arguments={
                 "query": [
-                    {"name": "a", "source_model": "b", "measures": [{"formula": "sum(amount)"}]},
-                    {"name": "b", "source_model": "a", "measures": [{"formula": "sum(amount)"}]},
-                    {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]},
+                    {"name": "a", "population": "b", "metrics": [{"expression": "sum(amount)"}]},
+                    {"name": "b", "population": "a", "metrics": [{"expression": "sum(amount)"}]},
+                    {"population": "orders", "metrics": [{"expression": "sum(amount)"}]},
                 ],
                 "dry_run": True,
             })
@@ -2733,7 +2733,7 @@ class TestQueryListMultiStage:
         with pytest.raises(ToolError, match="Invalid format"):
             await _call(mcp_server, name="query", arguments={
                 "query": [
-                    {"source_model": "orders", "measures": [{"formula": "count(*)"}]},
+                    {"population": "orders", "metrics": [{"expression": "count(*)"}]},
                 ],
                 "format": "xml",
             })
@@ -3046,7 +3046,7 @@ class TestSaveTimeSqlValidationMcp:
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "good_model", "sql": "SELECT id FROM orders",
             "data_source": "livedb",
-            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         })
         assert "created" in result
         assert await storage.get_dataset("good_model", data_source="livedb") is not None
@@ -3060,7 +3060,7 @@ class TestSaveTimeSqlValidationMcp:
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "bad_model", "sql": "SELECT nope FROM ghosts",
             "data_source": "livedb",
-            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         })
         assert "created" not in result
         assert "bad_model" in result
@@ -3144,7 +3144,7 @@ class TestDatabaseFailuresAreToolErrors:
         assert "Database error:" in result.content[0].text
 
     async def test_query_rejected_by_the_database(self, db_storage: YAMLStorage) -> None:
-        result = await self._call_tool(db_storage, "query", {"query": {"source_model": "orders", "measures": ["sum(broken)"]}})
+        result = await self._call_tool(db_storage, "query", {"query": {"population": "orders", "metrics": ["sum(broken)"]}})
         self._assert_database_tool_error(result)
 
     async def test_validate_models_database_unreachable(self, db_storage: YAMLStorage) -> None:
@@ -3169,8 +3169,8 @@ class TestDatabaseFailuresAreToolErrors:
 
     @pytest.mark.parametrize(("method", "arguments"), [
         ("save_model", {"name": "m", "sql_table": "orders", "data_source": "down",
-                        "columns": [{"name": "id", "sql": "id", "type": "number"}]}),
-        ("create_model_from_query", {"name": "m", "query": {"source_model": "orders", "measures": ["count(*)"]}}),
+                        "fields": [{"name": "id", "sql": "id", "datatype": "number"}]}),
+        ("create_model_from_query", {"name": "m", "query": {"population": "orders", "metrics": ["count(*)"]}}),
     ], ids=["table", "query"])
     async def test_create_model_database_unreachable(
         self, db_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch, method: str, arguments: dict[str, Any],

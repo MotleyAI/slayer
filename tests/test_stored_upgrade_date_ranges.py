@@ -58,7 +58,7 @@ async def test_query_backed_model_returns_the_0_10_2_rows(tmp_path, shop_ds, bac
     qb = query_backed_v10(name="rev_range", stages=[rev_query(time_dimensions=[year_td(date_range)])])
     storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
                               models=[orders_v10(), customers_v10(), qb])
-    resp = await run(storage, {"source_model": "rev_range", "measures": ["sum(rev)"]})
+    resp = await run(storage, {"population": "rev_range", "metrics": ["sum(rev)"]})
     assert measure_total(resp, measure="rev_sum") == expected
 
 

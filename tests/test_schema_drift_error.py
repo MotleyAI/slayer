@@ -130,7 +130,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)", "name": "total"}],
+            "metrics": [{"expression": "sum(amount)", "name": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -163,7 +163,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "broken",
-            "metrics": [{"formula": "sum(amount)", "name": "total"}],
+            "metrics": [{"expression": "sum(amount)", "name": "total"}],
         })
         # Original SQLAlchemy/DBAPI error should bubble up — NOT
         # SchemaDriftError. Assert on the original error class so a
@@ -237,7 +237,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders_view",
-            "metrics": [{"formula": "sum(amount)", "name": "total"}],
+            "metrics": [{"expression": "sum(amount)", "name": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -270,7 +270,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders_by_batch",
-            "metrics": [{"formula": "sum(amount)", "name": "total"}],
+            "metrics": [{"expression": "sum(amount)", "name": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -301,7 +301,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders_cte",
-            "metrics": [{"formula": "sum(amount)", "name": "total"}],
+            "metrics": [{"expression": "sum(amount)", "name": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -327,7 +327,7 @@ class TestSchemaDriftErrorWrap:
 
         q = SlayerQuery.model_validate({
             "population": "orders_view",
-            "metrics": [{"formula": "sum(amount)", "name": "total"}],
+            "metrics": [{"expression": "sum(amount)", "name": "total"}],
         })
         with pytest.raises(SchemaDriftError) as exc:
             await engine.execute(q)
@@ -348,7 +348,7 @@ class TestSchemaDriftErrorWrap:
         with patch.object(engine, "_validate_read_set", side_effect=_boom):
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "sum(amount)", "name": "total"}],
+                "metrics": [{"expression": "sum(amount)", "name": "total"}],
             })
             # The original DBAPI error should bubble up — NOT SchemaDriftError
             # and NOT the RuntimeError from the failing attribution.
@@ -371,7 +371,7 @@ class TestHealthyPathNoOverhead:
         ) as scoped:
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "sum(amount)", "name": "total"}],
+                "metrics": [{"expression": "sum(amount)", "name": "total"}],
             })
             resp = await engine.execute(q)
             assert resp.data is not None
@@ -390,7 +390,7 @@ class TestModelsTouchedComputation:
 
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)", "name": "total"}],
+            "metrics": [{"expression": "sum(amount)", "name": "total"}],
             "dimensions": ["customers.region"],
         })
         with pytest.raises(SchemaDriftError) as exc:

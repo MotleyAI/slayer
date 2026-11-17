@@ -130,9 +130,9 @@ class TestValidPathBindsAllJoins:
         engine = await _engine(tmp_path)
         sql = await _dry_sql(engine, SlayerQuery.model_validate({
             "population": "Invoice",
-            "metrics": [{"formula": "sum(amount)", "name": "amt"}],
+            "metrics": [{"expression": "sum(amount)", "name": "amt"}],
             "time_dimensions": [{
-                "dimension": "Subscription.Customer.Consumer.signup_at",
+                "field": "Subscription.Customer.Consumer.signup_at",
                 "granularity": "month",
             }],
         }))
@@ -199,9 +199,9 @@ class TestShortFormRoutingAndBrokenChains:
         engine = await _engine(tmp_path)
         q = SlayerQuery.model_validate({
             "population": "Invoice",
-            "metrics": [{"formula": "sum(amount)", "name": "amt"}],
+            "metrics": [{"expression": "sum(amount)", "name": "amt"}],
             "time_dimensions": [{
-                "dimension": "Customer.Consumer.signup_at",
+                "field": "Customer.Consumer.signup_at",
                 "granularity": "month",
             }],
         })
@@ -245,7 +245,7 @@ class TestDiagnosticsPreserved:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "A",
-            "metrics": [{"formula": "sum(amount)", "name": "amt"}],
+            "metrics": [{"expression": "sum(amount)", "name": "amt"}],
             "dimensions": ["to_b.to_a.amount"],
         })
         with pytest.raises(ValueError) as ei:
@@ -266,7 +266,7 @@ class TestInternalEnrichmentsUnaffected:
         sql = await _dry_sql(engine, SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["status"],
-            "metrics": [{"formula": "count(Subscription.Customer.Consumer.email)", "name": "c"}],
+            "metrics": [{"expression": "count(Subscription.Customer.Consumer.email)", "name": "c"}],
         }))
         sqlglot.parse_one(sql, dialect="postgres")
 
@@ -284,12 +284,12 @@ class TestDownstreamStageScope:
             "name": "s1",
             "population": "Invoice",
             "dimensions": ["Subscription.Customer.Consumer.name"],
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "dimensions": ["Subscription.Customer.Consumer.email"],
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         })
         with pytest.raises(UnrelatedDatasetError):
             await engine.execute(query=[inner, outer], dry_run=True)

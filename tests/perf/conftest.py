@@ -152,7 +152,7 @@ async def _create_env(order_count: int) -> BenchEnv:
     # Warmup: run a simple query to prime DB caches and connection pool
     await slayer_engine.execute(query=SlayerQuery.model_validate({
         "population": "orders",
-        "metrics": [{"formula": "count(*)"}],
+        "metrics": [{"expression": "count(*)"}],
     }))
 
     return slayer_engine, dataset

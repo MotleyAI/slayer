@@ -29,18 +29,18 @@ CUBES = [
          {"name": "tags", "sql": "{CUBE}.tags"},
          {"name": "amount_x2", "sql": "{CUBE}.amount * 2", "type": "number"},
      ],
-     "measures": [
-         {"name": "paid_cnt", "type": "number", "sql": "SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)"},
-         {"name": "paid_amount", "type": "number",
+     "metrics": [
+         {"name": "paid_cnt", "datatype": "number", "sql": "SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)"},
+         {"name": "paid_amount", "datatype": "number",
           "sql": "SUM(CASE WHEN {CUBE}.status = 'paid' THEN {CUBE}.amount END)"},
-         {"name": "paid_sum", "type": "sum", "sql": "{CUBE}.amount", "filters": PAID},
-         {"name": "via_dotted", "type": "number", "sql": "{orders.paid_sum}"},
-         {"name": "via_cube", "type": "number", "sql": "{CUBE.paid_sum}"},
-         {"name": "share", "type": "number",
+         {"name": "paid_sum", "datatype": "sum", "sql": "{CUBE}.amount", "filters": PAID},
+         {"name": "via_dotted", "datatype": "number", "sql": "{orders.paid_sum}"},
+         {"name": "via_cube", "datatype": "number", "sql": "{CUBE.paid_sum}"},
+         {"name": "share", "datatype": "number",
           "sql": "SUM({CUBE}.amount) FILTER (WHERE {CUBE}.status = 'paid') / COUNT(*)"},
-         {"name": "tag_cnt", "type": "count", "sql": "{CUBE}.tags"},
-         {"name": "tag_kinds", "type": "count_distinct", "sql": "{CUBE}.tags"},
-         {"name": "windowed", "type": "number", "sql": "SUM({CUBE}.amount) OVER ()"},
+         {"name": "tag_cnt", "datatype": "count", "sql": "{CUBE}.tags"},
+         {"name": "tag_kinds", "datatype": "count_distinct", "sql": "{CUBE}.tags"},
+         {"name": "windowed", "datatype": "number", "sql": "SUM({CUBE}.amount) OVER ()"},
      ],
      "segments": [{"name": "is_paid", "sql": "{CUBE}.status = 'paid'"}]},
     {"name": "orders_clash", "sql_table": "orders",
@@ -51,14 +51,14 @@ CUBES = [
          {"name": "status", "sql": "{CUBE}.state"},
          {"name": "customer_id", "sql": "{CUBE}.legacy_ref", "type": "number"},
      ],
-     "measures": [
-         {"name": "paid_cnt", "type": "number", "sql": "SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)"},
-         {"name": "paid_sum", "type": "sum", "sql": "{CUBE}.amount", "filters": PAID},
+     "metrics": [
+         {"name": "paid_cnt", "datatype": "number", "sql": "SUM(CASE WHEN {CUBE}.status = 'paid' THEN 1 END)"},
+         {"name": "paid_sum", "datatype": "sum", "sql": "{CUBE}.amount", "filters": PAID},
      ],
      "segments": [{"name": "is_paid", "sql": "{CUBE}.status = 'paid'"}]},
     {"name": "orders_self", "sql_table": "orders",
      "dimensions": [CUBE_ID, {"name": "status", "sql": "UPPER({CUBE}.status)"}],
-     "measures": [{"name": "paid_sum", "type": "sum", "sql": "{CUBE}.amount", "filters": PAID}]},
+     "metrics": [{"name": "paid_sum", "datatype": "sum", "sql": "{CUBE}.amount", "filters": PAID}]},
     {"name": "customers", "sql_table": "customers",
      "dimensions": [CUBE_ID, {"name": "name", "sql": "{CUBE}.name"}]},
 ]
@@ -72,7 +72,7 @@ DBT_MODELS = [
          {"name": "status_upper", "type": "categorical", "expr": "UPPER(status)"},
          {"name": "tags", "type": "categorical"},
      ],
-     "measures": [
+     "metrics": [
          {"name": "paid_cnt", "agg": "sum", "expr": "CASE WHEN status = 'paid' THEN 1 ELSE 0 END"},
          {"name": "paid_bool", "agg": "sum_boolean", "expr": "status = 'paid'"},
          {"name": "total", "agg": "sum", "expr": "amount"},
@@ -87,7 +87,7 @@ DBT_MODELS = [
          {"name": "status_upper", "type": "categorical", "expr": "UPPER(status)"},
          {"name": "customer_id", "type": "categorical", "expr": "legacy_ref"},
      ],
-     "measures": [
+     "metrics": [
          {"name": "paid_cnt", "agg": "sum", "expr": "CASE WHEN status = 'paid' THEN 1 ELSE 0 END"},
          {"name": "paid_bool", "agg": "sum_boolean", "expr": "status = 'paid'"},
      ]},
@@ -124,7 +124,7 @@ def db(tmp_path: Path) -> Path:
 
 
 async def _values(*, models: Iterable[SlayerDataset], db: Path, model: str, names: list[str]) -> dict[str, Any]:
-    (row,) = await rows(models=models, db=db, payload={"source_model": model, "measures": names})
+    (row,) = await rows(models=models, db=db, payload={"population": model, "metrics": names})
     return {name: row[f"{model}.{name}"] for name in names}
 
 

@@ -315,8 +315,8 @@ async def test_spine_query_through_mcp(backend) -> None:
     async with spine_engine(backend) as eng:
         server = create_mcp_server(storage=eng.storage)
         text = await _call(server, name="query", arguments={"query": {
-            "measures": [{"formula": "sum(orders.amount)", "name": "o"}],
-            "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": "month",
+            "metrics": [{"expression": "sum(orders.amount)", "name": "o"}],
+            "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month",
                                  "date_range": ["2025-01-01", "2025-03-31"]}],
         }})
     assert "2025-03" in text

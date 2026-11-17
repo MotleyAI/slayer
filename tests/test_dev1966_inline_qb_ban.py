@@ -33,11 +33,11 @@ INLINE_QB: Dict[str, Any] = {
     "name": "iqb",
     "data_source": "test",
     "source_queries": [{
-        "source_model": "orders", "dimensions": ["status"],
-        "measures": [{"formula": "sum(amount)", "name": "rev"}],
+        "population": "orders", "dimensions": ["status"],
+        "metrics": [{"expression": "sum(amount)", "name": "rev"}],
     }],
 }
-OUTER: Dict[str, Any] = {"dimensions": ["status"], "measures": [{"formula": "sum(rev)", "name": "t"}]}
+OUTER: Dict[str, Any] = {"dimensions": ["status"], "metrics": [{"expression": "sum(rev)", "name": "t"}]}
 
 
 def _assert_ban(exc: BaseException, name: str = "iqb") -> None:
@@ -68,7 +68,7 @@ class TestConstructionRejects:
         with pytest.raises(ValueError) as exc:
             SlayerDataset.model_validate({
                 "name": "outer", "data_source": "test",
-                "source_queries": [{"source_model": INLINE_QB, **OUTER}],
+                "source_queries": [{"population": INLINE_QB, **OUTER}],
             })
         _assert_ban(exc.value)
 
@@ -80,7 +80,7 @@ class TestConstructionRejects:
     def test_rest_responds_422(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             client = TestClient(create_app(storage=YAMLStorage(base_dir=tmp)))
-            resp = client.post("/query", json={"source_model": INLINE_QB, **OUTER, "dry_run": True})
+            resp = client.post("/query", json={"population": INLINE_QB, **OUTER, "dry_run": True})
         assert resp.status_code == 422, resp.text
         _assert_ban(AssertionError(resp.text))
 
@@ -89,7 +89,7 @@ class TestStoredModelsReject:
     async def test_create_model_from_query(self, engine: SlayerQueryEngine) -> None:
         with pytest.raises(ValueError) as exc:
             await engine.create_dataset_from_query(
-                query={"source_model": INLINE_QB, **OUTER}, name="wrapper")
+                query={"population": INLINE_QB, **OUTER}, name="wrapper")
         _assert_ban(exc.value)
 
     async def test_loading_a_persisted_model_containing_one(self) -> None:
@@ -112,9 +112,9 @@ class TestOtherInlineSourcesRejected:
     def test_inline_table_backed(self) -> None:
         inline = {
             "name": "orders_inline", "data_source": "test", "sql_table": "orders",
-            "columns": [{"name": "id", "type": "INT", "primary_key": True},
-                        {"name": "customer_id", "type": "INT"},
-                        {"name": "amount", "type": "DOUBLE"}],
+            "fields": [{"name": "id", "datatype": "INT", "primary_key": True},
+                        {"name": "customer_id", "datatype": "INT"},
+                        {"name": "amount", "datatype": "DOUBLE"}],
         }
         measures = [m("sum(amount)", "a")]
         with pytest.raises(ValueError, match="(?i)inline"):
@@ -124,9 +124,9 @@ class TestOtherInlineSourcesRejected:
         inline = {
             "name": "orders_sql", "data_source": "test",
             "sql": "SELECT id, customer_id, amount FROM orders",
-            "columns": [{"name": "id", "type": "INT", "primary_key": True},
-                        {"name": "customer_id", "type": "INT"},
-                        {"name": "amount", "type": "DOUBLE"}],
+            "fields": [{"name": "id", "datatype": "INT", "primary_key": True},
+                        {"name": "customer_id", "datatype": "INT"},
+                        {"name": "amount", "datatype": "DOUBLE"}],
         }
         measures = [m("sum(amount)", "a")]
         with pytest.raises(ValueError, match="(?i)inline"):
@@ -135,7 +135,7 @@ class TestOtherInlineSourcesRejected:
 
 class TestExtensionsAccepted:
     async def test_extension_over_a_stored_query_backed_model(self, engine) -> None:
-        ext = {"source_name": "cust_rev", "measures": [m("sum(rev * 2)", "r2")]}
+        ext = {"source_name": "cust_rev", "metrics": [m("sum(rev * 2)", "r2")]}
         resp = await engine.execute(query(
             source_model="cust_rev", extensions=[ext], dimensions=["customer_id"], measures=["r2"]))
         assert rows_by(resp.data, key="cust_rev.customer_id", value="cust_rev.r2") == {

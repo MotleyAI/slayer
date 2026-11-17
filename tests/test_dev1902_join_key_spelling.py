@@ -109,7 +109,7 @@ class TestExecutedRenamedKeys:
         # The FK dimension reroots onto the target key, so it slices, not broadcasts.
         resp = await all_renamed.execute(SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["customer_id"],
-            "metrics": [{"formula": "sum(customers.credit)", "name": "cr"}]}))
+            "metrics": [{"expression": "sum(customers.credit)", "name": "cr"}]}))
         assert cells(resp, dim_suffix="customer_id", measure="cr") == {
             1: 100.0, 2: 200.0, 3: 300.0}
         assert warnings_of(resp, "broadcast") == []
@@ -203,8 +203,8 @@ def _customer_totals(*, key: str = "customer_id") -> SlayerDataset:
     """Query-backed: its columns come from the backing query, so the join key is checked once populated."""
     return SlayerDataset.model_validate({
         "name": "customer_totals", "data_source": "test",
-        "source_queries": [{"source_model": "orders", "dimensions": ["customer_id"],
-                            "measures": [{"formula": "sum(amount)", "name": "amt"}]}],
+        "source_queries": [{"population": "orders", "dimensions": ["customer_id"],
+                            "metrics": [{"expression": "sum(amount)", "name": "amt"}]}],
         "relationships": [{"to": "customers", "join_pairs": [[key, "id"]]}],
     })
 
@@ -223,8 +223,8 @@ class TestQueryBackedJoinKeys:
         await all_renamed.save_dataset(base)
         resp = await all_renamed.execute(_query(
             source_model="customer_totals",
-            extensions=[{"source_name": "customer_totals", "joins": [
-                {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}]}],
+            extensions=[{"source_name": "customer_totals", "relationships": [
+                {"to": "customers", "join_pairs": [["customer_id", "id"]]}]}],
             dimensions=["customers.name"],
             measures=[{"formula": "sum(amt)", "name": "total"}]))
         assert cells(resp, dim_suffix="customers.name", measure="total") == AMOUNT_BY_CUSTOMER

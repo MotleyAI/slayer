@@ -32,7 +32,7 @@ def _import(db: Path, *metrics: dict[str, Any], model_metrics: list[dict[str, An
 
 async def _value(result: ConversionResult, db: Path, measure: str) -> Any:
     home = measure_home(result, measure).name
-    rows = await query(result=result, db=db, payload={"source_model": home, "measures": [measure]})
+    rows = await query(result=result, db=db, payload={"population": home, "metrics": [measure]})
     return rows[0][f"{home}.{measure}"]
 
 
@@ -75,7 +75,7 @@ async def test_filtered_distinct_count(db: Path) -> None:
 async def test_filter_does_not_remove_groups(db: Path) -> None:
     result = _import(db, m("v", "SUM(amount) FILTER (WHERE status = 'completed')"))
     rows = await query(result=result, db=db, payload={
-        "source_model": "orders", "dimensions": ["status"], "measures": ["v"]})
+        "population": "orders", "dimensions": ["status"], "metrics": ["v"]})
     values = {r["orders.status"]: r["orders.v"] for r in rows}
     assert set(values) == {"completed", "open"}
     assert values["open"] is None

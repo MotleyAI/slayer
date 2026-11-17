@@ -169,7 +169,7 @@ class TestFacade:
 class TestBrokenDependentsProbe:
     def test_filter_dependant_probes_with_a_functional_row_count(self) -> None:
         probe = _probe(_Dependent(dataset="orders", kind="filter", name="f"))
-        assert probe == {"source_model": "orders", "measures": ["count(*)"]}
+        assert probe == {"population": "orders", "metrics": ["count(*)"]}
 
 
 class TestMemoryTokens:

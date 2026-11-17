@@ -54,9 +54,9 @@ class TestExport:
         exported = metric(dataset(result.document, "ev"), "early")
         assert exported is not None, result.entries
         assert compares(exported["expression"]["sql"], op=exp.LTE, literal="2024-04-10"), exported
-        original = await rows(env, {"source_model": "ev", "measures": ["early"]})
+        original = await rows(env, {"population": "ev", "metrics": ["early"]})
         imported, _ = await reimport(env, result.document)
-        again = await rows(imported, {"source_model": "ev", "measures": ["early"]})
+        again = await rows(imported, {"population": "ev", "metrics": ["early"]})
         assert int(again[0]["ev.early"]) == int(original[0]["ev.early"]) == 1
 
     async def test_date_time_bound(self, env) -> None:

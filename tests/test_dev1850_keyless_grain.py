@@ -132,7 +132,7 @@ _COMBINED_CONSUMER_CASES = [
 async def test_combined_consumer_keyless_grain_rejected(
     dims, measures, order, filters, key,
 ) -> None:
-    kw = {"dimensions": dims, "measures": measures}
+    kw = {"dimensions": dims, "metrics": measures}
     if order:
         kw["order"] = order
     if filters:

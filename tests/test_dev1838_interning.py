@@ -54,7 +54,7 @@ def _band_wm_query(*windows: str, filters=None):
         DatasetMetric(expression=f"sum(amount, window='{w}')", name=f"w{w[:-1]}")
         for w in windows
     ]
-    kw = {"filters": filters} if filters else {}
+    kw = {"filter": filters} if filters else {}
     return q(dimensions=["region", BAND], time_dimensions=month_td(),
              measures=measures, **kw)
 

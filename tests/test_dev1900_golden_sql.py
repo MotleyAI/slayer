@@ -31,40 +31,40 @@ def _cases() -> dict:
         # fanning/* — must fail closed after the change (today: multiplying SQL).
         "fanning/cross_model_kwarg": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula":
+            "kw": {"metrics": [{"expression":
                 "weighted_avg(customers.spend, weight=customers.regions.bad_pop)",
                 "name": "w"}]}},
         "fanning/local_kwarg": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula":
+            "kw": {"metrics": [{"expression":
                 "weighted_avg(amount, weight=customers.regions.bad_pop)", "name": "w"}]}},
         "fanning/definition_default": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula": "wsumx(customers.spend)", "name": "w"}]}},
+            "kw": {"metrics": [{"expression": "wsumx(customers.spend)", "name": "w"}]}},
         "fanning/reagg_param": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula": _REAGG_BAD, "name": "w"}]}},
+            "kw": {"metrics": [{"expression": _REAGG_BAD, "name": "w"}]}},
         "fanning/dim_error_mode": {
             "models": "dev1900", "source": "orders", "mode": "error",
             "kw": {"dimensions": ["customers.regions.bad_pop"],
-                   "measures": [{"formula": "sum(amount)", "name": "amt"}]}},
+                   "metrics": [{"expression": "sum(amount)", "name": "amt"}]}},
         "fanning/pop_filter_derived": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula": "sum(amount)", "name": "amt"}],
-                   "filters": ["customers.regions.bad_pop > 0"]}},
+            "kw": {"metrics": [{"expression": "sum(amount)", "name": "amt"}],
+                   "filter": ["customers.regions.bad_pop > 0"]}},
         # positive/* — cross no fanning hop; byte-identical SQL through the change.
         "positive/reagg_derived_pop": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula": _REAGG_GOOD, "name": "ra"}]}},
+            "kw": {"metrics": [{"expression": _REAGG_GOOD, "name": "ra"}]}},
         "positive/to_one_filter": {
             "models": "dev1900", "source": "orders", "mode": None,
-            "kw": {"measures": [{"formula": "sum(amount)", "name": "amt"}],
-                   "filters": ["customers.tier = 'gold'"]}},
+            "kw": {"metrics": [{"expression": "sum(amount)", "name": "amt"}],
+                   "filter": ["customers.tier = 'gold'"]}},
         "positive/assoc_region_name": {
             "models": "dev1900", "source": "orders", "mode": "associate",
-            "kw": {"dimensions": ["customers.regions.name"], "measures": [
-                {"formula": "sum(amount)", "name": "amt"},
-                {"formula": "sum(customers.spend)", "name": "csp"}]}},
+            "kw": {"dimensions": ["customers.regions.name"], "metrics": [
+                {"expression": "sum(amount)", "name": "amt"},
+                {"expression": "sum(customers.spend)", "name": "csp"}]}},
     }
 
 

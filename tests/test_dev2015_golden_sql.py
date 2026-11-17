@@ -23,18 +23,18 @@ ALLOWED_DELTAS: dict[str, str] = {}
 def _cases() -> dict[str, dict[str, Any]]:
     """Raw query dicts (a custom granularity must not be parsed at collection)."""
     return {
-        "spine/two_facts": {"measures": TWO_FACTS, "time_dimensions": [spine_td()]},
+        "spine/two_facts": {"metrics": TWO_FACTS, "time_dimensions": [spine_td()]},
         "spine/per_group": {
-            "measures": [m("sum(orders.amount)", "o"), m("sum(returns.amount)", "r")],
+            "metrics": [m("sum(orders.amount)", "o"), m("sum(returns.amount)", "r")],
             "dimensions": ["customers.region"], "time_dimensions": [spine_td(date_range=JAN_MAR)],
         },
         "spine/quarter_hour": {
-            "measures": [m("count(orders.id)", "n")],
+            "metrics": [m("count(orders.id)", "n")],
             "time_dimensions": [spine_td(granularity="quarter_hour", date_range=["2025-01-01", "2025-01-01"])],
         },
         "custom/fiscal_year": {
-            "source_model": "orders", "measures": [m("sum(amount)", "s")],
-            "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
+            "population": "orders", "metrics": [m("sum(amount)", "s")],
+            "time_dimensions": [{"field": "order_date", "granularity": "fiscal_year"}],
         },
     }
 

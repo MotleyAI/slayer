@@ -87,7 +87,7 @@ class TestExpressionRankingKey:
     async def test_coalesced_ranking_key(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "balances", "dimensions": ["customer_id"],
-            "metrics": [{"formula": "last(balance, coalesce(updated_at, created_at))", "name": "v"}],
+            "metrics": [{"expression": "last(balance, coalesce(updated_at, created_at))", "name": "v"}],
         }))
         assert by_dims(resp, ["balances.customer_id"], "balances.v") == {(1,): 150.0, (2,): 70.0}
 
@@ -102,7 +102,7 @@ class TestExpressionRankingKey:
     async def test_fanning_leaf_local_producer(self, sqlite_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "accounts",
-            "metrics": [{"formula": "last(spend, coalesce(orders.created_at, signup_ts))", "name": "v"}],
+            "metrics": [{"expression": "last(spend, coalesce(orders.created_at, signup_ts))", "name": "v"}],
         })
         with pytest.raises(UnsafeRelationshipInputError) as ei:
             await sqlite_engine.execute(query)
@@ -112,7 +112,7 @@ class TestExpressionRankingKey:
     async def test_fanning_leaf_target_rooted_producer(self, sqlite_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "order_facts",
-            "metrics": [{"formula": "last(accounts.spend, coalesce(accounts.orders.created_at, accounts.signup_ts))",
+            "metrics": [{"expression": "last(accounts.spend, coalesce(accounts.orders.created_at, accounts.signup_ts))",
                           "name": "v"}],
         })
         with pytest.raises(UnsafeRelationshipInputError) as ei:

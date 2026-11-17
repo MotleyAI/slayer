@@ -22,27 +22,27 @@ def _cases() -> dict:
     return {
         "on_clause/renamed_fk": {
             "graph": {"rename_pk": False}, "source": "orders",
-            "kw": {"dimensions": ["customers.name"], "measures": [_AMT]}},
+            "kw": {"dimensions": ["customers.name"], "metrics": [_AMT]}},
         "on_clause/renamed_pk": {
             "graph": {"rename_fk": False}, "source": "orders",
-            "kw": {"dimensions": ["customers.tier"], "measures": [_AMT]}},
+            "kw": {"dimensions": ["customers.tier"], "metrics": [_AMT]}},
         "on_clause/renamed_both_two_hops": {
             "graph": {}, "source": "orders",
-            "kw": {"dimensions": ["customers.regions.name"], "measures": [_AMT]}},
+            "kw": {"dimensions": ["customers.regions.name"], "metrics": [_AMT]}},
         "spine/renamed_both": {
             "graph": {}, "source": "customers",
-            "kw": {"measures": [_CREDIT], "filters": ["orders.status = 'new'"]}},
+            "kw": {"metrics": [_CREDIT], "filter": ["orders.status = 'new'"]}},
         "association/renamed_pk_root": {
             "graph": {}, "source": "orders",
             "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": "sum(customers.credit)", "name": "cr"}],
+                   "metrics": [{"expression": "sum(customers.credit)", "name": "cr"}],
                    "to_many_handling": "associate"}},
         "quoting/on_clause_mixed_case": {
             "graph": {"pk_sql": "CustPK"}, "source": "orders",
-            "kw": {"dimensions": ["customers.name"], "measures": [_AMT]}},
+            "kw": {"dimensions": ["customers.name"], "metrics": [_AMT]}},
         "quoting/spine_mixed_case": {
             "graph": {"pk_sql": "CustPK"}, "source": "customers",
-            "kw": {"measures": [_CREDIT], "filters": ["orders.status = 'new'"]}},
+            "kw": {"metrics": [_CREDIT], "filter": ["orders.status = 'new'"]}},
     }
 
 

@@ -49,7 +49,7 @@ def test_the_allowlist_names_real_tokenize_readers() -> None:
 # Usage reporting reads the parse tree
 # --------------------------------------------------------------------------- #
 def _features(*measures: str) -> tuple[Counter[str], Counter[str]]:
-    found = query_features({"source_model": "m", "measures": list(measures)})
+    found = query_features({"population": "m", "metrics": list(measures)})
     return Counter(found.aggregations), Counter(found.flags)
 
 
@@ -70,7 +70,7 @@ def test_count_distinct_counts_as_count_distinct() -> None:
 
 
 def test_array_length_stays_custom() -> None:
-    found = query_features({"source_model": "m", "measures": ["array_length(tags)"]})
+    found = query_features({"population": "m", "metrics": ["array_length(tags)"]})
     assert Counter(found.aggregations) == Counter({"custom": 1})
     assert found.functions == []
 

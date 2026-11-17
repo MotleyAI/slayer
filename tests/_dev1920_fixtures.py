@@ -105,8 +105,8 @@ def orders_doc(*, version: int | None = STORED_VERSIONS["SlayerModel"], measures
                **extra: Any) -> dict:
     """``version=None`` is a fresh (unversioned) payload."""
     doc: dict[str, Any] = {
-        "name": "orders", "sql_table": "orders", "data_source": DS, "columns": _ORDER_COLUMNS,
-        "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}],
+        "name": "orders", "sql_table": "orders", "data_source": DS, "fields": _ORDER_COLUMNS,
+        "relationships": [{"to": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}],
         **extra,
     }
     if version is not None:

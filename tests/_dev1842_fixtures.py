@@ -87,7 +87,7 @@ def customers_model() -> SlayerDataset:
 
 
 def orders_model() -> SlayerDataset:
-    return _orders_1836().model_copy(update={"measures": ORDERS_MEASURES})
+    return _orders_1836().model_copy(update={"metrics": ORDERS_MEASURES})
 
 
 def dev1842_models() -> List[SlayerDataset]:

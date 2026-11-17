@@ -27,7 +27,7 @@ QUERIES = {
     "reverse_aggregate": SlayerQuery.model_validate({
         "population": "customers",
         "dimensions": ["name"],
-        "metrics": [{"formula": "sum(orders.amount)", "name": "t"}],
+        "metrics": [{"expression": "sum(orders.amount)", "name": "t"}],
     }),
     "multi_hop": SlayerQuery(
         population="regions", dimensions=["name", "customers.orders.status"]),

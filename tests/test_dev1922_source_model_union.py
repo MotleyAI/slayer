@@ -31,18 +31,18 @@ from slayer.engine.query_engine import SlayerQueryEngine
 
 EXTENSION = {
     "source_name": "orders",
-    "measures": [{"formula": "sum(amount * 2)", "name": "double_amount"}],
+    "metrics": [{"expression": "sum(amount * 2)", "name": "double_amount"}],
 }
 EXTENSION_WITH_MEASURES = {
     "source_name": "orders",
-    "measures": [{"formula": "sum(amount)", "name": "rev"}],
+    "metrics": [{"expression": "sum(amount)", "name": "rev"}],
 }
 EXTENSION_WITH_FILTERS = {"source_name": "orders", "filters": ["subtotal > tax_paid * 5"]}
 INLINE_MODEL = {
     "name": "ad_hoc",
     "sql_table": "things",
     "data_source": "ds",
-    "columns": [{"name": "x", "sql": "x", "type": "DOUBLE"}],
+    "fields": [{"name": "x", "sql": "x", "datatype": "DOUBLE"}],
 }
 JOIN_TO_CUSTOMERS = {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
 ONE_MEASURE = [{"formula": "sum(amount)"}]
@@ -141,8 +141,8 @@ class TestRejection:
 
     @pytest.mark.parametrize("form", ["legacy", "extensions"])
     def test_unknown_extension_key_is_named(self, form: str) -> None:
-        raw = ({"source_model": EXTENSION_WITH_FILTERS} if form == "legacy"
-               else {"source_model": "orders", "extensions": [EXTENSION_WITH_FILTERS]})
+        raw = ({"population": EXTENSION_WITH_FILTERS} if form == "legacy"
+               else {"population": "orders", "extensions": [EXTENSION_WITH_FILTERS]})
         with pytest.raises(ValidationError) as ei:
             _query(**raw)
         assert _error_keys(ei.value) == {("extra_forbidden", "filters")}
@@ -162,13 +162,13 @@ class TestRejection:
         with pytest.raises(ValidationError, match="filters"):
             SlayerDataset.model_validate({
                 "name": "qb",
-                "source_queries": [{"source_model": "orders", "extensions": [EXTENSION_WITH_FILTERS],
-                                    "measures": ONE_MEASURE}],
+                "source_queries": [{"population": "orders", "extensions": [EXTENSION_WITH_FILTERS],
+                                    "metrics": ONE_MEASURE}],
             })
 
     def test_rest_body_rejects_unknown_extension_key_with_422(self, rest_client) -> None:
         resp = rest_client.post("/query", json={
-            "source_model": "orders", "extensions": [EXTENSION_WITH_FILTERS], "measures": ONE_MEASURE,
+            "population": "orders", "extensions": [EXTENSION_WITH_FILTERS], "metrics": ONE_MEASURE,
             "dry_run": True,
         })
         assert resp.status_code == 422, resp.text
@@ -176,14 +176,14 @@ class TestRejection:
 
     def test_rest_body_rejects_non_spec_value_with_422(self, rest_client) -> None:
         resp = rest_client.post("/query", json={
-            "source_model": 42, "measures": ONE_MEASURE, "dry_run": True,
+            "population": 42, "metrics": ONE_MEASURE, "dry_run": True,
         })
         assert resp.status_code == 422, resp.text
 
     async def test_mcp_query_tool_rejects_unknown_extension_key(self, mcp_server) -> None:
         with pytest.raises(ToolError, match="filters"):
             await mcp_server.call_tool(name="query", arguments={
-                "query": {"source_model": "orders", "extensions": [EXTENSION_WITH_FILTERS], "measures": ONE_MEASURE},
+                "query": {"population": "orders", "extensions": [EXTENSION_WITH_FILTERS], "metrics": ONE_MEASURE},
                 "dry_run": True,
             })
 
@@ -232,7 +232,7 @@ class TestTypedAtConstruction:
 
     def test_model_copy_replacement_keeps_the_name_form(self) -> None:
         """``model_copy`` runs no validation, so the engine only ever swaps in a name."""
-        copied = SlayerQuery(population="orders").model_copy(update={"source_model": "customers"})
+        copied = SlayerQuery(population="orders").model_copy(update={"population": "customers"})
         assert isinstance(copied.population, str)
         assert copied.population_name == "customers"
 
@@ -244,7 +244,7 @@ class TestTypedAtConstruction:
 
 class TestRoundTrip:
     @pytest.mark.parametrize("raw", [
-        {"source_model": "orders", "extensions": [EXTENSION]},
+        {"population": "orders", "extensions": [EXTENSION]},
     ], ids=["extension"])
     @pytest.mark.parametrize("mode", ["python", "json"])
     def test_dump_then_validate_equals_the_original(self, raw, mode) -> None:

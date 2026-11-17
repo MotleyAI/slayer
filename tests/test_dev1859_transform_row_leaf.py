@@ -95,7 +95,7 @@ class TestGrainRefiningLeafRejected:
     @pytest.mark.parametrize("shape", list(SHAPES))
     def test_matrix_cell_rejected_at_plan_time(self, op, shape):
         kw = {"time_dimensions": month_td(),
-              "measures": [DatasetMetric(expression=_call(op, SHAPES[shape]),
+              "metrics": [DatasetMetric(expression=_call(op, SHAPES[shape]),
                                         name="t")]}
         if shape == "mixed":  # the constituent's partition key is projected
             kw["dimensions"] = ["store"]

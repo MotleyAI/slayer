@@ -178,7 +178,7 @@ async def granularity_store(*, backend: str, base: str, name: str) -> StorageBac
 
 async def bucket_totals(storage: StorageBackend, *, model: str = "bucketed") -> dict[str, float]:
     """``sum(s)`` per ``created_at`` bucket of the query-backed ``model`` (compare with ``EXPECTED_BUCKETS``)."""
-    resp = await run(storage, {"source_model": model, "dimensions": ["created_at"], "measures": ["sum(s)"]})
+    resp = await run(storage, {"population": model, "dimensions": ["created_at"], "metrics": ["sum(s)"]})
     return {str(r[f"{model}.created_at"])[:10]: float(r[f"{model}.s_sum"]) for r in resp.data}
 
 

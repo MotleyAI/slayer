@@ -248,8 +248,8 @@ class TestOrderItemEntryPoint:
     async def test_composite_over_declared_aliases_sorts(self, exec_engine, direction, expected) -> None:
         resp = await exec_engine.execute(SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["status"],
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}, {"formula": "count(*)", "name": "cnt"}],
-            "order": [{"column": "rev / cnt", "direction": direction}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}, {"expression": "count(*)", "name": "cnt"}],
+            "order": [{"field": "rev / cnt", "direction": direction}],
         }))
         assert [r["orders.status"] for r in resp.data] == expected
 

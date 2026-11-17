@@ -52,7 +52,7 @@ _SHADOW = [("t", "reverse", "reverse")]
 
 
 def _query(formula: str = "reverse(a)", **body: Any) -> dict:
-    return {"source_model": "t", "measures": [measure(formula)], **body}
+    return {"population": "t", "metrics": [measure(formula)], **body}
 
 
 class TestSaveAndLoad:
@@ -103,11 +103,11 @@ class TestEveryResponse:
 
     async def test_a_pruned_stage_is_not_announced(self) -> None:
         stages = [
-            {"name": "unused", "source_model": "t", "measures": [measure("reverse(a)", "r")]},
-            {"name": "s1", "source_model": "t", "dimensions": ["s"], "measures": [measure("sum(a)", "total")]},
-            {"source_model": "s1", "measures": [measure("sum(total)", "grand")]},
+            {"name": "unused", "population": "t", "metrics": [measure("reverse(a)", "r")]},
+            {"name": "s1", "population": "t", "dimensions": ["s"], "metrics": [measure("sum(a)", "total")]},
+            {"population": "s1", "metrics": [measure("sum(total)", "grand")]},
         ]
-        query = {"source_model": "qb", "measures": [measure("sum(grand)")]}
+        query = {"population": "qb", "metrics": [measure("sum(grand)")]}
         async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -120,8 +120,8 @@ class TestEveryResponse:
     async def test_a_library_call_in_another_model_is_not_announced(self) -> None:
         async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
             got = await _both(engine.execute({
-                "source_model": "t", "dimensions": [{"expression": "reverse(customers.name)", "name": "rn"}],
-                "measures": [measure("count(*)")]}))
+                "population": "t", "dimensions": [{"expression": "reverse(customers.name)", "name": "rn"}],
+                "metrics": [measure("count(*)")]}))
         assert got == ([], [])
 
 

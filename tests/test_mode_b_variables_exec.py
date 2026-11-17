@@ -198,7 +198,7 @@ class TestTemplateNaming:
 class TestSavedMeasures:
     async def test_saved_measure_on_source(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_dataset(orders_model().model_copy(update={
-            "measures": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
+            "metrics": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         }))
         resp = await exec_engine.execute(q(measures=["amt_scaled"], variables={"k": 10}))
         assert only_value(resp) == pytest.approx(2100.0)
@@ -213,7 +213,7 @@ class TestSavedMeasures:
 
     async def test_saved_measure_on_stage_source(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_dataset(orders_model().model_copy(update={
-            "measures": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
+            "metrics": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         }))
         stage1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "dimensions": ["region"], "metrics": ["amt_scaled"],
@@ -224,7 +224,7 @@ class TestSavedMeasures:
 
     async def test_saved_measure_through_join_unresolved(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_dataset(customers_model().model_copy(update={
-            "measures": [DatasetMetric(name="spend_scaled", expression="sum(spend) * {k}")],
+            "metrics": [DatasetMetric(name="spend_scaled", expression="sum(spend) * {k}")],
         }))
         query = q(measures=["customers.spend_scaled"], variables={"k": 10})
         with pytest.raises(UnresolvedPlaceholderError, match=r"\{k\}"):
@@ -232,7 +232,7 @@ class TestSavedMeasures:
 
     async def test_saved_measure_undefined_variable(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_dataset(orders_model().model_copy(update={
-            "measures": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
+            "metrics": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         }))
         query = q(measures=["amt_scaled"], variables={"other": 1})
         with pytest.raises(ValueError, match="Undefined variable 'k'"):
@@ -240,16 +240,16 @@ class TestSavedMeasures:
 
     async def test_undefaulted_saved_measure_keeps_column_types(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_dataset(orders_model().model_copy(update={
-            "measures": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
+            "metrics": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         }))
         assert (await exec_engine.get_result_column_types("orders"))["amount"].type in (DataType.INT, DataType.DOUBLE)
 
 
 class TestErrors:
     @pytest.mark.parametrize("kw", [
-        {"measures": ["sum(amount) * {k}"]},
-        {"dimensions": ["amount * {k}"], "measures": ["count(*)"]},
-        {"dimensions": ["region"], "measures": ["sum(amount)"], "order": [{"column": "sum(amount) * {k}"}]},
+        {"metrics": ["sum(amount) * {k}"]},
+        {"dimensions": ["amount * {k}"], "metrics": ["count(*)"]},
+        {"dimensions": ["region"], "metrics": ["sum(amount)"], "order": [{"field": "sum(amount) * {k}"}]},
     ])
     async def test_undefined_variable(self, exec_engine, kw) -> None:
         query = q(**kw)
@@ -257,8 +257,8 @@ class TestErrors:
             await exec_engine.execute(query)
 
     @pytest.mark.parametrize("kw", [
-        {"measures": ["sum(amount) * {? {k} ?}"]},
-        {"dimensions": [{"expression": "amount * {? {k} ?}", "name": "d"}], "measures": ["count(*)"]},
+        {"metrics": ["sum(amount) * {? {k} ?}"]},
+        {"dimensions": [{"expression": "amount * {? {k} ?}", "name": "d"}], "metrics": ["count(*)"]},
     ])
     async def test_optional_block_rejected(self, exec_engine, kw) -> None:
         query = q(**kw, variables={"k": 1})
@@ -285,11 +285,11 @@ class TestErrors:
 
 class TestSave:
     @pytest.mark.parametrize(("kw", "name"), [
-        ({"dimensions": ["region"], "measures": ["sum(amount) * {k}"]}, "k"),
-        ({"dimensions": ["amount * {k}"], "measures": ["count(*)"]}, "k"),
-        ({"dimensions": ["region"], "measures": ["sum(amount)"], "order": [{"column": "sum(amount) * {k}"}]}, "k"),
-        ({"measures": ["sum(amount)"], "filters": ["amount > {k}"]}, "k"),
-        ({"measures": ["sum(amount)"], "time_dimensions": [{**MONTH_TD, "date_range": ["{start}", None]}]}, "start"),
+        ({"dimensions": ["region"], "metrics": ["sum(amount) * {k}"]}, "k"),
+        ({"dimensions": ["amount * {k}"], "metrics": ["count(*)"]}, "k"),
+        ({"dimensions": ["region"], "metrics": ["sum(amount)"], "order": [{"field": "sum(amount) * {k}"}]}, "k"),
+        ({"metrics": ["sum(amount)"], "filter": ["amount > {k}"]}, "k"),
+        ({"metrics": ["sum(amount)"], "time_dimensions": [{**MONTH_TD, "date_range": ["{start}", None]}]}, "start"),
     ])
     async def test_undefaulted_variable_refuses_save(self, exec_engine: SlayerQueryEngine, kw, name: str) -> None:
         query = q(**kw)
@@ -299,7 +299,7 @@ class TestSave:
 
     async def test_undefaulted_saved_measure_refuses_save(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_dataset(orders_model().model_copy(update={
-            "measures": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
+            "metrics": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         }))
         query = q(measures=["amt_scaled"])
         with pytest.raises(ValueError, match="Undefined variable 'k'"):
@@ -332,6 +332,6 @@ class TestSave:
 
     async def test_model_with_saved_measure_placeholder_saves(self, exec_engine: SlayerQueryEngine) -> None:
         saved = await exec_engine.save_dataset(orders_model().model_copy(update={
-            "measures": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
+            "metrics": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         }))
         assert [m.expression for m in saved.metrics] == ["sum(amount) * {k}"]

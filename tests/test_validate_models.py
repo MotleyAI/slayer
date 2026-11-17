@@ -767,11 +767,11 @@ class TestCascadeRules:
                 SlayerQuery.model_validate({
                     "name": "stage_a",
                     "population": "orders",
-                    "metrics": [{"formula": "sum(amount)", "name": "total"}],
+                    "metrics": [{"expression": "sum(amount)", "name": "total"}],
                 }),
                 SlayerQuery.model_validate({
                     "population": "stage_a",
-                    "metrics": [{"formula": "max(total)", "name": "peak"}],
+                    "metrics": [{"expression": "max(total)", "name": "peak"}],
                 }),
             ],
         )
@@ -805,7 +805,7 @@ class TestCascadeRules:
             source_queries=[
                 SlayerQuery.model_validate({
                     "population": "orders",
-                    "metrics": [{"formula": "sum(amount)", "name": "total"}],
+                    "metrics": [{"expression": "sum(amount)", "name": "total"}],
                     "filter": ["sum(amount) > 100"],
                 }),
             ],
@@ -836,7 +836,7 @@ class TestCascadeRules:
             source_queries=[
                 SlayerQuery.model_validate({
                     "population": "orders",
-                    "metrics": [{"formula": "sum(amount)", "name": "total"}],
+                    "metrics": [{"expression": "sum(amount)", "name": "total"}],
                 }),
             ],
         )

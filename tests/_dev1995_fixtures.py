@@ -103,7 +103,7 @@ async def materialise(engine: SlayerQueryEngine, *, name: str,
     grain = model.fields[0].name
     measures = [m["name"] for m in payload["measures"]]
     resp = await engine.execute(q({
-        "source_model": name, "dimensions": [grain, *measures]}))
+        "population": name, "dimensions": [grain, *measures]}))
     return {m: cells(resp, f"{name}.{grain}", f"{name}.{m}") for m in measures}
 
 

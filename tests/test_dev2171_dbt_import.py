@@ -38,12 +38,12 @@ def meas(name: str, agg: str, expr: str | None = None) -> dict[str, Any]:
 def sm(*, dimensions: list[dict[str, Any]] | None = None, measures: list[dict[str, Any]] | None = None,
        entities: list[dict[str, Any]] | None = None, name: str = "orders") -> dict[str, Any]:
     return {"name": name, "model": "orders", "entities": entities or [ORDER],
-            "dimensions": dimensions or [], "measures": measures or []}
+            "dimensions": dimensions or [], "metrics": measures or []}
 
 
 def typed(*columns: tuple[str, str]) -> list[dict[str, Any]]:
     """The ``orders`` regular model declaring ``(column, data_type)`` pairs."""
-    return [{"name": "orders", "columns": [{"name": c, "data_type": t} for c, t in columns]}]
+    return [{"name": "orders", "fields": [{"name": c, "data_type": t} for c, t in columns]}]
 
 
 @pytest.fixture
@@ -142,7 +142,7 @@ class TestDeclaredDataType:
 
     def test_read_from_schema_yml_without_hidden_models(self, tmp_path: Path) -> None:
         write_yaml(tmp_path / "models" / "schema.yml", {
-            "models": [{"name": "orders", "columns": [{"name": "tags", "data_type": "array<string>"}]}],
+            "models": [{"name": "orders", "fields": [{"name": "tags", "data_type": "array<string>"}]}],
             "semantic_models": [{**sm(dimensions=[dim("tags")]), "model": "ref('orders')"}],
         })
         project = parse_dbt_project(str(tmp_path))

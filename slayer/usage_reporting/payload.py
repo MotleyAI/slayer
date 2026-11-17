@@ -17,26 +17,26 @@ Version = Annotated[str, Field(pattern=VERSION_PATTERN, max_length=64)]
 UsageKey = Literal[
     # CLI leaf commands
     "cli:serve", "cli:flight-serve", "cli:pg-serve", "cli:mcp", "cli:query", "cli:ingest",
-    "cli:validate-models", "cli:recommend-root-model",
+    "cli:validate-datasets", "cli:recommend-population",
     "cli:import-dbt", "cli:import-cube", "cli:import-osi", "cli:export-osi",
-    "cli:models.list", "cli:models.show", "cli:models.create", "cli:models.delete",
+    "cli:datasets.list", "cli:datasets.show", "cli:datasets.create", "cli:datasets.delete",
     "cli:datasources.list", "cli:datasources.show", "cli:datasources.create",
     "cli:datasources.delete", "cli:datasources.test",
     "cli:memory.save", "cli:memory.forget", "cli:storage.migrate-types",
     "cli:datasources.refresh-samples", "cli:inspect", "cli:search",
     "cli:other",
     # MCP tools
-    "mcp:create_datasource", "mcp:create_model", "mcp:delete_datasource", "mcp:delete_model",
-    "mcp:describe_datasource", "mcp:edit_datasource", "mcp:edit_model", "mcp:forget_memory",
-    "mcp:get_datasource_priority", "mcp:ingest_datasource_models", "mcp:inspect",
-    "mcp:list_datasources", "mcp:models_summary", "mcp:query",
-    "mcp:recommend_root_model", "mcp:save_memory", "mcp:search", "mcp:set_datasource_priority",
-    "mcp:validate_models", "mcp:other",
+    "mcp:create_datasource", "mcp:create_dataset", "mcp:delete_datasource", "mcp:delete_dataset",
+    "mcp:describe_datasource", "mcp:edit_datasource", "mcp:edit_dataset", "mcp:forget_memory",
+    "mcp:get_datasource_priority", "mcp:ingest_datasource", "mcp:inspect",
+    "mcp:list_datasources", "mcp:datasets_summary", "mcp:query",
+    "mcp:recommend_population", "mcp:save_memory", "mcp:search", "mcp:set_datasource_priority",
+    "mcp:validate_datasets", "mcp:other",
     # REST route templates
     "rest:/datasources", "rest:/datasources/priority", "rest:/datasources/{name}", "rest:/health",
-    "rest:/ingest", "rest:/inspect", "rest:/memories", "rest:/memories/{memory_id}", "rest:/models",
-    "rest:/models/{name}", "rest:/query", "rest:/recommend-root-model", "rest:/search",
-    "rest:/validate-models", "rest:other",
+    "rest:/ingest", "rest:/inspect", "rest:/memories", "rest:/memories/{memory_id}", "rest:/datasets",
+    "rest:/datasets/{name}", "rest:/query", "rest:/recommend-population", "rest:/search",
+    "rest:/validate-datasets", "rest:other",
     # wire protocols
     "flight:query", "flight:probe", "pg:query", "pg:probe",
 ]

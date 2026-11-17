@@ -19,7 +19,7 @@ from slayer.core.query import SlayerQuery
 from tests._dev2102_fixtures import DIALECTS, DS, customers, ext, join, orders, q, rows, shop, with_models
 
 _N = {"formula": "count(*)", "name": "n"}
-_S = {"name": "s", "source_model": "orders", "dimensions": ["customers.name"], "measures": [_N]}
+_S = {"name": "s", "population": "orders", "dimensions": ["customers.name"], "metrics": [_N]}
 _ISSUE_PAIRS = [["id", "n"]]
 _REGION_PAIRS = [["region_id", "id"]]
 

@@ -91,12 +91,12 @@ class TestDemoModels:
         engine = SlayerQueryEngine(storage=doc_demo_storage)
         try:
             per_element = engine.execute_sync({
-                "source_model": "orders", "dimensions": ["item_skus.value"],
-                "measures": [{"formula": "count(item_skus.*)", "name": "units"}],
+                "population": "orders", "dimensions": ["item_skus.value"],
+                "metrics": [{"expression": "count(item_skus.*)", "name": "units"}],
             }).data
             per_item = engine.execute_sync({
-                "source_model": "items", "dimensions": ["sku"],
-                "measures": [{"formula": "count(*)", "name": "units"}],
+                "population": "items", "dimensions": ["sku"],
+                "metrics": [{"expression": "count(*)", "name": "units"}],
             }).data
         finally:
             engine.close()

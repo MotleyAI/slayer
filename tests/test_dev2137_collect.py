@@ -104,8 +104,8 @@ class TestListResults:
     async def test_json_result(self, engine) -> None:
         server = create_mcp_server(storage=engine.storage)
         blocks, _ = await server.call_tool(name="query", arguments={
-            "query": {"source_model": "contractors", "dimensions": ["team"],
-                      "measures": [{"formula": "collect(city)", "name": "c"}]},
+            "query": {"population": "contractors", "dimensions": ["team"],
+                      "metrics": [{"expression": "collect(city)", "name": "c"}]},
             "format": "json"})
         block = next(iter(blocks))
         assert isinstance(block, TextContent), block

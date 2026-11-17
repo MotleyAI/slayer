@@ -358,7 +358,7 @@ CITY_ORDER = {
 def discount_rows_query(*, direction: str, nulls: str) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders", "dimensions": ["id"], "distinct_dimension_values": False,
-        "order": [{"column": "discount", "direction": direction, "nulls": nulls}, {"column": "id"}],
+        "order": [{"field": "discount", "direction": direction, "nulls": nulls}, {"field": "id"}],
     })
 
 
@@ -428,7 +428,7 @@ async def check_filtered_aggregations(engine: SlayerQueryEngine) -> None:
     assert num(single(resp)) == pytest.approx(3.6), resp.sql
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "balances", "dimensions": ["customer_id"],
-        "metrics": [{"formula": "last(balance, updated_at) FILTER (WHERE status = 'active')", "name": "v"}],
+        "metrics": [{"expression": "last(balance, updated_at) FILTER (WHERE status = 'active')", "name": "v"}],
     }))
     assert {int(k): num(v) for k, v in by_key(resp, "customer_id", model="balances").items()} == {1: 150.0, 2: 80.0}
 

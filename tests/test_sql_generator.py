@@ -733,7 +733,7 @@ class TestFields:
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "cumsum(sum(revenue))", "name": "running_revenue"}],
+            "metrics": [{"expression": "cumsum(sum(revenue))", "name": "running_revenue"}],
         })
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
@@ -773,7 +773,7 @@ class TestFields:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            "metrics": [{"formula": "consecutive_periods(sum(revenue) > 0)",
+            "metrics": [{"expression": "consecutive_periods(sum(revenue) > 0)",
                        "name": "positive_streak"}],
         })
         sql = await _generate(generator=gen, query=query, model=orders_model)
@@ -789,7 +789,7 @@ class TestFields:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "consecutive_periods(sum(revenue) > 0) >= 2", "name": "long_enough"}],
+            "metrics": [{"expression": "consecutive_periods(sum(revenue) > 0) >= 2", "name": "long_enough"}],
         })
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
@@ -803,7 +803,7 @@ class TestFields:
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue, window='90d')", "name": "revenue_90d"}],
+            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "revenue_90d"}],
         })
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
@@ -827,7 +827,7 @@ class TestFields:
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [
                 TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
                 TimeDimension(field="delivery_at", granularity=TimeGranularity.MONTH),
-            ], "metrics": [{"formula": "sum(revenue, window='90d')", "name": "revenue_90d"}]})
+            ], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "revenue_90d"}]})
         sql = await _generate(generator=generator, query=query, model=orders_model)
         assert "_w_td_" in sql
         assert '_base."orders.delivery_at"' in sql
@@ -891,7 +891,7 @@ class TestFields:
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue, window='90d')", "name": "revenue_90d"}],
+            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "revenue_90d"}],
             "filter": ["customers.region_id = 5"],
         })
         sql = (await engine.execute(query, dry_run=True)).sql
@@ -941,7 +941,7 @@ class TestFields:
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue, window='90d')", "name": "revenue_90d"}],
+            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "revenue_90d"}],
             "filter": ["customers.regions.name = 'US'"],
         })
         sql = (await engine.execute(query, dry_run=True)).sql
@@ -961,7 +961,7 @@ class TestFields:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue, window='90d')", "name": "revenue_90d"}],
+            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "revenue_90d"}],
             "filter": ["sum(revenue, window='90d') > 100"],
         })
         sql = await _generate(generator=generator, query=query, model=orders_model)
@@ -984,7 +984,7 @@ class TestFields:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.DAY)],
-            "metrics": [{"formula": "avg(revenue, window='1y2m3w5d6h7min8s')", "name": "avg_window"}],
+            "metrics": [{"expression": "avg(revenue, window='1y2m3w5d6h7min8s')", "name": "avg_window"}],
         })
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
@@ -1005,7 +1005,7 @@ class TestFields:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.DAY)],
-            "metrics": [{"formula": "sum(revenue, window='1w2d3h4min5s')", "name": "revenue_window"}],
+            "metrics": [{"expression": "sum(revenue, window='1w2d3h4min5s')", "name": "revenue_window"}],
         })
         sql = await _generate(
             generator=SQLGenerator(dialect="sqlite"),
@@ -1063,7 +1063,7 @@ class TestFields:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(paid_revenue, window='90d')", "name": "pr_90d"}],
+            "metrics": [{"expression": "sum(paid_revenue, window='90d')", "name": "pr_90d"}],
         })
         sql = await _generate(generator=generator, query=query, model=model)
         assert "_cm_orders__paid_revenue_sum_window_90d" in sql, sql
@@ -1095,7 +1095,7 @@ class TestFields:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(flagged_revenue, window='90d')", "name": "fr_90d"}],
+            "metrics": [{"expression": "sum(flagged_revenue, window='90d')", "name": "fr_90d"}],
         })
         sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
         assert "_cm_" in sql, sql
@@ -1130,7 +1130,7 @@ class TestFields:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_90d"}],
+            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}],
         })
         sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
         assert "_cm_" in sql, sql
@@ -1147,8 +1147,8 @@ class TestFields:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue, window='90d')", "name": "revenue_90d"}],
-            "order": [{"column": {"name": "revenue_90d"}, "direction": "desc"}],
+            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "revenue_90d"}],
+            "order": [{"field": {"name": "revenue_90d"}, "direction": "desc"}],
         })
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
@@ -1174,7 +1174,7 @@ class TestFields:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_90d"}],
+            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}],
             "filter": ["status = 'completed'"],
         })
         sql = await _generate(generator=generator, query=query, model=orders_model)
@@ -1192,7 +1192,7 @@ class TestFields:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-06-01", "2024-12-31"],
-            )], "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_90d"}]})
+            )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}]})
         sql = await _generate(generator=generator, query=query, model=orders_model)
         assert "_cm_" in sql, sql
         src_body = _extract_src_body(sql)
@@ -1212,7 +1212,7 @@ class TestFields:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_90d"}],
+            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}],
             "filter": ["created_at >= '2024-06-01'"],
         })
         sql = await _generate(generator=generator, query=query, model=orders_model)
@@ -1233,7 +1233,7 @@ class TestFields:
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_90d"}],
+            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}],
         })
         sql = await _generate(generator=generator, query=query, model=orders_model)
         assert "_cm_" in sql, sql
@@ -1281,7 +1281,7 @@ class TestFields:
         )
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="customers.signup_at", granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_w"}]})
+            )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_w"}]})
         sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
         assert "_cm_" in sql, sql
         src_body = _extract_src_body(sql)
@@ -10133,7 +10133,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "min(revenue, window='30d')", "name": "rev_w"}],
+            "metrics": [{"expression": "min(revenue, window='30d')", "name": "rev_w"}],
         })
         # window= is no longer restricted to sum/avg; min renders.
         sql = await _engine_generate(query=query, model=orders_model)
@@ -10144,7 +10144,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
-            "metrics": [{"formula": "sum(revenue, window='30d')", "name": "rev_w"}],
+            "metrics": [{"expression": "sum(revenue, window='30d')", "name": "rev_w"}],
         })
         with pytest.raises(ValueError, match="could not resolve its time dimension"):
             await _engine_generate(query=query, model=orders_model)
@@ -10173,7 +10173,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(customers.revenue, window='30d')", "name": "rev_w"}],
+            "metrics": [{"expression": "sum(customers.revenue, window='30d')", "name": "rev_w"}],
             "to_many_handling": "broadcast",
         })
         # Fails closed with a precise attributability ValueError (the active time dimension is a host column, unreachable from customers).
@@ -10200,7 +10200,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "cumsum(sum(revenue, window='90d'))", "name": "cum_w"}],
+            "metrics": [{"expression": "cumsum(sum(revenue, window='90d'))", "name": "cum_w"}],
         })
         # A windowed aggregate feeding a transform now renders instead of raising; the emitted SQL must be scope-closed and fully lowered (no ``__regroup__`` sentinel).
         sql = await _engine_generate(query=query, model=orders_model)
@@ -10211,7 +10211,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue, window='90d') / 2", "name": "half_w"}],
+            "metrics": [{"expression": "sum(revenue, window='90d') / 2", "name": "half_w"}],
         })
         # A windowed aggregate inside scalar arithmetic now renders instead of raising; scope-closed and fully lowered.
         sql = await _engine_generate(query=query, model=orders_model)
@@ -10222,7 +10222,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue)", "name": "rev"}],
+            "metrics": [{"expression": "sum(revenue)", "name": "rev"}],
             "filter": ["sum(revenue, window='90d') > 100"],
         })
         # A filter-only (hidden) windowed aggregate now renders instead of raising; scope-closed and fully lowered.
@@ -10251,7 +10251,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": f"sum(revenue, window='{bad}')", "name": "rev_w"}],
+            "metrics": [{"expression": f"sum(revenue, window='{bad}')", "name": "rev_w"}],
         })
         with pytest.raises(ValueError, match=r"Use syntax like '1y2m3w5d6h7min8s'"):
             await _engine_generate(query=query, model=orders_model)
@@ -10261,7 +10261,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue, window='')", "name": "rev_w"}],
+            "metrics": [{"expression": "sum(revenue, window='')", "name": "rev_w"}],
         })
         with pytest.raises(ValueError, match="cannot be empty"):
             await _engine_generate(query=query, model=orders_model)
@@ -10271,7 +10271,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue, window=90)", "name": "rev_w"}],
+            "metrics": [{"expression": "sum(revenue, window=90)", "name": "rev_w"}],
         })
         with pytest.raises(ValueError):
             await _engine_generate(query=query, model=orders_model)
@@ -10291,7 +10291,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "myagg(amount_col, window='90d')", "name": "w"}],
+            "metrics": [{"expression": "myagg(amount_col, window='90d')", "name": "w"}],
         })
         sql = await _engine_generate(query=query, model=model)
         assert_scope_closed(sql, dialect="postgres")
@@ -10305,7 +10305,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "cumsum(sum(revenue, window='90d'))", "name": "cum_w"}],
+            "metrics": [{"expression": "cumsum(sum(revenue, window='90d'))", "name": "cum_w"}],
         })
         # The G4/G6 guards are gone — a windowed aggregate nested in a transform now renders; the SQL must be scope-closed and fully lowered.
         sql = await _engine_generate(query=query, model=orders_model)
@@ -10344,14 +10344,14 @@ class TestWindowedMeasureGuards:
             q = SlayerQuery.model_validate({
                 "population": "orders",
                 "time_dimensions": td,
-                "metrics": [{"formula": "min(revenue, window='30d')", "name": "rev_w"}],
+                "metrics": [{"expression": "min(revenue, window='30d')", "name": "rev_w"}],
             })
             bundle, exc, match = _bundle(_plain()), None, None
         elif case == "g2_no_time_dim":
             q = SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": [FieldRef(name="status")],
-                "metrics": [{"formula": "sum(revenue, window='30d')", "name": "rev_w"}],
+                "metrics": [{"expression": "sum(revenue, window='30d')", "name": "rev_w"}],
             })
             bundle, exc, match = _bundle(_plain()), ValueError, "could not resolve its time dimension"
         elif case == "g3_cross_model":
@@ -10374,7 +10374,7 @@ class TestWindowedMeasureGuards:
             q = SlayerQuery.model_validate({
                 "population": "orders",
                 "time_dimensions": td,
-                "metrics": [{"formula": "sum(customers.revenue, window='30d')", "name": "rev_w"}],
+                "metrics": [{"expression": "sum(customers.revenue, window='30d')", "name": "rev_w"}],
                 "to_many_handling": "broadcast",
             })
             # Windowed cross-model with an unattributable TD → ValueError.
@@ -10392,7 +10392,7 @@ class TestWindowedMeasureGuards:
             q = SlayerQuery.model_validate({
                 "population": "orders",
                 "time_dimensions": td,
-                "metrics": [{"formula": "sum(revenue, window='90d') / 2", "name": "half_w"}],
+                "metrics": [{"expression": "sum(revenue, window='90d') / 2", "name": "half_w"}],
             })
             # G5 dissolved — this now plans instead of raising.
             bundle, exc, match = _bundle(_plain()), None, None
@@ -10400,7 +10400,7 @@ class TestWindowedMeasureGuards:
             q = SlayerQuery.model_validate({
                 "population": "orders",
                 "time_dimensions": td,
-                "metrics": [{"formula": "sum(revenue)", "name": "rev"}],
+                "metrics": [{"expression": "sum(revenue)", "name": "rev"}],
                 "filter": ["sum(revenue, window='90d') > 100"],
             })
             # G6 dissolved — this now plans instead of raising.
@@ -10409,7 +10409,7 @@ class TestWindowedMeasureGuards:
             q = SlayerQuery.model_validate({
                 "population": "orders",
                 "time_dimensions": td,
-                "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_w"}],
+                "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_w"}],
                 "filter": ["sum(revenue, window='90d') > 100 and sum(revenue) > 50"],
             })
             # G7 dissolved — this now plans instead of raising.
@@ -10418,7 +10418,7 @@ class TestWindowedMeasureGuards:
             q = SlayerQuery.model_validate({
                 "population": "orders",
                 "time_dimensions": td,
-                "metrics": [{"formula": "sum(revenue, window='90x')", "name": "rev_w"}],
+                "metrics": [{"expression": "sum(revenue, window='90x')", "name": "rev_w"}],
             })
             bundle, exc, match = _bundle(_plain()), ValueError, "Use syntax like"
 
@@ -10443,7 +10443,7 @@ class TestWindowedMeasureGuards:
         )
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_w"}],
+            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_w"}],
         })
         with pytest.raises(ValueError, match="could not resolve its time dimension"):
             await _engine_generate(query=query, model=model)
@@ -10453,7 +10453,7 @@ class TestWindowedMeasureGuards:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(revenue, window='90d')", "name": "rev_w"}],
+            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_w"}],
             "filter": ["sum(revenue, window='90d') > 100 and status = 'active'"],
         })
         # A filter mixing a windowed aggregate with a row predicate now renders instead of raising; scope-closed and fully lowered.

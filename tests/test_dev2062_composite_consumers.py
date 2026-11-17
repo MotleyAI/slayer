@@ -54,7 +54,7 @@ def _assert_cells_equal(actual: dict, expected: dict) -> None:
 _SPELLINGS = {"saved": ("aov", "cumsum(aov)"), "inline": (AOV, f"cumsum({AOV})")}
 _TIME_FILTERS = {
     "date_range": {"time_dimensions": month_td(date_range=DATE_RANGE)},
-    "date_filter": {"filters": [DATE_FILTER]},
+    "date_filter": {"filter": [DATE_FILTER]},
 }
 
 

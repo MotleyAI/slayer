@@ -94,10 +94,10 @@ class TestShiftedAttachShape:
     def test_join_pairs_cover_secondary_time_dimension(self) -> None:
         pq = plan_query(query=SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["status"],
-            "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"},
-                                {"dimension": "customers.signup_at", "granularity": "month"}],
+            "time_dimensions": [{"field": "ordered_at", "granularity": "month"},
+                                {"field": "customers.signup_at", "granularity": "month"}],
             "main_time_dimension": "ordered_at",
-            "metrics": [{"formula": "time_shift(sum(amount) / 2, -1)", "name": "t"}]}),
+            "metrics": [{"expression": "time_shift(sum(amount) / 2, -1)", "name": "t"}]}),
             bundle=_bundle("orders"))
         [attach] = _shifted(pq)
         grain = {s.key for s in pq.row_slots if not s.hidden}

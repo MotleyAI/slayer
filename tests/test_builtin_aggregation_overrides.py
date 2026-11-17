@@ -13,24 +13,24 @@ _COLLECT_SUM = agg("collect", "SUM({value})")
 class TestOwnCollect:
     async def test_answers_the_formula(self, dialect: str) -> None:
         async with stored_engine(models=[t_doc(aggregations=[_COLLECT_SUM])], dialect=dialect) as engine:
-            resp = await engine.execute({"source_model": "t", "measures": [measure("collect(a)")]})
+            resp = await engine.execute({"population": "t", "metrics": [measure("collect(a)")]})
         assert float(value(resp)) == SUM_A
 
     async def test_the_empty_value_follows_the_formula(self, dialect: str) -> None:
         async with stored_engine(models=[t_doc(aggregations=[_COLLECT_SUM])], dialect=dialect) as engine:
-            resp = await engine.execute({"source_model": "t", "measures": [measure("collect(a)")],
-                                         "filters": ["a > 100"]})
+            resp = await engine.execute({"population": "t", "metrics": [measure("collect(a)")],
+                                         "filter": ["a > 100"]})
         assert value(resp) is None
 
     async def test_its_result_type_is_the_formulas(self, dialect: str) -> None:
         async with stored_engine(models=[t_doc(aggregations=[_COLLECT_SUM])], dialect=dialect) as engine:
-            resp = await engine.execute({"source_model": "t", "measures": [measure("collect(a) + 1")]})
+            resp = await engine.execute({"population": "t", "metrics": [measure("collect(a) + 1")]})
         assert float(value(resp)) == SUM_A + 1
 
 
 async def test_another_model_keeps_the_builtin_collect() -> None:
     async with stored_engine(models=[t_doc(aggregations=[_COLLECT_SUM])], dialect="duckdb") as engine:
-        resp = await engine.execute({"source_model": "t", "measures": [measure("collect(customers.name)")]})
+        resp = await engine.execute({"population": "t", "metrics": [measure("collect(customers.name)")]})
     assert list(value(resp)) == ["abc", "xyz"]
 
 
@@ -39,7 +39,7 @@ class TestOtherClassificationSites:
         ("first", "MIN({value})", 1.0), ("last", "MAX({value})", MAX_A)])
     async def test_a_ranked_name_needs_no_ranking_column(self, name: str, formula: str, expected: float) -> None:
         async with stored_engine(models=[t_doc(aggregations=[agg(name, formula)])]) as engine:
-            resp = await engine.execute({"source_model": "t", "measures": [
+            resp = await engine.execute({"population": "t", "metrics": [
                 measure(f"{name}(a)")]})
         assert float(resp.data[0]["t.v"]) == expected
 
@@ -47,5 +47,5 @@ class TestOtherClassificationSites:
     async def test_positional_parameters_follow_the_definition(self, formula: str, factor: int) -> None:
         own = agg("percentile", "SUM({value}) * {k}", k="1")
         async with stored_engine(models=[t_doc(aggregations=[own])]) as engine:
-            resp = await engine.execute({"source_model": "t", "measures": [measure(formula)]})
+            resp = await engine.execute({"population": "t", "metrics": [measure(formula)]})
         assert float(value(resp)) == factor * SUM_A

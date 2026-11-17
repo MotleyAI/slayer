@@ -95,9 +95,9 @@ class TestDimensionsRewrite:
         q = SlayerQuery.model_validate({
             "version": 3,
             "strict": True,
-            "population": "orders",
+            "source_model": "orders",
             "dimensions": ["month(created_at)"],
-            "metrics": [{"formula": "count(*)"}],
+            "measures": [{"formula": "count(*)"}],
         })
         assert q.to_many_handling == "error"
         assert q.time_dimensions == [

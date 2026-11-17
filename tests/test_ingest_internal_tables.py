@@ -1238,7 +1238,7 @@ class TestVisibilitySurfaces:
         resp = await engine.execute(
             SlayerQuery.model_validate({
                 "population": "_dlt_loads",
-                "metrics": [{"formula": "count(*)", "name": "n"}],
+                "metrics": [{"expression": "count(*)", "name": "n"}],
             })
         )
         assert resp.row_count == 1
@@ -1278,7 +1278,7 @@ class TestJoinsIntoHiddenModels:
             SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["_dlt_loads.schema_name"],
-                "metrics": [{"formula": "sum(amount)", "name": "total"}],
+                "metrics": [{"expression": "sum(amount)", "name": "total"}],
             })
         )
         # The hidden model's name in the result key is evidence the join resolved.

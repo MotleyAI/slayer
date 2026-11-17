@@ -218,16 +218,16 @@ class TestDemoModels:
 
 class TestTwoYearDemo:
     def test_all_three_statuses_occur(self, doc_demo_storage: YAMLStorage) -> None:
-        rows = _rows(doc_demo_storage, {"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"]})
+        rows = _rows(doc_demo_storage, {"population": "orders", "metrics": ["count(*)"], "dimensions": ["status"]})
         assert rows
         assert {row[_dim_key(row)] for row in rows} == STATUSES
 
     def test_region_is_a_two_hop_dimension_of_orders(self, doc_demo_storage: YAMLStorage) -> None:
         rows = _rows(
             doc_demo_storage,
-            {"source_model": "orders", "measures": ["count(*)"], "dimensions": ["stores.regions.name"]},
+            {"population": "orders", "metrics": ["count(*)"], "dimensions": ["stores.regions.name"]},
         )
-        total = _rows(doc_demo_storage, {"source_model": "orders", "measures": ["count(*)"]})
+        total = _rows(doc_demo_storage, {"population": "orders", "metrics": ["count(*)"]})
         assert rows
         regions = [row[_dim_key(row)] for row in rows]
         assert len(regions) == len(set(regions))

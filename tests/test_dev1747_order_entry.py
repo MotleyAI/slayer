@@ -145,14 +145,14 @@ class TestScopeClassification:
         entry = _sole_scoped(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "sum(amount, window='90d')", "name": "w"}], "order": [OrderItem(field=FieldRef(name="w"), direction="desc")]}))
+            )], "metrics": [{"expression": "sum(amount, window='90d')", "name": "w"}], "order": [OrderItem(field=FieldRef(name="w"), direction="desc")]}))
         assert entry.scope is OrderScope.CROSS_DATASET_CTE
 
     def test_transform_measure_is_transform_step(self) -> None:
         entry = _sole_scoped(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="cs"), direction="asc")]}))
+            )], "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="cs"), direction="asc")]}))
         assert entry.scope is OrderScope.TRANSFORM_STEP
 
     def test_composite_over_a_cross_model_operand_is_outer_composite(self) -> None:
@@ -167,7 +167,7 @@ class TestScopeClassification:
         entry = _sole_scoped(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
-            "metrics": [{"formula": "sum(customers.spend) + sum(amount)", "name": "mix"}],
+            "metrics": [{"expression": "sum(customers.spend) + sum(amount)", "name": "mix"}],
             "order": [OrderItem(field=FieldRef(name="mix"), direction="desc")],
         }))
         assert entry.scope is OrderScope.OUTER_COMPOSITE
@@ -341,7 +341,7 @@ class TestHostGrainMarker:
 # Group 6 — the revised Law-3 trigger, branch by branch (D2)
 # ---------------------------------------------------------------------------
 _GROUPED_HEAD = {
-    "source_model": "orders",
+    "population": "orders",
     "dimensions": [FieldRef(name="status")],
 }
 

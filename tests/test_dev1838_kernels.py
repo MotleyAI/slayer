@@ -241,7 +241,7 @@ class TestRankingKeyPrecedence:
         query = SlayerQuery.model_validate({
             "population": "untimed",
             "dimensions": ["status"],
-            "metrics": [{"formula": "last(amount)", "name": "l"}],
+            "metrics": [{"expression": "last(amount)", "name": "l"}],
         })
         with pytest.raises(ValueError) as excinfo:
             plan.plan_query(query=query, bundle=bundle)

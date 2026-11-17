@@ -234,7 +234,7 @@ class TestIntermediateHopDimensions:
         tier aggregates the distinct regions its customers reach."""
         _, engine = exec_backend
         kw = {"dimensions": ["customers.tier"],
-              "measures": [M, DatasetMetric(expression="sum(customers.regions.pop)", name="pop")]}
+              "metrics": [M, DatasetMetric(expression="sum(customers.regions.pop)", name="pop")]}
         default = await engine.execute(q(**kw))
         assoc = await engine.execute(q(**kw, to_many_handling="associate"))
         assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))

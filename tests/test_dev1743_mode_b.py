@@ -65,7 +65,7 @@ class TestModeBOverDunderModels:
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "count(customer__region.*)"}],
+                "metrics": [{"expression": "count(customer__region.*)"}],
             }),
             model=host,
             extra_models=[dunder],

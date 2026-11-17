@@ -178,7 +178,7 @@ class TestOrderShorthandHealing:
         shorthand = SlayerQuery.model_validate({"population": "orders", "order": [{"sum(revenue)": "desc"}]})
         canonical = SlayerQuery.model_validate({
             "population": "orders",
-            "order": [{"column": "sum(revenue)", "direction": "desc"}],
+            "order": [{"field": "sum(revenue)", "direction": "desc"}],
         })
         assert shorthand.order == canonical.order
 
@@ -809,7 +809,7 @@ class TestSourceQueryStages:
             "name": "saved",
             "data_source": "ds",
             "source_queries": [
-                {"source_model": "orders", "measures": [{"formula": "count(*)"}]}
+                {"population": "orders", "metrics": [{"expression": "count(*)"}]}
             ],
         })
         assert m.source_queries is not None
@@ -1446,7 +1446,7 @@ class TestStringCoercion:
     def test_fields_mixed_strings_and_dicts(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": ["count(*)", {"formula": "sum(revenue) / count(*)", "name": "aov"}],
+            "metrics": ["count(*)", {"expression": "sum(revenue) / count(*)", "name": "aov"}],
         })
         assert len(query.metrics) == 2
         assert query.metrics[0] == DatasetMetric(expression="count(*)")
@@ -1468,7 +1468,7 @@ class TestStringCoercion:
     def test_dict_syntax_still_works(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": [{"name": "status"}],
         })
         assert query.metrics[0] == DatasetMetric(expression="count(*)")
@@ -1509,8 +1509,8 @@ class TestStringCoercion:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": ["count(*)"],
-            "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-            "order": [{"column": "_count", "direction": "desc"}],
+            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+            "order": [{"field": "_count", "direction": "desc"}],
         })
         assert query.time_dimensions is not None
         assert query.time_dimensions[0].field == "created_at"
@@ -1547,7 +1547,7 @@ class TestCoerceFieldsAndDimensions:
         assert q.metrics[1].expression == "sum(revenue)"
 
     def test_fields_list_of_dicts_accepted(self) -> None:
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "count(*)", "name": "cnt"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)", "name": "cnt"}]})
         assert q.metrics is not None
         assert q.metrics[0].expression == "count(*)"
         assert q.metrics[0].name == "cnt"
@@ -1761,36 +1761,36 @@ _ROOT_QUALIFIED = {
     "dimension-label": ({"dimensions": [{"name": "orders.status", "label": "Status"}]},
                         {"dimensions": [{"name": "status", "label": "Status"}]}),
     "time-dimension": (
-        {"time_dimensions": [{"dimension": "orders.created_at", "granularity": "month",
+        {"time_dimensions": [{"field": "orders.created_at", "granularity": "month",
                               "date_range": ["2024-01-01", "2024-12-31"], "label": "Month"}]},
-        {"time_dimensions": [{"dimension": "created_at", "granularity": "month",
+        {"time_dimensions": [{"field": "created_at", "granularity": "month",
                               "date_range": ["2024-01-01", "2024-12-31"], "label": "Month"}]},
     ),
-    "formula": ({"measures": ["sum(orders.revenue)"]}, {"measures": ["sum(revenue)"]}),
-    "star-count": ({"measures": ["count(orders.*)"]}, {"measures": ["count(*)"]}),
-    "arithmetic": ({"measures": ["sum(orders.revenue) / count(orders.*)"]}, {"measures": ["sum(revenue) / count(*)"]}),
-    "transform": ({"time_dimensions": [_MONTH], "measures": ["cumsum(sum(orders.revenue))"]},
-                  {"time_dimensions": [_MONTH], "measures": ["cumsum(sum(revenue))"]}),
-    "joined-formula": ({"measures": ["avg(orders.customers.score)"]}, {"measures": ["avg(customers.score)"]}),
-    "named-formula": ({"measures": [{"formula": "sum(orders.revenue)", "name": "rev", "label": "Revenue"}]},
-                      {"measures": [{"formula": "sum(revenue)", "name": "rev", "label": "Revenue"}]}),
-    "filter": ({"measures": ["count(*)"], "filters": ["orders.status = 'active'"]},
-               {"measures": ["count(*)"], "filters": ["status = 'active'"]}),
-    "joined-filter": ({"measures": ["count(*)"], "filters": ["orders.customers.name = 'foo'"]},
-                      {"measures": ["count(*)"], "filters": ["customers.name = 'foo'"]}),
+    "formula": ({"metrics": ["sum(orders.revenue)"]}, {"metrics": ["sum(revenue)"]}),
+    "star-count": ({"metrics": ["count(orders.*)"]}, {"metrics": ["count(*)"]}),
+    "arithmetic": ({"metrics": ["sum(orders.revenue) / count(orders.*)"]}, {"metrics": ["sum(revenue) / count(*)"]}),
+    "transform": ({"time_dimensions": [_MONTH], "metrics": ["cumsum(sum(orders.revenue))"]},
+                  {"time_dimensions": [_MONTH], "metrics": ["cumsum(sum(revenue))"]}),
+    "joined-formula": ({"metrics": ["avg(orders.customers.score)"]}, {"metrics": ["avg(customers.score)"]}),
+    "named-formula": ({"metrics": [{"expression": "sum(orders.revenue)", "name": "rev", "label": "Revenue"}]},
+                      {"metrics": [{"expression": "sum(revenue)", "name": "rev", "label": "Revenue"}]}),
+    "filter": ({"metrics": ["count(*)"], "filter": ["orders.status = 'active'"]},
+               {"metrics": ["count(*)"], "filter": ["status = 'active'"]}),
+    "joined-filter": ({"metrics": ["count(*)"], "filter": ["orders.customers.name = 'foo'"]},
+                      {"metrics": ["count(*)"], "filter": ["customers.name = 'foo'"]}),
     "transform-filter": (
-        {"time_dimensions": [_MONTH], "measures": ["count(*)"], "filters": ["change(sum(orders.revenue)) > 0"]},
-        {"time_dimensions": [_MONTH], "measures": ["count(*)"], "filters": ["change(sum(revenue)) > 0"]},
+        {"time_dimensions": [_MONTH], "metrics": ["count(*)"], "filter": ["change(sum(orders.revenue)) > 0"]},
+        {"time_dimensions": [_MONTH], "metrics": ["count(*)"], "filter": ["change(sum(revenue)) > 0"]},
     ),
-    "order-column": ({"dimensions": ["status"], "measures": ["count(*)"], "order": [{"column": "orders.status", "direction": "desc"}]},
-                     {"dimensions": ["status"], "measures": ["count(*)"], "order": [{"column": "status", "direction": "desc"}]}),
-    "order-aggregate": ({"measures": ["count(*)"], "order": [{"column": "sum(orders.revenue)", "direction": "desc"}]},
-                    {"measures": ["count(*)"], "order": [{"column": "sum(revenue)", "direction": "desc"}]}),
-    "order-multihop-aggregate": ({"measures": ["count(*)"], "order": [{"column": "sum(orders.customers.score)"}]},
-                             {"measures": ["count(*)"], "order": [{"column": "sum(customers.score)"}]}),
+    "order-column": ({"dimensions": ["status"], "metrics": ["count(*)"], "order": [{"field": "orders.status", "direction": "desc"}]},
+                     {"dimensions": ["status"], "metrics": ["count(*)"], "order": [{"field": "status", "direction": "desc"}]}),
+    "order-aggregate": ({"metrics": ["count(*)"], "order": [{"field": "sum(orders.revenue)", "direction": "desc"}]},
+                    {"metrics": ["count(*)"], "order": [{"field": "sum(revenue)", "direction": "desc"}]}),
+    "order-multihop-aggregate": ({"metrics": ["count(*)"], "order": [{"field": "sum(orders.customers.score)"}]},
+                             {"metrics": ["count(*)"], "order": [{"field": "sum(customers.score)"}]}),
     "main-time-dimension": (
-        {"time_dimensions": [_MONTH], "measures": ["change(sum(revenue))"], "main_time_dimension": "orders.created_at"},
-        {"time_dimensions": [_MONTH], "measures": ["change(sum(revenue))"], "main_time_dimension": "created_at"},
+        {"time_dimensions": [_MONTH], "metrics": ["change(sum(revenue))"], "main_time_dimension": "orders.created_at"},
+        {"time_dimensions": [_MONTH], "metrics": ["change(sum(revenue))"], "main_time_dimension": "created_at"},
     ),
 }
 
@@ -1801,32 +1801,32 @@ class TestRootQualifier:
     @pytest.mark.parametrize("case", sorted(_ROOT_QUALIFIED))
     async def test_root_qualified_equals_bare(self, case: str) -> None:
         qualified, bare = _ROOT_QUALIFIED[case]
-        assert await _prefix_sql({"source_model": "orders", **qualified}) == await _prefix_sql(
-            {"source_model": "orders", **bare})
+        assert await _prefix_sql({"population": "orders", **qualified}) == await _prefix_sql(
+            {"population": "orders", **bare})
 
     @pytest.mark.parametrize("source", [
-        {"source_model": "orders", "extensions": [{"source_name": "orders"}]},
-        {"source_model": "orders", "extensions": [DatasetExtension(source_name="orders")]},
+        {"population": "orders", "extensions": [{"source_name": "orders"}]},
+        {"population": "orders", "extensions": [DatasetExtension(source_name="orders")]},
     ], ids=["extension-dict", "extension-object"])
     async def test_every_root_spec_takes_its_name(self, source: dict) -> None:
         assert await _prefix_sql({**source, "dimensions": ["orders.status"]}) == await _prefix_sql(
             {**source, "dimensions": ["status"]})
 
     @pytest.mark.parametrize("query", [
-        {"measures": ["count(customers.orders.id)"]},
-        {"measures": ["count(*)"], "filters": ["customers.orders.status = 'paid'"]},
+        {"metrics": ["count(customers.orders.id)"]},
+        {"metrics": ["count(*)"], "filter": ["customers.orders.status = 'paid'"]},
     ], ids=["formula", "filter"])
     async def test_an_inner_hop_named_like_the_root_is_still_refused(self, query: dict) -> None:
         with pytest.raises(Exception, match="customers"):
-            await _prefix_sql({"source_model": "orders", **query})
+            await _prefix_sql({"population": "orders", **query})
 
     @pytest.mark.parametrize("query", [
-        {"measures": ["count(*)"], "filters": ["reorders.status = 'active'"]},
-        {"measures": ["sum(reorders.revenue)"]},
+        {"metrics": ["count(*)"], "filter": ["reorders.status = 'active'"]},
+        {"metrics": ["sum(reorders.revenue)"]},
     ], ids=["filter", "formula"])
     async def test_a_longer_model_name_is_no_root_qualifier(self, query: dict) -> None:
         with pytest.raises(Exception, match="reorders"):
-            await _prefix_sql({"source_model": "orders", **query})
+            await _prefix_sql({"population": "orders", **query})
 
 
 class TestColumnTypeLenientValidator:
@@ -1958,7 +1958,7 @@ class TestModelMeasureType:
         # SlayerQuery.metrics[i] is a ModelMeasure — same shape, same field.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*) / count(orders)", "name": "ratio", "type": "DOUBLE"}],
+            "metrics": [{"expression": "count(*) / count(orders)", "name": "ratio", "datatype": "DOUBLE"}],
         })
         assert q.metrics is not None
         assert q.metrics[0].datatype == DataType.DOUBLE

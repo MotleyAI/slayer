@@ -32,7 +32,7 @@ def _query(date_range) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
         "time_dimensions": [td],
-        "metrics": [{"formula": "sum(amount)", "name": "m0"}],
+        "metrics": [{"expression": "sum(amount)", "name": "m0"}],
     })
 
 

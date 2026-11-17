@@ -551,7 +551,7 @@ class TestDateRangeFilter:
         # legacy WHERE order: date_range first, user filter second.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
             "filter": ["amount > 0"],
             "time_dimensions": [
                 TimeDimension(

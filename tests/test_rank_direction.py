@@ -248,21 +248,21 @@ class TestBinding:
 # Direction errors.
 # --------------------------------------------------------------------------- #
 _MISSING = [
-    pytest.param({"dimensions": ["region"], "measures": [_m("rank(sum(amount))")]},
+    pytest.param({"dimensions": ["region"], "metrics": [_m("rank(sum(amount))")]},
                  "rank", id="measure"),
     pytest.param({"dimensions": ["region", "city"],
-                  "measures": [_m("dense_rank(sum(amount), partition_by=region)")]},
+                  "metrics": [_m("dense_rank(sum(amount), partition_by=region)")]},
                  "dense_rank", id="measure-dense-partitioned"),
-    pytest.param({"dimensions": ["region"], "measures": [_m("sum(amount)", "a")],
-                  "filters": ["rank(sum(amount)) <= 2"]}, "rank", id="filter"),
-    pytest.param({"dimensions": ["region"], "measures": [_m("sum(amount)", "a")],
-                  "order": [{"column": "rank(sum(amount))", "direction": "asc"}]},
+    pytest.param({"dimensions": ["region"], "metrics": [_m("sum(amount)", "a")],
+                  "filter": ["rank(sum(amount)) <= 2"]}, "rank", id="filter"),
+    pytest.param({"dimensions": ["region"], "metrics": [_m("sum(amount)", "a")],
+                  "order": [{"field": "rank(sum(amount))", "direction": "asc"}]},
                  "rank", id="order"),
     pytest.param({"dimensions": ["region", {"expression": "rank(sum(amount, partition_by=region))",
                                             "name": "rk"}],
-                  "measures": [_m("sum(amount)", "a")]}, "rank", id="computed-dimension"),
+                  "metrics": [_m("sum(amount)", "a")]}, "rank", id="computed-dimension"),
     pytest.param({"dimensions": ["region"],
-                  "measures": [_m("weighted_avg(amount, weight=rank(sum(amount, "
+                  "metrics": [_m("weighted_avg(amount, weight=rank(sum(amount, "
                                   "partition_by=region)))", "w")]},
                  "rank", id="aggregation-parameter"),
 ]

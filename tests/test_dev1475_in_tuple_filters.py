@@ -157,7 +157,7 @@ class TestParserGuards:
         )
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"formula": "count(*)"}], "filter": ["status in 'a'"],
+            "population": "orders", "metrics": [{"expression": "count(*)"}], "filter": ["status in 'a'"],
         })
         with pytest.raises(DateOperandTypeError, match="status"):
             engine.execute_sync(query=query, dry_run=True)
@@ -296,7 +296,7 @@ class TestSQLEmission:
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "filter": ["status in ('completed', 'pending')"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
@@ -311,7 +311,7 @@ class TestSQLEmission:
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "filter": ["status not in ('cancelled', 'expired')"],
         })
         sql = engine.execute_sync(query=query, dry_run=True).sql
@@ -333,7 +333,7 @@ class TestSQLEmission:
         engine, _ = _make_engine_with_orders()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "filter": [
                 "status in ('completed', 'pending') and amount > 100",
             ],
@@ -352,7 +352,7 @@ class TestSQLEmission:
         engine, orders, stores = _make_engine_with_orders_and_stores()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": ["stores.name"],
             "filter": ["stores.name in ('Brooklyn', 'Philadelphia')"],
         })

@@ -192,7 +192,7 @@ def jt_qb_model() -> SlayerDataset:
         query(name="a",
               source_model="customers",
               extensions=[{"source_name": "customers",
-                           "joins": [{"target_model": "b", "join_pairs": [["id", "customer_id"]]}]}],
+                           "relationships": [{"to": "b", "join_pairs": [["id", "customer_id"]]}]}],
               dimensions=["tier"], measures=[m("sum(b.rev)", "ab")]),
         query(name="b", source_model="orders", dimensions=["customer_id"],
               measures=[m("sum(amount)", "rev")]),

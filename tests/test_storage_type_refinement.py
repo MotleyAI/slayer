@@ -181,9 +181,9 @@ class TestRefineDictWithLiveSchema:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
-                {"name": "id", "sql": "id", "type": "DOUBLE", "primary_key": True},
-                {"name": "qty", "sql": "qty", "type": "DOUBLE"},
+            "fields": [
+                {"name": "id", "sql": "id", "datatype": "DOUBLE", "primary_key": True},
+                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
@@ -197,8 +197,8 @@ class TestRefineDictWithLiveSchema:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
-                {"name": "amount", "sql": "amount", "type": "DOUBLE"},
+            "fields": [
+                {"name": "amount", "sql": "amount", "datatype": "DOUBLE"},
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
@@ -211,9 +211,9 @@ class TestRefineDictWithLiveSchema:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
-                {"name": "name", "sql": "name", "type": "TEXT"},
-                {"name": "amount", "sql": "amount", "type": "DOUBLE"},
+            "fields": [
+                {"name": "name", "sql": "name", "datatype": "TEXT"},
+                {"name": "amount", "sql": "amount", "datatype": "DOUBLE"},
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
@@ -226,10 +226,10 @@ class TestRefineDictWithLiveSchema:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
+            "fields": [
                 # Non-bare sql: this is a derived column whose live type is
                 # unknown — refinement must NOT touch it even if id is INT.
-                {"name": "double_id", "sql": "id * 2", "type": "DOUBLE"},
+                {"name": "double_id", "sql": "id * 2", "datatype": "DOUBLE"},
             ],
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
@@ -242,9 +242,9 @@ class TestRefineDictWithLiveSchema:
         d = {
             "name": "rollup",
             "data_source": "live",
-            "source_queries": [{"source_model": "items", "measures": [{"formula": "sum(qty)"}]}],
-            "columns": [
-                {"name": "qty_sum", "sql": "qty_sum", "type": "DOUBLE"},
+            "source_queries": [{"population": "items", "metrics": [{"expression": "sum(qty)"}]}],
+            "fields": [
+                {"name": "qty_sum", "sql": "qty_sum", "datatype": "DOUBLE"},
             ],
         }
         ds = DatasourceConfig(name="live", type="sqlite", database=":memory:")
@@ -258,8 +258,8 @@ class TestRefineDictWithLiveSchema:
             "name": "rollup",
             "sql": "SELECT * FROM items",
             "data_source": "live",
-            "columns": [
-                {"name": "qty", "sql": "qty", "type": "DOUBLE"},
+            "fields": [
+                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
             ],
         }
         ds = DatasourceConfig(name="live", type="sqlite", database=":memory:")
@@ -274,8 +274,8 @@ class TestRefineDictWithLiveSchema:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
-                {"name": "qty", "sql": "qty", "type": "DOUBLE"},
+            "fields": [
+                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
             ],
         }
         # An unreachable Postgres URL → connect raises during introspection.
@@ -476,10 +476,10 @@ class TestRefineSqliteAffinityProbe:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
+            "fields": [
                 {
                     "name": "qty", "sql": "qty",
-                    "type": "INT",
+                    "datatype": "INT",
                     "format": {"type": "integer"},
                 },
             ],
@@ -506,8 +506,8 @@ class TestRefineSqliteAffinityProbe:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
-                {"name": "qty", "sql": "qty", "type": "DOUBLE"},
+            "fields": [
+                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
             ],
         }
         ds = self._ds_for(db_path)
@@ -527,8 +527,8 @@ class TestRefineSqliteAffinityProbe:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
-                {"name": "qty", "sql": "qty", "type": "DOUBLE"},
+            "fields": [
+                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
             ],
         }
         ds = self._ds_for(db_path)
@@ -547,8 +547,8 @@ class TestRefineSqliteAffinityProbe:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
-                {"name": "qty", "sql": "qty", "type": "DOUBLE"},
+            "fields": [
+                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
             ],
         }
         ds = self._ds_for(db_path)
@@ -567,8 +567,8 @@ class TestRefineSqliteAffinityProbe:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
-                {"name": "qty", "sql": "qty", "type": "DOUBLE"},
+            "fields": [
+                {"name": "qty", "sql": "qty", "datatype": "DOUBLE"},
             ],
         }
         # Use a closed-port Postgres URL; the connect must raise (not
@@ -597,8 +597,8 @@ class TestRefineSqliteAffinityProbe:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
-                {"name": "qty", "sql": "qty", "type": "INT"},
+            "fields": [
+                {"name": "qty", "sql": "qty", "datatype": "INT"},
             ],
         }
         ds = self._ds_for(db_path)
@@ -614,10 +614,10 @@ class TestRefineSqliteAffinityProbe:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
+            "fields": [
                 {
                     "name": "qty", "sql": "qty",
-                    "type": "INT",
+                    "datatype": "INT",
                     "format": {
                         "type": "currency",
                         "symbol": "€",
@@ -646,10 +646,10 @@ class TestRefineSqliteAffinityProbe:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
+            "fields": [
                 {
                     "name": "qty", "sql": "qty",
-                    "type": "INT",
+                    "datatype": "INT",
                     "format": {"type": "integer"},
                 },
             ],
@@ -674,8 +674,8 @@ class TestHasRefineableColumnsSqliteIntBranch:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
-                {"name": "qty", "sql": "qty", "type": "INT"},
+            "fields": [
+                {"name": "qty", "sql": "qty", "datatype": "INT"},
             ],
         }
         # INT base columns are *widenable* (best-effort), not *refineable*
@@ -689,8 +689,8 @@ class TestHasRefineableColumnsSqliteIntBranch:
             "name": "items",
             "sql_table": "items",
             "data_source": "live",
-            "columns": [
-                {"name": "amount", "sql": "amount", "type": "DOUBLE"},
+            "fields": [
+                {"name": "amount", "sql": "amount", "datatype": "DOUBLE"},
             ],
         }
         assert has_refineable_fields(d) is True

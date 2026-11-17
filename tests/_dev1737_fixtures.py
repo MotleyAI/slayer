@@ -472,7 +472,7 @@ async def check_server_scenarios(engine: SlayerQueryEngine) -> None:
 
     async def count(filt: str, model: str = "orders") -> int:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": model, "metrics": [{"formula": "count(*)", "name": "n"}], "filter": [filt]}))
+            "population": model, "metrics": [{"expression": "count(*)", "name": "n"}], "filter": [filt]}))
         return int(resp.data[0][f"{model}.n"])
 
     assert await count("created_at >= date_add(current_date(), -30, 'day')", model="recent") == 1

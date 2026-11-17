@@ -247,7 +247,7 @@ class TestExpressionSql:
         root = SlayerQuery.model_validate({
             "population": "stage1",
             "dimensions": ["status"],
-            "metrics": [{"formula": "max(amount_cost_sum)"}],
+            "metrics": [{"expression": "max(amount_cost_sum)"}],
         })
         model = _orders()
         with tempfile.TemporaryDirectory() as d:

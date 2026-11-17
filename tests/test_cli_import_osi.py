@@ -154,20 +154,20 @@ def test_current_spec_document_imports_end_to_end(duck_store, capsys) -> None:
         "order_id", "customer_id", "amount", "quantity", "status", "ordered_on", "tip_or_zero"}
     assert [j.join_pairs for j in orders.relationships] == [[["customer_id", "id"]]]
 
-    rows = run_sync(_rows(store, db, {"source_model": "orders",
-                                      "measures": ["total_amount", "completed_amount", "order_count"]}))
+    rows = run_sync(_rows(store, db, {"population": "orders",
+                                      "metrics": ["total_amount", "completed_amount", "order_count"]}))
     assert float(rows[0]["orders.total_amount"]) == pytest.approx(22)
     assert float(rows[0]["orders.completed_amount"]) == pytest.approx(17)
     assert rows[0]["orders.order_count"] == 3
 
-    rows = run_sync(_rows(store, db, {"source_model": "orders", "dimensions": ["customers.segment"],
-                                      "measures": ["total_amount"]}))
+    rows = run_sync(_rows(store, db, {"population": "orders", "dimensions": ["customers.segment"],
+                                      "metrics": ["total_amount"]}))
     assert {r["orders.customers.segment"]: float(r["orders.total_amount"]) for r in rows} == {"b2b": 15, "b2c": 7}
 
     loaded = {name: run_sync(storage.get_dataset(name, data_source=DATASOURCE)) for name in ("orders", "customers")}
     [home] = [name for name, model in loaded.items()
               if model is not None and any(x.name == "net_amount" for x in model.metrics)]
-    rows = run_sync(_rows(store, db, {"source_model": home, "measures": ["net_amount", "amount_per_customer"]}))
+    rows = run_sync(_rows(store, db, {"population": home, "metrics": ["net_amount", "amount_per_customer"]}))
     assert float(rows[0][f"{home}.net_amount"]) == pytest.approx(19.5)
     assert float(rows[0][f"{home}.amount_per_customer"]) == pytest.approx(11)
 

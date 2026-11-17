@@ -19,13 +19,13 @@ from tests._saved_query_refinement_fixtures import call_tool_json
 
 REVENUE = {"formula": "sum(orders.amount)", "name": "revenue"}
 # Rootless: infers ``customers``; with an ``orders.status`` filter it would infer ``orders``.
-BY_CUSTOMER: Dict[str, Any] = {"dimensions": ["customers.name"], "measures": [REVENUE]}
-OK_FILTER = {"filters": ["orders.status = 'ok'"]}
+BY_CUSTOMER: Dict[str, Any] = {"dimensions": ["customers.name"], "metrics": [REVENUE]}
+OK_FILTER = {"filter": ["orders.status = 'ok'"]}
 N = {"formula": "count(*)", "name": "n"}
 # The final stage infers model ``orders``, which a sibling stage is named.
 COLLIDING: List[Any] = [
-    {"name": "orders", "source_model": "customers", "dimensions": ["name"], "measures": [N]},
-    {"dimensions": ["customers.name", "products.title"], "measures": [N]},
+    {"name": "orders", "population": "customers", "dimensions": ["name"], "metrics": [N]},
+    {"dimensions": ["customers.name", "products.title"], "metrics": [N]},
 ]
 
 
@@ -106,7 +106,7 @@ class TestPinnedOnSave:
 
     async def test_edit_model_source_queries(self, engine: SlayerQueryEngine) -> None:
         await engine.create_dataset_from_query(
-            query={"source_model": "orders", "measures": [N]}, name="edited",
+            query={"population": "orders", "metrics": [N]}, name="edited",
         )
         server = create_mcp_server(storage=engine.storage)
         payload = await call_tool_json(
@@ -119,12 +119,12 @@ class TestPinnedOnSave:
     async def test_every_rootless_stage_pinned_and_rooted_stages_verbatim(
         self, sqlite_engine: SlayerQueryEngine,
     ) -> None:
-        extension = {"source_name": "orders", "measures": [{"formula": "sum(amount * 2)", "name": "double_amount"}]}
+        extension = {"source_name": "orders", "metrics": [{"expression": "sum(amount * 2)", "name": "double_amount"}]}
         await sqlite_engine.create_dataset_from_query(query=[
             {"name": "per_customer", **BY_CUSTOMER},
-            {"name": "ext", "source_model": "orders", "extensions": [extension],
-             "measures": [{"formula": "double_amount", "name": "d"}]},
-            {"source_model": "per_customer", "measures": [{"formula": "sum(revenue)", "name": "total"}]},
+            {"name": "ext", "population": "orders", "extensions": [extension],
+             "metrics": [{"expression": "double_amount", "name": "d"}]},
+            {"population": "per_customer", "metrics": [{"expression": "sum(revenue)", "name": "total"}]},
         ], name="staged")
         stages = {s.name: s for s in await stored_stages(sqlite_engine, "staged")}
         assert stages["per_customer"].population == "customers"
@@ -138,7 +138,7 @@ class TestRefinementKeepsPopulation:
     async def test_refined_run_keeps_pinned_population(self, engine: SlayerQueryEngine) -> None:
         await engine.create_dataset_from_query(query=BY_CUSTOMER, name="by_customer")
         refined = await engine.execute("by_customer", refine=OK_FILTER)
-        hand_written = await engine.execute({"source_model": "customers", **BY_CUSTOMER, **OK_FILTER})
+        hand_written = await engine.execute({"population": "customers", **BY_CUSTOMER, **OK_FILTER})
         assert refined.population == "customers"
         assert refined.columns == hand_written.columns == ["customers.name", "customers.revenue"]
         assert rows(refined) == rows(hand_written)
@@ -170,7 +170,7 @@ class TestLegacyUnpinnedModel:
     async def test_refined_run_pins_from_unrefined_stage(self, engine: SlayerQueryEngine) -> None:
         await self._store_legacy(engine, "legacy", [BY_CUSTOMER])
         refined = await engine.execute("legacy", refine=OK_FILTER)
-        hand_written = await engine.execute({"source_model": "customers", **BY_CUSTOMER, **OK_FILTER})
+        hand_written = await engine.execute({"population": "customers", **BY_CUSTOMER, **OK_FILTER})
         assert refined.population == "customers"
         assert refined.columns == hand_written.columns
         assert rows(refined) == rows(hand_written)
@@ -188,7 +188,7 @@ class TestLegacyUnpinnedModel:
     async def test_refined_collision_refused(self, products_engine: SlayerQueryEngine) -> None:
         await self._store_legacy(products_engine, "colliding", COLLIDING)
         with pytest.raises(ValueError, match=r"(?i)rename"):
-            await products_engine.execute("colliding", refine={"filters": ["n > 0"]})
+            await products_engine.execute("colliding", refine={"filter": ["n > 0"]})
 
     async def test_unrefined_collision_runs_as_before(self, products_engine: SlayerQueryEngine) -> None:
         await self._store_legacy(products_engine, "colliding", COLLIDING)

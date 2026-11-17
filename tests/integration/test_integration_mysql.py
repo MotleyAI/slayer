@@ -304,7 +304,7 @@ def mysql_env(_mysql_env_storage) -> SlayerQueryEngine:
 @pytest.mark.integration
 class TestMySQLQueries:
     async def test_count_all(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)"}]})
         result = await mysql_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
@@ -328,12 +328,12 @@ class TestMySQLQueries:
         assert by_rx == {1: 2, 0: 4}
 
     async def test_sum_measure(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(total)"}]})
         result = await mysql_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0  # NOSONAR(S1244) — sum of integer cents, exact-representable
 
     async def test_avg_measure(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "avg(avg_amount)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "avg(avg_amount)"}]})
         result = await mysql_env.execute(query=query)
         avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
@@ -341,7 +341,7 @@ class TestMySQLQueries:
     async def test_group_by_status(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": [{"name": "status"}],
         })
         result = await mysql_env.execute(query=query)
@@ -353,7 +353,7 @@ class TestMySQLQueries:
     async def test_filter_equals(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "filter": ["status == 'completed'"],
         })
         result = await mysql_env.execute(query=query)
@@ -362,7 +362,7 @@ class TestMySQLQueries:
     async def test_filter_gt(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "filter": ["total > 100"],
         })
         result = await mysql_env.execute(query=query)
@@ -375,7 +375,7 @@ class TestMySQLQueries:
         for total = 100."""
         acceptance = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "filter": ["trunc(total) >= 100"],
         })
         result = await mysql_env.execute(query=acceptance)
@@ -385,7 +385,7 @@ class TestMySQLQueries:
 
         truncates = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "filter": ["trunc(total / 40.0) == 2"],
         })
         result = await mysql_env.execute(query=truncates)
@@ -394,9 +394,9 @@ class TestMySQLQueries:
     async def test_order_by_desc(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": [{"name": "status"}],
-            "order": [{"column": {"name": "count"}, "direction": "desc"}],
+            "order": [{"field": {"name": "count"}, "direction": "desc"}],
         })
         result = await mysql_env.execute(query=query)
         assert result.data[0]["orders.status"] == "completed"
@@ -404,7 +404,7 @@ class TestMySQLQueries:
     async def test_limit(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": [{"name": "status"}],
             "limit": 2,
         })
@@ -414,7 +414,7 @@ class TestMySQLQueries:
     async def test_multiple_measures(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}, {"formula": "sum(total)"}],
+            "metrics": [{"expression": "count(*)"}, {"expression": "sum(total)"}],
             "dimensions": [{"name": "status"}],
         })
         result = await mysql_env.execute(query=query)
@@ -427,8 +427,8 @@ class TestMySQLQueries:
         return 3 months."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
-            "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}],
+            "metrics": [{"expression": "count(*)"}],
+            "time_dimensions": [{"field": {"name": "created_at"}, "granularity": "month"}],
         })
         result = await mysql_env.execute(query=query)
         assert result.row_count == 3
@@ -436,9 +436,9 @@ class TestMySQLQueries:
     async def test_time_dimension_with_date_range(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "time_dimensions": [{
-                "dimension": {"name": "created_at"},
+                "field": {"name": "created_at"},
                 "granularity": "month",
                 "date_range": ["2024-01-01", "2024-02-28"],
             }],
@@ -450,7 +450,7 @@ class TestMySQLQueries:
     async def test_composite_filter(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "filter": ["status == 'completed' or status == 'pending'"],
         })
         result = await mysql_env.execute(query=query)
@@ -785,7 +785,7 @@ class TestRollupIngestionMySQL:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": [{"name": "customers.name"}],
         })
         result = await engine.execute(query=query)
@@ -805,7 +805,7 @@ class TestRollupIngestionMySQL:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}, {"formula": "sum(amount)"}],
+            "metrics": [{"expression": "count(*)"}, {"expression": "sum(amount)"}],
             "dimensions": [{"name": "customers.regions.name"}],
         })
         result = await engine.execute(query=query)
@@ -838,7 +838,7 @@ class TestRollupIngestionMySQL:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": [{"name": "customers.regions.name"}],
         })
         result = await engine.execute(query=query)
@@ -854,7 +854,7 @@ class TestRollupIngestionMySQL:
         for m in models:
             await storage.save_dataset(m)
         engine = SlayerQueryEngine(storage=storage)
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)"}]})
         result = await engine.execute(query=query)
         assert "LEFT JOIN" not in result.sql
         assert result.data[0]["orders._count"] == 4
@@ -869,7 +869,7 @@ class TestRollupIngestionMySQL:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": [{"name": "customers.name"}],
         })
         result = await engine.execute(query=query)
@@ -887,7 +887,7 @@ class TestRollupIngestionMySQL:
         engine = SlayerQueryEngine(storage=storage)
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": [{"name": "customers.regions.name"}],
         })
         result = await engine.execute(query=query)
@@ -931,7 +931,7 @@ class TestRollupIngestionMySQL:
 @pytest.mark.integration
 class TestMySQLMedianPercentileRaises:
     async def test_median_raises(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "median(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "median(total)"}]})
         with pytest.raises(NotImplementedError, match="(?i)median.*mysql"):
             await mysql_env.execute(query=query)
 
@@ -939,7 +939,7 @@ class TestMySQLMedianPercentileRaises:
         """Grouped median path goes through the same dialect hook; must also raise."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "median(total)"}],
+            "metrics": [{"expression": "median(total)"}],
             "dimensions": [{"name": "status"}],
         })
         with pytest.raises(NotImplementedError, match="(?i)median.*mysql"):
@@ -948,7 +948,7 @@ class TestMySQLMedianPercentileRaises:
     async def test_percentile_raises(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "percentile(total, p=0.5)"}],
+            "metrics": [{"expression": "percentile(total, p=0.5)"}],
         })
         with pytest.raises(NotImplementedError, match="(?i)percentile.*mysql"):
             await mysql_env.execute(query=query)
@@ -973,7 +973,7 @@ class TestMySQLStatAggregations:
     """
 
     async def test_stddev_samp_native_mysql(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "stddev_samp(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "stddev_samp(total)"}]})
         result = await mysql_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(
@@ -995,7 +995,7 @@ class TestMySQLStatAggregations:
         """The MysqlDialect.build_stat_agg_1arg Anonymous wrap means the
         emitted SQL contains literal ``VAR_SAMP(``, not sqlglot's default
         ``VARIANCE``. Pin via dry_run."""
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "var_samp(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "var_samp(total)"}]})
         result = await mysql_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_var_samp"]) == pytest.approx(
@@ -1032,7 +1032,7 @@ class TestMySQLStatAggregations:
         (no native function). Pin both numeric correctness AND SQL shape."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "corr(total, other=customer_id)"}],
+            "metrics": [{"expression": "corr(total, other=customer_id)"}],
         })
         result = await mysql_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1057,7 +1057,7 @@ class TestMySQLStatAggregations:
     async def test_covar_samp_variance_decomposition_mysql(self, mysql_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "covar_samp(total, other=customer_id)"}],
+            "metrics": [{"expression": "covar_samp(total, other=customer_id)"}],
         })
         result = await mysql_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -1193,14 +1193,14 @@ async def test_log10_round_trip_mysql(mysql_log10_env: SlayerQueryEngine) -> Non
     ``LOG(10, ...)`` form."""
 
     result = await mysql_log10_env.execute(
-        SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "max(log_amount)"}]})
+        SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "max(log_amount)"}]})
     )
     assert float(result.data[0]["orders.log_amount_max"]) == pytest.approx(
         _math.log10(300.0), rel=1e-9
     )
 
     dry = await mysql_log10_env.execute(
-        SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "max(log_amount)"}]}),
+        SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "max(log_amount)"}]}),
         dry_run=True,
     )
     assert dry.sql is not None
@@ -1446,7 +1446,7 @@ class TestMySQLModeAEscaping:
     ) -> None:
         resp = await mysql_esc_env.execute(SlayerQuery.model_validate({
             "population": "esc",
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
             "variables": {"v": value},
         }))
         assert resp.row_count == 1
@@ -1462,7 +1462,7 @@ class TestMySQLModeAEscaping:
         # NULL on MySQL, 0 on ClickHouse — either way a weaker signal).
         resp = await mysql_esc_env.execute(SlayerQuery.model_validate({
             "population": "esc",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "variables": {"v": "x\\' OR '1'='1"},
         }))
         assert int(resp.data[0]["esc._count"]) == 0
@@ -1528,7 +1528,7 @@ class TestMySQLDateFunctions:
     async def test_hourly_time_dimension_keeps_the_hour(self, mysql_dates: SlayerQueryEngine) -> None:
         resp = await mysql_dates.execute(SlayerQuery.model_validate({
             "population": "dt", "dimensions": ["id"],
-            "time_dimensions": [{"dimension": "t1", "granularity": "hour"}],
+            "time_dimensions": [{"field": "t1", "granularity": "hour"}],
         }))
         buckets = {int(r["dt.id"]): r["dt.t1"] for r in resp.data}
         assert str(buckets[1])[:19] == "2024-01-31 23:00:00"

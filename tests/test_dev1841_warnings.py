@@ -68,7 +68,7 @@ class TestDiceSliceHint:
         """Scenario: broadcast warning carries the dice–slice hint — present
         whether or not the query contains a filter, naming associate mode."""
         _, engine = exec_backend
-        kw = {"dimensions": ["status"], "measures": [CM], "to_many_handling": "broadcast"}
+        kw = {"dimensions": ["status"], "metrics": [CM], "to_many_handling": "broadcast"}
         if filters:
             kw["filters"] = filters
         resp = await engine.execute(q(**kw))

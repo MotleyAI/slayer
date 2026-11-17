@@ -196,7 +196,7 @@ class TestAxes:
     async def test_stage_propagates_its_sources_default(self, backend) -> None:
         stage = SlayerQuery.model_validate({
             "name": "ob", "population": "orders", "dimensions": ["customer_id"],
-            "time_dimensions": [{"dimension": "order_date", "granularity": "day"}],
+            "time_dimensions": [{"field": "order_date", "granularity": "day"}],
             "metrics": [m("sum(amount)", "rev"), m("min(customers.signed_up_at)", "signup")],
         })
         async with spine_engine(backend, models=spine_models(signed_up_at=True)) as eng:
@@ -208,8 +208,8 @@ class TestAxes:
     async def test_sole_column_default_feeds_transforms(self, backend) -> None:
         query = SlayerQuery.model_validate({
             "population": "returns",
-            "time_dimensions": [{"dimension": "return_date", "granularity": "month"},
-                                {"dimension": "customers.signed_up_at", "granularity": "month"}],
+            "time_dimensions": [{"field": "return_date", "granularity": "month"},
+                                {"field": "customers.signed_up_at", "granularity": "month"}],
             "metrics": [m("cumsum(sum(amount))", "cs")],
         })
         got = {}
@@ -258,9 +258,9 @@ class TestRouting:
 
     async def test_existing_queries_never_route_through_the_spine(self, engine) -> None:
         query = {
-            "source_model": "orders",
-            "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
-            "measures": [m("sum(returns.amount)", "r")],
+            "population": "orders",
+            "time_dimensions": [{"field": "order_date", "granularity": "month"}],
+            "metrics": [m("sum(returns.amount)", "r")],
         }
         resp = await engine.execute(SlayerQuery.model_validate({**query, "to_many_handling": "broadcast"}))
         assert by_bucket(resp, ["r"], bucket="orders.order_date") == {"2025-01": (35.0,), "2025-02": (35.0,)}
@@ -270,7 +270,7 @@ class TestRouting:
     async def test_existing_queries_associate_by_default_without_the_spine(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "orders",
-            "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
+            "time_dimensions": [{"field": "order_date", "granularity": "month"}],
             "metrics": [m("sum(returns.amount)", "r")],
         }))
         assert [w for w in resp.warnings or [] if w.kind == "associated"]
@@ -350,7 +350,7 @@ def _over_monthly(**extra) -> SlayerQuery:
 
 
 class TestSpineStages:
-    @pytest.mark.parametrize("extra", [{}, {"source_model": "time_spine"}], ids=["rootless", "explicit-spine"])
+    @pytest.mark.parametrize("extra", [{}, {"population": "time_spine"}], ids=["rootless", "explicit-spine"])
     async def test_a_spine_stage_keeps_every_bucket(self, engine, extra) -> None:
         resp = await engine.execute([_monthly_stage(**extra), _over_monthly()])
         assert [(num(value(r, "t")), num(value(r, "c"))) for r in resp.data] == [(220.0, 3.0)]
@@ -385,7 +385,7 @@ class TestSpineStages:
         assert "lower bound" in str(exc.value).lower()
 
     @pytest.mark.parametrize(("measure", "extra"), [
-        (m("count(*)", "o"), {"source_model": "time_spine"}),
+        (m("count(*)", "o"), {"population": "time_spine"}),
         (m("min(time_spine.timestamp)", "o"), {}),
     ], ids=["count-star", "min-timestamp"])
     async def test_aggregation_over_the_spine_inside_a_stage(self, engine, measure, extra) -> None:
@@ -498,7 +498,7 @@ class TestFilters:
 
 class TestNoCountableRows:
     @pytest.mark.parametrize(("measure", "extra"), [
-        (m("count(*)", "c"), {"source_model": "time_spine"}),
+        (m("count(*)", "c"), {"population": "time_spine"}),
         (m("min(time_spine.timestamp)", "t"), {}),
     ], ids=["count-star", "min-timestamp"])
     async def test_aggregation_over_the_spine(self, engine, measure, extra) -> None:
@@ -508,11 +508,11 @@ class TestNoCountableRows:
         assert "time_spine" in str(exc.value)
 
     @pytest.mark.parametrize("extra", [
-        {"dimensions": ["time_spine.timestamp"], "time_dimensions": [], "measures": TWO_FACTS},
+        {"dimensions": ["time_spine.timestamp"], "time_dimensions": [], "metrics": TWO_FACTS},
         {"distinct_dimension_values": False, "measures": []},
         {"dimensions": [{"expression": "date_part('month', time_spine.timestamp)", "name": "mo"}],
-         "measures": TWO_FACTS},
-        {"order": [{"column": "date_trunc('day', time_spine.timestamp)"}], "measures": TWO_FACTS},
+         "metrics": TWO_FACTS},
+        {"order": [{"field": "date_trunc('day', time_spine.timestamp)"}], "metrics": TWO_FACTS},
     ], ids=["plain-dimension", "raw-rows", "computed-dimension-operand", "unprojected-order-key"])
     async def test_spine_column_only_as_a_bucketed_time_dimension(self, engine, extra) -> None:
         extra = dict(extra)  # the parametrized dict is shared across backends
@@ -530,7 +530,7 @@ class TestNoCountableRows:
     async def test_spine_order_key_outside_a_spine_query(self, engine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders", "metrics": [m("sum(amount)", "s")], "dimensions": ["customer_id"],
-            "order": [{"column": "time_spine.timestamp", "direction": "asc"}],
+            "order": [{"field": "time_spine.timestamp", "direction": "asc"}],
         })
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute(query, dry_run=True)
@@ -638,7 +638,7 @@ async def test_calendar_model_parity(backend) -> None:
     async with spine_engine(backend, models=calendar_models()) as eng:
         cal = await eng.execute(SlayerQuery.model_validate({
             "population": "calendar", "metrics": TWO_FACTS,
-            "time_dimensions": [{"dimension": "date", "granularity": "month", "date_range": JAN_JUN}],
+            "time_dimensions": [{"field": "date", "granularity": "month", "date_range": JAN_JUN}],
         }))
         spine = await eng.execute(spine_query(measures=TWO_FACTS))
     assert cal.warnings == []

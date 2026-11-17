@@ -2451,7 +2451,7 @@ def _unrelated_attach_fields(
     return {
         "unrelated_dataset": dataset,
         "unrelated_population": context.host_dataset.spelling,
-        "unrelated_measures": measures or [alias],
+        "unrelated_metrics": measures or [alias],
     }
 
 

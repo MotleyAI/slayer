@@ -102,7 +102,7 @@ class TestDunderModelLiveValues:
             result = await engine.execute(query=SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["customer__region.label"],
-                "metrics": [{"formula": "sum(amount)"}],
+                "metrics": [{"expression": "sum(amount)"}],
             }))
         by_label = {r["orders.customer__region.label"]: r["orders.amount_sum"]
                     for r in result.data}
@@ -180,7 +180,7 @@ class TestLongAliasCollisionLiveValues:
             result = await engine.execute(query=SlayerQuery.model_validate({
                 "population": "subscription_entity",
                 "dimensions": [north, south],
-                "metrics": [{"formula": "sum(amount)"}],
+                "metrics": [{"expression": "sum(amount)"}],
             }))
         assert result.row_count == 1
         row = result.data[0]

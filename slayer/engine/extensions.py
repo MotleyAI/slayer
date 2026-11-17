@@ -78,7 +78,7 @@ def respelled(query: SlayerQuery, *, tiers: Sequence[Iterable[str]]) -> SlayerQu
     update: Dict[str, object] = {}
     spec = query.population
     if spec is not None and spell(spec) != spec:
-        update["source_model"] = spell(spec)
+        update["population"] = spell(spec)
     extensions = [extension(e) for e in query.extensions or []]
     if any(new is not old for new, old in zip(extensions, query.extensions or [])):
         update["extensions"] = extensions

@@ -198,7 +198,7 @@ class TestMigration:
                 "name": "orders",
                 "sql_table": "orders",
                 "data_source": "ds",
-                "fields": [],
+                "columns": [],
             }
         )
         assert model.source_kind is None

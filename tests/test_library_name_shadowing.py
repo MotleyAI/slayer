@@ -23,7 +23,7 @@ from tests._stored_upgrade_fixtures import DS
 
 
 def _query(*measures: dict, source: str = "t", **body: object) -> dict:
-    return {"source_model": source, "measures": list(measures), **body}
+    return {"population": source, "metrics": list(measures), **body}
 
 
 class TestStoredShadow:
@@ -44,15 +44,15 @@ class TestStoredShadow:
     async def test_another_model_keeps_the_library_function(self) -> None:
         async with stored_engine(models=[t_doc(aggregations=[agg("reverse")])]) as engine:
             resp = await engine.execute({
-                "source_model": "t", "dimensions": [{"expression": "reverse(customers.name)", "name": "rn"}],
-                "measures": [measure("count(*)", "n")]})
+                "population": "t", "dimensions": [{"expression": "reverse(customers.name)", "name": "rn"}],
+                "metrics": [measure("count(*)", "n")]})
         assert {r["t.rn"] for r in resp.data} == {"cba", "zyx"}
 
     async def test_a_literal_argument_keeps_the_library_function(self) -> None:
         async with stored_engine(models=[t_doc(aggregations=[agg("reverse")])]) as engine:
             resp = await engine.execute({
-                "source_model": "t", "dimensions": [{"expression": "concat(s, reverse('abc'))", "name": "lit"}],
-                "measures": [measure("count(*)", "n")]})
+                "population": "t", "dimensions": [{"expression": "concat(s, reverse('abc'))", "name": "lit"}],
+                "metrics": [measure("count(*)", "n")]})
         assert {r["t.lit"] for r in resp.data} == {"xcba", "ycba", "zcba"}
 
     @pytest.mark.parametrize("spelling", sorted(SCALAR_SPELLINGS))
@@ -163,8 +163,8 @@ class TestLibraryErrorsKept:
     async def test_the_library_function_still_answers_without_a_definition(self) -> None:
         async with stored_engine(models=[t_doc()]) as engine:
             resp = await engine.execute({
-                "source_model": "t", "dimensions": [{"expression": "reverse(s)", "name": "rs"}],
-                "measures": [measure("count(*)", "n")]})
+                "population": "t", "dimensions": [{"expression": "reverse(s)", "name": "rs"}],
+                "metrics": [measure("count(*)", "n")]})
         assert {r["t.rs"] for r in resp.data} == {"x", "y", "z"}
 
 

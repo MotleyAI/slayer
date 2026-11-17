@@ -211,7 +211,7 @@ class SidecarEmbeddingStore:
         )
         return {raw[0]: self._row_from_db(raw) for raw in raws}
 
-    async def list_for_dataset(
+    async def list_for_model(
         self, *, embedding_model_name: str,
     ) -> list[Embedding]:
         raws = await asyncio.to_thread(
@@ -270,7 +270,7 @@ class SidecarEmbeddingsMixin:
     async def list_embeddings(
         self, *, embedding_model_name: str,
     ) -> list[Embedding]:
-        return await self._embeddings_store.list_for_dataset(
+        return await self._embeddings_store.list_for_model(
             embedding_model_name=embedding_model_name,
         )
 

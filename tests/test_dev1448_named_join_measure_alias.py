@@ -99,13 +99,13 @@ async def test_dev1448_downstream_resolves_user_name(engine: tuple[SlayerQueryEn
         "name": "stage1",
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+        "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
         "to_many_handling": "broadcast",
     })
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["status"],
-        "metrics": [{"formula": "max(rev)"}],
+        "metrics": [{"expression": "max(rev)"}],
     })
     resp = await eng.execute([stage1, root])
     # Result-key contract: downstream stage prefix + canonical alias of the
@@ -129,12 +129,12 @@ async def test_dev1448_canonical_form_not_a_downstream_name(engine: tuple[Slayer
         "name": "stage1",
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+        "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
     })
     root = SlayerQuery.model_validate({
         "population": "stage1",
         "dimensions": ["status"],
-        "metrics": [{"formula": "max(customers__revenue_sum)"}],
+        "metrics": [{"expression": "max(customers__revenue_sum)"}],
     })
     with pytest.raises(UnknownReferenceError):
         await eng.execute([stage1, root])

@@ -81,8 +81,8 @@ class TestSaveMemory:
         resp = await client.save_memory(
             learning="rev",
             linked_entities={
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"expression": "sum(amount)"}],
             },
         )
         assert resp.memory_id == "1"

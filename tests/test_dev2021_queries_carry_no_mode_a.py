@@ -117,9 +117,9 @@ def executed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 def _ext_column(column: dict[str, Any], *, source_name: str = "orders") -> dict[str, Any]:
     return {
-        "source_model": "orders",
+        "population": "orders",
         "extensions": [{"source_name": source_name, "columns": [column]}],
-        "measures": [{"formula": "count(*)"}],
+        "metrics": [{"expression": "count(*)"}],
     }
 
 
@@ -128,12 +128,12 @@ _CONSTRUCTION_ROUTES = {
     "extension-filter-oracle": _ext_column({"name": "oracle", "sql": "amount", "filter": "EXISTS (SELECT 1 FROM secrets)"}),
     "extension-sql-less-hidden-column": _ext_column({"name": "cost", "type": "DOUBLE"}),
     "inline-sql-table": {
-        "source_model": {"name": "s", "sql_table": "secrets", "data_source": DS,
+        "population": {"name": "s", "sql_table": "secrets", "data_source": DS,
                          "columns": [{"name": "pw", "type": "TEXT"}]},
         "dimensions": ["pw"],
     },
     "inline-sql": {
-        "source_model": {"name": "s", "sql": "SELECT pw FROM secrets", "data_source": DS,
+        "population": {"name": "s", "sql": "SELECT pw FROM secrets", "data_source": DS,
                          "columns": [{"name": "pw", "type": "TEXT"}]},
         "dimensions": ["pw"],
     },
@@ -169,7 +169,7 @@ class TestEachRouteIsRefused:
 
     async def test_a_hostile_variable_is_refused_before_sql_runs(self, shop: _Shop, executed: list[str]) -> None:
         query = SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"formula": "sum(scaled)"}],
+            "population": "orders", "metrics": [{"expression": "sum(scaled)"}],
             "variables": {"k": "(SELECT count(*) FROM secrets)"},
         })
         with pytest.raises(ValueError, match="literal values"):
@@ -181,7 +181,7 @@ class TestEachRouteIsRefused:
     ) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "weighted_avg(amount, weight='length(sqlite_version())')"}],
+            "metrics": [{"expression": "weighted_avg(amount, weight='length(sqlite_version())')"}],
         })
         with pytest.raises(UnanalyzableAggregationParameterError):
             await shop.engine.execute(query)
@@ -208,7 +208,7 @@ class TestSurfaces:
         server = create_mcp_server(storage=shop.storage)
         with pytest.raises(ToolError, match="literal values"):
             await server.call_tool(name="query", arguments={"query": {
-                "source_model": "orders", "measures": [{"formula": "sum(scaled)"}],
+                "population": "orders", "metrics": [{"expression": "sum(scaled)"}],
                 "variables": {"k": "(SELECT count(*) FROM secrets)"},
             }})
         assert not any("secrets" in sql or "sqlite_version" in sql for sql in executed)
@@ -219,13 +219,13 @@ class TestModeBSpellingsRun:
         resp = await shop.engine.execute(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [{"expression": "upper(customers.tier)", "name": "tier_label"}],
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
         }))
         assert {r["orders.tier_label"]: r["orders.rev"] for r in resp.data} == {"GOLD": 70.0, "SILVER": 30.0}
 
     async def test_a_literal_variable_binds_into_stored_mode_a(self, shop: _Shop) -> None:
         resp = await shop.engine.execute(SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"formula": "sum(scaled)", "name": "s"}], "variables": {"k": 2},
+            "population": "orders", "metrics": [{"expression": "sum(scaled)", "name": "s"}], "variables": {"k": 2},
         }))
         assert resp.data[0]["orders.s"] == pytest.approx(200.0)
 
@@ -235,7 +235,7 @@ class TestModeBSpellingsRun:
     ])
     async def test_a_string_argument_is_mode_b(self, shop: _Shop, formula: str) -> None:
         resp = await shop.engine.execute(SlayerQuery.model_validate({
-            "population": "orders", "metrics": [{"formula": formula, "name": "w"}],
+            "population": "orders", "metrics": [{"expression": formula, "name": "w"}],
         }))
         # sum(amount * id * 2) / sum(id * 2) = 600 / 20
         assert resp.data[0]["orders.w"] == pytest.approx(30.0)

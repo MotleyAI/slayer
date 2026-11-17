@@ -56,7 +56,7 @@ async def check_validation_finding(engine: SlayerQueryEngine, *, data_source: st
 
 async def check_query_carries_finding(engine: SlayerQueryEngine, *, column: str) -> None:
     with pytest.raises(SchemaDriftError) as info:
-        await engine.execute({"source_model": MODEL, "measures": [{"formula": f"sum({column})", "name": "s"}]})
+        await engine.execute({"population": MODEL, "metrics": [{"expression": f"sum({column})", "name": "s"}]})
     assert column in str(info.value), str(info.value)
     assert "ingest" in str(info.value).lower(), str(info.value)
 

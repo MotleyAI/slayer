@@ -66,7 +66,7 @@ async def test_embedding_retriever_subclasses_retriever(  # NOSONAR(S7503) — a
     storage: StorageBackend,
 ) -> None:
     assert issubclass(EmbeddingRetriever, Retriever)
-    er = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
+    er = EmbeddingRetriever(storage=storage, model_name="openai/x")
     assert er.name == "embeddings"
 
 

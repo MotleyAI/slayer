@@ -121,7 +121,7 @@ async def test_dev1445_alias_filter_matches_dotted_filter(engine: Tuple[SlayerQu
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+            "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
             "filter": ["rev >= 80"],
         })
     )
@@ -129,7 +129,7 @@ async def test_dev1445_alias_filter_matches_dotted_filter(engine: Tuple[SlayerQu
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+            "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
             "filter": ["sum(customers.revenue) >= 80"],
         })
     )
@@ -158,14 +158,14 @@ async def test_dev1445_filter_actually_applies(engine: Tuple[SlayerQueryEngine, 
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+            "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
         })
     )
     filtered = await eng.execute(
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+            "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
             "filter": ["rev >= 80"],
         })
     )
@@ -192,7 +192,7 @@ async def test_dev1445_both_filter_forms_share_one_cte(engine: Tuple[SlayerQuery
     query = SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+        "metrics": [{"expression": "sum(customers.revenue)", "name": "rev"}],
         "filter": ["rev >= 80", "sum(customers.revenue) >= 80"],
     })
     # Idempotent: giving both filter forms is the same as giving one.

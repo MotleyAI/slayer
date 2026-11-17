@@ -129,7 +129,7 @@ class TestHostGrainOrderWrapUsesEmittedAlias:
                 "population": "host",
                 "dimensions": ["direct_val"],
                 "metrics": ["count(*)"],
-                "order": [{"column": "a.b.val", "direction": "asc"}],
+                "order": [{"field": "a.b.val", "direction": "asc"}],
             }),
             model=host, extra_models=extra,
         )

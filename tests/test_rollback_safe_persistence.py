@@ -33,7 +33,7 @@ def _ordered_query() -> SlayerQuery:
     """Leaves every field added by this release unset: ``OrderItem.nulls``, ``TimeDimension.name``."""
     return SlayerQuery.model_validate({
         "population": "orders",
-        "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+        "metrics": [{"expression": "sum(amount)", "name": "rev"}],
         "dimensions": ["status"],
         "time_dimensions": [TimeDimension(field="ordered_at", granularity="month")],
         "order": [OrderItem.model_validate({"field": {"name": "status"}, "direction": "desc"})],

@@ -15,12 +15,12 @@ from slayer.storage.yaml_storage import YAMLStorage
 SHOP_DS = "shop"
 
 README_QUERY = json.dumps({
-    "source_model": "orders",
-    "measures": ["sum(order_total)", "change_pct(sum(order_total))"],
+    "population": "orders",
+    "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
     "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
 })
 
-TOTAL_QUERY = json.dumps({"source_model": "orders", "measures": ["sum(order_total)"]})
+TOTAL_QUERY = json.dumps({"population": "orders", "metrics": ["sum(order_total)"]})
 
 
 def build_shop_storage(base: Path) -> str:

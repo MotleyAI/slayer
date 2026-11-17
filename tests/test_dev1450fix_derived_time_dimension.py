@@ -203,7 +203,7 @@ async def test_derived_td_dimension_groups_by_derived_expr(engine: tuple[SlayerQ
         SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="effective_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "sum(amount)"}, {"formula": "count(*)"}]})
+            )], "metrics": [{"expression": "sum(amount)"}, {"expression": "count(*)"}]})
     )
     assert "orders.effective_at" in resp.columns
     assert resp.row_count == 3
@@ -219,7 +219,7 @@ async def test_derived_td_carries_attribute_label(engine: tuple[SlayerQueryEngin
         SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="effective_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "sum(amount)"}]})
+            )], "metrics": [{"expression": "sum(amount)"}]})
     )
     assert resp.attributes.dimensions["orders.effective_at"].label == "Effective date"
 
@@ -230,7 +230,7 @@ async def test_derived_td_order_by(engine: tuple[SlayerQueryEngine, str]) -> Non
         SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="effective_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "sum(amount)"}], "order": [OrderItem(field=FieldRef(name="effective_at"), direction="asc")]})
+            )], "metrics": [{"expression": "sum(amount)"}], "order": [OrderItem(field=FieldRef(name="effective_at"), direction="asc")]})
     )
     # Ascending by derived month: Jan=10, Feb=12, Mar=12.
     assert [r["orders.amount_sum"] for r in resp.data] == [10.0, 12.0, 12.0]
@@ -329,7 +329,7 @@ async def test_derived_td_date_range(engine: tuple[SlayerQueryEngine, str]) -> N
                 field="effective_at",
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-02-01 00:00:00", "2024-02-28 00:00:00"],
-            )], "metrics": [{"formula": "sum(amount)"}, {"formula": "count(*)"}]})
+            )], "metrics": [{"expression": "sum(amount)"}, {"expression": "count(*)"}]})
     )
     # Only the two effective-Feb rows survive (row2 shipped 02-05, row3
     # created 02-15) -> one month bucket, amount 12, count 2. With the bare
@@ -347,7 +347,7 @@ async def test_joined_derived_td(engine: tuple[SlayerQueryEngine, str]) -> None:
         SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="customers.signup_eff",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "sum(amount)"}]})
+            )], "metrics": [{"expression": "sum(amount)"}]})
     )
     assert "orders.customers.signup_eff" in resp.columns
     assert resp.row_count == 3
@@ -364,7 +364,7 @@ async def test_cross_model_agg_with_joined_derived_td_shared_grain(engine: tuple
         SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="customers.signup_eff",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "sum(customers.revenue)"}]})
+            )], "metrics": [{"expression": "sum(customers.revenue)"}]})
     )
     assert "orders.customers.signup_eff" in resp.columns
     assert "orders.customers.revenue_sum" in resp.columns

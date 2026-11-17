@@ -71,7 +71,7 @@ class TestAttribution:
         assert (w.filename, w.lineno) == (__file__, line)
 
     def test_nested_inside_a_model(self) -> None:
-        stage = {"source_model": "orders", "measures": ["count(*)"], "strict": True}
+        stage = {"population": "orders", "metrics": ["count(*)"], "strict": True}
         with recorded() as caught:
             line = _next_line()
             SlayerDataset.model_validate({"name": "m", "source_queries": [stage]})

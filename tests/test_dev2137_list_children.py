@@ -211,13 +211,13 @@ class TestComposition:
         assert got == {"A": (3, 2, ["go", "sql"])}
 
     async def test_a_collected_list_in_a_later_stage(self, engine) -> None:
-        stage = {"name": "s", "source_model": "contractors", "dimensions": ["team"],
-                 "measures": [measure("collect(skills.value)", "team_skills")]}
-        kept = await engine.execute([stage, {"source_model": "s", "dimensions": ["team"],
-                                             "filters": ["contains(team_skills, 'go')"]}])
+        stage = {"name": "s", "population": "contractors", "dimensions": ["team"],
+                 "metrics": [measure("collect(skills.value)", "team_skills")]}
+        kept = await engine.execute([stage, {"population": "s", "dimensions": ["team"],
+                                             "filter": ["contains(team_skills, 'go')"]}])
         assert {_cell(r, "team") for r in kept.data} == {"A", "B"}
-        per_skill = await engine.execute([stage, {"source_model": "s", "dimensions": ["team_skills.value"],
-                                                  "measures": [measure("count(team_skills.*)", "n")]}])
+        per_skill = await engine.execute([stage, {"population": "s", "dimensions": ["team_skills.value"],
+                                                  "metrics": [measure("count(team_skills.*)", "n")]}])
         assert {_cell(r, "team_skills.value"): num(_cell(r, "n")) for r in per_skill.data} == {"go": 2, "sql": 1}
 
 

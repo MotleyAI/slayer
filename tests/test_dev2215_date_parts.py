@@ -303,10 +303,10 @@ class TestTimeDimensionKeysAndOrder:
 
     async def test_stage_order_by_bucket(self, engine: SlayerQueryEngine) -> None:
         stages: list[Any] = [
-            {"name": "inner", "source_model": "orders",
-             "time_dimensions": [{"dimension": "created_at", "granularity": "day"}], "measures": COUNT},
-            {"source_model": "inner", "time_dimensions": [{"dimension": "created_at", "granularity": "month"}],
-             "measures": [m("sum(n)", "t")], "order": [{"column": "date_trunc('month', created_at)", "direction": "desc"}]},
+            {"name": "inner", "population": "orders",
+             "time_dimensions": [{"field": "created_at", "granularity": "day"}], "metrics": COUNT},
+            {"population": "inner", "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+             "metrics": [m("sum(n)", "t")], "order": [{"field": "date_trunc('month', created_at)", "direction": "desc"}]},
         ]
         resp = await engine.execute(stages)
         months = [str(day(r["inner.created_at"])) for r in resp.data]
@@ -431,15 +431,15 @@ class TestCustomGranularityUnits:
 # usage-reporting/collection
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("body", [
-    {"dimensions": [{"name": "m", "expression": "month(ordered_at)"}], "measures": ["count(*)"]},
-    {"measures": ["count(*)"], "filters": ["year(ordered_at) = 2024"]},
-    {"measures": ["max(second(ordered_at))"]},
+    {"dimensions": [{"name": "m", "expression": "month(ordered_at)"}], "metrics": ["count(*)"]},
+    {"metrics": ["count(*)"], "filter": ["year(ordered_at) = 2024"]},
+    {"metrics": ["max(second(ordered_at))"]},
 ])
 def test_extraction_calls_count_as_date_part(body: dict[str, Any]) -> None:
-    assert Counter(query_features({"source_model": "orders", **body}).functions)["date_part"] == 1
+    assert Counter(query_features({"population": "orders", **body}).functions)["date_part"] == 1
 
 
 def test_date_trunc_is_not_counted() -> None:
-    found = query_features({"source_model": "orders", "measures": ["count(*)"],
-                            "filters": ["date_trunc('month', ordered_at) = '2024-01-01'"]})
+    found = query_features({"population": "orders", "metrics": ["count(*)"],
+                            "filter": ["date_trunc('month', ordered_at) = '2024-01-01'"]})
     assert found.functions == []

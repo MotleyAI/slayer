@@ -49,18 +49,18 @@ async def storage(tmp_path) -> YAMLStorage:
     try:
         for name, query in (
             ("ext_revenue", {
-                "source_model": "orders",
+                "population": "orders",
                 "extensions": [{"source_name": "orders",
-                                "measures": [{"formula": "sum(amount * 2)", "name": "dbl"}]}],
-                "measures": [{"formula": "dbl", "name": "d"}],
+                                "metrics": [{"expression": "sum(amount * 2)", "name": "dbl"}]}],
+                "metrics": [{"expression": "dbl", "name": "d"}],
             }),
             ("rollup", [
-                {"name": "rollup", "source_model": "orders", "dimensions": ["region"], "measures": [REVENUE]},
-                {"source_model": "rollup", "measures": [{"formula": "sum(revenue)", "name": "total"}]},
+                {"name": "rollup", "population": "orders", "dimensions": ["region"], "metrics": [REVENUE]},
+                {"population": "rollup", "metrics": [{"expression": "sum(revenue)", "name": "total"}]},
             ]),
-            ("target_totals", {"source_model": "targets", "dimensions": ["region"], "measures": [REVENUE]}),
-            ("monthly_rollup", {"source_model": "monthly_revenue",
-                                "measures": [{"formula": "sum(revenue)", "name": "total"}]}),
+            ("target_totals", {"population": "targets", "dimensions": ["region"], "metrics": [REVENUE]}),
+            ("monthly_rollup", {"population": "monthly_revenue",
+                                "metrics": [{"expression": "sum(revenue)", "name": "total"}]}),
         ):
             await engine.create_dataset_from_query(query=query, name=name, description=EXTRA_DESCRIPTIONS[name])
         await engine.save_dataset(SlayerDataset(

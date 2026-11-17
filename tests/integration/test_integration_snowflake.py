@@ -1083,7 +1083,7 @@ def test_list_functions_on_a_structured_array(sf_lists: tuple[YAMLStorage, Any],
     (model,) = run_sync(_ingest(sf_datasource, include_tables=["structured"]))
     run_sync(storage.save_dataset(model))
     resp = run_sync(SlayerQueryEngine(storage=storage).execute(
-        {"source_model": "structured", "dimensions": ["id"], "filters": filters}))
+        {"population": "structured", "dimensions": ["id"], "filter": filters}))
     assert {int(r["structured.id"]) for r in resp.data} == kept, resp.sql
 
 
@@ -1223,7 +1223,7 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
         assert tags.sql == '"tags"'
         engine = SlayerQueryEngine(storage=storage)
         try:
-            rows = run_sync(engine.execute({"source_model": "lower_items", "dimensions": ["qty"]})).data
+            rows = run_sync(engine.execute({"population": "lower_items", "dimensions": ["qty"]})).data
         finally:
             engine.close()
         assert [r["lower_items.qty"] for r in rows] == [7]

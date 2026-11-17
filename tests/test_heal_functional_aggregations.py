@@ -38,7 +38,7 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 
 def by_region(*measures: str) -> dict[str, Any]:
-    return {"source_model": "orders", "dimensions": ["region"], "measures": list(measures)}
+    return {"population": "orders", "dimensions": ["region"], "metrics": list(measures)}
 
 
 class TestUnknownFunction:
@@ -115,7 +115,7 @@ class TestCountDistinctExecuted:
 
     async def test_expression_with_partition(self, engine: SlayerQueryEngine) -> None:
         def query(formula: str) -> dict[str, Any]:
-            return {"source_model": "orders", "dimensions": ["region", "status"], "measures": [formula]}
+            return {"population": "orders", "dimensions": ["region", "status"], "metrics": [formula]}
 
         await assert_equivalent(
             engine, query("count(distinct coalesce(customer_id, 0), partition_by=region)"),
@@ -196,7 +196,7 @@ class TestMethodCallExecuted:
             await engine.execute(query)
 
     async def test_date_part_callee_shows_functional_spelling(self, engine: SlayerQueryEngine) -> None:
-        query = {"source_model": "orders", "dimensions": ["order_items.month(created_at)"],
-                 "measures": ["count(order_items.*)"]}
+        query = {"population": "orders", "dimensions": ["order_items.month(created_at)"],
+                 "metrics": ["count(order_items.*)"]}
         with pytest.raises((ValueError, SlayerError), match=re.escape("month(order_items.created_at)")):
             await engine.execute(query)

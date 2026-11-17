@@ -54,7 +54,7 @@ def _respell_extension(extension: DatasetExtension, rename: Dict[str, str]) -> D
     if _respelled(extension.source_name, rename) != extension.source_name:
         update["source_name"] = _respelled(extension.source_name, rename)
     if any(_respelled(j.to, rename) != j.to for j in extension.relationships or []):
-        update["joins"] = _respell_relationships(list(extension.relationships or []), rename)
+        update["relationships"] = _respell_relationships(list(extension.relationships or []), rename)
     return extension.model_copy(update=update) if update else extension
 
 
@@ -72,7 +72,7 @@ def localize_stages(
     displays = {ident: StageDisplay(name=name, dataset=dataset) for name, ident in rename.items()}
     out: List[SlayerQuery] = []
     for q in queries:
-        update: Dict[str, Any] = {"source_model": _respell_spec(q.population, rename)}
+        update: Dict[str, Any] = {"population": _respell_spec(q.population, rename)}
         if q.extensions:
             update["extensions"] = [_respell_extension(e, rename) for e in q.extensions]
         if q is not root and q.name:

@@ -256,9 +256,9 @@ async def engine1954(request):
 class TestDefaultAndTwinOneProducer:
     """``weight`` defaults to ``customers.hr.pop``: default and twin share one producer."""
 
-    QUERY = {"source_model": "orders", "dimensions": ["customers.hr.rname"],
-             "measures": [{"formula": "wpop(amount)", "name": "a"},
-                          {"formula": "wpop(amount, weight=customers.hr.pop)", "name": "b"}]}
+    QUERY = {"population": "orders", "dimensions": ["customers.hr.rname"],
+             "metrics": [{"expression": "wpop(amount)", "name": "a"},
+                          {"expression": "wpop(amount, weight=customers.hr.pop)", "name": "b"}]}
 
     async def test_both_names_one_value(self, engine1954) -> None:
         resp = await engine1954.execute(SlayerQuery.model_validate(self.QUERY))

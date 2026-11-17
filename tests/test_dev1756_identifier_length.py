@@ -203,13 +203,13 @@ def _repro_query(*, with_order: bool = False) -> SlayerQuery:
             FieldRef(name=f"{DEEP}.name"),
             FieldRef(name=f"{DEEP}.email"),
             FieldRef(name="status"),
-        ], "metrics": [{"formula": "sum(totalAmount)"}, {"formula": "count(*)"}], **kwargs})
+        ], "metrics": [{"expression": "sum(totalAmount)"}, {"expression": "count(*)"}], **kwargs})
 
 
 SHORT_QUERY = SlayerQuery.model_validate({
     "population": "SandboxInvoiceV2",
     "dimensions": [FieldRef(name="status")],
-    "metrics": [{"formula": "sum(totalAmount)"}],
+    "metrics": [{"expression": "sum(totalAmount)"}],
 })
 
 
@@ -875,7 +875,7 @@ class TestVirtualModelShorts:
         query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
                 FieldRef(name=f"{DEEP}.email"),
                 FieldRef(name=f"{DEEP}.Email"),
-            ], "metrics": [{"formula": "count(*)"}]})
+            ], "metrics": [{"expression": "count(*)"}]})
         with pytest.raises(SlayerError) as exc:
             await engine._query_as_model(inner_query=query)
         assert not isinstance(exc.value, IdentifierCollisionError), exc.value
@@ -889,7 +889,7 @@ class TestVirtualModelShorts:
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [FieldRef(name=f"{DEEP}.name"), FieldRef(name=flat)],
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         })
         with pytest.raises(IdentifierCollisionError) as exc:
             await engine._query_as_model(inner_query=query)
@@ -932,7 +932,7 @@ class TestVirtualModelShorts:
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
             "dimensions": [FieldRef(name=short)],
-            "metrics": [{"formula": "sum(totalAmount_sum)"}],
+            "metrics": [{"expression": "sum(totalAmount_sum)"}],
         })
         resp = await engine.execute(query=[stage1, stage2], dry_run=True)
         assert resp.sql is not None
@@ -1033,7 +1033,7 @@ class TestSweep:
             SlayerQuery.model_validate({
                 "population": "SandboxInvoiceV2",
                 "dimensions": [FieldRef(name=f"{DEEP}.name")],
-                "metrics": [{"formula": "count(*)"}],
+                "metrics": [{"expression": "count(*)"}],
                 "filter": [f"{DEEP}.email IS NOT NULL"],
             }),
         ]

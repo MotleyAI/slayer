@@ -33,8 +33,8 @@ POOL = [
 BASES: dict[str, dict[str, Any]] = {
     "spine-only": {},
     "per-group": {"dimensions": ["customers.region"], "date_range": JAN_MAR},
-    "fact-filter": {"filters": ["orders.amount > 60"]},
-    "p-filter": {"dimensions": ["customers.region"], "filters": ["customers.region != 'E'"]},
+    "fact-filter": {"filter": ["orders.amount > 60"]},
+    "p-filter": {"dimensions": ["customers.region"], "filter": ["customers.region != 'E'"]},
 }
 MEASURE_SETS = {"one": POOL[:1], "facts": POOL[:3], "all": POOL}
 

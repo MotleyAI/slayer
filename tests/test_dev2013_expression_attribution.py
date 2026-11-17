@@ -452,7 +452,7 @@ class TestBroadcastReasons:
         resp = await fanning_engine.execute(SlayerQuery.model_validate({
             "population": "customers",
             "dimensions": ["tier", _dim("last_status == 'ok'", "lok")],
-            "metrics": [{"formula": "avg(sum(spend, partition_by=[tier, region_id]))",
+            "metrics": [{"expression": "avg(sum(spend, partition_by=[tier, region_id]))",
                           "name": "a"}],
             "to_many_handling": "broadcast"}))
         (w,) = broadcast_warnings(resp)

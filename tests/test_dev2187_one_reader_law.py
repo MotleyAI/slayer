@@ -31,7 +31,7 @@ async def engine(request):
 
 
 def _orders(**body: Any) -> dict[str, Any]:
-    return {"source_model": "orders", **body}
+    return {"population": "orders", **body}
 
 
 def _month(**extra: Any) -> dict[str, Any]:
@@ -43,14 +43,14 @@ SPINE_MONTHS = [{"dimension": "time_spine.timestamp", "granularity": "month",
 
 # A Mode-B surface holding the boolean text ``t``.
 SURFACES: dict[str, Callable[[str], dict[str, Any]]] = {
-    "filter": lambda t: {"filters": [t], "measures": ["count(*)"]},
-    "measure": lambda t: {"measures": [{"formula": f"sum(iif({t}, amount, 0))", "name": "m"}]},
+    "filter": lambda t: {"filter": [t], "metrics": ["count(*)"]},
+    "measure": lambda t: {"metrics": [{"expression": f"sum(iif({t}, amount, 0))", "name": "m"}]},
     "computed-dimension": lambda t: {
-        "dimensions": [{"expression": f"iif({t}, 'y', 'n')", "name": "flag"}], "measures": ["count(*)"]},
+        "dimensions": [{"expression": f"iif({t}, 'y', 'n')", "name": "flag"}], "metrics": ["count(*)"]},
     "time-dimension": lambda t: {
-        "time_dimensions": [{"dimension": f"iif({t}, created_at, shipped_at)", "granularity": "month", "name": "d"}],
-        "measures": ["count(*)"]},
-    "order": lambda t: {"dimensions": ["note"], "measures": ["count(*)"], "order": [{"column": f"iif({t}, 0, 1)"}]},
+        "time_dimensions": [{"field": f"iif({t}, created_at, shipped_at)", "granularity": "month", "name": "d"}],
+        "metrics": ["count(*)"]},
+    "order": lambda t: {"dimensions": ["note"], "metrics": ["count(*)"], "order": [{"field": f"iif({t}, 0, 1)"}]},
 }
 
 
@@ -84,10 +84,10 @@ async def test_a_literal_naming_the_root_inside_an_order_expression(engine: Slay
 # A quoted identifier names exactly what it spells
 # --------------------------------------------------------------------------- #
 QUOTED_ROOT_SURFACES = {
-    "filter": {"filters": ['"orders.x" = 1'], "measures": ["count(*)"]},
-    "measure": {"measures": ['sum("orders.x")']},
-    "computed-dimension": {"dimensions": [{"expression": '"orders.x" + 1', "name": "q"}], "measures": ["count(*)"]},
-    "order": {"dimensions": ["status"], "measures": ["count(*)"], "order": [{"column": '"orders.x" + 1'}]},
+    "filter": {"filter": ['"orders.x" = 1'], "metrics": ["count(*)"]},
+    "measure": {"metrics": ['sum("orders.x")']},
+    "computed-dimension": {"dimensions": [{"expression": '"orders.x" + 1', "name": "q"}], "metrics": ["count(*)"]},
+    "order": {"dimensions": ["status"], "metrics": ["count(*)"], "order": [{"field": '"orders.x" + 1'}]},
 }
 
 
@@ -100,8 +100,8 @@ async def test_a_quoted_identifier_naming_the_root_is_one_identifier(engine: Sla
 
 
 @pytest.mark.parametrize(("quoted", "bare"), [
-    ({"filters": ['"status" = \'paid\''], "measures": ["count(*)"]}, {"filters": ["status = 'paid'"], "measures": ["count(*)"]}),
-    ({"measures": ['sum("amount")']}, {"measures": ["sum(amount)"]}),
+    ({"filter": ['"status" = \'paid\''], "metrics": ["count(*)"]}, {"filter": ["status = 'paid'"], "metrics": ["count(*)"]}),
+    ({"metrics": ['sum("amount")']}, {"metrics": ["sum(amount)"]}),
 ], ids=["filter", "measure"])
 async def test_a_quoted_identifier_names_its_column(engine: SlayerQueryEngine, quoted: dict, bare: dict) -> None:
     await assert_same(engine, _orders(**quoted), _orders(**bare))
@@ -115,7 +115,7 @@ async def test_a_quoted_time_dimension_names_its_column(engine: SlayerQueryEngin
 
 
 MAIN_TIME = {"time_dimensions": ["date_trunc('month', created_at)", "date_trunc('month', shipped_at)"],
-             "measures": [{"formula": "change(count(*))", "name": "c"}]}
+             "metrics": [{"expression": "change(count(*))", "name": "c"}]}
 
 
 async def test_a_quoted_main_time_dimension_names_its_column(engine: SlayerQueryEngine) -> None:
@@ -134,10 +134,10 @@ async def test_a_quoted_main_time_dimension_naming_the_root_is_one_identifier(en
 # A literal naming the spine is not a spine query
 # --------------------------------------------------------------------------- #
 SPINE_LITERAL = {
-    "filter": {"filters": ["note = 'time_spine.x'"]},
+    "filter": {"filter": ["note = 'time_spine.x'"]},
     "computed-dimension": {"dimensions": [{"expression": "iif(note = 'time_spine.x', 'y', 'n')", "name": "flag"}]},
     "time-dimension": {"time_dimensions": [
-        _month(), {"dimension": "iif(note = 'time_spine.x', created_at, shipped_at)", "granularity": "year", "name": "y"},
+        _month(), {"field": "iif(note = 'time_spine.x', created_at, shipped_at)", "granularity": "year", "name": "y"},
     ]},
 }
 
@@ -156,7 +156,7 @@ async def test_a_literal_naming_the_spine_is_not_a_spine_query(engine: SlayerQue
 async def test_a_spine_filter_reads_as_the_template_binding_parses(
     engine: SlayerQueryEngine, rooted: bool, text: str, variables: dict[str, Any],
 ) -> None:
-    body = {"dimensions": ["orders.status"], "measures": ["count(orders.id)"], "filters": [text]}
+    body = {"dimensions": ["orders.status"], "metrics": ["count(orders.id)"], "filter": [text]}
     body = _orders(**body) if rooted else body
     with pytest.raises(TimeSpineError, match="not a lower or upper bound"):
         await engine.execute(body, variables=variables)
@@ -164,7 +164,7 @@ async def test_a_spine_filter_reads_as_the_template_binding_parses(
 
 @pytest.mark.parametrize("surface", sorted(SPINE_LITERAL))
 async def test_spine_literals_leave_the_population_alone(engine: SlayerQueryEngine, surface: str) -> None:
-    body = {"time_dimensions": [_month()], "measures": ["count(*)"], **SPINE_LITERAL[surface]}
+    body = {"time_dimensions": [_month()], "metrics": ["count(*)"], **SPINE_LITERAL[surface]}
     resp = await engine.execute(_orders(**body))
     assert {str(r["orders.created_at"])[:7] for r in resp.data} <= {"2025-01", "2025-02", "2025-03"}
     assert "time_spine" not in (resp.sql or "").replace("'time_spine.x'", "")
@@ -187,10 +187,10 @@ def spliced(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 SPLICE_LITERAL: dict[str, Callable[[str], dict[str, Any]]] = {
-    "filter": lambda lit: {"measures": ["count(orders.id)"], "filters": [f"orders.note <> '{lit}'"]},
-    "measure": lambda lit: {"measures": [{"formula": f"sum(iif(orders.note = '{lit}', 1, 0))", "name": "m"}]},
+    "filter": lambda lit: {"metrics": ["count(orders.id)"], "filter": [f"orders.note <> '{lit}'"]},
+    "measure": lambda lit: {"metrics": [{"expression": f"sum(iif(orders.note = '{lit}', 1, 0))", "name": "m"}]},
     "computed-dimension": lambda lit: {
-        "measures": ["count(orders.id)"],
+        "metrics": ["count(orders.id)"],
         "dimensions": [{"expression": f"iif(orders.note = '{lit}', 'y', 'n')", "name": "flag"}]},
 }
 
@@ -214,7 +214,7 @@ async def test_a_filter_literal_naming_a_query_backed_model_splices_nothing(
 
 
 async def test_a_query_backed_root_is_spliced(engine: SlayerQueryEngine, spliced: list[str]) -> None:
-    await engine.execute({"source_model": "qb", "measures": ["sum(tot)"]}, dry_run=True)
+    await engine.execute({"population": "qb", "metrics": ["sum(tot)"]}, dry_run=True)
     assert spliced == ["qb"]
 
 
@@ -278,7 +278,7 @@ async def test_inspection_reports_the_looked_up_variables(
 
 async def test_text_binding_does_not_look_up_runs_without_variables(engine: SlayerQueryEngine) -> None:
     await engine.storage.save_dataset(_backing("status = '{{s}}' OR regexp_like(status, '[0-9]{3}')"))
-    resp = await engine.execute({"source_model": "qbv", "measures": ["count(*)"]})
+    resp = await engine.execute({"population": "qbv", "metrics": ["count(*)"]})
     assert resp.data
 
 
@@ -290,7 +290,7 @@ async def test_a_spliced_backing_query_looks_up_what_it_reports(
     engine: SlayerQueryEngine, filter_text: str, needed: set[str],
 ) -> None:
     await engine.storage.save_dataset(_backing(filter_text))
-    body = {"source_model": "qbv", "measures": ["count(*)"]}
+    body = {"population": "qbv", "metrics": ["count(*)"]}
     await engine.execute(body, variables=dict.fromkeys(needed, "a"), dry_run=True)
     for name in needed:
         with pytest.raises(VariableError, match=f"'{name}'"):

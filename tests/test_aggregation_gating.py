@@ -527,7 +527,7 @@ class TestDev1576UnknownVsDisallowed:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(amount)", "name": "total"}],
+            "metrics": [{"expression": "sum(amount)", "name": "total"}],
             "filter": [f"{raw}(amount) > 5"],
         })
         sql = await _engine_generate(

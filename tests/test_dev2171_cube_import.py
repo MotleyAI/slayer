@@ -43,7 +43,7 @@ def meas(name: str, type_: str, sql: str | None = None, **extra: Any) -> dict[st
 
 def cube(name: str = "orders", *, dimensions: list[dict[str, Any]] | None = None,
          measures: list[dict[str, Any]] | None = None, **extra: Any) -> dict[str, Any]:
-    out: dict[str, Any] = {"name": name, "dimensions": [ID, *(dimensions or [])], "measures": measures or [],
+    out: dict[str, Any] = {"name": name, "dimensions": [ID, *(dimensions or [])], "metrics": measures or [],
                            **extra}
     if "sql" not in extra:
         out.setdefault("sql_table", "orders")

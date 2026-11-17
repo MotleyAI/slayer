@@ -15,7 +15,7 @@ CAST_TXT = "CAST(created_txt AS DATE)"
 
 
 def _q(**kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "count(*)", "name": "n"}],
+    return SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}],
                                        **kw})
 
 
@@ -136,15 +136,15 @@ class TestNames:
             _q(dimensions=["region"], time_dimensions=[{"dimension": EFF, "granularity": "month", "name": "region"}])
 
     @pytest.mark.parametrize("entries", [
-        {"dimensions": [{"expression": EFF}], "time_dimensions": [{"dimension": EFF, "granularity": "month"}]},
+        {"dimensions": [{"expression": EFF}], "time_dimensions": [{"field": EFF, "granularity": "month"}]},
         {"dimensions": [{"expression": "upper(city)", "name": EFF_NAME}],
-         "time_dimensions": [{"dimension": EFF, "granularity": "month"}]},
-        {"time_dimensions": [{"dimension": EFF, "granularity": "month"},
-                             {"dimension": "created_at", "granularity": "year", "name": EFF_NAME}]},
-        {"time_dimensions": [{"dimension": "created_at", "granularity": "year", "name": EFF_NAME},
-                             {"dimension": EFF, "granularity": "month"}]},
-        {"time_dimensions": [{"dimension": "created_at + 1", "granularity": "month"},
-                             {"dimension": "created_at - 1", "granularity": "year"}]},
+         "time_dimensions": [{"field": EFF, "granularity": "month"}]},
+        {"time_dimensions": [{"field": EFF, "granularity": "month"},
+                             {"field": "created_at", "granularity": "year", "name": EFF_NAME}]},
+        {"time_dimensions": [{"field": "created_at", "granularity": "year", "name": EFF_NAME},
+                             {"field": EFF, "granularity": "month"}]},
+        {"time_dimensions": [{"field": "created_at + 1", "granularity": "month"},
+                             {"field": "created_at - 1", "granularity": "year"}]},
     ], ids=["computed-auto", "computed-named", "td-named-after", "td-named-before", "sanitised-alike"])
     def test_auto_name_collision_fails_at_construction(self, entries: dict) -> None:
         with pytest.raises(ValueError, match="used twice"):

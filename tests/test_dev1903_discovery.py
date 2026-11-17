@@ -339,10 +339,10 @@ class TestReaggregationInComputedDimension:
     still needs query-dimension partition keys."""
 
     @pytest.mark.parametrize(("kw", "location"), [
-        pytest.param({"measures": [DatasetMetric(expression=_R, name="r")]},
+        pytest.param({"metrics": [DatasetMetric(expression=_R, name="r")]},
                      "measure 'r'", id="dual-role-measure"),
-        pytest.param({"measures": [DatasetMetric(expression="sum(amount)", name="s")],
-                      "order": [{"column": _R, "direction": "asc"}]},
+        pytest.param({"metrics": [DatasetMetric(expression="sum(amount)", name="s")],
+                      "order": [{"field": _R, "direction": "asc"}]},
                      "order item", id="dual-role-order"),
     ])
     def test_partition_key_error(self, kw, location):

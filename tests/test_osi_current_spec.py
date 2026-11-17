@@ -69,7 +69,7 @@ async def test_flat_document_imports_end_to_end(db: Path) -> None:
     assert measure_home(result, "total_amount").name == "orders"
     assert not result.unconverted_metrics
     assert not [e for e in entries(result) if e.severity == "unconverted"]
-    rows = await query(result=result, db=db, payload={"source_model": "orders", "measures": ["total_amount"]})
+    rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["total_amount"]})
     assert float(rows[0]["orders.total_amount"]) == pytest.approx(22)
 
 
@@ -143,8 +143,8 @@ async def test_relationship_on_renamed_fields_joins_the_source_columns(db: Path)
     result = convert(db=db, docs=documents(_shop()))
     assert [j.join_pairs for j in by_name(result)["orders"].relationships] == [[["customer_id", "id"]]]
     rows = await query(result=result, db=db, payload={
-        "source_model": "orders", "dimensions": ["customers.segment"],
-        "measures": [{"formula": "sum(amount)", "name": "s"}]})
+        "population": "orders", "dimensions": ["customers.segment"],
+        "metrics": [{"expression": "sum(amount)", "name": "s"}]})
     assert {r["orders.customers.segment"]: r["orders.s"] for r in rows} == {"b2b": 15, "b2c": 7}
 
 
@@ -328,7 +328,7 @@ def test_legacy_dataset_scoped_metric(db: Path, tmp_path: Path) -> None:
 async def test_dataset_scoped_metric_becomes_a_measure(db: Path) -> None:
     result = convert(db=db, docs=documents(_shop(orders=_orders(metrics=[m("total_amount", "SUM(amount)")]))))
     assert measure_home(result, "total_amount").name == "orders"
-    rows = await query(result=result, db=db, payload={"source_model": "orders", "measures": ["total_amount"]})
+    rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["total_amount"]})
     assert rows[0]["orders.total_amount"] == pytest.approx(22)
 
 

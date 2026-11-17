@@ -34,7 +34,7 @@ async def test_join_target_keeps_its_onward_relationship(engine: SlayerQueryEngi
     await engine.save_dataset(_customer_totals())
     consumer = orders_model().model_copy(update={
         "name": "consumer",
-        "joins": [DatasetRelationship(to="customer_totals", join_pairs=[["customer_id", "customer_id"]])],
+        "relationships": [DatasetRelationship(to="customer_totals", join_pairs=[["customer_id", "customer_id"]])],
     })
     await engine.save_dataset(consumer)
 
@@ -71,8 +71,8 @@ async def test_extension_join_alias_resolves_to_the_named_stored_edge(engine: Sl
     }))
 
     response = await engine.execute(_query(
-        source_model="customer_totals", extensions=[{"source_name": "customer_totals", "joins": [{
-            "target_model": "customers", "join_pairs": [["customer_id", "id"]], "name": "reviewer",
+        source_model="customer_totals", extensions=[{"source_name": "customer_totals", "relationships": [{
+            "to": "customers", "join_pairs": [["customer_id", "id"]], "name": "reviewer",
         }]}],
         dimensions=["owner.name", "reviewer.tier"],
         measures=[{"formula": "sum(amt)", "name": "total"}],

@@ -105,7 +105,7 @@ def _dataset_fingerprint(dataset: SlayerDataset) -> str:
         (c.model_dump(mode="json", exclude=set(_SAMPLE_FIELDS)) for c in dataset.fields),
         key=lambda d: str(d.get("name")),
     )
-    return _digest({"model": dataset.model_dump(mode="json", exclude={"fields"}), "columns": columns})
+    return _digest({"dataset": dataset.model_dump(mode="json", exclude={"fields"}), "fields": columns})
 
 
 def _first_line(exc: BaseException) -> str:
@@ -155,10 +155,10 @@ async def _profile_categorical(
     q = SlayerQuery.model_validate({
         "population": dataset.name,
         "dimensions": [ref],
-        "metrics": [{"formula": counted, "name": _COUNT}],
+        "metrics": [{"expression": counted, "name": _COUNT}],
         "order": [
-            {"column": _COUNT, "direction": "desc"},
-            {"column": ref, "direction": "asc"},
+            {"field": _COUNT, "direction": "desc"},
+            {"field": ref, "direction": "asc"},
         ],
         # +2 so one NULL row cannot push a non-overflow result over the cap.
         "limit": _MAX_CATEGORICAL_VALUES + 2,
@@ -186,7 +186,7 @@ async def _profile_numeric_temporal(
 ) -> list[_Sample]:
     """One batched min/max query (a list's over its elements); raises on query failure."""
     measures = [
-        {"formula": f"{agg}({_values_ref(c)})", "name": f"_slayer_range_{c.name}_{agg}"}
+        {"expression": f"{agg}({_values_ref(c)})", "name": f"_slayer_range_{c.name}_{agg}"}
         for c in fields for agg in ("min", "max")
     ]
     q = SlayerQuery.model_validate({"population": dataset.name, "metrics": measures})
@@ -203,7 +203,7 @@ async def _profile_numeric_temporal(
 
 async def _probe(*, dataset: SlayerDataset, engine: SlayerQueryEngine) -> Exception | None:
     """Row-count the model; the exception when it fails, else ``None``."""
-    q = SlayerQuery.model_validate({"population": dataset.name, "metrics": [{"formula": "count(*)"}]})
+    q = SlayerQuery.model_validate({"population": dataset.name, "metrics": [{"expression": "count(*)"}]})
     try:
         await engine.execute(query=q, data_source=dataset.data_source or None)
     except Exception as exc:  # NOSONAR(S112) — the probe's failure IS the classification

@@ -39,7 +39,7 @@ def _formulas(doc: dict) -> list[str]:
 
 
 def _query(*, version: int, **fields: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"version": version, "population": "orders", **fields})
+    return SlayerQuery.model_validate({"version": version, "source_model": "orders", **fields})
 
 
 class TestVersions:
@@ -124,7 +124,7 @@ class TestDistinctResults:
         model = await storage.get_dataset("orders", data_source=DS)
         assert model is not None
         assert [m.expression for m in model.metrics] == ['sum("distinct")']
-        resp = await run(storage, {"source_model": "orders", "measures": ["total"]})
+        resp = await run(storage, {"population": "orders", "metrics": ["total"]})
         assert measure_total(resp, measure="total") == DISTINCT_TOTAL
 
     @pytest.mark.parametrize("backend", BACKENDS)

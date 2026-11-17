@@ -322,7 +322,7 @@ class TestReservedStringReparsePaths:
         q = SlayerQuery.model_validate({
             "population": "grant",
             "dimensions": ["namespace"],
-            "metrics": [{"formula": "last(amount)"}],
+            "metrics": [{"expression": "last(amount)"}],
         })
         sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
         assert 'FROM "Grant" AS "grant"' in sql, sql
@@ -358,7 +358,7 @@ class TestReservedStringReparsePaths:
         q = SlayerQuery.model_validate({
             "population": "grant",
             "time_dimensions": [TimeDimension(field="created_at", granularity="month")],
-            "metrics": [{"formula": "change(sum(amount))"}],
+            "metrics": [{"expression": "change(sum(amount))"}],
             "filter": ["amount > 0"],
         })
         sql = await _gen(q, _grant_model(), extra_models=[_merchant_model()])
@@ -386,7 +386,7 @@ class TestReservedStringReparsePaths:
         q = SlayerQuery.model_validate({
             "population": "grant",
             "dimensions": ["namespace"],
-            "metrics": [{"formula": "sum(big)"}],
+            "metrics": [{"expression": "sum(big)"}],
         })
         sql = _norm(await _gen(q, model))
         assert 'CASE WHEN "grant".amount > 100' in sql, sql
@@ -397,7 +397,7 @@ class TestReservedStringReparsePaths:
         q = SlayerQuery.model_validate({
             "population": "grant",
             "dimensions": ["namespace"],
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
             "filter": ["sum(amount) > 100"],
         })
         sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
@@ -481,7 +481,7 @@ class TestReservedJoinedFromNonReservedRoot:
         q = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["grant.status"],
-            "metrics": [{"formula": "last(amount)"}],
+            "metrics": [{"expression": "last(amount)"}],
         })
         sql = _norm(await _gen(q, orders, extra_models=[grant]))
         # the reserved join alias appears quoted in the ranked subquery's join

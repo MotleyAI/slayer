@@ -34,7 +34,7 @@ def _daily() -> SlayerDataset:
             SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["created_at"],
-                "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+                "metrics": [{"expression": "sum(amount)", "name": "rev"}],
             })
         ],
     )

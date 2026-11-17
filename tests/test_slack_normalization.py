@@ -119,7 +119,7 @@ class TestMisplacedMeasure:
         # If the bare name matches a ModelMeasure, it's a valid measure ref
         # (not a column) and stays in measures.
         m = _orders().model_copy(update={
-            "measures": [DatasetMetric(name="aov", expression="avg(revenue)")],
+            "metrics": [DatasetMetric(name="aov", expression="avg(revenue)")],
         })
         q = SlayerQuery(population="orders", metrics=[{"formula": "aov"}])
         result = normalize_query(q, dataset=m)
@@ -166,7 +166,7 @@ class TestMisplacedMeasure:
         # measures — never reclassified as dimensions.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(revenue)"}, {"formula": "count(*)"}],
+            "metrics": [{"expression": "sum(revenue)"}, {"expression": "count(*)"}],
         })
         result = normalize_query(q, dataset=_orders())
         assert len(result.query.metrics) == 2
@@ -176,7 +176,7 @@ class TestMisplacedMeasure:
     # DEV-1484 backfill from TestAutoMoveDimensions.test_arithmetic_kept
     def test_arithmetic_formula_kept(self):
         # An arithmetic-over-aggregates formula stays a measure.
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(revenue) / count(*)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(revenue) / count(*)"}]})
         result = normalize_query(q, dataset=_orders())
         assert len(result.query.metrics) == 1
         assert not any(w.rule_id == "MISPLACED_MEASURE" for w in result.warnings)
@@ -189,7 +189,7 @@ class TestMisplacedMeasure:
         # legacy dotted-named-measure case — every dotted ref is kept.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "customers.nonexistent"}, {"formula": "sum(revenue)"}],
+            "metrics": [{"expression": "customers.nonexistent"}, {"expression": "sum(revenue)"}],
         })
         result = normalize_query(q, dataset=_orders())
         assert len(result.query.metrics) == 2
@@ -203,7 +203,7 @@ class TestMisplacedMeasure:
         # in measures rather than moving it to dimensions.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "customers.name_count"}, {"formula": "sum(revenue)"}],
+            "metrics": [{"expression": "customers.name_count"}, {"expression": "sum(revenue)"}],
         })
         result = normalize_query(q, dataset=_orders())
         assert len(result.query.metrics) == 2
@@ -228,7 +228,7 @@ class TestMisplacedMeasure:
         })
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "customer_id"}, {"formula": "sum(revenue)"}],
+            "metrics": [{"expression": "customer_id"}, {"expression": "sum(revenue)"}],
             "dimensions": ["status"],
         })
         result = normalize_query(q, dataset=m)
@@ -258,7 +258,7 @@ class TestResult:
     def test_canonical_input_returns_unchanged_query(self):
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(revenue)"}],
+            "metrics": [{"expression": "sum(revenue)"}],
             "dimensions": ["status"],
         })
         result = normalize_query(q, dataset=_orders())
@@ -305,7 +305,7 @@ class TestEngineWiring:
 
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "sum(revenue)"}],
+                "metrics": [{"expression": "sum(revenue)"}],
                 "dimensions": ["status"],
             })
             resp = await engine.execute(q, dry_run=True)
@@ -382,7 +382,7 @@ class TestEngineWiring:
             engine = SlayerQueryEngine(storage=storage)
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "customers.name"}, {"formula": "sum(revenue)"}],
+                "metrics": [{"expression": "customers.name"}, {"expression": "sum(revenue)"}],
             })
             with pytest.raises(PositionTypingError) as ei:
                 await engine.execute(q, dry_run=True)
@@ -398,7 +398,7 @@ class TestEngineWiring:
             )
             engine = SlayerQueryEngine(storage=storage)
             m = _orders().model_copy(update={
-                "measures": [DatasetMetric(name="rev_s", expression="sum(revenue)")],
+                "metrics": [DatasetMetric(name="rev_s", expression="sum(revenue)")],
             })
             saved = await engine.save_dataset(m)
             assert saved.metrics[0].expression == "sum(revenue)"
@@ -517,7 +517,7 @@ class TestJoinedCustomAggFunctional:
         try:
             await storage.save_dataset(_customers_with_rolling_avg())
             orders = _orders_joining_customers().model_copy(update={
-                "measures": [
+                "metrics": [
                     DatasetMetric(
                         name="ravg", expression="rolling_avg(customers.score)"
                     ),
@@ -559,7 +559,7 @@ class TestJoinedCustomAggFunctional:
             root = SlayerQuery.model_validate({
                 "population": "stage1",
                 "dimensions": ["status"],
-                "metrics": [{"formula": "max(ravg)"}],
+                "metrics": [{"expression": "max(ravg)"}],
             })
             resp = await engine.execute([stage1, root], dry_run=True)
             assert not _slack_rewrite_warnings(resp.warnings), resp.warnings
@@ -574,7 +574,7 @@ class TestJoinedCustomAggFunctional:
             await storage.save_dataset(_orders_joining_customers())
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "sum(revenue)"}],
+                "metrics": [{"expression": "sum(revenue)"}],
                 "dimensions": ["status"],
                 "filter": ["rolling_avg(customers.score) > 100"],
             })

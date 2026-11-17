@@ -130,8 +130,8 @@ async def test_query_only_runs_channel_1_via_extracted_entities(
     them in the entities bucket."""
     response = await service.search(
         query={
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount_paid)"}],
+            "population": "orders",
+            "metrics": [{"expression": "sum(amount_paid)"}],
         },
         max_results=20,
         compact=False,
@@ -344,8 +344,8 @@ async def test_resolved_input_entities_populated_for_query_input(
 ) -> None:
     response = await service.search(
         query={
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount_paid)"}],
+            "population": "orders",
+            "metrics": [{"expression": "sum(amount_paid)"}],
         },
     )
     # Both the source model and the referenced column should be resolved.
@@ -360,8 +360,8 @@ async def test_resolved_input_entities_combined_input_dedupes(
     response = await service.search(
         entities=["warehouse.orders.amount_paid"],
         query={
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount_paid)"}],
+            "population": "orders",
+            "metrics": [{"expression": "sum(amount_paid)"}],
         },
     )
     # `amount_paid` appears via both inputs but should not duplicate.

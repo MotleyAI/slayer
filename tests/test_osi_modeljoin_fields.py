@@ -60,8 +60,8 @@ def test_old_v7_join_without_new_fields_validates() -> None:
             "name": "orders",
             "sql_table": "orders",
             "data_source": "testds",
-            "fields": [{"name": "customer_id", "datatype": "INT"}],
-            "relationships": [{"to": "customers", "join_pairs": [["customer_id", "customer_id"]]}],
+            "columns": [{"name": "customer_id", "type": "INT"}],
+            "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "customer_id"]]}],
         }
     )
     assert m.relationships[0].description is None and m.relationships[0].meta is None

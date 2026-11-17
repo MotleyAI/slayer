@@ -176,7 +176,7 @@ class TestDerivedOfDerivedEmission:
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [{"formula": "deep_pop", "name": "deep_pop"}],
-            "metrics": [{"formula": "sum(amount)", "name": "m0"}],
+            "metrics": [{"expression": "sum(amount)", "name": "m0"}],
         }))
         assert "pop_x2" not in sql, f"dangling derived reference:\n{sql}"
         assert "customers__regions.population" in sql
@@ -187,7 +187,7 @@ class TestDerivedOfDerivedEmission:
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [{"formula": "status", "name": "status"}],
-            "metrics": [{"formula": "sum(deep_pop)", "name": "m0"}],
+            "metrics": [{"expression": "sum(deep_pop)", "name": "m0"}],
         }))
         assert "pop_x2" not in sql, f"dangling derived reference:\n{sql}"
         assert "customers__regions.population" in sql
@@ -196,7 +196,7 @@ class TestDerivedOfDerivedEmission:
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [{"formula": "status", "name": "status"}],
-            "metrics": [{"formula": "sum(amount)", "name": "m0"}],
+            "metrics": [{"expression": "sum(amount)", "name": "m0"}],
             "filter": ["deep_pop > 100"],
         }))
         assert "pop_x2" not in sql, f"dangling derived reference:\n{sql}"
@@ -206,7 +206,7 @@ class TestDerivedOfDerivedEmission:
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [{"formula": "alias_local", "name": "alias_local"}],
-            "metrics": [{"formula": "sum(amount)", "name": "m0"}],
+            "metrics": [{"expression": "sum(amount)", "name": "m0"}],
         }))
         # 'doubled' is derived on orders; it must inline, not be referenced.
         # Today this emits a BARE, unqualified `doubled` — invalid on any DB.
@@ -220,7 +220,7 @@ class TestDerivedOfDerivedEmission:
         sql = await self._sql(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [{"formula": "deep_live", "name": "deep_live"}],
-            "metrics": [{"formula": "sum(amount)", "name": "m0"}],
+            "metrics": [{"expression": "sum(amount)", "name": "m0"}],
         }))
         assert "customers__regions.status" in sql, (
             f"derived sql resolved against the wrong model:\n{sql}"
@@ -239,7 +239,7 @@ async def test_derived_of_derived_executes_on_duckdb() -> None:
         query=SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [{"formula": "deep_pop", "name": "deep_pop"}],
-            "metrics": [{"formula": "sum(amount)", "name": "m0"}],
+            "metrics": [{"expression": "sum(amount)", "name": "m0"}],
         }),
         model=_orders(), dialect="duckdb", validate=False,
         extra_models=[_customers(), _regions()],

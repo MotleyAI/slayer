@@ -80,19 +80,19 @@ _D4_SHAPES = {
     "outer_composite": SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": [FieldRef(name="status")],
-        "metrics": [{"formula": "sum(customers.spend) + sum(amount)", "name": "mix"}],
+        "metrics": [{"expression": "sum(customers.spend) + sum(amount)", "name": "mix"}],
         "order": [OrderItem(field=FieldRef(name="mix"), direction="desc")],
     }),
     "windowed": SlayerQuery.model_validate({
         "population": "orders",
         "time_dimensions": [_MONTH],
-        "metrics": [{"formula": "sum(amount, window='90d')", "name": "w"}],
+        "metrics": [{"expression": "sum(amount, window='90d')", "name": "w"}],
         "order": [OrderItem(field=FieldRef(name="w"), direction="desc")],
     }),
     "transform_chain": SlayerQuery.model_validate({
         "population": "orders",
         "time_dimensions": [_MONTH],
-        "metrics": [{"formula": "cumsum(sum(amount))", "name": "cs"}],
+        "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}],
         "order": [OrderItem(field=FieldRef(name="cs"), direction="asc")],
     }),
 }
@@ -240,7 +240,7 @@ class TestOrderTargetMatrix:
         sql = await _sql(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
-            "metrics": [{"formula": "sum(amount)", "name": "_1"}],
+            "metrics": [{"expression": "sum(amount)", "name": "_1"}],
             "order": [OrderItem(field=FieldRef(name="_1"), direction="asc")],
         }))
         for term in order_terms(sql):
@@ -253,7 +253,7 @@ class TestOrderTargetMatrix:
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="cs"), direction="desc")]}))
+            )], "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="cs"), direction="desc")]}))
         _assert_orders_by(sql, "orders.cs")
 
     async def test_cross_model_aggregate_orders_on_its_cte_column(self) -> None:
@@ -287,7 +287,7 @@ class TestOrderTargetMatrix:
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "sum(amount, window='90d')", "name": "w"}], "order": [OrderItem(field=FieldRef(name="w"), direction="desc")]}))
+            )], "metrics": [{"expression": "sum(amount, window='90d')", "name": "w"}], "order": [OrderItem(field=FieldRef(name="w"), direction="desc")]}))
         _assert_orders_by(sql, "orders.w")
 
 
@@ -408,7 +408,7 @@ class TestNullOrdering:
             SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                     field="created_at",
                     granularity=TimeGranularity.MONTH,
-                )], "metrics": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="cs"), direction="asc")]}),
+                )], "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="cs"), direction="asc")]}),
             dialect="tsql",
         )
         assert "CASE" not in order_by_text(sql, dialect="tsql").upper()

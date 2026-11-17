@@ -170,11 +170,11 @@ class TestExecution:
 
     def test_nested_source_queries_rejected(self) -> None:
         outer = {"name": "outer", "source_queries": [
-            {"source_model": "x", "dimensions": ["tier"], "measures": [{"formula": "sum(total_spend)", "name": "s"}]}]}
+            {"population": "x", "dimensions": ["tier"], "metrics": [{"expression": "sum(total_spend)", "name": "s"}]}]}
         with pytest.raises(ValueError, match=r"(?is)inline.*named stages?|named stages?.*inline"):
             SlayerQuery.model_validate({
                 "name": "n", "population": outer, "dimensions": ["tier"],
-                "metrics": [{"formula": "sum(s)", "name": "s3"}]})
+                "metrics": [{"expression": "sum(s)", "name": "s3"}]})
 
 
 # --------------------------------------------------------------------------- #

@@ -435,7 +435,7 @@ class TestFormulaSurfaces:
             name="regions", values=("North", "South"), listed=True)
 
     @pytest.mark.parametrize("kw", [
-        {"measures": ["sum(amount) * {? {k} ?}"]},
+        {"metrics": ["sum(amount) * {? {k} ?}"]},
         {"dimensions": [{"expression": "amount * {? {k} ?}", "name": "d"}]},
     ])
     def test_optional_block_rejected(self, kw) -> None:
@@ -445,9 +445,9 @@ class TestFormulaSurfaces:
         assert "filters" not in str(info.value)
 
     @pytest.mark.parametrize("kw", [
-        {"measures": ["sum(amount) * {k}"]},
+        {"metrics": ["sum(amount) * {k}"]},
         {"dimensions": ["amount * {k}"]},
-        {"order": [{"column": "sum(amount) * {k}"}]},
+        {"order": [{"field": "sum(amount) * {k}"}]},
     ])
     def test_undefined_variable_raises(self, kw) -> None:
         query = _q(**kw)

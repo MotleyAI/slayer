@@ -90,7 +90,7 @@ def _bundle() -> ResolvedSourceBundle:
 
 class TestSingleStage:
     def test_simple_aggregation(self):
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
         planned = plan_query(query=q, bundle=_bundle())
         # One slot in projection.
         assert len(planned.projection) == 1
@@ -102,7 +102,7 @@ class TestSingleStage:
     def test_dimension_plus_measure(self):
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
             "dimensions": ["status"],
         })
         planned = plan_query(query=q, bundle=_bundle())
@@ -112,7 +112,7 @@ class TestSingleStage:
     def test_filter_in_planned_query(self):
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
             "filter": ["status == 'paid'"],
         })
         planned = plan_query(query=q, bundle=_bundle())
@@ -156,12 +156,12 @@ class TestDownstreamStageFlatRefs:
         stage1 = SlayerQuery.model_validate({
             "name": "stage1",
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
             "dimensions": ["status"],
         })
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
-            "metrics": [{"formula": "max(amount_sum)"}],
+            "metrics": [{"expression": "max(amount_sum)"}],
             "dimensions": ["status"],
         })
         planned_stages = plan_stages(
@@ -206,13 +206,13 @@ class TestTopoSort:
         stage_a = SlayerQuery.model_validate({
             "name": "stage_a",
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
             "dimensions": ["status"],
         })
         stage_b = SlayerQuery.model_validate({
             "name": "stage_b",
             "population": "stage_a",
-            "metrics": [{"formula": "max(amount_sum)"}],
+            "metrics": [{"expression": "max(amount_sum)"}],
             "dimensions": ["status"],
         })
         root = SlayerQuery(population="stage_b", dimensions=["status"])
@@ -230,13 +230,13 @@ class TestTopoSort:
         s1 = SlayerQuery.model_validate({
             "name": "dup",
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
             "dimensions": ["status"],
         })
         s2 = SlayerQuery.model_validate({
             "name": "dup",
             "population": "orders",
-            "metrics": [{"formula": "max(amount)"}],
+            "metrics": [{"expression": "max(amount)"}],
             "dimensions": ["status"],
         })
         root = SlayerQuery(

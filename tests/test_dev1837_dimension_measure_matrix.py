@@ -96,7 +96,7 @@ def _cell_query(family: str, meas: str, *, include_x: bool = True):
     measures = [DatasetMetric(expression="sum(amount)", name="m")]
     if include_x:
         measures.append(DatasetMetric(expression=_formula(meas), name="x"))
-    kwargs = {"dimensions": DIM_FAMILY_DIMS[family], "measures": measures}
+    kwargs = {"dimensions": DIM_FAMILY_DIMS[family], "metrics": measures}
     if _needs_td(meas):
         kwargs["time_dimensions"] = month_td()
     return q(**kwargs)

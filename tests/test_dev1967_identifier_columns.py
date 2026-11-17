@@ -59,7 +59,7 @@ def codes() -> SlayerDataset:
 
 def _plan(*, model: SlayerDataset, formula: str) -> None:
     query = SlayerQuery.model_validate({
-        "population": model.name, "metrics": [{"formula": formula, "name": "m"}],
+        "population": model.name, "metrics": [{"expression": formula, "name": "m"}],
     })
     plan_query(query=query, bundle=ResolvedSourceBundle(population=model, referenced_datasets=[model], dialect="postgres"))
 

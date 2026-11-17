@@ -313,7 +313,7 @@ class TestParseDbtProjectRegularModels:
                     "name": "orders",
                     "schema": "public",
                     "alias": "orders",
-                    "columns": {},
+                    "fields": {},
                 },
                 "model.proj.raw_events": {
                     "resource_type": "model",
@@ -321,7 +321,7 @@ class TestParseDbtProjectRegularModels:
                     "schema": "staging",
                     "alias": "raw_events",
                     "description": "Unwrapped raw events table",
-                    "columns": {
+                    "fields": {
                         "event_id": {"name": "event_id", "description": "PK"},
                     },
                 },

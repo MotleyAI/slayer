@@ -106,7 +106,7 @@ def executed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 def _q(formula: str, **extra: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": formula, "name": "m"}], **extra})
+    return SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": formula, "name": "m"}], **extra})
 
 
 async def _value(engine: SlayerQueryEngine, formula: str) -> float:

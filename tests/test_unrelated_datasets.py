@@ -63,8 +63,8 @@ async def engine(request):
 
 def _spine_query(**extra: Any) -> SlayerQuery:
     return grouped_query(**{
-        "measures": [m("count(events.id)", "n_events")],
-        "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": JAN_MAR}],
+        "metrics": [m("count(events.id)", "n_events")],
+        "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month", "date_range": JAN_MAR}],
         **extra,
     })
 
@@ -99,16 +99,16 @@ class TestResolution:
 
     async def test_query_local_stage_is_an_unrelated_dataset(self, engine) -> None:
         resp = await engine.execute(stages(
-            {"name": "c", "source_model": "customers", "measures": [m("count(*)", "nc")]},
-            {"name": "e", "source_model": "events", "measures": [m("count(*)", "ne")]},
-            {"source_model": "c", "dimensions": ["nc"], "measures": [m("max(e.ne)", "ne")]},
+            {"name": "c", "population": "customers", "metrics": [m("count(*)", "nc")]},
+            {"name": "e", "population": "events", "metrics": [m("count(*)", "ne")]},
+            {"population": "c", "dimensions": ["nc"], "metrics": [m("max(e.ne)", "ne")]},
         ))
         assert only_row(resp, "nc", "ne") == (3.0, 5.0)
 
     async def test_stage_spelling_takes_precedence_over_the_model(self, engine) -> None:
         resp = await engine.execute(stages(
-            {"name": "events", "source_model": "users", "measures": [m("count(*)", "ne")]},
-            {"source_model": "customers", "measures": [m("max(events.ne)", "ne")]},
+            {"name": "events", "population": "users", "metrics": [m("count(*)", "ne")]},
+            {"population": "customers", "metrics": [m("max(events.ne)", "ne")]},
         ))
         assert only_row(resp, "ne") == (3.0,)
 
@@ -389,21 +389,21 @@ class TestRowLevelRefusal:
         _assert_row_level_refusal(exc, reference="events.amount_x2")
 
     @pytest.mark.parametrize("fields, reference", [
-        ({"time_dimensions": [{"dimension": "events.created_at", "granularity": "month"}]}, "events.created_at"),
+        ({"time_dimensions": [{"field": "events.created_at", "granularity": "month"}]}, "events.created_at"),
         ({"dimensions": ["city", {"expression": "events.amount * 2", "name": "a2"}]}, "events.amount"),
-        ({"order": [{"column": "events.amount", "direction": "asc"}]}, "events.amount"),
-        ({"dimensions": ["city", "events.kind"], "measures": [], "distinct_dimension_values": False}, "events.kind"),
+        ({"order": [{"field": "events.amount", "direction": "asc"}]}, "events.amount"),
+        ({"dimensions": ["city", "events.kind"], "metrics": [], "distinct_dimension_values": False}, "events.kind"),
     ], ids=["time_dimension", "computed_dimension", "order_key", "raw_rows"])
     async def test_other_row_level_positions(self, engine, fields: dict[str, Any], reference: str) -> None:
-        q = query(**{"measures": [m("count(*)", "n")], **fields})
+        q = query(**{"metrics": [m("count(*)", "n")], **fields})
         with pytest.raises(UnrelatedDatasetError) as exc:
             await engine.execute(q)
         _assert_row_level_refusal(exc, reference=reference)
 
     async def test_one_row_stage_field_names_the_max_remedy(self, engine) -> None:
         q = stages(
-            {"name": "e", "source_model": "events", "measures": [m("count(*)", "ne")]},
-            {"source_model": "customers", "dimensions": ["city", "e.ne"], "measures": [m("count(*)", "n")]},
+            {"name": "e", "population": "events", "metrics": [m("count(*)", "ne")]},
+            {"population": "customers", "dimensions": ["city", "e.ne"], "metrics": [m("count(*)", "n")]},
         )
         with pytest.raises(UnrelatedDatasetError) as exc:
             await engine.execute(q)
@@ -502,9 +502,9 @@ class TestWarnings:
 
     async def test_one_entry_per_dataset_and_stage(self, engine) -> None:
         resp, caught = await execute_capturing(engine, stages(
-            {"name": "s1", "source_model": "customers",
-             "measures": [m("count(events.id)", "n_events"), m("sum(events.amount)", "amount")]},
-            {"source_model": "s1", "measures": [m("max(n_events)", "inner"), m("count(events.id)", "outer")]},
+            {"name": "s1", "population": "customers",
+             "metrics": [m("count(events.id)", "n_events"), m("sum(events.amount)", "amount")]},
+            {"population": "s1", "metrics": [m("max(n_events)", "inner"), m("count(events.id)", "outer")]},
         ))
         assert len([c for c in caught if "unrelated" in str(c.message).lower()]) == 2
         entries = unrelated_warnings(resp)

@@ -74,27 +74,27 @@ async def _execute(engine: SlayerQueryEngine, body: dict[str, Any]):
 
 class TestColumnRuleset:
     async def test_scopes_the_table_only_a_filter_reads(self, base):
-        resp = await _execute(_scoped(base, COLUMN_POLICY), {"source_model": "ups_orders", "dimensions": ["id"]})
+        resp = await _execute(_scoped(base, COLUMN_POLICY), {"population": "ups_orders", "dimensions": ["id"]})
         assert ids(resp, "ups_orders") == {1}
 
     async def test_scopes_a_filtered_join_target(self, base):
-        resp = await _execute(_scoped(base, COLUMN_POLICY), {"source_model": "returns", "dimensions": ["id", "ups_orders.id"]})
+        resp = await _execute(_scoped(base, COLUMN_POLICY), {"population": "returns", "dimensions": ["id", "ups_orders.id"]})
         assert by_id(resp, "returns", "ups_orders.id") == {10: 1, 11: None, 14: None}
 
 
 class TestJoinRuleset:
     async def test_scopes_the_filtered_root(self, base):
-        resp = await _execute(_scoped(base, JOIN_POLICY), {"source_model": "ups_orders", "dimensions": ["id"]})
+        resp = await _execute(_scoped(base, JOIN_POLICY), {"population": "ups_orders", "dimensions": ["id"]})
         assert ids(resp, "ups_orders") == {1, 2}
 
     async def test_scopes_a_filtered_join_target(self, base):
-        resp = await _execute(_scoped(base, JOIN_POLICY), {"source_model": "returns", "dimensions": ["id", "ups_orders.id"]})
+        resp = await _execute(_scoped(base, JOIN_POLICY), {"population": "returns", "dimensions": ["id", "ups_orders.id"]})
         assert by_id(resp, "returns", "ups_orders.id") == {10: 1, 11: 2, 14: None}
 
 
 @pytest.mark.parametrize(("body", "expected"), [
-    ({"source_model": "ups_orders", "dimensions": ["id"]}, {"ups_orders", "shipments"}),
-    ({"source_model": "returns", "dimensions": ["id", "ups_orders.id"]}, {"returns", "ups_orders", "shipments"}),
+    ({"population": "ups_orders", "dimensions": ["id"]}, {"ups_orders", "shipments"}),
+    ({"population": "returns", "dimensions": ["id", "ups_orders.id"]}, {"returns", "ups_orders", "shipments"}),
 ], ids=["filtered-root", "filtered-join-target"])
 async def test_query_reports_every_model_read(base, body, expected):
     main, named, ds, chain = await base._normalize_input(body, runtime_kwarg={}, prefer_data_source=None)

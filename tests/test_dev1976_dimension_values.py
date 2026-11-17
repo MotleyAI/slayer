@@ -394,10 +394,10 @@ class TestStageDimensionValue:
         resp = await exec_engine.execute([
             SlayerQuery.model_validate({
                 "name": "st", "population": "sales", "dimensions": ["region", "city"],
-                "metrics": [{"formula": "sum(amount)", "name": "tot"}]}),
+                "metrics": [{"expression": "sum(amount)", "name": "tot"}]}),
             SlayerQuery.model_validate({
                 "population": "st", "dimensions": ["region"],
-                "metrics": [{"formula": "iif(region == 'North', sum(tot), 0)", "name": "m"}]}),
+                "metrics": [{"expression": "iif(region == 'North', sum(tot), 0)", "name": "m"}]}),
         ])
         got = {r["st.region"]: r["st.m"] for r in resp.data}
         assert got == {"North": 90.0, "South": 0, "East": 0, "Gap": 0, "Void": 0}

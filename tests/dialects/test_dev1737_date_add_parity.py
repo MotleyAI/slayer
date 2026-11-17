@@ -33,9 +33,9 @@ def _ev_model() -> SlayerDataset:
 
 def _query(granularity: str, *measures) -> dict:
     return {
-        "source_model": "ev",
-        "time_dimensions": [{"dimension": "ts", "granularity": granularity}],
-        "measures": list(measures),
+        "population": "ev",
+        "time_dimensions": [{"field": "ts", "granularity": granularity}],
+        "metrics": list(measures),
     }
 
 

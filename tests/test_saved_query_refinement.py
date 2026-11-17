@@ -258,8 +258,8 @@ class TestFilters:
 
 
 class TestReplacedSettings:
-    ORDERED = {"measures": [REVENUE], "dimensions": ["region"],
-               "order": [{"column": "revenue", "direction": "desc"}], "limit": 2, "offset": 1}
+    ORDERED = {"metrics": [REVENUE], "dimensions": ["region"],
+               "order": [{"field": "revenue", "direction": "desc"}], "limit": 2, "offset": 1}
 
     def test_order_replaced(self) -> None:
         merged = merge(saved(**self.ORDERED), order=[{"column": "region", "direction": "asc"}])
@@ -305,7 +305,7 @@ class TestWholeQuery:
             "name": "final", "population": "orders", "dimensions": ["region"],
             "time_dimensions": [{**MONTH_TD, "date_range": ["2025-01-01", "2025-02-28"], "label": "Month"}],
             "metrics": [REVENUE, "count(*)"], "filter": ["status = '{status}'"],
-            "variables": {"status": "paid"}, "order": [{"column": "revenue", "direction": "desc"}],
+            "variables": {"status": "paid"}, "order": [{"field": "revenue", "direction": "desc"}],
             "limit": 2, "offset": 1, "to_many_handling": "associate", "whole_periods_only": True,
         })
         merged = merge(base)

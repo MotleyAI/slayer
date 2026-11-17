@@ -188,14 +188,14 @@ def sentinel_store(usage_reporting_env) -> str:
 
 def test_cli_arguments_and_names_never_leave(sentinel_store: str, usage_reporting_env) -> None:
     query = {
-        "source_model": f"{SENT}_model",
+        "population": f"{SENT}_model",
         "dimensions": [{"expression": f"{SENT}_col * 2", "name": SENT}],
-        "measures": [f"{SENT}_agg({SENT}_col)", {"formula": f"sum({SENT}_col)", "name": f"{SENT}_m"}],
-        "filters": [f"{SENT}_col > 0 or '{HOSTILE}' == 'x'"],
+        "metrics": [f"{SENT}_agg({SENT}_col)", {"expression": f"sum({SENT}_col)", "name": f"{SENT}_m"}],
+        "filter": [f"{SENT}_col > 0 or '{HOSTILE}' == 'x'"],
     }
     runs = [
         ["query", json.dumps(query), "--storage", sentinel_store],
-        ["query", json.dumps({**query, "source_model": HOSTILE}), "--storage", sentinel_store],
+        ["query", json.dumps({**query, "population": HOSTILE}), "--storage", sentinel_store],
         ["query", HOSTILE, "--storage", sentinel_store],
         ["models", "--storage", sentinel_store, "show", HOSTILE],
         ["models", "--storage", sentinel_store, "list"],
@@ -217,9 +217,9 @@ async def test_mcp_arguments_errors_and_client_never_leave(sentinel_store: str) 
     client = Implementation(name=HOSTILE, version=HOSTILE)
     async with create_connected_server_and_client_session(server, client_info=client) as session:
         await session.call_tool("query", {"query": {
-            "source_model": f"{SENT}_model",
-            "measures": [f"{SENT}_agg({SENT}_col)"],
-            "filters": [f"'{HOSTILE}' == '{HOSTILE}'"],
+            "population": f"{SENT}_model",
+            "metrics": [f"{SENT}_agg({SENT}_col)"],
+            "filter": [f"'{HOSTILE}' == '{HOSTILE}'"],
         }})
         await session.call_tool("inspect", {"entity_type": "model", "reference": HOSTILE, "compact": False})
         await session.call_tool("save_memory", {"learning": HOSTILE, "linked_entities": [f"{SENT}_ds.{SENT}_model"]})
@@ -236,8 +236,8 @@ def test_rest_paths_bodies_and_errors_never_leave(sentinel_store: str) -> None:
     client.get(f"/models/{SENT}_model")
     client.get(f"/models/{SENT}missing")
     client.get(f"/{SENT}/unmatched")
-    client.post("/query", json={"source_model": f"{SENT}_model", "measures": [f"{SENT}_agg({SENT}_col)"]})
-    client.post("/query", json={"source_model": HOSTILE, "measures": ["count(*)"]})
+    client.post("/query", json={"population": f"{SENT}_model", "metrics": [f"{SENT}_agg({SENT}_col)"]})
+    client.post("/query", json={"population": HOSTILE, "metrics": ["count(*)"]})
     client.post(f"/mcp/messages/?session_id={SENT}", json={"x": HOSTILE})
     end_process()
     assert_clean_everywhere()
@@ -282,7 +282,7 @@ def test_flight_sql_never_leaves(usage_reporting_env) -> None:
 
 
 def test_sent_report_never_carries_a_sentinel(sentinel_store: str, usage_reporting_env) -> None:
-    cli(["query", json.dumps({"source_model": HOSTILE, "measures": ["count(*)"]}), "--storage", sentinel_store])
+    cli(["query", json.dumps({"population": HOSTILE, "metrics": ["count(*)"]}), "--storage", sentinel_store])
     cli(["models", "--storage", sentinel_store, "show", HOSTILE])
     make_due()
     cli(["models", "--storage", sentinel_store, "list"])
@@ -416,8 +416,8 @@ async def test_new_fields_never_carry_a_sentinel(sentinel_store: str) -> None:
     server = create_mcp_server(storage=YAMLStorage(base_dir=sentinel_store), _seed_help=False)
     client = Implementation(name=HOSTILE, version=HOSTILE)
     async with create_connected_server_and_client_session(server, client_info=client) as session:
-        await session.call_tool("query", {"query": {"source_model": f"{SENT}_model", "measures": [f"sum({SENT}_col)"]}})
-        await session.call_tool("query", {"query": {"source_model": HOSTILE, "measures": ["count(*)"]}})
+        await session.call_tool("query", {"query": {"population": f"{SENT}_model", "metrics": [f"sum({SENT}_col)"]}})
+        await session.call_tool("query", {"query": {"population": HOSTILE, "metrics": ["count(*)"]}})
     end_process()
     report = show()
     assert report["first_query_ok"]

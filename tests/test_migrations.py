@@ -329,7 +329,7 @@ def test_model_v1_to_v2_measures_only() -> None:
         "version": 1,
         "name": "orders",
         "sql_table": "orders",
-        "metrics": [
+        "measures": [
             {"name": "revenue", "sql": "amount"},
             {"name": "high_value", "sql": "amount", "filter": "amount > 100",
              "allowed_aggregations": ["sum"]},
@@ -352,7 +352,7 @@ def test_model_v1_to_v2_dim_and_measure() -> None:
         "name": "orders",
         "sql_table": "orders",
         "dimensions": [{"name": "status"}],
-        "metrics": [{"name": "revenue", "sql": "amount"}],
+        "measures": [{"name": "revenue", "sql": "amount"}],
     })
     assert [c.name for c in m.fields] == ["status", "revenue"]
     assert m.metrics == []
@@ -366,7 +366,7 @@ def test_model_v1_to_v2_collision_raises() -> None:
             "version": 1,
             "name": "orders",
             "dimensions": [{"name": "amount", "type": "number"}],
-            "metrics": [{"name": "amount", "sql": "amount"}],
+            "measures": [{"name": "amount", "sql": "amount"}],
         })
 
 
@@ -377,7 +377,7 @@ def test_model_v1_to_v2_legacy_type_alias() -> None:
         "version": 1,
         "name": "orders",
         "sql_table": "orders",
-        "metrics": [{"name": "revenue", "sql": "amount", "datatype": "sum"}],
+        "measures": [{"name": "revenue", "sql": "amount", "type": "sum"}],
     })
     col = m.fields[0]
     assert col.name == "revenue"
@@ -392,10 +392,10 @@ def test_model_v1_to_v2_legacy_type_alias_respects_explicit_whitelist() -> None:
         "version": 1,
         "name": "orders",
         "sql_table": "orders",
-        "metrics": [{
+        "measures": [{
             "name": "revenue",
             "sql": "amount",
-            "datatype": "sum",
+            "type": "sum",
             "allowed_aggregations": ["sum", "avg"],
         }],
     })
@@ -410,7 +410,7 @@ def test_model_v1_detector_handles_non_list_measures() -> None:
             "data_source": "ds",
             "version": 1,
             "name": "orders",
-            "metrics": {"name": "revenue"},  # dict, not list
+            "measures": {"name": "revenue"},  # dict, not list
         })
     # The error should come from Pydantic validation, not a KeyError: 0
     # raised inside the v1 detector while subscripting raw_measures[0].
@@ -424,8 +424,8 @@ def test_model_v2_input_is_noop() -> None:
         "version": 2,
         "name": "orders",
         "sql_table": "orders",
-        "fields": [{"name": "status", "datatype": "string"}],
-        "metrics": [],
+        "columns": [{"name": "status", "type": "string"}],
+        "measures": [],
     })
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     assert [c.name for c in m.fields] == ["status"]
@@ -438,8 +438,8 @@ def test_model_forward_version_passes_through() -> None:
         "version": 99,
         "name": "orders",
         "sql_table": "orders",
-        "fields": [{"name": "status", "datatype": "string"}],
-        "metrics": [],
+        "columns": [{"name": "status", "type": "string"}],
+        "measures": [],
         "future_field": "ignored",
     })
     assert m.version == 99
@@ -449,7 +449,7 @@ def test_query_v1_to_v2_fields_renamed() -> None:
     """v1 SlayerQuery `fields` becomes v2 `measures`."""
     q = SlayerQuery.model_validate({
         "version": 1,
-        "population": "orders",
+        "source_model": "orders",
         "fields": [{"formula": "revenue:sum", "name": "rev"}],
     })
     assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
@@ -463,9 +463,9 @@ def test_query_v1_to_v2_both_fields_and_measures_raises() -> None:
     with pytest.raises(ValueError, match="both 'fields' and 'measures'"):
         SlayerQuery.model_validate({
             "version": 1,
-            "population": "orders",
+            "source_model": "orders",
             "fields": [{"formula": "revenue:sum"}],
-            "metrics": [{"formula": "revenue:avg"}],
+            "measures": [{"formula": "revenue:avg"}],
         })
 
 
@@ -569,8 +569,8 @@ def test_model_v2_input_with_source_queries_preserved() -> None:
         "version": 2,
         "name": "saved",
         "data_source": "demo",
-        "fields": [],
-        "metrics": [],
+        "columns": [],
+        "measures": [],
         "source_queries": [{
             "version": 2,
             "source_model": "orders",
@@ -735,8 +735,8 @@ def test_query_v2_to_v3_drops_legacy_execution_flags(
 def test_query_v2_to_v3_names_an_inline_model_without_its_contents(caplog) -> None:
     secret = "alice@example.com"
     inline = {"name": "inline_orders", "sql_table": "orders", "data_source": "ds",
-              "columns": [{"name": "email", "type": "string"}],
-              "measures": [{"name": "m", "sql": f"COUNT(CASE WHEN email = '{secret}' THEN 1 END)"}]}
+              "fields": [{"name": "email", "datatype": "string"}],
+              "metrics": [{"name": "m", "sql": f"COUNT(CASE WHEN email = '{secret}' THEN 1 END)"}]}
     caplog.set_level(logging.WARNING, logger="slayer.storage.v3_migration")
     with pytest.warns(DeprecationWarning) as caught:
         mig.migrate("SlayerQuery", {"version": 2, "source_model": inline, "dry_run": True})
@@ -751,7 +751,7 @@ def test_query_v2_to_v3_no_op_when_neither_present(caplog) -> None:
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
         q = SlayerQuery.model_validate(
-            {"version": 2, "population": "orders"}
+            {"version": 2, "source_model": "orders"}
         )
         deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
     assert q.version == mig.CURRENT_VERSIONS["SlayerQuery"]
@@ -766,7 +766,7 @@ def test_query_v2_to_v3_uses_name_as_identifier_when_present(caplog) -> None:
         SlayerQuery.model_validate({
             "version": 2,
             "name": "stale_query",
-            "population": "orders",
+            "source_model": "orders",
             "dry_run": True,
         })
     [record] = [r for r in caplog.records if r.levelno == logging.WARNING]
@@ -814,7 +814,7 @@ async def _build_engine_with_orders(tmpdir: str):
 async def test_engine_dry_run_kwarg_slayer_query_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "count(*)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)"}]})
         result = await engine.execute(query=q, dry_run=True)
         assert result.data == []
         assert "COUNT(*)" in result.sql
@@ -824,7 +824,7 @@ async def test_engine_dry_run_kwarg_dict_input() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
-            query={"source_model": "orders", "measures": [{"formula": "count(*)"}]},
+            query={"population": "orders", "metrics": [{"expression": "count(*)"}]},
             dry_run=True,
         )
         assert result.data == []
@@ -837,7 +837,7 @@ async def test_engine_dry_run_kwarg_list_input() -> None:
         engine = await _build_engine_with_orders(tmp)
         result = await engine.execute(
             query=[
-                {"source_model": "orders", "measures": [{"formula": "count(*)"}]},
+                {"population": "orders", "metrics": [{"expression": "count(*)"}]},
             ],
             dry_run=True,
         )
@@ -994,10 +994,10 @@ class TestV4ToV5DictMigration:
         m = SlayerDataset.model_validate({
             "version": 4,
             "name": "items", "sql_table": "items", "data_source": "ds",
-            "fields": [
-                {"name": "title", "sql": "title", "datatype": "string"},
-                {"name": "amount", "sql": "amount", "datatype": "number"},
-                {"name": "ts", "sql": "ts", "datatype": "time"},
+            "columns": [
+                {"name": "title", "sql": "title", "type": "string"},
+                {"name": "amount", "sql": "amount", "type": "number"},
+                {"name": "ts", "sql": "ts", "type": "time"},
             ],
         })
         assert m.fields[0].datatype.name == "TEXT"

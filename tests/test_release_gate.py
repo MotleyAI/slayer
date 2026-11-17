@@ -25,8 +25,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEV_SLAYER = Path(sys.executable).parent / "slayer"
 WORKFLOWS = ("publish.yml", "publish-test.yml")
 HEADLINE = {
-    "source_model": "orders",
-    "measures": ["sum(order_total)", "change_pct(sum(order_total))"],
+    "population": "orders",
+    "metrics": ["sum(order_total)", "change_pct(sum(order_total))"],
     "dimensions": ["stores.name", "date_trunc('month', ordered_at)"],
 }
 

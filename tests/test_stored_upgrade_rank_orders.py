@@ -29,15 +29,15 @@ MEMORY_RANK = "rank(amount:sum)"
 #: The stored ranks as they load: descending, in the functional spelling.
 STAGE_RANK_LOADED = "rank(sum(rev), direction='desc')"
 MEMORY_RANK_LOADED = "rank(sum(amount), direction='desc')"
-TOP_QUERY = {"source_model": "top_status", "dimensions": ["status"], "measures": ["sum(total)"]}
+TOP_QUERY = {"population": "top_status", "dimensions": ["status"], "metrics": ["sum(total)"]}
 
 
 def _stages(*, query_version: int | None = None) -> list[dict]:
     stages = [
-        {"name": "x", "source_model": "orders", "dimensions": [{"name": "status"}],
-         "measures": [{"formula": "sum(amount)", "name": "rev"}]},
-        {"source_model": "x", "dimensions": [{"name": "status"}],
-         "measures": [{"formula": "rev:sum", "name": "total"}],
+        {"name": "x", "population": "orders", "dimensions": [{"name": "status"}],
+         "metrics": [{"expression": "sum(amount)", "name": "rev"}]},
+        {"population": "x", "dimensions": [{"name": "status"}],
+         "metrics": [{"expression": "rev:sum", "name": "total"}],
          "order": [funcstyle_rank_order(STAGE_RANK)], "limit": 1},
     ]
     if query_version is not None:
@@ -47,8 +47,8 @@ def _stages(*, query_version: int | None = None) -> list[dict]:
 
 
 def _memory_query(*, version: int | None = 4) -> dict:
-    q: dict = {"source_model": "orders", "dimensions": [{"name": "status"}],
-               "measures": [{"formula": "sum(amount)", "name": "rev"}],
+    q: dict = {"population": "orders", "dimensions": [{"name": "status"}],
+               "metrics": [{"expression": "sum(amount)", "name": "rev"}],
                "order": [funcstyle_rank_order(MEMORY_RANK)], "limit": 1}
     if version is not None:
         q["version"] = version

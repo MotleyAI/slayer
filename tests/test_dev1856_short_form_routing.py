@@ -622,12 +622,12 @@ class TestTypeAndOpaque:
         short = await self._virtual_columns(engine, SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Consumer.email"],
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         }))
         full = await self._virtual_columns(engine, SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Subscription.Customer.Consumer.email"],
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         }))
         assert short == full
         assert DataType.TEXT in short.values()
@@ -673,11 +673,11 @@ class TestSavedMeasureRouting:
         qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Consumer.name"],
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         })])
         await engine.save_dataset(qb)
         resp = await engine.execute(
-            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"formula": "count(*)"}]}),
+            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"expression": "count(*)"}]}),
             dry_run=True,
         )
         assert resp.sql is not None
@@ -693,7 +693,7 @@ class TestSavedMeasureRouting:
         )])
         await engine.save_dataset(qb)
         resp = await engine.execute(
-            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"formula": "count(*)"}]}),
+            query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"expression": "count(*)"}]}),
             dry_run=True,
         )
         assert resp.sql is not None
@@ -730,12 +730,12 @@ class TestScoping:
             "name": "s1",
             "population": "Invoice",
             "dimensions": ["Subscription.Customer.Consumer.name"],
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "dimensions": ["Consumer.email"],
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         })
         with pytest.raises(UnrelatedDatasetError):
             await engine.execute(query=[inner, outer], dry_run=True)
@@ -789,7 +789,7 @@ class TestSchemaDriftRouting:
         return SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
             "population": "Invoice",
             "dimensions": ["Consumer.email"],
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         })])
 
     def _drops(self, models: list[SlayerDataset]):

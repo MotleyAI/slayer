@@ -74,7 +74,7 @@ class TestTypeUnification:
 
 class TestValueSlotExpressionPopulated:
     def test_measure_slot_carries_expression(self) -> None:
-        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
         planned = plan_query(query=q, bundle=_bundle())
         assert len(planned.aggregate_slots) == 1
         slot = planned.aggregate_slots[0]
@@ -86,7 +86,7 @@ class TestValueSlotExpressionPopulated:
     def test_dimension_slot_carries_expression(self) -> None:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
             "dimensions": ["status"],
         })
         planned = plan_query(query=q, bundle=_bundle())
@@ -102,7 +102,7 @@ class TestValueSlotExpressionPopulated:
         # the generator can render them without re-binding.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
             "filter": ["amount > 0"],
         })
         planned = plan_query(query=q, bundle=_bundle())
@@ -140,7 +140,7 @@ class TestMaskExpressionPopulated:
         # key IS the binder-produced predicate (not just date_range filters).
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
             "filter": ["amount > 0"],
         })
         planned = plan_query(query=q, bundle=_bundle())
@@ -153,7 +153,7 @@ class TestMaskExpressionPopulated:
         # so structural equality implies equivalence.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
             "filter": ["amount > 0"],
         })
         planned = plan_query(query=q, bundle=_bundle())
@@ -168,7 +168,7 @@ class TestMaskExpressionPopulated:
         # expression too.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
             "filter": ["sum(amount) > 100"],
         })
         planned = plan_query(query=q, bundle=_bundle())

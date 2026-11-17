@@ -50,7 +50,7 @@ async def test_repeating_saved_join_in_extension_is_still_usable(saved_totals_en
         source_model="customer_totals",
         extensions=[{
             "source_name": "customer_totals",
-            "joins": [join.model_dump() for join in model.relationships],
+            "relationships": [join.model_dump() for join in model.relationships],
         }],
         dimensions=["customers.name"],
         measures=[{"formula": "sum(amt)", "name": "total"}],
@@ -65,7 +65,7 @@ async def test_repeating_saved_join_in_extension_is_still_usable(saved_totals_en
 async def test_repeating_stored_join_in_table_model_extension_is_that_edge(saved_totals_engine):
     response = await saved_totals_engine.execute(_query(
         source_model="orders",
-        extensions=[{"source_name": "orders", "joins": [
+        extensions=[{"source_name": "orders", "relationships": [
             orders_model().relationships[0].model_copy(update={"description": "repeated"}).model_dump()]}],
         dimensions=["customers.name"],
         measures=[{"formula": "sum(amount)", "name": "total"}],
@@ -76,8 +76,8 @@ async def test_repeating_stored_join_in_table_model_extension_is_that_edge(saved
 async def test_extension_join_differing_from_stored_one_stays_a_parallel_edge(saved_totals_engine):
     query = _query(
         source_model="orders",
-        extensions=[{"source_name": "orders", "joins": [
-            {"target_model": "customers", "join_pairs": [["id", "id"]]}]}],
+        extensions=[{"source_name": "orders", "relationships": [
+            {"to": "customers", "join_pairs": [["id", "id"]]}]}],
         dimensions=["customers.name"],
         measures=[{"formula": "sum(amount)", "name": "total"}],
     )

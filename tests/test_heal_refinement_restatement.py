@@ -90,8 +90,8 @@ class TestNotARestatement:
 @pytest.mark.parametrize("form", sorted(RESTATEMENTS))
 async def test_executed_restatement_equals_refinement_without_it(backend: str, form: str) -> None:
     async with refine_engine(backend) as (eng, _):
-        healed = await eng.execute("monthly_revenue", refine={"measures": [RESTATEMENTS[form], "count(*)"]})
-        expected = await eng.execute("monthly_revenue", refine={"measures": ["count(*)"]})
+        healed = await eng.execute("monthly_revenue", refine={"metrics": [RESTATEMENTS[form], "count(*)"]})
+        expected = await eng.execute("monthly_revenue", refine={"metrics": ["count(*)"]})
     assert healed.columns == expected.columns
     assert table(healed, ordered=False) == table(expected, ordered=False)
     assert healed.sql == expected.sql
@@ -101,6 +101,6 @@ async def test_executed_restatement_equals_refinement_without_it(backend: str, f
 async def test_executed_restatement_with_differing_label_conflicts(backend: str) -> None:
     async with refine_engine(backend) as (eng, _):
         with pytest.raises(RefinementConflictError) as info:
-            await eng.execute("monthly_revenue", refine={"measures": [{"formula": "revenue", "label": "Rev"}]})
+            await eng.execute("monthly_revenue", refine={"metrics": [{"expression": "revenue", "label": "Rev"}]})
     assert "measures" in str(info.value)
     assert "revenue" in str(info.value)

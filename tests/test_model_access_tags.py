@@ -87,7 +87,7 @@ class TestMcp:
     async def test_create_query_backed_model_sets_tags(self, storage: StorageBackend) -> None:
         await storage.save_dataset(_model())
         out = await self.call(storage, "create_model", name="item_count", access_tags=["hr"],
-                              query={"source_model": "items", "measures": [{"formula": "count(*)", "name": "n"}]})
+                              query={"population": "items", "metrics": [{"expression": "count(*)", "name": "n"}]})
         assert "Error" not in out, out
         assert (await must_get(storage, "item_count", DS)).access_tags == ["hr"]
 

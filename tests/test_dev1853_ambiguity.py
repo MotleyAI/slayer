@@ -66,7 +66,7 @@ class TestParallelEdgesFailClosed:
     async def test_measure_path_fails_closed(self, unnamed_engine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(customers.spend)", "name": "s"}],
+            "metrics": [{"expression": "sum(customers.spend)", "name": "s"}],
         })
         with pytest.raises(AmbiguousRelationshipPathError):
             await unnamed_engine.execute(query)

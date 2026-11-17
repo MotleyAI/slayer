@@ -31,8 +31,8 @@ from tests._deprecated_input_helpers import SAVED, deprecated_in, deprecations, 
 
 LEGACY = {
     "source_name": "orders",
-    "measures": [{"name": "double_amount", "formula": "sum(amount * 2)"}],
-    "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}],
+    "metrics": [{"name": "double_amount", "expression": "sum(amount * 2)"}],
+    "relationships": [{"to": "customers", "join_pairs": [["customer_id", "id"]]}],
 }
 
 
@@ -72,7 +72,7 @@ class TestFreshInputConverts:
     def test_a_stage_of_a_fresh_model_warns(self) -> None:
         with pytest.warns(FutureWarning, match="extensions"):
             model = SlayerDataset.model_validate({"name": "qb", "data_source": "shop", "source_queries": [
-                {"source_model": LEGACY, "measures": ["double_amount"]}]})
+                {"population": LEGACY, "metrics": ["double_amount"]}]})
         assert [q.population for q in model.source_queries or []] == ["orders"]
 
     def test_the_query_of_a_fresh_memory_warns(self) -> None:
@@ -104,7 +104,7 @@ class TestFreshInputConverts:
 
     def test_current_version_cannot_use_the_legacy_form(self) -> None:
         with pytest.raises(ValidationError, match="extensions"):
-            SlayerQuery.model_validate({"version": CURRENT_VERSIONS["SlayerQuery"], "population": LEGACY})
+            SlayerQuery.model_validate({"version": CURRENT_VERSIONS["SlayerQuery"], "source_model": LEGACY})
 
     def test_the_current_form_emits_no_warning(self, recorded) -> None:
         SlayerQuery.model_validate({"population": "orders", "extensions": [LEGACY]})
@@ -112,7 +112,7 @@ class TestFreshInputConverts:
 
 
 #: The legacy form over the deprecated-input helpers' engine.
-LEGACY_RUN = {"source_model": {"source_name": "orders"}, "measures": ["count(*)"]}
+LEGACY_RUN = {"population": {"source_name": "orders"}, "metrics": ["count(*)"]}
 
 
 class TestStructuredDeprecation:
@@ -126,7 +126,7 @@ class TestStructuredDeprecation:
         assert "extensions" in payload.new
 
     def test_a_stored_document_carries_none(self, recorded) -> None:
-        q = SlayerQuery.model_validate({"version": 9, "population": LEGACY})
+        q = SlayerQuery.model_validate({"version": 9, "source_model": LEGACY})
         assert q.deprecated_inputs == ()
         assert deprecations(recorded) == []
 

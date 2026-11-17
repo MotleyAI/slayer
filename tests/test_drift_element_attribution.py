@@ -35,7 +35,7 @@ INSERT INTO orders VALUES (1, 10.0, 1);
 """
 
 # Fails on SQLite for a non-drift reason: the derived column calls a function SQLite lacks.
-_DB_FAILURE = {"source_model": "t", "measures": [{"formula": "sum(bad)"}]}
+_DB_FAILURE = {"population": "t", "metrics": [{"expression": "sum(bad)"}]}
 
 
 def _t(*, ts: DataType = DataType.TEXT, filters: list[str] | None = None,
@@ -129,14 +129,14 @@ class TestUnreadDriftLeavesTheError:
         customers, orders = _shop()
         stale = customers.model_copy(update={"fields": [*customers.fields, DatasetField(name="amount", datatype=DataType.DOUBLE)]})
         async with _env(tmp_path, stale, orders) as env:
-            err = await _unwrapped(env.engine, {"source_model": "customers", "dimensions": ["region"], "measures": [
-                {"formula": "orders.sum(amount)", "name": "total"}, {"formula": "orders.sum(bad)", "name": "b"}]})
+            err = await _unwrapped(env.engine, {"population": "customers", "dimensions": ["region"], "metrics": [
+                {"expression": "orders.sum(amount)", "name": "total"}, {"expression": "orders.sum(bad)", "name": "b"}]})
         assert "no_such_fn" in str(err).lower(), err
 
     async def test_an_uncrossed_join_losing_its_key(self, tmp_path: Path) -> None:
         async with _env(tmp_path, *_shop()) as env:
             env.live("ALTER TABLE orders DROP COLUMN customer_id")
-            err = await _unwrapped(env.engine, {"source_model": "orders", "measures": [{"formula": "sum(bad)"}]})
+            err = await _unwrapped(env.engine, {"population": "orders", "metrics": [{"expression": "sum(bad)"}]})
         assert "no_such_fn" in str(err).lower(), err
 
 
@@ -144,47 +144,47 @@ class TestReadDriftWraps:
     async def test_a_read_dropped_column(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _t()) as env:
             env.live("ALTER TABLE t DROP COLUMN x")
-            err = await _wrapped(env.engine, {"source_model": "t", "measures": [{"formula": "sum(x)"}]})
+            err = await _wrapped(env.engine, {"population": "t", "metrics": [{"expression": "sum(x)"}]})
         assert _removes(err, model="t", column="x"), err.to_delete
 
     async def test_a_read_dropped_column_beside_unrelated_drift(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _t(ts=DataType.INT)) as env:
             env.live("ALTER TABLE t DROP COLUMN x")
-            err = await _wrapped(env.engine, {"source_model": "t", "measures": [{"formula": "sum(x)"}]})
+            err = await _wrapped(env.engine, {"population": "t", "metrics": [{"expression": "sum(x)"}]})
         assert _removes(err, model="t", column="x"), err.to_delete
 
     async def test_a_column_read_through_a_derived_column(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _t()) as env:
             env.live("ALTER TABLE t DROP COLUMN x")
-            await _wrapped(env.engine, {"source_model": "t", "measures": [{"formula": "sum(y)"}]})
+            await _wrapped(env.engine, {"population": "t", "metrics": [{"expression": "sum(y)"}]})
 
     async def test_a_join_key(self, tmp_path: Path) -> None:
         async with _env(tmp_path, *_shop()) as env:
             env.live("ALTER TABLE orders DROP COLUMN customer_id")
-            await _wrapped(env.engine, {"source_model": "orders", "dimensions": ["customers.region"],
-                                        "measures": [{"formula": "sum(amount)"}]})
+            await _wrapped(env.engine, {"population": "orders", "dimensions": ["customers.region"],
+                                        "metrics": [{"expression": "sum(amount)"}]})
 
     @pytest.mark.parametrize("formula", ["orders.sum(amount)", "sum(orders.amount)"])
     async def test_a_column_a_cross_model_producer_reads(self, tmp_path: Path, formula: str) -> None:
         async with _env(tmp_path, *_shop()) as env:
             env.live("ALTER TABLE orders DROP COLUMN amount")
-            err = await _wrapped(env.engine, {"source_model": "customers", "dimensions": ["region"],
-                                              "measures": [{"formula": formula, "name": "total"}]})
+            err = await _wrapped(env.engine, {"population": "customers", "dimensions": ["region"],
+                                              "metrics": [{"expression": formula, "name": "total"}]})
         assert _removes(err, model="orders", column="amount"), err.to_delete
 
     async def test_a_used_model_measure(self, tmp_path: Path) -> None:
         model = _t(measures=[DatasetMetric(name="total", expression="sum(x)")])
         async with _env(tmp_path, model) as env:
             env.live("ALTER TABLE t DROP COLUMN x")
-            await _wrapped(env.engine, {"source_model": "t", "measures": ["total"]})
+            await _wrapped(env.engine, {"population": "t", "metrics": ["total"]})
 
     async def test_a_model_filter_always_counts_as_read(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _t(filters=["s <> 'zzz'"])) as env:
             env.live("ALTER TABLE t DROP COLUMN s")
-            await _wrapped(env.engine, {"source_model": "t", "measures": [{"formula": "sum(x)"}]})
+            await _wrapped(env.engine, {"population": "t", "metrics": [{"expression": "sum(x)"}]})
 
 
-_ORDERS_BAD = {"source_model": "orders", "measures": [{"formula": "sum(bad)"}]}
+_ORDERS_BAD = {"population": "orders", "metrics": [{"expression": "sum(bad)"}]}
 
 
 def _instrumented_orders() -> SlayerDataset:
@@ -228,7 +228,7 @@ class TestInjectedRemovals:
     async def test_a_measure_used_by_name(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _shop()[0], _instrumented_orders()) as env:
             with _inject(RemoveSpec(metrics=["m_bad"])):
-                await _wrapped(env.engine, {"source_model": "orders", "measures": ["m_bad"]})
+                await _wrapped(env.engine, {"population": "orders", "metrics": ["m_bad"]})
 
     async def test_an_unused_measure(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _shop()[0], _instrumented_orders()) as env:
@@ -238,7 +238,7 @@ class TestInjectedRemovals:
     async def test_a_used_aggregation(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _shop()[0], _instrumented_orders()) as env:
             with _inject(RemoveSpec(aggregations=["wbad"])):
-                await _wrapped(env.engine, {"source_model": "orders", "measures": [{"formula": "wbad(bad)"}]})
+                await _wrapped(env.engine, {"population": "orders", "metrics": [{"expression": "wbad(bad)"}]})
 
     async def test_an_unused_aggregation(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _shop()[0], _instrumented_orders()) as env:
@@ -254,7 +254,7 @@ class TestInvalidSqlModel:
                                  DatasetField(name="amount", datatype=DataType.DOUBLE)])
         async with _env(tmp_path, *_shop(), broken) as env:
             entries = [e for e in await env.engine.validate_datasets(data_source="ds") if e.dataset_name == "sq_broken"]
-            err = await _unwrapped(env.engine, {"source_model": "sq_broken", "measures": [{"formula": "count(*)"}]})
+            err = await _unwrapped(env.engine, {"population": "sq_broken", "metrics": [{"expression": "count(*)"}]})
         assert [(type(e), e.cause if isinstance(e, WholeDatasetDelete) else None) for e in entries] == [
             (WholeDatasetDelete, "invalid_sql")], entries
         assert "no_such_function" in str(err).lower(), err

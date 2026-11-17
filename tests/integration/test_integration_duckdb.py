@@ -114,7 +114,7 @@ def duckdb_env(_duckdb_env_storage):
 @pytest.mark.integration
 class TestDuckDBQueries:
     async def test_count_all(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)"}]})
         result = await duckdb_env.execute(query=query)
         assert result.row_count == 1
         assert result.data[0]["orders._count"] == 6
@@ -138,12 +138,12 @@ class TestDuckDBQueries:
         assert by_rx == {1: 2, 0: 4}
 
     async def test_sum_measure(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(total)"}]})
         result = await duckdb_env.execute(query=query)
         assert float(result.data[0]["orders.total_sum"]) == 875.0
 
     async def test_avg_measure(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "avg(avg_amount)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "avg(avg_amount)"}]})
         result = await duckdb_env.execute(query=query)
         avg = float(result.data[0]["orders.avg_amount_avg"])
         assert abs(avg - 145.83) < 0.1
@@ -151,7 +151,7 @@ class TestDuckDBQueries:
     async def test_group_by_status(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": [{"name": "status"}],
         })
         result = await duckdb_env.execute(query=query)
@@ -163,7 +163,7 @@ class TestDuckDBQueries:
     async def test_filter_equals(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "filter": ["status == 'completed'"],
         })
         result = await duckdb_env.execute(query=query)
@@ -172,7 +172,7 @@ class TestDuckDBQueries:
     async def test_filter_gt(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "filter": ["amount > 100"],
         })
         result = await duckdb_env.execute(query=query)
@@ -181,9 +181,9 @@ class TestDuckDBQueries:
     async def test_order_by_desc(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": [{"name": "status"}],
-            "order": [{"column": {"name": "count"}, "direction": "desc"}],
+            "order": [{"field": {"name": "count"}, "direction": "desc"}],
         })
         result = await duckdb_env.execute(query=query)
         assert result.data[0]["orders.status"] == "completed"
@@ -191,7 +191,7 @@ class TestDuckDBQueries:
     async def test_limit(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": [{"name": "status"}],
             "limit": 2,
         })
@@ -201,7 +201,7 @@ class TestDuckDBQueries:
     async def test_multiple_measures(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}, {"formula": "sum(total)"}],
+            "metrics": [{"expression": "count(*)"}, {"expression": "sum(total)"}],
             "dimensions": [{"name": "status"}],
         })
         result = await duckdb_env.execute(query=query)
@@ -213,8 +213,8 @@ class TestDuckDBQueries:
         """DuckDB supports DATE_TRUNC natively."""
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
-            "time_dimensions": [{"dimension": {"name": "created_at"}, "granularity": "month"}],
+            "metrics": [{"expression": "count(*)"}],
+            "time_dimensions": [{"field": {"name": "created_at"}, "granularity": "month"}],
         })
         result = await duckdb_env.execute(query=query)
         assert result.row_count == 3  # Jan, Feb, Mar
@@ -222,9 +222,9 @@ class TestDuckDBQueries:
     async def test_time_dimension_with_date_range(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "time_dimensions": [{
-                "dimension": {"name": "created_at"},
+                "field": {"name": "created_at"},
                 "granularity": "month",
                 "date_range": ["2024-01-01", "2024-02-28"],
             }],
@@ -237,7 +237,7 @@ class TestDuckDBQueries:
     async def test_composite_filter(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "filter": ["status == 'completed' or status == 'pending'"],
         })
         result = await duckdb_env.execute(query=query)
@@ -482,7 +482,7 @@ class TestDuckDBIngestion:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "dimensions": [{"name": "customers.name"}],
         })
         result = await engine.execute(query=query)
@@ -505,7 +505,7 @@ class TestDuckDBIngestion:
 
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}, {"formula": "sum(amount)"}],
+            "metrics": [{"expression": "count(*)"}, {"expression": "sum(amount)"}],
             "dimensions": [{"name": "customers.regions.name"}],
         })
         result = await engine.execute(query=query)
@@ -529,7 +529,7 @@ class TestDuckDBMedianPercentile:
 
     async def test_median(self, duckdb_env: SlayerQueryEngine) -> None:
         # amounts = [100, 200, 50, 150, 75, 300] -> median 125
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "median(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "median(total)"}]})
         result = await duckdb_env.execute(query=query)
         assert float(result.data[0]["orders.total_median"]) == pytest.approx(125.0)
 
@@ -552,7 +552,7 @@ class TestDuckDBMedianPercentile:
         # cancelled: [75]            -> 75
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "median(total)"}],
+            "metrics": [{"expression": "median(total)"}],
             "dimensions": [{"name": "status"}],
         })
         result = await duckdb_env.execute(query=query)
@@ -573,7 +573,7 @@ class TestDuckDBStatAggregations:
     """
 
     async def test_stddev_samp_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "stddev_samp(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "stddev_samp(total)"}]})
         result = await duckdb_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(
@@ -581,7 +581,7 @@ class TestDuckDBStatAggregations:
         )
 
     async def test_var_pop_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "var_pop(total)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "var_pop(total)"}]})
         result = await duckdb_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_var_pop"]) == pytest.approx(
@@ -591,7 +591,7 @@ class TestDuckDBStatAggregations:
     async def test_corr_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "corr(total, other=customer_id)"}],
+            "metrics": [{"expression": "corr(total, other=customer_id)"}],
         })
         result = await duckdb_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -604,7 +604,7 @@ class TestDuckDBStatAggregations:
     async def test_covar_samp_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "covar_samp(total, other=customer_id)"}],
+            "metrics": [{"expression": "covar_samp(total, other=customer_id)"}],
         })
         result = await duckdb_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
@@ -650,7 +650,7 @@ class TestDuckDBStatAggregations:
         )
 
         result = await duckdb_env.execute(
-            SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "max(log_amount)"}]})
+            SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "max(log_amount)"}]})
         )
         # max(amount) = 300, log10(300) ≈ 2.4771
         assert float(result.data[0]["orders.log_amount_max"]) == pytest.approx(
@@ -658,7 +658,7 @@ class TestDuckDBStatAggregations:
         )
 
         dry = await duckdb_env.execute(
-            SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "max(log_amount)"}]}),
+            SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "max(log_amount)"}]}),
             dry_run=True,
         )
         assert dry.sql is not None

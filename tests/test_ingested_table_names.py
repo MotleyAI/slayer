@@ -52,7 +52,7 @@ async def shop(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncGenerator
 
 async def _qty(storage: YAMLStorage, model: str) -> list[Any]:
     async with owned_query_engine(storage=storage) as engine:
-        rows = (await engine.execute({"source_model": model, "dimensions": ["qty"]})).data
+        rows = (await engine.execute({"population": model, "dimensions": ["qty"]})).data
     return [r[f"{model}.qty"] for r in rows]
 
 

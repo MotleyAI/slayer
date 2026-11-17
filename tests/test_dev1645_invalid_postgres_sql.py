@@ -146,7 +146,7 @@ class TestFlavorAOrderByUnprojected:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
-            "metrics": [{"formula": "sum(revenue)", "name": "rev"}],
+            "metrics": [{"expression": "sum(revenue)", "name": "rev"}],
             "order": [OrderItem(field=FieldRef(name="rev"), direction="desc")],
         })
         sql = _norm(await _engine_generate(query=query, model=orders_model))
@@ -211,7 +211,7 @@ class TestFlavorAOrderByUnprojected:
         query = SlayerQuery.model_validate({
             "population": "accts",
             "dimensions": [FieldRef(name="status")],
-            "metrics": [{"formula": "sum(clusters.score)", "name": "sc"}],
+            "metrics": [{"expression": "sum(clusters.score)", "name": "sc"}],
             "order": [OrderItem(field=FieldRef(name="sc"), direction="desc")],
             "to_many_handling": "broadcast",
         })
@@ -264,7 +264,7 @@ class TestFlavorAOrderByUnprojected:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
             "filter": ["customers.regions.name == 'US'"],
             "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         })
@@ -303,7 +303,7 @@ class TestFlavorAOrderByUnprojected:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "last(amount, created_at)", "name": "latest"}],
+            "metrics": [{"expression": "last(amount, created_at)", "name": "latest"}],
             "filter": ["customers.regions.name == 'US'"],
             "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         })
@@ -333,7 +333,7 @@ class TestFlavorAJoinedOrderByResolves:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
             "filter": ["customers.regions.name == 'US'"],
             "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         })
@@ -350,7 +350,7 @@ class TestFlavorAJoinedOrderByResolves:
         orders, joined = _orders_customers_regions()
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
             "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         })
         sql = _norm(await _engine_generate(
@@ -364,7 +364,7 @@ class TestFlavorAJoinedOrderByResolves:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "cumsum(sum(amount))", "name": "cs"}],
+            "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}],
             "filter": ["customers.regions.name == 'US'"],
             "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         })
@@ -411,7 +411,7 @@ class TestFlavorBMixedCaseQuoting:
         ``_parse_predicate`` and must emit the quoted form in the WHERE."""
         query = SlayerQuery.model_validate({
             "population": "accounts",
-            "metrics": [{"formula": "count(*)", "name": "cnt"}],
+            "metrics": [{"expression": "count(*)", "name": "cnt"}],
             "filter": ["is_inactive == True"],
         })
         sql = _norm(await _engine_generate(query=query, model=accounts_model))
@@ -427,7 +427,7 @@ class TestFlavorBMixedCaseQuoting:
             filters=["StateFlag IS NOT NULL"],
             fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)],
         )
-        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"formula": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"expression": "count(*)"}]})
         sql = _norm(await _engine_generate(query=query, model=model))
         assert "WHERE" in sql
         assert '"StateFlag"' in sql
@@ -449,7 +449,7 @@ class TestFlavorBMixedCaseQuoting:
                 ),
             ],
         )
-        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"formula": "sum(amount)"}]})
+        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"expression": "sum(amount)"}]})
         sql = _norm(await _engine_generate(query=query, model=model))
         assert '"StateFlag"' in sql
 
@@ -529,7 +529,7 @@ class TestFlavorBMixedCaseQuoting:
         query = SlayerQuery.model_validate({
             "population": "events",
             "dimensions": [FieldRef(name="RegionCode")],
-            "metrics": [{"formula": "last(amount, ts)", "name": "latest"}],
+            "metrics": [{"expression": "last(amount, ts)", "name": "latest"}],
         })
         sql = _norm(await _engine_generate(query=query, model=model))
         # The OUTER group-by / projection reference must be quoted so it
@@ -556,7 +556,7 @@ class TestFlavorBMixedCaseQuoting:
         )
         query = SlayerQuery.model_validate({
             "population": "accounts",
-            "metrics": [{"formula": "sum(MixedAmt)", "name": "s"}],
+            "metrics": [{"expression": "sum(MixedAmt)", "name": "s"}],
         })
         sql = _norm(await _engine_generate(query=query, model=model))
         assert 'SUM(accounts."MixedAmt")' in sql
@@ -597,13 +597,13 @@ class TestFlavorBMixedCaseQuoting:
             data_source="test",
             fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)],
         )
-        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"formula": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"expression": "count(*)"}]})
         sql = _norm(await _engine_generate(query=query, model=model))
         assert '"MyAccounts"' in sql
 
     async def test_lowercase_only_expression_unchanged(self, orders_model: SlayerDataset) -> None:
         """No spurious quoting: an all-lowercase expression emits unchanged."""
-        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(revenue)"}]})
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(revenue)"}]})
         sql = _norm(await _engine_generate(query=query, model=orders_model))
         assert "SUM(orders.amount)" in sql
         assert '"amount"' not in sql
@@ -620,7 +620,7 @@ class TestFlavorBMixedCaseQuoting:
                 DatasetField(name="j", sql="COALESCE(RawVal, 0)", datatype=DataType.DOUBLE),
             ],
         )
-        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"formula": "sum(j)"}]})
+        query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"expression": "sum(j)"}]})
         sql = _norm(await _engine_generate(query=query, model=model))
         assert "COALESCE" in sql
         assert '"COALESCE"' not in sql

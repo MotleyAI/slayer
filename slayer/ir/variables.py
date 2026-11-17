@@ -106,7 +106,7 @@ def _substituted_time_dimension(td: TimeDimension, variables: Dict[str, Any]) ->
         return td
     # Revalidated so a substituted bound is shape-checked like a literal one.
     bound = TimeDimension.model_validate({
-        "dimension": dimension, "granularity": td.granularity, "date_range": bounds, "name": td.name,
+        "field": dimension, "granularity": td.granularity, "date_range": bounds, "name": td.name,
         "label": td.label,
     })
     bound._template = td.template
@@ -127,9 +127,9 @@ def apply_variables_to_query(
     date_variables = _date_variables(query, effective)
     changed: Dict[str, Any] = {}
     if query.filter is not None:
-        changed["filters"] = [bind_variables(f, effective) for f in query.filter]
+        changed["filter"] = [bind_variables(f, effective) for f in query.filter]
     surfaces = (
-        ("measures", lambda m: _substituted_metric(m, effective)),
+        ("metrics", lambda m: _substituted_metric(m, effective)),
         ("dimensions", lambda d: _substituted_dimension(d, effective)),
         ("order", lambda o: _substituted_order(o, effective)),
         ("time_dimensions", lambda td: _substituted_time_dimension(td, effective)),
@@ -265,13 +265,13 @@ def substitute_dataset_sql_surfaces(
     def _sub(text: str, field: str) -> str:
         return bind_mode_a(text, variables, field=field)
 
-    update: Dict[str, Any] = {"columns": _substituted_fields(dataset.fields, _sub)}
+    update: Dict[str, Any] = {"fields": _substituted_fields(dataset.fields, _sub)}
     if dataset.sql is not None:
         update["sql"] = _sub(dataset.sql, f"Model {dataset.name!r} sql")
     if dataset.filters:
         update["filters"] = [_sub(f, f"Model {dataset.name!r} filters[{i}]") for i, f in enumerate(dataset.filters)]
     if dataset.metrics:
-        update["measures"] = _substituted_metrics(dataset.metrics, variables)
+        update["metrics"] = _substituted_metrics(dataset.metrics, variables)
     return dataset.model_copy(update=update)
 
 

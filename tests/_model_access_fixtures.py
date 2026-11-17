@@ -189,19 +189,19 @@ def query_backed_models() -> list[SlayerDataset]:
         return SlayerDataset(name=name, source_queries=[SlayerQuery.model_validate(s) for s in stages])
 
     return [
-        qb("hr_summary", {"source_model": "hr", "dimensions": ["dept"], "measures": [{"formula": "sum(salary)", "name": "total"}]}),
-        qb("hr_rollup", {"source_model": "hr_summary", "measures": [{"formula": "sum(total)", "name": "grand"}]}),
-        qb("fin_hop", {"source_model": "fin", "dimensions": ["hr.dept"], "measures": [{"formula": "sum(amount)", "name": "amt"}]}),
+        qb("hr_summary", {"population": "hr", "dimensions": ["dept"], "metrics": [{"expression": "sum(salary)", "name": "total"}]}),
+        qb("hr_rollup", {"population": "hr_summary", "metrics": [{"expression": "sum(total)", "name": "grand"}]}),
+        qb("fin_hop", {"population": "fin", "dimensions": ["hr.dept"], "metrics": [{"expression": "sum(amount)", "name": "amt"}]}),
         qb("fin_ordered", {
-            "source_model": "fin", "dimensions": ["id"], "measures": [{"formula": "sum(amount)", "name": "amt"}],
-            "order": [{"column": "hr.salary", "direction": "desc"}],
+            "population": "fin", "dimensions": ["id"], "metrics": [{"expression": "sum(amount)", "name": "amt"}],
+            "order": [{"field": "hr.salary", "direction": "desc"}],
         }),
-        qb("fin_report", {"source_model": "fin", "measures": [{"formula": "sum(amount)", "name": "amt"}]}),
+        qb("fin_report", {"population": "fin", "metrics": [{"expression": "sum(amount)", "name": "amt"}]}),
     ]
 
 
-MIXED_QUERY = {"source_model": "fin", "dimensions": ["hr.dept"], "measures": [{"formula": "sum(amount)"}]}
-QHOP_QUERY = {"source_model": "pay", "dimensions": ["hr.dept"], "measures": [{"formula": "sum(gross)"}]}
+MIXED_QUERY = {"population": "fin", "dimensions": ["hr.dept"], "metrics": [{"expression": "sum(amount)"}]}
+QHOP_QUERY = {"population": "pay", "dimensions": ["hr.dept"], "metrics": [{"expression": "sum(gross)"}]}
 
 
 async def _save_memories(storage: StorageBackend) -> None:

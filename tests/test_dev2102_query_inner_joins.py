@@ -143,7 +143,7 @@ class TestPaths:
 
     async def test_adding_a_measure_never_changes_the_rows(self, dialect) -> None:
         extensions = [ext("customers", joins=[join("regions", REGION_PAIRS, join_type="inner")])]
-        base = {"source_model": "orders", "extensions": extensions, "dimensions": ["status"]}
+        base = {"population": "orders", "extensions": extensions, "dimensions": ["status"]}
         async with shop(dialect) as engine:
             plain = await engine.execute(q(**base, measures=[{"formula": "count(*)", "name": "n"}]))
             more = await engine.execute(q(**base, measures=[
@@ -163,7 +163,7 @@ class TestPaths:
     async def test_inner_to_a_query_backed_model_on_a_flattened_key(self, dialect) -> None:
         qb = SlayerDataset(name="big_spenders_qb", data_source=DS, source_queries=[SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["customers.id"],
-            "metrics": [{"formula": "sum(amount)", "name": "spent"}], "filter": ["spent > 25"]})])
+            "metrics": [{"expression": "sum(amount)", "name": "spent"}], "filter": ["spent > 25"]})])
         root = q(source_model="customers", extensions=[ext("customers", joins=[
             join("big_spenders_qb", [["id", "customers__id"]], join_type="inner")])], dimensions=["name"])
         async with shop(dialect, with_models(qb)) as engine:

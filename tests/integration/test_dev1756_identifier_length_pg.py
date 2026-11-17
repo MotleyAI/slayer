@@ -158,7 +158,7 @@ class TestPostgresIdentifierLength:
                 FieldRef(name=f"{DEEP}.name"),
                 FieldRef(name=f"{DEEP}.email"),
                 FieldRef(name="status"),
-            ], "metrics": [{"formula": "sum(totalAmount)"}, {"formula": "count(*)"}], "order": [OrderItem.model_validate({
+            ], "metrics": [{"expression": "sum(totalAmount)"}, {"expression": "count(*)"}], "order": [OrderItem.model_validate({
                 "field": "avg(totalAmount)",
                 "direction": "desc",
             })], "limit": 10})
@@ -179,7 +179,7 @@ class TestPostgresIdentifierLength:
         query = SlayerQuery.model_validate({"population": "SandboxInvoiceV2", "dimensions": [
                 FieldRef(name=f"{DEEP}.name"),
                 FieldRef(name=f"{DEEP}.email"),
-            ], "metrics": [{"formula": "count(*)"}]})
+            ], "metrics": [{"expression": "count(*)"}]})
         result = await chain_env.execute(query=query)
         assert result.data
         names = {row[LONG_NAME] for row in result.data}
@@ -192,7 +192,7 @@ class TestPostgresIdentifierLength:
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [FieldRef(name=f"{DEEP}.email")],
-            "metrics": [{"formula": "sum(totalAmount)"}],
+            "metrics": [{"expression": "sum(totalAmount)"}],
         })
         result = await chain_env.execute(query=query)
         assert result.data
@@ -207,7 +207,7 @@ class TestPostgresIdentifierLength:
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [FieldRef(name=f"{DEEP}.email")],
-            "metrics": [{"formula": "sum(totalAmount)"}],
+            "metrics": [{"expression": "sum(totalAmount)"}],
         })
         result = await chain_env.execute(query=query)
         totals = {row[LONG_EMAIL]: float(row["SandboxInvoiceV2.totalAmount_sum"]) for row in result.data}
@@ -218,7 +218,7 @@ class TestPostgresIdentifierLength:
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [FieldRef(name=f"{DEEP}.name"), FieldRef(name=f"{DEEP}.email")],
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         })
         result = await chain_env.execute(query=query)
         assert set(result.data[0]) >= {LONG_NAME, LONG_EMAIL}
@@ -229,7 +229,7 @@ class TestPostgresIdentifierLength:
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [FieldRef(name=f"{DEEP}.email")],
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         })
         first = await chain_env.execute(query=query, cache=True)
         second = await chain_env.execute(query=query, cache=True)
@@ -242,7 +242,7 @@ class TestPostgresIdentifierLength:
         query = SlayerQuery.model_validate({
             "population": "SandboxInvoiceV2",
             "dimensions": [FieldRef(name="status")],
-            "metrics": [{"formula": f"sum({DEEP}.lifetimeValue)"}],
+            "metrics": [{"expression": f"sum({DEEP}.lifetimeValue)"}],
         })
         result = await chain_env.execute(query=query)
         assert "_cm_" in cast(str, result.sql), "no cross-model CTE generated; test is vacuous"
@@ -258,12 +258,12 @@ class TestPostgresIdentifierLength:
             "name": "stage1",
             "population": "SandboxInvoiceV2",
             "dimensions": [FieldRef(name=f"{DEEP}.email")],
-            "metrics": [{"formula": "sum(totalAmount)"}],
+            "metrics": [{"expression": "sum(totalAmount)"}],
         })
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
             "dimensions": [FieldRef(name="SandboxSubscription__SandboxCustomer__SandboxConsumer__email")],
-            "metrics": [{"formula": "sum(totalAmount_sum)"}],
+            "metrics": [{"expression": "sum(totalAmount_sum)"}],
         })
         result = await chain_env.execute(query=[stage1, stage2])
         assert result.data

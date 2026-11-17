@@ -24,13 +24,13 @@ class TestACaseVariantIsNoOverride:
     @pytest.mark.parametrize("spelling", _SPELLINGS)
     async def test_every_spelling_is_the_builtin(self, builtin: str, expected: float, spelling: str) -> None:
         async with stored_engine(models=[t_doc(aggregations=[_hijacker(builtin)])]) as engine:
-            resp = await engine.execute({"source_model": "t", "measures": [{"formula": _spell(spelling, builtin)}]})
+            resp = await engine.execute({"population": "t", "metrics": [{"expression": _spell(spelling, builtin)}]})
         (row,) = resp.data
         assert float(row[f"t.a_{builtin}"]) == expected, row
 
     async def test_an_uppercase_definition_is_no_override_either(self) -> None:
         async with stored_engine(models=[t_doc(aggregations=[_hijacker("sum", name="SUM")])]) as engine:
-            resp = await engine.execute({"source_model": "t", "measures": [measure("SUM(a)")]})
+            resp = await engine.execute({"population": "t", "metrics": [measure("SUM(a)")]})
         assert float(value(resp)) == SUM_A
 
 
@@ -38,11 +38,11 @@ class TestContainers:
     async def test_a_stored_measure(self) -> None:
         doc = t_doc(aggregations=[_hijacker("sum")], measures=[{"name": "total", "formula": "SUM(a)"}])
         async with stored_engine(models=[doc]) as engine:
-            resp = await engine.execute({"source_model": "t", "measures": [measure("total")]})
+            resp = await engine.execute({"population": "t", "metrics": [measure("total")]})
         assert float(value(resp)) == SUM_A
 
     async def test_a_saved_query(self) -> None:
-        saved = saved_query_doc(name="sum_q", stage={"source_model": "t", "measures": [measure("sum(a)", "total")]})
+        saved = saved_query_doc(name="sum_q", stage={"population": "t", "metrics": [measure("sum(a)", "total")]})
         async with stored_engine(models=[t_doc(aggregations=[_hijacker("sum")]), saved]) as engine:
             resp = await engine.execute("sum_q")
         assert float(value(resp, name="total")) == SUM_A
@@ -51,13 +51,13 @@ class TestContainers:
 class TestExactDefinitions:
     async def test_an_exact_lowercase_definition_still_overrides(self) -> None:
         async with stored_engine(models=[t_doc(aggregations=[_hijacker("sum", name="sum")])]) as engine:
-            resp = await engine.execute({"source_model": "t", "measures": [measure("SUM(a)")]})
+            resp = await engine.execute({"population": "t", "metrics": [measure("SUM(a)")]})
         assert float(value(resp)) == SUM_A * 100
 
     async def test_several_case_variants_are_not_ambiguous(self) -> None:
         aggs = [_hijacker("sum", name="Sum"), _hijacker("sum", name="SUM")]
         async with stored_engine(models=[t_doc(aggregations=aggs)]) as engine:
-            resp = await engine.execute({"source_model": "t", "measures": [measure("sum(a)")]})
+            resp = await engine.execute({"population": "t", "metrics": [measure("sum(a)")]})
         assert float(value(resp)) == SUM_A
 
 
@@ -65,7 +65,7 @@ class TestOtherNamesKeepCaseResolution:
     async def test_a_library_name_and_a_custom_name(self) -> None:
         aggs = [agg("upper"), agg("Total", "MAX({value})")]
         async with stored_engine(models=[t_doc(aggregations=aggs)]) as engine:
-            resp = await engine.execute({"source_model": "t",
-                                         "measures": [measure("UPPER(a)", "up"), measure("total(a)", "tot")]})
+            resp = await engine.execute({"population": "t",
+                                         "metrics": [measure("UPPER(a)", "up"), measure("total(a)", "tot")]})
         (row,) = resp.data
         assert (float(row["t.up"]), float(row["t.tot"])) == (SUM_A, MAX_A)

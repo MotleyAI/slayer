@@ -229,44 +229,44 @@ class TestSavedMeasureExecution:
 
 #: operand shape id -> query kwargs for ``fn(X)``.
 PARITY = {
-    "local_saved": lambda fn: {"measures": [DatasetMetric(expression=f"{fn}(rev)", name="m")]},
+    "local_saved": lambda fn: {"metrics": [DatasetMetric(expression=f"{fn}(rev)", name="m")]},
     "dotted_cross_model_saved": lambda fn: {
-        "measures": [DatasetMetric(expression=f"{fn}(regions.tf)", name="m")]},
+        "metrics": [DatasetMetric(expression=f"{fn}(regions.tf)", name="m")]},
     "saved_transform": lambda fn: {
-        "measures": [DatasetMetric(expression=f"{fn}(cum_rev)", name="m")]},
+        "metrics": [DatasetMetric(expression=f"{fn}(cum_rev)", name="m")]},
     "saved_composite": lambda fn: {
-        "measures": [DatasetMetric(expression=f"{fn}(rev2)", name="m")]},
+        "metrics": [DatasetMetric(expression=f"{fn}(rev2)", name="m")]},
     "recursive_saved": lambda fn: {
-        "measures": [DatasetMetric(expression=f"{fn}(rev_twice)", name="m")]},
+        "metrics": [DatasetMetric(expression=f"{fn}(rev_twice)", name="m")]},
     "alias_in_filter": lambda fn: {
-        "measures": [DatasetMetric(expression="sum(revenue)", name="r")],
-        "filters": [f"{fn}(r) > 0"]},
+        "metrics": [DatasetMetric(expression="sum(revenue)", name="r")],
+        "filter": [f"{fn}(r) > 0"]},
     "alias_in_order": lambda fn: {
-        "measures": [DatasetMetric(expression="sum(revenue)", name="r")],
-        "order": [{"column": f"{fn}(r)", "direction": "desc"}]},
+        "metrics": [DatasetMetric(expression="sum(revenue)", name="r")],
+        "order": [{"field": f"{fn}(r)", "direction": "desc"}]},
     "unselected_saved_in_filter": lambda fn: {
-        "measures": [DatasetMetric(expression="sum(qty)", name="q")],
-        "filters": [f"{fn}(rev) > 0"]},
+        "metrics": [DatasetMetric(expression="sum(qty)", name="q")],
+        "filter": [f"{fn}(rev) > 0"]},
     "unselected_saved_in_order": lambda fn: {
-        "measures": [DatasetMetric(expression="sum(qty)", name="q")],
-        "order": [{"column": f"{fn}(rev)", "direction": "desc"}]},
+        "metrics": [DatasetMetric(expression="sum(qty)", name="q")],
+        "order": [{"field": f"{fn}(rev)", "direction": "desc"}]},
     "sibling_wrappers": lambda fn: {
-        "measures": [DatasetMetric(expression="sum(revenue)", name="r"),
+        "metrics": [DatasetMetric(expression="sum(revenue)", name="r"),
                      DatasetMetric(expression="sum(qty)", name="s")],
-        "filters": [f"{fn}(r) + {fn}(s) > 0"]},
+        "filter": [f"{fn}(r) + {fn}(s) > 0"]},
     "wrapper_of_wrapper": lambda fn: {
-        "measures": [DatasetMetric(expression=f"{fn}({fn}(sum(revenue)))", name="m")]},
+        "metrics": [DatasetMetric(expression=f"{fn}({fn}(sum(revenue)))", name="m")]},
     "wrapper_beside_cumsum": lambda fn: {
-        "measures": [DatasetMetric(
+        "metrics": [DatasetMetric(
             expression=f"{fn}(sum(revenue)) * 2 + {fn}(sum(revenue)) + cumsum(sum(qty))",
             name="m")]},
     "partitioned_operand": lambda fn: {
         "dimensions": ["store"],
-        "measures": [DatasetMetric(expression=f"{fn}(sum(revenue, partition_by=store))", name="m")]},
+        "metrics": [DatasetMetric(expression=f"{fn}(sum(revenue, partition_by=store))", name="m")]},
     "cross_model_composite": lambda fn: {
-        "measures": [DatasetMetric(expression=f"{fn}(regions.tf * 2 + rev)", name="m")]},
+        "metrics": [DatasetMetric(expression=f"{fn}(regions.tf * 2 + rev)", name="m")]},
     "inner_cumsum_error": lambda fn: {
-        "measures": [DatasetMetric(expression=f"{fn}(cumsum(weight))", name="m")]},
+        "metrics": [DatasetMetric(expression=f"{fn}(cumsum(weight))", name="m")]},
 }
 
 

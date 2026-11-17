@@ -244,7 +244,7 @@ class TestComputedDimFlattenCollision:
         query = SlayerQuery.model_validate({"population": "hostm", "dimensions": [
                 "customers.region",
                 {"expression": "amount", "name": "customers__region"},
-            ], "metrics": [{"formula": "sum(amount)"}]})
+            ], "metrics": [{"expression": "sum(amount)"}]})
         host = self._host()
         extras = [_customers()]
         with pytest.raises(ValueError, match=r"flatten to the same downstream name"):

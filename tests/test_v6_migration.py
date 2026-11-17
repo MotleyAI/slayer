@@ -53,9 +53,9 @@ def test_v5_payload_loads_with_sampled_none() -> None:
         "name": "orders",
         "sql_table": "orders",
         "data_source": "ds",
-        "fields": [
-            {"name": "id", "datatype": "INT", "primary_key": True},
-            {"name": "amount", "datatype": "DOUBLE"},
+        "columns": [
+            {"name": "id", "type": "INT", "primary_key": True},
+            {"name": "amount", "type": "DOUBLE"},
         ],
     }
     m = SlayerDataset.model_validate(raw)
@@ -72,8 +72,8 @@ def test_v6_payload_round_trips_with_sampled_value() -> None:
         "name": "orders",
         "sql_table": "orders",
         "data_source": "ds",
-        "fields": [
-            {"name": "amount", "datatype": "DOUBLE", "sampled": "0.0 .. 9999.99"},
+        "columns": [
+            {"name": "amount", "type": "DOUBLE", "sampled": "0.0 .. 9999.99"},
         ],
     }
     m = SlayerDataset.model_validate(raw)

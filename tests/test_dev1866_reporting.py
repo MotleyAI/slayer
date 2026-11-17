@@ -38,7 +38,7 @@ from tests._dev1866_fixtures import (
 
 _INFERRED = SlayerQuery.model_validate({
     "dimensions": ["customers.region"],
-    "metrics": [{"formula": "sum(orders.amount)", "name": "rev"}],
+    "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
 })
 
 
@@ -90,9 +90,9 @@ class TestExplicitVsInferredReporting:
     async def test_stage_population_reports_the_stage_name(self, engine, dry_run) -> None:
         stage = SlayerQuery.model_validate({
             "name": "by_region", "population": "customers", "dimensions": ["region"],
-            "metrics": [{"formula": "sum(orders.amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
         })
-        main = SlayerQuery.model_validate({"population": "by_region", "metrics": [{"formula": "sum(rev)"}]})
+        main = SlayerQuery.model_validate({"population": "by_region", "metrics": [{"expression": "sum(rev)"}]})
         resp = await engine.execute([stage, main], dry_run=dry_run)
         assert resp.population == "by_region"
         assert resp.population_inferred is False
@@ -124,7 +124,7 @@ class TestReportedAcrossExecutionModes:
         explicit = SlayerQuery.model_validate({
             "population": "customers",
             "dimensions": ["customers.region"],
-            "metrics": [{"formula": "sum(orders.amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
         })
         first = await engine.execute(explicit, cache=True)
         assert first.population_inferred is False

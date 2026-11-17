@@ -188,9 +188,9 @@ class TestScenarios:
 
     async def test_inside_a_stage(self, engine: SlayerQueryEngine) -> None:
         await assert_branch_mismatch(engine, [
-            {"name": "s1", "source_model": "orders",
+            {"name": "s1", "population": "orders",
              "dimensions": [{"expression": "status", "name": "s"}, {"expression": "amount", "name": "n"}]},
-            {"source_model": "s1", "dimensions": [{"expression": "coalesce(s, n)", "name": "x"}]},
+            {"population": "s1", "dimensions": [{"expression": "coalesce(s, n)", "name": "x"}]},
         ], "TEXT", "INT", call=("coalesce",))
 
 
@@ -228,7 +228,7 @@ class TestEveryPosition:
 class TestInferredTypes:
     @pytest.mark.parametrize("dialect_name", ["duckdb", "sqlite", "postgres"])
     def test_coerced_measure_type(self, dialect_name: str) -> None:
-        item = {"measures": [{"formula": "max(greatest(status, amount))", "name": "x"}]}
+        item = {"metrics": [{"expression": "max(greatest(status, amount))", "name": "x"}]}
         assert inferred_type(item, dialect=dialect_name) is DataType.DOUBLE
         assert stage_type(item, dialect=dialect_name) is DataType.DOUBLE
 

@@ -593,7 +593,7 @@ class TestStagePlannerTimeDimensions:
                     field="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
-            ], "metrics": [{"formula": "sum(amount)"}]})
+            ], "metrics": [{"expression": "sum(amount)"}]})
         planned = plan_query(query=query, bundle=_bundle_local())
         assert len(planned.projection) == 2
         assert any(isinstance(s.key, TimeTruncKey) for s in planned.row_slots)
@@ -607,7 +607,7 @@ class TestStagePlannerTimeDimensions:
                     field="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
-            ], "metrics": [{"formula": "sum(amount)"}]})
+            ], "metrics": [{"expression": "sum(amount)"}]})
         planned = plan_query(query=query, bundle=_bundle_local())
         assert planned.stage_schema is not None
         cols = planned.stage_schema.fields

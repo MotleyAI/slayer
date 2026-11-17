@@ -464,7 +464,7 @@ class TestCrossSpellingMatching:
     async def test_filter_resolves_to_renamed_measure(self, exec_engine: SlayerQueryEngine, measure, filter_) -> None:
         resp = await exec_engine.execute(SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["channel"],
-            "metrics": [{"formula": measure, "name": "rev"}], "filter": [filter_],
+            "metrics": [{"expression": measure, "name": "rev"}], "filter": [filter_],
         }))
         assert resp.columns == ["orders.channel", "orders.rev"]
         assert [(r["orders.channel"], float(r["orders.rev"])) for r in resp.data] == [("web", 165.0)]

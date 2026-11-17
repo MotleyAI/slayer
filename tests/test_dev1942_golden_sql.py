@@ -39,37 +39,37 @@ def _cases() -> dict:
         "dual_phase/measure": {
             "source": "monthly", "mode": None,
             "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
-                   "measures": [{"formula": _STANDALONE, "name": "a"},
-                                {"formula": _MIXED, "name": "b"}]}},
+                   "metrics": [{"expression": _STANDALONE, "name": "a"},
+                                {"expression": _MIXED, "name": "b"}]}},
         "dual_phase/filter_position": {
             "source": "monthly", "mode": None,
             "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
-                   "measures": [{"formula": _MIXED, "name": "b"}],
-                   "filters": [f"{_STANDALONE} > 5"]}},
+                   "metrics": [{"expression": _MIXED, "name": "b"}],
+                   "filter": [f"{_STANDALONE} > 5"]}},
         "dual_phase/order_position": {
             "source": "monthly", "mode": None,
             "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
-                   "measures": [{"formula": _STANDALONE, "name": "a"},
-                                {"formula": _MIXED, "name": "b"}],
-                   "order": [{"column": _STANDALONE, "direction": "desc"}]}},
+                   "metrics": [{"expression": _STANDALONE, "name": "a"},
+                                {"expression": _MIXED, "name": "b"}],
+                   "order": [{"field": _STANDALONE, "direction": "desc"}]}},
         "dual_phase/with_transform": {
             "source": "monthly", "mode": None,
             "kw": {"dimensions": ["region"], "time_dimensions": _MONTH_TD,
-                   "measures": [{"formula": _STANDALONE, "name": "a"},
-                                {"formula": _MIXED, "name": "b"},
-                                {"formula": "cumsum(sum(amount))", "name": "c"}]}},
+                   "metrics": [{"expression": _STANDALONE, "name": "a"},
+                                {"expression": _MIXED, "name": "b"},
+                                {"expression": "cumsum(sum(amount))", "name": "c"}]}},
         # population/* — the fanning-hop population filter over a mixed constituent.
         "population/mixed_reagg_constituent": {
             "source": "customers", "mode": None,
             "kw": {"dimensions": ["tier"],
-                   "measures": [{"formula": _POP_MIXED, "name": "m"}],
-                   "filters": [_OK]}},
+                   "metrics": [{"expression": _POP_MIXED, "name": "m"}],
+                   "filter": [_OK]}},
         "population/dual_phase_with_filter": {
             "source": "customers", "mode": None,
             "kw": {"dimensions": ["tier"],
-                   "measures": [{"formula": _POP_AVG, "name": "a"},
-                                {"formula": _POP_MIXED, "name": "m"}],
-                   "filters": [_OK]}},
+                   "metrics": [{"expression": _POP_AVG, "name": "a"},
+                                {"expression": _POP_MIXED, "name": "m"}],
+                   "filter": [_OK]}},
     }
 
 

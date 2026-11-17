@@ -62,7 +62,7 @@ def _assert_map(got: dict, expected: dict) -> None:
 async def _run_x(engine, dialect, *, measures, filters=None, dims=("region",)):
     query = q(
         dimensions=list(dims), time_dimensions=month_td(),
-        measures=measures, **({"filters": filters} if filters else {}),
+        measures=measures, **({"filter": filters} if filters else {}),
     )
     resp = await engine.execute(query)
     dry = await engine.execute(query, dry_run=True)

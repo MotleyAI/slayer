@@ -100,7 +100,7 @@ async def _buckets(engine: SlayerQueryEngine, *, data_source: str, model: str, c
                    series: str | None = None, width: int = 10) -> dict[str, float]:
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": model, "metrics": [m("sum(amount)", "s")],
-        "time_dimensions": [{"dimension": column, "granularity": granularity}],
+        "time_dimensions": [{"field": column, "granularity": granularity}],
         "filter": [f"series = '{series}'"] if series else [],
     }), data_source=data_source)
     return {bucket_key(value(r, column), width=width): float(value(r, "s")) for r in resp.data}

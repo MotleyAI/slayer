@@ -301,8 +301,8 @@ class TestGrouping:
         assert cells(resp, "team", "skills", value="n") == Counter((r["team"], elset(r["skills"])) for r in ROWS)
 
     async def test_through_a_to_one_join(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute({"source_model": "assignments", "dimensions": ["contractors.skills"],
-                                     "measures": [measure("count(*)", "n")]})
+        resp = await engine.execute({"population": "assignments", "dimensions": ["contractors.skills"],
+                                     "metrics": [measure("count(*)", "n")]})
         got = {as_set(cell(r, "contractors.skills")): num(cell(r, "n")) for r in resp.data}
         assert got == Counter(elset(BY_ID[c]["skills"]) if c in BY_ID else None for _, c in ASSIGNED)
 
@@ -630,59 +630,59 @@ class TestLength:
 # --------------------------------------------------------------------------- #
 # Multi-stage
 # --------------------------------------------------------------------------- #
-STAGE = {"name": "s", "source_model": "contractors", "dimensions": ["skills"], "measures": [measure("count(*)", "n")]}
+STAGE = {"name": "s", "population": "contractors", "dimensions": ["skills"], "metrics": [measure("count(*)", "n")]}
 
 
 class TestStages:
     async def test_grouped_list_projected_raw(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute([STAGE, {"source_model": "s", "dimensions": ["skills", "n"],
+        resp = await engine.execute([STAGE, {"population": "s", "dimensions": ["skills", "n"],
                                              "distinct_dimension_values": False}])
         assert {as_set(cell(r, "skills")): num(cell(r, "n")) for r in resp.data} == dict(GROUPS)
         assert len(resp.data) == 5
 
     async def test_regrouped(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute([STAGE, {"source_model": "s", "dimensions": ["skills"],
-                                             "measures": [measure("sum(n)", "t")]}])
+        resp = await engine.execute([STAGE, {"population": "s", "dimensions": ["skills"],
+                                             "metrics": [measure("sum(n)", "t")]}])
         assert {as_set(cell(r, "skills")): num(cell(r, "t")) for r in resp.data} == dict(GROUPS)
         if "list_sort" in (resp.sql or "").lower():
             assert "list_sort(list_distinct(list_sort(list_distinct(" not in (resp.sql or "").lower(), resp.sql
 
     async def test_compared(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute([STAGE, {"source_model": "s", "measures": [measure("sum(n)", "t")],
-                                             "filters": ["skills = ['sql', 'go']"]}])
+        resp = await engine.execute([STAGE, {"population": "s", "metrics": [measure("sum(n)", "t")],
+                                             "filter": ["skills = ['sql', 'go']"]}])
         assert num(cell(resp.data[0], "t")) == 2
 
     async def test_distinct_counted(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute([STAGE, {"source_model": "s",
-                                             "measures": [measure("count_distinct(skills)", "d")]}])
+        resp = await engine.execute([STAGE, {"population": "s",
+                                             "metrics": [measure("count_distinct(skills)", "d")]}])
         assert num(cell(resp.data[0], "d")) == 4
 
     async def test_length(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute([STAGE, {"source_model": "s", "dimensions": [
+        resp = await engine.execute([STAGE, {"population": "s", "dimensions": [
             "skills", {"expression": "length(skills)", "name": "len"}]}])
         assert {as_set(cell(r, "skills")): num(cell(r, "len")) for r in resp.data} == {
             g: None if g is None else len(g) for g in GROUPS}
 
     async def test_partition_key(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute([STAGE, {"source_model": "s", "dimensions": ["skills", "n"],
-                                             "measures": [measure("count(*, partition_by=skills)", "c")]}])
+        resp = await engine.execute([STAGE, {"population": "s", "dimensions": ["skills", "n"],
+                                             "metrics": [measure("count(*, partition_by=skills)", "c")]}])
         assert {as_set(cell(r, "skills")): num(cell(r, "c")) for r in resp.data} == {g: 1 for g in GROUPS}
 
     async def test_elements_of_a_grouped_list(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute([STAGE, {"source_model": "s", "dimensions": ["skills.value"],
-                                             "measures": [measure("count(skills.*)", "c")]}])
+        resp = await engine.execute([STAGE, {"population": "s", "dimensions": ["skills.value"],
+                                             "metrics": [measure("count(skills.*)", "c")]}])
         assert {cell(r, "skills.value"): num(cell(r, "c")) for r in resp.data} == {"go": 2, "sql": 2}
 
     async def test_contains_on_a_grouped_list(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute([STAGE, {"source_model": "s", "measures": [measure("sum(n)", "t")],
-                                             "filters": ["contains(skills, 'go')"]}])
+        resp = await engine.execute([STAGE, {"population": "s", "metrics": [measure("sum(n)", "t")],
+                                             "filter": ["contains(skills, 'go')"]}])
         assert num(cell(resp.data[0], "t")) == 3
 
     async def test_raw_stage_then_grouped(self, engine: SlayerQueryEngine) -> None:
-        raw = {"name": "s", "source_model": "contractors", "dimensions": ["id", "skills"],
+        raw = {"name": "s", "population": "contractors", "dimensions": ["id", "skills"],
                "distinct_dimension_values": False}
-        resp = await engine.execute([raw, {"source_model": "s", "dimensions": ["skills"],
-                                           "measures": [measure("count(*)", "n")]}])
+        resp = await engine.execute([raw, {"population": "s", "dimensions": ["skills"],
+                                           "metrics": [measure("count(*)", "n")]}])
         assert {as_set(cell(r, "skills")): num(cell(r, "n")) for r in resp.data} == dict(GROUPS)
 
     async def test_grouped_list_output_keeps_its_list_type(self, engine: SlayerQueryEngine) -> None:
@@ -692,10 +692,10 @@ class TestStages:
         assert (skills.datatype, skills.element_type) == (DataType.ARRAY, DataType.TEXT)
 
     async def test_three_stages(self, engine: SlayerQueryEngine) -> None:
-        s1 = {"name": "s1", "source_model": "contractors", "dimensions": ["team", "skills"],
-              "measures": [measure("count(*)", "n")]}
-        s2 = {"name": "s2", "source_model": "s1", "dimensions": ["skills"], "measures": [measure("sum(n)", "t")]}
-        s3 = {"source_model": "s2", "measures": [measure("count_distinct(skills)", "d"), measure("sum(t)", "total")]}
+        s1 = {"name": "s1", "population": "contractors", "dimensions": ["team", "skills"],
+              "metrics": [measure("count(*)", "n")]}
+        s2 = {"name": "s2", "population": "s1", "dimensions": ["skills"], "metrics": [measure("sum(n)", "t")]}
+        s3 = {"population": "s2", "metrics": [measure("count_distinct(skills)", "d"), measure("sum(t)", "total")]}
         resp = await engine.execute([s1, s2, s3])
         row = resp.data[0]
         assert (num(cell(row, "d")), num(cell(row, "total"))) == (4, 7)
@@ -710,8 +710,8 @@ def _python_warnings(caught: list[warnings.WarningMessage]) -> list[str]:
 
 class TestWarning:
     @pytest.mark.parametrize(("body", "alternative"), [
-        ({"dimensions": ["skills"], "measures": [measure("count(*)", "n")]}, "skills.value"),
-        ({"measures": [measure("count_distinct(skills)", "n")]}, "count_distinct(skills.value)"),
+        ({"dimensions": ["skills"], "metrics": [measure("count(*)", "n")]}, "skills.value"),
+        ({"metrics": [measure("count_distinct(skills)", "n")]}, "count_distinct(skills.value)"),
     ])
     async def test_warns_on_both_channels(self, duck: SlayerQueryEngine, body: dict[str, Any],
                                           alternative: str) -> None:
@@ -733,15 +733,15 @@ class TestWarning:
         assert len(_python_warnings(caught)) == 2
 
     async def test_one_warning_across_stages(self, duck: SlayerQueryEngine) -> None:
-        resp = await duck.execute([STAGE, {"source_model": "s", "dimensions": ["skills"],
-                                           "measures": [measure("sum(n)", "t")]}])
+        resp = await duck.execute([STAGE, {"population": "s", "dimensions": ["skills"],
+                                           "metrics": [measure("sum(n)", "t")]}])
         payloads = whole_list_payloads(resp)
         assert len(payloads) == 1, [p.human_message() for p in payloads]
 
     @pytest.mark.parametrize("body", [
         {"dimensions": ["id", "skills"], "distinct_dimension_values": False},
         {"dimensions": ["name", {"expression": "length(skills)", "name": "n"}]},
-        {"measures": [measure("count(skills)", "n")]},
+        {"metrics": [measure("count(skills)", "n")]},
     ])
     async def test_no_warning_without_a_whole_list_operation(self, duck: SlayerQueryEngine,
                                                              body: dict[str, Any]) -> None:
@@ -749,14 +749,14 @@ class TestWarning:
         assert not whole_list_payloads(resp)
 
     @pytest.mark.parametrize("body", [
-        {"dimensions": ["skills"], "measures": [measure("count(*)", "n")]},
-        {"measures": [measure("count_distinct(skills)", "n")]},
+        {"dimensions": ["skills"], "metrics": [measure("count(*)", "n")]},
+        {"metrics": [measure("count_distinct(skills)", "n")]},
     ])
     async def test_rest_carries_it(self, body: dict[str, Any]) -> None:
         async with duckdb_engine(statements=contractor_statements("duckdb"), engine_models=models()) as e:
             (payload,) = whole_list_payloads(await e.execute(query(**body)))
             client = TestClient(create_app(storage=e.storage))
-            resp = client.post("/query", json={"source_model": "contractors", **body})
+            resp = client.post("/query", json={"population": "contractors", **body})
         assert resp.status_code == 200, resp.text
         assert payload.model_dump(mode="json") in resp.json().get("warnings") or [], resp.json()
 
@@ -764,8 +764,8 @@ class TestWarning:
         async with duckdb_engine(statements=contractor_statements("duckdb"), engine_models=models()) as e:
             server = create_mcp_server(storage=e.storage, _seed_help=False)
             blocks, _ = await server.call_tool(name="query", arguments={"query": {
-                "source_model": "contractors", "dimensions": ["skills"],
-                "measures": [{"formula": "count_distinct(skills)", "name": "n"}]}})
+                "population": "contractors", "dimensions": ["skills"],
+                "metrics": [{"expression": "count_distinct(skills)", "name": "n"}]}})
         text = "\n".join(b.text for b in blocks if isinstance(b, TextContent))
         assert "count_distinct(skills.value)" in text, text
 
@@ -791,26 +791,26 @@ async def grids() -> AsyncGenerator[SlayerQueryEngine]:
 
 class TestOpaqueElements:
     async def test_null_tests_and_count_run(self, grids: SlayerQueryEngine) -> None:
-        resp = await grids.execute({"source_model": "grids", "measures": [measure("count(grid)", "n")],
-                                    "filters": ["grid IS NULL"]})
+        resp = await grids.execute({"population": "grids", "metrics": [measure("count(grid)", "n")],
+                                    "filter": ["grid IS NULL"]})
         assert num(resp.data[0]["grids.n"]) == 0
-        resp = await grids.execute({"source_model": "grids", "measures": [measure("count(grid)", "n")],
-                                    "filters": ["grid IS NOT NULL"]})
+        resp = await grids.execute({"population": "grids", "metrics": [measure("count(grid)", "n")],
+                                    "filter": ["grid IS NOT NULL"]})
         assert num(resp.data[0]["grids.n"]) == 2
 
     @pytest.mark.parametrize("body", [
         {"dimensions": ["id", {"expression": "length(grid)", "name": "n"}]},
-        {"dimensions": ["grid"], "measures": [measure("count(*)", "n")]},
+        {"dimensions": ["grid"], "metrics": [measure("count(*)", "n")]},
         {"dimensions": ["grid"]},
         {"dimensions": ["grid.value"]},
-        {"measures": [measure("count(*)", "n")], "filters": ["grid IS NOT DISTINCT FROM grid"]},
-        {"measures": [measure("count(*)", "n")], "filters": ["grid = grid"]},
-        {"measures": [measure("count_distinct(grid)", "n")]},
-        {"measures": [measure("count(*)", "n")], "filters": ["grid IN ([1], [2])"]},
+        {"metrics": [measure("count(*)", "n")], "filter": ["grid IS NOT DISTINCT FROM grid"]},
+        {"metrics": [measure("count(*)", "n")], "filter": ["grid = grid"]},
+        {"metrics": [measure("count_distinct(grid)", "n")]},
+        {"metrics": [measure("count(*)", "n")], "filter": ["grid IN ([1], [2])"]},
     ])
     async def test_set_readings_refused(self, grids: SlayerQueryEngine, body: dict[str, Any]) -> None:
         with pytest.raises(SlayerError, match="UNKNOWN"):
-            await grids.execute({"source_model": "grids", **body})
+            await grids.execute({"population": "grids", **body})
 
 
 # --------------------------------------------------------------------------- #
@@ -1076,7 +1076,7 @@ async def test_postgres_casts_each_operand_before_unnesting(filter_: str) -> Non
 
 
 async def _width_ids(engine: SlayerQueryEngine, filter_: str) -> set[int]:
-    resp = await engine.execute({"source_model": "widths", "dimensions": ["id"], "filters": [filter_]})
+    resp = await engine.execute({"population": "widths", "dimensions": ["id"], "filter": [filter_]})
     return {int(r["widths.id"]) for r in resp.data}
 
 
@@ -1099,10 +1099,10 @@ class TestPostgresArrayTypes:
 
     @pytest.mark.parametrize("column", ["v", "t", "s", "i", "b", "r", "d"])
     async def test_grouping_and_distinct_counting_each_type(self, widths: SlayerQueryEngine, column: str) -> None:
-        resp = await widths.execute({"source_model": "widths", "dimensions": [column],
-                                     "measures": [measure("count(*)", "n"),
+        resp = await widths.execute({"population": "widths", "dimensions": [column],
+                                     "metrics": [measure("count(*)", "n"),
                                                   measure(f"count({column}, partition_by={column})", "p")]})
         assert sum(num(r["widths.n"]) or 0 for r in resp.data) == 3
-        total = await widths.execute({"source_model": "widths",
-                                      "measures": [measure(f"count_distinct({column})", "sets")]})
+        total = await widths.execute({"population": "widths",
+                                      "metrics": [measure(f"count_distinct({column})", "sets")]})
         assert num(total.data[0]["widths.sets"]) == len(resp.data)

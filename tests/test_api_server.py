@@ -85,9 +85,9 @@ class TestModels:
             "name": "orders",
             "sql_table": "public.orders",
             "data_source": "test",
-            "columns": [
-                {"name": "id", "sql": "id", "type": "number"},
-                {"name": "revenue", "sql": "amount", "type": "number"},
+            "fields": [
+                {"name": "id", "sql": "id", "datatype": "number"},
+                {"name": "revenue", "sql": "amount", "datatype": "number"},
             ],
         }
         resp = client.post("/models", json=model)
@@ -148,11 +148,11 @@ class TestModels:
             "name": "orders",
             "sql_table": "t",
             "data_source": "test",
-            "columns": [
-                {"name": "id", "sql": "id", "type": "number"},
-                {"name": "internal_flag", "sql": "flag", "type": "string", "hidden": True},
-                {"name": "revenue", "sql": "amount", "type": "number"},
-                {"name": "secret_sum", "sql": "x", "type": "number", "hidden": True},
+            "fields": [
+                {"name": "id", "sql": "id", "datatype": "number"},
+                {"name": "internal_flag", "sql": "flag", "datatype": "string", "hidden": True},
+                {"name": "revenue", "sql": "amount", "datatype": "number"},
+                {"name": "secret_sum", "sql": "x", "datatype": "number", "hidden": True},
             ],
         }
         client.post("/models", json=model)
@@ -169,10 +169,10 @@ class TestModels:
             "name": "orders",
             "sql_table": "t",
             "data_source": "test",
-            "columns": [{"name": "amount", "sql": "amount", "type": "number"}],
-            "measures": [
-                {"name": "aov", "formula": "sum(amount) / count(*)"},
-                {"name": "revenue", "formula": "sum(amount)"},
+            "fields": [{"name": "amount", "sql": "amount", "datatype": "number"}],
+            "metrics": [
+                {"name": "aov", "expression": "sum(amount) / count(*)"},
+                {"name": "revenue", "expression": "sum(amount)"},
             ],
         }
         client.post("/models", json=model)
@@ -281,7 +281,7 @@ class TestIngestEndpoint:
 
 class TestQuery:
     def test_query_missing_model(self, client: TestClient) -> None:
-        resp = client.post("/query", json={"source_model": "nonexistent", "measures": [{"formula": "count(*)"}]})
+        resp = client.post("/query", json={"population": "nonexistent", "metrics": [{"expression": "count(*)"}]})
         assert resp.status_code == 400
 
     def test_query_missing_datasource(self, client: TestClient, storage: YAMLStorage) -> None:
@@ -291,7 +291,7 @@ class TestQuery:
             data_source="missing_ds",
             fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
         )))
-        resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": "sum(revenue)"}]})
+        resp = client.post("/query", json={"population": "orders", "metrics": [{"expression": "sum(revenue)"}]})
         assert resp.status_code == 400
 
     def test_query_schema_drift_returns_422(
@@ -306,7 +306,7 @@ class TestQuery:
 
         monkeypatch.setattr(SlayerQueryEngine, "execute", _raise_drift)
         resp = client.post("/query", json={
-            "source_model": "orders", "measures": [{"formula": "count(*)"}],
+            "population": "orders", "metrics": [{"expression": "count(*)"}],
         })
         assert resp.status_code == 422
         assert resp.json()["detail"]["error"] == "schema_drift"
@@ -314,7 +314,7 @@ class TestQuery:
     def test_request_measures_payload_reaches_slayer_query(self) -> None:
         """v2 `measures` key must be declared on QueryRequest so FastAPI keeps it."""
         req = QueryRequest.model_validate(
-            {"population": "orders", "metrics": [{"formula": "count(*)"}]}
+            {"population": "orders", "metrics": [{"expression": "count(*)"}]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert slayer_query.metrics is not None
@@ -369,8 +369,8 @@ class TestQueryBackedModelsAPI:
             "name": "qb_via_api",
             "data_source": "ds",
             "source_queries": [{
-                "source_model": "upstream",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "upstream",
+                "metrics": [{"expression": "sum(amount)"}],
                 "dry_run": True,
             }],
             "query_variables": {},
@@ -401,10 +401,10 @@ class TestQueryBackedModelsAPI:
             "name": "qb_bad",
             "data_source": "ds",
             "source_queries": [{
-                "source_model": "upstream",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "upstream",
+                "metrics": [{"expression": "sum(amount)"}],
             }],
-            "columns": [{"name": "x", "type": "string"}],
+            "fields": [{"name": "x", "datatype": "string"}],
         })
         # 400 with "auto-generated" in detail
         assert resp.status_code == 400
@@ -415,7 +415,7 @@ class TestQueryBackedModelsAPI:
     ) -> None:
         resp = client.post("/query", json={
             "name": "some_model",
-            "source_model": "other",
+            "population": "other",
         })
         assert resp.status_code == 400
         assert "put query clauses in 'refine'" in resp.text
@@ -476,7 +476,7 @@ class TestRunByNameRefine:
 
     def test_refine_with_variables(self, client: TestClient, seeded: YAMLStorage) -> None:
         resp = client.post("/query", json={
-            "name": "revenue_by_status", "refine": {"measures": ["count(*)"]}, "variables": {"status": "refunded"},
+            "name": "revenue_by_status", "refine": {"metrics": ["count(*)"]}, "variables": {"status": "refunded"},
         })
         assert resp.status_code == 200, resp.text
         assert resp.json()["data"] == [{"orders.region": "US", "orders.revenue": 40.0, "orders._count": 1}]
@@ -488,16 +488,16 @@ class TestRunByNameRefine:
         assert refined.json()["sql"] == plain.json()["sql"]
 
     def test_refine_without_name(self, client: TestClient, seeded: YAMLStorage) -> None:
-        resp = client.post("/query", json={"source_model": "orders", "refine": {"dimensions": ["region"]}})
+        resp = client.post("/query", json={"population": "orders", "refine": {"dimensions": ["region"]}})
         assert resp.status_code == 400
         assert "'refine' requires 'name'" in resp.text
 
     def test_null_refine_without_name(self, client: TestClient, seeded: YAMLStorage) -> None:
-        resp = client.post("/query", json={"source_model": "orders", "measures": ["count(*)"], "refine": None})
+        resp = client.post("/query", json={"population": "orders", "metrics": ["count(*)"], "refine": None})
         assert resp.status_code == 400
         assert "'refine' requires 'name'" in resp.text
 
-    @pytest.mark.parametrize("flat", [{"dimensions": ["region"]}, {"limit": None}, {"source_model": None}])
+    @pytest.mark.parametrize("flat", [{"dimensions": ["region"]}, {"limit": None}, {"population": None}])
     def test_flat_fields_next_to_name(self, client: TestClient, seeded: YAMLStorage, flat: dict) -> None:
         resp = client.post("/query", json={"name": "monthly_revenue", **flat})
         assert resp.status_code == 400
@@ -505,12 +505,12 @@ class TestRunByNameRefine:
 
     def test_conflict_is_400(self, client: TestClient, seeded: YAMLStorage) -> None:
         resp = client.post("/query", json={
-            "name": "monthly_revenue", "refine": {"measures": [{"formula": "count(*)", "name": "revenue"}]},
+            "name": "monthly_revenue", "refine": {"metrics": [{"expression": "count(*)", "name": "revenue"}]},
         })
         assert resp.status_code == 400
         assert "revenue" in resp.text
 
-    @pytest.mark.parametrize("refine", [{"bogus": 1}, {"source_model": "orders"}, {"limit": "many"}])
+    @pytest.mark.parametrize("refine", [{"bogus": 1}, {"population": "orders"}, {"limit": "many"}])
     def test_malformed_refine_is_422(self, client: TestClient, seeded: YAMLStorage, refine: dict) -> None:
         resp = client.post("/query", json={"name": "monthly_revenue", "refine": refine})
         assert resp.status_code == 422
@@ -542,10 +542,10 @@ class TestQueryListBody:
             "name": "orders",
             "data_source": "ds_list",
             "sql_table": "orders",
-            "columns": [
-                {"name": "amount", "sql": "amount", "type": "DOUBLE"},
-                {"name": "status", "sql": "status", "type": "TEXT"},
-                {"name": "customer_id", "sql": "customer_id", "type": "DOUBLE"},
+            "fields": [
+                {"name": "amount", "sql": "amount", "datatype": "DOUBLE"},
+                {"name": "status", "sql": "status", "datatype": "TEXT"},
+                {"name": "customer_id", "sql": "customer_id", "datatype": "DOUBLE"},
             ],
         })
         assert resp.status_code in (200, 201), resp.text
@@ -559,13 +559,13 @@ class TestQueryListBody:
             "queries": [
                 {
                     "name": "by_customer",
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": [{"name": "customer_id"}],
                 },
                 {
-                    "source_model": "by_customer",
-                    "measures": [{"formula": "avg(amount_sum)"}],
+                    "population": "by_customer",
+                    "metrics": [{"expression": "avg(amount_sum)"}],
                 },
             ],
             "dry_run": True,
@@ -584,18 +584,18 @@ class TestQueryListBody:
                 # ``b`` ahead so the SQL emits cleanly.
                 {
                     "name": "a",
-                    "source_model": "b",
-                    "measures": [{"formula": "avg(amount_sum)"}],
+                    "population": "b",
+                    "metrics": [{"expression": "avg(amount_sum)"}],
                 },
                 {
                     "name": "b",
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"expression": "sum(amount)"}],
                     "dimensions": [{"name": "customer_id"}],
                 },
                 {
-                    "source_model": "a",
-                    "measures": [{"formula": "max(amount_sum_avg)"}],
+                    "population": "a",
+                    "metrics": [{"expression": "max(amount_sum_avg)"}],
                 },
             ],
             "dry_run": True,
@@ -613,9 +613,9 @@ class TestQueryListBody:
         self._setup_orders(client)
         resp = client.post("/query", json={
             "queries": [
-                {"name": "a", "source_model": "b", "measures": [{"formula": "sum(amount)"}]},
-                {"name": "b", "source_model": "a", "measures": [{"formula": "sum(amount)"}]},
-                {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]},
+                {"name": "a", "population": "b", "metrics": [{"expression": "sum(amount)"}]},
+                {"name": "b", "population": "a", "metrics": [{"expression": "sum(amount)"}]},
+                {"population": "orders", "metrics": [{"expression": "sum(amount)"}]},
             ],
             "dry_run": True,
         })
@@ -636,8 +636,8 @@ class TestQueryInlineSourceModel:
             "name": "orders",
             "data_source": "ds_inline",
             "sql_table": "orders",
-            "columns": [
-                {"name": "amount", "sql": "amount", "type": "DOUBLE"},
+            "fields": [
+                {"name": "amount", "sql": "amount", "datatype": "DOUBLE"},
             ],
         })
         assert resp.status_code in (200, 201), resp.text
@@ -645,14 +645,14 @@ class TestQueryInlineSourceModel:
     def test_inline_model_extension_dict(self, client: TestClient) -> None:
         self._setup_orders(client)
         resp = client.post("/query", json={
-            "source_model": "orders",
+            "population": "orders",
             "extensions": [{
                 "source_name": "orders",
                 "columns": [
                     {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
                 ],
             }],
-            "measures": [{"formula": "sum(double_amount)"}],
+            "metrics": [{"expression": "sum(double_amount)"}],
             "dry_run": True,
         })
         assert resp.status_code == 422, resp.text
@@ -665,13 +665,13 @@ class TestQueryInlineSourceModel:
         })
         assert resp.status_code in (200, 201), resp.text
         resp = client.post("/query", json={
-            "source_model": {
+            "population": {
                 "name": "ad_hoc",
                 "sql_table": "things",
                 "data_source": "ds_adhoc",
                 "columns": [{"name": "x", "sql": "x", "type": "DOUBLE"}],
             },
-            "measures": [{"formula": "sum(x)"}],
+            "metrics": [{"expression": "sum(x)"}],
             "dry_run": True,
         })
         assert resp.status_code == 422, resp.text
@@ -745,8 +745,8 @@ class TestOpenAPI400Documentation:
             "name": "qb_dryrun",
             "data_source": "ds",
             "source_queries": [{
-                "source_model": "upstream",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "upstream",
+                "metrics": [{"expression": "sum(amount)"}],
             }],
         })
         assert setup_resp.status_code == 200, setup_resp.text
@@ -792,7 +792,7 @@ class TestSaveTimeSqlValidation:
         resp = client.post("/models", json={
             "name": "good_model", "sql": "SELECT id FROM orders",
             "data_source": "livedb",
-            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         })
         assert resp.status_code == 200
         # Acknowledged AND retrievable — not a no-op 200.
@@ -803,7 +803,7 @@ class TestSaveTimeSqlValidation:
         resp = client.post("/models", json={
             "name": "bad_model", "sql": "SELECT nope FROM ghosts",
             "data_source": "livedb",
-            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         })
         assert resp.status_code == 400
         assert client.get("/models/bad_model").status_code == 404
@@ -815,12 +815,12 @@ class TestSaveTimeSqlValidation:
         assert client.post("/models", json={
             "name": "upd", "sql": "SELECT id FROM orders",
             "data_source": "livedb",
-            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         }).status_code == 200
         resp = client.put("/models/upd", json={
             "name": "upd", "sql": "SELECT nope FROM ghosts",
             "data_source": "livedb",
-            "columns": [{"name": "id", "sql": "id", "type": "number"}],
+            "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         })
         assert resp.status_code == 400
         assert client.get("/models/upd").json()["sql"] == "SELECT id FROM orders"

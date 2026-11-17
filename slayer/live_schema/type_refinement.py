@@ -70,12 +70,12 @@ def has_refineable_fields(d: dict) -> bool:
     sql_table = d.get("sql_table")
     if not isinstance(sql_table, str) or not sql_table:
         return False
-    columns = d.get("columns")
+    columns = d.get("fields")
     if not isinstance(columns, list) or not columns:
         return False
     return any(
         isinstance(c, dict)
-        and c.get("type") == DataType.DOUBLE.value
+        and c.get("datatype") == DataType.DOUBLE.value
         and _field_is_base(c.get("sql"))
         for c in columns
     )
@@ -88,12 +88,12 @@ def has_sqlite_widenable_fields(d: dict) -> bool:
     sql_table = d.get("sql_table")
     if not isinstance(sql_table, str) or not sql_table:
         return False
-    columns = d.get("columns")
+    columns = d.get("fields")
     if not isinstance(columns, list) or not columns:
         return False
     return any(
         isinstance(c, dict)
-        and c.get("type") == DataType.INT.value
+        and c.get("datatype") == DataType.INT.value
         and _field_is_base(c.get("sql"))
         for c in columns
     )
@@ -188,7 +188,7 @@ async def _refine_one_field(
     col_name = _physical(col)
     if col_name is None:
         return False
-    persisted_type = col.get("type")
+    persisted_type = col.get("datatype")
     verdict = await _safe_probe(
         client=client, table=table_name, field=col_name, schema=schema_name,
         sql_table=sql_table, persisted_type=str(persisted_type),
@@ -199,7 +199,7 @@ async def _refine_one_field(
         persisted_type=str(persisted_type), verdict=verdict,
     ):
         return False
-    col["type"] = verdict.value
+    col["datatype"] = verdict.value
     _apply_format_flip(
         col=col, d=d, col_name=col_name,
         persisted_type=str(persisted_type), verdict=verdict,
@@ -211,11 +211,11 @@ async def _refine_dict_sqlite_probe(d: dict, datasource: DatasourceConfig, clien
     """Probe-verified SQLite refinement of ``d`` in place: widen INT on non-integer storage, narrow DOUBLE
     only on certified integer storage; ``True`` when a column changed."""
     sql_table = d["sql_table"]
-    columns = d["columns"]
+    columns = d["fields"]
     refineable: list[dict] = [
         c for c in columns
         if isinstance(c, dict)
-        and c.get("type") in (DataType.INT.value, DataType.DOUBLE.value)
+        and c.get("datatype") in (DataType.INT.value, DataType.DOUBLE.value)
         and _field_is_base(c.get("sql"))
     ]
     if not refineable:
@@ -246,11 +246,11 @@ async def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig, cl
         return False
 
     sql_table = d["sql_table"]
-    columns = d["columns"]
+    columns = d["fields"]
     refinable: list[dict] = [
         c for c in columns
         if isinstance(c, dict)
-        and c.get("type") == DataType.DOUBLE.value
+        and c.get("datatype") == DataType.DOUBLE.value
         and _field_is_base(c.get("sql"))
     ]
     if not refinable:
@@ -272,6 +272,6 @@ async def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig, cl
             continue
         live_type = live_columns.get(bare)
         if live_type is DataType.INT:
-            col["type"] = DataType.INT.value
+            col["datatype"] = DataType.INT.value
             changed = True
     return changed

@@ -19,12 +19,12 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 CUSTOMERS_EXT = {
     "source_name": "customers",
-    "measures": [{"name": "credit_total", "formula": "sum(credit)"}],
-    "joins": [{"target_model": "regions", "join_pairs": [["region_id", "id"]]}],
+    "metrics": [{"name": "credit_total", "expression": "sum(credit)"}],
+    "relationships": [{"to": "regions", "join_pairs": [["region_id", "id"]]}],
 }
-ORDERS_EXT = {"source_name": "orders", "measures": [{"name": "double_amount", "formula": "sum(amount * 2)"}]}
+ORDERS_EXT = {"source_name": "orders", "metrics": [{"name": "double_amount", "expression": "sum(amount * 2)"}]}
 WITH_FILTERS = {"source_name": "customers", "filters": ["credit > 5"]}
-MEASURES_ONLY = {"source_name": "orders", "measures": [{"formula": "sum(amount)", "name": "rev"}]}
+MEASURES_ONLY = {"source_name": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}]}
 ONE_MEASURE = [{"formula": "count(*)"}]
 
 
@@ -99,7 +99,7 @@ class TestRejected:
 
     def test_an_extension_without_source_name(self) -> None:
         with pytest.raises(ValidationError, match="source_name"):
-            _query(source_model="orders", extensions=[{"measures": []}])
+            _query(source_model="orders", extensions=[{"metrics": []}])
 
     def test_refinements_carry_no_extensions(self) -> None:
         with pytest.raises(ValidationError) as info:
@@ -109,7 +109,7 @@ class TestRejected:
     def test_a_model_s_stage_with_a_duplicate_is_rejected_too(self) -> None:
         with pytest.raises(ValidationError) as info:
             SlayerDataset.model_validate({"name": "qb", "source_queries": [{
-                "source_model": "orders", "measures": ONE_MEASURE,
+                "population": "orders", "metrics": ONE_MEASURE,
                 "extensions": [{"source_name": "customers"}, {"source_name": "customers"}]}]})
         _assert_rejected_naming(info.value, "customers")
 
@@ -156,7 +156,7 @@ class TestRestAndMcp:
 
     @pytest.mark.parametrize("version", [9, 10, 11, 12])
     def test_rest_body_migrates_a_versioned_legacy_root_extension(self, version: int) -> None:
-        req = QueryRequest.model_validate({"version": version, "population": ORDERS_EXT, "metrics": ["count(*)"]})
+        req = QueryRequest.model_validate({"version": version, "source_model": ORDERS_EXT, "measures": ["count(*)"]})
         assert req.population == "orders"
         assert [e.source_name for e in req.extensions or []] == ["orders"]
 
@@ -165,13 +165,13 @@ class TestRestAndMcp:
     ], ids=["unknown-key", "duplicate"])
     def test_rest_body_rejects_malformed_extensions_with_422(self, rest_client, extensions) -> None:
         resp = rest_client.post("/query", json={
-            "source_model": "orders", "extensions": extensions, "measures": ONE_MEASURE, "dry_run": True})
+            "population": "orders", "extensions": extensions, "metrics": ONE_MEASURE, "dry_run": True})
         assert resp.status_code == 422, resp.text
 
     async def test_mcp_query_tool_rejects_an_unknown_extension_key(self, mcp_server) -> None:
         with pytest.raises(ToolError, match="filters"):
             await mcp_server.call_tool(name="query", arguments={
-                "query": {"source_model": "orders", "extensions": [WITH_FILTERS], "measures": ONE_MEASURE},
+                "query": {"population": "orders", "extensions": [WITH_FILTERS], "metrics": ONE_MEASURE},
                 "dry_run": True,
             })
 

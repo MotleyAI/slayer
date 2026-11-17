@@ -67,7 +67,7 @@ class TestSelection:
         choice = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "metrics": [{"formula": "sum(orders.amount)", "name": "rev"}],
+                "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
             }),
             storage=storage,
         )
@@ -79,7 +79,7 @@ class TestSelection:
         with_measure = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "metrics": [{"formula": "sum(orders.amount)", "name": "rev"}],
+                "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
             }),
             storage=storage,
         )
@@ -190,7 +190,7 @@ class TestSelection:
         choice = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "metrics": [{"formula": "count(widgets.x)", "name": "wc"}],
+                "metrics": [{"expression": "count(widgets.x)", "name": "wc"}],
             }),
             storage=storage,
         )
@@ -233,7 +233,7 @@ class TestDeterminationItems:
     def test_measures_never_participate(self) -> None:
         items = self._items(SlayerQuery.model_validate({
             "dimensions": ["customers.region"],
-            "metrics": [{"formula": "sum(orders.amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(orders.amount)", "name": "rev"}],
         }))
         assert items == {"customers.region"}
 
@@ -298,7 +298,7 @@ class TestDeterminationItems:
     def test_model_level_filters_never_participate(self) -> None:
         models = chain_models_by_name()
         models["customers"] = models["customers"].model_copy(
-            update={"filters": ["regions.name <> 'Nowhere'"]}
+            update={"filter": ["regions.name <> 'Nowhere'"]}
         )
         items = set(determination_items(
             SlayerQuery(dimensions=["customers.region"]), datasets_by_name=models

@@ -659,17 +659,17 @@ examples:
     )
     _add_storage_arg(ingest_parser)
 
-    # ── validate-models ───────────────────────────────────────────────
+    # ── validate-datasets ─────────────────────────────────────────────
     validate_parser = subparsers.add_parser(
-        "validate-models",
-        help="Diff persisted models against live DB schemas (read-only)",
+        "validate-datasets",
+        help="Diff persisted datasets against live DB schemas (read-only)",
         epilog="""\
 examples:
-  slayer validate-models                      # check every datasource
-  slayer validate-models --datasource my_pg
-  slayer validate-models --cardinality        # + profile join arity (full scans)
-  slayer validate-models --cardinality --persist-cardinality
-  slayer validate-models --model orders --format json
+  slayer validate-datasets                    # check every datasource
+  slayer validate-datasets --datasource my_pg
+  slayer validate-datasets --cardinality      # + profile relationship arity (full scans)
+  slayer validate-datasets --cardinality --persist-cardinality
+  slayer validate-datasets --dataset orders --format json
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -679,9 +679,9 @@ examples:
         help="Datasource name. If omitted, every datasource is validated.",
     )
     validate_parser.add_argument(
-        "--model",
+        "--dataset",
         default=None,
-        help="Limit the whole report (and --force-clean) to a single model.",
+        help="Limit the whole report (and --force-clean) to a single dataset.",
     )
     validate_parser.add_argument(
         "--cardinality",
@@ -721,16 +721,16 @@ examples:
     )
     _add_storage_arg(validate_parser)
 
-    # ── recommend-root-model ──────────────────────────────────────────
+    # ── recommend-population ──────────────────────────────────────────
     recommend_parser = subparsers.add_parser(
-        "recommend-root-model",
-        help="Recommend a query root model + join paths for a set of items",
+        "recommend-population",
+        help="Recommend a query population + relationship paths for a set of items",
         epilog="""\
 examples:
-  slayer recommend-root-model orders.revenue customers.name
-  slayer recommend-root-model customers.name products.category --data-source my_pg
-  slayer recommend-root-model sum(orders.revenue) regions.name --format json
-  slayer recommend-root-model customers.name products.category --root-hint orders
+  slayer recommend-population orders.revenue customers.name
+  slayer recommend-population customers.name products.category --data-source my_pg
+  slayer recommend-population sum(orders.revenue) regions.name --format json
+  slayer recommend-population customers.name products.category --root-hint orders
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -777,11 +777,11 @@ examples:
     import_dbt_parser.add_argument("dbt_project_path", help="Path to dbt project root or models directory")
     import_dbt_parser.add_argument("--datasource", required=True, help="SLayer datasource name for the imported models")
     import_dbt_parser.add_argument(
-        "--include-hidden-models",
+        "--include-hidden-datasets",
         action="store_true",
         help=(
             "Also import regular dbt models (those not wrapped by a semantic_model) "
-            "as hidden SLayer models via SQL introspection. Requires dbt-core "
+            "as hidden SLayer datasets via SQL introspection. Requires dbt-core "
             "(pip install 'motley-slayer[dbt]') and a working connection on --datasource."
         ),
     )
@@ -843,8 +843,8 @@ examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     export_osi_parser.add_argument("--datasource", required=True, help="SLayer datasource whose models to export")
-    export_osi_parser.add_argument("--models", nargs="+", default=None,
-                                   help="Export only these models (default: all of the datasource's models)")
+    export_osi_parser.add_argument("--datasets", nargs="+", default=None,
+                                   help="Export only these datasets (default: all of the datasource's datasets)")
     export_osi_parser.add_argument("--out", required=True,
                                    help="Output file: JSON when it ends in .json, YAML otherwise")
     export_osi_parser.add_argument("--no-extensions", action="store_true",
@@ -852,32 +852,32 @@ examples:
                                         "is reported, not exported)")
     _add_storage_arg(export_osi_parser)
 
-    # ── models ────────────────────────────────────────────────────────
-    models_parser = subparsers.add_parser(
-        "models",
-        help="Manage models",
+    # ── datasets ──────────────────────────────────────────────────────
+    datasets_parser = subparsers.add_parser(
+        "datasets",
+        help="Manage datasets",
         epilog="""\
 examples:
-  slayer models list
-  slayer models show orders
-  slayer models create model.yaml
-  slayer models delete old_model
+  slayer datasets list
+  slayer datasets show orders
+  slayer datasets create dataset.yaml
+  slayer datasets delete old_dataset
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    _add_storage_arg(models_parser)
-    models_subparsers = models_parser.add_subparsers(dest="models_command")
+    _add_storage_arg(datasets_parser)
+    datasets_subparsers = datasets_parser.add_subparsers(dest="datasets_command")
 
-    models_subparsers.add_parser("list", help="List all models")
+    datasets_subparsers.add_parser("list", help="List all datasets")
 
-    models_show_parser = models_subparsers.add_parser("show", help="Show a model definition (YAML)")
-    models_show_parser.add_argument("name", help="Model name")
+    datasets_show_parser = datasets_subparsers.add_parser("show", help="Show a dataset definition (YAML)")
+    datasets_show_parser.add_argument("name", help="Dataset name")
 
-    models_create_parser = models_subparsers.add_parser("create", help="Create a model from a YAML file")
-    models_create_parser.add_argument("file", help="Path to YAML model definition")
+    datasets_create_parser = datasets_subparsers.add_parser("create", help="Create a dataset from a YAML file")
+    datasets_create_parser.add_argument("file", help="Path to YAML dataset definition")
 
-    models_delete_parser = models_subparsers.add_parser("delete", help="Delete a model")
-    models_delete_parser.add_argument("name", help="Model name")
+    datasets_delete_parser = datasets_subparsers.add_parser("delete", help="Delete a dataset")
+    datasets_delete_parser.add_argument("name", help="Dataset name")
 
     # ── datasources ───────────────────────────────────────────────────
     datasources_parser = subparsers.add_parser(
@@ -1026,11 +1026,11 @@ examples:
         help="Limit refresh to one datasource (default: all).",
     )
     refresh_parser.add_argument(
-        "--model",
+        "--dataset",
         action="append",
         default=None,
-        dest="models",
-        help="Model name(s) to refresh (repeatable; default: all in scope).",
+        dest="datasets",
+        help="Dataset name(s) to refresh (repeatable; default: all in scope).",
     )
     refresh_parser.add_argument(
         "--format",
@@ -1355,14 +1355,14 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) 
         _run_query(args)
     elif args.command == "ingest":
         _run_ingest(args)
-    elif args.command == "validate-models":
+    elif args.command == "validate-datasets":
         if args.format == "json" and args.force_clean:
             parser.error(
                 "--format json cannot be combined with --force-clean "
                 "(the apply flow is interactive and prints progress)"
             )
         _run_validate_datasets(args)
-    elif args.command == "recommend-root-model":
+    elif args.command == "recommend-population":
         _run_recommend_population(args)
     elif args.command == "import-dbt":
         _run_import_dbt(args)
@@ -1372,7 +1372,7 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) 
         _run_import_osi(args)
     elif args.command == "export-osi":
         _run_export_osi(args)
-    elif args.command == "models":
+    elif args.command == "datasets":
         _run_datasets(args)
     elif args.command == "datasources":
         _run_datasources(args)
@@ -1437,14 +1437,14 @@ async def _refresh_samples_async(*, args, engine: SlayerQueryEngine) -> "Refresh
     errors: list[str] = []
     unresolved_datasets: list[str] = []
     data_source = args.data_source
-    models = args.models
+    datasets = args.datasets
     if data_source is None:
         datasources = await storage.list_datasources()
     else:
         datasources = [data_source]
     for ds in datasources:
-        if models:
-            for model_name in models:
+        if datasets:
+            for model_name in datasets:
                 m = await storage.get_dataset(model_name, data_source=ds)
                 if m is None:
                     unresolved_datasets.append(f"{ds}.{model_name}")
@@ -1997,7 +1997,7 @@ def _resolve_validate_scope(args: argparse.Namespace, storage: StorageBackend) -
                 file=sys.stderr,
             )
             sys.exit(1)
-    model = getattr(args, "model", None)
+    model = getattr(args, "dataset", None)
     if not model:
         return
     identities = run_sync(storage._list_all_dataset_identities())
@@ -2049,7 +2049,7 @@ async def _collect_drift(
             failures.append((ds_name, result))
         else:
             entries.extend(result)
-    return _filter_entries_by_dataset(entries, getattr(args, "model", None)), failures
+    return _filter_entries_by_dataset(entries, getattr(args, "dataset", None)), failures
 
 
 def _filter_entries_by_dataset(entries: list[_DriftEntryT], dataset: str | None) -> list[_DriftEntryT]:
@@ -2066,7 +2066,7 @@ async def _collect_cardinality_report(args: argparse.Namespace, engine: SlayerQu
     try:
         return await engine.detect_relationship_cardinality(
             data_source=args.datasource,
-            dataset=getattr(args, "model", None),
+            dataset=getattr(args, "dataset", None),
             persist=persist,
         )
     except Exception as exc:
@@ -2084,8 +2084,8 @@ async def _collect_relationship_safety_findings(args: argparse.Namespace, storag
     """Joins whose arity is neither declared m:1/1:1 nor structurally proven —
     metrics crossing them broadcast."""
     findings = audit_relationship_safety(datasets=await _collect_all_datasets(args=args, storage=storage))
-    if getattr(args, "model", None):
-        findings = [f for f in findings if f.dataset == args.model]
+    if getattr(args, "dataset", None):
+        findings = [f for f in findings if f.dataset == args.dataset]
     return findings
 
 
@@ -2151,7 +2151,7 @@ async def _apply_force_clean(
     # apply_drift_deletes re-validates whole datasources, so scope the residual
     # the same way the report was scoped — out-of-scope drift is not ours.
     residual = _filter_entries_by_dataset(
-        result.residual, getattr(args, "model", None)
+        result.residual, getattr(args, "dataset", None)
     )
     if residual:
         print("\nResidual drift after apply:")
@@ -2230,7 +2230,7 @@ def _run_import_dbt(args):
 
 async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
     storage = engine.storage
-    include_hidden = bool(args.include_hidden_models)
+    include_hidden = bool(args.include_hidden_datasets)
     project = parse_dbt_project(
         args.dbt_project_path,
         include_regular_datasets=include_hidden,
@@ -2380,7 +2380,7 @@ def _run_import_osi(args):
 def _run_export_osi(args):
     engine = SlayerQueryEngine(storage=_resolve_storage(args))
     try:
-        result = engine.run_sync(export_osi(engine=engine, datasource=args.datasource, datasets=args.models,
+        result = engine.run_sync(export_osi(engine=engine, datasource=args.datasource, datasets=args.datasets,
                                             extensions=not args.no_extensions))
     except OsiExportError as exc:
         _fail(str(exc))
@@ -2514,7 +2514,7 @@ _DATASETS_COMMANDS = {"list": _datasets_list, "show": _datasets_show, "create": 
 
 def _run_datasets(args):
     storage = _resolve_storage(args)
-    handler = _DATASETS_COMMANDS.get(args.models_command)
+    handler = _DATASETS_COMMANDS.get(args.datasets_command)
     if handler is None:
         _fail("usage: slayer models {list,show,create,delete}")
     handler(storage, args)

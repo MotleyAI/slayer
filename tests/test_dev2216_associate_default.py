@@ -119,8 +119,8 @@ class TestTheDefaultAssociates:
         assert not associated_warnings(resp)
 
     async def test_local_metric_never_double_counts(self, engine) -> None:
-        kw = {"source_model": "customers", "dimensions": ["orders.status"],
-              "measures": [DatasetMetric(expression="sum(spend)", name="sp")]}
+        kw = {"population": "customers", "dimensions": ["orders.status"],
+              "metrics": [DatasetMetric(expression="sum(spend)", name="sp")]}
         default = await engine.execute(_q(None, **kw))
         assoc = await engine.execute(_q("associate", **kw))
         cells = _status(default, "sp", root="customers")
@@ -146,7 +146,7 @@ class TestTheDefaultAssociates:
 class TestModeInvariance:
     async def test_fully_attributable_query(self, engine) -> None:
         kw = {"dimensions": ["status", "customers.tier"],
-              "measures": [DatasetMetric(expression="sum(amount)", name="amt")]}
+              "metrics": [DatasetMetric(expression="sum(amount)", name="amt")]}
         runs = [await engine.execute(_q(mode, **kw)) for mode in (None, "broadcast", "associate", "error")]
         assert all(_same_rows(r, runs[0]) for r in runs)
         for r in runs:
@@ -189,7 +189,7 @@ class TestBroadcastFallback:
         assert not associated_warnings(default)
 
     async def test_window_broadcasts_with_its_reason(self, engine) -> None:
-        kw = {"dimensions": ["status"], "time_dimensions": SIGNUP_MONTH, "measures": [WINDOWED]}
+        kw = {"dimensions": ["status"], "time_dimensions": SIGNUP_MONTH, "metrics": [WINDOWED]}
         default = await engine.execute(_q(None, **kw))
         bcast = await engine.execute(_q("broadcast", **kw))
         assert _same_rows(default, bcast)
@@ -267,8 +267,8 @@ class TestBroadcastFallback:
             await fanning_engine.execute(query)
 
     async def test_local_ranked_aggregate_never_raises(self, engine) -> None:
-        kw = {"source_model": "customers", "dimensions": ["orders.status"],
-              "measures": [DatasetMetric(expression="last(spend, signup_at)", name="l")]}
+        kw = {"population": "customers", "dimensions": ["orders.status"],
+              "metrics": [DatasetMetric(expression="last(spend, signup_at)", name="l")]}
         default = await engine.execute(_q(None, **kw))
         bcast = await engine.execute(_q("broadcast", **kw))
         assert _same_rows(default, bcast)

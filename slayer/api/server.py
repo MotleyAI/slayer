@@ -59,7 +59,7 @@ class QueryRequest(BaseModel):
     extensions: list[DatasetExtension] | None = None
     # ``metrics`` and ``dimensions`` accept bare strings as a shorthand,
     # mirroring the Python API: ``"count(*)"`` is lifted to
-    # ``{"formula": "count(*)"}``, ``"status"`` to ``{"name": "status"}``.
+    # ``{"expression": "count(*)"}``, ``"status"`` to ``{"name": "status"}``.
     # ``SlayerQuery``'s before-validators (``_coerce_measures`` /
     # ``_coerce_dimensions``) do the actual lifting downstream.
     metrics: list[str | dict[str, Any]] | None = None
@@ -185,7 +185,7 @@ class ValidateDatasetsRequest(BaseModel):
 
 
 class RecommendPopulationRequest(BaseModel):
-    """Body for ``POST /recommend-root-model``."""
+    """Body for ``POST /recommend-population``."""
     items: list[str]
     data_source: str | None = None
     root_hint: str | None = None
@@ -476,7 +476,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 status_code=422,
                 detail={
                     "error": "schema_drift",
-                    "models": drift.datasets,
+                    "datasets": drift.datasets,
                     "to_delete": [
                         e.model_dump(mode="json") for e in drift.to_delete
                     ],
@@ -487,7 +487,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             # SlayerError subclasses ValueError; both map to 400.
             raise HTTPException(status_code=400, detail=str(e))
 
-    @app.get("/models")
+    @app.get("/datasets")
     async def list_datasets(
         data_source: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -508,7 +508,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         return result
 
     @app.get(
-        "/models/{name}",
+        "/datasets/{name}",
         responses={
             404: {"description": "Model not found."},
             409: {
@@ -537,12 +537,12 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         if model is None:
             raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
         data = model.model_dump(exclude_none=True)
-        if "columns" in data:
-            data["columns"] = [c for c in data["columns"] if not c.get("hidden")]
+        if "fields" in data:
+            data["fields"] = [c for c in data["fields"] if not c.get("hidden")]
         return data
 
     @app.post(
-        "/models",
+        "/datasets",
         responses={400: {"description": "Model failed validation (e.g. user-supplied cache fields on a query-backed model, save-time SQL generation failure)."}},
     )
     async def create_dataset(dataset: SlayerDataset) -> dict[str, Any]:
@@ -556,7 +556,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         return {"status": "created", "name": dataset.name, "warnings": _dumped(notes)}
 
     @app.put(
-        "/models/{name}",
+        "/datasets/{name}",
         responses={400: {"description": "Body name does not match path name, or model failed validation."}},
     )
     async def update_dataset(name: str, dataset: SlayerDataset) -> dict[str, Any]:
@@ -573,7 +573,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         return {"status": "updated", "name": name, "warnings": _dumped(notes)}
 
     @app.delete(
-        "/models/{name}",
+        "/datasets/{name}",
         responses={
             404: {"description": "Model not found."},
             409: {
@@ -678,7 +678,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         return {"status": "deleted", "name": name}
 
     @app.post(
-        "/validate-models",
+        "/validate-datasets",
         responses={
             404: {"description": "Datasource not found."},
             422: {
@@ -715,7 +715,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         return [e.model_dump(mode="json") for e in entries]
 
     @app.post(
-        "/recommend-root-model",
+        "/recommend-population",
         responses={400: {"description": "Unresolvable / wrong-kind / cross-datasource items."}},
     )
     async def recommend_population_endpoint(

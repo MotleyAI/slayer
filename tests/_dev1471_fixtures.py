@@ -71,7 +71,7 @@ def orders_table_spec(rows: list[tuple], *, extra_columns: Iterable[tuple[str, s
         ("region", "TEXT"), ("created_at", "TIMESTAMP"), ("shipped_at", "TIMESTAMP"),
     ]
     columns.extend(extra_columns)
-    return {"name": "orders", "columns": columns, "rows": rows}
+    return {"name": "orders", "fields": columns, "rows": rows}
 
 
 # One order per month, Jan–Apr 2025 (id, customer_id, amount, region, created_at, shipped_at).
@@ -86,7 +86,7 @@ MONTHLY_ROWS = [
 MONTHLY_INNER = SlayerQuery.model_validate({
     "name": "s1", "population": "orders",
     "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-    "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+    "metrics": [{"expression": "sum(amount)", "name": "rev"}],
 })
 
 
@@ -125,12 +125,12 @@ def region_chain_tables(
 ) -> list[dict]:
     return [
         {"name": "regions",
-         "columns": [("id", "INT"), ("name", "TEXT"), ("last_activity_at", "TIMESTAMP")],
+         "fields": [("id", "INT"), ("name", "TEXT"), ("last_activity_at", "TIMESTAMP")],
          "rows": regions},
         {"name": "customers",
-         "columns": [("id", "INT"), ("region_id", "INT")], "rows": customers},
+         "fields": [("id", "INT"), ("region_id", "INT")], "rows": customers},
         {"name": "orders",
-         "columns": [("id", "INT"), ("customer_id", "INT")], "rows": orders},
+         "fields": [("id", "INT"), ("customer_id", "INT")], "rows": orders},
     ]
 
 

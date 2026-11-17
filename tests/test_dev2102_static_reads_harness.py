@@ -21,8 +21,8 @@ from tests._dev2102_fixtures import (
 _HARNESS_QB = "harness_qb"
 _AMOUNT = {"formula": "sum(amount)", "name": "a"}
 _REGION_PAIRS = [["region_id", "id"]]
-_SPENT_BY_CUSTOMER = {"source_model": "orders", "dimensions": ["customer_id"],
-                      "measures": [{"formula": "sum(amount)", "name": "spent"}]}
+_SPENT_BY_CUSTOMER = {"population": "orders", "dimensions": ["customer_id"],
+                      "metrics": [{"expression": "sum(amount)", "name": "spent"}]}
 
 
 def _models() -> list[SlayerDataset]:
@@ -233,8 +233,8 @@ def test_a_sibling_shadows_a_stored_model_whatever_the_case() -> None:
     assert _root_source_and_base(stages, _models(), data_source=DS) == ("Customers", "orders")
 
 
-_CUSTOMER_NAMES = {"source_model": "orders", "dimensions": ["customers.name"],
-                   "measures": [{"formula": "count(*)", "name": "n"}]}
+_CUSTOMER_NAMES = {"population": "orders", "dimensions": ["customers.name"],
+                   "metrics": [{"expression": "count(*)", "name": "n"}]}
 
 
 @pytest.mark.parametrize(("stages", "column"), [
@@ -251,8 +251,8 @@ async def test_a_stage_source_is_local_to_its_own_stage(stages: list[SlayerQuery
 
 
 _LABELS = _cities({"name": "label", "sql": "city", "type": "TEXT"}, name="labels_src")
-_STORED_LABEL_READ = {"source_model": "orders", "dimensions": ["customers.label"],
-                      "measures": [{"formula": "count(*)", "name": "n"}]}
+_STORED_LABEL_READ = {"population": "orders", "dimensions": ["customers.label"],
+                      "metrics": [{"expression": "count(*)", "name": "n"}]}
 
 
 @pytest.mark.parametrize("stages", [

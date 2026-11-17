@@ -76,7 +76,7 @@ class TestInstantReading:
             query=q(dimensions=["id"], filters=["created_at <= '{cutoff}'"]), name="early",
             variables={"cutoff": "2024-04-10"},
         )
-        resp = await engine.execute({"source_model": "early", "dimensions": ["id"]})
+        resp = await engine.execute({"population": "early", "dimensions": ["id"]})
         assert ids(resp, model="early") == {1}
 
 
@@ -92,7 +92,7 @@ class TestInsideMeasures:
     @pytest.mark.parametrize("formula", [FILTERED, CASED])
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_saved_measure(self, backend: str, formula: str) -> None:
-        model = orders_model().model_copy(update={"measures": [DatasetMetric(name="v", expression=formula)]})
+        model = orders_model().model_copy(update={"metrics": [DatasetMetric(name="v", expression=formula)]})
         async with dev2215_engine(backend, models=[model, *_others()]) as eng:
             resp = await eng.execute(q(measures=["v"], filters=[FIRST_TWO]))
         assert int(single(resp)) == 1
@@ -224,15 +224,15 @@ class TestNotice:
     async def test_a_variable_in_an_extension_measure_is_named(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
             measures=["early"], variables={"cutoff": "2024-12-31"},
-            extensions=[{"source_name": "orders", "measures": [
-                {"name": "early", "formula": "count(*) FILTER (WHERE created_at <= '{cutoff}')"}]}]))
+            extensions=[{"source_name": "orders", "metrics": [
+                {"name": "early", "expression": "count(*) FILTER (WHERE created_at <= '{cutoff}')"}]}]))
         assert [w.variables for w in notices(resp)] == [["cutoff"]], resp.warnings
 
     async def test_a_variable_in_a_joined_extension_measure_is_named(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
             measures=["customers.recent"], variables={"cutoff": "2024-12-31"},
-            extensions=[{"source_name": "customers", "measures": [
-                {"name": "recent", "formula": "count(*) FILTER (WHERE updated_at <= '{cutoff}')"}]}]))
+            extensions=[{"source_name": "customers", "metrics": [
+                {"name": "recent", "expression": "count(*) FILTER (WHERE updated_at <= '{cutoff}')"}]}]))
         assert [w.variables for w in notices(resp)] == [["cutoff"]], resp.warnings
 
     @pytest.mark.parametrize(("operand", "announced"), [
@@ -252,7 +252,7 @@ class TestNotice:
         assert [w.variables for w in notices(resp)] == [["cutoff", "other"]], resp.warnings
 
     async def test_a_saved_measure_is_announced_at_save(self, engine: SlayerQueryEngine) -> None:
-        model = orders_model().model_copy(update={"measures": [
+        model = orders_model().model_copy(update={"metrics": [
             DatasetMetric(name="on_day", expression="count(*) FILTER (WHERE created_at = '2024-04-10')")]})
         notes: list[Any] = []
         with recorded_warnings() as caught:
@@ -268,7 +268,7 @@ class TestNotice:
     async def test_a_saved_measure_on_a_case_variant_or_joined_column_is_announced(
         self, engine: SlayerQueryEngine, formula: str,
     ) -> None:
-        model = orders_model().model_copy(update={"measures": [DatasetMetric(name="on_day", expression=formula)]})
+        model = orders_model().model_copy(update={"metrics": [DatasetMetric(name="on_day", expression=formula)]})
         notes: list[Any] = []
         await engine.save_dataset(model, warnings_out=notes)
         assert len([n for n in notes if NOTICE in payload_text(n)]) == 1, notes

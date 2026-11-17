@@ -269,12 +269,12 @@ class TestStagePositions:
             "name": "stage1",
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(revenue)"}],
+            "metrics": [{"expression": "sum(revenue)"}],
         })
         root = SlayerQuery.model_validate({
             "population": "stage1",
             "dimensions": ["status"],
-            "metrics": [{"formula": "max(revenue_sum)"}],
+            "metrics": [{"expression": "max(revenue_sum)"}],
         })
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
@@ -295,7 +295,7 @@ class TestStagePositions:
                 SlayerQuery.model_validate({
                     "population": "orders",
                     "dimensions": ["status"],
-                    "metrics": [{"formula": "sum(revenue)", "name": "rev"}],
+                    "metrics": [{"expression": "sum(revenue)", "name": "rev"}],
                 })
             ],
         )

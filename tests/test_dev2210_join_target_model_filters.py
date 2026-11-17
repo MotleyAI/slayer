@@ -70,8 +70,8 @@ class TestJoinTargetReadsFilteredRows:
 
     async def test_stage_source(self, engine):
         resp = await engine.execute([
-            {"name": "s", "source_model": "done_orders", "dimensions": ["id"]},
-            {"source_model": "s", "dimensions": ["id"]},
+            {"name": "s", "population": "done_orders", "dimensions": ["id"]},
+            {"population": "s", "dimensions": ["id"]},
         ])
         assert ids(resp, "s") == {1, 2, 3}
 
@@ -174,20 +174,20 @@ class TestFilteredRoot:
 class TestListParentReadsFilteredRows:
     @pytest.fixture
     async def team_a(self) -> AsyncIterator[SlayerQueryEngine]:
-        model = contractors_model().model_copy(update={"filters": ["team = 'A'"]})
+        model = contractors_model().model_copy(update={"filter": ["team = 'A'"]})
         async with contractors_engine("duckdb", models=[model]) as eng:
             yield eng
 
     async def test_element_count(self, team_a):
         resp = await team_a.execute(SlayerQuery.model_validate({
-            "population": "contractors", "metrics": [{"formula": "count(skills.*)", "name": "n"}],
+            "population": "contractors", "metrics": [{"expression": "count(skills.*)", "name": "n"}],
         }))
         assert [int(r["contractors.n"]) for r in resp.data] == [4]
 
     async def test_element_values(self, team_a):
         resp = await team_a.execute(SlayerQuery.model_validate({
             "population": "contractors", "dimensions": ["skills.value"],
-            "metrics": [{"formula": "count(skills.*)", "name": "n"}],
+            "metrics": [{"expression": "count(skills.*)", "name": "n"}],
         }))
         assert {r["contractors.skills.value"]: int(r["contractors.n"]) for r in resp.data} == {"go": 2, "sql": 2}
 
@@ -216,7 +216,7 @@ class TestAssociation:
 class TestInlinedAndAssociationFormsAgree:
     """Lowering soundness: inlining a proven to-one filter read equals its association form."""
 
-    QUERY = {"source_model": "returns_of_done", "dimensions": ["id"]}
+    QUERY = {"population": "returns_of_done", "dimensions": ["id"]}
 
     def test_same_rows(self, backend, tmp_path):
         if backend == "duckdb":

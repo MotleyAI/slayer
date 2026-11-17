@@ -124,7 +124,7 @@ class TestSidecarKinds:
     ) -> None:
         await pre_rename_store(backend=backend, base=tmp_path)
         storage = reopen(backend=backend, base=tmp_path)
-        retriever = EmbeddingRetriever(storage=storage, dataset_name=EMBEDDER)
+        retriever = EmbeddingRetriever(storage=storage, model_name=EMBEDDER)
         for name in ("customers", "orders"):
             dataset = await storage.get_dataset(name, data_source=DS)
             assert dataset is not None

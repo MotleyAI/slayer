@@ -164,7 +164,7 @@ class TestInnerExtensionJoinRestriction:
             DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]], join_type=JoinType.INNER),
         ])
         query = SlayerQuery.model_validate(
-            {"population": "orders", "extensions": [ext], "metrics": [{"formula": "count(*)"}]},
+            {"population": "orders", "extensions": [ext], "metrics": [{"expression": "count(*)"}]},
         )
         qb = SlayerDataset(name="qb", data_source="ds", source_queries=[query])
         models = [_orders_with_stored_buyer(), customers, regions, qb]

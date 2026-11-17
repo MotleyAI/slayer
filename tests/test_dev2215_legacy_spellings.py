@@ -146,7 +146,7 @@ class TestFreshInput:
     ("customers.count(*)", "count(customers.*)"),
 ])
 async def test_a_save_stores_the_canonical_twin(storage: StorageBackend, written: str, stored: str) -> None:
-    model = orders_model().model_copy(update={"measures": [DatasetMetric(name="paid", expression=written)]})
+    model = orders_model().model_copy(update={"metrics": [DatasetMetric(name="paid", expression=written)]})
     with recorded_warnings() as caught:
         await storage.save_dataset(model)
     loaded = await storage.get_dataset("orders", data_source="test")
@@ -158,8 +158,8 @@ async def test_a_save_stores_the_canonical_twin(storage: StorageBackend, written
 async def test_a_saved_query_stores_the_canonical_twin(storage: StorageBackend) -> None:
     await storage.save_dataset(orders_model())
     saved = SlayerDataset.model_validate({"name": "paid_orders", "data_source": "test", "source_queries": [
-        {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}],
-         "filters": ["status == 'paid' and region is not None"]}]})
+        {"population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}],
+         "filter": ["status == 'paid' and region is not None"]}]})
     await storage.save_dataset(saved)
     loaded = await storage.get_dataset("paid_orders", data_source="test")
     assert loaded is not None
@@ -177,7 +177,7 @@ def spelling_payloads(notes: list[Any]) -> list[Any]:
 
 async def test_an_engine_save_returns_one_warning_per_spelling(storage: StorageBackend) -> None:
     engine = SlayerQueryEngine(storage=storage)
-    model = orders_model().model_copy(update={"measures": [DatasetMetric(name="paid", expression=PAID_SPELLINGS)]})
+    model = orders_model().model_copy(update={"metrics": [DatasetMetric(name="paid", expression=PAID_SPELLINGS)]})
     notes: list[Any] = []
     try:
         with recorded_warnings() as caught:
@@ -193,8 +193,8 @@ async def test_an_engine_save_returns_one_warning_per_spelling(storage: StorageB
 
 async def test_a_saved_query_save_returns_its_spelling_warnings(engine: SlayerQueryEngine) -> None:
     saved = SlayerDataset.model_validate({"name": "paid_orders", "source_queries": [
-        {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}],
-         "filters": ["status == 'paid' and region is not None"]}]})
+        {"population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}],
+         "filter": ["status == 'paid' and region is not None"]}]})
     notes: list[Any] = []
     with recorded_warnings():
         await engine.save_dataset(saved, warnings_out=notes)
@@ -203,7 +203,7 @@ async def test_a_saved_query_save_returns_its_spelling_warnings(engine: SlayerQu
 
 async def test_a_rest_model_save_returns_the_spelling_warning(storage: StorageBackend) -> None:
     client = TestClient(create_app(storage=storage))
-    body = orders_model().model_copy(update={"measures": [DatasetMetric(name="paid", expression=PAID_SPELLINGS)]})
+    body = orders_model().model_copy(update={"metrics": [DatasetMetric(name="paid", expression=PAID_SPELLINGS)]})
     with recorded_warnings():
         resp = client.post("/models", json=body.model_dump(mode="json"))
     assert resp.status_code == 200, resp.text
@@ -222,7 +222,7 @@ async def test_an_mcp_model_save_lists_the_spelling_warning(storage: StorageBack
 
 async def test_a_canonical_save_is_silent_and_verbatim(storage: StorageBackend) -> None:
     formula = "sum(iif(status = 'paid' AND region IS NOT NULL, amount, NULL))"
-    model = orders_model().model_copy(update={"measures": [DatasetMetric(name="paid", expression=formula)]})
+    model = orders_model().model_copy(update={"metrics": [DatasetMetric(name="paid", expression=formula)]})
     with recorded_warnings() as caught:
         await storage.save_dataset(model)
     loaded = await storage.get_dataset("orders", data_source="test")

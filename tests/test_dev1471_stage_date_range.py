@@ -31,7 +31,7 @@ _ROWS = [
 _INNER = SlayerQuery.model_validate({
     "name": "s1", "population": "orders",
     "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
-    "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+    "metrics": [{"expression": "sum(amount)", "name": "rev"}],
 })
 
 
@@ -52,7 +52,7 @@ async def test_stage_date_range_restricts_outer_stage(backend: str) -> None:
             field="created_at", granularity=TG.MONTH,
             date_range=["2025-02-01", "2025-03-31"],
         )],
-        "metrics": [{"formula": "sum(rev)"}],
+        "metrics": [{"expression": "sum(rev)"}],
     })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec(backend, tmp, outer)
@@ -73,7 +73,7 @@ async def test_stage_date_range_on_coarser_rebucketing(backend: str) -> None:
             field="created_at", granularity=TG.YEAR,
             date_range=["2025-02-01", "2025-03-31"],
         )],
-        "metrics": [{"formula": "sum(rev)"}],
+        "metrics": [{"expression": "sum(rev)"}],
     })
     with tempfile.TemporaryDirectory() as tmp:
         resp = await _exec(backend, tmp, outer)

@@ -85,7 +85,7 @@ def render_datasets_summary(
         # (a plain-text sentinel would break json.loads for the caller).
         if fmt == "json":
             return json.dumps(
-                {"datasource_name": datasource_name, "model_count": 0, "models": []},
+                {"datasource_name": datasource_name, "dataset_count": 0, "datasets": []},
                 indent=2,
             )
         return f"Datasource '{datasource_name}' has no models."
@@ -115,9 +115,9 @@ def _datasets_summary_json(
             {
                 "name": m.name,
                 "description": desc(m.description),
-                "column_count": _visible_field_count(m),
-                "measure_names": [mm.name for mm in m.metrics],
-                "joins_to": _relationship_targets(m, datasets),
+                "field_count": _visible_field_count(m),
+                "metric_names": [mm.name for mm in m.metrics],
+                "relationships_to": _relationship_targets(m, datasets),
             }
             for m in datasets
         ]
@@ -126,32 +126,32 @@ def _datasets_summary_json(
             {
                 "name": m.name,
                 "description": desc(m.description),
-                "columns": [
+                "fields": [
                     {
                         "name": c.name,
-                        "type": str(c.datatype),
+                        "datatype": str(c.datatype),
                         **({"element_type": str(c.element_type)} if c.element_type is not None else {}),
                         "description": desc(c.description),
                     }
                     for c in m.fields if not c.hidden
                 ],
-                "measures": [
+                "metrics": [
                     {
                         "name": mm.name,
-                        "formula": mm.expression,
+                        "expression": mm.expression,
                         "description": desc(mm.description),
                     }
                     for mm in m.metrics
                 ],
-                "joins_to": _relationship_targets(m, datasets),
+                "relationships_to": _relationship_targets(m, datasets),
             }
             for m in datasets
         ]
     return json.dumps(
         {
             "datasource_name": datasource_name,
-            "model_count": len(datasets),
-            "models": model_payload,
+            "dataset_count": len(datasets),
+            "datasets": model_payload,
         },
         indent=2,
     )
@@ -199,24 +199,24 @@ def _append_verbose_dataset_lines(
     all_datasets: list[SlayerDataset] | None = None,
 ) -> None:
     col_rows = [
-        {"name": c.name, "type": field_type_text(c), "description": desc(c.description)}
+        {"name": c.name, "datatype": field_type_text(c), "description": desc(c.description)}
         for c in m.fields if not c.hidden
     ]
     dataset_lines.append(f"**Columns ({len(col_rows)}):**")
     dataset_lines.append("")
     dataset_lines.append(
-        _markdown_table(rows=col_rows, fields=["name", "type", "description"])
+        _markdown_table(rows=col_rows, fields=["name", "datatype", "description"])
     )
     dataset_lines.append("")
 
     measure_rows = [
-        {"name": mm.name, "formula": mm.expression, "description": desc(mm.description)}
+        {"name": mm.name, "expression": mm.expression, "description": desc(mm.description)}
         for mm in m.metrics
     ]
     dataset_lines.append(f"**Measures ({len(measure_rows)}):**")
     dataset_lines.append("")
     dataset_lines.append(
-        _markdown_table(rows=measure_rows, fields=["name", "formula", "description"])
+        _markdown_table(rows=measure_rows, fields=["name", "expression", "description"])
     )
     dataset_lines.append("")
 
@@ -258,17 +258,17 @@ def _oneliner_index_json(
     for ds, models in groups:
         if models is None:
             entries.append(
-                {"data_source": ds, "error": "invalid config", "models": []}
+                {"data_source": ds, "error": "invalid config", "datasets": []}
             )
             continue
         entries.append({
             "data_source": ds,
-            "model_count": len(models),
-            "models": [
+            "dataset_count": len(models),
+            "datasets": [
                 {
                     "name": m.name,
-                    "column_count": _visible_field_count(m),
-                    "joins_to": _relationship_targets(m, models),
+                    "field_count": _visible_field_count(m),
+                    "relationships_to": _relationship_targets(m, models),
                 }
                 for m in models
             ],
@@ -361,7 +361,7 @@ def datasource_skeleton_fields(
     return {
         "name": name,
         "description": _truncate_description(description, descriptions_max_chars),
-        "models": [
+        "datasets": [
             dataset_skeleton_fields(
                 dataset=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
             )

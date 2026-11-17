@@ -588,7 +588,7 @@ class TestRefresh:
         assert old_key in engine._cache._entries
 
         # Edit the stored model: an always-applied filter changes the SQL.
-        edited = _orders_model("ds").model_copy(update={"filters": ["amount > 60"]})
+        edited = _orders_model("ds").model_copy(update={"filter": ["amount > 60"]})
         await engine.storage.save_dataset(edited)
         new_sql = (await engine.execute(q, dry_run=True)).sql
         new_key = QueryCache.make_key(new_sql, fp)
@@ -778,7 +778,7 @@ class TestMultiStageAndByName:
 
 
 class TestRefinedByName:
-    REFINE = {"filters": ["status = 'completed'"]}
+    REFINE = {"filter": ["status = 'completed'"]}
 
     async def _engine_with_saved(self, tmp_path) -> SlayerQueryEngine:
         engine = await _build_engine(tmp_path)

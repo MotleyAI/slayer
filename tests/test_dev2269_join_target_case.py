@@ -43,9 +43,9 @@ STORAGES = ("yaml", "sqlite")
 PRE_REPAIR = 24
 #: Orders per customer name in the shop seed.
 ORDERS_BY_NAME = {"Ann": 2, "Bob": 2, "Cid": 2}
-NAME_QUERY = {"source_model": "orders", "dimensions": ["customers.name"],
-              "measures": [{"formula": "count(*)", "name": "n"}]}
-REGION_QUERY = {"source_model": "orders", "dimensions": ["customers.region"], "measures": ["sum(amount)"]}
+NAME_QUERY = {"population": "orders", "dimensions": ["customers.name"],
+              "metrics": [{"expression": "count(*)", "name": "n"}]}
+REGION_QUERY = {"population": "orders", "dimensions": ["customers.region"], "metrics": ["sum(amount)"]}
 
 
 # --------------------------------------------------------------------------- #
@@ -267,7 +267,7 @@ class TestStoredUpgrade:
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_legacy_alias_walks_a_case_only_target(self, tmp_path, shop_ds, backend) -> None:
-        orders_doc = {**_orders_doc(), "filters": ["customers__addr.region = 'North'"]}
+        orders_doc = {**_orders_doc(), "filter": ["customers__addr.region = 'North'"]}
         target = {**_customers_doc(), "joins": [{"target_model": "addr", "join_pairs": [["id", "id"]]}]}
         storage = await _store(tmp_path, backend=backend, ds=shop_ds,
                                docs=[orders_doc, target, _customers_doc("addr")])
@@ -275,7 +275,7 @@ class TestStoredUpgrade:
         assert model is not None
         assert (model.filters, [j.to for j in model.relationships]) == (
             ["customers.addr.region = 'North'"], ["Customers"])
-        resp = await run(storage, {"source_model": "orders", "measures": ["sum(amount)"]})
+        resp = await run(storage, {"population": "orders", "metrics": ["sum(amount)"]})
         assert [float(v) for r in resp.data for v in r.values()] == [AMOUNT_BY_REGION["North"]]
 
     @pytest.mark.parametrize("backend", BACKENDS)
@@ -322,9 +322,9 @@ def _ev_doc(*, joins: list[dict]) -> dict:
 
 
 SPINE_QUERY = {
-    "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": "month",
+    "time_dimensions": [{"field": "time_spine.timestamp", "granularity": "month",
                          "date_range": ["2024-01-01", "2024-03-31"]}],
-    "measures": [{"formula": "sum(ev.amount)", "name": "s"}],
+    "metrics": [{"expression": "sum(ev.amount)", "name": "s"}],
 }
 
 

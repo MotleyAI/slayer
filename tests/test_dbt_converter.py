@@ -1780,6 +1780,6 @@ class TestEntityExprResolvesPhysically:
     async def test_join_executes_over_the_renamed_keys(self, renamed_keys_engine) -> None:
         resp = await renamed_keys_engine.execute(SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["customers.name"],
-            "metrics": [{"formula": "sum(amount)", "name": "amt"}],
+            "metrics": [{"expression": "sum(amount)", "name": "amt"}],
         }))
         assert cells(resp, dim_suffix="customers.name", measure="amt") == AMOUNT_BY_CUSTOMER

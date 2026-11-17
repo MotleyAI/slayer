@@ -136,7 +136,7 @@ async def test_save_is_upsert(store: SidecarEmbeddingStore) -> None:
     assert fetched is not None
     assert fetched.content_hash == "b"
     assert fetched.embedding == [2.0, 2.0, 2.0]
-    rows = await store.list_for_dataset(
+    rows = await store.list_for_model(
         embedding_model_name="openai/test-embedding",
     )
     assert len(rows) == 1
@@ -153,7 +153,7 @@ async def test_save_many_persists_all(store: SidecarEmbeddingStore) -> None:
         for i in range(5)
     ]
     await store.save_many(rows)
-    listed = await store.list_for_dataset(
+    listed = await store.list_for_model(
         embedding_model_name="openai/test-embedding",
     )
     assert {r.canonical_id for r in listed} == {f"e{i}" for i in range(5)}
@@ -176,7 +176,7 @@ async def test_save_many_empty_is_noop(
     # Short-circuit: no connection opened.
     assert connect_calls == []
     # Outcome: no rows were written either.
-    listed = await store.list_for_dataset(
+    listed = await store.list_for_model(
         embedding_model_name="openai/test-embedding",
     )
     assert listed == []
@@ -287,8 +287,8 @@ async def test_list_for_model_filters(store: SidecarEmbeddingStore) -> None:
     await store.save(_embed(canonical_id="a", model="openai/x"))
     await store.save(_embed(canonical_id="b", model="openai/x"))
     await store.save(_embed(canonical_id="c", model="openai/y"))
-    rows_x = await store.list_for_dataset(embedding_model_name="openai/x")
-    rows_y = await store.list_for_dataset(embedding_model_name="openai/y")
+    rows_x = await store.list_for_model(embedding_model_name="openai/x")
+    rows_y = await store.list_for_model(embedding_model_name="openai/y")
     assert {r.canonical_id for r in rows_x} == {"a", "b"}
     assert {r.canonical_id for r in rows_y} == {"c"}
 
@@ -324,7 +324,7 @@ async def test_delete_memory_prefix_does_not_match_numeric_siblings(
     removed = await store.delete_for_canonical(canonical_id_prefix="memory:4")
     assert removed == 1
     remaining = {
-        r.canonical_id for r in await store.list_for_dataset(
+        r.canonical_id for r in await store.list_for_model(
             embedding_model_name="openai/test-embedding",
         )
     }
@@ -348,7 +348,7 @@ async def test_delete_datasource_prefix_does_not_match_char_siblings(
     removed = await store.delete_for_canonical(canonical_id_prefix="orders")
     assert removed == 3
     remaining = {
-        r.canonical_id for r in await store.list_for_dataset(
+        r.canonical_id for r in await store.list_for_model(
             embedding_model_name="openai/test-embedding",
         )
     }
@@ -374,7 +374,7 @@ async def test_delete_model_prefix_does_not_match_sibling_models(
     )
     assert removed == 2
     remaining = {
-        r.canonical_id for r in await store.list_for_dataset(
+        r.canonical_id for r in await store.list_for_model(
             embedding_model_name="openai/test-embedding",
         )
     }
@@ -387,7 +387,7 @@ async def test_delete_for_canonical_no_match_returns_zero(
     await store.save(_embed(canonical_id="x"))
     removed = await store.delete_for_canonical(canonical_id_prefix="no.match")
     assert removed == 0
-    assert len(await store.list_for_dataset(
+    assert len(await store.list_for_model(
         embedding_model_name="openai/test-embedding",
     )) == 1
 
@@ -413,7 +413,7 @@ async def test_delete_escapes_like_wildcards(
     # Should hit a%b (exact) and a%b.child (descendant), but not aXb.
     assert removed == 2
     remaining = {
-        r.canonical_id for r in await store.list_for_dataset(
+        r.canonical_id for r in await store.list_for_model(
             embedding_model_name="openai/test-embedding",
         )
     }

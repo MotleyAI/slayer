@@ -97,11 +97,11 @@ class TestSiblingStageGrain:
     def test_named_sibling_stage_schema_carries_its_grain(self) -> None:
         sibling = SlayerQuery.model_validate({
             "name": "c", "population": "customers", "dimensions": ["id"],
-            "metrics": [{"formula": "max(tier)", "name": "tr"}],
+            "metrics": [{"expression": "max(tier)", "name": "tr"}],
         })
         root = SlayerQuery.model_validate({
             "population": "c", "dimensions": ["tr"],
-            "metrics": [{"formula": "count(*)", "name": "n"}],
+            "metrics": [{"expression": "count(*)", "name": "n"}],
         })
         customers = next(m for m in dev1836_models() if m.name == "customers")
         bundle = _bundle().model_copy(update={"stage_source_models": {"c": customers}})

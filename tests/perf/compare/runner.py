@@ -154,7 +154,7 @@ async def _main_async(args, version: str) -> dict:
         await storage.save_dataset(SlayerDataset(**model_dict))
 
     engine = SlayerQueryEngine(storage=storage)
-    await engine.execute(query={"source_model": "orders", "measures": ["count(*)"]})
+    await engine.execute(query={"population": "orders", "metrics": ["count(*)"]})
 
     entries = _select_entries(args)
     payload: dict = {

@@ -174,7 +174,7 @@ class TestLeft:
         assert [m.expression for m in other.metrics] == ["count_distinct(left(status, 1))"]
         mem_query = await _memory_query(store.storage, "m_other")
         assert [getattr(d, "expression", None) for d in mem_query.dimensions or []] == ["left(status, 1)"]
-        resp = await run(store.storage, {"source_model": "other_events", "measures": ["initials"]})
+        resp = await run(store.storage, {"population": "other_events", "metrics": ["initials"]})
         assert [int(v) for v in resp.data[0].values()] == [2]
         by_initial = {r["other_events.initial"]: float(r["other_events.s"]) for r in (await run(store.storage, mem_query)).data}
         assert by_initial == {"o": 5.0, "n": 10.0}
@@ -315,7 +315,7 @@ async def test_a_current_version_store_colliding_with_a_later_addition(tmp_path:
     loaded = await _stage(storage, "bucketed")
     assert [(str(t.field), str(t.granularity)) for t in loaded.time_dimensions or []] == [
         ("created_at", "left_granularity")]
-    resp = await run(storage, {"source_model": "bucketed", "dimensions": ["created_at"], "measures": ["sum(s)"]})
+    resp = await run(storage, {"population": "bucketed", "dimensions": ["created_at"], "metrics": ["sum(s)"]})
     assert {str(r["bucketed.created_at"])[:10]: float(r["bucketed.s_sum"]) for r in resp.data} == EXPECTED_BUCKETS
 
 
@@ -357,42 +357,42 @@ class TestTakenName:
 
 # Every position of a stored query that accepts a granularity name.
 QUERY_POSITIONS: dict[str, Callable[[str], dict]] = {
-    "time-dimension": lambda g: {"time_dimensions": [{"dimension": "created_at", "granularity": g}], "measures": [SUM]},
-    "time-dimension-call": lambda g: {"time_dimensions": [f"{g}(created_at)"], "measures": [SUM]},
-    "dimension-call": lambda g: {"dimensions": [f"{g}(created_at)"], "measures": [SUM]},
-    "computed-dimension": lambda g: {"dimensions": [{"expression": f"{g}(created_at)", "name": "b"}], "measures": [SUM]},
-    "measure": lambda g: {"measures": [{"formula": f"count_distinct({g}(created_at))", "name": "n"}]},
+    "time-dimension": lambda g: {"time_dimensions": [{"field": "created_at", "granularity": g}], "metrics": [SUM]},
+    "time-dimension-call": lambda g: {"time_dimensions": [f"{g}(created_at)"], "metrics": [SUM]},
+    "dimension-call": lambda g: {"dimensions": [f"{g}(created_at)"], "metrics": [SUM]},
+    "computed-dimension": lambda g: {"dimensions": [{"expression": f"{g}(created_at)", "name": "b"}], "metrics": [SUM]},
+    "measure": lambda g: {"metrics": [{"expression": f"count_distinct({g}(created_at))", "name": "n"}]},
     "measure-filter-clause": lambda g: {
-        "measures": [{"formula": f"sum(amount) FILTER (WHERE {g}(created_at) = '2025-02-15')", "name": "f"}]},
-    "filter": lambda g: {"measures": [SUM], "filters": [f"{g}(created_at) = '2025-01-15'"]},
-    "order": lambda g: {"time_dimensions": [{"dimension": "created_at", "granularity": g}], "measures": [SUM],
-                        "order": [{"column": f"{g}(created_at)", "direction": "desc"}]},
-    "relative-token-filter": lambda g: {"measures": [SUM], "filters": [f"created_at >= 'last 1000 {g}s'"]},
-    "relative-token-filter-singular": lambda g: {"measures": [SUM], "filters": [f"created_at < 'this {g}'"]},
+        "metrics": [{"expression": f"sum(amount) FILTER (WHERE {g}(created_at) = '2025-02-15')", "name": "f"}]},
+    "filter": lambda g: {"metrics": [SUM], "filter": [f"{g}(created_at) = '2025-01-15'"]},
+    "order": lambda g: {"time_dimensions": [{"field": "created_at", "granularity": g}], "metrics": [SUM],
+                        "order": [{"field": f"{g}(created_at)", "direction": "desc"}]},
+    "relative-token-filter": lambda g: {"metrics": [SUM], "filter": [f"created_at >= 'last 1000 {g}s'"]},
+    "relative-token-filter-singular": lambda g: {"metrics": [SUM], "filter": [f"created_at < 'this {g}'"]},
     "relative-token-date-range": lambda g: {
-        "time_dimensions": [{"dimension": "created_at", "granularity": "month", "date_range": f"last 1000 {g}s"}],
-        "measures": [SUM]},
+        "time_dimensions": [{"field": "created_at", "granularity": "month", "date_range": f"last 1000 {g}s"}],
+        "metrics": [SUM]},
     "time-shift-unit": lambda g: {
-        "time_dimensions": [{"dimension": "created_at", "granularity": g}],
-        "measures": [SUM, {"formula": f"time_shift(sum(amount), -1, '{g}')", "name": "p"}]},
+        "time_dimensions": [{"field": "created_at", "granularity": g}],
+        "metrics": [SUM, {"expression": f"time_shift(sum(amount), -1, '{g}')", "name": "p"}]},
     "time-shift-keyword": lambda g: {
-        "time_dimensions": [{"dimension": "created_at", "granularity": g}],
-        "measures": [SUM, {"formula": f"time_shift(sum(amount), -1, granularity='{g}')", "name": "p"}]},
+        "time_dimensions": [{"field": "created_at", "granularity": g}],
+        "metrics": [SUM, {"expression": f"time_shift(sum(amount), -1, granularity='{g}')", "name": "p"}]},
     "inline-extension-measure": lambda g: {
-        "source_model": {"source_name": "events", "measures": [{"name": "n", "formula": f"count_distinct({g}(created_at))"}]},
-        "measures": ["n"]},
+        "population": {"source_name": "events", "metrics": [{"name": "n", "expression": f"count_distinct({g}(created_at))"}]},
+        "metrics": ["n"]},
 }
 
 # Every position of a stored model that accepts a granularity name: (model document, query over it).
 MODEL_POSITIONS: dict[str, tuple[Callable[[str], dict], Callable[[str], dict]]] = {
     "column-granularity": (
         lambda g: events_doc(name="dep", column_granularity=g),
-        lambda g: {"source_model": "dep", "measures": [SUM],
-                   "time_dimensions": [{"dimension": "created_at", "granularity": g}]},
+        lambda g: {"population": "dep", "metrics": [SUM],
+                   "time_dimensions": [{"field": "created_at", "granularity": g}]},
     ),
     "model-measure": (
         lambda g: events_doc(name="dep", measures=[{"name": "n", "formula": f"count_distinct({g}(created_at))"}]),
-        lambda _: {"source_model": "dep", "measures": ["n"]},
+        lambda _: {"population": "dep", "metrics": ["n"]},
     ),
 }
 

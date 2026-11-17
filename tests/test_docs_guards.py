@@ -154,12 +154,12 @@ def test_multiline_lists_fragments_json_lines_and_comments() -> None:
 
 def test_every_query_field_is_read() -> None:
     query = {
-        "source_model": "orders",
-        "measures": ["count(*)", {"formula": "sum(amount)", "name": "total"}, {"name": "revenue"}],
+        "population": "orders",
+        "metrics": ["count(*)", {"expression": "sum(amount)", "name": "total"}, {"name": "revenue"}],
         "dimensions": ["status", {"expression": "upper(status)", "name": "s"}, {"name": "status", "label": "S"}],
-        "time_dimensions": ["month(order_date)", {"dimension": "order_date", "granularity": "week"}],
-        "filters": ["amount > 10"],
-        "order": [{"column": "sum(amount)", "direction": "desc"}],
+        "time_dimensions": ["month(order_date)", {"field": "order_date", "granularity": "week"}],
+        "filter": ["amount > 10"],
+        "order": [{"field": "sum(amount)", "direction": "desc"}],
         "variables": {"v": "x"},
     }
     assert mode_b_values(query) == [
@@ -169,17 +169,17 @@ def test_every_query_field_is_read() -> None:
 
 
 def test_time_dimension_column_alias_is_read() -> None:
-    query = {"time_dimensions": [{"column": "bad((", "granularity": "month"}]}
+    query = {"time_dimensions": [{"field": "bad((", "granularity": "month"}]}
     assert mode_b_values(query) == ["bad(("]
 
 
 def test_stage_lists_and_refinements() -> None:
     stages = [
-        {"name": "per_customer", "source_model": "orders", "dimensions": ["customers.name"],
-         "measures": [{"formula": "sum(amount)", "name": "total"}]},
-        {"source_model": "per_customer", "measures": ["avg(total)"], "filters": ["total > 100"]},
+        {"name": "per_customer", "population": "orders", "dimensions": ["customers.name"],
+         "metrics": [{"expression": "sum(amount)", "name": "total"}]},
+        {"population": "per_customer", "metrics": ["avg(total)"], "filter": ["total > 100"]},
     ]
-    call = {"query": "monthly_revenue", "refine": {"dimensions": ["region"], "filters": ["region = 'EU'"]}}
+    call = {"query": "monthly_revenue", "refine": {"dimensions": ["region"], "filter": ["region = 'EU'"]}}
     assert mode_b_values(stages) == ["customers.name", "sum(amount)", "avg(total)", "total > 100"]
     assert mode_b_values(call) == ["region", "region = 'EU'"]
 
@@ -188,18 +188,18 @@ def test_models_keep_only_measure_formulas() -> None:
     model = {
         "name": "orders", "sql_table": "orders", "data_source": "db",
         "filters": ["deleted_at IS NULL"],
-        "columns": [{"name": "net", "sql": "amount - tax", "filter": "status = 'paid'", "type": "DOUBLE"}],
-        "measures": [{"name": "aov", "formula": "sum(amount) / count(*)"}],
-        "aggregations": [{"name": "wavg", "formula": "SUM({value} * {weight}) / SUM({weight})"}],
-        "source_queries": [{"source_model": "raw", "filters": ["amount > 0"]}],
+        "fields": [{"name": "net", "sql": "amount - tax", "filter": "status = 'paid'", "datatype": "DOUBLE"}],
+        "metrics": [{"name": "aov", "expression": "sum(amount) / count(*)"}],
+        "aggregations": [{"name": "wavg", "expression": "SUM({value} * {weight}) / SUM({weight})"}],
+        "source_queries": [{"population": "raw", "filter": ["amount > 0"]}],
     }
     assert mode_b_values(model) == ["sum(amount) / count(*)", "amount > 0"]
 
 
 def test_inline_extension_and_standalone_objects() -> None:
-    query = {"source_model": "orders",
+    query = {"population": "orders",
              "extensions": [{"source_name": "orders", "columns": [{"name": "big", "sql": "amount > 100"}]}],
-             "measures": ["count(*)"]}
+             "metrics": ["count(*)"]}
     assert mode_b_values(query) == ["count(*)"]
     assert mode_b_values({"formula": "cumsum(sum(revenue))"}) == ["cumsum(sum(revenue))"]
     assert mode_b_values({"dimension": "created_at", "granularity": "month", "date_range": "2025"}) == ["created_at"]

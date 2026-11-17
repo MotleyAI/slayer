@@ -431,7 +431,7 @@ class TestEngineTsqlDecodeIntegration:
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "count(*)"}],
+                "metrics": [{"expression": "count(*)"}],
                 "dimensions": [FieldRef(name="status")],
             })
             resp = await engine.execute(query)
@@ -444,7 +444,7 @@ class TestEngineTsqlDecodeIntegration:
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "count(*)"}],
+                "metrics": [{"expression": "count(*)"}],
                 "dimensions": [FieldRef(name="status")],
             })
             resp = await engine.execute(query)

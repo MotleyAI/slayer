@@ -127,14 +127,14 @@ async def test_c1_target_derived_model_filter_expands(engine):
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"formula": "sum(customers.revenue)"}],
+            "metrics": [{"expression": "sum(customers.revenue)"}],
         })
     )
     dry = await engine.execute(
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"formula": "sum(customers.revenue)"}],
+            "metrics": [{"expression": "sum(customers.revenue)"}],
         }),
         dry_run=True,
     )
@@ -156,7 +156,7 @@ async def test_c2_routed_query_filter_on_joined_derived_column(engine):
     q = SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"formula": "sum(customers.revenue)"}],
+        "metrics": [{"expression": "sum(customers.revenue)"}],
         "filter": ["customers.big_spender == 1"],
     })
     dry = await engine.execute(q, dry_run=True)
@@ -180,7 +180,7 @@ async def test_derived_column_as_cross_model_agg_source(engine: SlayerQueryEngin
     q = SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"formula": "sum(customers.rev_x2)"}],
+        "metrics": [{"expression": "sum(customers.rev_x2)"}],
     })
     dry = await engine.execute(q, dry_run=True)
     assert "orders.customers.rev_x2_sum" in dry.columns, dry.columns
@@ -202,7 +202,7 @@ async def test_cr11_cross_model_agg_over_derived_column_metadata(engine: SlayerQ
         SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["customers.region"],
-            "metrics": [{"formula": "sum(customers.revenue)"}],
+            "metrics": [{"expression": "sum(customers.revenue)"}],
         })
     )
     # revenue carries label "Revenue"; the cross-model measure inherits it.

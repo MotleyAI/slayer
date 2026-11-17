@@ -678,7 +678,7 @@ def _bind_in(
     if isinstance(parsed.right, Placeholder):
         _reject_placeholders(parsed.right)
     ctx: Dict[str, Any] = {"scope": scope, "bundle": bundle, "in_filter": in_filter, "alias_map": alias_map,
-                           "measure_ctx": metric_ctx, "dim_alias_map": dim_alias_map}
+                           "metric_ctx": metric_ctx, "dim_alias_map": dim_alias_map}
     if isinstance(parsed.right, BoundVariable):
         listed = list_valued(_bind(parsed.left, **ctx), field_type=scope_field_type(scope=scope, bundle=bundle))
         rewritten = _variable_in(parsed, right=parsed.right, list_left=listed)

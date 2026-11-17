@@ -42,7 +42,7 @@ from tests._osi_helpers import by_name, cols, convert, disable_type_probe, docum
 DS = "ds"
 ITEMS = {"name": "items", "sql_table": "Sales.OrderItems",
          "dimensions": [{"name": "amount", "sql": "{CUBE}.OrderAmount", "type": "number"}],
-         "measures": [{"name": "total", "type": "sum", "sql": "{CUBE}.OrderAmount"}]}
+         "metrics": [{"name": "total", "datatype": "sum", "sql": "{CUBE}.OrderAmount"}]}
 
 
 def _cube(*cubes: dict[str, Any], dialect: str | None = "postgres", engine: sa.Engine | None = None,
@@ -94,8 +94,8 @@ def test_names_local_to_a_source_query() -> None:
 
 
 def test_calculated_measure_with_a_mixed_case_operand() -> None:
-    result = _cube({"name": "orders", "sql_table": "orders", "measures": [
-        {"name": "paid_amount", "type": "number", "sql": "SUM(CASE WHEN {CUBE}.Status = 'paid' THEN {CUBE}.Amount END)"}]})
+    result = _cube({"name": "orders", "sql_table": "orders", "metrics": [
+        {"name": "paid_amount", "datatype": "number", "sql": "SUM(CASE WHEN {CUBE}.Status = 'paid' THEN {CUBE}.Amount END)"}]})
     operand = source_column(_models(result)["orders"], "paid_amount").sql
     assert operand is not None
     assert _columns_read(operand) == {"status", "amount"}
@@ -278,7 +278,7 @@ def test_regular_model_config_block_is_stripped_before_folding() -> None:
 
 def test_declared_type_matches_the_folded_column() -> None:
     result = _dbt({"name": "items", "model": "orders", "dimensions": [{"name": "Qty", "type": "categorical"}]},
-                  regular=[{"name": "orders", "columns": [{"name": "Qty", "data_type": "integer"}]}],
+                  regular=[{"name": "orders", "fields": [{"name": "Qty", "data_type": "integer"}]}],
                   dialect="postgres").convert()
     assert column(models_of(result)["items"], "Qty").datatype is DataType.INT
 

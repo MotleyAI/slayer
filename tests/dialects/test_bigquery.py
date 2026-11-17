@@ -399,7 +399,7 @@ class TestEngineDecodeIntegration:
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "count(*)"}],
+                "metrics": [{"expression": "count(*)"}],
                 "dimensions": ["status"],
             })
             resp = await engine.execute(query)
@@ -414,7 +414,7 @@ class TestEngineDecodeIntegration:
         try:
             query = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "count(*)"}],
+                "metrics": [{"expression": "count(*)"}],
                 "dimensions": ["status"],
             })
             resp = await engine.execute(query)
@@ -588,7 +588,7 @@ async def test_virtual_model_wrapped_refs_match_mangled_inner_bigquery() -> None
             data_source="bq",
             source_queries=[SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "count(*)"}],
+                "metrics": [{"expression": "count(*)"}],
                 "dimensions": ["status"],
             })],
         )

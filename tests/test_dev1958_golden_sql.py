@@ -33,14 +33,14 @@ _EVENT = "customers.regions.region_events.value"
 
 
 def _monthly(formula: str, *, dr: bool = False, dims=("region",), **kw) -> dict:
-    return {"source_model": "monthly", "dimensions": list(dims),
+    return {"population": "monthly", "dimensions": list(dims),
             "time_dimensions": [_TD_DR if dr else _TD],
-            "measures": [{"formula": formula, "name": "t"}], **kw}
+            "metrics": [{"expression": formula, "name": "t"}], **kw}
 
 
 def _orders(formula: str, *, dims, **kw) -> dict:
-    return {"source_model": "orders", "dimensions": list(dims), "time_dimensions": [_TD],
-            "measures": [{"formula": formula, "name": "t"}], **kw}
+    return {"population": "orders", "dimensions": list(dims), "time_dimensions": [_TD],
+            "metrics": [{"expression": formula, "name": "t"}], **kw}
 
 
 def _cases() -> dict:
@@ -67,9 +67,9 @@ def _cases() -> dict:
         "frame/mixed_conjunction": _monthly(
             "time_shift(sum(amount) + sum(amount, partition_by=[ordered_at]), -1)",
             filters=["ordered_at >= '2024-02-01' and region = 'North'"]),
-        "join/two_offsets": {**_monthly(""), "measures": [
-            {"formula": f"time_shift({_SHARE}, -1)", "name": "t1"},
-            {"formula": f"time_shift({_SHARE}, -2)", "name": "t2"}]},
+        "join/two_offsets": {**_monthly(""), "metrics": [
+            {"expression": f"time_shift({_SHARE}, -1)", "name": "t1"},
+            {"expression": f"time_shift({_SHARE}, -2)", "name": "t2"}]},
         "join/unaligned_day": _monthly("time_shift(sum(amount), -1, 'day')"),
         "population/association_filter": _orders(
             f"time_shift({_SHARE}, -1)", dims=["status"], filters=[f"{_EVENT} > 40"]),
@@ -82,10 +82,10 @@ def _cases() -> dict:
             f"time_shift(sum(amount) / sum(amount, partition_by=[{_EVENT}]), -1)",
             dims=["status"]),
         "stage/share": [
-            {"name": "s1", "source_model": "monthly", "dimensions": ["region"],
-             "time_dimensions": [_TD], "measures": [{"formula": "sum(amount)", "name": "rev"}]},
-            {"source_model": "s1", "dimensions": ["region"], "time_dimensions": [_TD_DR],
-             "measures": [{"formula": "time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
+            {"name": "s1", "population": "monthly", "dimensions": ["region"],
+             "time_dimensions": [_TD], "metrics": [{"expression": "sum(amount)", "name": "rev"}]},
+            {"population": "s1", "dimensions": ["region"], "time_dimensions": [_TD_DR],
+             "metrics": [{"expression": "time_shift(sum(rev) / sum(rev, partition_by=[ordered_at]), -1)",
                            "name": "t"}]}],
     }
 

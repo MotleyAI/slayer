@@ -311,34 +311,34 @@ class TestStageOperands:
     async def test_stage_dimension_column(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "dimensions": ["created_at", "status"],
-            "metrics": [{"formula": "count(*)", "name": "n"}],
+            "metrics": [{"expression": "count(*)", "name": "n"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1", "dimensions": [{"expression": "date_part('year', created_at)", "name": "y"}],
-            "metrics": [{"formula": "sum(n)", "name": "n_total"}],
+            "metrics": [{"expression": "sum(n)", "name": "n_total"}],
         })
         await engine.execute([s1, outer], dry_run=True)
 
     async def test_stage_measure_column(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "dimensions": ["status"],
-            "metrics": [{"formula": "max(created_at)", "name": "last_at"}],
+            "metrics": [{"expression": "max(created_at)", "name": "last_at"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1", "dimensions": ["status"],
             "filter": ["date_diff('day', last_at, now()) > 0"],
-            "metrics": [{"formula": "count(*)", "name": "n"}],
+            "metrics": [{"expression": "count(*)", "name": "n"}],
         })
         await engine.execute([s1, outer], dry_run=True)
 
     async def test_stage_text_column_rejected(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "dimensions": ["status"],
-            "metrics": [{"formula": "count(*)", "name": "n"}],
+            "metrics": [{"expression": "count(*)", "name": "n"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1", "filter": ["date_part('year', status) = 1"],
-            "metrics": [{"formula": "sum(n)", "name": "n_total"}],
+            "metrics": [{"expression": "sum(n)", "name": "n_total"}],
         })
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute([s1, outer], dry_run=True)
@@ -380,15 +380,15 @@ class TestResultTypes:
     async def test_query_backed_model_column_types(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
             query={
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": [
                     {"expression": "date_part('month', created_at)", "name": "m"},
                     {"expression": "date_add(order_date, 1, 'month')", "name": "due"},
                     {"expression": "date_add(order_date, 2, 'hour')", "name": "due_at"},
                 ],
-                "measures": [
-                    {"formula": "date_diff('day', min(created_at), max(created_at))", "name": "span"},
-                    {"formula": "date_add(max(order_date), 1, 'month')", "name": "next_due"},
+                "metrics": [
+                    {"expression": "date_diff('day', min(created_at), max(created_at))", "name": "span"},
+                    {"expression": "date_add(max(order_date), 1, 'month')", "name": "next_due"},
                 ],
             },
             name="dated", save=False,
@@ -404,16 +404,16 @@ class TestResultTypes:
         model = await engine.create_dataset_from_query(
             query=[
                 {
-                    "name": "s1", "source_model": "orders", "dimensions": ["status", "created_at"],
-                    "measures": [{"formula": "date_add(max(customers.signup_date), 1, 'day')", "name": "joined_due"}],
+                    "name": "s1", "population": "orders", "dimensions": ["status", "created_at"],
+                    "metrics": [{"expression": "date_add(max(customers.signup_date), 1, 'day')", "name": "joined_due"}],
                 },
                 {
-                    "source_model": "s1",
+                    "population": "s1",
                     "dimensions": [{"expression": "date_part('year', created_at)", "name": "y"}],
-                    "measures": [
-                        {"formula": "max(joined_due)", "name": "due"},
-                        {"formula": "date_diff('day', max(joined_due), max(created_at))", "name": "lag_days"},
-                        {"formula": "date_add(max(created_at), 1, 'hour')", "name": "next_at"},
+                    "metrics": [
+                        {"expression": "max(joined_due)", "name": "due"},
+                        {"expression": "date_diff('day', max(joined_due), max(created_at))", "name": "lag_days"},
+                        {"expression": "date_add(max(created_at), 1, 'hour')", "name": "next_at"},
                     ],
                 },
             ],
@@ -429,12 +429,12 @@ class TestResultTypes:
         model = await engine.create_dataset_from_query(
             query=[
                 {
-                    "name": "s1", "source_model": "orders", "dimensions": ["status", "created_at"],
-                    "measures": [{"formula": "max(order_date)", "name": "od"}, {"formula": "count(*)", "name": "n"}],
+                    "name": "s1", "population": "orders", "dimensions": ["status", "created_at"],
+                    "metrics": [{"expression": "max(order_date)", "name": "od"}, {"expression": "count(*)", "name": "n"}],
                 },
                 {
-                    "source_model": "s1", "dimensions": ["created_at"],
-                    "measures": [{"formula": "max(od)", "name": "o"}, {"formula": "sum(n)", "name": "total"}],
+                    "population": "s1", "dimensions": ["created_at"],
+                    "metrics": [{"expression": "max(od)", "name": "o"}, {"expression": "sum(n)", "name": "total"}],
                 },
             ],
             name="passthrough", save=False,
@@ -447,14 +447,14 @@ class TestResultTypes:
         model = await engine.create_dataset_from_query(
             query=[
                 {
-                    "name": "s1", "source_model": "orders", "dimensions": ["status", "order_date"],
-                    "measures": [{"formula": "count(*)", "name": "n"}],
+                    "name": "s1", "population": "orders", "dimensions": ["status", "order_date"],
+                    "metrics": [{"expression": "count(*)", "name": "n"}],
                 },
                 {
-                    "source_model": "s1", "dimensions": ["status"],
-                    "measures": [
-                        {"formula": "max(date_add(order_date, 1, 'day'))", "name": "next_day"},
-                        {"formula": "min(coalesce(order_date, current_date()))", "name": "first_day"},
+                    "population": "s1", "dimensions": ["status"],
+                    "metrics": [
+                        {"expression": "max(date_add(order_date, 1, 'day'))", "name": "next_day"},
+                        {"expression": "min(coalesce(order_date, current_date()))", "name": "first_day"},
                     ],
                 },
             ],
@@ -468,16 +468,16 @@ class TestResultTypes:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "count(*)", "name": "n"}],
+            "metrics": [{"expression": "count(*)", "name": "n"}],
         })
         s2 = SlayerQuery.model_validate({
             "name": "s2", "population": "s1", "dimensions": ["created_at"],
-            "metrics": [{"formula": "sum(n)", "name": "total"}],
+            "metrics": [{"expression": "sum(n)", "name": "total"}],
         })
         s3 = SlayerQuery.model_validate({
             "population": "s2",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.DAY)],
-            "metrics": [{"formula": "sum(total)", "name": "t"}],
+            "metrics": [{"expression": "sum(total)", "name": "t"}],
         })
         with pytest.raises(TimeDimensionFieldError, match="already bucketed at 'month'"):
             await engine.execute([s1, s2, s3], dry_run=True)
@@ -486,12 +486,12 @@ class TestResultTypes:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "dimensions": [{"expression": "date_add(order_date, 1, 'month')", "name": "due"}],
-            "metrics": [{"formula": "count(*)", "name": "n"}],
+            "metrics": [{"expression": "count(*)", "name": "n"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [TimeDimension(field="due", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(n)", "name": "n_total"}],
+            "metrics": [{"expression": "sum(n)", "name": "n_total"}],
         })
         await engine.execute([s1, outer], dry_run=True)
 
@@ -499,12 +499,12 @@ class TestResultTypes:
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "dimensions": [{"expression": "date_part('month', created_at)", "name": "m"}],
-            "metrics": [{"formula": "count(*)", "name": "n"}],
+            "metrics": [{"expression": "count(*)", "name": "n"}],
         })
         outer = SlayerQuery.model_validate({
             "population": "s1",
             "time_dimensions": [TimeDimension(field="m", granularity=TimeGranularity.MONTH)],
-            "metrics": [{"formula": "sum(n)", "name": "n_total"}],
+            "metrics": [{"expression": "sum(n)", "name": "n_total"}],
         })
         with pytest.raises(TimeDimensionFieldError, match="INT"):
             await engine.execute([s1, outer], dry_run=True)

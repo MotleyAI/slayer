@@ -261,16 +261,16 @@ def _fine_cases():
     """(id, query kwargs, expected location pattern) for combined consumers of FINE."""
     fm = DatasetMetric(expression=FINE, name="f")
     return [
-        ("measure", {"measures": [fm]}, r"measure 'f'"),
-        ("order", {"measures": [TOT], "order": [{"column": FINE, "direction": "asc"}]},
+        ("measure", {"metrics": [fm]}, r"measure 'f'"),
+        ("order", {"metrics": [TOT], "order": [{"field": FINE, "direction": "asc"}]},
          r"order item\b"),
-        ("arithmetic", {"measures": [DatasetMetric(expression=f"{FINE} + 1", name="f")]},
+        ("arithmetic", {"metrics": [DatasetMetric(expression=f"{FINE} + 1", name="f")]},
          r"measure 'f'"),
-        ("transform", {"measures": [DatasetMetric(expression=f"rank({FINE}, direction='desc')", name="f")]},
+        ("transform", {"metrics": [DatasetMetric(expression=f"rank({FINE}, direction='desc')", name="f")]},
          r"measure 'f'"),
-        ("filter", {"measures": [TOT], "filters": [f"{FINE} < sum(amount)"]}, r"filter\b"),
+        ("filter", {"metrics": [TOT], "filter": [f"{FINE} < sum(amount)"]}, r"filter\b"),
         ("split-filter",
-         {"measures": [TOT], "filters": [f"{FINE} < sum(amount) and region <> 'Gap'"]},
+         {"metrics": [TOT], "filter": [f"{FINE} < sum(amount) and region <> 'Gap'"]},
          r"filter\b"),
     ]
 
@@ -323,14 +323,14 @@ def _is_r(key: ValueKey) -> bool:
 
 
 _R_CONSUMERS = [
-    pytest.param({"filters": [f"{R} < sum(amount)"]}, id="filter"),
-    pytest.param({"order": [{"column": R, "direction": "desc"}]}, id="order"),
-    pytest.param({"measures": [TOT, DatasetMetric(expression=R, name="r")]}, id="measure"),
+    pytest.param({"filter": [f"{R} < sum(amount)"]}, id="filter"),
+    pytest.param({"order": [{"field": R, "direction": "desc"}]}, id="order"),
+    pytest.param({"metrics": [TOT, DatasetMetric(expression=R, name="r")]}, id="measure"),
 ]
 
 
 def _r_query(kw: dict):
-    return sales_q(**{"dimensions": ["region", RLEVEL], "measures": [TOT], **kw})
+    return sales_q(**{"dimensions": ["region", RLEVEL], "metrics": [TOT], **kw})
 
 
 class TestDualPhasePlan:

@@ -170,14 +170,14 @@ class TestRewrite:
 # --------------------------------------------------------------------------- #
 def _query_dict(version: Any = 4) -> dict:
     data: dict = {
-        "source_model": "sales",
+        "population": "sales",
         "dimensions": ["region", {"expression": "rank(sum(amount, partition_by=region))", "name": "rk"}],
-        "measures": [
+        "metrics": [
             "rank(sum(amount)) + 1",
-            {"formula": "iif(dense_rank(sum(amount, partition_by=[region])) <= 2, 1, 0)", "name": "top"},
+            {"expression": "iif(dense_rank(sum(amount, partition_by=[region])) <= 2, 1, 0)", "name": "top"},
         ],
-        "filters": ["rank(sum(amount, partition_by=region)) <= 3 and city <> 'rank('"],
-        "order": [{"column": "abs(rank(sum(amount)))", "direction": "asc"}],
+        "filter": ["rank(sum(amount, partition_by=region)) <= 3 and city <> 'rank('"],
+        "order": [{"field": "abs(rank(sum(amount)))", "direction": "asc"}],
         "main_time_dimension": "rank(sum(amount))",
     }
     if version is not None:
@@ -212,7 +212,7 @@ class TestStoredQuery:
         _assert_query_filled(q)
 
     def test_inline_extension_measures_of_a_stored_query(self):
-        ext = {"source_name": "sales", "measures": [{"name": "x", "formula": BARE}]}
+        ext = {"source_name": "sales", "metrics": [{"name": "x", "expression": BARE}]}
         q = SlayerQuery.model_validate({**_query_dict(version=4), "population": ext})
         assert q.population == "sales"
         assert ((q.extensions or [])[0].metrics or [])[0].expression == FILLED
@@ -254,7 +254,7 @@ class TestPayloadVersions:
 
     @pytest.mark.parametrize("version", [3, 4])
     def test_explicit_old_query_is_filled(self, version):
-        q = SlayerQuery.model_validate({"version": version, "population": "sales", "metrics": [BARE]})
+        q = SlayerQuery.model_validate({"version": version, "source_model": "sales", "measures": [BARE]})
         assert (q.metrics or [])[0].expression == FILLED
 
 
@@ -336,8 +336,8 @@ class TestStorageLoad:
 
     async def test_unversioned_model_with_unversioned_nested_query(self, seed: Seeder):
         qb = {"name": "qb", "data_source": "test",
-              "source_queries": [{"source_model": "sales", "dimensions": ["region"],
-                                  "measures": [{"formula": BARE, "name": "r"}]}]}
+              "source_queries": [{"population": "sales", "dimensions": ["region"],
+                                  "metrics": [{"expression": BARE, "name": "r"}]}]}
         storage = await seed(models=[_model_dict(measures=[]), qb])
         model = await storage.get_dataset("qb", data_source="test")
         assert model is not None
@@ -347,7 +347,7 @@ class TestStorageLoad:
     async def test_unversioned_memory_and_query(self, seed: Seeder):
         storage = await seed(memories=[{
             "id": "m1", "learning": "top regions",
-            "query": {"source_model": "sales", "measures": [BARE], "filters": [f"{BARE} <= 2"]},
+            "query": {"population": "sales", "metrics": [BARE], "filter": [f"{BARE} <= 2"]},
         }])
         mem = await storage.get_memory("m1")
         assert mem.query is not None
@@ -383,7 +383,7 @@ class TestStorageLoad:
     @pytest.mark.parametrize("version", [None, "current"])
     async def test_fresh_or_current_query_with_bare_rank_fails(self, seed: Seeder, version):
         storage = await seed(models=[_model_dict(measures=[])])
-        payload: dict = {"source_model": "sales", "dimensions": ["region"], "measures": [BARE]}
+        payload: dict = {"population": "sales", "dimensions": ["region"], "metrics": [BARE]}
         if version == "current":
             payload["version"] = mig.CURRENT_VERSIONS["SlayerQuery"]
         query = SlayerQuery.model_validate(payload)
@@ -395,8 +395,8 @@ class TestStorageLoad:
     async def test_explicit_old_query_executes_descending(self, seed: Seeder):
         storage = await seed(models=[_model_dict(measures=[])])
         resp = await _execute(storage, SlayerQuery.model_validate(
-            {"version": 4, "population": "sales", "dimensions": ["region"],
-             "metrics": [{"formula": BARE, "name": "r"}]}))
+            {"version": 4, "source_model": "sales", "dimensions": ["region"],
+             "measures": [{"formula": BARE, "name": "r"}]}))
         assert {k[0]: v["sales.r"] for k, v in rows_by(resp, "sales.region").items()} == RANK_DESC
 
 
@@ -420,8 +420,8 @@ def served_storage():
 
 def test_rest_fresh_payload_fails(served_storage):
     client = TestClient(create_app(storage=served_storage))
-    resp = client.post("/query", json={"source_model": "sales", "dimensions": ["region"],
-                                       "measures": [{"formula": BARE}]})
+    resp = client.post("/query", json={"population": "sales", "dimensions": ["region"],
+                                       "metrics": [{"expression": BARE}]})
     assert 400 <= resp.status_code < 500
     assert "direction='desc'" in resp.text
     assert "direction='asc'" in resp.text
@@ -431,7 +431,7 @@ async def test_mcp_fresh_payload_fails(served_storage):
     server = create_mcp_server(storage=served_storage)
     try:
         text = str(await server.call_tool(name="query", arguments={"query": {
-            "source_model": "sales", "dimensions": ["region"], "measures": [BARE]}}))
+            "population": "sales", "dimensions": ["region"], "metrics": [BARE]}}))
     except Exception as exc:  # noqa: BLE001 — a ToolError carries the message too
         text = str(exc)
     assert "direction='desc'" in text

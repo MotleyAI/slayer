@@ -74,14 +74,14 @@ def _dimensions(model: SlayerDataset) -> list[str]:
 
 def _payloads(model: SlayerDataset, *, extra_dimensions: list[str], empty_filter: str | None) -> list[dict[str, Any]]:
     dims = _dimensions(model)
-    out: list[dict[str, Any]] = [{"source_model": model.name, "dimensions": [d]} for d in dims]
+    out: list[dict[str, Any]] = [{"population": model.name, "dimensions": [d]} for d in dims]
     for m in model.metrics:
-        base: dict[str, Any] = {"source_model": model.name, "measures": [m.name]}
+        base: dict[str, Any] = {"population": model.name, "metrics": [m.name]}
         out += [base, {**base, "dimensions": dims}, {**base, "time_dimensions": _MONTH},
                 {**base, "time_dimensions": _MONTH, "dimensions": ["region"]}]
         out += [{**base, "dimensions": [d]} for d in [*dims, *extra_dimensions]]
         if empty_filter is not None:
-            out += [{**base, "filters": [empty_filter]}, {**base, "filters": [empty_filter], "dimensions": dims[:2]}]
+            out += [{**base, "filter": [empty_filter]}, {**base, "filter": [empty_filter], "dimensions": dims[:2]}]
     return out
 
 
@@ -128,7 +128,7 @@ async def test_same_results_after_round_trip(trip: tuple[Env, Env]) -> None:
     payloads: list[dict[str, Any]] = []
     for model in _models():
         if model.source_queries:
-            payloads.append({"source_model": model.name, "dimensions": ["ordered_on", "revenue"]})
+            payloads.append({"population": model.name, "dimensions": ["ordered_on", "revenue"]})
             continue
         payloads += _payloads(
             model,
@@ -264,6 +264,6 @@ async def test_source_columns_round_trip(tmp_path: Path) -> None:
     assert {c.name for c in orders_model.fields if not c.hidden} == {"order_id", "amount"}
     assert [c for c in orders_model.fields if c.hidden]
     assert not [e for e in entries(convert_document(env, exported)) if e.category == "extension"]
-    payload = {"source_model": "orders", "measures": ["units", "total"]}
+    payload = {"population": "orders", "metrics": ["units", "total"]}
     assert normalized(await rows(second, payload)) == normalized(await rows(first, payload))
     assert normalized(await rows(first, payload)) == normalized([{"orders.units": 11, "orders.total": 46}])

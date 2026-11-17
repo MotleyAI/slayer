@@ -137,7 +137,7 @@ async def test_metric_datatype_is_metadata_only(db: Path) -> None:
     measures = {x.name: x for x in by_name(result)["orders"].metrics}
     assert (measures["typed"].meta or {})["osi_datatype"] == "Decimal"
     assert measures["typed"].datatype is None
-    rows = await query(result=result, db=db, payload={"source_model": "orders", "measures": ["typed", "untyped"]})
+    rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["typed", "untyped"]})
     # Exact only if the renamed field keeps the source column's db_type.
     assert rows[0]["orders.typed"] == Decimal("22.00")
     assert isinstance(rows[0]["orders.typed"], Decimal)

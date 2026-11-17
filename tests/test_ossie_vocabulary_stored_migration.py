@@ -138,10 +138,10 @@ class TestVersionSteps:
     def test_a_stored_extension_steps_silently(self) -> None:
         with recorded() as caught:
             query = SlayerQuery.model_validate({
-                "version": PRE["SlayerQuery"], "population": "orders", "metrics": ["aov"],
+                "version": PRE["SlayerQuery"], "source_model": "orders", "measures": ["aov"],
                 "extensions": [{"source_name": "orders",
-                                "metrics": [{"name": "aov", "expression": "sum(amount) / count(*)"}],
-                                "relationships": [{"to": "customers", "join_pairs": [["customer_id", "id"]],
+                                "measures": [{"name": "aov", "formula": "sum(amount) / count(*)"}],
+                                "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]],
                                            "name": "buyer"}]}],
             })
         assert future(caught) == []

@@ -72,7 +72,7 @@ def _outer_where_query() -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": [{"formula": "status", "name": "status"}],
-        "metrics": [{"formula": "sum(eu_amount)", "name": "eu"}],
+        "metrics": [{"expression": "sum(eu_amount)", "name": "eu"}],
         "filter": ["sum(eu_amount) > 100"],
     })
 
@@ -100,7 +100,7 @@ class TestPlanCarriesOuterWhereRouting:
         plain = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [{"formula": "status", "name": "status"}],
-            "metrics": [{"formula": "sum(amount)", "name": "a"}],
+            "metrics": [{"expression": "sum(amount)", "name": "a"}],
             "filter": ["sum(amount) > 100"],
         })
         planned = plan_query(query=plain, bundle=_bundle())
@@ -177,10 +177,10 @@ class TestFrameBoundColumnsStayPlanSide:
 
     def _windowed_query(self) -> SlayerQuery:
         return SlayerQuery.model_validate({"population": "orders", "time_dimensions": [{
-                "dimension": "created_at",
+                "field": "created_at",
                 "granularity": TimeGranularity.MONTH,
                 "date_range": ["2024-01-01", "2024-12-31"],
-            }], "metrics": [{"formula": "sum(amount)", "name": "a"}]})
+            }], "metrics": [{"expression": "sum(amount)", "name": "a"}]})
 
     def test_plan_carries_frame_bound_columns(self) -> None:
         """A DECLARED field, checked the same way as masks.

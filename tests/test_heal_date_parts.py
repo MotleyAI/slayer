@@ -52,11 +52,11 @@ def canonical(part: str, operand: str = "created_at") -> str:
 def every_position(expr: str) -> dict[str, Any]:
     """``expr`` as a dimension, a filter, an aggregation input and inside an order key."""
     return {
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": [{"expression": expr, "name": "p"}],
-        "measures": [{"formula": f"max({expr})", "name": "m"}, {"formula": "count(*)", "name": "n"}],
-        "filters": [f"{expr} > 1"],
-        "order": [{"column": f"min({expr})", "direction": "desc"}, {"column": "p"}],
+        "metrics": [{"expression": f"max({expr})", "name": "m"}, {"expression": "count(*)", "name": "n"}],
+        "filter": [f"{expr} > 1"],
+        "order": [{"field": f"min({expr})", "direction": "desc"}, {"field": "p"}],
     }
 
 
@@ -182,8 +182,8 @@ class TestAmbiguousWeekdays:
     @pytest.mark.parametrize("name", [*AMBIGUOUS_WEEKDAYS, "DOW", "DayOfWeek"])
     async def test_function_names_both_conventions(self, engine: SlayerQueryEngine, name: str) -> None:
         message = await rejection(engine, {
-            "source_model": "orders",
-            "dimensions": [{"expression": f"{name}(created_at)", "name": "d"}], "measures": ["count(*)"],
+            "population": "orders",
+            "dimensions": [{"expression": f"{name}(created_at)", "name": "d"}], "metrics": ["count(*)"],
         })
         for remedy in BOTH_CONVENTIONS:
             assert remedy in message
@@ -192,7 +192,7 @@ class TestAmbiguousWeekdays:
     async def test_custom_aggregation_named_weekday_still_works(self, backend: str) -> None:
         orders = orders_model(aggregations=[Aggregation(name="weekday", expression="MAX({value})")])
         async with heal_engine(backend, models=heal_models(orders=orders)) as eng:
-            resp = await eng.execute({"source_model": "orders", "dimensions": ["region"], "measures": ["weekday(amount)"]})
+            resp = await eng.execute({"population": "orders", "dimensions": ["region"], "metrics": ["weekday(amount)"]})
         assert {r["orders.region"]: r[resp.columns[1]] for r in resp.data} == {"US": 50.0, "EU": 60.0, None: 70.0}
 
 
@@ -216,20 +216,20 @@ class TestReservedNames:
 class TestExecutedEquivalence:
     async def test_alias_function_as_named_dimension(self, engine: SlayerQueryEngine) -> None:
         def query(expr: str) -> dict[str, Any]:
-            return {"source_model": "orders", "dimensions": [{"expression": expr, "name": "dow"}], "measures": ["count(*)"]}
+            return {"population": "orders", "dimensions": [{"expression": expr, "name": "dow"}], "metrics": ["count(*)"]}
 
         resp = await assert_equivalent(engine, query("isodow(created_at)"), query(canonical("day_of_week")))
         assert {r["orders.dow"]: r["orders._count"] for r in resp.data} == {1: 2, 3: 1, 4: 1, 6: 1, 7: 2}
 
     async def test_extract_with_alias_part(self, engine: SlayerQueryEngine) -> None:
         def query(expr: str) -> dict[str, Any]:
-            return {"source_model": "orders", "dimensions": [{"expression": expr, "name": "p"}], "measures": ["count(*)"]}
+            return {"population": "orders", "dimensions": [{"expression": expr, "name": "p"}], "metrics": ["count(*)"]}
 
         await assert_equivalent(engine, query("extract(isodow from created_at)"), query(canonical("day_of_week")))
 
     async def test_extract_over_nested_operand(self, engine: SlayerQueryEngine) -> None:
         def query(formula: str) -> dict[str, Any]:
-            return {"source_model": "orders", "dimensions": ["region"], "measures": [{"formula": formula, "name": "m"}]}
+            return {"population": "orders", "dimensions": ["region"], "metrics": [{"expression": formula, "name": "m"}]}
 
         await assert_equivalent(
             engine, query("max(EXTRACT(day FROM coalesce(shipped_at, created_at)))"),
@@ -238,20 +238,20 @@ class TestExecutedEquivalence:
 
     async def test_wrong_alias_arity_in_filter(self, engine: SlayerQueryEngine) -> None:
         message = await rejection(engine, {
-            "source_model": "orders", "measures": ["count(*)"], "filters": ["isodow(created_at, 1) = 1"],
+            "population": "orders", "metrics": ["count(*)"], "filter": ["isodow(created_at, 1) = 1"],
         })
         assert "isodow" in message
         assert "2" in message
 
     async def test_unknown_extract_part_in_filter(self, engine: SlayerQueryEngine) -> None:
         message = await rejection(engine, {
-            "source_model": "orders", "measures": ["count(*)"], "filters": ["extract(epoch from created_at) > 0"],
+            "population": "orders", "metrics": ["count(*)"], "filter": ["extract(epoch from created_at) > 0"],
         })
         assert "day_of_week" in message
 
     async def test_keyword_text_in_filter_literal(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute({
-            "source_model": "orders", "measures": ["count(*)"], "filters": ["status == 'extract(day from x)'"],
+            "population": "orders", "metrics": ["count(*)"], "filter": ["status == 'extract(day from x)'"],
         })
         assert [r["orders._count"] for r in resp.data] in ([0], [])
 
@@ -259,9 +259,9 @@ class TestExecutedEquivalence:
     async def test_date_trunc_dimension_keeps_bucket_meaning(self, engine: SlayerQueryEngine, bucket: str) -> None:
         await assert_equivalent(
             engine,
-            {"source_model": "orders", "dimensions": [f"date_trunc('{bucket}', created_at)"], "measures": ["count(*)"]},
-            {"source_model": "orders", "time_dimensions": [{"dimension": "created_at", "granularity": bucket}],
-             "measures": ["count(*)"]},
+            {"population": "orders", "dimensions": [f"date_trunc('{bucket}', created_at)"], "metrics": ["count(*)"]},
+            {"population": "orders", "time_dimensions": [{"field": "created_at", "granularity": bucket}],
+             "metrics": ["count(*)"]},
         )
 
     @pytest.mark.parametrize("spelling", sorted(SPELLINGS))

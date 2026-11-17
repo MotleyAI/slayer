@@ -67,7 +67,7 @@ def test_model_measure_formula(stored: str, loaded: str) -> None:
 
 @pytest.mark.parametrize(("stored", "loaded"), CASES)
 def test_query_filter(stored: str, loaded: str) -> None:
-    query = SlayerQuery.model_validate({"version": 6, "population": "orders", "filter": [stored]})
+    query = SlayerQuery.model_validate({"version": 6, "source_model": "orders", "filters": [stored]})
     assert query.filter == [_fully_loaded(stored, loaded)]
 
 
@@ -89,11 +89,11 @@ def shop_ds(tmp_path):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_stored_double_negation_returns_its_old_value(tmp_path, shop_ds, backend: str) -> None:
-    stage: dict[str, Any] = {"source_model": "orders",
-                             "measures": [{"formula": "sum(amount) --sum(amount)", "name": "rev"}]}
+    stage: dict[str, Any] = {"population": "orders",
+                             "metrics": [{"expression": "sum(amount) --sum(amount)", "name": "rev"}]}
     storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
                               models=[orders_v10(), customers_v10(), query_backed_v10(name="rev_q", stages=[stage])])
-    total = measure_total(await run(storage, {"source_model": "orders", "measures": [{"formula": "sum(amount)",
+    total = measure_total(await run(storage, {"population": "orders", "metrics": [{"expression": "sum(amount)",
                                                                                      "name": "t"}]}), measure="t")
-    resp = await run(storage, {"source_model": "rev_q", "measures": ["sum(rev)"]})
+    resp = await run(storage, {"population": "rev_q", "metrics": ["sum(rev)"]})
     assert measure_total(resp, measure="rev_sum") == 2 * total

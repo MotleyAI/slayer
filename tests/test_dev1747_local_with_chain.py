@@ -136,7 +136,7 @@ class TestWithChainAssembly:
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="cs"), direction="desc")], "limit": 2}))
+            )], "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="cs"), direction="desc")], "limit": 2}))
         assert order_by_text(sql), f"chain lost its ORDER BY:\n{sql}"
         assert "LIMIT" in sql.upper() or "TOP" in sql.upper()
 
@@ -229,12 +229,12 @@ class TestChainSemanticsPreserved:
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="status"), direction="desc")]}))
+            )], "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="status"), direction="desc")]}))
         assert order_by_text(sql)
 
     async def test_post_phase_filter_still_wraps_the_chain(self) -> None:
         sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "metrics": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "filter": ["cs > 5"]}))
+            )], "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}], "filter": ["cs > 5"]}))
         assert "WHERE" in sql.upper()

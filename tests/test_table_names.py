@@ -128,7 +128,7 @@ def test_rendered_name_reads_back_as_its_parts(parts: Sequence[str], dialect: st
 async def _query(storage: YAMLStorage, model: str) -> list[dict[str, object]]:
     engine = SlayerQueryEngine(storage=storage)
     try:
-        return (await engine.execute({"source_model": model, "dimensions": ["qty"]})).data
+        return (await engine.execute({"population": model, "dimensions": ["qty"]})).data
     finally:
         engine.close()
 
@@ -285,7 +285,7 @@ async def test_a_catalog_matches_the_current_database_by_the_name_it_denotes() -
 async def test_type_refinement_reads_a_quoted_schema_in_the_current_database() -> None:
     client = _SnowflakeDatabaseClient()
     model = {"name": "t", "sql_table": 'slayer_ci."lower_schema".t', "data_source": DS,
-             "columns": [{"name": "qty", "type": "DOUBLE"}]}
+             "fields": [{"name": "qty", "datatype": "DOUBLE"}]}
     assert await refine_dict_with_live_schema(model, client.datasource, client)
     (location,) = client.located
     assert (location.catalog, location.schema_name, is_quoted_name(location.schema_name)) == (
@@ -330,11 +330,11 @@ def _key_columns(sql: str, *, dialect: str) -> set[tuple[str, bool]]:
 
 
 @pytest.mark.parametrize(("cardinality", "query"), [
-    (RelationshipCardinality.ONE_TO_ONE, {"source_model": "customers", "dimensions": ["name", "orders.status"]}),
-    (RelationshipCardinality.ONE_TO_MANY, {"source_model": "customers", "dimensions": ["name"],
-                                   "filters": ["orders.status = 'x'"]}),
-    (RelationshipCardinality.ONE_TO_MANY, {"source_model": "customers", "dimensions": ["name"],
-                                   "filters": ["name = 'a' OR orders.status = 'x'"]}),
+    (RelationshipCardinality.ONE_TO_ONE, {"population": "customers", "dimensions": ["name", "orders.status"]}),
+    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["name"],
+                                   "filter": ["orders.status = 'x'"]}),
+    (RelationshipCardinality.ONE_TO_MANY, {"population": "customers", "dimensions": ["name"],
+                                   "filter": ["name = 'a' OR orders.status = 'x'"]}),
 ])
 @pytest.mark.parametrize("dialect", ["snowflake", "postgres"])
 async def test_quoted_join_keys_stay_quoted(cardinality: RelationshipCardinality, query: dict[str, Any], dialect: str) -> None:

@@ -21,7 +21,7 @@ PREVIOUS_MODEL = 20
 
 
 def _stored(**fields: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"version": PREVIOUS, "population": "orders", **fields})
+    return SlayerQuery.model_validate({"version": PREVIOUS, "source_model": "orders", **fields})
 
 
 def _stage(*, mode: str | None, versioned: bool, name: str | None = None) -> dict:
@@ -47,11 +47,11 @@ class TestQueryDocument:
         assert _stored(to_many_handling=mode).to_many_handling == mode
 
     def test_stored_strict_false_loads_as_the_default(self) -> None:
-        query = SlayerQuery.model_validate({"version": 3, "population": "orders", "strict": False})
+        query = SlayerQuery.model_validate({"version": 3, "source_model": "orders", "strict": False})
         assert query.to_many_handling is None
 
     def test_stored_strict_true_still_means_error(self) -> None:
-        query = SlayerQuery.model_validate({"version": 3, "population": "orders", "strict": True})
+        query = SlayerQuery.model_validate({"version": 3, "source_model": "orders", "strict": True})
         assert query.to_many_handling == "error"
 
     def test_fresh_broadcast_is_kept(self) -> None:
@@ -60,7 +60,7 @@ class TestQueryDocument:
 
     def test_current_version_broadcast_is_kept(self) -> None:
         query = SlayerQuery.model_validate({
-            "version": CURRENT_VERSIONS["SlayerQuery"], "population": "orders", "to_many_handling": "broadcast"})
+            "version": CURRENT_VERSIONS["SlayerQuery"], "source_model": "orders", "to_many_handling": "broadcast"})
         assert query.to_many_handling == "broadcast"
 
     def test_memory_query(self) -> None:
@@ -75,7 +75,7 @@ class TestNestedStages:
     def test_every_stage_migrates(self, versioned: bool) -> None:
         doc = query_backed_v10(name="rev_q", version=PREVIOUS_MODEL, stages=[
             _stage(mode="broadcast", versioned=versioned, name="first"),
-            {**_stage(mode="broadcast", versioned=versioned), "source_model": "first"},
+            {**_stage(mode="broadcast", versioned=versioned), "population": "first"},
         ])
         model = SlayerDataset.model_validate(doc)
         assert [s.to_many_handling for s in model.source_queries or []] == [None, None]
@@ -83,7 +83,7 @@ class TestNestedStages:
     def test_other_modes_survive_in_stages(self) -> None:
         doc = query_backed_v10(name="rev_q", version=PREVIOUS_MODEL, stages=[
             _stage(mode="error", versioned=False, name="first"),
-            {**_stage(mode="associate", versioned=True), "source_model": "first"},
+            {**_stage(mode="associate", versioned=True), "population": "first"},
         ])
         model = SlayerDataset.model_validate(doc)
         assert [s.to_many_handling for s in model.source_queries or []] == ["error", "associate"]
@@ -94,7 +94,7 @@ class TestStorage:
     async def test_stored_stages_load_as_the_default(self, tmp_path: Path, backend: str) -> None:
         doc = query_backed_v10(name="rev_q", version=PREVIOUS_MODEL, stages=[
             _stage(mode="broadcast", versioned=True, name="first"),
-            {**_stage(mode="broadcast", versioned=False), "source_model": "first"},
+            {**_stage(mode="broadcast", versioned=False), "population": "first"},
         ])
         storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=None, models=[doc])
         model = await storage.get_dataset("rev_q", data_source=DS)

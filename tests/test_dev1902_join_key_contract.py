@@ -179,7 +179,7 @@ class TestExtensionOverlay:
                 "population": "orders",
                 "extensions": [DatasetExtension(source_name="orders", relationships=[
                     DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])])],
-                "metrics": [{"formula": "sum(amount)", "name": "amt"}],
+                "metrics": [{"expression": "sum(amount)", "name": "amt"}],
                 "dimensions": ["regions.name"]})
             with pytest.raises(ValueError, match="key 'region_id'"):
                 await engine.execute(query, dry_run=True)
@@ -268,7 +268,7 @@ class TestPhysicalJoinPairs:
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery.model_validate({
                 "population": "orders", "dimensions": ["customers.name"],
-                "metrics": [{"formula": "sum(amount)", "name": "amt"}]})
+                "metrics": [{"expression": "sum(amount)", "name": "amt"}]})
             with pytest.raises(RelationshipKeyError, match="'cust_key'"):
                 await engine.execute(query, dry_run=True)
 
@@ -338,7 +338,7 @@ class TestDriftAndRefinement:
                 conn.executemany("INSERT INTO items VALUES (?, ?)", [(1, 10), (2, 20)])
             doc = {
                 "name": "items", "sql_table": "items", "data_source": "live",
-                "columns": [{"name": "quantity", "sql": '"qty"', "type": "DOUBLE"}],
+                "fields": [{"name": "quantity", "sql": '"qty"', "datatype": "DOUBLE"}],
             }
             ds = DatasourceConfig(name="live", type="sqlite", database=db_path)
             client = SlayerSQLClient(datasource=ds)

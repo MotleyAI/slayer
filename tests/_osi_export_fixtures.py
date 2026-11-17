@@ -119,8 +119,8 @@ def monthly_revenue() -> SlayerDataset:
         name="monthly_revenue", data_source=DATASOURCE,
         source_queries=[SlayerQuery.model_validate({
             "population": "orders",
-            "time_dimensions": [{"dimension": "ordered_on", "granularity": "month"}],
-            "metrics": [{"formula": "sum(amount)", "name": "revenue"}],
+            "time_dimensions": [{"field": "ordered_on", "granularity": "month"}],
+            "metrics": [{"expression": "sum(amount)", "name": "revenue"}],
             "filter": ["region = '{region}'"],
         })],
         query_variables={"region": "US"},

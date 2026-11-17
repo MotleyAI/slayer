@@ -97,10 +97,10 @@ def test_versions_bumped() -> None:
 # --------------------------------------------------------------------------- #
 # Stored bucket calls are upgraded to date_trunc
 # --------------------------------------------------------------------------- #
-MONTHLY_STAGE = {"source_model": "orders", "dimensions": ["month(ordered_at)"],
-                 "measures": [{"formula": "sum(amount)", "name": "rev"}],
-                 "filters": ["year(ordered_at) >= '2024'"],
-                 "order": [{"column": "month(ordered_at)", "direction": "asc"}]}
+MONTHLY_STAGE = {"population": "orders", "dimensions": ["month(ordered_at)"],
+                 "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+                 "filter": ["year(ordered_at) >= '2024'"],
+                 "order": [{"field": "month(ordered_at)", "direction": "asc"}]}
 
 
 class TestBucketCalls:
@@ -114,13 +114,13 @@ class TestBucketCalls:
 
     @pytest.mark.parametrize("unit", ["second", "minute", "hour", "day", "week", "month", "quarter", "year"])
     def test_every_built_in_unit(self, unit: str) -> None:
-        query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "population": "orders",
-                                            "metrics": [f"count_distinct({unit}(ordered_at))"]})
+        query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": "orders",
+                                            "measures": [f"count_distinct({unit}(ordered_at))"]})
         assert [m.expression for m in query.metrics or []] == [f"count_distinct(date_trunc('{unit}', ordered_at))"]
 
     def test_week_sunday(self) -> None:
-        query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "population": "orders",
-                                            "filter": ["week_sunday(ordered_at) = '2024-01-07'"]})
+        query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": "orders",
+                                            "filters": ["week_sunday(ordered_at) = '2024-01-07'"]})
         assert query.filter == ["date_trunc('week_sunday', ordered_at) = '2024-01-07'"]
 
     def test_saved_measure_formula(self) -> None:
@@ -129,17 +129,17 @@ class TestBucketCalls:
         assert [m.expression for m in model.metrics] == ["count_distinct(date_trunc('month', ordered_at))"]
 
     def test_rest_of_the_text_is_byte_identical(self) -> None:
-        query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "population": "orders",
-                                            "filter": ["month(ordered_at)>='2024-03'  AND status = 'ok'"]})
+        query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": "orders",
+                                            "filters": ["month(ordered_at)>='2024-03'  AND status = 'ok'"]})
         assert query.filter == ["date_trunc('month', ordered_at)>='2024-03'  AND status = 'ok'"]
 
     def test_quoted_text_is_untouched(self) -> None:
-        query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "population": "orders",
-                                            "filter": ["status = 'month(x)'"]})
+        query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": "orders",
+                                            "filters": ["status = 'month(x)'"]})
         assert query.filter == ["status = 'month(x)'"]
 
     def test_a_current_document_is_not_rewritten(self) -> None:
-        query = SlayerQuery.model_validate({"version": CURRENT_VERSIONS["SlayerQuery"], "population": "orders",
+        query = SlayerQuery.model_validate({"version": CURRENT_VERSIONS["SlayerQuery"], "source_model": "orders",
                                             "dimensions": [{"expression": "month(ordered_at)", "name": "m"}]})
         assert "month(ordered_at)" in dumped(query)
         assert "date_trunc" not in dumped(query)
@@ -164,9 +164,9 @@ class TestBucketCalls:
         assert next(a for a in model.aggregations if a.name == "yr").expression == "MAX(year({value}))"
 
     def test_structured_time_dimensions_are_untouched(self) -> None:
-        query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "population": "orders",
+        query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": "orders",
                                             "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}],
-                                            "metrics": ["cumsum(sum(amount))"]})
+                                            "measures": ["cumsum(sum(amount))"]})
         assert [(str(t.field), getattr(t.granularity, "value", t.granularity))
                 for t in query.time_dimensions or []] == [("ordered_at", "month")]
 
@@ -180,8 +180,8 @@ class TestBucketCalls:
         text = dumped(model)
         assert "date_trunc('year', ordered_at) >= '2024'" in text
         assert not _BUCKET_CALL.search(text), text
-        resp = await run(storage, {"source_model": "monthly_rev", "dimensions": ["ordered_at"],
-                                   "measures": [{"formula": "sum(rev)", "name": "r"}]})
+        resp = await run(storage, {"population": "monthly_rev", "dimensions": ["ordered_at"],
+                                   "metrics": [{"expression": "sum(rev)", "name": "r"}]})
         assert by_month(resp, key="monthly_rev.ordered_at", value="monthly_rev.r") == MONTHLY_2024_ON
 
     @pytest.mark.parametrize("backend", BACKENDS)
@@ -222,9 +222,9 @@ class TestBucketCalls:
 
     def test_extension_is_rewritten(self) -> None:
         extension = {"source_name": "orders",
-                     "measures": [{"name": "months", "formula": "count_distinct(month(ordered_at))"},
-                                  {"name": "ok", "formula": "sum(iif(status == 'ok', amount, None))"}]}
-        text = dumped(SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "population": extension}))
+                     "metrics": [{"name": "months", "expression": "count_distinct(month(ordered_at))"},
+                                  {"name": "ok", "expression": "sum(iif(status == 'ok', amount, None))"}]}
+        text = dumped(SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": extension}))
         assert not _BUCKET_CALL.search(text), text
         assert "==" not in text, text
         assert "None)" not in text, text
@@ -233,15 +233,15 @@ class TestBucketCalls:
     def test_nested_saved_query_stages_are_rewritten(self) -> None:
         model = SlayerDataset.model_validate(saved_query_doc(
             "two_stage",
-            {"name": "inner", "source_model": "orders", "measures": [{"formula": "sum(amount)", "name": "rev"}],
-             "filters": ["year(ordered_at) >= '2024' and status == 'ok'"]},
-            {"source_model": "inner", "measures": [{"formula": "sum(rev)", "name": "t"}]}))
+            {"name": "inner", "population": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+             "filter": ["year(ordered_at) >= '2024' and status == 'ok'"]},
+            {"population": "inner", "metrics": [{"expression": "sum(rev)", "name": "t"}]}))
         stage = (model.source_queries or [])[0]
         assert stage.filter == ["date_trunc('year', ordered_at) >= '2024' and status = 'ok'"]
 
     def test_already_converted_text_is_left_alone(self) -> None:
-        query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "population": "orders",
-                                            "filter": ["date_trunc('month', ordered_at) = '2024-01' AND x IS NULL"]})
+        query = SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": "orders",
+                                            "filters": ["date_trunc('month', ordered_at) = '2024-01' AND x IS NULL"]})
         assert query.filter == ["date_trunc('month', ordered_at) = '2024-01' AND x IS NULL"]
 
     @pytest.mark.parametrize("backend", BACKENDS)
@@ -281,8 +281,8 @@ class TestDeprecatedSpellings:
 
     def test_method_call_and_list_after_in_in_a_saved_query(self) -> None:
         model = SlayerDataset.model_validate(saved_query_doc("q", {
-            "source_model": "orders", "measures": [{"formula": "customers.count(*)", "name": "n"}],
-            "filters": ["status in ['ok', 'new']", "customer_id is None or status == 'ok'"]}))
+            "population": "orders", "metrics": [{"expression": "customers.count(*)", "name": "n"}],
+            "filter": ["status in ['ok', 'new']", "customer_id is None or status == 'ok'"]}))
         stage = (model.source_queries or [])[0]
         assert [m.expression for m in stage.metrics or []] == ["count(customers.*)"]
         assert stage.filter == ["status in ('ok', 'new')", "customer_id IS NULL or status = 'ok'"]
@@ -292,7 +292,7 @@ class TestDeprecatedSpellings:
         storage = await store(tmp_path, shop_ds, backend=backend, models=[orders_doc(measures=[{
             "name": "ok", "formula": "sum(iif(status == 'ok' and customer_id is not None, amount, None))"}])])
         with recorded_warnings() as caught:
-            resp = await run(storage, {"source_model": "orders", "measures": ["ok"]})
+            resp = await run(storage, {"population": "orders", "metrics": ["ok"]})
         assert float(resp.data[0]["orders.ok"]) == 80.0
         assert future_warnings(caught) == []
 
@@ -305,8 +305,8 @@ class TestAggRename:
     async def test_aggregation_named_agg(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                          caplog: pytest.LogCaptureFixture) -> None:
         doubled = orders_doc(aggregations=[{"name": "agg", "formula": "SUM({value}) * 2"}])
-        saved = saved_query_doc("doubled", {"source_model": "orders",
-                                            "measures": [{"formula": "agg(amount)", "name": "d"}]})
+        saved = saved_query_doc("doubled", {"population": "orders",
+                                            "metrics": [{"expression": "agg(amount)", "name": "d"}]})
         storage = await store(tmp_path, shop_ds, backend=backend, models=[doubled, saved])
         with logged(caplog) as texts:
             model = await storage.get_dataset("orders", data_source=DS)
@@ -316,7 +316,7 @@ class TestAggRename:
         assert [a.name for a in model.aggregations] == ["agg_aggregation"]
         assert "agg_aggregation(amount)" in dumped(query_backed)
         assert any("agg_aggregation" in t and "orders" in t for t in texts), texts
-        resp = await run(storage, {"source_model": "doubled", "measures": [{"formula": "sum(d)", "name": "t"}]})
+        resp = await run(storage, {"population": "doubled", "metrics": [{"expression": "sum(d)", "name": "t"}]})
         assert float(resp.data[0]["doubled.t"]) == 420.0
 
     def test_any_case(self) -> None:
@@ -339,4 +339,4 @@ class TestAggRename:
         assert [m.expression for m in model.metrics] == ["agg(amount)"]
         assert any("agg" in t and "orders" in t for t in texts), texts
         with pytest.raises(SlayerError, match="(?i)AGG.*reserved"):
-            await run(storage, {"source_model": "orders", "measures": ["agg(amount)"]})
+            await run(storage, {"population": "orders", "metrics": ["agg(amount)"]})

@@ -296,7 +296,7 @@ class TestTopOnlySteps:
             filters=["orders.status = 'ok'"])
         root = SlayerQuery.model_validate({
             "population": "s1", "dimensions": ["tier"],
-            "metrics": [{"formula": "sum(sp)", "name": "t"}]})
+            "metrics": [{"expression": "sum(sp)", "name": "t"}]})
         stage_plans = plan_stages(queries=[s1, root], bundle=_customers_bundle())
         assert calls == {"dispose": 2, "total_routing": 2}
         assert [len(p.semi_join_filters) for p in stage_plans] == [1, 0]

@@ -179,14 +179,14 @@ def orders_query(*, formula: str, filters=None, dimensions=None, date_range=None
         "time_dimensions": [td],
         "dimensions": dimensions or [],
         "filter": ["customer_id = 1"] if filters is None else filters,
-        "metrics": [{"formula": formula, "name": "v"}],
+        "metrics": [{"expression": formula, "name": "v"}],
     })
 
 
 def ticks_query(*, series: str, granularity: str, measures: list) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "ticks",
-        "time_dimensions": [{"dimension": "ts", "granularity": granularity}],
+        "time_dimensions": [{"field": "ts", "granularity": granularity}],
         "filter": [f"series = '{series}'"],
         "metrics": measures,
     })

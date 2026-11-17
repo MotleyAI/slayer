@@ -36,7 +36,7 @@ class TestQueryBackedFailClosed:
         backing = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
         })
         dead = DatasetMetric(name="dead", expression="sum(amount)")
         with pytest.raises(ValidationError):
@@ -47,7 +47,7 @@ class TestQueryBackedFailClosed:
         backing = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
         })
         dead = DatasetMetric(name="dead", expression="sum(amount)")
         with pytest.raises(ValidationError) as ei:
@@ -93,7 +93,7 @@ class TestExtensionMeasuresOverQueryBacked:
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders",
                     "dimensions": ["status"],
-                    "metrics": [{"formula": "sum(amount)"}],
+                    "metrics": [{"expression": "sum(amount)"}],
                 })],
             ))
             engine = SlayerQueryEngine(storage=storage)
@@ -218,7 +218,7 @@ class TestStageExtensionMeasuresOverQueryBacked:
                 source_queries=[SlayerQuery.model_validate({
                     "population": "orders",
                     "dimensions": ["status"],
-                    "metrics": [{"formula": "sum(amount)"}],
+                    "metrics": [{"expression": "sum(amount)"}],
                 })],
             ))
             stage = SlayerQuery(

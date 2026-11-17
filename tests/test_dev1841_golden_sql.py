@@ -44,23 +44,23 @@ PART = DatasetMetric(expression="sum(customers.spend, partition_by=status)", nam
 def _cases() -> dict:
     return {
         "assoc/spend_by_status": {"models": "default", "mode": "associate",
-                                  "kw": {"dimensions": ["status"], "measures": [CM]}},
+                                  "kw": {"dimensions": ["status"], "metrics": [CM]}},
         "assoc/count_by_status": {"models": "default", "mode": "associate",
-                                  "kw": {"dimensions": ["status"], "measures": [NC]}},
+                                  "kw": {"dimensions": ["status"], "metrics": [NC]}},
         "assoc/pop_by_status": {"models": "default", "mode": "associate",
-                                "kw": {"dimensions": ["status"], "measures": [POP]}},
+                                "kw": {"dimensions": ["status"], "metrics": [POP]}},
         "assoc/median_by_status": {"models": "default", "mode": "associate",
-                                   "kw": {"dimensions": ["status"], "measures": [MED]}},
+                                   "kw": {"dimensions": ["status"], "metrics": [MED]}},
         "assoc/rent_composite_key": {"models": "default", "mode": "associate",
-                                     "kw": {"dimensions": ["status"], "measures": [RENT]}},
+                                     "kw": {"dimensions": ["status"], "metrics": [RENT]}},
         "assoc/measure_local_filter": {"models": "ext", "mode": "associate",
-                                       "kw": {"dimensions": ["status"], "measures": [GS]}},
+                                       "kw": {"dimensions": ["status"], "metrics": [GS]}},
         "assoc/explicit_partition": {"models": "default", "mode": "associate",
-                                     "kw": {"dimensions": ["status"], "measures": [PART]}},
+                                     "kw": {"dimensions": ["status"], "metrics": [PART]}},
         "bcast/spend_by_status": {"models": "default", "mode": "broadcast",
-                                  "kw": {"dimensions": ["status"], "measures": [CM]}},
+                                  "kw": {"dimensions": ["status"], "metrics": [CM]}},
         "bcast/attributable_tier": {"models": "default", "mode": None,
-                                    "kw": {"dimensions": ["customers.tier"], "measures": [CM]}},
+                                    "kw": {"dimensions": ["customers.tier"], "metrics": [CM]}},
     }
 
 

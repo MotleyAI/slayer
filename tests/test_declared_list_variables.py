@@ -293,7 +293,7 @@ async def test_e2e_scalar_and_list_return_identical_rows():
         async def _total(regions):
             q = SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "sum(amount)"}],
+                "metrics": [{"expression": "sum(amount)"}],
                 "variables": {"regions": regions},
             })
             resp = await engine.execute(q)

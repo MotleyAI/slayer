@@ -32,68 +32,68 @@ def _cases() -> dict:
         "lifted/host_homed_arith": {
             "source": "orders", "mode": None,
             "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": "sum(amount - customers.discount)",
+                   "metrics": [{"expression": "sum(amount - customers.discount)",
                                  "name": "m"}]}},
         "lifted/target_homed": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["customers.tier"], "measures": [
-                {"formula": "sum(customers.spend - customers.regions.pop)",
+            "kw": {"dimensions": ["customers.tier"], "metrics": [
+                {"expression": "sum(customers.spend - customers.regions.pop)",
                  "name": "m"}]}},
         "lifted/two_branch": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["status"], "measures": [
-                {"formula": "sum(customers.spend - stores.rent)", "name": "m"}]}},
+            "kw": {"dimensions": ["status"], "metrics": [
+                {"expression": "sum(customers.spend - stores.rent)", "name": "m"}]}},
         "lifted/cross_model_partition": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["status"], "measures": [
-                {"formula": "sum(amount - customers.discount, partition_by=status)",
+            "kw": {"dimensions": ["status"], "metrics": [
+                {"expression": "sum(amount - customers.discount, partition_by=status)",
                  "name": "m"}]}},
         "lifted/filtered_operand": {
             "source": "sales", "mode": None,
             "kw": {"dimensions": ["region"],
-                   "measures": [{"formula": "sum(q_amount - 1)", "name": "m"}]}},
+                   "metrics": [{"expression": "sum(q_amount - 1)", "name": "m"}]}},
         "lifted/filtered_leaf_joined": {
             "source": "orders", "mode": None,
-            "kw": {"dimensions": ["status"], "measures": [
-                {"formula": "sum(amount - customers.north_spend)", "name": "m"}]}},
+            "kw": {"dimensions": ["status"], "metrics": [
+                {"expression": "sum(amount - customers.north_spend)", "name": "m"}]}},
         "lifted/transform_constituent": {
             "source": "monthly", "mode": None,
-            "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
+            "kw": {"time_dimensions": _MONTH_TD, "metrics": [{"expression":
                 "sum(cumsum(sum(amount, partition_by=[region, ordered_at])) - 1)",
                 "name": "m"}]}},
         "lifted/mixed_transform": {
             "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "measures": [{"formula":
+            "kw": {"dimensions": ["region"], "metrics": [{"expression":
                 "sum(quantity * rank(avg(unit_price, partition_by=product), direction='desc'))",
                 "name": "m"}]}},
         # DEV-1928 — re-aggregation constituents in a mixed source; windowed inner.
         "lifted/mixed_reagg": {
             "source": "monthly", "mode": None,
-            "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
+            "kw": {"time_dimensions": _MONTH_TD, "metrics": [{"expression":
                 "sum(amount * min(sum(amount, partition_by=[region, ordered_at]), "
                 "partition_by=region))", "name": "m"}]}},
         "lifted/mixed_collapse": {
             "source": "monthly", "mode": None,
-            "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
+            "kw": {"time_dimensions": _MONTH_TD, "metrics": [{"expression":
                 "sum(amount * last(sum(amount, partition_by=[region, ordered_at])))",
                 "name": "m"}]}},
         "lifted/windowed_inner": {
             "source": "monthly", "mode": None,
-            "kw": {"time_dimensions": _MONTH_TD, "measures": [{"formula":
+            "kw": {"time_dimensions": _MONTH_TD, "metrics": [{"expression":
                 "sum(rank(sum(amount, window='90d', partition_by=region), direction='desc'))",
                 "name": "m"}]}},
         # positive/* — already supported; byte-identical SQL through the change.
         "positive/same_model_arith": {
             "source": "orders", "mode": None,
             "kw": {"dimensions": ["status"],
-                   "measures": [{"formula": "sum(amount - cost)", "name": "m"}]}},
+                   "metrics": [{"expression": "sum(amount - cost)", "name": "m"}]}},
         "positive/reaggregation": {
             "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "measures": [{"formula":
+            "kw": {"dimensions": ["region"], "metrics": [{"expression":
                 "avg(sum(amount, partition_by=[city, region]))", "name": "m"}]}},
         "positive/mixed_row_attached": {
             "source": "sales", "mode": None,
-            "kw": {"dimensions": ["region"], "measures": [{"formula":
+            "kw": {"dimensions": ["region"], "metrics": [{"expression":
                 "sum(quantity * avg(unit_price, partition_by=product))", "name": "m"}]}},
     }
 

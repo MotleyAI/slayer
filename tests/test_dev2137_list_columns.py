@@ -280,17 +280,17 @@ class TestOpaqueElements:
     async def test_length_and_element_access_refused(self) -> None:
         async with contractors_engine(models=[contractors_model(), _grids_model()], extra=GRIDS) as e:
             with pytest.raises(SlayerError, match="UNKNOWN"):
-                await e.execute({"source_model": "grids", "dimensions": [
+                await e.execute({"population": "grids", "dimensions": [
                     "id", {"expression": "length(grid)", "name": "n"}]})
             with pytest.raises(SlayerError, match="UNKNOWN"):
-                await e.execute({"source_model": "grids", "dimensions": ["grid.value"]})
+                await e.execute({"population": "grids", "dimensions": ["grid.value"]})
             with pytest.raises(SlayerError, match="grid"):
-                await e.execute({"source_model": "grids", "dimensions": ["id"],
-                                 "filters": ["contains(grid, 1)"]})
+                await e.execute({"population": "grids", "dimensions": ["id"],
+                                 "filter": ["contains(grid, 1)"]})
 
     async def test_null_tests_run(self) -> None:
         async with contractors_engine(models=[contractors_model(), _grids_model()], extra=GRIDS) as e:
-            resp = await e.execute({"source_model": "grids", "dimensions": ["id"], "filters": ["grid IS NULL"]})
+            resp = await e.execute({"population": "grids", "dimensions": ["id"], "filter": ["grid IS NULL"]})
             assert {int(r["grids.id"]) for r in resp.data} == {2}
 
 
@@ -552,7 +552,7 @@ class TestSqlModeElementType:
     async def test_element_access_names_the_opaque_type(self) -> None:
         async with contractors_engine(models=[contractors_model(), _dev_skills({"type": "ARRAY"})]) as e:
             with pytest.raises(SlayerError, match="UNKNOWN"):
-                await e.execute({"source_model": "dev_skills", "dimensions": ["skills.value"]})
+                await e.execute({"population": "dev_skills", "dimensions": ["skills.value"]})
 
     @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
     async def test_a_stored_model_loads_and_re_saves_unknown(self, tmp_path, backend: str) -> None:
@@ -574,8 +574,8 @@ class TestSqlModeElementType:
             assert _skills(loaded).element_type is DataType.TEXT
             engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=os.path.join(tmp, "store")))
             try:
-                resp = await engine.execute({"source_model": "dev_skills", "dimensions": ["id"],
-                                             "filters": ["contains(skills, 'go')"]})
+                resp = await engine.execute({"population": "dev_skills", "dimensions": ["id"],
+                                             "filter": ["contains(skills, 'go')"]})
             finally:
                 engine.close()
         assert [int(r["dev_skills.id"]) for r in resp.data] == [1]
@@ -619,14 +619,14 @@ class TestMCPSqlModeElementType:
         async with self._server() as (server, storage):
             await _mcp(server, name="create_model", arguments={
                 "name": "dev_skills", "data_source": "test", "sql": SKILLS_SQL,
-                "columns": [{"name": "id", "type": "INT"}, {"name": "skills", "type": "ARRAY"}]})
+                "fields": [{"name": "id", "datatype": "INT"}, {"name": "skills", "datatype": "ARRAY"}]})
             assert _skills(await storage.get_dataset("dev_skills")).element_type is DataType.UNKNOWN
 
     async def test_create_model_refuses_a_table_backed_list(self) -> None:
         async with self._server() as (server, storage):
             out = await _mcp(server, name="create_model", arguments={
                 "name": "raw_skills", "data_source": "test", "sql_table": "contractors",
-                "columns": [{"name": "id", "type": "INT"}, {"name": "skills", "type": "ARRAY"}]})
+                "fields": [{"name": "id", "datatype": "INT"}, {"name": "skills", "datatype": "ARRAY"}]})
             assert "skills" in out, out
             assert "element_type" in out, out
             assert await storage.get_dataset("raw_skills") is None

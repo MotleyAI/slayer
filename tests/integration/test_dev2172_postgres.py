@@ -64,13 +64,13 @@ async def _mcp_rows(store: FacadeStore, query: dict) -> tuple[str, list[dict]]:
 
 @pytest.mark.integration
 async def test_collect_over_uuid_on_mcp_json(store: FacadeStore) -> None:
-    _text, rows = await _mcp_rows(store, {"source_model": "things", "measures": ["uids"]})
+    _text, rows = await _mcp_rows(store, {"population": "things", "metrics": ["uids"]})
     assert sorted(rows[0]["things.uids"]) == sorted([str(UID_1), str(UID_2)])
 
 
 @pytest.mark.integration
 async def test_collect_over_exact_numerics_keeps_every_digit(store: FacadeStore) -> None:
-    text, rows = await _mcp_rows(store, {"source_model": "things", "measures": ["prices"]})
+    text, rows = await _mcp_rows(store, {"population": "things", "metrics": ["prices"]})
     assert str(BIG) in text
     assert f'"{BIG}"' not in text
     assert sorted(rows[0]["things.prices"]) == sorted([BIG, Decimal("0.50")])
@@ -78,7 +78,7 @@ async def test_collect_over_exact_numerics_keeps_every_digit(store: FacadeStore)
 
 @pytest.mark.integration
 async def test_values_on_mcp_json(store: FacadeStore) -> None:
-    _text, rows = await _mcp_rows(store, {"source_model": "things", "dimensions": ["id", "payload", "blob", "span"],
+    _text, rows = await _mcp_rows(store, {"population": "things", "dimensions": ["id", "payload", "blob", "span"],
                                           "distinct_dimension_values": False})
     got = {r["things.id"]: (r["things.payload"], r["things.blob"], r["things.span"]) for r in rows}
     assert got == {1: ({"a": [1, "x"]}, "\\xdeadbeef", "P1DT2H"), 2: ([1, 2], "\\x00", "-PT1H30M"),

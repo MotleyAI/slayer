@@ -1173,7 +1173,7 @@ def _merge_persisted_field_with_probe(
     ):
         return persisted_col, False
 
-    updates: dict[str, Any] = {"type": fresh_col.datatype}
+    updates: dict[str, Any] = {"datatype": fresh_col.datatype}
     if _is_auto_default_integer_format(persisted_col.format):
         updates["format"] = _format_for_widened_type(fresh_col.datatype)
     else:
@@ -1447,7 +1447,7 @@ def _additive_merge_existing(
     ):
         return AdditiveMergeResult(merged=persisted)
 
-    update: dict[str, Any] = {"columns": merged_columns, "joins": merged_joins}
+    update: dict[str, Any] = {"fields": merged_columns, "relationships": merged_joins}
     if kind_changed:
         update["source_kind"] = fresh.source_kind
     if model_described:
@@ -1665,7 +1665,7 @@ async def _adopt_stored_sanitized_names(
         if new_name != name:
             updates["name"] = new_name
         if joins != fresh.relationships:
-            updates["joins"] = joins
+            updates["relationships"] = joins
         adopted[new_name] = fresh.model_copy(update=updates) if updates else fresh
     return adopted, rename_map
 
@@ -1811,9 +1811,9 @@ def _addition_fields(*, merge: _TableMerge, final: SlayerDataset, plan: FkEdgePl
     """``ModelAddition`` fields for one merged table."""
     added = final.relationships if merge.created else plan.added.get(final.name, [])
     fields: dict[str, Any] = {
-        "model_name": merge.table_name,
-        "new_joins": [edge_reference(dataset=final, relationship=j) for j in added],
-        "named_joins": plan.named.get(final.name, []),
+        "dataset_name": merge.table_name,
+        "new_relationships": [edge_reference(dataset=final, relationship=j) for j in added],
+        "named_relationships": plan.named.get(final.name, []),
         "source_kind": final.source_kind,
     }
     if merge.created:

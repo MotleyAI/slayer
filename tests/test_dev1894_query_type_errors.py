@@ -123,7 +123,7 @@ FAMILY_CASES = [
      TransformInputError, "transform 'cumsum'", True),
     ("computed-dimension",
      lambda: (SlayerQuery.model_validate({
-         "population": "orders", "metrics": [{"formula": "sum(amount)", "name": "t"}],
+         "population": "orders", "metrics": [{"expression": "sum(amount)", "name": "t"}],
          "dimensions": ["region", {"expression": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END", "name": "band"}],
      }), f1740.dev1740_models()),
      ComputedDimensionError, "dimension 'band'", False),
@@ -143,7 +143,7 @@ FAMILY_CASES = [
      ReaggregationError, "measure 'w'", True),
     ("name-collision",
      lambda: (SlayerQuery.model_validate({
-         "population": "orders", "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+         "population": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}],
          "dimensions": ["region", {"expression": "lower(city)", "name": "rev"}],
      }), f1740.dev1740_models()),
      NameCollisionError, "dimension 'rev'", True),
@@ -258,9 +258,9 @@ async def test_rest_answers_time_axis_violation_with_400(tmp_path) -> None:
     await storage.save_datasource(DatasourceConfig(name="test", type="duckdb"))
     await storage.save_dataset(f1832.monthly_model(), _validate=False)
     body = {
-        "source_model": "monthly",
-        "time_dimensions": [{"dimension": {"name": "ordered_at"}, "granularity": "month"}],
-        "measures": [{"formula": _NO_AXIS, "name": "m"}],
+        "population": "monthly",
+        "time_dimensions": [{"field": {"name": "ordered_at"}, "granularity": "month"}],
+        "metrics": [{"expression": _NO_AXIS, "name": "m"}],
     }
     resp = TestClient(create_app(storage=storage)).post("/query", json=body)
     assert resp.status_code == 400, resp.text

@@ -31,7 +31,7 @@ from tests._library_names_fixtures import agg, measure, stored_engine, t_doc
 from tests._model_access_fixtures import mcp_text
 
 EXTENSION_OLD = "An extension object in `source_model`"
-LEGACY_CLEAN = {"source_model": {"source_name": "orders"}, "measures": ["count(*)"]}
+LEGACY_CLEAN = {"population": {"source_name": "orders"}, "metrics": ["count(*)"]}
 TWO_FORMS = strict(LEGACY_CLEAN)
 
 
@@ -169,7 +169,7 @@ class TestDryRun:
         assert warnings_block.splitlines() == [f"  - {_strict_message()}"]
 
     async def test_mcp_json_carries_a_library_name_shadow(self) -> None:
-        query = {"source_model": "t", "measures": [measure("reverse(a)")]}
+        query = {"population": "t", "metrics": [measure("reverse(a)")]}
         async with stored_engine(models=[t_doc(aggregations=[agg("reverse")])]) as engine:
             text = await _dry_run(engine.storage, query, "json")
         shadows = [w for w in json.loads(text)["warnings"] if w.get("kind") == "library_name_shadow"]

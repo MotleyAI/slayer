@@ -50,7 +50,7 @@ TOKEN_CASES = [
 
 
 def _model_doc(*, formula: str, version: int = 15, **extra: Any) -> dict:
-    return {**orders_v10(version=version), "measures": [{"name": "x", "formula": formula}], **extra}
+    return {**orders_v10(version=version), "metrics": [{"name": "x", "expression": formula}], **extra}
 
 
 def _model_formula(text: str) -> str:
@@ -58,7 +58,7 @@ def _model_formula(text: str) -> str:
 
 
 def _query(**fields: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"version": 6, "population": "orders", **fields})
+    return SlayerQuery.model_validate({"version": 6, "source_model": "orders", **fields})
 
 
 class TestVersions:
@@ -82,7 +82,7 @@ class TestTokenRewrite:
         doc = _model_doc(formula=text, version=CURRENT_VERSIONS["SlayerModel"])
         assert SlayerDataset.model_validate(doc).metrics[0].expression == text
         query = SlayerQuery.model_validate(
-            {"version": CURRENT_VERSIONS["SlayerQuery"], "population": "orders", "filter": ['status == "paid"']})
+            {"version": CURRENT_VERSIONS["SlayerQuery"], "source_model": "orders", "filters": ['status == "paid"']})
         assert query.filter == ['status == "paid"']
 
     def test_post_string_rule_document_keeps_identifiers_and_drops_legacy_spellings(self) -> None:
@@ -107,8 +107,8 @@ class TestEverySurface:
         assert query.order[0].raw_expression == "sum(iif(status = 'paid', amount, 0))"
 
     def test_inline_extension_measures(self) -> None:
-        query = _query(source_model={"source_name": "orders", "measures": [
-            {"name": "paid", "formula": 'sum(iif(status == "paid", amount, 0))'}]}, measures=["paid"])
+        query = _query(source_model={"source_name": "orders", "metrics": [
+            {"name": "paid", "expression": 'sum(iif(status == "paid", amount, 0))'}]}, measures=["paid"])
         assert query.population == "orders"
         (extension,) = query.extensions or []
         assert (extension.metrics or [])[0].expression == "sum(iif(status = 'paid', amount, 0))"
@@ -157,8 +157,8 @@ async def _store(*, tmp_path, ds, backend: str, stage: dict, memories: list[dict
 class TestStoredResultsUnchanged:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_double_quoted_filter_and_measure(self, tmp_path, shop_ds, backend: str) -> None:
-        stage = {"source_model": "orders", "filters": ['status == "ok"'],
-                 "measures": [{"formula": 'sum(iif(status == "ok", amount, 0))', "name": "rev"}]}
+        stage = {"population": "orders", "filter": ['status == "ok"'],
+                 "metrics": [{"expression": 'sum(iif(status == "ok", amount, 0))', "name": "rev"}]}
         storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend=backend, stage=stage)
         model = await storage.get_dataset("rev_q", data_source=DS)
         assert model is not None
@@ -167,7 +167,7 @@ class TestStoredResultsUnchanged:
         assert loaded.filter == ["status = 'ok'"]
         assert loaded.metrics is not None
         assert loaded.metrics[0].expression == "sum(iif(status = 'ok', amount, 0))"
-        resp = await run(storage, {"source_model": "rev_q", "measures": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_q", "metrics": ["sum(rev)"]})
         assert measure_total(resp, measure="rev_sum") == 80.0
 
     async def test_rewrite_precedes_the_legacy_time_literal_repair(self, tmp_path, shop_ds) -> None:
@@ -177,14 +177,14 @@ class TestStoredResultsUnchanged:
         assert model is not None
         stage = (model.source_queries or [])[0]
         assert stage.filter == ["ordered_at >= '2024-01-01T00:00:00'"]
-        resp = await run(storage, {"source_model": "rev_q", "measures": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_q", "metrics": ["sum(rev)"]})
         assert measure_total(resp, measure="rev_sum") == 200.0
 
     async def test_pipe_concatenation_returns_the_same_values(self, tmp_path, shop_ds) -> None:
-        stage = {"source_model": "orders", "dimensions": [{"expression": 'status | "#"', "name": "tag"}],
-                 "measures": [{"formula": "sum(amount)", "name": "rev"}]}
+        stage = {"population": "orders", "dimensions": [{"expression": 'status | "#"', "name": "tag"}],
+                 "metrics": [{"expression": "sum(amount)", "name": "rev"}]}
         storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", stage=stage)
-        resp = await run(storage, {"source_model": "rev_q", "dimensions": ["tag"], "measures": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_q", "dimensions": ["tag"], "metrics": ["sum(rev)"]})
         assert {r["rev_q.tag"]: float(r["rev_q.rev_sum"]) for r in resp.data} == {
             "ok#": 80.0, "new#": 70.0, "2024/01/01#": 60.0,
         }
@@ -211,5 +211,5 @@ class TestStoredResultsUnchanged:
     async def test_unversioned_client_query_fails_with_the_hint(self, tmp_path, shop_ds) -> None:
         storage = await _store(tmp_path=tmp_path, ds=shop_ds, backend="yaml", stage=rev_query())
         with pytest.raises(UnknownReferenceError) as info:
-            await run(storage, {"source_model": "orders", "measures": ["sum(amount)"], "filters": ['status = "ok"']})
+            await run(storage, {"population": "orders", "metrics": ["sum(amount)"], "filter": ['status = "ok"']})
         assert "single quote" in str(info.value).lower(), str(info.value)

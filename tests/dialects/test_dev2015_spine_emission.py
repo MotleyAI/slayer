@@ -37,7 +37,7 @@ async def _sql(dialect: str, query: dict) -> str:
 @pytest.mark.parametrize("dialect", TIER1)
 @pytest.mark.parametrize("granularity", ["month", "quarter_hour"])
 async def test_spine_is_a_generated_series(dialect, granularity) -> None:
-    sql = await _sql(dialect, {"measures": TWO_FACTS, "time_dimensions": [spine_td(granularity=granularity)]})
+    sql = await _sql(dialect, {"metrics": TWO_FACTS, "time_dimensions": [spine_td(granularity=granularity)]})
     assert re.search(SEQUENCE[dialect], sql, flags=re.IGNORECASE), sql
     assert not re.search(r"\b(FROM|JOIN)\s+[`\"\[]?time_spine\b", sql, flags=re.IGNORECASE), sql
 
@@ -45,7 +45,7 @@ async def test_spine_is_a_generated_series(dialect, granularity) -> None:
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_custom_bucketing_renders(dialect) -> None:
     sql = await _sql(dialect, {
-        "source_model": "orders", "measures": [m("sum(amount)", "s")],
-        "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
+        "population": "orders", "metrics": [m("sum(amount)", "s")],
+        "time_dimensions": [{"field": "order_date", "granularity": "fiscal_year"}],
     })
     assert "2000" in sql  # the fiscal year's origin anchors the bucket arithmetic

@@ -198,29 +198,29 @@ def _stage_names(data: dict) -> frozenset[str]:
 
 def _incoming_keys(*, sibling: dict, target: str, target_fields: list) -> list[tuple[Any, str | None]]:
     """``target``-side keys of ``sibling``'s joins into ``target``, each typed like its source key."""
-    joins = sibling.get("joins")
+    joins = sibling.get("relationships")
     out: list[tuple[Any, str | None]] = []
     for join in joins if isinstance(joins, list) else []:
-        if not isinstance(join, dict) or join.get("target_model") != target:
+        if not isinstance(join, dict) or join.get("to") != target:
             continue
         canonical = {**join, "join_pairs": canonical_join_pairs(
-            pairs=join.get("join_pairs"), source_fields=sibling.get("columns"), target_fields=target_fields,
+            pairs=join.get("join_pairs"), source_fields=sibling.get("fields"), target_fields=target_fields,
         )}
-        out.extend((tgt, stored_type(key=src, fields=sibling.get("columns"))) for src, tgt in _key_pairs(canonical))
+        out.extend((tgt, stored_type(key=src, fields=sibling.get("fields"))) for src, tgt in _key_pairs(canonical))
     return out
 
 
 def _stored_counterpart(*, relationship: dict, name: str, peer: dict | None, fields: Any):
     """The exact-inverse of ``relationship`` in ``peer``'s raw joins (canonicalised against ``fields``, this document's), or ``None``."""
-    peer_joins = peer.get("joins") if isinstance(peer, dict) else None
+    peer_joins = peer.get("relationships") if isinstance(peer, dict) else None
     if not isinstance(peer, dict) or not isinstance(peer_joins, list):
         return None
     return next(
         (
             j for j in peer_joins
-            if isinstance(j, dict) and j.get("target_model") == name
+            if isinstance(j, dict) and j.get("to") == name
             and is_exact_inverse_relationship(relationship, {**j, "join_pairs": canonical_join_pairs(
-                pairs=j.get("join_pairs"), source_fields=peer.get("columns"),
+                pairs=j.get("join_pairs"), source_fields=peer.get("fields"),
                 target_fields=fields,
             )})
         ),
@@ -238,7 +238,7 @@ def _repaired_target(target: str, *, names: set[str]) -> str:
 
 def _with_repaired_targets(raw: Any, *, names: set[str]) -> Any:
     """A raw peer document's joins as its pre-v23 target repair will read them."""
-    joins = raw.get("joins") if isinstance(raw, dict) else None
+    joins = raw.get("relationships") if isinstance(raw, dict) else None
     if not isinstance(joins, list):
         return raw
     try:
@@ -246,9 +246,9 @@ def _with_repaired_targets(raw: Any, *, names: set[str]) -> Any:
             return raw
     except (TypeError, ValueError):  # a malformed version is reported at that document's own load
         return raw
-    return {**raw, "joins": [
-        {**j, "target_model": _repaired_target(j["target_model"], names=names)}
-        if isinstance(j, dict) and isinstance(j.get("target_model"), str) else j
+    return {**raw, "relationships": [
+        {**j, "to": _repaired_target(j["to"], names=names)}
+        if isinstance(j, dict) and isinstance(j.get("to"), str) else j
         for j in joins
     ]}
 
@@ -1084,13 +1084,13 @@ class StorageBackend(ABC):
     async def _repair_relationship_targets(self, *, name: str, data: dict, data_source: str) -> None:
         """Respell each join target of ``data`` naming no model exactly but one by case to that model; drop each join
         into the spine, with a warning."""
-        joins = data.get("joins")
+        joins = data.get("relationships")
         if not isinstance(joins, list):
             return
         names = await self._dataset_names(data_source) | {name}
         kept: list = []
         for join in joins:
-            target = join.get("target_model") if isinstance(join, dict) else None
+            target = join.get("to") if isinstance(join, dict) else None
             if not isinstance(target, str) or target in names:
                 kept.append(join)
                 continue
@@ -1099,45 +1099,45 @@ class StorageBackend(ABC):
                     dataset=name, relationship=str(join.get("name") or target),
                 )), stacklevel=2)
                 continue
-            join["target_model"] = _repaired_target(target, names=names)
+            join["to"] = _repaired_target(target, names=names)
             kept.append(join)
-        data["joins"] = kept
+        data["relationships"] = kept
 
     async def _canonicalize_relationship_key_spellings(self, *, data: dict, data_source: str) -> None:
         """Rewrite stored physical join-key spellings in ``data`` to ``Column.name``, both sides."""
-        joins = data.get("joins")
+        joins = data.get("relationships")
         if not isinstance(joins, list):
             return
         for join in joins:
-            if not isinstance(join, dict) or not isinstance(join.get("target_model"), str):
+            if not isinstance(join, dict) or not isinstance(join.get("to"), str):
                 continue
             peer = await self._cached_raw_dataset_dict(
-                name=join["target_model"], data_source=data_source,
+                name=join["to"], data_source=data_source,
             )
             join["join_pairs"] = canonical_join_pairs(
-                pairs=join.get("join_pairs"), source_fields=data.get("columns"),
-                target_fields=peer.get("columns") if isinstance(peer, dict) else None,
+                pairs=join.get("join_pairs"), source_fields=data.get("fields"),
+                target_fields=peer.get("fields") if isinstance(peer, dict) else None,
             )
 
     async def _declare_join_keys(self, *, name: str, data: dict, data_source: str) -> None:
         """Declare each join key naming no column of this table- or SQL-backed document as its hidden base column:
         source keys from its own joins, target keys from its siblings' joins into it. Typed like the opposite key."""
-        columns = data.get("columns")
+        columns = data.get("fields")
         if data.get("source_queries") or not isinstance(columns, list):
             return
-        keys = await self._outgoing_keys(relationships=data.get("joins"), data_source=data_source)
+        keys = await self._outgoing_keys(relationships=data.get("relationships"), data_source=data_source)
         keys += await self._sibling_keys_into(name=name, fields=columns, data_source=data_source)
         for key, key_type in keys:
             if _undeclared_key(key=key, fields=columns):
-                columns.append({"name": key, "hidden": True, **({"type": key_type} if key_type else {})})
+                columns.append({"name": key, "hidden": True, **({"datatype": key_type} if key_type else {})})
 
     async def _outgoing_keys(self, *, relationships: Any, data_source: str) -> list[tuple[Any, str | None]]:
         """Source-side keys of ``relationships``, each typed like its target key."""
         keys: list[tuple[Any, str | None]] = []
         for join in relationships if isinstance(relationships, list) else []:
-            target = join.get("target_model") if isinstance(join, dict) else None
+            target = join.get("to") if isinstance(join, dict) else None
             peer = await self._cached_raw_dataset_dict(name=target, data_source=data_source) if isinstance(target, str) else None
-            peer_columns = peer.get("columns") if isinstance(peer, dict) else None
+            peer_columns = peer.get("fields") if isinstance(peer, dict) else None
             keys.extend((src, stored_type(key=tgt, fields=peer_columns)) for src, tgt in _key_pairs(join))
         return keys
 
@@ -1207,13 +1207,13 @@ class StorageBackend(ABC):
         migrated = _mig.migrate("SlayerQuery", _mig.stamp_stored(query))
         query.clear()
         query.update(migrated)
-        filters = query.get("filters")
+        filters = query.get("filter")
         if not isinstance(filters, list):
             return
         found = [legacy_literal_sites(f) if isinstance(f, str) else None for f in filters]
         if not any(found):
             return
-        resolved = await self._query_host(source=query.get("source_model"), data_source=data_source,
+        resolved = await self._query_host(source=query.get("population"), data_source=data_source,
                                           stage_names=stage_names)
         if resolved is None:
             return
@@ -1240,7 +1240,7 @@ class StorageBackend(ABC):
     ) -> tuple[dict, StoredDatasets] | None:
         """The raw stored model (or the spine) a stored query reads, and the stored models typing it; ``None`` for a stage
         or an unresolvable source."""
-        if isinstance(source, dict) and isinstance(source.get("columns"), list):
+        if isinstance(source, dict) and isinstance(source.get("fields"), list):
             inline_ds = str(source.get("data_source") or data_source)
             return source, (await self._stored_datasets(inline_ds)).model_copy(update={"stages": stage_names})
         if not isinstance(source, str):
@@ -1291,7 +1291,7 @@ class StorageBackend(ABC):
         self, *, name: str, data: dict, data_source: str,
     ) -> dict:
         """Drop this document's half of a stored exact-inverse join pair when the counterpart holds the surviving half. Load-order-independent (survivor reads only the two halves); a missing/drifted peer leaves the document untouched."""
-        joins = data.get("joins")
+        joins = data.get("relationships")
         if not isinstance(joins, list) or not joins:
             return data
         cache: dict[str, dict | None] = {}
@@ -1300,11 +1300,11 @@ class StorageBackend(ABC):
             join for join in joins
             if await self._survives_stored_inverse(
                 relationship=join, name=name, data_source=data_source, cache=cache,
-                fields=data.get("columns"), names=names,
+                fields=data.get("fields"), names=names,
             )
         ]
         if len(kept) != len(joins):
-            data["joins"] = kept
+            data["relationships"] = kept
         return data
 
     async def _survives_stored_inverse(
@@ -1313,7 +1313,7 @@ class StorageBackend(ABC):
     ) -> bool:
         """True when ``relationship`` has no stored exact-inverse counterpart, or wins
         against it."""
-        peer_name = relationship.get("target_model") if isinstance(relationship, dict) else None
+        peer_name = relationship.get("to") if isinstance(relationship, dict) else None
         if not isinstance(peer_name, str) or peer_name == name:
             return True
         if peer_name not in cache:
@@ -1364,9 +1364,9 @@ class StorageBackend(ABC):
         """True iff every hop in ``chain`` is a join target on the preceding model (host first, then each hop's own model), a hop matching its target by case as a target repair would; sibling dicts loaded raw, target-repaired and memoised, a broken intermediate collapses the chain."""
         # An exact ``__``-named join target beats a split-alias reading: a host
         # join to a model literally named ``"__".join(chain)`` is exact, not a walk.
-        host_joins = host.get("joins")
+        host_joins = host.get("relationships")
         host_targets = {
-            j.get("target_model")
+            j.get("to")
             for j in host_joins if isinstance(j, dict)
         } if isinstance(host_joins, list) else set()
         if "__".join(chain) in host_targets:
@@ -1376,9 +1376,9 @@ class StorageBackend(ABC):
         for i, hop in enumerate(chain):
             if current is None:
                 return False
-            joins = current.get("joins")
+            joins = current.get("relationships")
             targets = {
-                t for j in joins if isinstance(j, dict) and isinstance(t := j.get("target_model"), str)
+                t for j in joins if isinstance(j, dict) and isinstance(t := j.get("to"), str)
             } if isinstance(joins, list) else set()
             target = _repaired_target(hop, names=targets)
             if target not in targets:

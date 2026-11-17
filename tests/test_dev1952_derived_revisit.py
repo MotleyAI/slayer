@@ -530,7 +530,7 @@ class TestSaveTimeEngineDoor:
         await storage.save_dataset(_regions())
         engine = SlayerQueryEngine(storage=storage)
         model = _customers().model_copy(
-            update={"filters": ["regions.customers.spend > 0"]})
+            update={"filter": ["regions.customers.spend > 0"]})
         with pytest.raises(CircularRelationshipPathError) as ei:
             await engine.save_dataset(model)
         assert not isinstance(ei.value, DerivedFieldCircularError)

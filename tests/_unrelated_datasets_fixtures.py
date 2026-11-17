@@ -221,7 +221,7 @@ def ratio_query(**extra: Any) -> SlayerQuery:
 
 
 def grouped_query(**extra: Any) -> SlayerQuery:
-    return query(**{"dimensions": ["city"], "measures": GROUPED, **extra})
+    return query(**{"dimensions": ["city"], "metrics": GROUPED, **extra})
 
 
 def stages(*raw: dict[str, Any]) -> list[SlayerQuery]:

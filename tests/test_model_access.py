@@ -195,20 +195,20 @@ class TestModelsReadBy:
         assert {"fin", "hr"} <= self.reads(SlayerQuery.model_validate(MIXED_QUERY), models)
 
     @pytest.mark.parametrize("stage", [
-        {"source_model": "hr", "extensions": [{"source_name": "hr", "measures": [{"name": "x", "formula": "sum(salary * 2)"}]}]},
-        {"source_model": "pub", "extensions": [
-            {"source_name": "pub", "joins": [{"target_model": "hr", "join_pairs": [["id", "id"]]}]}]},
-        {"source_model": "pub_link", "dimensions": [f"{PRUNED_EDGE}.dept"]},
-        {"source_model": "fin", "time_dimensions": [{"dimension": "hr.hired_at", "granularity": "month"}]},
-        {"source_model": "fin", "measures": [{"formula": "sum(amount)"}], "filters": ["hr.dept = 'eng'"]},
+        {"population": "hr", "extensions": [{"source_name": "hr", "metrics": [{"name": "x", "expression": "sum(salary * 2)"}]}]},
+        {"population": "pub", "extensions": [
+            {"source_name": "pub", "relationships": [{"to": "hr", "join_pairs": [["id", "id"]]}]}]},
+        {"population": "pub_link", "dimensions": [f"{PRUNED_EDGE}.dept"]},
+        {"population": "fin", "time_dimensions": [{"field": "hr.hired_at", "granularity": "month"}]},
+        {"population": "fin", "metrics": [{"expression": "sum(amount)"}], "filter": ["hr.dept = 'eng'"]},
     ], ids=["extension-base", "extension-join", "model-join", "time-dimension-hop", "filter-hop"])
     async def test_query_fields_read_hr(self, models: dict[str, SlayerDataset], stage: dict) -> None:
         assert "hr" in self.reads(SlayerQuery.model_validate(stage), models)
 
     async def test_sibling_stage_chain_reads_the_first_source(self, models: dict[str, SlayerDataset]) -> None:
         chained = SlayerDataset(name="chained", source_queries=[
-            SlayerQuery.model_validate({"name": "s1", "population": "hr", "metrics": [{"formula": "sum(salary)", "name": "t"}]}),
-            SlayerQuery.model_validate({"population": "s1", "metrics": [{"formula": "sum(t)"}]}),
+            SlayerQuery.model_validate({"name": "s1", "population": "hr", "metrics": [{"expression": "sum(salary)", "name": "t"}]}),
+            SlayerQuery.model_validate({"population": "s1", "metrics": [{"expression": "sum(t)"}]}),
         ])
         reads = self.reads(chained, models)
         assert "hr" in reads
@@ -217,14 +217,14 @@ class TestModelsReadBy:
     async def test_saved_measure_reads_are_followed_recursively(self, models: dict[str, SlayerDataset]) -> None:
         relay = models["pub"].model_copy(update={
             "name": "relay",
-            "joins": [DatasetRelationship(to="pay_measure", join_pairs=[["id", "id"]])],
-            "measures": [DatasetMetric(name="relayed", expression="pay_measure.hr_salary_total")],
+            "relationships": [DatasetRelationship(to="pay_measure", join_pairs=[["id", "id"]])],
+            "metrics": [DatasetMetric(name="relayed", expression="pay_measure.hr_salary_total")],
         })
         assert {"pay_measure", "hr"} <= self.reads(relay, models)
 
     async def test_unresolvable_path_adds_nothing(self, models: dict[str, SlayerDataset]) -> None:
         stray = models["pub"].model_copy(update={
-            "name": "stray", "columns": [*models["pub"].fields, DatasetField(name="far", sql="nowhere.x")],
+            "name": "stray", "fields": [*models["pub"].fields, DatasetField(name="far", sql="nowhere.x")],
         })
         assert self.reads(stray, models) == set()
 

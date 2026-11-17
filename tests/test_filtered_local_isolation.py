@@ -166,7 +166,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"formula": "sum(total_amount)"}],
+            "metrics": [{"expression": "sum(total_amount)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -190,7 +190,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"formula": "sum(loss_payment_amt)"}],
+            "metrics": [{"expression": "sum(loss_payment_amt)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -212,7 +212,7 @@ class TestCrossModelPlannerTriggerPredicate:
         )
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(eu_amount)"}],
+            "metrics": [{"expression": "sum(eu_amount)"}],
             "dimensions": ["id"],
         })
         planned = plan_query(query=q, bundle=bundle)
@@ -231,7 +231,7 @@ class TestCrossModelPlannerTriggerPredicate:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"formula": "sum(loss_payment.has_flag)"}],
+            "metrics": [{"expression": "sum(loss_payment.has_flag)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -274,7 +274,7 @@ class TestCrossModelPlannerTriggerPredicate:
         )
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(customers.premium_rev)"}],
+            "metrics": [{"expression": "sum(customers.premium_rev)"}],
             "dimensions": ["id"],
         })
         planned = plan_query(query=q, bundle=bundle)
@@ -293,7 +293,7 @@ class TestProducerMode:
         host = _claim_amount()
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"formula": "sum(loss_payment_amt)"}],
+            "metrics": [{"expression": "sum(loss_payment_amt)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -340,7 +340,7 @@ class TestHostModelFiltersInteractions:
         )
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"formula": "sum(loss_payment_amt)"}],
+            "metrics": [{"expression": "sum(loss_payment_amt)"}],
             "dimensions": ["id"],
         })
         planned = plan_query(query=q, bundle=bundle)
@@ -388,7 +388,7 @@ class TestFirstLastNoNestedCmaPlans:
         host = _claim_amount(with_time=True, with_filter_first=True)
         q = SlayerQuery.model_validate({
             "population": "claim_amount",
-            "metrics": [{"formula": "last(latest_payment)"}],
+            "metrics": [{"expression": "last(latest_payment)"}],
             "dimensions": ["claim.claim_number"],
             "time_dimensions": [
                 TimeDimension(
@@ -700,7 +700,7 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # A host ROW filter must propagate into the sub-plan's filters.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(region_pay)"}],
+            "metrics": [{"expression": "sum(region_pay)"}],
             "filter": ["amount > 50"],
         })
         planned = plan_query(query=q, bundle=_s5_bundle())
@@ -719,7 +719,7 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # the host, so it too propagates into the sub-plan.
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "sum(region_pay)"}],
+            "metrics": [{"expression": "sum(region_pay)"}],
             "filter": ["customers.weight > 1"],
         })
         planned = plan_query(query=q, bundle=_s5_bundle())

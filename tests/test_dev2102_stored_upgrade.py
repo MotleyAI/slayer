@@ -32,15 +32,15 @@ from tests._stored_upgrade_fixtures import (
 
 LEGACY_EXTENSION = {
     "source_name": "orders",
-    "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}],
+    "relationships": [{"to": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}],
 }
 #: The rows the stage returned before the upgrade: sum(amount * 2) by customers.region.
 RECORDED = {"North": 240.0, "South": 180.0}
 
 
 def _stage(version: int | None = 9) -> dict:
-    stage = {"source_model": LEGACY_EXTENSION, "dimensions": ["customers.region"],
-             "measures": [{"formula": "sum(amount * 2)", "name": "rev2"}]}
+    stage = {"population": LEGACY_EXTENSION, "dimensions": ["customers.region"],
+             "metrics": [{"expression": "sum(amount * 2)", "name": "rev2"}]}
     return stage if version is None else {"version": version, **stage}
 
 
@@ -107,8 +107,8 @@ class TestStoredModels:
         model = await storage.get_dataset("rev2_q", data_source=DS)
         assert model is not None
         _assert_upgraded((model.source_queries or [None])[0])
-        resp = await run(storage, {"source_model": "rev2_q", "dimensions": ["customers__region"],
-                                   "measures": [{"formula": "sum(rev2)", "name": "t"}]})
+        resp = await run(storage, {"population": "rev2_q", "dimensions": ["customers__region"],
+                                   "metrics": [{"expression": "sum(rev2)", "name": "t"}]})
         assert by_dimension(resp, dim_suffix="customers__region") == RECORDED
 
     async def test_a_saved_query_run_by_name_returns_its_rows(self, tmp_path, shop_ds) -> None:
@@ -213,7 +213,7 @@ class TestExtensionColumnFilterLiterals:
         loaded = await _loaded_stage(storage)
         assert loaded.filter == [repaired]
         _assert_no_extension_columns(loaded)
-        resp = await run(storage, {"source_model": "rev_x", "measures": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_x", "metrics": ["sum(rev)"]})
         assert measure_total(resp, measure="rev_sum") == expected
 
     async def test_a_non_temporal_extension_column_literal_stays_verbatim(self, tmp_path, shop_ds) -> None:
@@ -223,7 +223,7 @@ class TestExtensionColumnFilterLiterals:
         loaded = await _loaded_stage(storage)
         assert loaded.filter == ["status = '2024/01/01'"]
         _assert_no_extension_columns(loaded)
-        resp = await run(storage, {"source_model": "rev_x", "measures": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_x", "metrics": ["sum(rev)"]})
         assert measure_total(resp, measure="rev_sum") == 60.0
 
     @pytest.mark.parametrize("backend", BACKENDS)

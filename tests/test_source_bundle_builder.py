@@ -297,7 +297,7 @@ class TestMultiStage:
             "name": "stage1",
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
         })
         root = SlayerQuery(population="stage1", dimensions=["status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
@@ -315,7 +315,7 @@ class TestMultiStage:
             "name": "stage1",
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
         })
         root = SlayerQuery(population="stage1", dimensions=["status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
@@ -332,7 +332,7 @@ class TestMultiStage:
             "name": "stage1",
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(customers.revenue)"}],
+            "metrics": [{"expression": "sum(customers.revenue)"}],
         })
         root = SlayerQuery(population="stage1", dimensions=["status"])
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
@@ -407,14 +407,14 @@ class TestStorageReadEconomy:
         stage_a = SlayerQuery.model_validate({
             "name": "stage_a",
             "population": "orders",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         })
         stage_b = SlayerQuery.model_validate({
             "name": "stage_b",
             "population": "orders",
-            "metrics": [{"formula": "sum(amount)"}],
+            "metrics": [{"expression": "sum(amount)"}],
         })
-        root = SlayerQuery.model_validate({"population": "stage_a", "metrics": [{"formula": "count(*)"}]})
+        root = SlayerQuery.model_validate({"population": "stage_a", "metrics": [{"expression": "count(*)"}]})
         await slayer.engine.bundle_builder.build_resolved_source_bundle(
             query=root, storage=storage,
             named_queries={"stage_a": stage_a, "stage_b": stage_b},

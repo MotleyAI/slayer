@@ -102,9 +102,9 @@ class TestModelMeasures:
         assert model is not None
         assert [m.expression for m in model.metrics] == [f for _, f in MODEL_MEASURES]
         names = [f"m{i}" for i in range(len(MODEL_MEASURES))]
-        expected = await run(storage, {"source_model": "orders",
-                                       "measures": _measures([f for _, f in MODEL_MEASURES])})
-        assert rows(await run(storage, {"source_model": "orders", "measures": names})) == rows(expected)
+        expected = await run(storage, {"population": "orders",
+                                       "metrics": _measures([f for _, f in MODEL_MEASURES])})
+        assert rows(await run(storage, {"population": "orders", "metrics": names})) == rows(expected)
 
 
 #: (query field, stored value, the value a fresh functional query writes).
@@ -131,8 +131,8 @@ QUERY_POSITIONS = [
     pytest.param("order", [{"column": "rank(amount:sum, direction='desc')"}],
                  [{"column": "rank(sum(amount), direction='desc')"}], id="order-expression"),
     pytest.param("order", [{"amount:sum": "desc"}], [{"sum(amount)": "desc"}], id="order-shorthand"),
-    pytest.param("source_model", {"source_name": "orders", "measures": [{"name": "m", "formula": "amount:sum"}]},
-                 {"source_name": "orders", "measures": [{"name": "m", "formula": "sum(amount)"}]},
+    pytest.param("source_model", {"source_name": "orders", "metrics": [{"name": "m", "expression": "amount:sum"}]},
+                 {"source_name": "orders", "metrics": [{"name": "m", "expression": "sum(amount)"}]},
                  id="model-extension-measure"),
 ]
 
@@ -189,10 +189,10 @@ class TestExecution:
         stage = stored_query(dimensions=["status"], measures=[{"name": "rev", "formula": "amount:sum"}])
         storage = await make_store(backend=backend, models=[
             orders_doc(), customers_doc(), regions_doc(), query_backed_doc(name="rev_q", stage=stage)])
-        resp = await run(storage, {"source_model": "rev_q", "dimensions": ["status"], "measures": ["sum(rev)"]})
+        resp = await run(storage, {"population": "rev_q", "dimensions": ["status"], "metrics": ["sum(rev)"]})
         assert {r["rev_q.status"]: r["rev_q.rev_sum"] for r in rows(resp)} == {"paid": 80.0, "new": 70.0}
-        extended = stored_query(source_model={"source_name": "orders", "measures": [
-            {"name": "m", "formula": "amount:sum"}]}, measures=["m"])
+        extended = stored_query(source_model={"source_name": "orders", "metrics": [
+            {"name": "m", "expression": "amount:sum"}]}, measures=["m"])
         assert rows(await run(storage, extended)) == [{"orders.m": 150.0}]
 
 
@@ -294,7 +294,7 @@ async def test_stored_colon_call_to_a_shadowing_aggregation_answers() -> None:
         model = await engine.storage.get_dataset("t", data_source=DS)
         assert model is not None
         assert [m.expression for m in model.metrics] == ["reverse(a)"]
-        resp = await engine.execute({"source_model": "t", "measures": ["c"]})
+        resp = await engine.execute({"population": "t", "metrics": ["c"]})
     assert float(value(resp, name="c")) == SUM_A
 
 
@@ -342,4 +342,4 @@ class TestLeftAlone:
 
     async def test_a_client_query_is_refused_not_rewritten(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
-        await _assert_refused_unrewritten(storage, {"source_model": "orders", "measures": ["amount:sum"]})
+        await _assert_refused_unrewritten(storage, {"population": "orders", "metrics": ["amount:sum"]})

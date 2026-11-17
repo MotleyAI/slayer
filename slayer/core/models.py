@@ -528,7 +528,7 @@ class Aggregation(BaseModel):
         if self.name not in BUILTIN_AGGREGATIONS and self.expression is None:
             raise ValueError(
                 f"Aggregation '{self.name}' is not a built-in aggregation; "
-                f"a 'formula' is required. Built-in aggregations: "
+                f"an 'expression' is required. Built-in aggregations: "
                 f"{', '.join(sorted(BUILTIN_AGGREGATIONS))}"
             )
         if self.expression is not None and not self.expression.strip():
@@ -762,7 +762,7 @@ def _check_field_metric_namespace(
     unnamed = [m.expression for m in metrics if m.name is None]
     if unnamed:
         raise ValueError(
-            f"Model '{dataset_name}': every ModelMeasure in 'measures' must "
+            f"Model '{dataset_name}': every DatasetMetric in 'metrics' must "
             f"have a name. Unnamed formulas: {unnamed}."
         )
     measure_names_seq = [m.name for m in metrics if m.name is not None]
@@ -1318,14 +1318,14 @@ def case_collisions(dataset: SlayerDataset) -> list[tuple[str, list[str]]]:
     namespaces: list[tuple[str, list[str]]] = [
         ("fields", [c.name for c in dataset.fields] + [m.name for m in dataset.metrics if m.name]),
         ("aggregations", [a.name for a in dataset.aggregations]),
-        ("joins", [j.name for j in dataset.relationships if j.name]),
+        ("relationships", [j.name for j in dataset.relationships if j.name]),
     ]
     stages: Sequence[SlayerQuery | dict[str, Any]] = dataset.source_queries or []
     namespaces.append(("stages", [n for q in stages if (n := _item_name(q))]))
     for q in stages:
         where = f"result names of stage {_item_name(q)!r}" if _item_name(q) else "result names"
-        measures = q.get("measures") if isinstance(q, dict) else q.metrics
-        namespaces.append((where, [n for m in measures or [] if (n := _item_name(m))]))
+        metrics = q.get("metrics") if isinstance(q, dict) else q.metrics
+        namespaces.append((where, [n for m in metrics or [] if (n := _item_name(m))]))
     return [(where, group) for where, names in namespaces for group in folded_collisions(names)]
 
 

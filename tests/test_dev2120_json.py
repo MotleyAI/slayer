@@ -160,7 +160,7 @@ class TestPathSubset:
 
 
 def _measure_query(formula: str, **kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "lib", "metrics": [{"formula": formula, "name": "v"}], **kw})
+    return SlayerQuery.model_validate({"population": "lib", "metrics": [{"expression": formula, "name": "v"}], **kw})
 
 
 class TestTyping:

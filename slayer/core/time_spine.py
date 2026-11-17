@@ -106,18 +106,18 @@ def respell_spine(query: SlayerQuery, *, keep: Callable[[str], bool]) -> Tuple[S
     r = _SpineRespeller(keep)
     update: Dict[str, Any] = {}
     if query.population is not None:
-        update["source_model"] = r.name(query.population) or query.population
+        update["population"] = r.name(query.population) or query.population
     if query.extensions is not None:
         update["extensions"] = [r.extension(e) for e in query.extensions]
     if query.dimensions is not None:
         update["dimensions"] = [r.dimension(d) for d in query.dimensions]
     if query.time_dimensions is not None:
         update["time_dimensions"] = [
-            td.model_copy(update={"dimension": r.text(td.field)}) for td in query.time_dimensions]
+            td.model_copy(update={"field": r.text(td.field)}) for td in query.time_dimensions]
     if query.metrics is not None:
-        update["measures"] = [r.metric(m) for m in query.metrics]
+        update["metrics"] = [r.metric(m) for m in query.metrics]
     if query.filter is not None:
-        update["filters"] = [r.text(f) for f in query.filter]
+        update["filter"] = [r.text(f) for f in query.filter]
     if query.order is not None:
         update["order"] = [r.order(o) for o in query.order]
     if query.main_time_dimension is not None:

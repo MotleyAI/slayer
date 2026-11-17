@@ -39,13 +39,13 @@ async def exec_engine(request):
 
 def _stage(*, dimensions: list, measures: list | None = None, **kwargs: Any) -> dict:
     return {
-        "name": "cr", "source_model": "orders", "dimensions": dimensions,
-        "measures": measures if measures is not None else [REVENUE], **kwargs,
+        "name": "cr", "population": "orders", "dimensions": dimensions,
+        "metrics": measures if measures is not None else [REVENUE], **kwargs,
     }
 
 
 def _outer(*, dimensions: list, measures: list | None = None, **kwargs: Any) -> dict:
-    return {"source_model": "cr", "dimensions": dimensions, "measures": measures or [], **kwargs}
+    return {"population": "cr", "dimensions": dimensions, "metrics": measures or [], **kwargs}
 
 
 def _rows(resp, *keys: str) -> List[tuple]:
@@ -55,7 +55,7 @@ def _rows(resp, *keys: str) -> List[tuple]:
     )
 
 
-SINGLE_NAMED_ONE_HOP = {"source_model": "orders", "dimensions": [REGION_ID], "measures": [REVENUE]}
+SINGLE_NAMED_ONE_HOP = {"population": "orders", "dimensions": [REGION_ID], "metrics": [REVENUE]}
 STAGE_NAMED_ONE_HOP = [
     _stage(dimensions=[REGION_ID, "customer_id"]),
     _outer(dimensions=["region_id", "customer_id", "revenue"]),
@@ -68,15 +68,15 @@ STAGE_DOWNSTREAM_AGG = [
     _stage(dimensions=[RID, "customer_id"]),
     _outer(dimensions=["rid"], measures=[{"formula": "sum(revenue)", "name": "tot"}]),
 ]
-SINGLE_UNNAMED_PATH = {"source_model": "orders", "dimensions": [UNNAMED_PATH], "measures": [REVENUE]}
+SINGLE_UNNAMED_PATH = {"population": "orders", "dimensions": [UNNAMED_PATH], "metrics": [REVENUE]}
 STAGE_UNNAMED_PATH = [
     _stage(dimensions=[UNNAMED_PATH]),
     _outer(dimensions=["customers__region_id", "revenue"]),
 ]
 SINGLE_PLAIN_AND_NAMED = {
-    "source_model": "orders",
+    "population": "orders",
     "dimensions": ["customers.region_id", "status", RID],
-    "measures": [REVENUE],
+    "metrics": [REVENUE],
 }
 STAGE_PLAIN_AND_NAMED: list[SlayerQuery | dict] = [
     _stage(dimensions=["customers.region_id", "status", RID]),
@@ -84,9 +84,9 @@ STAGE_PLAIN_AND_NAMED: list[SlayerQuery | dict] = [
 ]
 SINGLE_ORDER_BY_NAME = {
     **SINGLE_NAMED_ONE_HOP, "dimensions": [RID],
-    "order": [{"column": "rid", "direction": "desc"}],
+    "order": [{"field": "rid", "direction": "desc"}],
 }
-SINGLE_FILTER_BY_NAME = {**SINGLE_NAMED_ONE_HOP, "dimensions": [RID], "filters": ["rid = 1"]}
+SINGLE_FILTER_BY_NAME = {**SINGLE_NAMED_ONE_HOP, "dimensions": [RID], "filter": ["rid = 1"]}
 STAGE_PLAIN_PATH = [
     _stage(dimensions=["customers.region_id"]),
     _outer(dimensions=["customers__region_id", "revenue"]),
@@ -95,13 +95,13 @@ STAGE_LOCAL_RENAME = [
     _stage(dimensions=[{"name": "cust", "expression": "customer_id"}]),
     _outer(dimensions=["cust", "revenue"]),
 ]
-QUERY_BACKED_OUTER = {"source_model": "cr", "dimensions": ["region_id", "revenue"]}
+QUERY_BACKED_OUTER = {"population": "cr", "dimensions": ["region_id", "revenue"]}
 
 
 async def _save_query_backed_cr(engine: SlayerQueryEngine) -> None:
     await engine.save_dataset(SlayerDataset.model_validate({
         "name": "cr",
-        "source_queries": [{"source_model": "orders", "dimensions": [REGION_ID], "measures": [REVENUE]}],
+        "source_queries": [{"population": "orders", "dimensions": [REGION_ID], "metrics": [REVENUE]}],
     }))
 
 
@@ -134,9 +134,9 @@ class TestNamedJoinedPathSingleQuery:
     async def test_name_colliding_with_host_column_rejected(self, exec_engine) -> None:
         with pytest.raises(NameCollisionError, match="computed dimension name collides"):
             await exec_engine.execute({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": [{"name": "region", "expression": "customers.regions.name"}],
-                "measures": [REVENUE],
+                "metrics": [REVENUE],
             })
 
 
@@ -287,7 +287,7 @@ async def test_query_backed_mismatch_names_the_model(exec_engine, monkeypatch: p
     monkeypatch.setattr(query_engine_module, "build_flat_rename_wrapper", _mismatching)
     model = SlayerDataset.model_validate({
         "name": "cr",
-        "source_queries": [{"source_model": "orders", "dimensions": [REGION_ID], "measures": [REVENUE]}],
+        "source_queries": [{"population": "orders", "dimensions": [REGION_ID], "metrics": [REVENUE]}],
     })
     with pytest.raises(ValueError, match="stage 'cr'"):
         await exec_engine._expand_query_backed_dataset(dataset=model)

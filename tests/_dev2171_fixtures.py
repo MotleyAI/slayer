@@ -211,7 +211,7 @@ async def rows(*, models: Iterable[SlayerDataset], db: Path, payload: dict[str, 
 async def value(*, models: Iterable[SlayerDataset], db: Path, model: str, formula: str,
                 variables: dict[str, Any] | None = None) -> Any:
     """The single value of ``formula`` over ``model``."""
-    payload: dict[str, Any] = {"source_model": model, "measures": [{"formula": formula, "name": "v"}]}
+    payload: dict[str, Any] = {"population": model, "metrics": [{"expression": formula, "name": "v"}]}
     if variables is not None:
         payload["variables"] = variables
     (row,) = await rows(models=models, db=db, payload=payload)
@@ -221,8 +221,8 @@ async def value(*, models: Iterable[SlayerDataset], db: Path, model: str, formul
 async def counts_by(*, models: Iterable[SlayerDataset], db: Path, model: str, dimension: str,
                     variables: dict[str, Any] | None = None) -> dict[Any, int]:
     """Row counts of ``model`` grouped by ``dimension``."""
-    payload: dict[str, Any] = {"source_model": model, "dimensions": [dimension],
-                               "measures": [{"formula": "count(*)", "name": "n"}]}
+    payload: dict[str, Any] = {"population": model, "dimensions": [dimension],
+                               "metrics": [{"expression": "count(*)", "name": "n"}]}
     if variables is not None:
         payload["variables"] = variables
     out = await rows(models=models, db=db, payload=payload)
@@ -232,7 +232,7 @@ async def counts_by(*, models: Iterable[SlayerDataset], db: Path, model: str, di
 async def by_id(*, models: Iterable[SlayerDataset], db: Path, model: str, dimension: str) -> list[Any]:
     """``dimension`` per row of ``model``, ordered by ``id``."""
     out = await rows(models=models, db=db, payload={
-        "source_model": model, "dimensions": ["id", dimension], "order": [{"column": "id"}]})
+        "population": model, "dimensions": ["id", dimension], "order": [{"field": "id"}]})
     return [r[f"{model}.{dimension}"] for r in out]
 
 

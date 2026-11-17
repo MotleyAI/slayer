@@ -44,7 +44,7 @@ def dialect(request) -> str:
 def _cust_spend() -> SlayerDataset:
     return SlayerDataset(name="cust_spend", data_source=DS, source_queries=[SlayerQuery.model_validate({
         "population": "orders", "dimensions": ["customer_id"],
-        "metrics": [{"formula": "sum(amount)", "name": "spent"}]})])
+        "metrics": [{"expression": "sum(amount)", "name": "spent"}]})])
 
 
 class TestExtendingAnyModel:
@@ -71,7 +71,7 @@ class TestExtendingAnyModel:
 
     async def test_extending_the_root_equals_the_legacy_form(self, dialect) -> None:
         joins = [join("regions", [["ship_region_id", "id"]])]
-        fields = {"dimensions": ["regions.name"], "measures": [AMOUNT]}
+        fields = {"dimensions": ["regions.name"], "metrics": [AMOUNT]}
         async with shop(dialect) as engine:
             current = await engine.execute(q(source_model="orders", extensions=[ext("orders", joins=joins)], **fields))
             with pytest.warns(FutureWarning):
@@ -125,7 +125,7 @@ class TestScope:
     async def test_extension_is_invisible_to_a_stored_query_backed_stage(self, dialect) -> None:
         qb = SlayerDataset(name="tl_rev", data_source=DS, source_queries=[SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["status"],
-            "metrics": [{"formula": "customers.credit_total", "name": "a"}]})])
+            "metrics": [{"expression": "customers.credit_total", "name": "a"}]})])
         query = q(source_model="tl_rev", measures=[{"formula": "sum(a)", "name": "t"}],
                   extensions=[ext("customers", measures=[CREDIT_TOTAL])])
         async with shop(dialect, with_models(qb)) as engine:
@@ -133,7 +133,7 @@ class TestScope:
                 await engine.execute(query)
 
     async def test_extension_is_invisible_to_a_saved_measure(self, dialect) -> None:
-        stored = orders().model_copy(update={"measures": [
+        stored = orders().model_copy(update={"metrics": [
             DatasetMetric(name="labels", expression="count_distinct(regions.name)")]})
         query = q(source_model="orders", measures=["labels"],
                   extensions=[ext("orders", joins=[join("regions", [["ship_region_id", "id"]])])])
@@ -262,12 +262,12 @@ class TestUsageFeatures:
     @pytest.mark.parametrize("source_name", ["orders", "customers"], ids=["root", "joined"])
     def test_extensions_count_as_inline_sources_with_their_measures(self, source_name: str) -> None:
         found = query_features({
-            "source_model": "orders", "measures": ["count(*)"],
-            "extensions": [{"source_name": source_name, "measures": [{"name": "m2", "formula": "max(round(credit))"}]}],
+            "population": "orders", "metrics": ["count(*)"],
+            "extensions": [{"source_name": source_name, "metrics": [{"name": "m2", "expression": "max(round(credit))"}]}],
         })
         assert "inline_source" in found.flags
         assert Counter(found.functions) == Counter(["round"])
         assert Counter(found.aggregations) == Counter(["count", "max"])
 
     def test_a_plain_query_is_not_an_inline_source(self) -> None:
-        assert "inline_source" not in query_features({"source_model": "orders", "measures": ["count(*)"]}).flags
+        assert "inline_source" not in query_features({"population": "orders", "metrics": ["count(*)"]}).flags

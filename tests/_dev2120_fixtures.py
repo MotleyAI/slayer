@@ -251,9 +251,9 @@ class Case(BaseModel):
     dataset: str = "lib"
 
     def query(self) -> SlayerQuery:
-        body: dict[str, Any] = {"source_model": self.dataset, "distinct_dimension_values": False}
+        body: dict[str, Any] = {"population": self.dataset, "distinct_dimension_values": False}
         if self.keeps is not None:
-            body |= {"dimensions": ["id"], "filters": [self.expr]}
+            body |= {"dimensions": ["id"], "filter": [self.expr]}
         else:
             body |= {"dimensions": ["id", {"expression": self.expr, "name": "v"}]}
         if self.variables:

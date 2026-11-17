@@ -38,7 +38,7 @@ def _cases() -> dict:
 
 
 async def _generate_one(expr: str, dialect: str):
-    query = {"source_model": "dt", "dimensions": ["id", {"expression": expr, "name": "v"}]}
+    query = {"population": "dt", "dimensions": ["id", {"expression": expr, "name": "v"}]}
     try:
         return await _engine_generate(query=[query], model=dt_model(), dialect=dialect)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract

@@ -303,7 +303,7 @@ class TestSkipNonSqlTableModes:
         await engine.create_dataset_from_query(
             query=SlayerQuery.model_validate({
                 "population": "orders",
-                "metrics": [{"formula": "sum(amount)", "name": "total"}],
+                "metrics": [{"expression": "sum(amount)", "name": "total"}],
             }),
             name="orders_summary",
         )

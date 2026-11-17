@@ -78,7 +78,7 @@ def _sql_model(sql: str, *, name: str = "orders_sql") -> SlayerDataset:
 
 
 def _query(source: str, formula: str, *, variables: dict[str, Any] | None = None, **extra: Any) -> SlayerQuery:
-    raw: dict[str, Any] = {"source_model": source, "measures": [{"formula": formula, "name": "v"}], **extra}
+    raw: dict[str, Any] = {"population": source, "metrics": [{"expression": formula, "name": "v"}], **extra}
     if variables is not None:
         raw["variables"] = variables
     return SlayerQuery.model_validate(raw)
@@ -272,7 +272,7 @@ class TestPostgres:
     async def test_literal_values_bind(self, pg_env: _Env) -> None:
         model = _table_model(filters=["status IN ({statuses})", "amount >= {floor}"], extra=(_SCALED, _TAGGED))
         resp = await pg_env.run(model, SlayerQuery.model_validate({
-            "population": "orders", "dimensions": ["tagged"], "metrics": [{"formula": "sum(scaled)", "name": "v"}],
+            "population": "orders", "dimensions": ["tagged"], "metrics": [{"expression": "sum(scaled)", "name": "v"}],
             "variables": {"statuses": ["ok", "new"], "floor": "15", "k": 2, "suffix": "O'Brien"},
         }))
         assert {r["orders.tagged"]: float(r["orders.v"]) for r in resp.data} == {

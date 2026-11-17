@@ -40,7 +40,7 @@ def _import(db: Path, *metrics: dict[str, Any], fields: list[dict[str, Any]] | N
 
 
 async def _value(result: ConversionResult, db: Path, measure: str, *, model: str = "orders") -> Any:
-    rows = await query(result=result, db=db, payload={"source_model": model, "measures": [measure]})
+    rows = await query(result=result, db=db, payload={"population": model, "metrics": [measure]})
     assert len(rows) == 1
     return rows[0][f"{model}.{measure}"]
 

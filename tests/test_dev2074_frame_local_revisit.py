@@ -275,7 +275,7 @@ class TestDerivedColumnsCompose:
             "LEFT JOIN z z2 ON y.z_id = z2.id ORDER BY z.id")
         assert oracle == [(100, "z200"), (200, "z100")]
         resp = await ctx.engine.execute(SlayerQuery.model_validate(
-            {"population": "z", "dimensions": ["id", "xzv"], "order": [{"column": "id", "direction": "asc"}]}))
+            {"population": "z", "dimensions": ["id", "xzv"], "order": [{"field": "id", "direction": "asc"}]}))
         assert _rows(resp, "z.id", "z.xzv") == oracle
 
     async def test_directed_three_cycle_typed_in_one_frame_is_refused(self, ctx: _Ctx) -> None:
@@ -290,7 +290,7 @@ class TestDerivedColumnsCompose:
             "LEFT JOIN b b2 ON a2.b_id = b2.id ORDER BY a.id")
         assert [(i, _num(w)) for i, w in oracle] == [(1, 200.0), (2, 100.0)]
         resp = await ctx.engine.execute(SlayerQuery.model_validate(
-            {"population": "a", "dimensions": ["id", "to_b.abw"], "order": [{"column": "id", "direction": "asc"}]}))
+            {"population": "a", "dimensions": ["id", "to_b.abw"], "order": [{"field": "id", "direction": "asc"}]}))
         assert [(i, _num(w)) for i, w in _rows(resp, "a.id", "a.to_b.abw")] == [
             (i, _num(w)) for i, w in oracle]
 
@@ -389,8 +389,8 @@ class TestComposedOccurrenceMetadata:
         assert {k: _num(v) for k, v in oracle.items()} == {"ann": 1.0, "bob": 0.0}
         native = await ctx.engine.execute(SlayerQuery.model_validate({
             "population": "customers", "dimensions": ["name"],
-            "metrics": [{"formula": "avg(last_order.big)", "name": "s"},
-                         {"formula": "sum(last_order.amount)", "name": "t"}]}))
+            "metrics": [{"expression": "avg(last_order.big)", "name": "s"},
+                         {"expression": "sum(last_order.amount)", "name": "t"}]}))
         assert native.attributes.metrics["customers.s"].format == NumberFormat(type=NumberFormatType.PERCENT)
         assert native.attributes.metrics["customers.t"].format == CURRENCY
         resp = await ctx.engine.execute(_q(

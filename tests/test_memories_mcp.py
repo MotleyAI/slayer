@@ -305,8 +305,8 @@ class TestSaveMemoryQuery:
         self, mcp_server, seeded: YAMLStorage
     ) -> None:
         query_dict = {
-            "source_model": "orders",
-            "measures": [{"formula": "count(*)"}],
+            "population": "orders",
+            "metrics": [{"expression": "count(*)"}],
         }
         result = await _call(
             mcp_server,

@@ -57,9 +57,9 @@ class TestTypingEnvironment:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
             "filter": ["status = 'ok'", "sum(amount) > 5"],
-            "order": [{"column": "status", "direction": "asc"}],
+            "order": [{"field": "status", "direction": "asc"}],
         })
         elab = elaborate_query(query=query, bundle=_bundle())
         assert isinstance(elab, ElaboratedQuery)
@@ -72,7 +72,7 @@ class TestTypingEnvironment:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
         })
         elab = elaborate_query(query=query, bundle=_bundle())
         entry = elab.metrics[0]
@@ -84,7 +84,7 @@ class TestTypingEnvironment:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
             "filter": ["sum(amount) > 5"],
         })
         elab = elaborate_query(query=query, bundle=_bundle())
@@ -132,9 +132,9 @@ class TestEntryEquivalence:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
             "filter": ["sum(amount) > 5"],
-            "order": [{"column": "status", "direction": "asc"}],
+            "order": [{"field": "status", "direction": "asc"}],
         })
         bundle = _bundle()
         raw = elaborate_query(query=query, bundle=bundle)
@@ -150,7 +150,7 @@ class TestCompileSeam:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
         })
         planned = plan_query(query=query, bundle=_bundle())
         compiled = compile_query(

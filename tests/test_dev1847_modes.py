@@ -40,7 +40,7 @@ async def exec_engine(request):
 
 
 def _q(mode=None):
-    kw = {"dimensions": ["region"], "measures": [reagg("avg", INNER_CITY, name="acc")]}
+    kw = {"dimensions": ["region"], "metrics": [reagg("avg", INNER_CITY, name="acc")]}
     if mode is not None:
         kw["to_many_handling"] = mode
     return sales_q(**kw)

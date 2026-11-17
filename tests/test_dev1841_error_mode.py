@@ -138,9 +138,9 @@ class TestStrictParity:
         on a broadcast, closing the migration→execution loop."""
         _, engine = exec_backend
         migrated = SlayerQuery.model_validate({
-            "version": 3, "population": "orders", "strict": True,
+            "version": 3, "source_model": "orders", "strict": True,
             "dimensions": ["status"],
-            "metrics": [{"formula": "sum(customers.spend)", "name": "cm"}],
+            "measures": [{"formula": "sum(customers.spend)", "name": "cm"}],
         })
         assert migrated.to_many_handling == "error"
         with pytest.raises((SlayerError, ValueError)):

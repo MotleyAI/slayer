@@ -134,10 +134,10 @@ class TestTotalRoutingInvariant:
 
     @pytest.mark.parametrize("role_kwargs", [
         pytest.param(
-            {"filters": ["sum(customers.spend) > 100"]}, id="filter-only",
+            {"filter": ["sum(customers.spend) > 100"]}, id="filter-only",
         ),
         pytest.param(
-            {"order": [{"column": "sum(customers.spend)", "direction": "desc"}]},
+            {"order": [{"field": "sum(customers.spend)", "direction": "desc"}]},
             id="order-only",
         ),
     ])

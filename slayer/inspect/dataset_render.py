@@ -58,7 +58,7 @@ def _is_unsupported_grouping_error(exc: BaseException) -> bool:
     return any(sig in text for sig in _UNSUPPORTED_GROUPING_SIGNATURES)
 
 # Dropped sections: these collapse to a names-only CSV, the omittable ones vanish.
-_INSPECT_SECTIONS_NAMES_ONLY = ("columns", "measures", "aggregations", "joins")
+_INSPECT_SECTIONS_NAMES_ONLY = ("fields", "metrics", "aggregations", "relationships")
 _INSPECT_SECTIONS_OMITTABLE = ("samples", "learnings", "saved_queries")
 _VALID_INSPECT_SECTIONS = _INSPECT_SECTIONS_NAMES_ONLY + _INSPECT_SECTIONS_OMITTABLE
 _TRUNCATION_MARKER = " ... [truncated]"
@@ -257,18 +257,18 @@ def _build_sample_query_args(
     metric_types = metric_types or {}
     dims, dim_names = _choose_sample_dims(dataset)
 
-    metrics: list[dict[str, str]] = [{"formula": "count(*)"}]
+    metrics: list[dict[str, str]] = [{"expression": "count(*)"}]
     for c in dataset.fields:
         if c.hidden or is_identifier(field=c, fields=dataset.fields) or c.name in dim_names:
             continue
         agg = _choose_sample_agg(c, metric_types=metric_types)
         if agg is None:
             continue
-        metrics.append({"formula": f"{agg}({c.name})"})
+        metrics.append({"expression": f"{agg}({c.name})"})
 
     return {
-        "source_model": dataset.name,
-        "measures": metrics,
+        "population": dataset.name,
+        "metrics": metrics,
         "dimensions": dims,
         "limit": num_rows,
     }
@@ -300,7 +300,7 @@ async def _get_row_count(
     try:
         q = SlayerQuery.model_validate({
             "population": dataset.name,
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
         })
         r = await engine.execute(query=q, data_source=dataset.data_source or None)
     except Exception:
@@ -344,7 +344,7 @@ def _render_field_value(v: Any) -> str:
     name = v.get("name")
     if name:
         return str(name)
-    formula = v.get("formula")
+    formula = v.get("expression")
     if formula:
         return str(formula)
     inner = v.get("dimension")
@@ -357,7 +357,7 @@ def _render_field_value(v: Any) -> str:
 
 def _render_stage_field_list(key: str, val: list) -> str:
     """Render a stage's field list (dimensions / measures / filters / etc.)."""
-    if key == "filters":
+    if key == "filter":
         return "; ".join(f"`{f}`" for f in val)
     return "; ".join(_render_field_value(v) for v in val)
 
@@ -377,10 +377,10 @@ def _render_stage(i: int, stage: dict, total: int) -> list[str]:
     """Render one stage's markdown lines."""
     title = stage.get("name") or ("final" if i == total else f"stage {i}")
     out: list[str] = [f"\n**{i}. {title}**"]
-    for line in (_render_source_dataset(stage.get("source_model")), _render_extensions(stage.get("extensions"))):
+    for line in (_render_source_dataset(stage.get("population")), _render_extensions(stage.get("extensions"))):
         if line:
             out.append(line)
-    for key in ("dimensions", "time_dimensions", "measures", "filters"):
+    for key in ("dimensions", "time_dimensions", "metrics", "filter"):
         val = stage.get(key)
         if not val:
             continue
@@ -461,10 +461,10 @@ def dataset_skeleton_fields(
         "name": dataset.name,
         "canonical_id": canonical_id,
         "description": _truncate_description(dataset.description, max_chars),
-        "column_names": [c.name for c in dataset.fields if not c.hidden],
-        "measure_names": [m.name for m in dataset.metrics if m.name is not None],
+        "field_names": [c.name for c in dataset.fields if not c.hidden],
+        "metric_names": [m.name for m in dataset.metrics if m.name is not None],
         "aggregation_names": [a.name for a in dataset.aggregations],
-        "joins_to": sorted({edge_reference(dataset=dataset, relationship=j) for j in dataset.relationships}),
+        "relationships_to": sorted({edge_reference(dataset=dataset, relationship=j) for j in dataset.relationships}),
         "variables": {"required": mv.required, "optional": mv.optional},
     }
     if saved_queries:
@@ -487,10 +487,10 @@ def render_dataset_skeleton(
     lines: list[str] = []
     if fields["description"]:
         lines.append(fields["description"])
-    lines.append(f"Columns: {_skeleton_csv(fields['column_names'])}")
-    lines.append(f"Measures: {_skeleton_csv(fields['measure_names'])}")
+    lines.append(f"Fields: {_skeleton_csv(fields['field_names'])}")
+    lines.append(f"Metrics: {_skeleton_csv(fields['metric_names'])}")
     lines.append(f"Aggregations: {_skeleton_csv(fields['aggregation_names'])}")
-    lines.append(f"Joins to: {_skeleton_csv(fields['joins_to'])}")
+    lines.append(f"Relationships to: {_skeleton_csv(fields['relationships_to'])}")
     var_line = _render_variables_line(fields["variables"])
     if var_line:
         lines.append(var_line)
@@ -602,7 +602,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
 
     # Rendered samples come only from the profiling owner's returned columns.
     sampled_by_name: dict[str, DatasetField] = {}
-    if engine is not None and "columns" in included_set:
+    if engine is not None and "fields" in included_set:
         outcome = await ensure_samples_fresh(
             dataset=dataset, fields=list(dataset.fields), engine=engine, storage=storage,
         )
@@ -620,14 +620,14 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         )
 
     visible_columns = [c for c in dataset.fields if not c.hidden]
-    if "columns" in included_set:
+    if "fields" in included_set:
         col_rows: list[dict[str, Any]] = []
         for c in visible_columns:
             aggs = ", ".join(c.allowed_aggregations) if c.allowed_aggregations else "all"
             sampled_col = sampled_by_name.get(c.name)
             col_rows.append({
                 "name": c.name,
-                "type": _render_field_type(c),
+                "datatype": _render_field_type(c),
                 "primary_key": "yes" if c.primary_key else "",
                 "unique": "yes" if c.unique else "",
                 "sql": c.sql if c.sql else c.name,
@@ -639,7 +639,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 "sampled": sampled_col.sampled if sampled_col is not None else None,
             })
         col_columns = [
-            "name", "type", "primary_key", "unique", "sql", "allowed_aggregations",
+            "name", "datatype", "primary_key", "unique", "sql", "allowed_aggregations",
             "filter", "label", "description", "meta", "sampled",
         ]
         if not show_sql:
@@ -654,12 +654,12 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             f"## Columns ({len(visible_columns)} — names only)\n\n{csv}"
         )
 
-    if "measures" in included_set:
+    if "metrics" in included_set:
         measure_rows: list[dict[str, Any]] = []
         for mm in dataset.metrics:
             measure_rows.append({
                 "name": mm.name,
-                "formula": mm.expression,
+                "expression": mm.expression,
                 "label": mm.label,
                 "description": _truncate_description(mm.description, descriptions_max_chars),
                 "meta": _format_meta(mm.meta),
@@ -668,7 +668,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             f"## Measures ({len(measure_rows)})\n\n"
             + _markdown_table(
                 rows=measure_rows,
-                fields=["name", "formula", "label", "description", "meta"],
+                fields=["name", "expression", "label", "description", "meta"],
             )
         )
     elif dataset.metrics:
@@ -690,16 +690,16 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                     params = None
                 agg_rows.append({
                     "name": a.name,
-                    "formula": a.expression or "(built-in override)",
+                    "expression": a.expression or "(built-in override)",
                     "params": params,
                     "description": _truncate_description(
                         a.description, descriptions_max_chars,
                     ),
                     "meta": _format_meta(a.meta),
                 })
-            agg_columns = ["name", "formula", "params", "description", "meta"]
+            agg_columns = ["name", "expression", "params", "description", "meta"]
             if not show_sql:
-                agg_columns = [c for c in agg_columns if c != "formula"]
+                agg_columns = [c for c in agg_columns if c != "expression"]
             out_sections.append(
                 f"## Aggregations ({len(agg_rows)})\n\n"
                 + _markdown_table(rows=agg_rows, fields=agg_columns)
@@ -711,13 +711,13 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         )
 
     hops = await _oriented_hops(dataset, storage, failures=failures)
-    if "joins" in included_set:
+    if "relationships" in included_set:
         join_rows: list[dict[str, Any]] = []
         for h in hops:
             pairs = "; ".join(f"{src} = {tgt}" for src, tgt in h.join_pairs)
             join_rows.append({
                 "name": h.name or "",
-                "target_model": h.to,
+                "to": h.to,
                 "join_pairs": pairs,
                 "cardinality": str(h.cardinality) if h.cardinality else "",
             })
@@ -725,7 +725,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             f"## Joins ({len(join_rows)})\n\n"
             + _markdown_table(
                 rows=join_rows,
-                fields=["name", "target_model", "join_pairs", "cardinality"],
+                fields=["name", "to", "join_pairs", "cardinality"],
             )
         )
     elif hops:
@@ -755,7 +755,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 if not _is_unsupported_grouping_error(exc):
                     raise
                 minimal_args = dict(query_args)
-                minimal_args["measures"] = [{"formula": "count(*)"}]
+                minimal_args["metrics"] = [{"expression": "count(*)"}]
                 minimal_args["dimensions"] = []
                 sample_query = SlayerQuery.model_validate(minimal_args)
                 try:
@@ -843,7 +843,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
 
     if fmt == "json":
         payload: dict[str, Any] = {
-            "model_name": dataset.name,
+            "dataset_name": dataset.name,
             "description": truncated_model_desc,
             "data_source": dataset.data_source,
             "source_type": _source_type_for(dataset),
@@ -859,16 +859,16 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         payload["meta"] = dataset.meta
         payload["row_count"] = row_count
         if show_sql:
-            payload["filters"] = dataset.filters
+            payload["filter"] = dataset.filters
 
         # Columns
-        if "columns" in included_set:
+        if "fields" in included_set:
             col_payloads: list[dict[str, Any]] = []
             for c in visible_columns:
                 sampled_col = sampled_by_name.get(c.name)
                 col_payloads.append({
                     "name": c.name,
-                    "type": str(c.datatype),
+                    "datatype": str(c.datatype),
                     **({"element_type": str(c.element_type)} if c.element_type is not None else {}),
                     # Opaque columns only (see _render_column_type).
                     **(
@@ -891,16 +891,16 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                     "sampled_values": sampled_col.sampled_values if sampled_col is not None else None,
                     "distinct_count": sampled_col.distinct_count if sampled_col is not None else None,
                 })
-            payload["columns"] = col_payloads
+            payload["fields"] = col_payloads
         elif visible_columns:
             payload["columns_names"] = [c.name for c in visible_columns]
 
         # Measures
-        if "measures" in included_set:
-            payload["measures"] = [
+        if "metrics" in included_set:
+            payload["metrics"] = [
                 {
                     "name": mm.name,
-                    "formula": mm.expression,
+                    "expression": mm.expression,
                     "label": mm.label,
                     "description": _truncate_description(
                         mm.description, descriptions_max_chars,
@@ -917,7 +917,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             payload["aggregations"] = [
                 {
                     "name": a.name,
-                    **({"formula": a.expression} if show_sql else {}),
+                    **({"expression": a.expression} if show_sql else {}),
                     "params": [
                         ({"name": p.name, "sql": p.sql} if show_sql else {"name": p.name})
                         for p in (a.params or [])
@@ -933,11 +933,11 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             payload["aggregations_names"] = [a.name for a in dataset.aggregations]
 
         # Joins — declared outgoing plus reverse-reachable incoming, oriented.
-        if "joins" in included_set:
-            payload["joins"] = [
+        if "relationships" in included_set:
+            payload["relationships"] = [
                 {
                     "name": h.name,
-                    "target_model": h.to,
+                    "to": h.to,
                     "join_pairs": h.join_pairs,
                     "cardinality": h.cardinality,
                 }

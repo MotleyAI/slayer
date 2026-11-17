@@ -199,7 +199,7 @@ class TestPostFilter:
 
     _COMPOSITE = {
         "dimensions": [{"expression": "lower(status)", "name": "ls"}],
-        "filters": ["cumsum(sum(amount)) > 50 or lower(status) == 'c'"],
+        "filter": ["cumsum(sum(amount)) > 50 or lower(status) == 'c'"],
     }
 
     async def test_composite_dimension_filter_reads_a_carried_column(self) -> None:
@@ -361,12 +361,12 @@ def _stat_seams(formula: str) -> dict:
             "population": "orders", "time_dimensions": F15.month_td(), "metrics": measure,
         }),
         "non_root_stage": [
-            {"name": "s1", "source_model": "orders", "time_dimensions": month, "measures": measure},
-            {"source_model": "s1", "measures": [{"formula": "max(w)", "name": "mx"}]},
+            {"name": "s1", "population": "orders", "time_dimensions": month, "metrics": measure},
+            {"population": "s1", "metrics": [{"expression": "max(w)", "name": "mx"}]},
         ],
         "root_stage": [
-            {"name": "s1", "source_model": "orders", "dimensions": ["id"]},
-            {"source_model": "orders", "time_dimensions": month, "measures": measure},
+            {"name": "s1", "population": "orders", "dimensions": ["id"]},
+            {"population": "orders", "time_dimensions": month, "metrics": measure},
         ],
     }
 

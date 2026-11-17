@@ -42,8 +42,8 @@ async def test_hourly_time_shift(backend: str) -> None:
         (3, "2024-01-01 12:30:00", "2024-01-01", 4.0),
     ]
     got = await _run(backend, rows, {
-        "time_dimensions": [{"dimension": "ts", "granularity": "hour"}],
-        "measures": ["sum(v)", {"formula": "time_shift(sum(v), -1, 'hour')", "name": "x"}],
+        "time_dimensions": [{"field": "ts", "granularity": "hour"}],
+        "metrics": ["sum(v)", {"expression": "time_shift(sum(v), -1, 'hour')", "name": "x"}],
     }, width=16)
     assert got == {"2024-01-01 10:00": None, "2024-01-01 11:00": 1.0, "2024-01-01 12:00": 2.0}
 
@@ -56,8 +56,8 @@ async def test_month_shift_of_month_end_daily_bucket(backend: str) -> None:
         (3, "2024-03-31 09:00:00", "2024-03-31", 1.0),
     ]
     got = await _run(backend, rows, {
-        "time_dimensions": [{"dimension": "d", "granularity": "day"}],
-        "measures": ["sum(v)", {"formula": "time_shift(sum(v), -1, 'month')", "name": "x"}],
+        "time_dimensions": [{"field": "d", "granularity": "day"}],
+        "metrics": ["sum(v)", {"expression": "time_shift(sum(v), -1, 'month')", "name": "x"}],
     }, width=10)
     assert got == {"2024-02-29": None, "2024-03-02": None, "2024-03-31": 10.0}
 
@@ -71,8 +71,8 @@ async def test_one_month_window_ending_at_month_end(backend: str) -> None:
         (4, "2024-03-30 09:00:00", "2024-03-30", 1000.0),
     ]
     got = await _run(backend, rows, {
-        "time_dimensions": [{"dimension": "d", "granularity": "day"}],
-        "measures": [{"formula": "sum(v, window='1m')", "name": "x"}],
+        "time_dimensions": [{"field": "d", "granularity": "day"}],
+        "metrics": [{"expression": "sum(v, window='1m')", "name": "x"}],
     }, width=10)
     assert got["2024-03-30"] == 1110.0
     assert got["2024-03-01"] == 111.0
@@ -85,8 +85,8 @@ async def test_sub_day_window_part_before_a_day_part_keeps_its_time(backend: str
         (2, "2024-03-03 09:00:00", "2024-03-03", 100.0),
     ]
     got = await _run(backend, rows, {
-        "time_dimensions": [{"dimension": "d", "granularity": "day"}],
-        "measures": [{"formula": "sum(v, window='6h1d')", "name": "x"}],
+        "time_dimensions": [{"field": "d", "granularity": "day"}],
+        "metrics": [{"expression": "sum(v, window='6h1d')", "name": "x"}],
     }, width=10)
     # [03-04 00:00 - 6h - 1d, 03-04 00:00) starts at 03-02 18:00, excluding 03-02.
     assert got["2024-03-03"] == 100.0
@@ -102,8 +102,8 @@ async def test_consecutive_periods_over_date_column(
 ) -> None:
     rows = [(i, f"{d} 09:00:00", d, 1.0) for i, d in enumerate(dates, start=1)]
     got = await _run(backend, rows, {
-        "time_dimensions": [{"dimension": "d", "granularity": granularity}],
-        "measures": [{"formula": "consecutive_periods(sum(v) > 0)", "name": "x"}],
+        "time_dimensions": [{"field": "d", "granularity": granularity}],
+        "metrics": [{"expression": "consecutive_periods(sum(v) > 0)", "name": "x"}],
     }, width=width)
     assert [got[d[:width]] for d in dates] == [1, 2, 1, 2]
 
@@ -122,7 +122,7 @@ async def test_bigquery_bucket_comparisons_are_datetimes(dim: str, formula: str,
     model.fields.append(DatasetField(name="d_expr", sql="DATE(ts)", datatype=DataType.DATE))
     sql = await _engine_generate(query=SlayerQuery.model_validate({
         "population": "ev",
-        "time_dimensions": [{"dimension": dim, "granularity": "month"}],
-        "metrics": [{"formula": formula, "name": "x"}],
+        "time_dimensions": [{"field": dim, "granularity": "month"}],
+        "metrics": [{"expression": formula, "name": "x"}],
     }), model=model, dialect="bigquery", validate=False)
     assert comparison.format(dim=dim) in sql

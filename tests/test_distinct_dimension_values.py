@@ -797,7 +797,7 @@ class TestMCPSurface:
             name="query",
             arguments={
                 "query": {
-                    "source_model": "orders",
+                    "population": "orders",
                     "dimensions": ["status"],
                     "distinct_dimension_values": False,
                 },
@@ -821,15 +821,15 @@ class TestMCPSurface:
             arguments={
                 "query": [
                     {
-                        "source_model": "orders",
+                        "population": "orders",
                         "name": "raw_rows",
                         "dimensions": ["status", "amount"],
                         "distinct_dimension_values": False,
                     },
                     {
-                        "source_model": "raw_rows",
+                        "population": "raw_rows",
                         "dimensions": ["status"],
-                        "measures": [{"formula": "sum(amount)"}],
+                        "metrics": [{"expression": "sum(amount)"}],
                     },
                 ],
                 "format": "json",
@@ -854,15 +854,15 @@ class TestMCPSurface:
                 arguments={
                     "query": [
                         {
-                            "source_model": "orders",
+                            "population": "orders",
                             "name": "raw_rows",
                             "dimensions": ["status", "amount"],
                         },
                         {
-                            "source_model": "raw_rows",
+                            "population": "raw_rows",
                             "dimensions": ["status"],
                             # Outer has flag=False but also a measure → reject.
-                            "measures": [{"formula": "sum(amount)"}],
+                            "metrics": [{"expression": "sum(amount)"}],
                             "distinct_dimension_values": False,
                         },
                     ],
@@ -886,7 +886,7 @@ class TestRESTSurface:
         resp = client.post(
             "/query",
             json={
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["status"],
                 "distinct_dimension_values": False,
             },
@@ -905,15 +905,15 @@ class TestRESTSurface:
             json={
                 "queries": [
                     {
-                        "source_model": "orders",
+                        "population": "orders",
                         "name": "raw_rows",
                         "dimensions": ["status", "amount"],
                         "distinct_dimension_values": False,
                     },
                     {
-                        "source_model": "raw_rows",
+                        "population": "raw_rows",
                         "dimensions": ["status"],
-                        "measures": [{"formula": "sum(amount)"}],
+                        "metrics": [{"expression": "sum(amount)"}],
                     },
                 ],
             },

@@ -150,13 +150,13 @@ class TestRewrites:
     async def test_saved_query_with_an_inclusive_upper_bound(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                              backend: str) -> None:
         storage = await store(tmp_path, shop_ds, backend=backend, models=(
-            saved_query_doc("year_end", {"source_model": "orders", "dimensions": ["id"],
-                                         "filters": ["created_at <= '2024-12-31'"]}),))
+            saved_query_doc("year_end", {"population": "orders", "dimensions": ["id"],
+                                         "filter": ["created_at <= '2024-12-31'"]}),))
         model = await storage.get_dataset("year_end", data_source=DS)
         assert model is not None
         stage = (model.source_queries or [])[0]
         assert stage.filter == ["created_at < '2025-01-01'"]
-        resp = await run(storage, {"source_model": "year_end", "dimensions": ["id"]})
+        resp = await run(storage, {"population": "year_end", "dimensions": ["id"]})
         assert ids(resp, model="year_end") == {1, 2, 3, 4, 5, 6}
         assert notices(resp) == []
 
@@ -181,7 +181,7 @@ class TestRewrites:
         assert [m.expression for m in model.metrics] == [EARLY_COUNT_UPGRADED]
         assert next(c for c in model.fields if c.name == "late_amount").filter == LATE_AMOUNT_UPGRADED
         assert next(c for c in model.fields if c.name == "late_amount").sql == "amount"
-        resp = await run(storage, {"source_model": "orders", "measures": ["early", "sum(late_amount)"]})
+        resp = await run(storage, {"population": "orders", "metrics": ["early", "sum(late_amount)"]})
         row = resp.data[0]
         assert int(row["orders.early"]) == 3
         assert float(next(v for k, v in row.items() if k != "orders.early")) == pytest.approx(220.0)
@@ -211,7 +211,7 @@ class TestRewrites:
                                                  backend: str) -> None:
         # Stored before extension columns were removed: the load-time conversion inlines it after this upgrade.
         extended_q = {**query(version=13), "extensions": [{"source_name": "orders", "columns": [LATE_AMOUNT]}],
-                      "measures": [{"formula": "sum(late_amount)", "name": "s"}]}
+                      "metrics": [{"expression": "sum(late_amount)", "name": "s"}]}
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_ext", extended_q, version=9),))
         mem_query = (await storage.get_memory("m_ext")).query
         assert mem_query is not None
@@ -268,7 +268,7 @@ class TestRewrites:
 
     async def test_names_match_case_insensitively(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                   backend: str) -> None:
-        body = {**query("Created_At <= '2024-04-10'", "ORDERS.created_at > '2024-04-10'"), "source_model": "ORDERS"}
+        body = {**query("Created_At <= '2024-04-10'", "ORDERS.created_at > '2024-04-10'"), "population": "ORDERS"}
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_case", body),))
         mem = await storage.get_memory("m_case")
         assert mem.query is not None
@@ -288,7 +288,7 @@ class TestRewrites:
         pairs = [["code", "code"]]
         customers = orders_doc(name="customers", joins=[{"target_model": "purchases", "join_pairs": pairs}])
         purchases = orders_doc(name="purchases", joins=[{"target_model": "customers", "join_pairs": pairs}])
-        body = {**query("purchases.created_at <= '2024-04-10'"), "source_model": "customers"}
+        body = {**query("purchases.created_at <= '2024-04-10'"), "population": "customers"}
         storage = await store(tmp_path, shop_ds, backend=backend, models=(customers, purchases),
                               memories=(memory("m_twins", body),))
         mem = await storage.get_memory("m_twins")
@@ -318,7 +318,7 @@ class TestRewrites:
         named = orders_doc(name="refunds", joins=[
             {"name": "refunded", "target_model": "customers", "join_pairs": [["code", "code"]]}])
         body = {**query("purchases.created_at <= '2024-04-10'", "refunded.created_at > '2024-04-10'"),
-                "source_model": "customers"}
+                "population": "customers"}
         storage = await store(tmp_path, shop_ds, backend=backend, models=(customers, orders, named),
                               memories=(memory("m_back", body),))
         mem = await storage.get_memory("m_back")
@@ -378,8 +378,8 @@ class TestLeftAlone:
 
     async def test_a_sibling_stage_is_not_its_namesake_model(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                              backend: str) -> None:
-        stage = {"name": "base", "source_model": "orders", "dimensions": ["id", "code"]}
-        reader = {"source_model": "base", "dimensions": ["id"], "filters": ["code <= '2024-04-10'"]}
+        stage = {"name": "base", "population": "orders", "dimensions": ["id", "code"]}
+        reader = {"population": "base", "dimensions": ["id"], "filter": ["code <= '2024-04-10'"]}
         namesake = orders_doc(name="base", columns=[*COLUMNS[:3], {"name": "code", "type": "TIMESTAMP"}])
         storage = await store(tmp_path, shop_ds, backend=backend,
                               models=(namesake, saved_query_doc("staged", stage, reader)))
@@ -391,7 +391,7 @@ class TestLeftAlone:
 
     async def test_missing_model_is_left_and_logged(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                                     caplog: pytest.LogCaptureFixture) -> None:
-        body = {**query("created_at <= '2024-12-31'"), "source_model": "gone"}
+        body = {**query("created_at <= '2024-12-31'"), "population": "gone"}
         storage = await store(tmp_path, shop_ds, backend=backend, memories=(memory("m_gone", body),))
         with logged(caplog) as texts:
             mem = await storage.get_memory("m_gone")
@@ -404,8 +404,8 @@ class TestLeftAlone:
 class TestVersionGating:
     async def test_current_model_with_an_older_nested_query(self, tmp_path: Path, shop_ds: DatasourceConfig,
                                                             backend: str) -> None:
-        doc = saved_query_doc("mixed", {"source_model": "orders", "dimensions": ["id"],
-                                        "filters": ["created_at <= '2024-12-31'"]},
+        doc = saved_query_doc("mixed", {"population": "orders", "dimensions": ["id"],
+                                        "filter": ["created_at <= '2024-12-31'"]},
                               version=CURRENT_VERSIONS["SlayerModel"])
         storage = await store(tmp_path, shop_ds, backend=backend, models=(doc,))
         model = await storage.get_dataset("mixed", data_source=DS)
@@ -424,7 +424,7 @@ class TestVersionGating:
     async def test_current_memory_with_an_older_query_holding_an_extension(
         self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
     ) -> None:
-        body = query(extensions=[{"source_name": "orders", "measures": [{"name": "early", "formula": EARLY_COUNT}]}])
+        body = query(extensions=[{"source_name": "orders", "metrics": [{"name": "early", "expression": EARLY_COUNT}]}])
         storage = await store(tmp_path, shop_ds, backend=backend,
                               memories=(memory("m_ext_old", body, version=CURRENT_VERSIONS["Memory"]),))
         mem = await storage.get_memory("m_ext_old")

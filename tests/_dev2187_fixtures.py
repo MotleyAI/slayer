@@ -71,7 +71,7 @@ def customers_model() -> SlayerDataset:
 def qb_model() -> SlayerDataset:
     """Query-backed: ``tot`` per ``status``."""
     return SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
-        "population": "orders", "dimensions": ["status"], "metrics": [{"formula": "sum(amount)", "name": "tot"}],
+        "population": "orders", "dimensions": ["status"], "metrics": [{"expression": "sum(amount)", "name": "tot"}],
     })])
 
 

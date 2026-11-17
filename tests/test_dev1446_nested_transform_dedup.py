@@ -100,7 +100,7 @@ def _query() -> SlayerQuery:
                 field="created_at",
                 granularity=TimeGranularity.MONTH,
             )
-        ], "metrics": [{"formula": "sum(amount)", "name": "revenue"}], "filter": ["change(sum(amount)) > 0"]})
+        ], "metrics": [{"expression": "sum(amount)", "name": "revenue"}], "filter": ["change(sum(amount)) > 0"]})
 
 
 async def test_dev1446_change_filter_keeps_correct_rows(engine: Tuple[SlayerQueryEngine, str]):

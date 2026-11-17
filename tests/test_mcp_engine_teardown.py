@@ -97,8 +97,8 @@ async def _query_count(server, *, source_model: str) -> int:
         server, name="query",
         arguments={
             "query": {
-                "source_model": source_model,
-                "measures": [{"formula": "count(*)"}],
+                "population": source_model,
+                "metrics": [{"expression": "count(*)"}],
             },
             "format": "json",
         },
@@ -156,7 +156,7 @@ class TestContractAttribute:
         monkeypatch.setattr(SlayerQueryEngine, "execute", _spy)
         await _call(
             server, name="query",
-            arguments={"query": [{"source_model": "t", "measures": [{"formula": "count(*)"}]}]},
+            arguments={"query": [{"population": "t", "metrics": [{"expression": "count(*)"}]}]},
         )
 
         assert captured["self"] is server._slayer_engine

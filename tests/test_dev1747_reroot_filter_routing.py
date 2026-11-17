@@ -53,7 +53,7 @@ FILTER_AGGREGATE_REF = "sum(customers.spend) > 500"
 _HOST_ROOTED_QUERY = SlayerQuery.model_validate({
     "population": "orders",
     "dimensions": [FieldRef(name="status")],
-    "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+    "metrics": [{"expression": "sum(amount)", "name": "rev"}],
     "order": [OrderItem(field=FieldRef(name="cust_region"), direction="asc")],
 })
 
@@ -62,7 +62,7 @@ def _query(*filters: str) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": [FieldRef(name="name", dataset="customers.regions")],
-        "metrics": [{"formula": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE],
+        "metrics": [{"expression": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE],
         "filter": list(filters) or None,
     })
 
@@ -239,7 +239,7 @@ class TestMixedOrPushes:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [FieldRef(name="name", dataset="customers.regions")],
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE],
             "filter": [
                 "customers.tier == 'gold' or status == 'A'",
                 "customers.tier == 'silver' or status == 'B'",
@@ -315,7 +315,7 @@ class TestUnreachableDimensionsStillDrop:
         query = SlayerQuery.model_validate({"population": "orders", "dimensions": [
                 FieldRef(name="name", dataset="customers.regions"),
                 FieldRef(name="name", dataset="order_tags"),
-            ], "metrics": [{"formula": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE],
+            ], "metrics": [{"expression": "sum(amount)", "name": "rev"}, _CROSS_MODEL_MEASURE],
             "to_many_handling": "broadcast"})
         plan = plan_query(query=query, bundle=dev1747_bundle())
         attach = next(
@@ -340,7 +340,7 @@ class TestFilteredLocalDispatchAccounting:
         return SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
             "order": [OrderItem(
                 field=FieldRef(name="name", dataset="customers.regions"),
                 direction="asc",
@@ -599,7 +599,7 @@ class TestRowPhaseFiltersAlwaysApplyAtTheHost:
         plain = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [FieldRef(name="name", dataset="customers.regions")],
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
             "filter": [FILTER_REACHABLE],
         })
         plain_rows = await self._rows(plain)

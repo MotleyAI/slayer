@@ -109,10 +109,10 @@ def _measures(value: Any) -> Iterator[str]:
 
 
 _FIELD_READERS = {
-    "measures": _measures,
+    "metrics": _measures,
     "dimensions": lambda v: _entries(v, keys=("expression",)),
     "time_dimensions": lambda v: _entries(v, keys=("dimension", "column")),
-    "filters": _strings,
+    "filter": _strings,
     "order": lambda v: _entries(v, keys=("column",)),
 }
 

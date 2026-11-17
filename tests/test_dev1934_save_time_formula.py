@@ -285,7 +285,7 @@ class TestRest:
         assert client.post("/models", json=_model("SUM({value})").model_dump(mode="json")).status_code == 200
 
         def detail(formula: str) -> str:
-            resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": formula, "name": "m"}]})
+            resp = client.post("/query", json={"population": "orders", "metrics": [{"expression": formula, "name": "m"}]})
             assert resp.status_code == 400, resp.text
             return resp.json()["detail"]
 
@@ -337,8 +337,8 @@ class TestMcp:
     async def test_create_model_rejects_broken_formula(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, _engine, store = mcp
         out = await _call(server=server, name="create_model", arguments={
-            "name": "orders", "sql_table": "orders", "data_source": _DS, "columns": _COLUMNS,
-            "aggregations": [{"name": "custom_agg", "formula": _BROKEN}],
+            "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _COLUMNS,
+            "aggregations": [{"name": "custom_agg", "expression": _BROKEN}],
         })
         assert "Error" in out
         assert "orders" in out
@@ -348,8 +348,8 @@ class TestMcp:
     async def test_create_model_with_aggregation_is_queryable(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, engine, store = mcp
         out = await _call(server=server, name="create_model", arguments={
-            "name": "orders", "sql_table": "orders", "data_source": _DS, "columns": _COLUMNS,
-            "aggregations": [{"name": "sum_sq", "formula": "SUM({value} * {value})"}],
+            "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _COLUMNS,
+            "aggregations": [{"name": "sum_sq", "expression": "SUM({value} * {value})"}],
         })
         assert "created" in out, out
         saved = await store.get_dataset("orders", data_source=_DS)
@@ -363,7 +363,7 @@ class TestMcp:
     async def test_create_model_aggregations_with_query_rejected(self, mcp) -> None:
         server, _engine, _store = mcp
         out = await _call(server=server, name="create_model", arguments={
-            "name": "qb", "query": {"source_model": "orders", "measures": ["count(*)"]},
+            "name": "qb", "query": {"population": "orders", "metrics": ["count(*)"]},
             "aggregations": [{"name": "sum_sq", "formula": "SUM({value} * {value})"}],
         })
         assert "Error" in out

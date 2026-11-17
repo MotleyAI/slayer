@@ -88,8 +88,8 @@ class TestBounds:
 class TestStages:
     async def test_multi_stage_model_accepts_one_sided_range(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "daily", "metrics": [{"formula": "sum(rev)", "name": "r"}],
-            "time_dimensions": [{"dimension": "ts", "granularity": "year", "date_range": ["2026-01-01", None]}],
+            "population": "daily", "metrics": [{"expression": "sum(rev)", "name": "r"}],
+            "time_dimensions": [{"field": "ts", "granularity": "year", "date_range": ["2026-01-01", None]}],
         }))
         assert sum(r["daily.r"] for r in resp.data) == pytest.approx(
             float(sum(ids_where(lambda t: t >= D(2026, 1, 1)))),
@@ -98,12 +98,12 @@ class TestStages:
     async def test_stage_range_with_period_bounds(self, engine) -> None:
         inner = {
             "name": "m", "population": "ev",
-            "time_dimensions": [{"dimension": "ts", "granularity": "month"}],
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "time_dimensions": [{"field": "ts", "granularity": "month"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
         }
         outer = {
-            "population": "m", "metrics": [{"formula": "sum(rev)", "name": "r"}],
-            "time_dimensions": [{"dimension": "ts", "granularity": "month", "date_range": ["2025-02", "2025-03"]}],
+            "population": "m", "metrics": [{"expression": "sum(rev)", "name": "r"}],
+            "time_dimensions": [{"field": "ts", "granularity": "month", "date_range": ["2025-02", "2025-03"]}],
         }
         resp = await engine.execute([SlayerQuery.model_validate(inner), SlayerQuery.model_validate(outer)])
         got = {month_key(r["m.ts"]): r["m.r"] for r in resp.data}
@@ -115,12 +115,12 @@ class TestStages:
     async def test_stage_range_on_coarser_rebucketing(self, engine) -> None:
         inner = {
             "name": "m", "population": "ev",
-            "time_dimensions": [{"dimension": "ts", "granularity": "month"}],
-            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+            "time_dimensions": [{"field": "ts", "granularity": "month"}],
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
         }
         outer = {
-            "population": "m", "metrics": [{"formula": "sum(rev)", "name": "r"}],
-            "time_dimensions": [{"dimension": "ts", "granularity": "year", "date_range": "2025-Q1"}],
+            "population": "m", "metrics": [{"expression": "sum(rev)", "name": "r"}],
+            "time_dimensions": [{"field": "ts", "granularity": "year", "date_range": "2025-Q1"}],
         }
         resp = await engine.execute([SlayerQuery.model_validate(inner), SlayerQuery.model_validate(outer)])
         [row] = resp.data

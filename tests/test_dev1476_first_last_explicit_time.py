@@ -141,7 +141,7 @@ async def test_b_no_time_dimension_with_explicit_time_arg(
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"formula": "last(amount, created_at)"}],
+        "metrics": [{"expression": "last(amount, created_at)"}],
     }))
     assert resp.data, resp.sql
     by_status = {row["orders.status"]: row for row in resp.data}
@@ -161,7 +161,7 @@ async def test_c_cross_model_bare_column_explicit_time_arg(
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"formula": "last(customers.amount, customers.signup_at)"}],
+        "metrics": [{"expression": "last(customers.amount, customers.signup_at)"}],
     }))
     assert resp.data, resp.sql
     by_region = {row["orders.customers.region"]: row for row in resp.data}
@@ -195,7 +195,7 @@ async def test_local_first_last_over_derived_column_expands_inner_refs(
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"formula": "last(net_amount, created_at)"}],
+        "metrics": [{"expression": "last(net_amount, created_at)"}],
     }))
     assert resp.data, resp.sql
 
@@ -241,7 +241,7 @@ async def test_cross_model_first_last_uses_target_default_time_dimension() -> No
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"formula": "last(customers.amount)"}],
+        "metrics": [{"expression": "last(customers.amount)"}],
     }))
     by_region = {row["orders.customers.region"]: row for row in resp.data}
     assert set(by_region) == {"NA"}, resp.sql
@@ -289,7 +289,7 @@ async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
     query = SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"formula": "last(customers.amount)"}],
+        "metrics": [{"expression": "last(customers.amount)"}],
     })
     with pytest.raises(ValueError, match=r"first/last.*ranking time"):
         await engine.execute(query)
@@ -353,7 +353,7 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"formula": "last(customers.amount)"}],
+        "metrics": [{"expression": "last(customers.amount)"}],
     }))
     by_region = {row["orders.customers.region"]: row for row in resp.data}
     # Orders of a deleted customer read the filtered-out target as NULL.
@@ -413,7 +413,7 @@ async def test_cross_model_last_over_column_filter_masks_the_newest_row() -> Non
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"formula": "last(customers.active_amount)"}],
+        "metrics": [{"expression": "last(customers.active_amount)"}],
     }))
     by_region = {row["orders.customers.region"]: row for row in resp.data}
     assert set(by_region) == {"NA"}, resp.sql
@@ -479,7 +479,7 @@ async def test_local_last_over_derived_complex_time_col_qualifies_under_join() -
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"formula": "last(amount, created_day)"}],
+        "metrics": [{"expression": "last(amount, created_day)"}],
     }))
     assert resp.data, resp.sql
     by_region = {row["orders.customers.region"]: row for row in resp.data}
@@ -638,7 +638,7 @@ class TestTimeArgJoinDiscovery:
             SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["status"],
-                "metrics": [{"formula": "last(amount, customers.signup_at)"}],
+                "metrics": [{"expression": "last(amount, customers.signup_at)"}],
             }),
             _u_orders(),
         )
@@ -649,7 +649,7 @@ class TestTimeArgJoinDiscovery:
             SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["status"],
-                "metrics": [{"formula": "last(amount, customers.regions.opened_at)"}],
+                "metrics": [{"expression": "last(amount, customers.regions.opened_at)"}],
             }),
             _u_orders(),
         )
@@ -664,7 +664,7 @@ class TestTimeArgJoinDiscovery:
             SlayerQuery.model_validate({
                 "population": "orders",
                 "dimensions": ["status"],
-                "metrics": [{"formula": "last(amount, cust_signup)"}],
+                "metrics": [{"expression": "last(amount, cust_signup)"}],
             }),
             orders,
         )
@@ -685,7 +685,7 @@ class TestTimeArgJoinDiscovery:
     def test_cross_model_time_arg_not_registered_on_host(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"formula": "last(customers.amount, customers.signup_at)"}],
+            "metrics": [{"expression": "last(customers.amount, customers.signup_at)"}],
         })
         bundle = _u_bundle(_u_orders())
         order, slots = _planned_slots(query, bundle)
@@ -805,7 +805,7 @@ async def test_e2e_noncomposite_local_crossing_time_arg() -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"formula": "last(amount, customers.signup_at)"}],
+        "metrics": [{"expression": "last(amount, customers.signup_at)"}],
     }))
     assert resp.data, resp.sql
     assert re.search(r"JOIN\s+customers\b", resp.sql, re.I), resp.sql
@@ -820,7 +820,7 @@ async def test_e2e_multi_hop_local_crossing_time_arg() -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"formula": "last(amount, customers.regions.opened_at)"}],
+        "metrics": [{"expression": "last(amount, customers.regions.opened_at)"}],
     }))
     assert resp.data, resp.sql
     assert re.search(r"JOIN\s+customers\b", resp.sql, re.I), resp.sql
@@ -861,7 +861,7 @@ async def test_e2e_local_derived_crossing_time_arg() -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["status"],
-        "metrics": [{"formula": "last(amount, cust_signup)"}],
+        "metrics": [{"expression": "last(amount, cust_signup)"}],
     }))
     assert resp.data, resp.sql
     assert re.search(r"JOIN\s+customers\b", resp.sql, re.I), resp.sql
@@ -876,7 +876,7 @@ async def test_e2e_time_arg_join_dedup_with_dimension() -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",
         "dimensions": ["customers.region"],
-        "metrics": [{"formula": "last(amount, customers.signup_at)"}],
+        "metrics": [{"expression": "last(amount, customers.signup_at)"}],
     }))
     assert resp.data, resp.sql
     assert "_cm_" in resp.sql, (

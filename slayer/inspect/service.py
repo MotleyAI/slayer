@@ -356,7 +356,7 @@ class InspectService:
         for ds, models in groups:
             if models is None:
                 entries.append(
-                    {"data_source": ds, "error": "invalid config", "models": []}
+                    {"data_source": ds, "error": "invalid config", "datasets": []}
                 )
             else:
                 entries.append(json.loads(render_datasets_summary(
@@ -614,7 +614,7 @@ class InspectService:
                 "entity_type": "datasource",
                 "description": trunc_desc,
                 "granularities": granularities,
-                "models": [
+                "datasets": [
                     dataset_skeleton_fields(
                         dataset=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
                     )

@@ -103,9 +103,9 @@ class TestZonedColumnReadsNaive:
     async def test_time_dimension_bucket_and_date_range(self) -> None:
         query = SlayerQuery.model_validate({
             "population": "lib",
-            "metrics": [{"formula": "count(*)"}],
+            "metrics": [{"expression": "count(*)"}],
             "time_dimensions": [
-            {"dimension": "ts", "granularity": "month", "date_range": ["2024-01-01", "2024-03-31"]}],
+            {"field": "ts", "granularity": "month", "date_range": ["2024-01-01", "2024-03-31"]}],
         })
         sql = " ".join((await _engine_generate(query=query, model=_zoned_lib(), dialect="bigquery")).upper().split())
         assert "DATE_TRUNC(CAST(LIB.TS AS DATETIME), MONTH)" in sql, sql
@@ -115,7 +115,7 @@ class TestZonedColumnReadsNaive:
         ("max(ts)", "MAX(CAST(LIB.TS AS DATETIME))"), ("count_distinct(ts)", "COUNT(DISTINCT CAST(LIB.TS AS DATETIME))"),
     ])
     async def test_aggregate_input_reads_naive(self, formula: str, fragment: str) -> None:
-        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"formula": formula, "name": "agg_v"}]})
+        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"expression": formula, "name": "agg_v"}]})
         sql = " ".join((await _engine_generate(query=query, model=_zoned_lib(), dialect="bigquery")).upper().split())
         assert fragment in sql, sql
 
@@ -123,7 +123,7 @@ class TestZonedColumnReadsNaive:
         base = _zoned_lib()
         model = base.model_copy(update={"fields": [*base.fields, DatasetField(
             name="ts_shifted", sql="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)", datatype=DataType.TIMESTAMP, db_type="TIMESTAMP")]})
-        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"formula": "max(ts_shifted)",
+        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"expression": "max(ts_shifted)",
                                                                                  "name": "agg_v"}]})
         sql = " ".join((await _engine_generate(query=query, model=model, dialect="bigquery")).upper().split())
         assert "MAX(CAST(TIMESTAMP_ADD(LIB.TS, INTERVAL '1' HOUR) AS DATETIME))" in sql, sql
@@ -133,8 +133,8 @@ class TestZonedColumnReadsNaive:
     async def test_ranked_pick_reads_naive(self, agg: str) -> None:
         query = SlayerQuery.model_validate({
             "population": "lib",
-            "metrics": [{"formula": f"{agg}(ts)", "name": "agg_v"}],
-            "time_dimensions": [{"dimension": "ts", "granularity": "month"}],
+            "metrics": [{"expression": f"{agg}(ts)", "name": "agg_v"}],
+            "time_dimensions": [{"field": "ts", "granularity": "month"}],
         })
         sql = " ".join((await _engine_generate(query=query, model=_zoned_lib(), dialect="bigquery")).upper().split())
         assert "CAST(LIB.TS AS DATETIME) AS _VAL_1" in sql, sql
@@ -143,8 +143,8 @@ class TestZonedColumnReadsNaive:
         base = _zoned_lib()
         model = base.model_copy(update={"fields": [*base.fields, DatasetField(
             name="ts_shifted", sql="TIMESTAMP_ADD(ts, INTERVAL 1 HOUR)", datatype=DataType.TIMESTAMP, db_type="TIMESTAMP")]})
-        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"formula": "count(*)"}],
-                                            "time_dimensions": [{"dimension": "ts_shifted", "granularity": "month"}]})
+        query = SlayerQuery.model_validate({"population": "lib", "metrics": [{"expression": "count(*)"}],
+                                            "time_dimensions": [{"field": "ts_shifted", "granularity": "month"}]})
         sql = " ".join((await _engine_generate(query=query, model=model, dialect="bigquery")).upper().split())
         assert "DATE_TRUNC(CAST(TIMESTAMP_ADD(LIB.TS, INTERVAL '1' HOUR) AS DATETIME), MONTH)" in sql, sql
 
@@ -182,7 +182,7 @@ class TestZonedColumnReadsNaive:
     async def test_window_time_reads_naive(self) -> None:
         models = _zoned(dev1840_models(), {("customers", "signup_at")})
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": signup_month_td(),
-                                            "metrics": [{"formula": WINDOWED_PARAM, "name": "w"}]})
+                                            "metrics": [{"expression": WINDOWED_PARAM, "name": "w"}]})
         sql = await _engine_generate(query=query, model=models[0], extra_models=models[1:], dialect="bigquery",
                                      validate=False)
         assert "CAST(customers.signup_at AS DATETIME) AS _w_time" in " ".join(sql.split()), sql

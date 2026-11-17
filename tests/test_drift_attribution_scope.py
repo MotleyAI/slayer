@@ -91,9 +91,9 @@ def _sql_model(*, name: str, sql: str, ds: str = "ds") -> SlayerDataset:
 
 # Reads orders + customers (not products) and fails for a non-drift reason.
 _UNRELATED_FAILURE = {
-    "source_model": "orders",
+    "population": "orders",
     "dimensions": ["customers.region"],
-    "measures": [{"formula": "sum(bad)"}],
+    "metrics": [{"expression": "sum(bad)"}],
 }
 
 
@@ -226,8 +226,8 @@ class TestReadSetScope:
     async def test_drift_in_a_read_join_target_wraps(self, env: _Env, explain: bool) -> None:
         env.live("DROP TABLE customers")
         err = await _fails_with_drift(env.engine, {
-            "source_model": "orders", "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders", "dimensions": ["customers.region"],
+            "metrics": [{"expression": "sum(amount)"}],
         }, explain=explain)
         assert "customers" in _blamed(err)
         assert any(
@@ -248,29 +248,29 @@ class TestReadSetScope:
         [
             pytest.param(
                 "customers",
-                {"source_model": "orders", "dimensions": ["customers.region"],
-                 "measures": [{"formula": "sum(amount)"}]},
+                {"population": "orders", "dimensions": ["customers.region"],
+                 "metrics": [{"expression": "sum(amount)"}]},
                 None,
                 id="single-stage",
             ),
             pytest.param(
                 "customers",
-                {"source_model": "s1", "measures": [{"formula": "sum(total)"}]},
-                {"name": "s1", "source_model": "orders", "dimensions": ["customers.region"],
-                 "measures": [{"formula": "sum(amount)", "name": "total"}]},
+                {"population": "s1", "metrics": [{"expression": "sum(total)"}]},
+                {"name": "s1", "population": "orders", "dimensions": ["customers.region"],
+                 "metrics": [{"expression": "sum(amount)", "name": "total"}]},
                 id="multi-stage",
             ),
             pytest.param(
                 "orders",
-                {"source_model": "customers", "dimensions": ["region"],
-                 "measures": [{"formula": "sum(orders.amount)"}]},
+                {"population": "customers", "dimensions": ["region"],
+                 "metrics": [{"expression": "sum(orders.amount)"}]},
                 None,
                 id="cross-model-producer",
             ),
             pytest.param(
                 "orders",
-                {"source_model": "customers", "measures": [{"formula": "count(*)"}],
-                 "filters": ["orders.amount > 5"]},
+                {"population": "customers", "metrics": [{"expression": "count(*)"}],
+                 "filter": ["orders.amount > 5"]},
                 None,
                 id="filter-semi-join",
             ),
@@ -288,11 +288,11 @@ class TestReadSetScope:
     async def test_a_pruned_stored_stage_is_not_read(self, env: _Env) -> None:
         await env.engine.create_dataset_from_query(
             query=[
-                {"name": "unused", "source_model": "products", "dimensions": ["name"],
-                 "measures": [{"formula": "count(*)", "name": "n"}]},
-                {"name": "s1", "source_model": "orders", "dimensions": ["customers.region"],
-                 "measures": [{"formula": "sum(amount)", "name": "total"}]},
-                {"source_model": "s1", "measures": [{"formula": "sum(total)", "name": "grand"}]},
+                {"name": "unused", "population": "products", "dimensions": ["name"],
+                 "metrics": [{"expression": "count(*)", "name": "n"}]},
+                {"name": "s1", "population": "orders", "dimensions": ["customers.region"],
+                 "metrics": [{"expression": "sum(amount)", "name": "total"}]},
+                {"population": "s1", "metrics": [{"expression": "sum(total)", "name": "grand"}]},
             ],
             name="qb_pruned",
         )
@@ -305,7 +305,7 @@ class TestReadSetScope:
             for s in stored.source_queries or []
         ]
         await env.save(stored.model_copy(update={"source_queries": stages}))
-        query = {"source_model": "qb_pruned", "measures": [{"formula": "sum(grand)"}]}
+        query = {"population": "qb_pruned", "metrics": [{"expression": "sum(grand)"}]}
         dry = await env.engine.execute(query, dry_run=True)
         assert "products" not in (dry.sql or ""), "fixture must prune the unused stage"
 
@@ -315,15 +315,15 @@ class TestReadSetScope:
     async def test_query_backed_source_is_read_through_its_stages(self, env: _Env) -> None:
         await env.engine.create_dataset_from_query(
             query=[
-                {"name": "s1", "source_model": "orders", "dimensions": ["customers.region"],
-                 "measures": [{"formula": "sum(amount)", "name": "total"}]},
-                {"source_model": "s1", "measures": [{"formula": "sum(total)", "name": "grand"}]},
+                {"name": "s1", "population": "orders", "dimensions": ["customers.region"],
+                 "metrics": [{"expression": "sum(amount)", "name": "total"}]},
+                {"population": "s1", "metrics": [{"expression": "sum(total)", "name": "grand"}]},
             ],
             name="qb",
         )
         env.live("ALTER TABLE orders DROP COLUMN amount")
         err = await _fails_with_drift(
-            env.engine, {"source_model": "qb", "measures": [{"formula": "sum(grand)"}]},
+            env.engine, {"population": "qb", "metrics": [{"expression": "sum(grand)"}]},
         )
         assert "orders" in _blamed(err)
 
@@ -332,8 +332,8 @@ class TestPayload:
     async def test_models_lists_only_the_blamed_models(self, env: _Env) -> None:
         env.live("ALTER TABLE customers DROP COLUMN region")
         err = await _fails_with_drift(env.engine, {
-            "source_model": "orders", "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders", "dimensions": ["customers.region"],
+            "metrics": [{"expression": "sum(amount)"}],
         })
         assert err.datasets == ["customers"]
         assert err.datasets == sorted(_blamed(err))
@@ -342,8 +342,8 @@ class TestPayload:
         # Dropping customers blames it wholesale and cascades orders' join.
         env.live("DROP TABLE customers")
         err = await _fails_with_drift(env.engine, {
-            "source_model": "orders", "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders", "dimensions": ["customers.region"],
+            "metrics": [{"expression": "sum(amount)"}],
         })
         assert err.datasets == ["customers", "orders"]
         assert err.datasets == sorted(_blamed(err))
@@ -374,7 +374,7 @@ class TestScopedInspection:
                 wraps=sqlite_introspect.probe_sqlite_integer_column,
             ) as probe:
                 await _fails_unwrapped(
-                    e.engine, {"source_model": "t3", "measures": [{"formula": "sum(bad)"}]},
+                    e.engine, {"population": "t3", "metrics": [{"expression": "sum(bad)"}]},
                 )
             assert [c.kwargs["table_name"] for c in introspect.call_args_list] == ["t3"]
             assert {c.kwargs["table"] for c in probe.call_args_list} == {"t3"}
@@ -391,7 +391,7 @@ class TestScopedInspection:
         await env.save(_sql_model(name="sq_orders", sql="SELECT id, amount FROM orders"))
         await env.save(_sql_model(name="sq_customers", sql="SELECT id, region FROM customers"))
         await _fails_unwrapped(
-            env.engine, {"source_model": "sq_orders", "measures": [{"formula": "sum(bad)"}]},
+            env.engine, {"population": "sq_orders", "metrics": [{"expression": "sum(bad)"}]},
         )
         assert spies.trialled() == ["sq_orders"]
 
@@ -415,7 +415,7 @@ class TestScopedInspection:
             ],
         ))
         await _fails_unwrapped(
-            env.engine, {"source_model": "orders_view", "measures": [{"formula": "sum(bad)"}]},
+            env.engine, {"population": "orders_view", "metrics": [{"expression": "sum(bad)"}]},
         )
 
     async def test_explicit_validation_stays_whole_datasource(self, env: _Env, spies: _Spies) -> None:
@@ -423,7 +423,7 @@ class TestScopedInspection:
             "ALTER TABLE products DROP COLUMN name; ALTER TABLE customers DROP COLUMN region;"
         )
         await _fails_unwrapped(
-            env.engine, {"source_model": "orders", "measures": [{"formula": "sum(bad)"}]},
+            env.engine, {"population": "orders", "metrics": [{"expression": "sum(bad)"}]},
         )
         entries = await env.engine.validate_datasets(data_source="ds")
         assert {e.dataset_name for e in entries} >= {"customers", "products"}
@@ -450,7 +450,7 @@ class TestSnapshotReuse:
         await env.save(_sql_model(name="sq_orders", sql="SELECT id, amount FROM orders"))
         for _ in range(3):
             await _fails_unwrapped(
-                env.engine, {"source_model": "sq_orders", "measures": [{"formula": "sum(bad)"}]},
+                env.engine, {"population": "sq_orders", "metrics": [{"expression": "sum(bad)"}]},
             )
         assert spies.trialled() == ["sq_orders"]
 
@@ -463,8 +463,8 @@ class TestSnapshotReuse:
             "joins": [DatasetRelationship(to="sq_b", join_pairs=[["id", "id"]])],
         }))
         await _fails_unwrapped(env.engine, {
-            "source_model": "sq_a", "dimensions": ["sq_b.id"],
-            "measures": [{"formula": "sum(bad)"}],
+            "population": "sq_a", "dimensions": ["sq_b.id"],
+            "metrics": [{"expression": "sum(bad)"}],
         })
         assert len(spies.trialled()) == 1
 
@@ -477,7 +477,7 @@ class TestSnapshotReuse:
         ) as resolve:
             for _ in range(2):
                 await _fails_unwrapped(
-                    env.engine, {"source_model": "sq_broken", "measures": [{"formula": "count(*)"}]},
+                    env.engine, {"population": "sq_broken", "metrics": [{"expression": "count(*)"}]},
                 )
         assert spies.trialled() == ["sq_broken"]
         assert resolve.call_count == 1
@@ -507,7 +507,7 @@ class TestSnapshotReuse:
     ) -> None:
         env.live("DROP TABLE orders")
         spies.listing.side_effect = RuntimeError("permission denied")
-        query = {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]}
+        query = {"population": "orders", "metrics": [{"expression": "sum(amount)"}]}
         for _ in range(2):
             err = await _fails_unwrapped(env.engine, query)
             assert "no such table" in str(err).lower()
@@ -516,7 +516,7 @@ class TestSnapshotReuse:
     async def test_a_model_edit_within_the_window_is_honoured(self, env: _Env, spies: _Spies) -> None:
         env.live("ALTER TABLE orders DROP COLUMN amount")
         first = await _fails_with_drift(
-            env.engine, {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]},
+            env.engine, {"population": "orders", "metrics": [{"expression": "sum(amount)"}]},
         )
         assert any(
             isinstance(e, EditDatasetDelete) and e.dataset_name == "orders"
@@ -529,7 +529,7 @@ class TestSnapshotReuse:
             "fields": [c for c in orders.fields if c.name != "amount"],
         }))
         await _fails_unwrapped(
-            env.engine, {"source_model": "orders", "measures": [{"formula": "sum(bad)"}]},
+            env.engine, {"population": "orders", "metrics": [{"expression": "sum(bad)"}]},
         )
         assert spies.listing.call_count == 1
 
@@ -546,7 +546,7 @@ class TestSnapshotReuse:
 
     async def test_a_dropped_tables_absence_is_reused(self, env: _Env, spies: _Spies) -> None:
         env.live("DROP TABLE orders")
-        query = {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]}
+        query = {"population": "orders", "metrics": [{"expression": "sum(amount)"}]}
         for _ in range(3):
             err = await _fails_with_drift(env.engine, query)
             assert any(
@@ -688,12 +688,12 @@ class TestUnreadableTable:
         env.live("ALTER TABLE customers DROP COLUMN region")
         with patch.object(schema_drift, "_introspect_one_table", side_effect=_customers_unreadable):
             await _fails_unwrapped(env.engine, {
-                "source_model": "customers", "dimensions": ["region"],
-                "measures": [{"formula": "count(*)"}],
+                "population": "customers", "dimensions": ["region"],
+                "metrics": [{"expression": "count(*)"}],
             })
             env.live("ALTER TABLE orders DROP COLUMN amount")
             err = await _fails_with_drift(
-                env.engine, {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]},
+                env.engine, {"population": "orders", "metrics": [{"expression": "sum(amount)"}]},
             )
         assert "orders" in _blamed(err)
 
@@ -725,7 +725,7 @@ class TestUnreachableDatasource:
         self, tmp_path: Path, source: str,
     ) -> None:
         engine = await _unreachable_engine(tmp_path)
-        query = {"source_model": source, "measures": [{"formula": "count(*)"}]}
+        query = {"population": source, "metrics": [{"expression": "count(*)"}]}
         try:
             with patch.object(
                 SlayerSQLClient, "_metadata", autospec=True,
@@ -763,42 +763,42 @@ _FIT_MARKER_RE = re.compile(r"_[0-9a-f]{8}_")
 _LONG = "AnExtremelyLongModelNameThatForcesIdentifierFitting"
 
 _QB_STAGES = [
-    {"name": "s1", "source_model": "orders", "dimensions": ["customers.region"],
-     "measures": [{"formula": "sum(amount)", "name": "total"}]},
-    {"source_model": "s1", "measures": [{"formula": "sum(total)", "name": "grand"}]},
+    {"name": "s1", "population": "orders", "dimensions": ["customers.region"],
+     "metrics": [{"expression": "sum(amount)", "name": "total"}]},
+    {"population": "s1", "metrics": [{"expression": "sum(total)", "name": "grand"}]},
 ]
 
 # (id, input, expected read set); query-backed models qb / qb_pruned are saved by the test.
 _READ_SET_CORPUS = [
     pytest.param(
-        {"source_model": "orders", "dimensions": ["customers.region"],
-         "measures": [{"formula": "sum(amount)"}]},
+        {"population": "orders", "dimensions": ["customers.region"],
+         "metrics": [{"expression": "sum(amount)"}]},
         {"orders", "customers"}, id="single-stage",
     ),
     pytest.param(
-        [_QB_STAGES[0], {"source_model": "s1", "measures": [{"formula": "sum(total)"}]}],
+        [_QB_STAGES[0], {"population": "s1", "metrics": [{"expression": "sum(total)"}]}],
         {"orders", "customers"}, id="multi-stage",
     ),
     pytest.param(
-        {"source_model": "qb", "measures": [{"formula": "sum(grand)"}]},
+        {"population": "qb", "metrics": [{"expression": "sum(grand)"}]},
         {"qb", "orders", "customers"}, id="query-backed-splice",
     ),
     pytest.param(
-        {"source_model": "qb_pruned", "measures": [{"formula": "sum(grand)"}]},
+        {"population": "qb_pruned", "metrics": [{"expression": "sum(grand)"}]},
         {"qb_pruned", "orders", "customers"}, id="pruned-splice",
     ),
     pytest.param(
-        {"source_model": "customers", "dimensions": ["region"],
-         "measures": [{"formula": "sum(orders.amount)"}]},
+        {"population": "customers", "dimensions": ["region"],
+         "metrics": [{"expression": "sum(orders.amount)"}]},
         {"customers", "orders"}, id="cross-model-producer",
     ),
     pytest.param(
-        {"source_model": "customers", "measures": [{"formula": "count(*)"}],
-         "filters": ["orders.amount > 5"]},
+        {"population": "customers", "metrics": [{"expression": "count(*)"}],
+         "filter": ["orders.amount > 5"]},
         {"customers", "orders"}, id="filter-semi-join",
     ),
     pytest.param(
-        {"source_model": "sq_orders", "measures": [{"formula": "count(*)"}]},
+        {"population": "sq_orders", "metrics": [{"expression": "count(*)"}]},
         {"sq_orders"}, id="sql-model",
     ),
 ]
@@ -873,8 +873,8 @@ class TestReadSetStamp:
         await env.engine.create_dataset_from_query(query=_QB_STAGES, name="qb")
         await env.engine.create_dataset_from_query(
             query=[
-                {"name": "unused", "source_model": "products", "dimensions": ["name"],
-                 "measures": [{"formula": "count(*)", "name": "n"}]},
+                {"name": "unused", "population": "products", "dimensions": ["name"],
+                 "metrics": [{"expression": "count(*)", "name": "n"}]},
                 *_QB_STAGES,
             ],
             name="qb_pruned",
@@ -904,9 +904,9 @@ class TestReadSetStamp:
         engine = SlayerQueryEngine(storage=storage)
         try:
             statement, touched, sql = await _render(engine, {
-                "source_model": f"{_LONG}Invoice",
+                "population": f"{_LONG}Invoice",
                 "dimensions": ["status", f"{_LONG}Customer.{_LONG}Consumer.lifetime_value"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"expression": "count(*)"}],
             })
         finally:
             await engine.aclose()
