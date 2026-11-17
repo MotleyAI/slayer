@@ -1,7 +1,7 @@
 # models/column-filters Specification
 
 ## Purpose
-Defines `Column.filter` as sugar for a conditional derived definition, so a filtered
+Defines `DatasetField.filter` as sugar for a conditional derived definition, so a filtered
 column behaves as one column expression in every position, with one dependency rule.
 
 ## Requirements

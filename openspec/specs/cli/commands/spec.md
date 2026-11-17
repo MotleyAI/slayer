@@ -55,17 +55,17 @@ refresh-samples`.
 
 ### Requirement: Sample refresh is a datasources command
 `slayer datasources refresh-samples` SHALL re-profile and persist sample values for table-backed
-models, optionally limited to one datasource (`--data-source`) and to named models (`--model`,
+models, optionally limited to one datasource (`--data-source`) and to named models (`--dataset`,
 repeatable), printing text or, with `--format json`, a JSON result envelope. A named model that does
 not resolve in scope SHALL make the command exit with status 1. It SHALL NOT write anything other
 than the refreshed sample values.
 
 #### Scenario: Refresh one model
-- **WHEN** `slayer datasources refresh-samples --data-source jaffle_shop --model orders` runs
+- **WHEN** `slayer datasources refresh-samples --data-source jaffle_shop --dataset orders` runs
 - **THEN** `orders`' sample values are refreshed and persisted and the command exits 0
 
 #### Scenario: Unknown model
-- **WHEN** `slayer datasources refresh-samples --data-source jaffle_shop --model nope --format json`
+- **WHEN** `slayer datasources refresh-samples --data-source jaffle_shop --dataset nope --format json`
   runs
 - **THEN** the JSON envelope lists `jaffle_shop.nope` as unresolved and the exit status is 1
 
@@ -79,12 +79,12 @@ other cells as their plain value. `--format json` output SHALL carry the raw val
 - **THEN** the table cell shows `$193.65K` and the JSON output carries the unformatted value
 
 ### Requirement: export-osi writes an Ossie document
-`slayer export-osi --datasource X --out <file>` SHALL write the datasource's models as an Ossie document to `<file>`, as JSON when the file name ends in `.json` and as YAML otherwise, and SHALL print the export report. `--models` SHALL limit the export to the named models, and `--no-extensions` SHALL omit the `SLAYER` extensions. An unknown datasource or an unknown model name SHALL fail as a CLI error and write no file.
+`slayer export-osi --datasource X --out <file>` SHALL write the datasource's models as an Ossie document to `<file>`, as JSON when the file name ends in `.json` and as YAML otherwise, and SHALL print the export report. `--datasets` SHALL limit the export to the named models, and `--no-extensions` SHALL omit the `SLAYER` extensions. An unknown datasource or an unknown model name SHALL fail as a CLI error and write no file.
 
 #### Scenario: Export to YAML
 - **WHEN** `slayer export-osi --datasource jaffle_shop --out shop.osi.yaml` runs
 - **THEN** `shop.osi.yaml` holds a YAML Ossie document of the datasource's models, the report is printed, and the exit status is 0
 
 #### Scenario: Unknown model
-- **WHEN** `slayer export-osi --datasource jaffle_shop --models nope --out shop.osi.yaml` runs
+- **WHEN** `slayer export-osi --datasource jaffle_shop --datasets nope --out shop.osi.yaml` runs
 - **THEN** stderr holds one `Error: ` line naming `nope`, no file is written, and the exit status is 1

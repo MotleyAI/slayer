@@ -1,38 +1,38 @@
-# Measures from joined models
+# Metrics from joined datasets
 
-A key requirement for an expressive semantic layer is [joins](../05_joins/joins.md). Once you have a join defined, it's easy to reuse dimensions from child models — you've already joined the underlying table, just refer to dimension definitions prefixed with the right subquery alias.
+A key requirement for an expressive semantic layer is [relationships](../05_joins/joins.md). Once you have a relationship defined, it's easy to reuse dimensions from child datasets — you've already joined the underlying table, just refer to dimension definitions prefixed with the right subquery alias.
 
-Using *measures* from child models is harder. Why not just do all the joins, then apply the measure definition to the corresponding columns in the joined-up expression? Because the join might change the cardinality (number of rows) in the pre-aggregation result, thus breaking aggregations such as sum or average.
+Using *metrics* from child datasets is harder. Why not just do all the joins, then apply the metric definition to the corresponding columns in the joined-up expression? Because the join might change the cardinality (number of rows) in the pre-aggregation result, thus breaking aggregations such as sum or average.
 
-For measures from joined models to be useful, we must ensure that querying a measure from a joined model, grouped only by dimensions available in that joined model, gives the same result as querying that measure directly from the joined model. So for example if `orders` has a join to `customers`, and `customers` has a dimension `name`, then these two queries must give the same result:
+For metrics from joined datasets to be useful, we must ensure that querying a metric from a joined dataset, grouped only by dimensions available in that joined dataset, gives the same result as querying that metric directly from the joined dataset. So for example if `orders` has a relationship to `customers`, and `customers` has a dimension `name`, then these two queries must give the same result:
 
 ```json
-{"source_model": "orders", "measures": ["count(customers.*)"], "dimensions": ["customers.name"]}
+{"population": "orders", "metrics": ["count(customers.*)"], "dimensions": ["customers.name"]}
 ```
 
 ```json
-{"source_model": "customers", "measures": ["count(*)"], "dimensions": ["name"]}
+{"population": "customers", "metrics": ["count(*)"], "dimensions": ["name"]}
 ```
 
-How do we achieve that? Through a sub-query. Suppose we have a query that references a measure from a joined model. We split that query into two parts: one that contains the [cross-model measure](../../concepts/queries.md#cross-model-measures) reference, and the other that contains all the other fields. We evaluate the second one as usual; and for the first one, we change the source model to the model of that measure, then drop all dimensions that are not reachable from that model.
+How do we achieve that? Through a sub-query. Suppose we have a query that references a metric from a joined dataset. We split that query into two parts: one that contains the [cross-dataset metric](../../concepts/queries.md#cross-dataset-metrics) reference, and the other that contains all the other fields. We evaluate the second one as usual; and for the first one, we change the population to the dataset of that metric, then drop all dimensions that are not reachable from that dataset.
 
 We then evaluate both queries (the results may have different cardinality because the dimensions in one are only a subset of the other), and left join the results to each other by all the dimensions they share.
 
-This way we guarantee that the values of that joined measure are exactly the same as in the original — as that is exactly how it's evaluated.
+This way we guarantee that the values of that joined metric are exactly the same as in the original — as that is exactly how it's evaluated.
 
-[Transforms](../../concepts/formulas.md) like `cumsum()` and `change()` work on cross-model measures too — the transform is applied after the sub-query join:
+[Transforms](../../concepts/formulas.md) like `cumsum()` and `change()` work on cross-dataset metrics too — the transform is applied after the sub-query join:
 
 ```json
 {
-  "source_model": "orders",
-  "time_dimensions": [{"dimension": "ordered_at", "granularity": "month"}],
-  "measures": [
+  "population": "orders",
+  "time_dimensions": [{"field": "ordered_at", "granularity": "month"}],
+  "metrics": [
     "count(customers.*)",
-    {"formula": "cumsum(count(customers.*))", "name": "cumulative_customers"}
+    {"expression": "cumsum(count(customers.*))", "name": "cumulative_customers"}
   ]
 }
 ```
 
 ---
 
-See the [companion notebook](joined_measures_nb.ipynb) for runnable code demonstrating cross-model measures.
+See the [companion notebook](joined_measures_nb.ipynb) for runnable code demonstrating cross-dataset metrics.

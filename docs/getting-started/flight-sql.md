@@ -61,9 +61,9 @@ Auth: bearer token
 
 ### Tableau
 
-Tableau treats Flight SQL identifiers as case-sensitive by default. When picking models
-and dimensions, **match SLayer's casing exactly** (lowercase model + column names in
-the demo dataset). Configure the connection as:
+Tableau treats Flight SQL identifiers as case-sensitive by default. When picking datasets
+and dimensions, **match SLayer's casing exactly** (lowercase dataset + field names in
+the demo). Configure the connection as:
 
 ```text
 Server: <slayer-host>
@@ -108,7 +108,7 @@ table from the BI tool:
 SELECT * FROM INFORMATION_SCHEMA.METRICS LIMIT 20;
 ```
 
-Then try a single-table SELECT against a real model — `row_count` is always available:
+Then try a single-table SELECT against a real dataset — `row_count` is always available:
 
 ```sql
 SELECT row_count FROM orders;

@@ -398,7 +398,7 @@ class TestLaw3TriggerMatrix:
         plan = _plan(query)
         if expect_host_rooted:
             # A host-grain wrap / crossing-input wrap is a
-            # HOST-rooted regroup producer (producer_root_model None = rooted
+            # HOST-rooted regroup producer (producer_root_dataset None = rooted
             # at the consumer, which IS the host).
             attach = next(
                 (a for a in plan.regroup_attach_plans

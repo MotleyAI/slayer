@@ -75,21 +75,21 @@ only one of the pair is rejected at startup.
 ## Catalog Layout
 
 SLayer exposes a single Flight catalog named **`slayer`** with one **schema per
-datasource** and one **table per non-hidden `SlayerModel`** in that datasource. Each
+datasource** and one **table per non-hidden `SlayerDataset`** in that datasource. Each
 table carries two fan-outs:
 
-* **Metrics** — derived from each model's `columns` × eligible aggregations, plus saved
-  `ModelMeasure` formulas, plus custom aggregations on the model, plus a synthetic
+* **Metrics** — derived from each dataset's `fields` × eligible aggregations, plus saved
+  `DatasetMetric` expressions, plus custom aggregations on the dataset, plus a synthetic
   `row_count` metric (`count(*)`).
-* **Dimensions** — every non-hidden column of the model, plus reachable join targets
+* **Dimensions** — every non-hidden field of the dataset, plus reachable relationship targets
   walked up to depth 3.
 
-Cross-model dimensions use **dotted** path syntax — `customers.regions.name` is a
+Cross-dataset dimensions use **dotted** path syntax — `customers.regions.name` is a
 multi-hop dimension on `orders` when `orders → customers → regions`. The same dotted
 form is used in `INFORMATION_SCHEMA.*`, in the BI-tool projection list, in `WHERE`, and
 in the SLayer DSL.
 
-`count(*)` is exposed as a column literally named `row_count`. If a user-defined column
+`count(*)` is exposed as a column literally named `row_count`. If a user-defined field
 is also named `row_count`, SLayer renames the synthetic to `_row_count` and logs a
 warning at catalog-build time.
 
@@ -177,15 +177,15 @@ gRPC status.
 ## Wire-Format Schema (Phase 1)
 
 The wire schema for a `SELECT ... FROM <flight-table>` is derived from the
-**catalog-declared** `DataType` of each projected item (`Column.datatype` for dimensions,
-`ModelMeasure.datatype` for measures). A `LIMIT 0` is still executed for engine-side query
+**catalog-declared** `DataType` of each projected item (`DatasetField.datatype` for dimensions,
+`DatasetMetric.datatype` for metrics). A `LIMIT 0` is still executed for engine-side query
 validation, but `SlayerResponse.attributes` does not yet expose per-column Arrow types
 so the catalog-declared types are the wire-schema source. Phase 2 will tighten this to
 a real `LIMIT 0`-derived schema.
 
-If a `ModelMeasure` has an incorrect or absent declared `type`, the wire-schema /
-data-row type mismatch surfaces as `ArrowTypeError`. Set `ModelMeasure.datatype` on custom
-formulas that surface over Flight SQL.
+If a `DatasetMetric` has an incorrect or absent declared `datatype`, the wire-schema /
+data-row type mismatch surfaces as `ArrowTypeError`. Set `DatasetMetric.datatype` on custom
+expressions that surface over Flight SQL.
 
 ## Unobserved Commands
 

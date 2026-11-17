@@ -1,7 +1,7 @@
 """Shared setup for Jaffle Shop example notebooks.
 
 Thin wrapper over ``slayer.demo.jaffle_shop.ensure_demo_datasource`` — pins the
-DuckDB + SLayer-models location next to this file so notebooks can reuse a
+DuckDB + SLayer-datasets location next to this file so notebooks can reuse a
 single on-disk dataset across runs.
 """
 
@@ -23,17 +23,17 @@ MODELS_DIR = os.path.join(_THIS_DIR, "slayer_models")
 def ensure_jaffle_shop(
     years: int = 3,
 ) -> Tuple[SlayerQueryEngine, YAMLStorage, List[SlayerDataset]]:
-    """Ensure the Jaffle Shop DuckDB and SLayer models exist; return an engine.
+    """Ensure the Jaffle Shop DuckDB and SLayer datasets exist; return an engine.
 
     On first run, generates ~``years`` of synthetic data with jafgen and ingests
-    the models. Subsequent runs reuse the existing database and models.
+    the datasets. Subsequent runs reuse the existing database and datasets.
     """
     # Machine-independent notebook outputs: no paths in warnings (kernel-wide by design).
     warnings.formatwarning = lambda msg, cat, *a, **k: f"{cat.__name__}: {msg}\n"
 
     storage = YAMLStorage(base_dir=MODELS_DIR)
 
-    _ds, models, db_built = ensure_demo_datasource(
+    _ds, datasets, db_built = ensure_demo_datasource(
         storage,
         storage_path=_THIS_DIR,
         years=years,
@@ -45,4 +45,4 @@ def ensure_jaffle_shop(
         print(f"Database created at {os.path.relpath(DB_PATH, start=_THIS_DIR)}")
 
     engine = SlayerQueryEngine(storage=storage)
-    return engine, storage, models
+    return engine, storage, datasets

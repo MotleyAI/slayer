@@ -85,7 +85,7 @@ def _reject_reserved_prefix(name: str, label: str) -> None:
 _NO_DOT = _SubstringRule(
     substring=".",
     reason="dots are the canonical-id namespace delimiter "
-           "(``<ds>.<model>.<leaf>``) and the dotted-path reference "
+           "(``<ds>.<dataset>.<leaf>``) and the dotted-path reference "
            "syntax in queries.",
 )
 _NO_COLON = _SubstringRule(
@@ -121,7 +121,7 @@ def _require_non_empty_trimmed(v: str, context: str) -> None:
 
 
 def _validate_dataset_name(name: str, context: str) -> str:
-    """Reject model/query names containing ``.``/``:`` or the ``__slayer_`` prefix."""
+    """Reject dataset/query names containing ``.``/``:`` or the ``__slayer_`` prefix."""
     label = f"{context} name"
     _NO_DOT.check(name=name, context=label)
     _NO_COLON.check(name=name, context=label)
@@ -138,7 +138,7 @@ def sanitize_dataset_name(name: str) -> str:
 
 
 def _validate_field_name(name: str, context: str) -> str:
-    """Reject dimension/measure names containing ``.`` or ``:`` (``__`` allowed for flattened join paths)."""
+    """Reject dimension/metric names containing ``.`` or ``:`` (``__`` allowed for flattened relationship paths)."""
     label = f"{context} name"
     _NO_DOT.check(name=name, context=label)
     _NO_COLON.check(name=name, context=label)
@@ -155,21 +155,21 @@ def _bare_identifier(sql: str) -> str | None:
 
 
 def is_base_field_sql(sql: str | None) -> bool:
-    """A column ``sql`` that names one physical column (unset, bare or double-quoted identifier)."""
+    """A field ``sql`` that names one physical column (unset, bare or double-quoted identifier)."""
     return sql is None or _bare_identifier(sql) is not None
 
 
 def physical_column_sql(*, sql: str | None, name: str) -> str:
-    """The unquoted physical identifier of a base column, else ``name``."""
+    """The unquoted physical identifier of a base field, else ``name``."""
     return (_bare_identifier(sql) if sql is not None else None) or name
 
 
 def check_element_type(*, name: str, data_type: DataType, element_type: DataType | None) -> None:
-    """``element_type`` is rejected off a list and is never itself a list (the model requires it on one)."""
+    """``element_type`` is rejected off a list and is never itself a list (the dataset requires it on one)."""
     if data_type is not DataType.ARRAY and element_type is not None:
         raise ValueError(
             f"DatasetField {name!r} declares element_type {element_type.value} but its type is {data_type.value}; "
-            f"only an ARRAY column has an element_type."
+            f"only an ARRAY field has an element_type."
         )
     if element_type is DataType.ARRAY:
         raise ValueError(
@@ -213,7 +213,7 @@ def _check_one_expression(*, field: str, sql: str) -> None:
 
 
 class DatasetField(BaseModel):
-    """A row-level column, usable per-query as a GROUP BY dimension or an aggregation measure."""
+    """A row-level field, usable per-query as a GROUP BY dimension or an aggregation metric."""
     name: str
     sql: str | None = None
     datatype: DataType = Field(
@@ -224,7 +224,7 @@ class DatasetField(BaseModel):
         default=None,
         description=(
             "A list's element type, any type but ARRAY; forbidden off ARRAY. Required on a table-backed "
-            "model's list; an sql-mode model's undeclared one is UNKNOWN."
+            "dataset's list; an sql-mode dataset's undeclared one is UNKNOWN."
         ),
     )
     db_type: str | None = Field(
@@ -233,11 +233,11 @@ class DatasetField(BaseModel):
             "Raw database type string (e.g. 'point', 'DECIMAL(18, 2)'), "
             "retained when the declared DataType loses information. Populated "
             "by ingestion for UNKNOWN (opaque), exact NUMERIC/DECIMAL, JSON, "
-            "zoned-timestamp and list columns; None when the mapped type carries everything needed."
+            "zoned-timestamp and list fields; None when the mapped type carries everything needed."
         ),
     )
     primary_key: bool = False
-    unique: bool = False  # single-column uniqueness; a sole primary key implies it, a composite member does not
+    unique: bool = False  # single-field uniqueness; a sole primary key implies it, a composite member does not
     description: str | None = None
     label: str | None = None
     hidden: bool = False
@@ -245,9 +245,9 @@ class DatasetField(BaseModel):
     granularity: GranularitySpec | None = Field(
         default=None,
         description=(
-            "Time bucket the column's values are already truncated to: a built-in "
-            "granularity or a custom granularity defined on the model's datasource. "
-            "Query-backed models stamp it from the final stage; on a table-backed "
+            "Time bucket the field's values are already truncated to: a built-in "
+            "granularity or a custom granularity defined on the dataset's datasource. "
+            "Query-backed datasets stamp it from the final stage; on a table-backed "
             "field set it by hand only when you are sure the values are bucketed "
             "at that granularity. A finer or non-nesting time dimension over the "
             "field is then a typed error."
@@ -259,7 +259,7 @@ class DatasetField(BaseModel):
     sampled: str | None = None  # cached sample-value snapshot
     sampled_values: list[str] | None = None  # structured top-N
     distinct_count: int | None = None  # true cardinality at profile time
-    # Runtime-only (never persisted): stale respellings of a generated query-backed column.
+    # Runtime-only (never persisted): stale respellings of a generated query-backed field.
     _respellings: tuple[str, ...] = PrivateAttr(default=())
 
     @model_validator(mode="before")
@@ -270,7 +270,7 @@ class DatasetField(BaseModel):
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
-        return _validate_field_name(v, "Column")
+        return _validate_field_name(v, "Field")
 
     @field_validator("filter")
     @classmethod
@@ -288,12 +288,12 @@ class DatasetField(BaseModel):
 
     @model_validator(mode="after")
     def _validate_granularity_temporal(self) -> "DatasetField":
-        # A bucket only makes sense on a temporal column (like filter/aggregations, fail at construction).
+        # A bucket only makes sense on a temporal field (like filter/aggregations, fail at construction).
         if self.granularity is not None and self.datatype not in (DataType.DATE, DataType.TIMESTAMP):
             raise ValueError(
                 f"DatasetField {self.name!r} declares granularity "
                 f"'{self.granularity}' but its type is {self.datatype.value}; "
-                f"a granularity is only valid on a temporal (DATE / TIMESTAMP) column."
+                f"a granularity is only valid on a temporal (DATE / TIMESTAMP) field."
             )
         return self
 
@@ -314,17 +314,17 @@ class DatasetField(BaseModel):
 
     @property
     def physical_name(self) -> str:
-        """The physical column this base column reads; raises on an expression column."""
+        """The physical column this base field reads; raises on an expression field."""
         if not self.is_base:
             raise RelationshipKeyError(
-                summary=f"field {self.name!r} is not a base column (sql={self.sql!r}) "
+                summary=f"field {self.name!r} is not a base field (sql={self.sql!r}) "
                         f"and has no physical spelling",
             )
         return physical_column_sql(sql=self.sql, name=self.name)
 
     @property
     def physical_quoted(self) -> bool:
-        """Whether this base column's ``sql`` quotes its physical name (an exact-case name)."""
+        """Whether this base field's ``sql`` quotes its physical name (an exact-case name)."""
         text = (self.sql or "").strip()
         return self.is_base and len(text) > 1 and text[0] == text[-1] == '"'
 
@@ -345,21 +345,21 @@ class DatasetField(BaseModel):
 
 
 def list_operations_hint(field: DatasetField) -> str:
-    """One line naming what a list column takes."""
+    """One line naming what a list field takes."""
     n = field.name
     return (f"list: contains({n}, x), contains_any / contains_all({n}, [...]), length({n}) (distinct elements); "
             f"it groups and compares as the set of its distinct elements; its elements are {n}.value")
 
 
 def field_type_text(field: DatasetField) -> str:
-    """``ARRAY<TEXT> (list: …)`` for a list column, else its type."""
+    """``ARRAY<TEXT> (list: …)`` for a list field, else its type."""
     if field.datatype is not DataType.ARRAY:
         return str(field.datatype)
     return f"{type_display(field.datatype, field.element_type)} ({list_operations_hint(field)})"
 
 
 def is_identifier(*, field: DatasetField, fields: list[DatasetField]) -> bool:
-    """``field`` is its model's sole primary key (composite-key members are not identifiers)."""
+    """``field`` is its dataset's sole primary key (composite-key members are not identifiers)."""
     return field.primary_key and sum(1 for c in fields if c.primary_key) == 1
 
 
@@ -379,52 +379,52 @@ def _check_allowed_aggregation(
     *, field: DatasetField, agg_name: str, identifier: bool,
     custom_agg_names: AbstractSet[str], valid_names: AbstractSet[str],
 ) -> None:
-    """One ``allowed_aggregations`` entry must be known and eligible for the column's type / identifier role."""
+    """One ``allowed_aggregations`` entry must be known and eligible for the field's type / identifier role."""
     if agg_name not in valid_names:
         raise ValueError(
             f"DatasetField '{field.name}': allowed_aggregations contains "
             f"'{agg_name}', which is not a built-in aggregation "
-            f"or defined in this model's aggregations. "
+            f"or defined in this dataset's aggregations. "
             f"Valid: {sorted(valid_names)}"
         )
     if identifier:
         if agg_name not in PRIMARY_KEY_AGGREGATIONS:
             raise ValueError(
                 f"DatasetField '{field.name}': '{agg_name}' is not allowed "
-                f"on a primary-key column. PK columns can only be "
+                f"on a primary-key field. PK fields can only be "
                 f"aggregated with {sorted(PRIMARY_KEY_AGGREGATIONS)}."
             )
         return
     if agg_name in custom_agg_names and agg_name not in BUILTIN_AGGREGATIONS:
-        # Custom aggregations bypass type-default eligibility; the formula decides.
+        # Custom aggregations bypass type-default eligibility; the expression decides.
         return
     allowed_for_type = DEFAULT_AGGREGATIONS_BY_TYPE.get(field.datatype, frozenset())
     if agg_name not in allowed_for_type:
         raise ValueError(
             f"DatasetField '{field.name}': aggregation '{agg_name}' is not "
-            f"applicable to {field.datatype} columns. allowed_aggregations "
+            f"applicable to {field.datatype} fields. allowed_aggregations "
             f"must be a subset of the type-default set "
             f"{sorted(allowed_for_type)} (plus any custom "
-            f"aggregations defined on this model)."
+            f"aggregations defined on this dataset)."
         )
 
 
 class DatasetMetric(BaseModel):
-    """A named aggregation formula, inline in a query or saved on a model and referenced by bare name."""
-    expression: str = Field(description="Same syntax as the query object's measures.")
-    name: str | None = Field(default=None, description="Result key; filters and order may use it in place of the formula.")
+    """A named aggregation expression, inline in a query or saved on a dataset and referenced by bare name."""
+    expression: str = Field(description="Same syntax as the query object's metrics.")
+    name: str | None = Field(default=None, description="Result key; filters and order may use it in place of the expression.")
     label: str | None = None
     description: str | None = None
     datatype: DataType | None = None
     meta: dict[str, Any] | None = None
-    # Pre-substitution formula; names derive from it so result keys never carry variable values.
+    # Pre-substitution expression; names derive from it so result keys never carry variable values.
     _template: str | None = PrivateAttr(default=None)
     # The effective variables a whole-``IN`` placeholder left unwritten by binding reads (``parse_bound_expr``).
     _bound_variables: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     @property
     def template(self) -> str:
-        """The formula as written, before ``{var}`` substitution."""
+        """The expression as written, before ``{var}`` substitution."""
         return self._template or self.expression
 
     @property
@@ -441,7 +441,7 @@ class DatasetMetric(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_type(cls, data: Any) -> Any:
-        # ``datatype`` declares the formula's result type; an explicit null stays set.
+        # ``datatype`` declares the expression's result type; an explicit null stays set.
         if isinstance(data, dict) and "type" in data and data["type"] is None:
             return data
         return _coerce_legacy_type_field(data)
@@ -461,12 +461,12 @@ class DatasetMetric(BaseModel):
     @field_validator("expression")
     @classmethod
     def _reject_raw_window_function(cls, v: str) -> str:
-        """Reject raw ``OVER (...)`` window SQL — unparseable by the formula grammar."""
+        """Reject raw ``OVER (...)`` window SQL — unparseable by the expression grammar."""
         if has_window_function(v):
-            raise ValueError(f"DatasetMetric formula '{v}' {WINDOW_IN_FILTER_ERROR}")
+            raise ValueError(f"DatasetMetric expression '{v}' {WINDOW_IN_FILTER_ERROR}")
         return v
 
-    # Formulas may contain ``__`` (flattened virtual-model join paths); typos are
+    # Expressions may contain ``__`` (flattened virtual-dataset relationship paths); typos are
     # caught by strict resolution at binding time.
 
 
@@ -476,8 +476,8 @@ VALUE_PLACEHOLDER = "value"
 def reserved_value_param_message(agg_name: str) -> str:
     return (
         f"Aggregation '{agg_name}': a parameter may not be named '{VALUE_PLACEHOLDER}'. "
-        f"'{{{VALUE_PLACEHOLDER}}}' in an aggregation formula always stands for the "
-        f"aggregated column, so such a parameter could never be used; rename it."
+        f"'{{{VALUE_PLACEHOLDER}}}' in an aggregation expression always stands for the "
+        f"aggregated field, so such a parameter could never be used; rename it."
     )
 
 
@@ -493,9 +493,9 @@ def reserved_window_param_message(agg_name: str) -> str:
 
 
 class AggregationParam(BaseModel):
-    """A named parameter for an aggregation formula."""
+    """A named parameter for an aggregation expression."""
     name: str
-    sql: str  # default value — column name or SQL expression
+    sql: str  # default value — field name or SQL expression
 
     @model_validator(mode="after")
     def _require_sql(self) -> "AggregationParam":
@@ -507,7 +507,7 @@ class AggregationParam(BaseModel):
 class Aggregation(BaseModel):
     """A named aggregation overriding a built-in (``expression`` optional) or fully custom (``expression`` required)."""
     name: str
-    expression: str | None = None  # SQL template; None = use built-in formula
+    expression: str | None = None  # SQL template; None = use built-in expression
     params: list[AggregationParam] = Field(default_factory=list)
     description: str | None = None
     meta: dict[str, Any] | None = None
@@ -515,7 +515,7 @@ class Aggregation(BaseModel):
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
-        # Same identifier rule as Column.name; a dotted name would misclassify in the pg-facade catalog.
+        # Same identifier rule as DatasetField.name; a dotted name would misclassify in the pg-facade catalog.
         if not _NAME_PATTERN.match(v):
             raise ValueError(
                 f"Invalid name '{v}': must contain only letters, digits, "
@@ -532,7 +532,7 @@ class Aggregation(BaseModel):
                 f"{', '.join(sorted(BUILTIN_AGGREGATIONS))}"
             )
         if self.expression is not None and not self.expression.strip():
-            raise ValueError(f"Aggregation '{self.name}' has an empty formula.")
+            raise ValueError(f"Aggregation '{self.name}' has an empty expression.")
         if any(p.name == VALUE_PLACEHOLDER for p in self.params):
             raise ValueError(reserved_value_param_message(self.name))
         return self
@@ -584,7 +584,7 @@ def shadows_library_function(aggregation: Aggregation) -> bool:
 
 
 def builtin_semantics(definition: Aggregation | None) -> bool:
-    """Whether a call keeps its built-in aggregation's semantics: its owner declares no formula for it."""
+    """Whether a call keeps its built-in aggregation's semantics: its owner declares no expression for it."""
     return definition is None or definition.expression is None
 
 
@@ -622,7 +622,7 @@ def _coerce_source_queries(v: Any) -> Any:
         return v
     if not isinstance(v, list):
         raise ValueError(f"source_queries must be a list, got {type(v).__name__}")
-    from slayer.core.query import SlayerQuery  # ALLOW(import-not-top): circular — slayer.core.query imports SlayerModel/ModelMeasure from this module
+    from slayer.core.query import SlayerQuery  # ALLOW(import-not-top): circular — slayer.core.query imports SlayerDataset/DatasetMetric from this module
     result = []
     for i, item in enumerate(v):
         if isinstance(item, SlayerQuery):
@@ -638,10 +638,10 @@ def _coerce_source_queries(v: Any) -> Any:
 
 
 class SourceDatasetOrigin(BaseModel):
-    """In-memory lineage breadcrumb for virtual stage models: a linked list of
+    """In-memory lineage breadcrumb for virtual stage datasets: a linked list of
     upstream names so outer-stage dotted-ref lookup can strip prefixes.
 
-    ``agg_field_names`` marks columns safe for the cross-stage intercept to
+    ``agg_field_names`` marks fields safe for the cross-stage intercept to
     re-aggregate, so a dimension that merely looks like an aggregation canonical
     isn't silently re-summed.
     """
@@ -652,14 +652,14 @@ class SourceDatasetOrigin(BaseModel):
 
 
 class DatasetRelationship(BaseModel):
-    """A join relationship to another model."""
-    to: str                               # Name of the joined model
-    join_pairs: list[list[str]] = Field(...)        # [[source column name, target column name], ...]
+    """A relationship to another dataset."""
+    to: str                               # Name of the joined dataset
+    join_pairs: list[list[str]] = Field(...)        # [[source field name, target field name], ...]
     join_type: JoinType = JoinType.LEFT             # LEFT (default) or INNER
-    # Join arity, read source->target; None = undetermined.
+    # Relationship arity, read source->target; None = undetermined.
     cardinality: RelationshipCardinality | None = None
     # Optional edge name, usable as a path segment in either direction — the
-    # disambiguator for parallel edges. Model-name identifier rules.
+    # disambiguator for parallel edges. Dataset-name identifier rules.
     name: str | None = None
     # Optional human/agent metadata; additive, so no schema-version bump needed.
     description: str | None = None
@@ -691,7 +691,7 @@ class DatasetRelationship(BaseModel):
     @classmethod
     def _validate_name(cls, v: str | None) -> str | None:
         if v is not None:
-            _validate_dataset_name(v, "Join")
+            _validate_dataset_name(v, "Relationship")
         return v
 
     @field_validator("join_pairs")
@@ -699,8 +699,8 @@ class DatasetRelationship(BaseModel):
     def _validate_join_pairs(cls, v: list[list[str]]) -> list[list[str]]:
         if not v:
             raise ValueError(
-                "join_pairs must be non-empty; to combine a model no join path reaches, drop the join and "
-                "aggregate its columns in the query (e.g. count(events.id) / count(*))"
+                "join_pairs must be non-empty; to combine a dataset no relationship path reaches, drop the relationship and "
+                "aggregate its fields in the query (e.g. count(events.id) / count(*))"
             )
         for i, pair in enumerate(v):
             if len(pair) != 2 or not all(isinstance(s, str) and s for s in pair):
@@ -715,34 +715,34 @@ class DatasetRelationship(BaseModel):
 def relationship_key_error(
     *, dataset: str, target: str, key: str, side: str, fields: list[DatasetField],
 ) -> RelationshipKeyError | None:
-    """Why ``key`` is not a declared base column of ``side`` (whose ``fields`` are given)."""
-    head = f"join {dataset} → {target} key {key!r}"
+    """Why ``key`` is not a declared base field of ``side`` (whose ``fields`` are given)."""
+    head = f"relationship {dataset} → {target} key {key!r}"
     col = next((c for c in fields if c.name == key), None)
     if col is None:
         renamed = next((c.name for c in fields
                         if c.is_base and c.name != key and c.physical_name == key), None)
-        hint = (f"name the column by its name {renamed!r}, not its physical sql" if renamed
-                else f"declare Column(name={key!r}) on '{side}' (sql= its physical column if renamed)")
-        return RelationshipKeyError(summary=f"{head} is not a declared column of '{side}'",
+        hint = (f"name the field by its name {renamed!r}, not its physical sql" if renamed
+                else f"declare DatasetField(name={key!r}) on '{side}' (sql= its physical column if renamed)")
+        return RelationshipKeyError(summary=f"{head} is not a declared field of '{side}'",
                             suggestion=hint)
     if not col.is_base:
         return RelationshipKeyError(
-            summary=f"{head} is an expression column of '{side}' (sql={col.sql!r})",
-            suggestion="key the join on a base column: sql unset or a single column identifier",
+            summary=f"{head} is an expression field of '{side}' (sql={col.sql!r})",
+            suggestion="key the relationship on a base field: sql unset or a single field identifier",
         )
     if col.filter is not None:
         return RelationshipKeyError(
             summary=f"{head} carries a filter on '{side}'",
-            suggestion="key the join on an unfiltered base column",
+            suggestion="key the relationship on an unfiltered base field",
         )
     return None
 
 
 def _check_join_keys(*, dataset_name: str, fields: list[DatasetField], joins: list[DatasetRelationship]) -> None:
-    """Every join's source-side key names a declared, unfiltered base column."""
-    for join in joins:
-        for src, _ in join.join_pairs:
-            err = relationship_key_error(dataset=dataset_name, target=join.to, key=src,
+    """Every relationship's source-side key names a declared, unfiltered base field."""
+    for relationship in joins:
+        for src, _ in relationship.join_pairs:
+            err = relationship_key_error(dataset=dataset_name, target=relationship.to, key=src,
                                  side=dataset_name, fields=fields)
             if err is not None:
                 raise err
@@ -751,19 +751,19 @@ def _check_join_keys(*, dataset_name: str, fields: list[DatasetField], joins: li
 def _check_field_metric_namespace(
     *, dataset_name: str, fields: list[DatasetField], metrics: list[DatasetMetric]
 ) -> None:
-    """Columns and measures share one namespace: unique within each, disjoint across."""
+    """Fields and metrics share one namespace: unique within each, disjoint across."""
     col_names_seq = [c.name for c in fields]
     col_dupes = sorted({n for n in col_names_seq if col_names_seq.count(n) > 1})
     if col_dupes:
         raise ValueError(
-            f"Model '{dataset_name}': duplicate column names: {col_dupes}. "
-            f"Each column name must be unique within a model."
+            f"Dataset '{dataset_name}': duplicate field names: {col_dupes}. "
+            f"Each field name must be unique within a dataset."
         )
     unnamed = [m.expression for m in metrics if m.name is None]
     if unnamed:
         raise ValueError(
-            f"Model '{dataset_name}': every DatasetMetric in 'metrics' must "
-            f"have a name. Unnamed formulas: {unnamed}."
+            f"Dataset '{dataset_name}': every DatasetMetric in 'metrics' must "
+            f"have a name. Unnamed expressions: {unnamed}."
         )
     measure_names_seq = [m.name for m in metrics if m.name is not None]
     measure_dupes = sorted(
@@ -771,15 +771,15 @@ def _check_field_metric_namespace(
     )
     if measure_dupes:
         raise ValueError(
-            f"Model '{dataset_name}': duplicate measure names: {measure_dupes}. "
-            f"Each named ModelMeasure must have a unique name within a model."
+            f"Dataset '{dataset_name}': duplicate metric names: {measure_dupes}. "
+            f"Each named DatasetMetric must have a unique name within a dataset."
         )
     overlap = sorted(set(col_names_seq) & set(measure_names_seq))
     if overlap:
         raise ValueError(
-            f"Model '{dataset_name}': name collision between columns and "
-            f"metrics: {overlap}. Each name must be unique within a model "
-            f"(columns and measures share a namespace)."
+            f"Dataset '{dataset_name}': name collision between fields and "
+            f"metrics: {overlap}. Each name must be unique within a dataset "
+            f"(fields and metrics share a namespace)."
         )
 
 
@@ -812,21 +812,21 @@ class SlayerDataset(BaseModel):
     @field_validator("name")
     @classmethod
     def _validate_name(cls, v: str) -> str:
-        return _validate_dataset_name(v, "Model")
+        return _validate_dataset_name(v, "Dataset")
 
     @field_validator("data_source")
     @classmethod
     def _validate_data_source_format(cls, v: str) -> str:
-        # Format-only checks; emptiness is enforced below so query-backed models
+        # Format-only checks; emptiness is enforced below so query-backed datasets
         # can be constructed before their cache populator fills data_source.
         if not v:
             return v
         if v.strip() != v:
             raise ValueError(
-                f"Model 'data_source' must not have leading/trailing "
+                f"Dataset 'data_source' must not have leading/trailing "
                 f"whitespace; got {v!r}."
             )
-        label = "Model 'data_source'"
+        label = "Dataset 'data_source'"
         _NO_NUL.check(name=v, context=label)
         _NO_FWD_SLASH.check(name=v, context=label)
         _NO_BACK_SLASH.check(name=v, context=label)
@@ -836,50 +836,50 @@ class SlayerDataset(BaseModel):
 
     @model_validator(mode="after")
     def _require_data_source_unless_query_backed(self) -> "SlayerDataset":
-        # Table-backed models need data_source up front (storage key); query-backed
+        # Table-backed datasets need data_source up front (storage key); query-backed
         # ones may start empty — the engine fills it in before persisting.
         if not self.data_source.strip() and not self.source_queries:
             raise ValueError(
-                f"Model '{self.name}': 'data_source' must be a non-empty "
+                f"Dataset '{self.name}': 'data_source' must be a non-empty "
                 f"string. Set it to the name of the DatasourceConfig the "
                 f"dataset belongs to."
             )
         return self
     relationships: list[DatasetRelationship] = Field(default_factory=list)
-    filters: list[str] = Field(default_factory=list)  # Model-level filters (always applied)
+    filters: list[str] = Field(default_factory=list)  # Dataset-level filters (always applied)
     default_time_dimension: str | None = None
     description: str | None = None
     hidden: bool = False
-    # Callers sharing a tag may read the model; empty = public.
+    # Callers sharing a tag may read the dataset; empty = public.
     access_tags: list[str] = Field(default_factory=list)
     meta: dict[str, Any] | None = None
-    # In-memory breadcrumb for virtual stage models; ``exclude=True`` keeps it unpersisted.
+    # In-memory breadcrumb for virtual stage datasets; ``exclude=True`` keeps it unpersisted.
     source_dataset_origin: SourceDatasetOrigin | None = Field(default=None, exclude=True)
-    # Runtime-only (never persisted): a query stage's user spelling in join paths.
+    # Runtime-only (never persisted): a query stage's user spelling in relationship paths.
     _spelling: str | None = PrivateAttr(default=None)  # NOSONAR(S5890) — pydantic PrivateAttr descriptor; the attribute holds str | None
-    # Runtime-only: this model is the P factor of a ``time_spine × P`` population.
+    # Runtime-only: this dataset is the P factor of a ``time_spine × P`` population.
     _population_spine: bool = PrivateAttr(default=False)
-    # Runtime-only: datasets no join path reaches that this query frame's population names.
+    # Runtime-only: datasets no relationship path reaches that this query frame's population names.
     _unrelated: frozenset[str] = PrivateAttr(default=frozenset())
-    # Runtime-only: a list child's ``(parent model, list column)``.
+    # Runtime-only: a list child's ``(parent dataset, list field)``.
     _list_of: tuple[str, str] | None = PrivateAttr(default=None)
-    # Runtime-only: the list children built from this model (``join_walker.list_child``).
+    # Runtime-only: the list children built from this dataset (``join_walker.list_child``).
     _list_children: dict[tuple[str, str | None, str, DataType | None], "SlayerDataset"] = PrivateAttr(
         default_factory=dict)
-    # Runtime-only: the column and measure names a query extension added.
+    # Runtime-only: the field and metric names a query extension added.
     _query_local: frozenset[str] = PrivateAttr(default=frozenset())
 
     @field_validator("filters")
     @classmethod
     def _validate_filter_predicates(cls, v: list[str]) -> list[str]:
-        """Validate each model filter as a SQL-mode predicate at construction time."""
+        """Validate each dataset filter as a SQL-mode predicate at construction time."""
         for f in v:
             parse_sql_predicate(f)
         return v
 
     @model_validator(mode="after")
     def _validate_field_metric_disjoint(self) -> "SlayerDataset":
-        """Columns and measures share one namespace (see ``_check_field_metric_namespace``)."""
+        """Fields and metrics share one namespace (see ``_check_field_metric_namespace``)."""
         _check_field_metric_namespace(
             dataset_name=self.name, fields=self.fields, metrics=self.metrics
         )
@@ -887,28 +887,28 @@ class SlayerDataset(BaseModel):
 
     @model_validator(mode="after")
     def _validate_join_keys(self) -> "SlayerDataset":
-        # An unexpanded query-backed model has no columns yet; checked once populated.
+        # An unexpanded query-backed dataset has no fields yet; checked once populated.
         if not self.awaits_fields:
             _check_join_keys(dataset_name=self.name, fields=self.fields, joins=self.relationships)
         return self
 
     @model_validator(mode="after")
     def _reject_self_relationships(self) -> "SlayerDataset":
-        """Joins resolve by target-model name, so a self-join is unaddressable."""
+        """Relationships resolve by target-dataset name, so a self-relationship is unaddressable."""
         if any(j.to == self.name for j in self.relationships):
             raise ValueError(
-                f"Model '{self.name}': join target_model '{self.name}' is the "
-                f"dataset itself. Self-joins are not supported — dotted "
-                f"references resolve by model name, so a self-join can never "
+                f"Dataset '{self.name}': relationship to '{self.name}' is the "
+                f"dataset itself. Self-relationships are not supported — dotted "
+                f"references resolve by dataset name, so a self-relationship can never "
                 f"be addressed from a query. Define the second role as a "
-                f"separate model over the same table (or a view) and join to "
+                f"separate dataset over the same table (or a view) and join to "
                 f"that."
             )
         return self
 
     @model_validator(mode="after")
     def _validate_list_element_types(self) -> "SlayerDataset":
-        """A list column needs an ``element_type``; an sql-mode model's undeclared one is ``UNKNOWN``."""
+        """A list field needs an ``element_type``; an sql-mode dataset's undeclared one is ``UNKNOWN``."""
         for c in self.fields:
             if c.datatype is not DataType.ARRAY or c.element_type is not None:
                 continue
@@ -919,7 +919,7 @@ class SlayerDataset(BaseModel):
 
     @model_validator(mode="after")
     def _validate_allowed_aggregations(self) -> "SlayerDataset":
-        """Enforce that ``Column.allowed_aggregations`` is a subset of the type/PK eligibility set."""
+        """Enforce that ``DatasetField.allowed_aggregations`` is a subset of the type/PK eligibility set."""
         custom_agg_names = {a.name for a in self.aggregations}
         valid_names = BUILTIN_AGGREGATIONS | custom_agg_names
         for c in self.fields:
@@ -929,9 +929,9 @@ class SlayerDataset(BaseModel):
                 db_type_note = f" (db_type={c.db_type!r})" if c.db_type else ""
                 raise ValueError(
                     f"DatasetField '{c.name}'{db_type_note}: allowed_aggregations "
-                    f"cannot be declared on a column of type {c.datatype} — "
+                    f"cannot be declared on a field of type {c.datatype} — "
                     f"aggregations are not supported for that type. Remove "
-                    f"allowed_aggregations, or give the column an operable type."
+                    f"allowed_aggregations, or give the field an operable type."
                 )
             if c.datatype is DataType.ARRAY and set(c.allowed_aggregations) - DEFAULT_AGGREGATIONS_BY_TYPE[DataType.ARRAY]:
                 raise ValueError(
@@ -952,7 +952,7 @@ class SlayerDataset(BaseModel):
         """Exactly one of sql_table, sql, source_queries must be populated."""
         if self.source_queries is not None and len(self.source_queries) == 0:
             raise ValueError(
-                f"Model '{self.name}': source_queries cannot be an empty list. "
+                f"Dataset '{self.name}': source_queries cannot be an empty list. "
                 f"Provide one or more stages, or omit the field entirely."
             )
         populated = []
@@ -964,12 +964,12 @@ class SlayerDataset(BaseModel):
             populated.append("source_queries")
         if len(populated) == 0:
             raise ValueError(
-                f"Model '{self.name}' must specify exactly one source: "
+                f"Dataset '{self.name}' must specify exactly one source: "
                 f"sql_table, sql, or source_queries (none specified)."
             )
         if len(populated) > 1:
             raise ValueError(
-                f"Model '{self.name}' must specify exactly one source: "
+                f"Dataset '{self.name}' must specify exactly one source: "
                 f"sql_table, sql, or source_queries (got: {populated})."
             )
         return self
@@ -987,7 +987,7 @@ class SlayerDataset(BaseModel):
             for i, stage in enumerate(stages[:-1]):
                 if not getattr(stage, "name", None):
                     raise ValueError(
-                        f"Model '{self.name}': non-final stage at index {i} "
+                        f"Dataset '{self.name}': non-final stage at index {i} "
                         f"in source_queries must have a 'name'."
                     )
         seen: set = set()
@@ -1001,7 +1001,7 @@ class SlayerDataset(BaseModel):
             seen.add(n)
         if dupes:
             raise ValueError(
-                f"Model '{self.name}': duplicate stage name(s) in "
+                f"Dataset '{self.name}': duplicate stage name(s) in "
                 f"source_queries: {sorted(dupes)}."
             )
         return self
@@ -1009,19 +1009,19 @@ class SlayerDataset(BaseModel):
     # NOSONAR S3516 — Pydantic v2 @model_validator(mode="after") must return self.
     @model_validator(mode="after")
     def _reject_metrics_on_query_backed(self) -> "SlayerDataset":
-        """A query-backed model may not declare ``metrics`` directly — they never take effect."""
+        """A query-backed dataset may not declare ``metrics`` directly — they never take effect."""
         if self.source_queries and self.metrics:
             raise ValueError(
-                f"Model '{self.name}': a query-backed model (source_queries) "
-                f"cannot declare measures directly — they never take effect. "
-                f"Declare the measure in the backing query's final stage, or add "
+                f"Dataset '{self.name}': a query-backed dataset (source_queries) "
+                f"cannot declare metrics directly — they never take effect. "
+                f"Declare the metric in the backing query's final stage, or add "
                 f"it with a ModelExtension at query time."
             )
         return self
 
     @property
     def explicit_spelling(self) -> str | None:
-        """A query stage's user spelling in join paths, when it differs from ``name``."""
+        """A query stage's user spelling in relationship paths, when it differs from ``name``."""
         return self._spelling
 
     @property
@@ -1035,7 +1035,7 @@ class SlayerDataset(BaseModel):
 
     @property
     def population_spine(self) -> bool:
-        """This model is the P factor of a spine population (its spine hop is the product)."""
+        """This dataset is the P factor of a spine population (its spine hop is the product)."""
         return self._population_spine
 
     def as_population_factor(self, factor: bool = True) -> "SlayerDataset":
@@ -1055,7 +1055,7 @@ class SlayerDataset(BaseModel):
 
     @property
     def query_local_names(self) -> frozenset[str]:
-        """The column and measure names a query extension added to this model."""
+        """The field and metric names a query extension added to this dataset."""
         return self._query_local
 
     def with_query_local(self, names: frozenset[str]) -> "SlayerDataset":
@@ -1065,11 +1065,11 @@ class SlayerDataset(BaseModel):
 
     @property
     def extended(self) -> bool:
-        """Whether a query extension added anything to this model."""
+        """Whether a query extension added anything to this dataset."""
         return bool(self._query_local) or any(j.query_local or j.aliases for j in self.relationships)
 
     def definition_view(self) -> "SlayerDataset":
-        """This model as stored definitions see it: without anything a query extension added."""
+        """This dataset as stored definitions see it: without anything a query extension added."""
         if not self.extended:
             return self
         local = self._query_local
@@ -1083,11 +1083,11 @@ class SlayerDataset(BaseModel):
 
     @property
     def list_of(self) -> tuple[str, str] | None:
-        """``(parent model, list column)`` when this is a list column's element child (semantics Axiom 3.2)."""
+        """``(parent dataset, list field)`` when this is a list field's element child (semantics Axiom 3.2)."""
         return self._list_of
 
     def list_fields(self) -> list[DatasetField]:
-        """The list columns whose elements are reachable as a child (opaque elements excluded)."""
+        """The list fields whose elements are reachable as a child (opaque elements excluded)."""
         return [c for c in self.fields if c.datatype is DataType.ARRAY and not (c.element_type or DataType.UNKNOWN).is_opaque]
 
     @property
@@ -1097,19 +1097,19 @@ class SlayerDataset(BaseModel):
 
     @property
     def effective_default_time_dimension(self) -> str | None:
-        """The declared ``default_time_dimension``, else the model's only DATE / TIMESTAMP column."""
+        """The declared ``default_time_dimension``, else the dataset's only DATE / TIMESTAMP field."""
         if self.default_time_dimension:
             return self.default_time_dimension
         temporal = [c.name for c in self.fields if c.datatype in (DataType.DATE, DataType.TIMESTAMP)]
         return temporal[0] if len(temporal) == 1 else None
 
     def get_field(self, name: str, *, quoted: bool = False) -> DatasetField | None:
-        """The column ``name`` reaches (``slayer.core.names.match_name``)."""
+        """The field ``name`` reaches (``slayer.core.names.match_name``)."""
         found = match_name(name=name, declared=[c.name for c in self.fields], quoted=quoted)
         return None if found is None else next(c for c in self.fields if c.name == found)
 
     def get_metric(self, name: str, *, quoted: bool = False) -> DatasetMetric | None:
-        """The saved measure ``name`` reaches (``slayer.core.names.match_name``)."""
+        """The saved metric ``name`` reaches (``slayer.core.names.match_name``)."""
         found = match_name(name=name, declared=[m.name for m in self.metrics if m.name], quoted=quoted)
         return None if found is None else next(m for m in self.metrics if m.name == found)
 
@@ -1131,7 +1131,7 @@ class DatasourceConfig(BaseModel):
     connection_string: str | None = None
     schema_name: str | None = None
     # Unlike ``schema_name`` (upstream physical schema), this is the schema the
-    # Postgres facade advertises this datasource's models under; ``None`` => "public".
+    # Postgres facade advertises this datasource's datasets under; ``None`` => "public".
     postgres_schema: str | None = None
     description: str | None = None
     # Snowflake-specific. ``connection_name`` is the primary auth path (creds from
@@ -1167,7 +1167,7 @@ class DatasourceConfig(BaseModel):
     @classmethod
     def _validate_name(cls, v: str) -> str:
         # Leading segment of every canonical-id and a YAML storage path component;
-        # substring rules shared with ``SlayerModel.data_source``. ``__`` is allowed.
+        # substring rules shared with ``SlayerDataset.data_source``. ``__`` is allowed.
         label = "Datasource 'name'"
         _require_non_empty_trimmed(v=v, context=label)
         _NO_NUL.check(name=v, context=label)
@@ -1313,8 +1313,8 @@ def _resolve_env_string(value: str) -> str:
 
 
 def case_collisions(dataset: SlayerDataset) -> list[tuple[str, list[str]]]:
-    """Each group of ``dataset``'s names that differ only in case, per namespace: fields (columns and measures),
-    aggregations, join names, and a saved query's stage names and each stage's result names."""
+    """Each group of ``dataset``'s names that differ only in case, per namespace: fields and metrics (one namespace),
+    aggregations, relationship names, and a saved query's stage names and each stage's result names."""
     namespaces: list[tuple[str, list[str]]] = [
         ("fields", [c.name for c in dataset.fields] + [m.name for m in dataset.metrics if m.name]),
         ("aggregations", [a.name for a in dataset.aggregations]),
@@ -1330,7 +1330,7 @@ def case_collisions(dataset: SlayerDataset) -> list[tuple[str, list[str]]]:
 
 
 def _item_name(item: Any) -> str | None:
-    """A stage's or measure's name, validated or a raw dict."""
+    """A stage's or metric's name, validated or a raw dict."""
     return item.get("name") if isinstance(item, dict) else getattr(item, "name", None)
 
 

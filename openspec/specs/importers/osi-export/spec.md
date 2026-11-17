@@ -27,11 +27,11 @@ Exports one datasource's SLayer models as an Ossie (OSI) semantic-model document
 
 ### Requirement: Model subset
 
-With `--models`, only the named models SHALL be exported. A relationship, metric, or SLayer-only entity that needs a model outside the subset SHALL be reported with a workaround naming the model to add.
+With `--datasets`, only the named models SHALL be exported. A relationship, metric, or SLayer-only entity that needs a model outside the subset SHALL be reported with a workaround naming the model to add.
 
 #### Scenario: Join to an excluded model
-- **WHEN** `orders` joins `customers` and the export runs with `--models orders`
-- **THEN** the document holds dataset `orders` and no relationship to `customers`, and the report names the join and suggests adding `customers` to `--models`
+- **WHEN** `orders` joins `customers` and the export runs with `--datasets orders`
+- **THEN** the document holds dataset `orders` and no relationship to `customers`, and the report names the join and suggests adding `customers` to `--datasets`
 
 ### Requirement: Dataset sources
 

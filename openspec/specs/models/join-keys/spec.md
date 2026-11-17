@@ -11,7 +11,7 @@ Each entry of a join's `join_pairs` SHALL name a column of the model on its side
 
 #### Scenario: A renamed source key is written by its column name
 
-- **WHEN** a model declares `Column(name="region_id", sql="region_fk")` and a join with `join_pairs: [["region_id", "id"]]`
+- **WHEN** a model declares `DatasetField(name="region_id", sql="region_fk")` and a join with `join_pairs: [["region_id", "id"]]`
 - **THEN** the model saves, and queries crossing the join execute against the physical column `region_fk`
 
 #### Scenario: An undeclared source key is rejected at construction
@@ -55,12 +55,12 @@ Join-graph reasoning — provable arity, grain determination, the entity and for
 
 #### Scenario: A renamed source foreign key executes
 
-- **WHEN** `orders` joins `customers` on `Column(name="customer_id", sql="cust_fk")` → `id` and a query rooted at `orders` groups a measure by `customers.name`
+- **WHEN** `orders` joins `customers` on `DatasetField(name="customer_id", sql="cust_fk")` → `id` and a query rooted at `orders` groups a measure by `customers.name`
 - **THEN** the query executes on SQLite and DuckDB with the hand-computed per-customer values, joining on `cust_fk`
 
 #### Scenario: A renamed target primary key proves the hop and executes
 
-- **WHEN** `customers` declares `Column(name="id", sql="customer_pk", primary_key=True)` and `orders` joins it with `join_pairs: [["customer_id", "id"]]` and no cardinality declaration
+- **WHEN** `customers` declares `DatasetField(name="id", sql="customer_pk", primary_key=True)` and `orders` joins it with `join_pairs: [["customer_id", "id"]]` and no cardinality declaration
 - **THEN** the hop is provably many-to-one, the dimension keeps exact attributed values with no broadcast warning, and the query executes with the hand-computed values
 
 #### Scenario: Renames on both sides across two hops execute
@@ -70,7 +70,7 @@ Join-graph reasoning — provable arity, grain determination, the entity and for
 
 #### Scenario: Association over a renamed primary-key root executes
 
-- **WHEN** the aggregation's home model declares its primary key as `Column(name="id", sql="customer_pk", primary_key=True)` and the query runs in associate mode over an unattributable dimension
+- **WHEN** the aggregation's home model declares its primary key as `DatasetField(name="id", sql="customer_pk", primary_key=True)` and the query runs in associate mode over an unattributable dimension
 - **THEN** the query executes with the distinct-entity values, the entity key referenced by its column name
 
 #### Scenario: Population pushdown over renamed keys executes
@@ -107,12 +107,12 @@ The canonicalisation SHALL precede exact-inverse join deduplication, and the cou
 
 #### Scenario: A source-side physical spelling is rewritten on load
 
-- **WHEN** a v10 stored model declares `Column(name="customer_id", sql="cust_fk")` and its join carries `join_pairs: [["cust_fk", "id"]]`
+- **WHEN** a v10 stored model declares `DatasetField(name="customer_id", sql="cust_fk")` and its join carries `join_pairs: [["cust_fk", "id"]]`
 - **THEN** after loading, the join carries `[["customer_id", "id"]]` and the stored document is at the current version with the rewritten entry, on both the YAML and the SQLite backends
 
 #### Scenario: A target-side physical spelling is rewritten on load
 
-- **WHEN** a v10 stored `orders` carries `join_pairs: [["customer_id", "customer_pk"]]` and the stored `customers` declares `Column(name="id", sql="customer_pk")`
+- **WHEN** a v10 stored `orders` carries `join_pairs: [["customer_id", "customer_pk"]]` and the stored `customers` declares `DatasetField(name="id", sql="customer_pk")`
 - **THEN** after loading `orders`, the join carries `[["customer_id", "id"]]`
 
 #### Scenario: A mirror pair spelled two ways collapses to one edge
@@ -148,7 +148,7 @@ Schema drift and type refinement SHALL treat a column whose `sql` is a double-qu
 
 #### Scenario: A quoted self-name column present in the live table is not drift
 
-- **WHEN** a model declares `Column(name="legalEntityType", sql="\"legalEntityType\"")` and the live table has the column `legalEntityType`
+- **WHEN** a model declares `DatasetField(name="legalEntityType", sql="\"legalEntityType\"")` and the live table has the column `legalEntityType`
 - **THEN** schema drift reports no missing column and keeps a join keyed on it
 
 #### Scenario: A quoted base column is type-refined

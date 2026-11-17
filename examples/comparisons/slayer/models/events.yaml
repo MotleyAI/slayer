@@ -1,7 +1,7 @@
 name: events
 data_source: probe
 sql_table: events
-columns:
-  - {name: id, type: number, primary_key: true}
-  - {name: amount, type: number}
-  - {name: event_ts, type: time}
+fields:
+  - {name: id, datatype: number, primary_key: true}
+  - {name: amount, datatype: number}
+  - {name: event_ts, datatype: time}

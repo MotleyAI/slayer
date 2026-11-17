@@ -2896,18 +2896,18 @@ class TestFriendlyErrors:
 
 class TestFormatTable:
     def test_empty(self) -> None:
-        assert _format_table(data=[], fields=[]) == "No results."
+        assert _format_table(data=[], columns=[]) == "No results."
 
     def test_basic(self) -> None:
         data = [{"a": 1, "b": "x"}, {"a": 2, "b": "y"}]
-        result = _format_table(data=data, fields=["a", "b"])
+        result = _format_table(data=data, columns=["a", "b"])
         assert "a | b" in result
         assert "1 | x" in result
         assert "2 | y" in result
 
     def test_truncation(self) -> None:
         data = [{"x": i} for i in range(100)]
-        result = _format_table(data=data, fields=["x"], max_rows=10)
+        result = _format_table(data=data, columns=["x"], max_rows=10)
         assert "100 total rows" in result
         assert "showing first 10" in result
 

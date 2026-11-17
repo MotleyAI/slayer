@@ -590,13 +590,13 @@ class DuplicateMetricNameError(NameCollisionError):
 
 
 class MetricNameCollidesWithFieldError(NameCollisionError):
-    """A declared measure ``name`` matches a source column, so the alias-form filter would bind to the column."""
+    """A declared metric ``name`` matches a source field, so the alias-form filter would bind to the field."""
 
     def __init__(self, name: str, dataset: str, suggestion: str | None = None) -> None:
         self.name = name
         self.dataset = dataset
         super().__init__(
-            summary=f"The declared measure name matches a source column on model {dataset!r}.",
+            summary=f"The declared metric name matches a source field on dataset {dataset!r}.",
             location=f"metric {name!r}",
             suggestion=suggestion,
         )

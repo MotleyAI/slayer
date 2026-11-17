@@ -8,12 +8,12 @@ visibly say they don't.
 
 ### Requirement: Every documented query runs on the demo or is marked illustrative
 In the code blocks and Markdown image alt texts of `README.md`, `docs/index.md`, `docs/getting-started/`,
-`docs/examples/` and `docs/reference/`, every query literal — an object with a top-level `source_model`,
+`docs/examples/` and `docs/reference/`, every query literal — an object with a top-level `population`,
 or a non-empty list of them, in whatever language or command wraps it — SHALL execute on the demo and
 return at least one row, unless its code block or image is marked illustrative. A code block or image is
 marked illustrative when the last non-blank element before it is an `!!! note "Illustrative schema"`
 admonition; the marker applies to that one block or image only. A code block or image alt text that
-mentions `source_model` but contains no recognisable query literal SHALL be marked illustrative, or be
+mentions `population` but contains no recognisable query literal SHALL be marked illustrative, or be
 directly preceded by a `<!-- doc-check: not-a-query -->` comment; that comment does not exempt its query
 literals. Run-by-name and `@file` query forms carry no inline query and are outside this requirement, and
 so is the `alt` attribute of an HTML `<img>` tag.
@@ -31,11 +31,11 @@ so is the `alt` attribute of an HTML `<img>` tag.
 - **THEN** the check fails, naming the page and line
 
 #### Scenario: An unrecognised query form fails the check
-- **WHEN** an unmarked code block mentions `source_model` but no query literal can be extracted from it
+- **WHEN** an unmarked code block mentions `population` but no query literal can be extracted from it
 - **THEN** the check fails, naming the page and line
 
 #### Scenario: A non-query block is exempted by a hidden comment
-- **WHEN** a code block mentions `source_model` without containing a query, and the line before it is
+- **WHEN** a code block mentions `population` without containing a query, and the line before it is
   `<!-- doc-check: not-a-query -->`
 - **THEN** the check passes it, while a query literal in a block so marked is still executed
 
@@ -48,10 +48,10 @@ so is the `alt` attribute of an HTML `<img>` tag.
 #### Scenario: A query in an image's alt text is checked
 - **WHEN** an in-scope page has an unmarked image, inline (`![alt](url)`) or reference-style
   (`![alt][ref]`), whose alt text holds a query that references a column the demo lacks
-- **THEN** the check fails, naming the page and the line of the alt text's `source_model`
+- **THEN** the check fails, naming the page and the line of the alt text's `population`
 
 #### Scenario: An image alt text without a recognisable query fails the check
-- **WHEN** an unmarked image's alt text mentions `source_model` but no query literal can be extracted
+- **WHEN** an unmarked image's alt text mentions `population` but no query literal can be extracted
   from it
 - **THEN** the check fails, naming the page and line
 
@@ -65,7 +65,7 @@ so is the `alt` attribute of an HTML `<img>` tag.
 - **THEN** the query in the alt text of its SQL-versus-SLayer image is among the queries it executes
 
 ### Requirement: Documented demo references resolve
-Every `jaffle_shop.<model>[.<path>]` reference on the in-scope pages SHALL resolve on the demo the way
+Every `jaffle_shop.<dataset>[.<path>]` reference on the in-scope pages SHALL resolve on the demo the way
 `slayer inspect` resolves it.
 
 #### Scenario: A dangling demo reference fails the check

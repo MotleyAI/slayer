@@ -29,7 +29,7 @@ literal carried as its midnight instant. No other predicate shape SHALL populate
 ### Requirement: Relational time comparators translate verbatim
 
 The facade SHALL translate every relational comparator (`>=`, `>`, `<=`, `<`) on a time
-dimension verbatim into `SlayerQuery.filters` — whether one-sided or part of a pair —
+dimension verbatim into `SlayerQuery.filter` — whether one-sided or part of a pair —
 preserving the operator's strictness exactly, with each date-only literal carried as its
 midnight instant. It MUST NOT merge comparators into `date_range`, and MUST NOT produce a
 `date_range` containing a null bound.

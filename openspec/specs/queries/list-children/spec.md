@@ -1,7 +1,7 @@
 # queries/list-children Specification
 
 ## Purpose
-Defines element access: each list column is a keyless one-to-many child of its model, reached as `<column>.value`, so filters, dimensions and aggregates over elements follow the ordinary query semantics without fanning parent values.
+Defines element access: each list column is a keyless one-to-many child of its model, reached as `<field>.value`, so filters, dimensions and aggregates over elements follow the ordinary query semantics without fanning parent values.
 
 The examples use `contractors(id, team, rate, skills ARRAY<TEXT>)` with these rows:
 - Ann: team A, rate 10, skills `['go', 'sql', 'go']`

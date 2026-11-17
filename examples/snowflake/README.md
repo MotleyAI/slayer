@@ -45,9 +45,9 @@ This drops + recreates the four canonical tables (`regions`, `customers`,
 slayer datasources create "snowflake://?connection_name=default" --name sf --ingest
 ```
 
-Auto-ingestion walks the schema and creates one `SlayerModel` per table.
+Auto-ingestion walks the schema and creates one `SlayerDataset` per table.
 **Snowflake exposes declarative `FOREIGN KEY` constraints via its Inspector,
-so join models are discovered automatically** — no manual `joins:` editing
+so relationships are discovered automatically** — no manual `relationships:` editing
 required.
 
 ## 5. Verify
@@ -57,7 +57,7 @@ python verify.py
 ```
 
 `verify.py` runs the same battery used by the other Tier 1 examples:
-auto-ingestion + rollup joins + column-type assertions + aggregation matrix
+auto-ingestion + rollup relationships + field-type assertions + aggregation matrix
 (`median`, `percentile`, `stddev_samp/pop`, `var_samp/pop`, `corr`, `covar_samp/pop`).
 Every aggregation is native on Snowflake; no formula fallbacks.
 

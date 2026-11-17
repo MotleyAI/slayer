@@ -796,7 +796,7 @@ def plan_value_keys_by_root(planned, root: Optional[str] = None) -> Iterator[Tup
     for key in _walk_plan_keys(planned, {id(a.producer_plan) for a in attaches}):
         yield root, key
     for attach in attaches:
-        yield from plan_value_keys_by_root(attach.producer_plan, attach.producer_root_model or root)
+        yield from plan_value_keys_by_root(attach.producer_plan, attach.producer_root_dataset or root)
 
 
 def planned_keys(planned_list) -> Iterator[ValueKey]:
@@ -833,16 +833,16 @@ def _iter_plans_with_producers(planned_list):
                 yield plan
 
 
-def _walk_regroup_attaches(planned):
+def _walk_regroup_attaches(planned: PlannedQuery) -> Iterator[RegroupAttachPlan]:
     """Every ``RegroupAttachPlan`` reachable from ``planned`` (a producer is a nested
     plan), each object once — a carried or interned one is reachable twice."""
     seen: set = set()
 
-    def walk(plan):
+    def walk(plan: PlannedQuery) -> Iterator[RegroupAttachPlan]:
         if id(plan) in seen:
             return
         seen.add(id(plan))
-        for attach in getattr(plan, "regroup_attach_plans", ()) or ():
+        for attach in plan.regroup_attach_plans:
             if id(attach) not in seen:
                 seen.add(id(attach))
                 yield attach

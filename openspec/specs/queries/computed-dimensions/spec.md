@@ -343,14 +343,14 @@ Oracles use the DEV-1847 `sales` fixture with `P` = `sum(amount, partition_by=re
 - **THEN** on every row the first equals `x` and the second equals `x` plus 1
 
 ### Requirement: A named computed dimension keys by its name
-A computed dimension with a user-chosen `name` SHALL surface under that name — result key `<model>.<name>` in a single query, column `<name>` in any downstream stage or when its query backs a model — whatever its expression, including a bare joined path of any length. A computed dimension without a user-chosen name whose expression is a bare joined path SHALL behave exactly as the plain dotted dimension: result key `<model>.<canonical path>.<column>`, downstream column `<canonical path, __-joined>__<column>`. Every dimension entry SHALL project its own column, including two entries over the same joined path. A query's planned result keys SHALL equal, in projection order, the result keys its rendered SQL returns.
+A computed dimension with a user-chosen `name` SHALL surface under that name — result key `<dataset>.<name>` in a single query, column `<name>` in any downstream stage or when its query backs a model — whatever its expression, including a bare joined path of any length. A computed dimension without a user-chosen name whose expression is a bare joined path SHALL behave exactly as the plain dotted dimension: result key `<dataset>.<canonical path>.<field>`, downstream column `<canonical path, __-joined>__<field>`. Every dimension entry SHALL project its own column, including two entries over the same joined path. A query's planned result keys SHALL equal, in projection order, the result keys its rendered SQL returns.
 
 #### Scenario: Named one-hop path in a single query
-- **WHEN** `orders` is queried with dimension `{"name": "region_id", "expression": "customers.region_id"}` and measure `{"formula": "sum(amount)", "name": "revenue"}`
+- **WHEN** `orders` is queried with dimension `{"name": "region_id", "expression": "customers.region_id"}` and measure `{"expression": "sum(amount)", "name": "revenue"}`
 - **THEN** the result columns are `orders.region_id` and `orders.revenue`, with rows `(1, 160)` and `(2, 50)`
 
 #### Scenario: Named one-hop path crosses a stage
-- **WHEN** stage `cr` over `orders` declares dimensions `{"name": "region_id", "expression": "customers.region_id"}` and `customer_id` and measure `{"formula": "sum(amount)", "name": "revenue"}`, and the next stage over `cr` selects dimensions `region_id`, `customer_id`, `revenue`
+- **WHEN** stage `cr` over `orders` declares dimensions `{"name": "region_id", "expression": "customers.region_id"}` and `customer_id` and measure `{"expression": "sum(amount)", "name": "revenue"}`, and the next stage over `cr` selects dimensions `region_id`, `customer_id`, `revenue`
 - **THEN** the query executes, with rows `(1, 1, 90)`, `(1, 2, 70)`, `(2, 3, 50)`
 
 #### Scenario: Named two-hop path crosses a stage

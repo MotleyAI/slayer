@@ -344,10 +344,10 @@ def _render_field_value(v: Any) -> str:
     name = v.get("name")
     if name:
         return str(name)
-    formula = v.get("expression")
-    if formula:
-        return str(formula)
-    inner = v.get("dimension")
+    expression = v.get("expression")
+    if expression:
+        return str(expression)
+    inner = v.get("field")
     if isinstance(inner, dict):
         inner_name = inner.get("name")
         if inner_name:

@@ -1,41 +1,41 @@
-# Joins in SLayer
+# Relationships in SLayer
 
 Joins are an important concept when dealing with tabular data, as are foreign keys - a closely related concept. For example, you could have an `orders` table with a `customer_id` column that is a foreign key pointing to the `id` field in the `customers` table containing customer details. When you want to retrieve some customer details along with each order, you’d join the two tables via this pair of columns. 
 
 In SQL, there are many kinds of joins serving various purposes; SLayer follows the example of other semantic layers such as Cube.js by initially only supporting left joins, as the kind most frequently used for data enrichment.
 
-If you think of left joins as edges of a graph whose vertices are models, then the measures, dimensions, **and filters** in a model have access to the columns of not just the SQL expression underlying that model (the “sql” field of the model definition), but also of those underlying any model that is reachable from that model in the join graph.
+If you think of left joins as edges of a graph whose vertices are datasets, then the metrics, dimensions, **and filters** in a dataset have access to the columns of not just the SQL expression underlying that dataset (the “sql” field of the dataset definition), but also of those underlying any dataset that is reachable from that dataset in the relationship graph.
 
 The graph may contain cycles; a path token always binds the edge it names, so from `x` in a cycle `x → y → z → x` the token `z` follows the direct edge between `x` and `z`, never the route through `y`.
 
-The data model for a SLayer join is covered in the [Models section](../../concepts/models.md#joins), it consists of a target model plus list of column pairs (of the sql expressions underlying the models) to join on.
+The data model for a SLayer relationship is covered in the [Datasets section](../../concepts/models.md#relationships), it consists of a target dataset plus list of column pairs (of the sql expressions underlying the datasets) to join on.
 
-## Referencing joined models in queries
+## Referencing joined datasets in queries
 
-SLayer refers to measures and dimensions in joined models using a dot syntax. That is, if model_a has a join to model_b, and model_b has a join to model_c, then a query on model_a can refer to a measure defined in model_c as “model_b.model_c.my_dimension”, and similarly for measures. 
+SLayer refers to metrics and dimensions in joined datasets using a dot syntax. That is, if dataset_a has a relationship to dataset_b, and dataset_b has a relationship to dataset_c, then a query on dataset_a can refer to a dimension defined in dataset_c as “dataset_b.dataset_c.my_dimension”, and similarly for metrics. 
 
-That may seem verbose, but avoids ambiguity when there are multiple ways of reaching a given model within the join graph. 
+That may seem verbose, but avoids ambiguity when there are multiple ways of reaching a given dataset within the relationship graph. 
 
-## Referencing joined models in sql snippets
+## Referencing joined datasets in sql snippets
 
-As described in the discussion of [SQL vs expressions](../02_sql_vs_dsl/sql_vs_dsl.md), you will use SQL snippets when defining measures, dimensions, and filters at model level. 
+As described in the discussion of [SQL vs expressions](../02_sql_vs_dsl/sql_vs_dsl.md), you will use SQL snippets when defining metrics, dimensions, and filters at dataset level. 
 
-You reference columns of joined models with the same **dotted** join-path syntax as above: if model_a has a join to model_b, and model_b has a join to model_c, then the measures, dimensions and filters in model_a refer to a column from the underlying query of model_c as `model_b.model_c.column_name`. Dots separate join hops and the leaf column follows the final dot; SLayer resolves the path through the join graph and emits the correct subquery aliases at resolution time. (The legacy `__`-delimited split-alias form is no longer accepted — it is a hard error.)
+You reference fields of joined datasets with the same **dotted** relationship-path syntax as above: if dataset_a has a relationship to dataset_b, and dataset_b has a relationship to dataset_c, then the metrics, dimensions and filters in dataset_a refer to a column from the underlying query of dataset_c as `dataset_b.dataset_c.column_name`. Dots separate relationship hops and the leaf column follows the final dot; SLayer resolves the path through the relationship graph and emits the correct subquery aliases at resolution time. (The legacy `__`-delimited split-alias form is no longer accepted — it is a hard error.)
 
 ## Auto-ingesting schemas
 
-When auto-ingesting a schema, SLayer introspects foreign key relationships and creates a **direct** join for each FK on a table (one hop only). Multi-hop reachability (e.g. `orders → customers → regions`) is not baked in at ingestion; instead, at query time SLayer walks each intermediate model's own joins to resolve the full path and generate the correct SQL.
+When auto-ingesting a schema, SLayer introspects foreign key relationships and creates a **direct** relationship for each FK on a table (one hop only). Multi-hop reachability (e.g. `orders → customers → regions`) is not baked in at ingestion; instead, at query time SLayer walks each intermediate dataset's own relationships to resolve the full path and generate the correct SQL.
 
-## Recombining join patterns
+## Recombining relationship patterns
 
-For now, if there are multiple ways in the join graph to reach a given model, we treat these as separate copies when constructing queries, de facto turning the join graph into a tree. For example, if we have joins like A → B → C and A → D→ C, then B.C.column1 and D.C.column1 will refer to separate subqueries in the SLayer-constructed query. 
+For now, if there are multiple ways in the relationship graph to reach a given dataset, we treat these as separate copies when constructing queries, de facto turning the relationship graph into a tree. For example, if we have relationships like A → B → C and A → D→ C, then B.C.column1 and D.C.column1 will refer to separate subqueries in the SLayer-constructed query. 
 
-If that is not the desired behavior, add a filter `B.C.column1 = D.C.column1` to the query, or to the model to make it permanent (dotted paths work in both), re-creating the diamond pattern.
+If that is not the desired behavior, add a filter `B.C.column1 = D.C.column1` to the query, or to the dataset to make it permanent (dotted paths work in both), re-creating the diamond pattern.
 
-## Dynamic joins
+## Dynamic relationships
 
-Finally, it’s worth reminding the reader that joins can be added to a model at query time via [query extensions](../../concepts/queries.md#query-extensions). This is especially useful to join models that are themselves dynamically created as the result of a query (see the upcoming post on how that mechanism enables powerful and elegant multi-stage query semantics).
+Finally, it’s worth reminding the reader that relationships can be added to a dataset at query time via [query extensions](../../concepts/queries.md#query-extensions). This is especially useful to join datasets that are themselves dynamically created as the result of a query (see the upcoming post on how that mechanism enables powerful and elegant multi-stage query semantics).
 
 ---
 
-See the [companion notebook](joins_nb.ipynb) for runnable code demonstrating all join patterns.
+See the [companion notebook](joins_nb.ipynb) for runnable code demonstrating all relationship patterns.

@@ -89,7 +89,7 @@ skipped.
 
 #### Scenario: A placeholder only in a column expression does not skip the model-SQL check
 
-- **WHEN** a raw-`sql` model whose `sql` is static but a `Column.sql` contains a
+- **WHEN** a raw-`sql` model whose `sql` is static but a `DatasetField.sql` contains a
   `{var}` placeholder is saved, and the static `sql` is invalid for the backend
 - **THEN** the model `sql` is still trial-executed and the invalid SQL is
   rejected
@@ -116,7 +116,7 @@ trial-execute, preserving their existing save behavior.
 
 The save-time SQL check SHALL run at every door that creates or edits a model
 through the engine — the REST create/update endpoints, the CLI create command,
-and the MCP `create_model` and `edit_model` tools. Direct ingestion / YAML-load
+and the MCP `create_dataset` and `edit_dataset` tools. Direct ingestion / YAML-load
 persistence SHALL remain out of scope and unaffected.
 
 #### Scenario: REST create with invalid SQL is rejected
@@ -127,13 +127,13 @@ persistence SHALL remain out of scope and unaffected.
 
 #### Scenario: MCP create_model with invalid SQL is rejected
 
-- **WHEN** the MCP `create_model` tool is called with a raw-`sql` model whose SQL
+- **WHEN** the MCP `create_dataset` tool is called with a raw-`sql` model whose SQL
   is invalid for a reachable datasource
 - **THEN** the tool returns an error message and the model is not persisted
 
 #### Scenario: MCP edit_model changing sql to invalid is rejected and leaves the original intact
 
-- **WHEN** the MCP `edit_model` tool changes a model's `sql` to SQL invalid for a
+- **WHEN** the MCP `edit_dataset` tool changes a model's `sql` to SQL invalid for a
   reachable datasource
 - **THEN** the tool returns an error message and the previously-persisted model
   is left unchanged
@@ -146,7 +146,7 @@ persistence SHALL remain out of scope and unaffected.
 ### Requirement: Aggregation formulas are parse-checked at save time
 
 When a model is saved through any engine create or edit door, every model-defined
-aggregation `formula` SHALL be parsed with its placeholders replaced, in the model's
+aggregation `expression` SHALL be parsed with its placeholders replaced, in the model's
 datasource dialect (sqlglot's generic dialect when the datasource cannot be resolved —
 the check is never skipped). A formula that does not parse, or that places a placeholder
 in a non-expression position, SHALL fail the save with an error naming the model and the
@@ -160,7 +160,7 @@ Ingestion / YAML-load persistence SHALL remain out of scope.
 #### Scenario: Unparseable formula blocks the save
 
 - **WHEN** a model declaring an aggregation with formula `SUM({value}` is saved through the
-  MCP `create_model` tool
+  MCP `create_dataset` tool
 - **THEN** the tool returns an error naming the model and the aggregation
 - **AND** the model is not persisted
 
@@ -179,20 +179,20 @@ Ingestion / YAML-load persistence SHALL remain out of scope.
 
 #### Scenario: Edit introducing a broken formula leaves the original intact
 
-- **WHEN** the MCP `edit_model` tool changes an aggregation's formula to `SUM({value}`
+- **WHEN** the MCP `edit_dataset` tool changes an aggregation's formula to `SUM({value}`
 - **THEN** the tool returns an error and the previously-persisted model is unchanged
 
 ### Requirement: MCP create_model accepts model-defined aggregations
 
-The MCP `create_model` tool SHALL accept an optional `aggregations` list of aggregation
-definitions (the same shape `edit_model` upserts), persisting them on the created model
+The MCP `create_dataset` tool SHALL accept an optional `aggregations` list of aggregation
+definitions (the same shape `edit_dataset` upserts), persisting them on the created model
 subject to the same save-time checks. Combining `aggregations` with `query` SHALL be
 rejected like the other table-model parameters.
 
 #### Scenario: Custom aggregation declared at creation
 
-- **WHEN** `create_model` is called with a table model and an aggregation
-  `{"name": "sum_sq", "formula": "SUM({value} * {value})"}`
+- **WHEN** `create_dataset` is called with a table model and an aggregation
+  `{"name": "sum_sq", "expression": "SUM({value} * {value})"}`
 - **THEN** the model is persisted with that aggregation and a query using
   `sum_sq(amount)` succeeds
 

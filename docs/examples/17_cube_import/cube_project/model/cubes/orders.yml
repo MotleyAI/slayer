@@ -1,5 +1,5 @@
-# A table-anchored Cube. Becomes a SLayer model bound to the `orders` table,
-# with a join to `customers` the importer turns into a SLayer join.
+# A table-anchored Cube. Becomes a SLayer dataset bound to the `orders` table,
+# with a join to `customers` the importer turns into a SLayer relationship.
 cubes:
   - name: orders
     sql_table: orders

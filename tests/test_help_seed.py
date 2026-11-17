@@ -41,19 +41,19 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 EXPECTED_HELP_IDS = (
     "help.intro",
-    "help.models",
+    "help.datasets",
     "help.workflow",
     "help.aggregations",
     "help.transforms",
     "help.time",
-    "help.joins",
+    "help.relationships",
     "help.queries",
 )
 REUSED_HELP_IDS = (
     "help.aggregations",
     "help.transforms",
     "help.time",
-    "help.joins",
+    "help.relationships",
     "help.queries",
 )
 
@@ -214,16 +214,16 @@ class TestSeeding:
 
 
 class TestNoLearningsPollution:
-    async def test_help_memories_absent_from_model_learnings(
+    async def test_help_memories_absent_from_dataset_learnings(
         self, storage: YAMLStorage
     ) -> None:
         await seed_help_memories(storage)
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="mydb.orders", entity_type="model", compact=False,
+            reference="mydb.orders", entity_type="dataset", compact=False,
         )
         assert "## Learnings" not in out
-        # None of the help learning bodies leak into the model render.
+        # None of the help learning bodies leak into the dataset render.
         intro = next(t for t in HELP_TOPICS if t.id == "help.intro")
         assert intro.learning[:40] not in out
 
@@ -238,20 +238,20 @@ class TestInspectRetrieval:
         await seed_help_memories(storage)
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="memory:help.models", entity_type="memory",
+            reference="memory:help.datasets", entity_type="memory",
             compact=True,
         )
-        topic = next(t for t in HELP_TOPICS if t.id == "help.models")
+        topic = next(t for t in HELP_TOPICS if t.id == "help.datasets")
         assert topic.description in out
 
     async def test_full_returns_learning(self, storage: YAMLStorage) -> None:
         await seed_help_memories(storage)
         svc = InspectService(storage=storage)
         out = await svc.inspect(
-            reference="memory:help.models", entity_type="memory",
+            reference="memory:help.datasets", entity_type="memory",
             compact=False,
         )
-        topic = next(t for t in HELP_TOPICS if t.id == "help.models")
+        topic = next(t for t in HELP_TOPICS if t.id == "help.datasets")
         # A distinctive chunk of the learning body is present verbatim.
         assert topic.learning.strip()[:60] in out
 
@@ -268,11 +268,11 @@ class TestSearchSurfacing:
         # tantivy ranking / embedding availability.
         await seed_help_memories(storage)
         svc = SearchService(storage=storage)
-        resp = await svc.search(entities=["memory:help.models"],
+        resp = await svc.search(entities=["memory:help.datasets"],
                                 max_results=20)
         memory_hits = [h for h in resp.results if h.kind == "memory"]
-        assert any("help.models" in h.id for h in memory_hits), (
-            f"help.models not surfaced; got {[h.id for h in memory_hits]}"
+        assert any("help.datasets" in h.id for h in memory_hits), (
+            f"help.datasets not surfaced; got {[h.id for h in memory_hits]}"
         )
 
     async def test_concept_question_surfaces_help_memory(
@@ -285,8 +285,8 @@ class TestSearchSurfacing:
         resp = await svc.search(question="declare joins symmetric diamond",
                                 max_results=20)
         memory_hits = [h for h in resp.results if h.kind == "memory"]
-        assert any("help.models" in h.id for h in memory_hits), (
-            f"help.models not surfaced; got {[h.id for h in memory_hits]}"
+        assert any("help.datasets" in h.id for h in memory_hits), (
+            f"help.datasets not surfaced; got {[h.id for h in memory_hits]}"
         )
 
 
@@ -620,7 +620,7 @@ class TestHostExtensibility:
         blob = "".join(t.learning + t.description for t in topics)
         assert "{{" not in blob
         # The host's product name reaches a templatized body.
-        models = next(t for t in topics if t.id == "help.models")
+        models = next(t for t in topics if t.id == "help.datasets")
         assert "Motley" in models.learning
         assert "SLayer" not in models.learning
         # Code identifiers are never rewritten by the product token.

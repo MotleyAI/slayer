@@ -3,20 +3,20 @@
 SLayer carries an agent-memory layer alongside the semantic layer. A
 **memory** is a free-form note that an agent has written about a part of
 the schema, optionally bundled with an example `SlayerQuery`. Memories
-are indexed by the **canonical entities** they reference (models,
-columns, named measures, custom aggregations), so before issuing a new
+are indexed by the **canonical entities** they reference (datasets,
+fields, named metrics, custom aggregations), so before issuing a new
 query an agent can call [`search`](search.md) and pull back every note
 or example previously saved against the entities in its draft (plus
 canonical entity matches via tantivy full-text — see the search docs).
 
 A memory has two flavours:
 
-- **Learning** — a memory with no attached query. Surfaces in a model
+- **Learning** — a memory with no attached query. Surfaces in a dataset
   `inspect` and as a `kind="memory"` hit in `search` with
   `hit.query is None`.
 - **Query-bearing** — a memory whose `query` field carries a
   `SlayerQuery`. Surfaces only via `search`, as a `kind="memory"` hit
-  with `hit.query is not None`. Not rendered in a model `inspect`.
+  with `hit.query is not None`. Not rendered in a dataset `inspect`.
 
 Both flavours land in the same flat `SearchResponse.results` list;
 callers split on `hit.query` rather than on separate
@@ -24,7 +24,7 @@ buckets. The split is implicit at save time: pass an entity list to
 `save_memory` to record a learning; pass a `SlayerQuery` and the
 memory carries that query.
 
-SLayer also seeds its conceptual help as memories (`help.intro`, `help.models`, `help.workflow`, `help.aggregations`, `help.transforms`, `help.time`, `help.joins`, `help.queries`), which `compact` never shortens in `inspect` (`descriptions_max_chars` still does).
+SLayer also seeds its conceptual help as memories (`help.intro`, `help.datasets`, `help.workflow`, `help.aggregations`, `help.transforms`, `help.time`, `help.relationships`, `help.queries`), which `compact` never shortens in `inspect` (`descriptions_max_chars` still does).
 
 ## The canonical entity form
 
@@ -33,24 +33,24 @@ Every persisted entity is exactly one of:
 | Form | Example |
 |------|---------|
 | `<datasource>` | `mydb` |
-| `<datasource>.<model>` | `mydb.orders` |
-| `<datasource>.<model>.<leaf>` | `mydb.orders.amount` |
+| `<datasource>.<dataset>` | `mydb.orders` |
+| `<datasource>.<dataset>.<leaf>` | `mydb.orders.amount` |
 
 Inputs that aren't already in this shape are normalised at save time:
 
 - **Aggregation suffixes are stripped.** `sum(revenue)`,
   `weighted_avg(revenue, weight=qty)`, and `corr(revenue, other=qty)` all
-  canonicalise to `<ds>.<model>.revenue`. The aggregation itself is
+  canonicalise to `<ds>.<dataset>.revenue`. The aggregation itself is
   not an independent entity.
-- **`count(*)` collapses to the source model.** It's "count of all rows
-  on this model," so the entity is the model.
+- **`count(*)` collapses to the population.** It's "count of all rows
+  on this dataset," so the entity is the dataset.
 - **Multi-hop dotted paths keep only the leaf.** A query referencing
   `orders.customers.regions.name` produces `{mydb.orders,
-  <regions-ds>.regions.name}` — intermediate hops on the join path
+  <regions-ds>.regions.name}` — intermediate hops on the relationship path
   are discarded.
-- **Named measures and custom aggregations are opaque.** A learning
+- **Named metrics and custom aggregations are opaque.** A learning
   tagged against `mydb.orders.aov` does **not** also recurse into the
-  `aov` formula and tag every column it references.
+  `aov` expression and tag every field it references.
 
 Equality is plain string equality on the canonical form, so two
 callers using `sum(revenue)` and `mydb.orders.revenue` reach the same
@@ -67,11 +67,11 @@ the write side.
 Persist a memory. `linked_entities` accepts either form:
 
 - **List of entity strings** — each is resolved strictly; ambiguous
-  bare-column matches and unknown segments raise. `memory:<id>`
+  bare-field matches and unknown segments raise. `memory:<id>`
   references to other memories are also valid (cross-memory linking).
 - **An inline `SlayerQuery` (dict)** — the entity extractor walks
-  `source_model`, `dimensions`, `time_dimensions`, `measures`, and
-  `filters`; resolution warnings are non-fatal. The query is also
+  `population`, `dimensions`, `time_dimensions`, `metrics`, and
+  `filter`; resolution warnings are non-fatal. The query is also
   stored on the memory.
 
 `id` is optional. Omit it to let the allocator pick the next monotonic
@@ -85,7 +85,7 @@ only by letter case from an existing one (`X` vs `x`) raises
 on macOS / Windows.
 
 `description` is optional (≤ 500 chars). When set, `search(compact=True)`
-and `inspect(entity_type="model", compact=True)` surface this short preview instead of
+and `inspect(entity_type="dataset", compact=True)` surface this short preview instead of
 the full `learning` body — the token-saving counterpart of the verbose
 body. Empty / whitespace-only `description` is normalized to `None` at
 save time. When unset, compact rendering falls back to the first
@@ -117,9 +117,9 @@ Query-bearing form:
 {
   "learning": "Total paid revenue",
   "linked_entities": {
-    "source_model": "orders",
-    "measures": [{"formula": "sum(amount)"}],
-    "filters": ["status = 'paid'"]
+    "population": "orders",
+    "metrics": [{"expression": "sum(amount)"}],
+    "filter": ["status = 'paid'"]
   }
 }
 ```
@@ -137,7 +137,7 @@ list (exact-match only — `memory:42` never strips `memory:421`).
 
 ## Recommended agent workflow
 
-1. **Plan the query.** Decide the source model and the columns / measures you
+1. **Plan the query.** Decide the population and the fields / metrics you
    intend to use.
 2. **Call `search` first.** Pass the entities you're considering (and/or
    the draft query, and/or a free-text `question`). Walk
@@ -145,7 +145,7 @@ list (exact-match only — `memory:42` never strips `memory:421`).
    `hit.query is not None` marks a saved example query); other kinds
    surface canonical entities matched by the full-text / embedding
    channels. Memory hits may flag pitfalls you'd otherwise hit (NULL
-   handling, units, deprecated columns, etc.).
+   handling, units, deprecated fields, etc.).
 3. **Issue the actual query** via the `query` tool.
 4. **Save what you learn.** When you discover a non-obvious quirk
    (encoding, NULL semantics, business rule), call `save_memory`
@@ -153,10 +153,10 @@ list (exact-match only — `memory:42` never strips `memory:421`).
 
 ## `inspect` integration
 
-A model `inspect` (`compact=False`) automatically renders a `Learnings` section listing
+A dataset `inspect` (`compact=False`) automatically renders a `Learnings` section listing
 every memory **whose `query` is `None`** and whose stored entity set
-overlaps the model's own entity set (the model itself, every column,
-every named measure, every custom aggregation). Query-bearing memories
+overlaps the dataset's own entity set (the dataset itself, every field,
+every named metric, every custom aggregation). Query-bearing memories
 appear only via `search` (as `kind="memory"` hits with
 `hit.query is not None`). The section is auto-pruned when there are
 no matches — no header is emitted in that case.
@@ -197,12 +197,12 @@ drop the matching embedding row AND strips every other memory's
 
 ### Cascade-on-delete
 
-When a `delete_model` / `delete_datasource` / `forget_memory` /
-`edit_model_remove` call removes a leaf, every dangling reference to
+When a `delete_dataset` / `delete_datasource` / `forget_memory` /
+`edit_dataset_remove` call removes a leaf, every dangling reference to
 it is stripped from every memory's `entities` list. The match
 predicate splits by ref kind:
 
-- `<ds>.<model>[.<leaf>]` — exact match OR strict dotted-path
+- `<ds>.<dataset>[.<leaf>]` — exact match OR strict dotted-path
   descendant (`mydb.orders` strips both `mydb.orders` and
   `mydb.orders.amount`; `mydb.orders_archive` is **not** touched).
 - `memory:<id>` — exact-match only (`memory:42` does not strip

@@ -3,7 +3,7 @@
 Self-contained and **fully offline** (no network, unlike the dbt MetricFlow
 demo's git clone): builds a tiny retail DuckDB with deterministic rows, registers
 it as a SLayer datasource, and converts the committed ``shop.osi.yaml`` OSI
-config into queryable SLayer models via
+config into queryable SLayer datasets via
 :class:`~slayer.osi.converter.OsiToSlayerConverter`.
 
 Everything generated lives under a gitignored ``.cache/`` next to this file, so
@@ -115,11 +115,11 @@ def convert_osi_to_slayer(
     models_dir: Path = MODELS_DIR,
     db_path: Path = DB_PATH,
 ) -> ConversionResult:
-    """Convert the OSI config into SLayer models and persist them.
+    """Convert the OSI config into SLayer datasets and persist them.
 
     Saves a DuckDB ``DatasourceConfig`` into a fresh ``YAMLStorage`` rooted at
     ``models_dir`` (the importer introspects it live for column types), parses
-    the OSI documents, runs :class:`OsiToSlayerConverter`, and saves each model.
+    the OSI documents, runs :class:`OsiToSlayerConverter`, and saves each dataset.
     """
     # Quieten the converter's benign clean-fail notices so the notebook output
     # stays focused on the demo.
@@ -144,8 +144,8 @@ def convert_osi_to_slayer(
     engine.run_sync(converter.collect_metadata(client=engine.client_for(ds)))
     result = converter.convert()
 
-    for model in result.datasets:
-        run_sync(storage.save_dataset(model))
+    for dataset in result.datasets:
+        run_sync(storage.save_dataset(dataset))
     return result
 
 

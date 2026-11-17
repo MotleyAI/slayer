@@ -65,21 +65,21 @@ CHANGE = "change(sum(amount))"
 CHANGE_PCT = "change_pct(sum(amount))"
 TIME_SHIFT = "time_shift(sum(amount), -1)"
 CUMSUM = "cumsum(sum(amount))"
-CROSS_MODEL = "sum(customers.credit)"
+CROSS_DATASET = "sum(customers.credit)"
 RANK_FILTER = "rank(sum(amount), partition_by=customers.regions.name, direction='desc') <= 1"
 ANTI_JOIN = "orders.id is null"
-ORDER_UNDISPLAYED = '{"column": "sum(amount)", "direction": "desc"}'
+ORDER_UNDISPLAYED = '{"field": "sum(amount)", "direction": "desc"}'
 POPULATION_COUNT = "count(customers.orders.id)"
 CONDITIONAL = "sum(iif(customers.orders.order_date >= '2025-01-01', 1, 0))"
 STAGE_COLUMN = "customers__regions__name"
-SPINE_TIME_DIMENSION = '{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": "2025"}'
+SPINE_TIME_DIMENSION = '{"field": "time_spine.timestamp", "granularity": "month", "date_range": "2025"}'
 SPINE_MEASURE = "sum(orders.amount)"
 SECOND_CHILD = "sum(returns.amount)"
 AGG_FILTER = "count(*) FILTER (WHERE status = 'paid')"
 IN_LIST_VARIABLE = "status in ({statuses})"
-CROSS_MODEL_RATIO = "sum(orders.amount) / count(*)"
-#: Guidance marker for an aggregate over a model no join path reaches; owned by ``measures``.
-UNRELATED_MODEL = "no join path reaches"
+CROSS_DATASET_RATIO = "sum(orders.amount) / count(*)"
+#: Guidance marker for an aggregate over a dataset no relationship path reaches; owned by ``metrics``.
+UNRELATED_DATASET = "no relationship path reaches"
 UNRELATED_RATIO = "count(events.id) / count(*)"
 
 # Guidance markers
@@ -90,33 +90,33 @@ ONE_QUERY = "ONE QUESTION = ONE QUERY"
 FAN_OUT = "NEVER fans out or double counts"
 PER_QUERY_EXPRESSION = "in the position that uses it"
 
-#: Example text or schema-owned marker → (owning $defs model, field) in the query tool's input schema.
+#: Example text or schema-owned marker → (owning $defs class, field) in the query tool's input schema.
 EXAMPLE_OWNERS: dict[str, tuple[str, str]] = {
-    SHARE_OF_GROUP: ("SlayerQuery", "measures"),
-    SHARE_OF_TOTAL: ("SlayerQuery", "measures"),
-    TRAILING_WINDOW: ("SlayerQuery", "measures"),
-    NESTED: ("SlayerQuery", "measures"),
+    SHARE_OF_GROUP: ("SlayerQuery", "metrics"),
+    SHARE_OF_TOTAL: ("SlayerQuery", "metrics"),
+    TRAILING_WINDOW: ("SlayerQuery", "metrics"),
+    NESTED: ("SlayerQuery", "metrics"),
     SPEND_BAND: ("SlayerQuery", "dimensions"),
-    CHANGE: ("SlayerQuery", "measures"),
-    CHANGE_PCT: ("SlayerQuery", "measures"),
-    TIME_SHIFT: ("SlayerQuery", "measures"),
-    CUMSUM: ("SlayerQuery", "measures"),
-    CROSS_MODEL: ("SlayerQuery", "measures"),
-    RANK_FILTER: ("SlayerQuery", "filters"),
-    ANTI_JOIN: ("SlayerQuery", "filters"),
+    CHANGE: ("SlayerQuery", "metrics"),
+    CHANGE_PCT: ("SlayerQuery", "metrics"),
+    TIME_SHIFT: ("SlayerQuery", "metrics"),
+    CUMSUM: ("SlayerQuery", "metrics"),
+    CROSS_DATASET: ("SlayerQuery", "metrics"),
+    RANK_FILTER: ("SlayerQuery", "filter"),
+    ANTI_JOIN: ("SlayerQuery", "filter"),
     ORDER_UNDISPLAYED: ("SlayerQuery", "order"),
-    POPULATION_COUNT: ("SlayerQuery", "source_model"),
-    CONDITIONAL: ("SlayerQuery", "source_model"),
+    POPULATION_COUNT: ("SlayerQuery", "population"),
+    CONDITIONAL: ("SlayerQuery", "population"),
     STAGE_COLUMN: ("SlayerQuery", "name"),
     SPINE_TIME_DIMENSION: ("SlayerQuery", "time_dimensions"),
-    SECOND_CHILD: ("SlayerQuery", "measures"),
-    CROSS_MODEL_RATIO: ("SlayerQuery", "measures"),
+    SECOND_CHILD: ("SlayerQuery", "metrics"),
+    CROSS_DATASET_RATIO: ("SlayerQuery", "metrics"),
     STAGE_NOT_NEEDED: ("SlayerQuery", "name"),
     STAGE_NEEDED: ("SlayerQuery", "name"),
     READABLE_LABEL: ("SlayerQuery", "dimensions"),
-    AGG_FILTER: ("SlayerQuery", "measures"),
+    AGG_FILTER: ("SlayerQuery", "metrics"),
     IN_LIST_VARIABLE: ("SlayerQuery", "variables"),
-    PER_QUERY_EXPRESSION: ("SlayerQuery", "source_model"),
+    PER_QUERY_EXPRESSION: ("SlayerQuery", "population"),
 }
 
 

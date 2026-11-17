@@ -1,4 +1,4 @@
-"""Helpers for the joins notebook — diamond join schema and setup."""
+"""Helpers for the relationships notebook — diamond-relationship schema and setup."""
 
 import os
 import tempfile
@@ -12,7 +12,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 def create_diamond_db(db_path: str) -> None:
-    """Create a DuckDB with a diamond-join schema and sample data.
+    """Create a DuckDB with a diamond-relationship schema and sample data.
 
     Schema:
         regions (id PK, name)
@@ -77,7 +77,7 @@ def create_diamond_db(db_path: str) -> None:
 
 
 def setup_diamond_example() -> tuple:
-    """Create a diamond-join DB, ingest it, and return (engine, storage, models, db_path, work_dir).
+    """Create a diamond-relationship DB, ingest it, and return (engine, storage, datasets, db_path, work_dir).
 
     Uses a temporary directory that the caller can clean up.
     """
@@ -92,8 +92,8 @@ def setup_diamond_example() -> tuple:
     run_sync(storage.save_datasource(ds))
 
     engine = SlayerQueryEngine(storage=storage)
-    models = engine.ingest_sync(ds)
-    for model in models:
-        run_sync(storage.save_dataset(model))
+    datasets = engine.ingest_sync(ds)
+    for dataset in datasets:
+        run_sync(storage.save_dataset(dataset))
 
-    return engine, storage, models, db_path, work_dir
+    return engine, storage, datasets, db_path, work_dir

@@ -6,7 +6,7 @@ Run after seeding + ingesting:
     python examples/snowflake/verify.py
 
 Snowflake exposes declarative FK constraints via the Inspector, so the
-rollup joins ARE generated (unlike ClickHouse / BigQuery). Every aggregation
+rollup relationships ARE generated (unlike ClickHouse / BigQuery). Every aggregation
 in the matrix is native — no formula fallbacks like MySQL / SQL Server.
 """
 
@@ -16,7 +16,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from verify_common import (
     check,
-    check_column_types,
+    check_field_types,
     check_corr_covar,
     check_median_percentile,
     check_rollup,
@@ -26,16 +26,16 @@ from verify_common import (
 )
 
 if __name__ == "__main__":
-    models = run_common_checks()
-    check("4 models", len(models) == 4)
-    # Snowflake DOES expose declarative FK constraints — rollup joins should
+    datasets = run_common_checks()
+    check("4 datasets", len(datasets) == 4)
+    # Snowflake DOES expose declarative FK constraints — rollup relationships should
     # auto-discover. Behaviour matches Postgres / MySQL / SQLite, NOT
     # ClickHouse / BigQuery.
     check_rollup(expect_rollup=True)
     # NUMBER(38,0) → INT; NUMBER(10,2) → DOUBLE; TEXT → TEXT;
     # TIMESTAMP_NTZ → TIMESTAMP.
-    check_column_types(
-        model_name="orders",
+    check_field_types(
+        dataset_name="orders",
         expected_types={
             "id": "INT",
             "customer_id": "INT",
@@ -45,8 +45,8 @@ if __name__ == "__main__":
             "created_at": "TIMESTAMP",
         },
     )
-    check_column_types(
-        model_name="customers",
+    check_field_types(
+        dataset_name="customers",
         expected_types={
             "id": "INT",
             "name": "TEXT",
@@ -54,8 +54,8 @@ if __name__ == "__main__":
             "region_id": "INT",
         },
     )
-    check_column_types(
-        model_name="products",
+    check_field_types(
+        dataset_name="products",
         expected_types={
             "id": "INT",
             "name": "TEXT",
@@ -63,8 +63,8 @@ if __name__ == "__main__":
             "price": "DOUBLE",
         },
     )
-    check_column_types(
-        model_name="regions",
+    check_field_types(
+        dataset_name="regions",
         expected_types={
             "id": "INT",
             "name": "TEXT",

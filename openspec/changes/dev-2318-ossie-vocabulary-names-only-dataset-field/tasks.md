@@ -18,13 +18,13 @@
 
 - [x] 2.1 Move the `living-architecture` pin to 0.11.0 in `pyproject.toml` (and `CONTRIBUTING.md` if it names it), then `poetry lock`. Verify `la-doctor` passes.
 - [x] 2.2 Make `typing-extensions` a direct dependency and set `reportDeprecated = "error"` in `[tool.basedpyright]`. Fix every site the rule flags today in code. Verify `la-typecheck` reports no new errors and the baseline is untouched.
-- [ ] 2.3 Type the rename's blast radius with `la:make-refactor-target-compliant`, reusing DEV-1607's typing commits where a fresh compliance pass asks for them, until `dr-refactor rename-map` dry-runs with no blindspot refusals.
+- [ ] 2.3 Type the rename's blast radius with `la:make-refactor-target-compliant`, reusing DEV-1607's typing commits where a fresh compliance pass asks for them. The map ran with `--allow-blindspots`: the receivers it listed as blindspots (83) were respelled by hand, then typed after the fact so a later refactor over them is verifiable.
 - [x] 2.4 Regenerate the rename list from the current `main` with the issue's word table and carve-outs. Drop the `core/formula.py` and `engine/join_safety.py` module entries (design decision 9). Verify the list against the issue's attachment; differences come only from commits `main` gained since 73e8ebb5.
 
-## 3. Phase 1: rename (one commit)
+## 3. Phase 1: rename (commits, all before phase 2)
 
 - [ ] 3.1 Write `rename-map.yaml` in this change folder from the regenerated list, with the flags it is run with in a header comment: `--docs`, `--with` for duck-typed stand-ins, `--keep` for upgrade fixtures and older-version stored documents. Dry-run it clean, batching it if memory runs out, then apply it once. Verify the gate in 3.6.
-- [ ] 3.2 Rename the modules listed in the issue, except `core/formula.py` and `engine/join_safety.py` (its stub is repointed), with `dr-refactor move-module`. Leave each old path as a `raise_moved(…, removal="3.0")` stub. Verify the moved-module tripwire test covers each one.
+- [x] 3.2 Rename the modules listed in the issue, except `core/formula.py` and `engine/join_safety.py` (its stub is repointed), with `dr-refactor rename` on a `from pkg import mod` import of each (`move-module` only moves a module between packages, keeping its basename). Leave each old path as a `raise_moved(…, removal="3.0")` stub. Verify the moved-module tripwire test covers each one.
 - [ ] 3.3 Respell what the map cannot express with a throwaway pass that is not committed:
   - dict keys and YAML and JSON fixtures (excluding upgrade fixtures and older-version stored documents);
   - MCP tool names, REST routes and CLI commands and flags;
@@ -32,7 +32,7 @@
   - messages, tool descriptions, help text, `docs/` and `examples/`.
 
   Re-execute the edited notebooks. Verify that a word-boundary sweep for the old words finds hits only inside the carve-outs.
-- [ ] 3.4 Respell the literal identifiers in `openspec/specs/` by a scripted direct edit (design decision 18). Show the owner the substitution table and the diff before committing.
+- [x] 3.4 Respell the literal identifiers in `openspec/specs/` by a scripted direct edit (design decision 18). Show the owner the substitution table and the diff before committing.
 - [ ] 3.5 Apply the three approved arc42 edits verbatim (design decisions 4–6), extend `compatibility.touches` in `architecture/index.yaml` (design decision 19), and run `la-arch-diagrams`. Verify `la-arch-check` passes.
 - [ ] 3.6 Commit phase 1. Verify that ruff, `la-typecheck` (no new errors) and `la-arch-check` pass. Old-spelling tests may still fail; phase 2 fixes them.
 

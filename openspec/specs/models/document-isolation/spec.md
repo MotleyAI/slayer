@@ -59,7 +59,7 @@ An operation that chooses an answer among a datasource's models SHALL fail with 
 
 #### Scenario: Population inference fails closed
 
-- **WHEN** a query without `source_model` infers its population in a datasource holding an unloadable model
+- **WHEN** a query without `population` infers its population in a datasource holding an unloadable model
 - **THEN** the query fails with that model's stored-document load error
 
 #### Scenario: Memory entity resolution fails closed

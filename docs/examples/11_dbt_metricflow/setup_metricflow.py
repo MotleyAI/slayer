@@ -2,7 +2,7 @@
 
 Self-bootstrapping: clones the dbt-labs ACME Insurance benchmark project at a
 **pinned commit**, loads its CSV data into a local DuckDB file, and converts the
-dbt MetricFlow definitions (``semantic_models`` + ``metrics``) into SLayer models
+dbt MetricFlow definitions (``semantic_models`` + ``metrics``) into SLayer datasets
 via :class:`~slayer.dbt.converter.DbtToSlayerConverter`. Everything generated
 lives under a gitignored ``.cache/`` next to this file, so nothing generated is
 committed and re-runs are instant.
@@ -236,10 +236,10 @@ def load_csvs_into_duckdb(csv_dir: Path, db_path: Path) -> List[str]:
 def convert_dbt_to_slayer(
     dbt_project_path: Path, models_dir: Path, db_path: Path
 ) -> ConversionResult:
-    """Convert the dbt MetricFlow project into SLayer models and persist them.
+    """Convert the dbt MetricFlow project into SLayer datasets and persist them.
 
     Parses ``<dbt_project_path>/models`` for ``semantic_models`` + ``metrics``,
-    runs :class:`DbtToSlayerConverter`, and saves each model plus a DuckDB
+    runs :class:`DbtToSlayerConverter`, and saves each dataset plus a DuckDB
     datasource config into a fresh ``YAMLStorage`` rooted at ``models_dir``.
     """
     # Quieten the converter's benign "foreign entity '…' has no matching primary
@@ -257,8 +257,8 @@ def convert_dbt_to_slayer(
     ).convert()
 
     storage = YAMLStorage(base_dir=str(models_dir))
-    for model in result.datasets:
-        run_sync(storage.save_dataset(model))
+    for dataset in result.datasets:
+        run_sync(storage.save_dataset(dataset))
     run_sync(
         storage.save_datasource(
             DatasourceConfig(

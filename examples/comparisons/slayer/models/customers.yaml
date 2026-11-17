@@ -1,14 +1,14 @@
 name: customers
 data_source: probe
 sql_table: customers
-columns:
-  - {name: id, type: number, primary_key: true}
-  - {name: name, type: string}
-  - {name: region_id, type: number}
-  - {name: city, type: string}
-  - {name: tier, type: string}
-  - {name: credit, type: number}
-  - {name: discount, type: number}
-  - {name: tags, type: ARRAY, element_type: TEXT}
-joins:
-  - {target_model: regions, join_pairs: [[region_id, id]], cardinality: many_to_one}
+fields:
+  - {name: id, datatype: number, primary_key: true}
+  - {name: name, datatype: string}
+  - {name: region_id, datatype: number}
+  - {name: city, datatype: string}
+  - {name: tier, datatype: string}
+  - {name: credit, datatype: number}
+  - {name: discount, datatype: number}
+  - {name: tags, datatype: ARRAY, element_type: TEXT}
+relationships:
+  - {to: regions, join_pairs: [[region_id, id]], cardinality: many_to_one}

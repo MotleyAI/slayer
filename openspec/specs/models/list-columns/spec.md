@@ -7,18 +7,18 @@ Defines list (array) columns as model metadata: the `ARRAY` type and its element
 
 ### Requirement: The list type carries an element type
 
-A column whose values are lists of scalars SHALL have `type: ARRAY` and an `element_type` naming the scalar type of its elements (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for opaque elements such as nested lists or records). `element_type` SHALL be required when the type is `ARRAY` (except on an `sql`-mode model, see below), SHALL be rejected on any other type, and SHALL never be `ARRAY`. A column with `UNKNOWN` elements supports only NULL tests and `count`; every construct reading its elements or its element set — `length`, grouping, comparison, `IN`, `count_distinct` and `<column>.value` — SHALL fail with a typed error naming the opaque element type.
+A column whose values are lists of scalars SHALL have `datatype: ARRAY` and an `element_type` naming the scalar type of its elements (`TEXT`, `INT`, `DOUBLE`, `BOOLEAN`, `DATE`, `TIMESTAMP`, or `UNKNOWN` for opaque elements such as nested lists or records). `element_type` SHALL be required when the type is `ARRAY` (except on an `sql`-mode model, see below), SHALL be rejected on any other type, and SHALL never be `ARRAY`. A column with `UNKNOWN` elements supports only NULL tests and `count`; every construct reading its elements or its element set — `length`, grouping, comparison, `IN`, `count_distinct` and `<field>.value` — SHALL fail with a typed error naming the opaque element type.
 
 #### Scenario: Missing element type
-- **WHEN** a table-backed model is saved with a column `type: ARRAY` and no `element_type`
+- **WHEN** a table-backed model is saved with a column `datatype: ARRAY` and no `element_type`
 - **THEN** the save fails with a typed error naming the column and `element_type`
 
 #### Scenario: Element type on a scalar column
-- **WHEN** a model is saved with a column `type: TEXT, element_type: INT`
+- **WHEN** a model is saved with a column `datatype: TEXT, element_type: INT`
 - **THEN** the save fails with a typed error naming the column
 
 #### Scenario: Opaque elements
-- **WHEN** a column is `type: ARRAY, element_type: UNKNOWN` and queries use, in turn, the filter `col IS NULL` with the measure `count(col)`, the dimension `length(col)`, `col` as a dimension of a grouping query, and `col.value` as a dimension
+- **WHEN** a column is `datatype: ARRAY, element_type: UNKNOWN` and queries use, in turn, the filter `col IS NULL` with the measure `count(col)`, the dimension `length(col)`, `col` as a dimension of a grouping query, and `col.value` as a dimension
 - **THEN** the first query runs, and each of the others fails with a typed error naming the opaque element type
 
 ### Requirement: Ingestion maps native list types
@@ -27,23 +27,23 @@ Ingestion SHALL map each dialect's native list type to `ARRAY` with the declared
 
 #### Scenario: BigQuery REPEATED field
 - **WHEN** a BigQuery table with `skills REPEATED STRING` is ingested
-- **THEN** the column is `type: ARRAY`, `element_type: TEXT`, with a `db_type` naming the array and its `STRING` element
+- **THEN** the column is `datatype: ARRAY`, `element_type: TEXT`, with a `db_type` naming the array and its `STRING` element
 
 #### Scenario: Postgres integer array
 - **WHEN** a Postgres table with `scores integer[]` is ingested
-- **THEN** the column is `type: ARRAY`, `element_type: INT`
+- **THEN** the column is `datatype: ARRAY`, `element_type: INT`
 
 #### Scenario: DuckDB list via the INFORMATION_SCHEMA fallback
 - **WHEN** a DuckDB table with `scores INTEGER[]` is ingested through the INFORMATION_SCHEMA path
-- **THEN** the column is `type: ARRAY`, `element_type: INT`, never `INT`
+- **THEN** the column is `datatype: ARRAY`, `element_type: INT`, never `INT`
 
 #### Scenario: ClickHouse wrapped element
 - **WHEN** a ClickHouse table with `tags Array(LowCardinality(Nullable(String)))` is ingested
-- **THEN** the column is `type: ARRAY`, `element_type: TEXT`
+- **THEN** the column is `datatype: ARRAY`, `element_type: TEXT`
 
 #### Scenario: Nested list
 - **WHEN** a DuckDB table with `grid INTEGER[][]` is ingested
-- **THEN** the column is `type: ARRAY`, `element_type: UNKNOWN`
+- **THEN** the column is `datatype: ARRAY`, `element_type: UNKNOWN`
 
 ### Requirement: Snowflake untyped arrays get an inferred element type
 
@@ -161,21 +161,21 @@ On SQLite, MySQL, MariaDB, SQL Server, Redshift, Databricks, Spark and Oracle, e
 
 ### Requirement: Re-ingest re-types TEXT list columns
 
-When a stored column is `TEXT` and its live column is a native list, re-ingest SHALL change it to `type: ARRAY` with the live `element_type` and `db_type`, keeping every other stored attribute (description, label, meta) and keeping `allowed_aggregations` only as far as it names `count` and `count_distinct`. A stored `ARRAY` column's `element_type` SHALL NOT be overwritten, except a Snowflake `UNKNOWN` being re-inferred.
+When a stored column is `TEXT` and its live column is a native list, re-ingest SHALL change it to `datatype: ARRAY` with the live `element_type` and `db_type`, keeping every other stored attribute (description, label, meta) and keeping `allowed_aggregations` only as far as it names `count` and `count_distinct`. A stored `ARRAY` column's `element_type` SHALL NOT be overwritten, except a Snowflake `UNKNOWN` being re-inferred.
 
-Before saving such a re-type, re-ingest SHALL check every stored definition of the datasource that depends on the re-typed column — measures, derived columns and model filters of any model reaching it, transitively through derived columns, and saved queries (query-backed models) reading it — by planning it without execution against the models as stored and as re-typed. Each definition that plans before the re-type and fails after it SHALL be reported in the re-ingest result's `broken_dependents`, naming its model, its kind (`measure`, `column`, `filter` or `saved_query`), its name, the re-typed column and the error's type and message, and SHALL be emitted as a structured warning; a definition whose check could not run SHALL be reported as unchecked with the reason. The CLI and MCP ingest output SHALL list each broken dependant. Definitions that failed before the re-type SHALL NOT be reported. The re-type SHALL be saved whether or not dependants break, and the check SHALL leave the ingest's SQL client open and usable.
+Before saving such a re-type, re-ingest SHALL check every stored definition of the datasource that depends on the re-typed column — measures, derived columns and model filters of any model reaching it, transitively through derived columns, and saved queries (query-backed models) reading it — by planning it without execution against the models as stored and as re-typed. Each definition that plans before the re-type and fails after it SHALL be reported in the re-ingest result's `broken_dependents`, naming its model, its kind (`metric`, `field`, `filter` or `saved_query`), its name, the re-typed column and the error's type and message, and SHALL be emitted as a structured warning; a definition whose check could not run SHALL be reported as unchecked with the reason. The CLI and MCP ingest output SHALL list each broken dependant. Definitions that failed before the re-type SHALL NOT be reported. The re-type SHALL be saved whether or not dependants break, and the check SHALL leave the ingest's SQL client open and usable.
 
 #### Scenario: Re-typing keeps metadata
 - **WHEN** a stored model has `skills: TEXT` with a description, the live column is `VARCHAR[]`, and the datasource is re-ingested
-- **THEN** `skills` is `type: ARRAY`, `element_type: TEXT`, and keeps its description
+- **THEN** `skills` is `datatype: ARRAY`, `element_type: TEXT`, and keeps its description
 
 #### Scenario: Re-typing keeps only the count aggregation
 - **WHEN** a stored `skills: TEXT` has `allowed_aggregations: [count, max]`, its live column is `VARCHAR[]`, and the datasource is re-ingested
-- **THEN** `skills` is `type: ARRAY` with `allowed_aggregations: [count]`
+- **THEN** `skills` is `datatype: ARRAY` with `allowed_aggregations: [count]`
 
 #### Scenario: Re-typing keeps a distinct count
 - **WHEN** a stored `skills: TEXT` has `allowed_aggregations: [count, count_distinct, min]`, its live column is `VARCHAR[]`, and the datasource is re-ingested
-- **THEN** `skills` is `type: ARRAY` with `allowed_aggregations: [count, count_distinct]`
+- **THEN** `skills` is `datatype: ARRAY` with `allowed_aggregations: [count, count_distinct]`
 
 #### Scenario: A user's element type survives
 - **WHEN** a stored `ARRAY` column has `element_type: TEXT` set by the user over a live `INTEGER[]` column, and the datasource is re-ingested
@@ -211,7 +211,7 @@ Before saving such a re-type, re-ingest SHALL check every stored definition of t
 
 ### Requirement: Agents see list columns and their operations
 
-`inspect` of a model or column, `search` column hits and `models_summary` SHALL render a list column's type as `ARRAY<element type>`, its element samples when profiled, and the operations it supports: `contains`, `contains_all` / `contains_any`, element access through `<column>.value`, and grouping and comparison as a set. The JSON rendering SHALL carry `element_type`.
+`inspect` of a model or column, `search` column hits and `datasets_summary` SHALL render a list column's type as `ARRAY<element type>`, its element samples when profiled, and the operations it supports: `contains`, `contains_all` / `contains_any`, element access through `<field>.value`, and grouping and comparison as a set. The JSON rendering SHALL carry `element_type`.
 
 #### Scenario: Rendered list column
 - **WHEN** `inspect` of the model `contractors` renders it at `compact=False` with a profiled `skills` column
@@ -238,8 +238,8 @@ On BigQuery, which stores a NULL list as an empty one, and on ClickHouse, which 
 An `sql`-mode model's `ARRAY` column without a declared `element_type` SHALL have `element_type: UNKNOWN`, whether the model is saved by a client or loaded from a store. A declared `element_type` SHALL be kept by every re-ingest, and an `UNKNOWN` one SHALL change only as the Snowflake untyped-array re-inference allows.
 
 #### Scenario: Undeclared element type
-- **WHEN** an `sql`-mode model over DuckDB selects the `VARCHAR[]` column `skills` and declares it `type: ARRAY` without an `element_type`
-- **THEN** `skills` is `type: ARRAY`, `element_type: UNKNOWN`, and `skills.value` as a dimension fails naming the opaque element type
+- **WHEN** an `sql`-mode model over DuckDB selects the `VARCHAR[]` column `skills` and declares it `datatype: ARRAY` without an `element_type`
+- **THEN** `skills` is `datatype: ARRAY`, `element_type: UNKNOWN`, and `skills.value` as a dimension fails naming the opaque element type
 
 #### Scenario: Undeclared element type in a stored model
 - **WHEN** a store holds that `sql`-mode model without an `element_type` on `skills`, and it is loaded and saved again

@@ -1,10 +1,10 @@
 # CLI
 
-SLayer provides a command-line interface for server management, querying, and model operations.
+SLayer provides a command-line interface for server management, querying, and dataset operations.
 
 ## Storage
 
-All commands accept a `--storage` flag to specify where models and datasources are stored. When omitted, SLayer uses a platform-appropriate default (`~/.local/share/slayer` on Linux, `~/Library/Application Support/slayer` on macOS, `%LOCALAPPDATA%\slayer` on Windows). See [Storage](../configuration/storage.md) for full details on backends, resolution, and overrides.
+All commands accept a `--storage` flag to specify where datasets and datasources are stored. When omitted, SLayer uses a platform-appropriate default (`~/.local/share/slayer` on Linux, `~/Library/Application Support/slayer` on macOS, `%LOCALAPPDATA%\slayer` on Windows). See [Storage](../configuration/storage.md) for full details on backends, resolution, and overrides.
 
 The `SLAYER_NOW` environment variable pins the "now" that relative time points resolve against (see [Time](../concepts/time.md#relative-tokens)); every command validates it first and exits non-zero on an invalid value.
 
@@ -101,16 +101,16 @@ Execute a query from the terminal.
 
 ```bash
 # Inline JSON
-slayer query '{"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"]}'
+slayer query '{"population": "orders", "metrics": ["count(*)"], "dimensions": ["status"]}'
 
 # From a file
 slayer query @query.json
 
 # JSON output
-slayer query '{"source_model": "orders", "measures": ["count(*)"]}' --format json
+slayer query '{"population": "orders", "metrics": ["count(*)"]}' --format json
 
 # Preview SQL without executing
-slayer query '{"source_model": "orders", "measures": ["count(*)"]}' --dry-run
+slayer query '{"population": "orders", "metrics": ["count(*)"]}' --dry-run
 
 # Show execution plan
 slayer query @query.json --explain
@@ -118,26 +118,26 @@ slayer query @query.json --explain
 # Run a saved query by name, refined
 slayer query monthly_revenue --refine '{"dimensions": ["region"]}'
 
-# Pass runtime variables (always overrides query.variables / model.query_variables)
+# Pass runtime variables (always overrides query.variables / dataset.query_variables)
 slayer query monthly_revenue --variables region=US --variables threshold=100
 slayer query @query.json --variables-json '{"region": "US"}'
 ```
 
-The positional argument is a JSON query if it starts with `{` or `[`, a file path if it starts with `@`, and otherwise the name of a query-backed model whose stored backing query runs.
+The positional argument is a JSON query if it starts with `{` or `[`, a file path if it starts with `@`, and otherwise the name of a query-backed dataset whose stored backing query runs.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--storage` | [platform default](../configuration/storage.md) | Storage path (directory for YAML, `.db` file for SQLite) |
-| `--format` | `table` | Output format: `table` (numbers rendered through each column's or measure's `format`, as in MCP output) or `json` (raw values) |
+| `--format` | `table` | Output format: `table` (numbers rendered through each field's or metric's `format`, as in MCP output) or `json` (raw values) |
 | `--dry-run` | | Generate SQL without executing |
 | `--explain` | | Run the database's EXPLAIN on the query |
-| `--refine` | | Model-name form only: JSON (or `@file`) clauses merged into the saved query's final stage |
-| `--variables KEY=VALUE` | | Runtime variable, repeatable. Overrides `query.variables` and `model.query_variables`. |
+| `--refine` | | Dataset-name form only: JSON (or `@file`) clauses merged into the saved query's final stage |
+| `--variables KEY=VALUE` | | Runtime variable, repeatable. Overrides `query.variables` and `dataset.query_variables`. |
 | `--variables-json '{...}'` | | Runtime variables from a JSON object. Mutually exclusive with `--variables`. |
 
 ### `slayer ingest`
 
-Auto-generate models from a datasource.
+Auto-generate datasets from a datasource.
 
 ```bash
 slayer ingest --datasource my_postgres
@@ -164,21 +164,21 @@ Views and materialized views are ingested alongside tables by default — dbt
 materializes staging models as views, so skipping them would hide most of a
 typical dbt project. Pass `--no-views` to restrict ingestion to base tables.
 
-A view-backed model records `source_kind: view` (or `materialized_view`) and is
+A view-backed dataset records `source_kind: view` (or `materialized_view`) and is
 labelled `[view]` in the ingest output. Views expose no primary key and no
-foreign keys, so such models carry no primary-key column and get no
-auto-generated joins; add joins by hand if you need them.
+foreign keys, so such datasets carry no primary-key field and get no
+auto-generated relationships; add relationships by hand if you need them.
 
-`--no-views` affects ingestion only. `slayer validate-models` always resolves
-models against tables *and* views, so a model pointing at a view is never
+`--no-views` affects ingestion only. `slayer validate-datasets` always resolves
+datasets against tables *and* views, so a dataset pointing at a view is never
 mistaken for one whose table was dropped.
 
 #### Unmodellable objects
 
-`__` is legal in a model name, so an object whose name contains it (dlt writes
+`__` is legal in a dataset name, so an object whose name contains it (dlt writes
 nested-JSON child tables like `reports__patient__drug`) is modelled under its
 **faithful** name — `reports__patient__drug`, with `sql_table` matching. A
-re-ingest still matches a pre-existing stored model that was sanitized under the
+re-ingest still matches a pre-existing stored dataset that was sanitized under the
 old rules (`reports_patient_drug`) to the same live object, so it is updated in
 place rather than duplicated (stored name wins).
 
@@ -193,32 +193,32 @@ ELT and migration tooling writes bookkeeping tables into the same schema as
 your data. These are modelled with `hidden: true` and listed under `Hidden`:
 
 ```text
-Hidden (3) — recognised ELT/migration internals (excluded from models_summary; still queryable by name):
+Hidden (3) — recognised ELT/migration internals (excluded from datasets_summary; still queryable by name):
   - _dlt_loads: dlt
   - _dlt_pipeline_state: dlt
   - _dlt_version: dlt
-  --surface-internals ingests NEW internals visible; use edit_model("<model>", data_source="my_postgres", hidden=False) to unhide an existing one.
+  --surface-internals ingests NEW internals visible; use edit_dataset("<dataset>", data_source="my_postgres", hidden=False) to unhide an existing one.
 ```
 
-The hint names the datasource because these models collide across datasources
+The hint names the datasource because these datasets collide across datasources
 by construction — every dlt-loaded database has its own `_dlt_loads`, so a bare
-`edit_model("_dlt_loads", hidden=false)` resolves by [datasource
+`edit_dataset("_dlt_loads", hidden=false)` resolves by [datasource
 priority](../concepts/models.md) and can un-hide the wrong one.
 
-When a model's name differs from the live object it points at, the listing shows
-the model name too, since that is what `edit_model` takes: `- analytics._dlt_loads
-(model: _dlt_loads): dlt`.
+When a dataset's name differs from the live object it points at, the listing shows
+the dataset name too, since that is what `edit_dataset` takes: `- analytics._dlt_loads
+(dataset: _dlt_loads): dlt`.
 
-Hidden, not skipped. The model still exists, is still queryable by name, and is
-still a valid join target — it is only absent from `models list`, MCP
-`models_summary`, the REST model listing, semantic search, and the BI catalogs.
+Hidden, not skipped. The dataset still exists, is still queryable by name, and is
+still a valid relationship target — it is only absent from `datasets list`, MCP
+`datasets_summary`, the REST dataset listing, semantic search, and the BI catalogs.
 That keeps a deliberate use working (`_dlt_loads` answers "when did this last
-load?") while keeping the agent-facing model list free of junk that costs tokens
+load?") while keeping the agent-facing dataset list free of junk that costs tokens
 in every session and invites an agent to aggregate or join it by mistake.
 
 Matching is case-insensitive and applies to the **live object name**
-(`sql_table`), not the model name, so an internal is still recognised when its
-model name differs from the table it points at (e.g. an old-world sanitized name
+(`sql_table`), not the dataset name, so an internal is still recognised when its
+dataset name differs from the table it points at (e.g. an old-world sanitized name
 kept for re-ingest matching, or a schema-qualified `sql_table`).
 
 | Rule | Matches | Tool |
@@ -245,9 +245,9 @@ ever fire on a *non*-SQLite database, where `sqlite_backup` is an ordinary
 table. PostGIS (`spatial_ref_sys`, `geometry_columns`, …) and
 `pg_stat_statements` are deliberately not matched.
 
-Hiding happens **when the model is created**. A re-ingest never re-hides a model
-you un-hid, and never retro-hides one that already existed — so `edit_model(name,
-hidden=false)` sticks. For the same reason `--surface-internals` governs models
+Hiding happens **when the dataset is created**. A re-ingest never re-hides a dataset
+you un-hid, and never retro-hides one that already existed — so `edit_dataset(name,
+hidden=false)` sticks. For the same reason `--surface-internals` governs datasets
 the run creates; it cannot surface one an earlier run already hid.
 
 `--include` and `--exclude` choose *which* objects are scanned, not whether they
@@ -259,38 +259,38 @@ leave an internal out of the store entirely.
 | Code | Meaning |
 |------|---------|
 | `0` | Ingest completed; nothing skipped and no errors |
-| `1` | One or more objects were skipped, a model failed to persist, or the schema contained no tables or views at all |
+| `1` | One or more objects were skipped, a dataset failed to persist, or the schema contained no tables or views at all |
 
 An empty result prints the available schemas so a mistyped `--schema` is
 obvious rather than silent.
 
 
-### `slayer validate-models`
+### `slayer validate-datasets`
 
-Diff persisted models against the live database schemas (read-only) and, optionally, profile each join's arity from the data. See [Schema Drift](../concepts/schema-drift.md) and [Join cardinality](../concepts/models.md#join-cardinality).
+Diff persisted datasets against the live database schemas (read-only) and, optionally, profile each relationship's arity from the data. See [Schema Drift](../concepts/schema-drift.md) and [Relationship cardinality](../concepts/models.md#relationship-cardinality).
 
 ```bash
-slayer validate-models                                   # every datasource
-slayer validate-models --datasource jaffle_shop
-slayer validate-models --model orders --format json
-slayer validate-models --cardinality                     # + profile join arity
-slayer validate-models --cardinality --persist-cardinality
-slayer validate-models --datasource jaffle_shop --force-clean --yes
+slayer validate-datasets                                   # every datasource
+slayer validate-datasets --datasource jaffle_shop
+slayer validate-datasets --dataset orders --format json
+slayer validate-datasets --cardinality                     # + profile relationship arity
+slayer validate-datasets --cardinality --persist-cardinality
+slayer validate-datasets --datasource jaffle_shop --force-clean --yes
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--datasource X` | all | Limit to one datasource. Unknown names fail fast. |
-| `--model M` | all | Limit the whole report — and `--force-clean` — to one model. Resolves across every datasource that has a model of that name. |
-| `--cardinality` | off | Also profile each join's arity from the data. Full-scans both sides of every join, so it is opt-in. |
-| `--persist-cardinality` | off | Write the detected `cardinality` back onto each matching join (identified by target model + key pairs). Implies `--cardinality`. |
+| `--dataset D` | all | Limit the whole report — and `--force-clean` — to one dataset. Resolves across every datasource that has a dataset of that name. |
+| `--cardinality` | off | Also profile each relationship's arity from the data. Full-scans both sides of every relationship, so it is opt-in. |
+| `--persist-cardinality` | off | Write the detected `cardinality` back onto each matching relationship (identified by target dataset + key pairs). Implies `--cardinality`. |
 | `--format` | `text` | `text`, or `json` for one `{"drift": [...], "join_safety": [...], "cardinality": {...}}` document. Cannot be combined with `--force-clean`. |
 | `--force-clean` | off | After printing the diff, prompt to apply each delete. Destructive; opt-in only. |
 | `-y` / `--yes` | off | With `--force-clean`, skip the confirmation prompt. |
 
-Without a cardinality flag the output is the drift diff, plus a `Join safety` section whenever unproven-join findings exist. With one, the report gains labelled `Schema drift` and `Join cardinality` sections (with `Join safety` between them), and any `--force-clean` apply happens *before* profiling, so it reads the repaired models.
+Without a cardinality flag the output is the drift diff, plus a `Join safety` section whenever unproven-relationship findings exist. With one, the report gains labelled `Schema drift` and `Join cardinality` sections (with `Join safety` between them), and any `--force-clean` apply happens *before* profiling, so it reads the repaired datasets.
 
-Exit code is `0` for any report about the data, including `contradicts_hard` — the command did its job and the answer is unwelcome. It is `1` when the command could not do its job: an unknown datasource or model, a datasource that failed validation (an unscoped run validates each one explicitly rather than silently skipping failures), a profiling failure, any `scan_failed` finding, or residual drift after `--force-clean`. Diagnostics go to stderr, so stdout stays parseable under `--format json`.
+Exit code is `0` for any report about the data, including `contradicts_hard` — the command did its job and the answer is unwelcome. It is `1` when the command could not do its job: an unknown datasource or dataset, a datasource that failed validation (an unscoped run validates each one explicitly rather than silently skipping failures), a profiling failure, any `scan_failed` finding, or residual drift after `--force-clean`. Diagnostics go to stderr, so stdout stays parseable under `--format json`.
 
 #### Cardinality verdicts
 
@@ -300,30 +300,30 @@ Exit code is `0` for any report about the data, including `contradicts_hard` —
 | `confirms` | Detected value matches what was stored. |
 | `refines` | Differs from the stored value, but the data does not disprove it — "no duplicates observed" only *suggests* uniqueness. |
 | `contradicts_hard` | The data **disproves** the stored value: a side it claimed unique has duplicates. |
-| `skipped_unsupported` | Not profilable — a non-`sql_table` model (sql-mode / query-backed) or an expression-valued join key. |
+| `skipped_unsupported` | Not profilable — a non-`sql_table` dataset (sql-mode / query-backed) or an expression-valued join key. |
 | `no_evidence` | Profiled fine, but one side had no non-null key rows. An empty scan says nothing about arity, so nothing is detected or written. Worth re-running once data lands — unlike `skipped_unsupported`, which never becomes profilable. |
-| `scan_failed` | The scan itself raised; the message is in `note`. Contained per join, so one unreadable table costs one finding rather than the whole report — but the command still exits 1, since that join was not profiled. |
+| `scan_failed` | The scan itself raised; the message is in `note`. Contained per relationship, so one unreadable table costs one finding rather than the whole report — but the command still exits 1, since that relationship was not profiled. |
 
-Columns declared `unique` (or `primary_key`) that the data shows have duplicates are reported under `unique_contradictions`; detection never mutates `Column.unique`.
+Fields declared `unique` (or `primary_key`) that the data shows have duplicates are reported under `unique_contradictions`; detection never mutates `DatasetField.unique`.
 
 Detection is a strong guess, not a guarantee: a duplicate disproves uniqueness with certainty, but its absence only suggests uniqueness.
 
 
-### `slayer recommend-root-model`
+### `slayer recommend-population`
 
-Recommend the query root (population) for a set of `model.column` / `model.metric` items, with each item's reference path from it. See [Choosing a root model](../concepts/queries.md#choosing-a-root-model).
+Recommend the query root (population) for a set of `dataset.field` / `dataset.metric` items, with each item's reference path from it. See [Choosing a root dataset](../concepts/queries.md#choosing-a-root-dataset).
 
 ```bash
-slayer recommend-root-model customers.name products.category
-slayer recommend-root-model "sum(orders.revenue)" regions.name --format json
-slayer recommend-root-model customers.name products.category --root-hint orders
+slayer recommend-population customers.name products.category
+slayer recommend-population "sum(orders.revenue)" regions.name --format json
+slayer recommend-population customers.name products.category --root-hint orders
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `items` | | One or more `model.column` / `model.metric` items (aggregation suffixes allowed) |
+| `items` | | One or more `dataset.field` / `dataset.metric` items (aggregation suffixes allowed) |
 | `--data-source X` | priority list | Datasource that scopes name resolution |
-| `--root-hint M` | | Intended root (bare name or `<data_source>.<model>`); honoured when it reaches every item, else a warning explains the auto-pick |
+| `--root-hint M` | | Intended root (bare name or `<data_source>.<dataset>`); honoured when it reaches every item, else a warning explains the auto-pick |
 | `--format` | `text` | `text` or `json` |
 | `--storage` | [platform default](../configuration/storage.md) | Storage path |
 
@@ -333,14 +333,14 @@ Import dbt Semantic Layer definitions into SLayer.
 
 ```bash
 slayer import-dbt ./my_dbt_project --datasource my_postgres
-slayer import-dbt ./my_dbt_project --datasource my_postgres --include-hidden-models
+slayer import-dbt ./my_dbt_project --datasource my_postgres --include-hidden-datasets
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
 | `dbt_project_path` | Yes | Path to the dbt project root (or a models directory) |
-| `--datasource` | Yes | SLayer datasource name for the imported models |
-| `--include-hidden-models` | No | Also import regular dbt models (those not wrapped by a `semantic_model`) as hidden SLayer models via SQL introspection. Requires the `dbt` extra (`pip install 'motley-slayer[dbt]'`). See [dbt Import](../dbt/dbt_import.md#regular-dbt-models-hidden-import). |
+| `--datasource` | Yes | SLayer datasource name for the imported datasets |
+| `--include-hidden-datasets` | No | Also import regular dbt models (those not wrapped by a `semantic_model`) as hidden SLayer datasets via SQL introspection. Requires the `dbt` extra (`pip install 'motley-slayer[dbt]'`). See [dbt Import](../dbt/dbt_import.md#regular-dbt-models-hidden-import). |
 
 ### `slayer import-cube`
 
@@ -354,9 +354,9 @@ slayer import-cube ./cube_project/model --datasource my_postgres --report ./repo
 | Flag | Required | Description |
 |------|----------|-------------|
 | `cube_project_path` | Yes | Path to the Cube project (or its model directory) |
-| `--datasource` | Yes | SLayer datasource name to file the imported models under |
+| `--datasource` | Yes | SLayer datasource name to file the imported datasets under |
 | `--report` | No | Path for the JSON conversion report (default: `<storage>/cube_import_report.json`) |
-| `--include-hidden` | No | Also print hidden (`public: false`) models in the summary |
+| `--include-hidden` | No | Also print hidden (`public: false`) datasets in the summary |
 | `--ignore-required-meta` | No | Emit every `FILTER_PARAMS` pushdown as an optional filter, ignoring a member's `meta.required` marker |
 | `--storage` | No | Storage path |
 
@@ -378,30 +378,30 @@ slayer import-osi ./model.yaml --datasource my_postgres --dialect SNOWFLAKE
 
 ### `slayer export-osi`
 
-Export a datasource's models as an Ossie (OSI) document. See [Exporting to OSI](../osi/osi_export.md).
+Export a datasource's datasets as an Ossie (OSI) document. See [Exporting to OSI](../osi/osi_export.md).
 
 ```bash
 slayer export-osi --datasource my_postgres --out shop.osi.yaml
-slayer export-osi --datasource my_postgres --models orders customers --out shop.osi.json --no-extensions
+slayer export-osi --datasource my_postgres --datasets orders customers --out shop.osi.json --no-extensions
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--datasource` | Yes | SLayer datasource whose models to export |
+| `--datasource` | Yes | SLayer datasource whose datasets to export |
 | `--out` | Yes | Output file; JSON when it ends in `.json`, YAML otherwise |
-| `--models` | No | Export only these models (an unknown name fails with no file written) |
+| `--datasets` | No | Export only these datasets (an unknown name fails with no file written) |
 | `--no-extensions` | No | Omit the `SLAYER` non-portable extensions; SLayer-only content is reported instead of exported |
 | `--storage` | No | Storage path |
 
-### `slayer models`
+### `slayer datasets`
 
-Manage models.
+Manage datasets.
 
 ```bash
-slayer models list
-slayer models show orders
-slayer models create model.yaml
-slayer models delete orders
+slayer datasets list
+slayer datasets show orders
+slayer datasets create dataset.yaml
+slayer datasets delete orders
 ```
 
 ### `slayer datasources`
@@ -417,19 +417,19 @@ slayer datasources delete my_postgres
 
 #### `slayer datasources refresh-samples`
 
-Re-profile and persist `Column.sampled` / `sampled_values` / `distinct_count` for table-backed models. Per-column failures are reported but do not abort; a `--model` that does not resolve exits 1.
+Re-profile and persist `DatasetField.sampled` / `sampled_values` / `distinct_count` for table-backed datasets. Per-field failures are reported but do not abort; a `--dataset` that does not resolve exits 1.
 
 ```bash
 slayer datasources refresh-samples
 slayer datasources refresh-samples --data-source jaffle_shop
-slayer datasources refresh-samples --data-source jaffle_shop --model orders --model customers
+slayer datasources refresh-samples --data-source jaffle_shop --dataset orders --dataset customers
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--data-source X` | all | Limit the refresh to one datasource. |
-| `--model M` | all | Repeatable; limit to specific models. |
-| `--format` | `text` | `text`, or `json` for the `{"errors": [...], "unresolved_models": [...]}` envelope. |
+| `--dataset D` | all | Repeatable; limit to specific datasets. |
+| `--format` | `text` | `text`, or `json` for the `{"errors": [...], "unresolved_datasets": [...]}` envelope. |
 
 #### `slayer datasources create`
 
@@ -454,14 +454,14 @@ slayer datasources create demo --ingest        # bundled Jaffle Shop demo
 | `--no-views` | No | (with `--ingest`) Skip views and materialized views (ingested by default) |
 | `--surface-internals` | No | (with `--ingest`) Ingest recognised ELT/migration internals visible instead of hidden |
 | `--years` | No | (demo only) Years of synthetic data to generate (default: 2) |
-| `-y`, `--yes` | No | Overwrite existing datasource / colliding models without prompting |
+| `-y`, `--yes` | No | Overwrite existing datasource / colliding datasets without prompting |
 | `--storage` | No | Storage path |
 
-The demo path generates a DuckDB at `<storage>/demo/jaffle_shop.duckdb` and is idempotent — re-running reuses the existing file. Ingested demo models are enriched with curated column labels/descriptions, currency and percent formats, saved measures (e.g. `orders.total_revenue`, `orders.avg_order_value`, `orders.effective_tax_rate`), and a `weighted_avg` custom-aggregation example on `orders`. The enrichment is additive-only: labels/descriptions are filled only where unset and existing measures are never overwritten, so user edits survive re-runs. `duckdb` and `jafgen` are core dependencies of `motley-slayer`, so the demo works after a single `pip install motley-slayer` with no extras needed.
+The demo path generates a DuckDB at `<storage>/demo/jaffle_shop.duckdb` and is idempotent — re-running reuses the existing file. Ingested demo datasets are enriched with curated field labels/descriptions, currency and percent formats, saved metrics (e.g. `orders.total_revenue`, `orders.avg_order_value`, `orders.effective_tax_rate`), and a `weighted_avg` custom-aggregation example on `orders`. The enrichment is additive-only: labels/descriptions are filled only where unset and existing metrics are never overwritten, so user edits survive re-runs. `duckdb` and `jafgen` are core dependencies of `motley-slayer`, so the demo works after a single `pip install motley-slayer` with no extras needed.
 
-If a datasource with the same name already exists, or (with `--ingest`) any generated model name collides with a stored model, SLayer prompts for confirmation. Use `--yes` for non-interactive use.
+If a datasource with the same name already exists, or (with `--ingest`) any generated dataset name collides with a stored dataset, SLayer prompts for confirmation. Use `--yes` for non-interactive use.
 
-With `--ingest`, the `Hidden` and `Skipped` sections described under [`slayer ingest`](#slayer-ingest) are printed after the models are written. Neither affects the exit code here — creating the datasource is this command's job, and it succeeded.
+With `--ingest`, the `Hidden` and `Skipped` sections described under [`slayer ingest`](#slayer-ingest) are printed after the datasets are written. Neither affects the exit code here — creating the datasource is this command's job, and it succeeded.
 
 ### `slayer inspect`
 
@@ -471,36 +471,36 @@ references to inspect several entities of the **same kind** in one call:
 the output is one `## <canonical>` block per reference, in input
 order (a JSON array under `--format json`), with per-reference error isolation.
 **Omit the reference entirely** to list the whole **collection** at
-`--type` — supported for `model` and `datasource` only. `--type model` lists all
-models grouped by datasource (a terse one line per model by default; `--no-compact`
-gives the full per-model tables); `--type datasource` lists all datasources.
+`--type` — supported for `dataset` and `datasource` only. `--type dataset` lists all
+datasets grouped by datasource (a terse one line per dataset by default; `--no-compact`
+gives the full per-dataset tables); `--type datasource` lists all datasources.
 
 ```bash
-slayer inspect jaffle_shop.orders --type model
-slayer inspect jaffle_shop.orders.order_total --type column --no-compact
-slayer inspect jaffle_shop.orders.stores.regions.name --type column --no-compact  # join path → owning model
+slayer inspect jaffle_shop.orders --type dataset
+slayer inspect jaffle_shop.orders.order_total --type field --no-compact
+slayer inspect jaffle_shop.orders.stores.regions.name --type field --no-compact  # relationship path → owning dataset
 slayer inspect memory:42 --type memory --no-compact
-slayer inspect jaffle_shop.orders --type model --format json
-slayer inspect jaffle_shop.orders.order_total jaffle_shop.orders.id --type column --no-compact  # batch
-slayer inspect --type model         # collection: all models, grouped by datasource
+slayer inspect jaffle_shop.orders --type dataset --format json
+slayer inspect jaffle_shop.orders.order_total jaffle_shop.orders.id --type field --no-compact  # batch
+slayer inspect --type dataset       # collection: all datasets, grouped by datasource
 slayer inspect --type datasource    # collection: all datasources
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `reference` | No | Zero or more entity references: canonical id, bare name, join path (resolved to the owning model), or `memory:<id>`. Two or more → a same-kind batch. **Omit entirely** to list the whole collection at `--type` (`model` or `datasource` only). |
-| `--type` | Yes | Entity kind: `datasource`, `model`, `column`, `measure`, `aggregation`, or `memory`. Disambiguates same-named entities and asserts the kind. |
-| `--no-compact` | No | Return the full render. The compact default is description-only for column/measure/aggregation/datasource/memory (`compact` never shortens a `help.*` memory; `descriptions_max_chars` still does), and a cheap **schema skeleton** (column/measure/aggregation names + join targets, zero DB calls) for `--type model`; `--no-compact` on a datasource renders a per-model skeleton for each visible model. |
+| `reference` | No | Zero or more entity references: canonical id, bare name, relationship path (resolved to the owning dataset), or `memory:<id>`. Two or more → a same-kind batch. **Omit entirely** to list the whole collection at `--type` (`dataset` or `datasource` only). |
+| `--type` | Yes | Entity kind: `datasource`, `dataset`, `field`, `metric`, `aggregation`, or `memory`. Disambiguates same-named entities and asserts the kind. |
+| `--no-compact` | No | Return the full render. The compact default is description-only for field/metric/aggregation/datasource/memory (`compact` never shortens a `help.*` memory; `descriptions_max_chars` still does), and a cheap **schema skeleton** (field/metric/aggregation names + relationship targets, zero DB calls) for `--type dataset`; `--no-compact` on a datasource renders a per-dataset skeleton for each visible dataset. |
 | `--format` | No | `markdown` (default) or `json`. |
-| `--num-rows` | No | (model only) Sample-data rows. Ignored with a warning for other kinds. |
-| `--show-sql` | No | (model only) Include generated SQL. No-op for column/measure/aggregation; warned for datasource/memory. |
-| `--section` | No | (model only, repeatable) Restrict to a section subset. Ignored with a warning for other kinds. |
+| `--num-rows` | No | (dataset only) Sample-data rows. Ignored with a warning for other kinds. |
+| `--show-sql` | No | (dataset only) Include generated SQL. No-op for field/metric/aggregation; warned for datasource/memory. |
+| `--section` | No | (dataset only, repeatable) Restrict to a section subset. Ignored with a warning for other kinds. |
 | `--descriptions-max-chars` | No | Truncate description fields. Applies to every kind. |
 | `--storage` | No | Storage path. |
 
 ### `slayer search`
 
-Run semantic search over memories and canonical entities (datasources, models, columns, named measures, custom aggregations). Three retrieval channels run in parallel — BM25 over memory entity tags, Tantivy full-text over memories ∪ entities, and (with the `advanced_search` extra plus a provider API key) dense embeddings — and are RRF-fused into a single ranked list. See [Search](../concepts/search.md).
+Run semantic search over memories and canonical entities (datasources, datasets, fields, named metrics, custom aggregations). Three retrieval channels run in parallel — BM25 over memory entity tags, Tantivy full-text over memories ∪ entities, and (with the `advanced_search` extra plus a provider API key) dense embeddings — and are RRF-fused into a single ranked list. See [Search](../concepts/search.md).
 
 ```bash
 # Entity-driven
@@ -513,7 +513,7 @@ slayer search "What stores are in jaffle_shop?"
 slayer search --query @draft_query.json
 
 # Inline query JSON
-slayer search --query '{"source_model": "orders", "measures": ["sum(order_total)"]}'
+slayer search --query '{"population": "orders", "metrics": ["sum(order_total)"]}'
 
 # Narrow to one datasource
 slayer search --question "lifetime spend" --datasource jaffle_shop
@@ -523,7 +523,7 @@ slayer search --question "Brooklyn POS" --cypher-filter 'MATCH (n:Memory) RETURN
 
 # Graph-narrow with cypher_filter (full openCypher; requires the advanced_search extra)
 slayer search --question "store rev" --cypher-filter \
-  "MATCH (d:Datasource {name: 'jaffle_shop'})-[:CONTAINS]->(m:Model)-[:CONTAINS]->(c:ModelColumn) RETURN c.id AS id"
+  "MATCH (d:Datasource {name: 'jaffle_shop'})-[:CONTAINS]->(m:Dataset)-[:CONTAINS]->(c:DatasetField) RETURN c.id AS id"
 
 # JSON output for piping
 slayer search --question "lifetime spend" --format json
@@ -531,15 +531,15 @@ slayer search --question "lifetime spend" --format json
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--entity ENT` (repeatable) | | Canonical entity string (`<ds>`, `<ds>.<model>`, `<ds>.<model>.<leaf>`, `memory:<id>`). Pass multiple times to combine. Drives the BM25 channel. |
-| `--query JSON_OR_@FILE` | | Inline SLayer query (or `@path.json`). Entities are auto-extracted from `source_model`, dimensions, measures, time dims, and filters. |
+| `--entity ENT` (repeatable) | | Canonical entity string (`<ds>`, `<ds>.<dataset>`, `<ds>.<dataset>.<leaf>`, `memory:<id>`). Pass multiple times to combine. Drives the BM25 channel. |
+| `--query JSON_OR_@FILE` | | Inline SLayer query (or `@path.json`). Entities are auto-extracted from `population`, dimensions, metrics, time dims, and `filter`. |
 | `QUESTION` / `--question TEXT` | | Free-text question, positional or as `--question` (not both). Drives Tantivy + embeddings. |
 | `--datasource DS` | | Pre-narrow every channel to ids rooted at the named datasource. Unknown name raises. |
-| `--cypher-filter CYPHER` | | Pre-narrow all three channels via a graph query. Full openCypher with `advanced_search` (LadybugDB property graph with `Memory` / `Datasource` / `Model` / `ModelColumn` / `Measure` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `JOINS` edges). Without the extra, only the naive `MATCH (n:Label1:Label2…) RETURN n.id AS id` form is accepted; anything richer raises with an install hint. |
+| `--cypher-filter CYPHER` | | Pre-narrow all three channels via a graph query. Full openCypher with `advanced_search` (LadybugDB property graph with `Memory` / `Datasource` / `Dataset` / `DatasetField` / `Metric` / `Aggregation` nodes and `MENTIONS` / `CONTAINS` / `RELATIONSHIPS` edges). Without the extra, only the naive `MATCH (n:Label1:Label2…) RETURN n.id AS id` form is accepted; anything richer raises with an install hint. |
 | `--max-results N` | `10` | Cap applied after RRF fusion and the `cypher_filter` allowlist. |
 | `--format` | `text` | `text` (newline-grouped human output) or `json` (full `SearchResponse`). |
 
-In `text` mode each result row prints only `kind`, `id`, `score`, and a one-line preview of the hit's `text`. The full column snapshot — the top-50 `sampled_values`, JSON-encoded inside the hit's `text` — is returned in full only under `--format json`; columns with more than 50 distinct values surface only that top 50, with no exact total. (The `50+ distinct` overflow marker is a property of `Column.sampled` and shows in `slayer inspect` / MCP `inspect` output, not in search results.) Memory hits with `query is not None` are saved example queries. Unresolved input entities surface as warnings rather than errors.
+In `text` mode each result row prints only `kind`, `id`, `score`, and a one-line preview of the hit's `text`. The full field snapshot — the top-50 `sampled_values`, JSON-encoded inside the hit's `text` — is returned in full only under `--format json`; fields with more than 50 distinct values surface only that top 50, with no exact total. (The `50+ distinct` overflow marker is a property of `DatasetField.sampled` and shows in `slayer inspect` / MCP `inspect` output, not in search results.) Memory hits with `query is not None` are saved example queries. Unresolved input entities surface as warnings rather than errors.
 
 ### `slayer memory`
 
@@ -577,7 +577,7 @@ slayer memory forget kb.brooklyn-pos
 
 ### `slayer storage`
 
-Storage maintenance. `migrate-types` introspects each model's datasource and refines `DOUBLE` to `INT` on base columns whose live SQL type is integer (on SQLite, whose stored values probe as integers, and there it also widens an `INT` column to `DOUBLE` or `TEXT` whose values are not); it fails if a datasource is unreachable.
+Storage maintenance. `migrate-types` introspects each dataset's datasource and refines `DOUBLE` to `INT` on base fields whose live SQL type is integer (on SQLite, whose stored values probe as integers, and there it also widens an `INT` field to `DOUBLE` or `TEXT` whose values are not); it fails if a datasource is unreachable.
 
 ```bash
 slayer storage migrate-types --dry-run
@@ -607,8 +607,8 @@ SLayer's conceptual help ships as a predefined set of **help memories** (`memory
 
 ```bash
 slayer inspect memory:help.intro --type memory        # overview + judgment calls
-slayer inspect memory:help.models --type memory       # authoring models, joins, result keys
-slayer search --question "how do joins resolve"       # surface the relevant topic
+slayer inspect memory:help.datasets --type memory     # authoring datasets, relationships, result keys
+slayer search --question "how do relationships resolve"       # surface the relevant topic
 ```
 
-`memory:help.intro` lists the deep-dive topics (`memory:help.models`, `memory:help.workflow`, `memory:help.aggregations`, `memory:help.transforms`, `memory:help.time`, `memory:help.joins`, `memory:help.queries`); the query syntax itself is on the MCP `query` tool's schema fields.
+`memory:help.intro` lists the deep-dive topics (`memory:help.datasets`, `memory:help.workflow`, `memory:help.aggregations`, `memory:help.transforms`, `memory:help.time`, `memory:help.relationships`, `memory:help.queries`); the query syntax itself is on the MCP `query` tool's schema fields.

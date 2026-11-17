@@ -1,7 +1,7 @@
 # Semantic search
 
 SLayer ships a `search` tool that lets agents find both **memories** and
-**entities** (datasources, models, columns, named measures, custom
+**entities** (datasources, datasets, fields, named metrics, custom
 aggregations) using up to three parallel retrieval channels merged by
 Reciprocal Rank Fusion. It is the **only** retrieval surface — there is
 no separate recall tool.
@@ -30,18 +30,18 @@ supplied.
 
 ### Channel 1 — entity-overlap BM25 with implicit self-references
 
-Inputs are resolved to canonical entity strings (`<ds>`, `<ds>.<model>`,
-or `<ds>.<model>.<leaf>` — see
+Inputs are resolved to canonical entity strings (`<ds>`, `<ds>.<dataset>`,
+or `<ds>.<dataset>.<leaf>` — see
 [memories.md](memories.md#the-canonical-entity-form)) and scored against
 each memory's stored entity tags via `BM25Plus`. Memories with zero
 overlap are excluded.
 
 **Implicit self-references.** Channel 1 contributes to BOTH
-the memory ranking AND the entity ranking via a single unifying model:
+the memory ranking AND the entity ranking via a single unifying rule:
 every doc is conceptually tagged with an implicit reference to itself.
 
 - A memory `M` is treated as having effective tags `M.entities ∪ {memory:<M.id>}`, so an `entities=["memory:<id>"]` ref surfaces the named memory itself at the top of the memory BM25 ranking.
-- An entity `E` is treated as having a single tag `{<canonical_of_E>}`, so an `entities=["<ds>.<model>.<col>"]` ref surfaces the named entity at the top of the entities bucket.
+- An entity `E` is treated as having a single tag `{<canonical_of_E>}`, so an `entities=["<ds>.<dataset>.<field>"]` ref surfaces the named entity at the top of the entities bucket.
 
 Concretely:
 
@@ -49,7 +49,7 @@ Concretely:
 {
   "call": {"entities": ["mydb.orders.amount"], "max_results": 5},
   "response": {
-    "results": [{"id": "mydb.orders.amount", "kind": "column", "score": 0.0}]
+    "results": [{"id": "mydb.orders.amount", "kind": "field", "score": 0.0}]
   }
 }
 ```
@@ -67,7 +67,7 @@ Filter rules for the new entity surfacing:
 
 - `memory:<id>` refs contribute to the memory portion of the ranking only — they surface as `kind="memory"` hits.
 - Refs not rooted at `datasource` (when set) drop with a warning `entity '<X>' is not rooted at datasource '<ds>'; dropped from entities bucket.` The memory side fires the symmetric `memory:<id> is not rooted at datasource '<ds>'; dropped.` when the named memory has no entities rooted at the requested datasource.
-- Refs on a hidden model or hidden column drop from the entities portion with `entity '<X>' is on a hidden model/column; dropped from entities bucket.` BM25 over original memory tags is unaffected — memories tagged with that canonical still surface.
+- Refs on a hidden dataset or hidden field drop from the entities portion with `entity '<X>' is on a hidden dataset/field; dropped from entities bucket.` BM25 over original memory tags is unaffected — memories tagged with that canonical still surface.
 - An explicitly-named `memory:<id>` whose attached `Memory.query` has stale references emits the standard stale-query warning (the user explicitly asked for that memory; they deserve to know the query is broken).
 
 Activated when `entities` and/or `query` is supplied to `search`.
@@ -77,12 +77,12 @@ Activated when `entities` and/or `query` is supplied to `search`.
 A fresh tantivy in-memory index is built per call covering:
 
 - one doc per non-hidden datasource;
-- one doc per non-hidden model (excluding model `meta`);
-- one doc per non-hidden column on each non-hidden model (including the
-  cached `Column.sampled` snapshot, the column's `sql` expression, and
+- one doc per non-hidden dataset (excluding dataset `meta`);
+- one doc per non-hidden field on each non-hidden dataset (including the
+  cached `DatasetField.sampled` snapshot, the field's `sql` expression, and
   its `description` / `label` / `format` / `allowed_aggregations`);
-- one doc per named `ModelMeasure` (formula + description + label);
-- one doc per custom `Aggregation` (formula + params + description);
+- one doc per named `DatasetMetric` (expression + description + label);
+- one doc per custom `Aggregation` (expression + params + description);
 - one doc per memory (learning text + canonical entity tags).
 
 The index uses tantivy's `en_stem` analyzer (Porter stemmer + default
@@ -96,7 +96,7 @@ Activated when `question` is supplied.
 ### Channel 3 — dense embedding similarity
 
 A persistent embeddings sidecar table holds one row per indexable doc
-(memory or non-hidden datasource / model / column / measure /
+(memory or non-hidden datasource / dataset / field / metric /
 aggregation) under each configured `embedding_model_name`. On search,
 the question is embedded once, the corpus matrix is loaded fresh, and
 top-k cosine similarities are computed with numpy.
@@ -118,12 +118,12 @@ to `openai/text-embedding-3-small`. Provider credentials
 (`OPENAI_API_KEY`, `AZURE_API_KEY`, etc.) are read by litellm itself.
 
 **Refresh.** Embedding rows are refreshed inline on the same write-side
-edges as `Column.sampled`:
+edges as `DatasetField.sampled`:
 
-- `slayer ingest` / `ingest_datasource_models` MCP / `POST /ingest` —
-  refreshes the datasource doc plus every visible model + its visible
-  children (columns, named measures, aggregations);
-- `edit_model` — refreshes the model's whole subtree;
+- `slayer ingest` / `ingest_datasource` MCP / `POST /ingest` —
+  refreshes the datasource doc plus every visible dataset + its visible
+  children (fields, named metrics, aggregations);
+- `edit_dataset` — refreshes the dataset's whole subtree;
 - `save_memory` — refreshes that one memory.
 
 Each refresh hashes the rendered indexed text and compares it to the
@@ -198,7 +198,7 @@ symmetric across hit kinds:
   when the user set it on `save_memory`, otherwise the first non-empty
   paragraph of `Memory.learning` capped at 500 chars. `SearchHit.text`
   is empty (`""`). `query` is preserved for example-query memories.
-- **Entity hits** (datasource / model / column / measure / aggregation)
+- **Entity hits** (datasource / dataset / field / metric / aggregation)
   — `SearchHit.description` holds the entity's structured
   `description` field (`None` when the entity has none). `SearchHit.text`
   is empty.
@@ -219,8 +219,8 @@ datasource:
 
 - **Entity hits** (channels 1, 2, and 3) include only docs whose
   `canonical_id` is rooted at the requested datasource — exact name
-  match (`<ds>`) or strict dotted-path descendant (`<ds>.<model>`,
-  `<ds>.<model>.<leaf>`). Character-prefix matches do NOT qualify, so
+  match (`<ds>`) or strict dotted-path descendant (`<ds>.<dataset>`,
+  `<ds>.<dataset>.<leaf>`). Character-prefix matches do NOT qualify, so
   `datasource="prod"` excludes a sibling datasource named `prod_v2`.
   Channel 1 drops a user-supplied `entities=` ref that
   isn't rooted at the requested datasource with a warning rather than
@@ -244,7 +244,7 @@ surface fast.
 `canonical_id` rooting uses `slayer.memories.resolver.canonical_id_rooted_at`,
 which encodes the same dotted-namespace rule the embedding cascade-delete
 already enforces. Datasource names cannot contain `.` (rejected
-by `DatasourceConfig.name` + `SlayerModel.data_source` validators), so the
+by `DatasourceConfig.name` + `SlayerDataset.data_source` validators), so the
 prefix match is unambiguous.
 
 ### `cypher_filter` graph pre-filter
@@ -270,8 +270,8 @@ supported without LadybugDB. The naive parser accepts only:
 MATCH (var:Label1:Label2:...) RETURN var.id AS id
 ```
 
-Labels must be one or more of `Memory`, `Datasource`, `Model`,
-`Column` (or its alias `ModelColumn`), `Measure`, `Aggregation`
+Labels must be one or more of `Memory`, `Datasource`, `Dataset`,
+`Field` (or its alias `DatasetField`), `Metric`, `Aggregation`
 (case-insensitive). The colon-separated
 multi-label form is a union — it returns hits whose kind matches any of
 the listed labels. Any other Cypher (WHERE clauses, relationships,
@@ -294,39 +294,39 @@ property conditions are all supported.
 |---|---|
 | `Memory` | `id` (`memory:<id>` form), `learning` |
 | `Datasource` | `id`, `name` |
-| `Model` | `id` (`<ds>.<model>`), `name`, `description` |
-| `ModelColumn` | `id` (`<ds>.<model>.<col>`), `name`, `data_type`, `description` |
-| `Measure` | `id` (`<ds>.<model>.<name>`), `name`, `description` |
-| `Aggregation` | `id` (`<ds>.<model>.<name>`), `name` |
+| `Dataset` | `id` (`<ds>.<dataset>`), `name`, `description` |
+| `DatasetField` | `id` (`<ds>.<dataset>.<field>`), `name`, `data_type`, `description` |
+| `Metric` | `id` (`<ds>.<dataset>.<name>`), `name`, `description` |
+| `Aggregation` | `id` (`<ds>.<dataset>.<name>`), `name` |
 
-Note: the column node table is named `ModelColumn` (not `Column`) because `Column` is a reserved keyword in LadybugDB ≥ 0.15.
+Note: the field node table is named `DatasetField`; only the naive fallback also accepts `Field`.
 
 | Relationship | From → To |
 |---|---|
-| `MENTIONS` | Memory → {Datasource, Model, ModelColumn, Measure, Aggregation, Memory} |
-| `CONTAINS` | Datasource → Model, Model → {ModelColumn, Measure, Aggregation} |
-| `JOINS` | Model → Model |
+| `MENTIONS` | Memory → {Datasource, Dataset, DatasetField, Metric, Aggregation, Memory} |
+| `CONTAINS` | Datasource → Dataset, Dataset → {DatasetField, Metric, Aggregation} |
+| `RELATIONSHIPS` | Dataset → Dataset |
 
-Hidden models and hidden columns are excluded from the graph. The graph is
+Hidden datasets and hidden fields are excluded from the graph. The graph is
 rebuilt automatically when the storage fingerprint changes (a content digest
 of the files for YAML, the database's change counter for SQLite).
 
-**Example** — surface only memories that mention the `orders` model:
+**Example** — surface only memories that mention the `orders` dataset:
 
 ```cypher
-MATCH (m:Memory)-[:MENTIONS]->(n:Model {id: 'shop.orders'})
+MATCH (m:Memory)-[:MENTIONS]->(n:Dataset {id: 'shop.orders'})
 RETURN m.id AS id
 ```
 
-**Example** — surface columns in the `shop` datasource:
+**Example** — surface fields in the `shop` datasource:
 
 ```cypher
-MATCH (d:Datasource {id: 'shop'})-[:CONTAINS*1..3]->(c:ModelColumn)
+MATCH (d:Datasource {id: 'shop'})-[:CONTAINS*1..3]->(c:DatasetField)
 RETURN c.id AS id
 ```
 
-**Multi-label union**: `MATCH (n:Memory:ModelColumn)` returns nodes from both
-`Memory` AND `ModelColumn` tables (LadybugDB union semantics).
+**Multi-label union**: `MATCH (n:Memory:DatasetField)` returns nodes from both
+`Memory` AND `DatasetField` tables (LadybugDB union semantics).
 
 ### Behaviour matrix
 
@@ -340,7 +340,7 @@ RETURN c.id AS id
 ### Response shape
 
 All hits — memories (both learning-only and query-bearing) and entities
-(datasources, models, columns, measures, aggregations) — are returned
+(datasources, datasets, fields, metrics, aggregations) — are returned
 as a single flat ranked `results` list capped at `max_results`.
 Query-bearing memories have `query` set; learning-only memories have
 `query=None`; entity hits have `kind` set to their entity type.
@@ -348,7 +348,7 @@ Query-bearing memories have `query` set; learning-only memories have
 ```python
 class SearchHit(BaseModel):
     id: str            # memory id OR canonical entity string
-    kind: str          # "memory"|"datasource"|"model"|"column"|"measure"|"aggregation"
+    kind: str          # "memory"|"datasource"|"dataset"|"field"|"metric"|"aggregation"
     score: float       # RRF-fused score
     text: str          # full indexed text under compact=False; "" under compact=True
     description: Optional[str]    # compact preview (always populated for
@@ -378,31 +378,31 @@ accepted in `entities` for cross-memory linking.
 
 ## Sample-value cache
 
-Every column carries three optional sample-value fields for richer results:
+Every field carries three optional sample-value attributes for richer results:
 
-- `Column.sampled` — formatted text: top-20 most-common values (comma-joined) for
+- `DatasetField.sampled` — formatted text: top-20 most-common values (comma-joined) for
   categoricals, `min .. max` range for numeric/temporal. High-cardinality
   categoricals (> 50 distinct) get a `... (50+ distinct)` marker.
-- `Column.sampled_values` — structured top-50-by-frequency list for categoricals
+- `DatasetField.sampled_values` — structured top-50-by-frequency list for categoricals
   (`None` for numeric/temporal). Read this rather than splitting `sampled` on
   commas — values may themselves contain commas (e.g. `"R$ 1,000–3,000"`).
-- `Column.distinct_count` — exact count when ≤ 50; `None` on overflow or for
+- `DatasetField.distinct_count` — exact count when ≤ 50; `None` on overflow or for
   numeric/temporal (a single top-50 scan, no second `count_distinct`).
 
-Profiling is lazy, never run at ingest (a per-column full scan would dominate
-ingest wall-clock). Samples populate on first `inspect` of a column, and also on:
-`slayer datasources refresh-samples`, `edit_model` (edited column, or every column on a
-model-level change), a model `inspect` (missing values), `search()` column hits
-(stale values — one profiling call per model, models concurrently; no-op without
-an engine), and single-entity `inspect` at `compact=False`. Legacy models carrying
-only `sampled` re-profile on the next such touch. sql-mode and query-backed models
-are skipped by `refresh-samples` and `edit_model`.
+Profiling is lazy, never run at ingest (a per-field full scan would dominate
+ingest wall-clock). Samples populate on first `inspect` of a field, and also on:
+`slayer datasources refresh-samples`, `edit_dataset` (edited field, or every field on a
+dataset-level change), a dataset `inspect` (missing values), `search()` field hits
+(stale values — one profiling call per dataset, datasets concurrently; no-op without
+an engine), and single-entity `inspect` at `compact=False`. Legacy datasets carrying
+only `sampled` re-profile on the next such touch. sql-mode and query-backed datasets
+are skipped by `refresh-samples` and `edit_dataset`.
 
-A failing profiling query triggers one row-count probe of the model: if the probe fails (or three column queries fail in a row), the model is skipped, and each failure is logged once and cached per engine for an hour (a changed model or column definition retries at once).
+A failing profiling query triggers one row-count probe of the dataset: if the probe fails (or three field queries fail in a row), the dataset is skipped, and each failure is logged once and cached per engine for an hour (a changed dataset or field definition retries at once).
 
 ### How sample values surface in search results
 
-`render_column_text` prefers the structured `sampled_values` list over the
+`render_field_text` prefers the structured `sampled_values` list over the
 20-truncated `sampled` text, rendering it as a JSON array so comma-bearing values
 survive unambiguously:
 
@@ -416,7 +416,7 @@ Sample values: ["paid", "refunded", "cancelled", "pending", …]
 When `sampled_values` is `None` (numeric/temporal, legacy data) the renderer
 falls back to `sampled`; an empty `[]` is authoritative-empty (line skipped, no
 fallback). The same renderer feeds both the search index doc and `EntityHit.text`.
-A model `inspect`'s markdown `## Columns` table keeps the 20-truncated `sampled` for
+A dataset `inspect`'s markdown `## Fields` table keeps the 20-truncated `sampled` for
 readability; its JSON output carries the full list.
 
 **Known limitation.** The refresh hook runs *after* RRF fusion, on the returned
@@ -428,7 +428,7 @@ refreshed; tantivy/embeddings catch up on the next `slayer ingest`.
 
 - The tantivy index is rebuilt fresh per call (no persistence/invalidation) —
   fast at SLayer's scale; on-disk indexing is a future follow-up.
-- `meta` (arbitrary user JSON) is excluded; hidden models/columns are skipped.
+- `meta` (arbitrary user JSON) is excluded; hidden datasets/fields are skipped.
 - Each doc has four fields: `id`, `kind`, `canonical` (exact-match), `text`
   (en-stemmed + tokenised).
 
@@ -439,7 +439,7 @@ refreshed; tantivy/embeddings catch up on the next `slayer ingest`.
   `YAMLStorage`), keyed by `(canonical_id, embedding_model_name)` via a shared
   `SidecarEmbeddingStore`. Search loads the matrix fresh and runs cosine in numpy.
 - Same render pipeline as tantivy — one text per doc feeds both.
-- Refresh is inline on the same edges as `Column.sampled` (ingest, `edit_model`,
+- Refresh is inline on the same edges as `DatasetField.sampled` (ingest, `edit_dataset`,
   `save_memory`), skipped by SHA256 content hash. Memories are refreshed by `slayer ingest`
   (filtered to those rooted at the current datasource), so `embeddings.db` is
   repairable by re-running ingest — no separate refresh step.

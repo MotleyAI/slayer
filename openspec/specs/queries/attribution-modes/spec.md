@@ -50,7 +50,7 @@ the fanning hop and the remedy (declare join cardinality or a covering unique ke
 target). The rule applies uniformly wherever the key appears — a partitioned measure,
 filter, ORDER BY target, computed-dimension aggregate, transform partition set,
 re-aggregation inner, or windowed aggregate — and to both the path-less spelling
-(`partition_by=<derived host column>`) and the path-bearing spelling
+(`partition_by=<derived host field>`) and the path-bearing spelling
 (`partition_by=<dotted reference across the hop>`). A partition key that is safe from the
 host but unattributable only from a further (cross-model) root is unaffected: it keeps
 its mode-aware resolution.

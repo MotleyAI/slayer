@@ -312,7 +312,7 @@ class _Stage:
                 return td
             name, label = td.name or computed_dimension_name(td.field), td.label
         return TimeDimension.model_validate({
-            "dimension": text, "name": name, "granularity": td.granularity, "date_range": td.date_range, "label": label,
+            "field": text, "name": name, "granularity": td.granularity, "date_range": td.date_range, "label": label,
         })
 
     def _metric(self, metric: DatasetMetric, *, root: Optional[SlayerDataset]) -> DatasetMetric:
