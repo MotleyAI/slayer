@@ -91,7 +91,7 @@ def stage_doc(*, source_dataset: Any = "events", **fields: Any) -> dict:
 
 def bucket_stage(granularity: str) -> dict:
     """``sum(amount)`` by ``created_at`` bucketed by ``granularity``."""
-    return stage_doc(time_dimensions=[{"field": "created_at", "granularity": granularity}], measures=[SUM])
+    return stage_doc(time_dimensions=[{"dimension": "created_at", "granularity": granularity}], measures=[SUM])
 
 
 def query_backed_doc(*, name: str, stage: dict, data_source: str = DS) -> dict:

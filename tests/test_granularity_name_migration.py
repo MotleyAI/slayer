@@ -19,9 +19,11 @@ import yaml
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasourceConfig
 from slayer.core.query import SlayerQuery
+from slayer.core.vocabulary import stored_query
 from slayer.engine.query_engine import SlayerResponse
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_keys import CURRENT_KEYS, dataset_in
 from slayer.storage.migrations import CURRENT_VERSIONS
 from slayer.storage.sqlite_conn import transaction
 from tests._granularity_rename_fixtures import (
@@ -300,16 +302,13 @@ async def test_a_foreign_dotted_model_file_does_not_block_the_rename(tmp_path: A
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_a_current_version_store_colliding_with_a_later_addition(tmp_path: Any, backend: str) -> None:
-    def current(doc: dict, entity: str) -> dict:
-        return {**doc, "version": CURRENT_VERSIONS[entity]}
-
-    stage = current(stage_doc(dimensions=["date_trunc('left', created_at)"], measures=[SUM]), "SlayerQuery")
+    stage = _current(stage_doc(dimensions=["date_trunc('left', created_at)"], measures=[SUM]), "SlayerQuery")
     storage = await write_raw_store(
         backend=backend, base=str(tmp_path),
-        datasources=[current(datasource_doc(db_path=live_db(str(tmp_path)), granularities=["left"]),
+        datasources=[_current(datasource_doc(db_path=live_db(str(tmp_path)), granularities=["left"]),
                              "DatasourceConfig")],
-        datasets=[current(events_doc(), "SlayerModel"),
-                current(query_backed_doc(name="bucketed", stage=stage), "SlayerModel")],
+        datasets=[_current(events_doc(), "SlayerModel"),
+                  _current(query_backed_doc(name="bucketed", stage=stage), "SlayerModel")],
     )
     assert await _granularity_names(storage) == ["left_granularity"]
     loaded = await _stage(storage, "bucketed")
@@ -357,30 +356,30 @@ class TestTakenName:
 
 # Every position of a stored query that accepts a granularity name.
 QUERY_POSITIONS: dict[str, Callable[[str], dict]] = {
-    "time-dimension": lambda g: {"time_dimensions": [{"field": "created_at", "granularity": g}], "metrics": [SUM]},
-    "time-dimension-call": lambda g: {"time_dimensions": [f"{g}(created_at)"], "metrics": [SUM]},
-    "dimension-call": lambda g: {"dimensions": [f"{g}(created_at)"], "metrics": [SUM]},
-    "computed-dimension": lambda g: {"dimensions": [{"expression": f"{g}(created_at)", "name": "b"}], "metrics": [SUM]},
-    "measure": lambda g: {"metrics": [{"expression": f"count_distinct({g}(created_at))", "name": "n"}]},
+    "time-dimension": lambda g: {"time_dimensions": [{"dimension": "created_at", "granularity": g}], "measures": [SUM]},
+    "time-dimension-call": lambda g: {"time_dimensions": [f"{g}(created_at)"], "measures": [SUM]},
+    "dimension-call": lambda g: {"dimensions": [f"{g}(created_at)"], "measures": [SUM]},
+    "computed-dimension": lambda g: {"dimensions": [{"expression": f"{g}(created_at)", "name": "b"}], "measures": [SUM]},
+    "measure": lambda g: {"measures": [{"formula": f"count_distinct({g}(created_at))", "name": "n"}]},
     "measure-filter-clause": lambda g: {
-        "metrics": [{"expression": f"sum(amount) FILTER (WHERE {g}(created_at) = '2025-02-15')", "name": "f"}]},
-    "filter": lambda g: {"metrics": [SUM], "filter": [f"{g}(created_at) = '2025-01-15'"]},
-    "order": lambda g: {"time_dimensions": [{"field": "created_at", "granularity": g}], "metrics": [SUM],
-                        "order": [{"field": f"{g}(created_at)", "direction": "desc"}]},
-    "relative-token-filter": lambda g: {"metrics": [SUM], "filter": [f"created_at >= 'last 1000 {g}s'"]},
-    "relative-token-filter-singular": lambda g: {"metrics": [SUM], "filter": [f"created_at < 'this {g}'"]},
+        "measures": [{"formula": f"sum(amount) FILTER (WHERE {g}(created_at) = '2025-02-15')", "name": "f"}]},
+    "filter": lambda g: {"measures": [SUM], "filters": [f"{g}(created_at) = '2025-01-15'"]},
+    "order": lambda g: {"time_dimensions": [{"dimension": "created_at", "granularity": g}], "measures": [SUM],
+                        "order": [{"column": f"{g}(created_at)", "direction": "desc"}]},
+    "relative-token-filter": lambda g: {"measures": [SUM], "filters": [f"created_at >= 'last 1000 {g}s'"]},
+    "relative-token-filter-singular": lambda g: {"measures": [SUM], "filters": [f"created_at < 'this {g}'"]},
     "relative-token-date-range": lambda g: {
-        "time_dimensions": [{"field": "created_at", "granularity": "month", "date_range": f"last 1000 {g}s"}],
-        "metrics": [SUM]},
+        "time_dimensions": [{"dimension": "created_at", "granularity": "month", "date_range": f"last 1000 {g}s"}],
+        "measures": [SUM]},
     "time-shift-unit": lambda g: {
-        "time_dimensions": [{"field": "created_at", "granularity": g}],
-        "metrics": [SUM, {"expression": f"time_shift(sum(amount), -1, '{g}')", "name": "p"}]},
+        "time_dimensions": [{"dimension": "created_at", "granularity": g}],
+        "measures": [SUM, {"formula": f"time_shift(sum(amount), -1, '{g}')", "name": "p"}]},
     "time-shift-keyword": lambda g: {
-        "time_dimensions": [{"field": "created_at", "granularity": g}],
-        "metrics": [SUM, {"expression": f"time_shift(sum(amount), -1, granularity='{g}')", "name": "p"}]},
+        "time_dimensions": [{"dimension": "created_at", "granularity": g}],
+        "measures": [SUM, {"formula": f"time_shift(sum(amount), -1, granularity='{g}')", "name": "p"}]},
     "inline-extension-measure": lambda g: {
-        "population": {"source_name": "events", "metrics": [{"name": "n", "expression": f"count_distinct({g}(created_at))"}]},
-        "metrics": ["n"]},
+        "source_model": {"source_name": "events", "measures": [{"name": "n", "formula": f"count_distinct({g}(created_at))"}]},
+        "measures": ["n"]},
 }
 
 # Every position of a stored model that accepts a granularity name: (model document, query over it).
@@ -494,7 +493,9 @@ async def test_a_rename_converges(tmp_path: Any, caplog: pytest.LogCaptureFixtur
 
 
 def _current(doc: dict, entity: str) -> dict:
-    return {**doc, "version": CURRENT_VERSIONS[entity]}
+    """``doc`` (spelled as the previous release stored it) as the current release stores it."""
+    respelled = {"SlayerModel": lambda d: dataset_in(d, CURRENT_KEYS), "SlayerQuery": stored_query}
+    return {**respelled.get(entity, dict)(doc), "version": CURRENT_VERSIONS[entity]}
 
 
 def _assert_consistent(raw: dict[str, str]) -> None:
