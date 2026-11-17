@@ -478,14 +478,14 @@ class RenamedField(BaseModel):
 
 def _renamed_fields(datasets: list[SlayerDataset]) -> list[RenamedField]:
     out: list[RenamedField] = []
-    for model in datasets:
-        for column in model.fields:
+    for dataset in datasets:
+        for column in dataset.fields:
             physical = (column.sql or "").strip('"')
             if column.sql and is_base_field_sql(column.sql) and _logical_field_name(physical) != column.name:
-                out.append(RenamedField(dataset=model.name, field=column.name, physical=physical))
+                out.append(RenamedField(dataset=dataset.name, field=column.name, physical=physical))
                 logger.warning(
                     "dataset %r: physical column %r differs from another only in case; ingested as %r",
-                    model.name, physical, column.name,
+                    dataset.name, physical, column.name,
                 )
     return out
 
@@ -780,10 +780,10 @@ def _resolve_scanned_collisions(
 
     winners: dict[str, tuple[SchemaRef, IngestableObject]] = {}
     skipped: list[SkippedTable] = []
-    for model_name, members in groups.items():
+    for dataset_name, members in groups.items():
         ordered = sorted(members, key=lambda ro: _collision_sort_key(*ro))
         win_ref, win_obj = ordered[0]
-        winners[model_name] = (win_ref, win_obj)
+        winners[dataset_name] = (win_ref, win_obj)
         winner_label = (
             win_ref.qualify(win_obj.live_name, dialect=dialect) if multi_schema else win_obj.name
         )
@@ -796,7 +796,7 @@ def _resolve_scanned_collisions(
                     table_name=label,
                     kind=obj.kind,
                     reason=(
-                        f"name collision: resolves to dataset '{model_name}', "
+                        f"name collision: resolves to dataset '{dataset_name}', "
                         f"already taken by '{winner_label}'"
                     ),
                 )
@@ -829,7 +829,7 @@ async def _build_one_dataset(
     table = obj.live_name
     sql_table = ref.qualify(table, dialect=dialect_of(client))
     keys_by_table = keys_by_table if keys_by_table is not None else {}
-    model_joins = await _generate_relationships(
+    dataset_relationships = await _generate_relationships(
         client=client,
         source_table=table,
         schema=ref.token,
@@ -851,7 +851,7 @@ async def _build_one_dataset(
         fields=columns,
         data_source=data_source,
         sql_table=sql_table,
-        relationships=model_joins,
+        relationships=dataset_relationships,
         unique_fields=_solo_unique_fields(keys),
         source_kind=obj.kind,
         hidden=internal_tool is not None,
@@ -914,7 +914,7 @@ async def _scan_one_schema(
         default_schema = await client.default_schema() if entries else None
     except Exception:  # noqa: BLE001 — each object then reads it inside its own isolated build
         logger.debug("default-schema read failed; reading it per object", exc_info=True)
-    for model_name, obj in entries:
+    for dataset_name, obj in entries:
         # Classified on the live name; still recorded under ``surface_internals``.
         tool = internal_table_rule(obj.name)
         try:
@@ -922,7 +922,7 @@ async def _scan_one_schema(
                 await _build_one_dataset(
                     client=client,
                     obj=obj,
-                    dataset_name=model_name,
+                    dataset_name=dataset_name,
                     ref=ref,
                     data_source=data_source,
                     table_set=table_set,
@@ -947,7 +947,7 @@ async def _scan_one_schema(
             internal_tables.append(
                 InternalTable(
                     table_name=obj.name,
-                    dataset_name=model_name,
+                    dataset_name=dataset_name,
                     tool=tool,
                     kind=obj.kind,
                     hidden=not surface_internals,
@@ -1020,11 +1020,11 @@ async def ingest_datasource_report_async(
     )
 
     by_schema: dict[str | None, tuple[SchemaRef, list[tuple[str, IngestableObject]]]] = {}
-    for model_name, (ref, obj) in winners.items():
+    for dataset_name, (ref, obj) in winners.items():
         key = ref.token
         if key not in by_schema:
             by_schema[key] = (ref, [])
-        by_schema[key][1].append((model_name, obj))
+        by_schema[key][1].append((dataset_name, obj))
 
     datasets: list[SlayerDataset] = []
     internal_tables: list[InternalTable] = []
@@ -1435,7 +1435,7 @@ def _additive_merge_existing(
         and fresh.source_kind != persisted.source_kind
     )
 
-    model_described = bool(fresh.description) and not persisted.description
+    dataset_described = bool(fresh.description) and not persisted.description
 
     if not (
         new_column_names
@@ -1443,14 +1443,14 @@ def _additive_merge_existing(
         or kind_changed
         or metadata_changed
         or columns.described
-        or model_described
+        or dataset_described
     ):
         return AdditiveMergeResult(merged=persisted)
 
     update: dict[str, Any] = {"fields": merged_columns, "relationships": merged_joins}
     if kind_changed:
         update["source_kind"] = fresh.source_kind
-    if model_described:
+    if dataset_described:
         update["description"] = fresh.description
 
     return AdditiveMergeResult(
@@ -1460,7 +1460,7 @@ def _additive_merge_existing(
         kind_changed=kind_changed,
         metadata_changed=metadata_changed,
         described_fields=columns.described,
-        dataset_described=model_described,
+        dataset_described=dataset_described,
     )
 
 
@@ -1678,25 +1678,25 @@ async def _retype_sql_datasets(
     retyped: dict[str, list[str]] = {}
     errors: dict[str, str] = {}
     # A parameterized query only runs with its variables bound.
-    sql_models = [
+    sql_datasets = [
         m for m in failures.skip(await storage.load_datasets(data_source=datasource.name))
         if m.sql and not any(extract_variable_refs(m.sql))
     ]
-    if not sql_models:
+    if not sql_datasets:
         return retyped, errors
-    for model in sql_models:
+    for dataset in sql_datasets:
         try:
-            types = await sql_result_types(sql=model.sql or "", client=client)
+            types = await sql_result_types(sql=dataset.sql or "", client=client)
             # Re-read after the slow trial so a concurrent edit is not reverted.
-            current = await storage.get_dataset(model.name, data_source=datasource.name)
-            if current is None or current.sql != model.sql:
+            current = await storage.get_dataset(dataset.name, data_source=datasource.name)
+            if current is None or current.sql != dataset.sql:
                 continue
             updated, columns = retyped_sql_columns(current, lists=types.lists)
             if columns:
                 await storage.save_dataset(updated)
-                retyped[model.name] = columns
+                retyped[dataset.name] = columns
         except Exception as exc:  # noqa: BLE001 — one dataset's failure must not abort the pass
-            errors[model.name] = f"sql-mode re-type: {exc}"
+            errors[dataset.name] = f"sql-mode re-type: {exc}"
     return retyped, errors
 
 
@@ -1922,8 +1922,8 @@ async def ingest_datasource_idempotent(
     )
     default_schema_name, default_objects = await _default_schema_membership(client)
     failures = DocumentLoadFailures()
-    fresh_models = scan.datasets
-    fresh_by_name = {m.name: m for m in fresh_models}
+    fresh_datasets = scan.datasets
+    fresh_by_name = {m.name: m for m in fresh_datasets}
     fresh_by_name, adopted_renames = await _adopt_stored_sanitized_names(
         fresh_by_name=fresh_by_name,
         storage=storage,
@@ -1931,7 +1931,7 @@ async def ingest_datasource_idempotent(
         default_schema=default_schema_name,
         failures=failures,
     )
-    fresh_models = list(fresh_by_name.values())
+    fresh_datasets = list(fresh_by_name.values())
     # Re-point internal-table entries at adopted names, else the re-check drops them.
     if adopted_renames:
         scan.internal_tables = [
@@ -1942,7 +1942,7 @@ async def ingest_datasource_idempotent(
     # Live object names, not dataset names (the two can differ).
     in_scope_table_names: set[str] = {
         _bare_table_name(m.sql_table, dialect=dialect_for_ds_type(datasource.type))
-        for m in fresh_models if m.sql_table
+        for m in fresh_datasets if m.sql_table
     }
 
     additions, errors, merge_skipped, broken = await _run_additive_pass(
@@ -1983,14 +1983,14 @@ async def ingest_datasource_idempotent(
                 error=f"datasource description save: {exc}",
             ))
 
-    scoped_models = await _scoped_datasets_for_validation(
+    scoped_datasets = await _scoped_datasets_for_validation(
         storage=storage,
         datasource=datasource,
         in_scope_table_names=in_scope_table_names,
         failures=failures,
     )
     to_delete = await schema_drift.validate_datasource(
-        datasource=datasource, datasets=scoped_models, client=client,
+        datasource=datasource, datasets=scoped_datasets, client=client,
     )
 
     # No sample profiling here (a full scan per field); read paths refresh on cache miss.
@@ -1998,9 +1998,9 @@ async def ingest_datasource_idempotent(
     embedding_errors = await _refresh_datasource_embeddings(
         datasource_name=datasource.name, storage=storage, failures=failures,
     )
-    for model_name, err in embedding_errors:
+    for dataset_name, err in embedding_errors:
         errors.append(schema_drift.IngestionError(
-            dataset_name=model_name,
+            dataset_name=dataset_name,
             data_source=datasource.name,
             error=f"embedding refresh: {err}",
         ))
@@ -2352,10 +2352,10 @@ async def _refresh_datasets_for_datasource(
     """Refresh every loadable dataset's embeddings → ``(warnings tagged <ds>.<name>, models_in_ds)``."""
     warnings: list[tuple[str, str]] = []
     try:
-        models_in_ds = failures.skip(await storage.load_datasets(data_source=datasource_name))
+        datasets_in_ds = failures.skip(await storage.load_datasets(data_source=datasource_name))
     except Exception as exc:  # noqa: BLE001 — defensive
         return [("", f"{datasource_name}: {exc}")], []
-    for m in models_in_ds:
+    for m in datasets_in_ds:
         tag = f"{m.data_source}.{m.name}"
         try:
             subtree_warnings = await search.refresh_dataset_subtree(m)
@@ -2363,7 +2363,7 @@ async def _refresh_datasets_for_datasource(
             subtree_warnings = [str(exc)]
         for w in subtree_warnings:
             warnings.append((tag, w))
-    return warnings, models_in_ds
+    return warnings, datasets_in_ds
 
 
 async def _refresh_datasource_doc(
@@ -2407,21 +2407,21 @@ async def _entity_ref_exists(
         return False
     if len(parts) == 1:
         return True
-    model_name = parts[1]
+    dataset_name = parts[1]
     try:
-        model = await storage.get_dataset(model_name, data_source=head)
+        dataset = await storage.get_dataset(dataset_name, data_source=head)
     except Exception:  # noqa: BLE001 — transient
         return None
-    if model is None:
+    if dataset is None:
         return False
     if len(parts) == 2:
         return True
     leaf = parts[-1]
-    if model.get_field(leaf) is not None:
+    if dataset.get_field(leaf) is not None:
         return True
-    if model.get_metric(leaf) is not None:
+    if dataset.get_metric(leaf) is not None:
         return True
-    if model.get_aggregation(leaf) is not None:
+    if dataset.get_aggregation(leaf) is not None:
         return True
     return False
 
@@ -2501,16 +2501,16 @@ async def _refresh_datasource_embeddings(
 
     search = SearchService(storage=storage)
     failures = failures or DocumentLoadFailures()
-    model_warnings, models_in_ds = await _refresh_datasets_for_datasource(
+    dataset_warnings, datasets_in_ds = await _refresh_datasets_for_datasource(
         datasource_name=datasource_name, storage=storage, search=search, failures=failures,
     )
     doc_warnings = await _refresh_datasource_doc(
         datasource_name=datasource_name,
-        datasets=models_in_ds,
+        datasets=datasets_in_ds,
         search=search,
         storage=storage,
     )
     memory_warnings = await _refresh_memories_for_datasource(
         datasource_name=datasource_name, storage=storage, search=search, failures=failures,
     )
-    return model_warnings + doc_warnings + memory_warnings
+    return dataset_warnings + doc_warnings + memory_warnings

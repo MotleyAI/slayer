@@ -46,14 +46,14 @@ def _relationship_targets(
     forward targets. The spine's virtual edges are left out (its description names its wiring)."""
     if is_spine(dataset):
         return []
-    models_by_name = {m.name: m for m in (all_datasets or [dataset])}
-    models_by_name.setdefault(dataset.name, dataset)
+    datasets_by_name = {m.name: m for m in (all_datasets or [dataset])}
+    datasets_by_name.setdefault(dataset.name, dataset)
     tokens: set[str] = set()
     ambiguous: set[str] = set()
-    for hop in neighbors(dataset=dataset, datasets_by_name=models_by_name):
+    for hop in neighbors(dataset=dataset, datasets_by_name=datasets_by_name):
         if hop.to == TIME_SPINE_DATASET:
             continue
-        token = addressable_token(current=dataset, edge=hop, datasets_by_name=models_by_name)
+        token = addressable_token(current=dataset, edge=hop, datasets_by_name=datasets_by_name)
         if token is None:
             ambiguous.add(hop.to)
         else:
@@ -111,7 +111,7 @@ def _datasets_summary_json(
     *, datasource_name: str, datasets: list[SlayerDataset], compact: bool, desc,
 ) -> str:
     if compact:
-        model_payload = [
+        dataset_payload = [
             {
                 "name": m.name,
                 "description": desc(m.description),
@@ -122,7 +122,7 @@ def _datasets_summary_json(
             for m in datasets
         ]
     else:
-        model_payload = [
+        dataset_payload = [
             {
                 "name": m.name,
                 "description": desc(m.description),
@@ -151,7 +151,7 @@ def _datasets_summary_json(
         {
             "datasource_name": datasource_name,
             "dataset_count": len(datasets),
-            "datasets": model_payload,
+            "datasets": dataset_payload,
         },
         indent=2,
     )
@@ -164,18 +164,18 @@ def _datasets_summary_markdown(
         f"# Datasource: `{datasource_name}` — {len(datasets)} dataset(s)"
     ]
     for m in datasets:
-        model_lines: list[str] = [f"## `{m.name}`"]
+        dataset_lines: list[str] = [f"## `{m.name}`"]
         if m.description:
-            model_lines.append(desc(m.description) or "")
+            dataset_lines.append(desc(m.description) or "")
         if compact:
             _append_compact_dataset_lines(
-                dataset_lines=model_lines, m=m, all_datasets=datasets,
+                dataset_lines=dataset_lines, m=m, all_datasets=datasets,
             )
         else:
             _append_verbose_dataset_lines(
-                dataset_lines=model_lines, m=m, desc=desc, all_datasets=datasets,
+                dataset_lines=dataset_lines, m=m, desc=desc, all_datasets=datasets,
             )
-        sections.append("\n".join(model_lines))
+        sections.append("\n".join(dataset_lines))
     return "\n\n".join(sections)
 
 
@@ -184,8 +184,8 @@ def _append_compact_dataset_lines(
     all_datasets: list[SlayerDataset] | None = None,
 ) -> None:
     dataset_lines.append(f"Fields: {_visible_field_count(m)}")
-    measure_names = ", ".join(mm.name for mm in m.metrics if mm.name is not None)
-    dataset_lines.append(f"Metrics: {measure_names}")
+    metric_names = ", ".join(mm.name for mm in m.metrics if mm.name is not None)
+    dataset_lines.append(f"Metrics: {metric_names}")
     targets = _relationship_targets(m, all_datasets)
     if targets:
         rendered = ", ".join(f"`{t}`" for t in targets)
@@ -209,14 +209,14 @@ def _append_verbose_dataset_lines(
     )
     dataset_lines.append("")
 
-    measure_rows = [
+    metric_rows = [
         {"name": mm.name, "expression": mm.expression, "description": desc(mm.description)}
         for mm in m.metrics
     ]
-    dataset_lines.append(f"**Metrics ({len(measure_rows)}):**")
+    dataset_lines.append(f"**Metrics ({len(metric_rows)}):**")
     dataset_lines.append("")
     dataset_lines.append(
-        _markdown_table(rows=measure_rows, fields=["name", "expression", "description"])
+        _markdown_table(rows=metric_rows, fields=["name", "expression", "description"])
     )
     dataset_lines.append("")
 
@@ -255,22 +255,22 @@ def _oneliner_index_json(
     *, groups: list[DatasetGroup], warnings: list[str],
 ) -> str:
     entries: list[dict[str, Any]] = []
-    for ds, models in groups:
-        if models is None:
+    for ds, datasets in groups:
+        if datasets is None:
             entries.append(
                 {"data_source": ds, "error": "invalid config", "datasets": []}
             )
             continue
         entries.append({
             "data_source": ds,
-            "dataset_count": len(models),
+            "dataset_count": len(datasets),
             "datasets": [
                 {
                     "name": m.name,
                     "field_count": _visible_field_count(m),
-                    "relationships_to": _relationship_targets(m, models),
+                    "relationships_to": _relationship_targets(m, datasets),
                 }
-                for m in models
+                for m in datasets
             ],
         })
     return json.dumps({
@@ -285,19 +285,19 @@ def _oneliner_index_markdown(
     *, groups: list[DatasetGroup], warnings: list[str],
 ) -> str:
     blocks: list[str] = []
-    for ds, models in groups:
-        if models is None:
+    for ds, datasets in groups:
+        if datasets is None:
             blocks.append(f"# Datasource: `{ds}` — (ERROR: invalid config)")
             continue
-        lines = [f"# Datasource: `{ds}` — {len(models)} dataset(s)"]
-        for m in models:
-            joins = _relationship_targets(m, models)
-            joins_str = (
-                ", ".join(f"`{t}`" for t in joins) if joins else "_(none)_"
+        lines = [f"# Datasource: `{ds}` — {len(datasets)} dataset(s)"]
+        for m in datasets:
+            relationships = _relationship_targets(m, datasets)
+            relationships_str = (
+                ", ".join(f"`{t}`" for t in relationships) if relationships else "_(none)_"
             )
             lines.append(
                 f"- `{m.name}` ({_visible_field_count(m)} fields; "
-                f"relationships: {joins_str})"
+                f"relationships: {relationships_str})"
             )
         blocks.append("\n".join(lines))
     body = "\n\n".join(blocks)

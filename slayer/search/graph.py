@@ -200,15 +200,15 @@ def _insert_dataset_child_nodes(conn: Any, canonical_dataset: str, dataset: Slay
                 "descr": col.description or "",
             },
         )
-    for measure in dataset.metrics:
-        if not measure.name:
+    for metric in dataset.metrics:
+        if not metric.name:
             continue
         conn.execute(
             "CREATE (:Metric {id: $id, name: $name, description: $descr})",
             {
-                "id": f"{canonical_dataset}.{measure.name}",
-                "name": measure.name,
-                "descr": measure.description or "",
+                "id": f"{canonical_dataset}.{metric.name}",
+                "name": metric.name,
+                "descr": metric.description or "",
             },
         )
     for agg in dataset.aggregations:
@@ -248,17 +248,17 @@ def _insert_nodes(
             },
         )
 
-    for canonical_model, model in visible_datasets.items():
-        _, model_name = canonical_model.split(".", 1)
+    for canonical_dataset, dataset in visible_datasets.items():
+        _, dataset_name = canonical_dataset.split(".", 1)
         conn.execute(
             "CREATE (:Dataset {id: $id, name: $name, description: $descr})",
             {
-                "id": canonical_model,
-                "name": model_name,
-                "descr": model.description or "",
+                "id": canonical_dataset,
+                "name": dataset_name,
+                "descr": dataset.description or "",
             },
         )
-        _insert_dataset_child_nodes(conn, canonical_model, model)
+        _insert_dataset_child_nodes(conn, canonical_dataset, dataset)
 
     for mem in memories:
         conn.execute(
@@ -278,53 +278,53 @@ def _insert_contains_edges(
 ) -> None:
     """Insert CONTAINS edges: Datasource→Dataset and Dataset→{DatasetField/Metric/Agg}."""
     ds_set = set(datasource_names)
-    for canonical_model, model in visible_datasets.items():
-        ds = canonical_model.split(".", 1)[0]
+    for canonical_dataset, dataset in visible_datasets.items():
+        ds = canonical_dataset.split(".", 1)[0]
         if ds in ds_set:
             conn.execute(
                 "MATCH (d:Datasource {id: $ds}), (m:Dataset {id: $dataset}) "
                 "CREATE (d)-[:CONTAINS]->(m)",
-                {"ds": ds, "dataset": canonical_model},
+                {"ds": ds, "dataset": canonical_dataset},
             )
-        for col in model.fields:
+        for col in dataset.fields:
             if col.hidden:
                 continue
             conn.execute(
                 "MATCH (m:Dataset {id: $dataset}), (c:DatasetField {id: $field}) "
                 "CREATE (m)-[:CONTAINS]->(c)",
-                {"dataset": canonical_model, "field": f"{canonical_model}.{col.name}"},
+                {"dataset": canonical_dataset, "field": f"{canonical_dataset}.{col.name}"},
             )
-        for measure in model.metrics:
-            if not measure.name:
+        for metric in dataset.metrics:
+            if not metric.name:
                 continue
             conn.execute(
                 "MATCH (m:Dataset {id: $dataset}), (ms:Metric {id: $ms}) "
                 "CREATE (m)-[:CONTAINS]->(ms)",
-                {"dataset": canonical_model, "ms": f"{canonical_model}.{measure.name}"},
+                {"dataset": canonical_dataset, "ms": f"{canonical_dataset}.{metric.name}"},
             )
-        for agg in model.aggregations:
+        for agg in dataset.aggregations:
             conn.execute(
                 "MATCH (m:Dataset {id: $dataset}), (a:Aggregation {id: $agg}) "
                 "CREATE (m)-[:CONTAINS]->(a)",
-                {"dataset": canonical_model, "agg": f"{canonical_model}.{agg.name}"},
+                {"dataset": canonical_dataset, "agg": f"{canonical_dataset}.{agg.name}"},
             )
 
 
 def _insert_relationships_edges(conn: Any, visible_datasets: dict[str, SlayerDataset]) -> None:
     """Insert RELATIONSHIPS edges: Dataset→Dataset (via dataset.relationships). Missing targets silently skipped."""
-    for canonical_model, model in visible_datasets.items():
-        ds = canonical_model.split(".", 1)[0]
-        for join in model.relationships:
-            target_canonical = f"{ds}.{join.to}"
+    for canonical_dataset, dataset in visible_datasets.items():
+        ds = canonical_dataset.split(".", 1)[0]
+        for relationship in dataset.relationships:
+            target_canonical = f"{ds}.{relationship.to}"
             if target_canonical not in visible_datasets:
                 continue
             conn.execute(
                 "MATCH (src:Dataset {id: $src}), (tgt:Dataset {id: $tgt}) "
                 "CREATE (src)-[:RELATIONSHIPS {cardinality: $card}]->(tgt)",
                 {
-                    "src": canonical_model,
+                    "src": canonical_dataset,
                     "tgt": target_canonical,
-                    "card": str(join.cardinality) if join.cardinality else "",
+                    "card": str(relationship.cardinality) if relationship.cardinality else "",
                 },
             )
 
@@ -387,15 +387,15 @@ def _build_valid_entity_sets(
     valid_fields: set[str] = set()
     valid_metrics: set[str] = set()
     valid_aggs: set[str] = set()
-    for canonical_model, model in visible_datasets.items():
-        for col in model.fields:
+    for canonical_dataset, dataset in visible_datasets.items():
+        for col in dataset.fields:
             if not col.hidden:
-                valid_fields.add(f"{canonical_model}.{col.name}")
-        for measure in model.metrics:
-            if measure.name:
-                valid_metrics.add(f"{canonical_model}.{measure.name}")
-        for agg in model.aggregations:
-            valid_aggs.add(f"{canonical_model}.{agg.name}")
+                valid_fields.add(f"{canonical_dataset}.{col.name}")
+        for metric in dataset.metrics:
+            if metric.name:
+                valid_metrics.add(f"{canonical_dataset}.{metric.name}")
+        for agg in dataset.aggregations:
+            valid_aggs.add(f"{canonical_dataset}.{agg.name}")
     valid_memory_canonicals = {f"{_MEMORY_PREFIX}{m.id}" for m in memories}
     return valid_fields, valid_metrics, valid_aggs, valid_memory_canonicals
 
@@ -409,7 +409,7 @@ def _insert_mentions_edges(
     """Insert MENTIONS edges: Memory → {Datasource, Dataset, DatasetField, Metric, Agg, Memory}."""
     ds_set = set(datasource_names)
     valid_datasets: set[str] = set(visible_datasets)
-    valid_columns, valid_measures, valid_aggs, valid_memory_canonicals = (
+    valid_fields, valid_metrics, valid_aggs, valid_memory_canonicals = (
         _build_valid_entity_sets(visible_datasets, memories)
     )
 
@@ -418,7 +418,7 @@ def _insert_mentions_edges(
         for entity in mem.entities:
             _connect_entity_mention(
                 conn, src, entity,
-                ds_set, valid_datasets, valid_columns, valid_measures, valid_aggs,
+                ds_set, valid_datasets, valid_fields, valid_metrics, valid_aggs,
                 valid_memory_canonicals,
             )
 

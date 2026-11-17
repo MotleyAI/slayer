@@ -288,7 +288,7 @@ def _map_bound_keys(
     order_specs: List[OrderSpec],
     skip_dimensions: bool = False,
 ) -> Tuple[List[DeclaredMetric], List[BoundFilter], List[OrderSpec]]:
-    new_measures = [
+    new_metrics = [
         dm.model_copy(update={"bound": BoundExpr(
             value_key=(
                 dm.bound.value_key if (skip_dimensions and dm.is_dimension)
@@ -319,7 +319,7 @@ def _map_bound_keys(
         )
         for spec in order_specs
     ]
-    return new_measures, new_filters, new_specs
+    return new_metrics, new_filters, new_specs
 
 
 def _bind_inner_restriction(
@@ -370,13 +370,13 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     if query.distinct_dimension_values is False:
         _reject_metric_refs_for_raw_rows(query=query, scope=scope, bundle=bundle)
 
-    declared_measures = _declared_metrics_from_query(
+    declared_metrics = _declared_metrics_from_query(
         query=query, scope=scope, bundle=bundle,
     )
 
     # Alias lookup for ORDER BY, checked before bind_expr so aggregate aliases resolve via the registry.
     declared_alias_to_bound: Dict[str, BoundExpr] = {}
-    for dm in declared_measures:
+    for dm in declared_metrics:
         for alias in (dm.public_name, dm.declared_name, dm.canonical_alias):
             if alias is not None:
                 declared_alias_to_bound.setdefault(alias, dm.bound)
@@ -386,14 +386,14 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     n_tds = len(query.time_dimensions or [])
     filter_alias_map: Dict[str, ValueKey] = {}
     _, _, _agg_dms = partition_declared_metrics(
-        declared_metrics=declared_measures, n_dims=n_dims, n_time_dimensions=n_tds,
+        declared_metrics=declared_metrics, n_dims=n_dims, n_time_dimensions=n_tds,
     )
     for dm in _agg_dms:
         for alias in (dm.public_name, dm.declared_name, dm.canonical_alias):
             if alias is not None:
                 filter_alias_map.setdefault(alias, dm.bound.value_key)
     # A computed dimension's name is a query-local alias resolvable in filters/order.
-    for dm in declared_measures:
+    for dm in declared_metrics:
         if dm.is_dimension and dm.public_name is not None:
             filter_alias_map.setdefault(dm.public_name, dm.bound.value_key)
     # ...and resolvable inside a filter/order ``partition_by=``.
@@ -402,13 +402,13 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     )
     dim_alias_map: Dict[str, ValueKey] = {
         dm.public_name: dm.bound.value_key
-        for dm in declared_measures
+        for dm in declared_metrics
         if dm.is_dimension
         and dm.public_name is not None
         and dm.public_name in _computed_names
     }
     _, _td_alias_dms, _ = partition_declared_metrics(
-        declared_metrics=declared_measures, n_dims=n_dims, n_time_dimensions=n_tds,
+        declared_metrics=declared_metrics, n_dims=n_dims, n_time_dimensions=n_tds,
     )
     dim_alias_map.update(_time_dimension_aliases([
         (td, dm.bound, "") for td, dm in zip(query.time_dimensions or [], _td_alias_dms)
@@ -562,7 +562,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
                 )
             order_specs.append(OrderSpec(bound=bo, direction=o.direction, nulls=o.nulls or "default"))
 
-    column_type = scope_field_type(scope=scope, bundle=bundle)
+    field_type = scope_field_type(scope=scope, bundle=bundle)
     zoned = scope_zoned_timestamp(scope=scope, bundle=bundle)
     lists = _list_typing(scope=scope, bundle=bundle)
     # A list has no sort order: the default order skips it.
@@ -572,7 +572,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     ]
     check_list_operands(
         roots=[
-            *(dm.bound.value_key for dm in declared_measures),
+            *(dm.bound.value_key for dm in declared_metrics),
             *(bf.value_key for bf in bound_filters),
             *(spec.bound.value_key for spec in order_specs),
         ],
@@ -582,89 +582,89 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         check_list_order_key(key=spec.bound.value_key, typing=lists)
     check_date_operands(
         roots=[
-            *(dm.bound.value_key for dm in declared_measures),
+            *(dm.bound.value_key for dm in declared_metrics),
             *(bf.value_key for bf in bound_filters),
             *(spec.bound.value_key for spec in order_specs),
         ],
-        field_type=column_type,
+        field_type=field_type,
     )
     notices = date_only_notices(
         [
-            *(dm.bound.value_key for dm in declared_measures),
+            *(dm.bound.value_key for dm in declared_metrics),
             *(bf.value_key for bf in bound_filters),
             *(spec.bound.value_key for spec in order_specs),
         ],
-        field_type=column_type, variables=query.date_variables,
+        field_type=field_type, variables=query.date_variables,
     )
     # Every time point resolves against the execution's one clock reading.
-    declared_measures, bound_filters, order_specs = _map_bound_keys(
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
         lambda vk: coerce_zoned_comparisons(
             coerce_text_numbers(
                 coerce_list_arguments(
-                    resolve_time_points(vk, field_type=column_type, now=bundle.now, units=bundle.granularities),
+                    resolve_time_points(vk, field_type=field_type, now=bundle.now, units=bundle.granularities),
                     typing=lists,
                 ),
-                field_type=column_type,
+                field_type=field_type,
             ),
-            zoned=zoned, field_type=column_type,
+            zoned=zoned, field_type=field_type,
         ),
-        declared_metrics=declared_measures,
+        declared_metrics=declared_metrics,
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
     check_conditional_branches(
         roots=[
-            *(dm.bound.value_key for dm in declared_measures),
+            *(dm.bound.value_key for dm in declared_metrics),
             *(bf.value_key for bf in bound_filters),
             *(spec.bound.value_key for spec in order_specs),
         ],
-        field_type=column_type,
+        field_type=field_type,
     )
-    declared_measures, bound_filters, order_specs = _map_bound_keys(
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
         lambda vk: canonical_list_reads(vk, typing=lists),
-        declared_metrics=declared_measures,
+        declared_metrics=declared_metrics,
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
     will_group_by = _will_group_by(query)
-    declared_measures = [
+    declared_metrics = [
         _rekeyed(dm, canonical_list_dimension(dm.bound.value_key, typing=lists, will_group_by=will_group_by))
         if i < n_dims else dm
-        for i, dm in enumerate(declared_measures)
+        for i, dm in enumerate(declared_metrics)
     ]
     list_reads = whole_list_reads(
-        dimensions=[dm.bound.value_key for dm in declared_measures[:n_dims]],
+        dimensions=[dm.bound.value_key for dm in declared_metrics[:n_dims]],
         roots=[
-            *(dm.bound.value_key for dm in declared_measures),
+            *(dm.bound.value_key for dm in declared_metrics),
             *(bf.value_key for bf in bound_filters),
             *(spec.bound.value_key for spec in order_specs),
         ],
     )
-    declared_measures = _retyped_after_coercion(
-        declared_measures, n_grain=n_dims + n_tds, scope=scope, bundle=bundle,
+    declared_metrics = _retyped_after_coercion(
+        declared_metrics, n_grain=n_dims + n_tds, scope=scope, bundle=bundle,
     )
     granularity_conflicts: List[GranularityConflict] = []
     if query.whole_periods_only:
         check_whole_periods_axis(
             has_time_dimension=bool(n_tds),
-            remedy=first_bucket_remedy(dm.bound.value_key for dm in declared_measures[:n_dims]),
+            remedy=first_bucket_remedy(dm.bound.value_key for dm in declared_metrics[:n_dims]),
         )
         bound_filters, bound_filter_texts, n_date_range, granularity_conflicts = _snap_whole_periods(
             bound_filters=bound_filters, bound_filter_texts=bound_filter_texts,
             n_date_range=n_date_range, now=bundle.now,
             td_keys=[
                 dm.bound.value_key for dm in partition_declared_metrics(
-                    declared_metrics=declared_measures, n_dims=n_dims, n_time_dimensions=n_tds,
+                    declared_metrics=declared_metrics, n_dims=n_dims, n_time_dimensions=n_tds,
                 )[1]
             ],
-            field_type=column_type,
+            field_type=field_type,
         )
 
     # Attach the active TD as time_key on every time-needing TransformKey the binder
     # left at None — the stage's own bucket is the axis on a StageSchema.
     active_td_key: Optional[TimeTruncKey] = None
-    _active_model = scope.population if isinstance(scope, DatasetScope) else None
-    active_td = _resolve_main_time_dimension(query=query, dataset=_active_model, root=root_spelling(scope))
+    _active_dataset = scope.population if isinstance(scope, DatasetScope) else None
+    active_td = _resolve_main_time_dimension(query=query, dataset=_active_dataset, root=root_spelling(scope))
     if active_td is not None:
         atd_key = bind_time_dimension(
             td=active_td, scope=scope, bundle=bundle,
@@ -674,28 +674,28 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         active_td_key = atd_key
 
     if active_td_key is not None:
-        declared_measures, bound_filters, order_specs = _map_bound_keys(
+        declared_metrics, bound_filters, order_specs = _map_bound_keys(
             lambda vk: _attach_time_keys(vk, td_key=active_td_key),
-            declared_metrics=declared_measures,
+            declared_metrics=declared_metrics,
             bound_filters=bound_filters,
             order_specs=order_specs,
         )
 
     # Any time-needing transform still at time_key=None means no resolvable TD.
     check_time_transforms_resolved(roots=[
-        *(dm.bound.value_key for dm in declared_measures),
+        *(dm.bound.value_key for dm in declared_metrics),
         *(bf.value_key for bf in bound_filters),
         *(spec.bound.value_key for spec in order_specs),
-    ], remedy=first_bucket_remedy(dm.bound.value_key for dm in declared_measures[:n_dims]))
+    ], remedy=first_bucket_remedy(dm.bound.value_key for dm in declared_metrics[:n_dims]))
 
     # Transform-input typing runs pre-lowering, where change/change_pct are still
     # single nodes (their desugar duplicates the offending input).
     _proj_dim_dms, _proj_td_dms, _ = partition_declared_metrics(
-        declared_metrics=declared_measures, n_dims=n_dims, n_time_dimensions=n_tds,
+        declared_metrics=declared_metrics, n_dims=n_dims, n_time_dimensions=n_tds,
     )
     check_transform_inputs(
         roots=[
-            *(dm.bound.value_key for dm in declared_measures),
+            *(dm.bound.value_key for dm in declared_metrics),
             *(bf.value_key for bf in bound_filters),
             *(spec.bound.value_key for spec in order_specs),
         ],
@@ -704,24 +704,24 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
         ),
     )
 
-    declared_measures, bound_filters, order_specs = _map_bound_keys(
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
         lambda vk: _resolve_shift_units(vk, bundle=bundle),
-        declared_metrics=declared_measures,
+        declared_metrics=declared_metrics,
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
 
     # Sugar lowering runs AFTER patching so the desugared time_shift inherits the patched time_key.
-    declared_measures, bound_filters, order_specs = _map_bound_keys(
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
         lower_sugar_transforms,
-        declared_metrics=declared_measures,
+        declared_metrics=declared_metrics,
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
 
     # Validate every rank-family partition_by field resolves to a query dim/td, rewriting a td source field to its bucket TimeTruncKey. Runs BEFORE interning.
     _dim_dms, _td_dms, _ = partition_declared_metrics(
-        declared_metrics=declared_measures, n_dims=n_dims, n_time_dimensions=n_tds,
+        declared_metrics=declared_metrics, n_dims=n_dims, n_time_dimensions=n_tds,
     )
     _dim_key_set = {dm.bound.value_key for dm in _dim_dms}
     # A source field at two granularities maps to two buckets — a bare partition_by is then ambiguous.
@@ -746,9 +746,9 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # checks as a user-written partition_by=. Every dependent set below (dim-agg,
     # combined-consumer, reagg-operand) is computed AFTER, over the normalised keys.
     _query_grain = Grain.of([*_dim_key_set, *_td_key_set])
-    declared_measures, bound_filters, order_specs = _map_bound_keys(
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
         lambda vk: normalize_transform_constituents(vk, query_grain=_query_grain),
-        declared_metrics=declared_measures,
+        declared_metrics=declared_metrics,
         bound_filters=bound_filters,
         order_specs=order_specs,
         skip_dimensions=True,
@@ -758,7 +758,7 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     # checker after typing. A transform nested in an attached operand declares an
     # internal producer grain, so its partition keys need not be query dimensions.
     _reagg_operand_keys = attached_operand_keys([
-        *[dm.bound.value_key for dm in declared_measures],
+        *[dm.bound.value_key for dm in declared_metrics],
         *[bf.value_key for bf in bound_filters],
         *[sp.bound.value_key for sp in order_specs],
     ])
@@ -792,15 +792,15 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     def _rw(vk: ValueKey) -> ValueKey:
         return rewrite_rank_partition_keys(vk, rewrite_fn=_validate_partition_keys)
 
-    declared_measures, bound_filters, order_specs = _map_bound_keys(
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
         _rw,
-        declared_metrics=declared_measures,
+        declared_metrics=declared_metrics,
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
     check_transform_partition_keys_in_operand_grain(
         roots=[
-            *(dm.bound.value_key for dm in declared_measures),
+            *(dm.bound.value_key for dm in declared_metrics),
             *(bf.value_key for bf in bound_filters),
             *(spec.bound.value_key for spec in order_specs),
         ],
@@ -808,22 +808,22 @@ def bind_query_inputs(  # NOSONAR(S3776) — one cohesive bind pass. The stages 
     )
 
     check_dimension_temporal_axis(
-        declared_measures, bound_filters=bound_filters, order_specs=order_specs,
+        declared_metrics, bound_filters=bound_filters, order_specs=order_specs,
     )
 
     # Lower a collapsing transform constituent (first/last, D4c) to an exact
     # per-partition pick AFTER the axis check (which sees the raw transform); the
     # synthesized max's partition_by is a carrier grain key, validated inside the
     # carrier sub-plan, so it runs after _rw. All positions.
-    declared_measures, bound_filters, order_specs = _map_bound_keys(
+    declared_metrics, bound_filters, order_specs = _map_bound_keys(
         lower_collapsing_constituents,
-        declared_metrics=declared_measures,
+        declared_metrics=declared_metrics,
         bound_filters=bound_filters,
         order_specs=order_specs,
     )
 
     return PreboundQuery(
-        declared_metrics=declared_measures,
+        declared_metrics=declared_metrics,
         bound_filters=bound_filters,
         bound_filter_texts=bound_filter_texts,
         n_date_range=n_date_range,
@@ -981,17 +981,17 @@ def _route_short_form_saved_metric(
     ambiguous hop there — it returns None and lets binding raise the ambiguity."""
     if len(hops) != 1:
         return None
-    models_by_name = bundle.datasets_by_name
-    models_by_name.setdefault(host.name, host)
+    datasets_by_name = bundle.datasets_by_name
+    datasets_by_name.setdefault(host.name, host)
     try:
         if resolve_hop(
-            current=host, token=hops[0], datasets_by_name=models_by_name,
+            current=host, token=hops[0], datasets_by_name=datasets_by_name,
         ) is not None:
             return None
     except AmbiguousRelationshipPathError:
         return None
     route = dimension_routing.short_form_route_or_none(
-        root=host, target_dataset=hops[0], datasets_by_name=models_by_name,
+        root=host, target_dataset=hops[0], datasets_by_name=datasets_by_name,
     )
     walked = (
         _walk_dotted(source_dataset=host, hops=list(route), bundle=bundle)
@@ -1089,14 +1089,14 @@ def _will_group_by(query: SlayerQuery) -> bool:
 def _reject_computed_dim_name_collision(
     *, name: str, query: SlayerQuery, scope: DatasetScope | StageSchema,
 ) -> None:
-    model_collision = None
+    dataset_collision = None
     if isinstance(scope, DatasetScope) and scope.population is not None:
-        model = scope.population
-        if model.get_field(name) is not None or model.get_metric(name) is not None:
-            model_collision = model.name
+        dataset = scope.population
+        if dataset.get_field(name) is not None or dataset.get_metric(name) is not None:
+            dataset_collision = dataset.name
     check_computed_dim_name_collision(
         name=name,
-        dataset_name=model_collision,
+        dataset_name=dataset_collision,
         query_metric_collision=any(
             m.name == name for m in (query.metrics or [])
         ),
@@ -1220,8 +1220,8 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
             granularity = _td_granularity(td, bundle=bundle)
             btd = bind_time_dimension(td=td, scope=scope, bundle=bundle, granularity=granularity)
             td_types.append(_check_time_dimension(td=td, btd=btd, scope=scope, bundle=bundle, granularity=granularity))
-            column = td.field_ref
-            canonical = td.effective_name or btd.bound.routed_dotted or (column.full_name if column else td.field)
+            field = td.field_ref
+            canonical = td.effective_name or btd.bound.routed_dotted or (field.full_name if field else td.field)
             bound_tds.append((td, btd.bound, canonical))
     _assert_equivalent_tds_agree(bound_tds)
     dim_alias_map.update(_time_dimension_aliases(bound_tds))
@@ -1244,9 +1244,9 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
     seen_metric_keys: Dict[str, Tuple[str, ValueKey, DatasetMetric]] = {}
     for i, m in enumerate(query.metrics or []):
         with stale_spelling_position(f"metrics[{i}]"):
-            formula = m.expression
+            expression = m.expression
             explicit_name = m.name
-            parsed = parse_bound_expr(formula, query.bound_variables)
+            parsed = parse_bound_expr(expression, query.bound_variables)
             bound = bind_expr(
                 parsed=parsed, scope=scope, bundle=bundle, allow_metrics=True,
                 dimension_alias_map=dim_alias_map,
@@ -1254,16 +1254,16 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
             # The parsed tree drives text-shape alias derivation, so both spellings
             # of one expression share an alias.
             canonical = _canonical_alias_for_expression(
-                formula, bound=bound, parsed=parsed, bundle=bundle, root=root_spelling(scope),
+                expression, bound=bound, parsed=parsed, bundle=bundle, root=root_spelling(scope),
             )
             # A bare/dotted saved-DatasetMetric reference surfaces under the expression text (explicit query name still wins).
             saved_name = _saved_metric_public_name(
-                scope=scope, bundle=bundle, expression=formula,
+                scope=scope, bundle=bundle, expression=expression,
             )
             alias_name = explicit_name or saved_name
             # A substituted expression is named from its template (text path: an aggregate
             # key's alias would embed the value), staying unnamed for dedupe.
-            template_name = None if m.template == formula else _canonical_alias_for_expression(
+            template_name = None if m.template == expression else _canonical_alias_for_expression(
                 m.template, parsed=parse_expr(m.template), root=root_spelling(scope),
             )
             declared_name = alias_name or template_name or canonical
@@ -1278,20 +1278,20 @@ def _declared_metrics_from_query(  # NOSONAR(S3776) — three sequential project
                 prior = seen_metric_keys.get(public_name)
                 if prior is not None:
                     check_metric_dedupe_collision(
-                        prior_expression=prior[0], expression=formula,
+                        prior_expression=prior[0], expression=expression,
                         public_name=public_name,
                         same_key=prior[1] == bound.value_key,
                         same_meta=(m.label, m.datatype) == (prior[2].label, prior[2].datatype),
                     )
                     continue
-                seen_metric_keys[public_name] = (formula, bound.value_key, m)
+                seen_metric_keys[public_name] = (expression, bound.value_key, m)
             fmt, desc = _format_description_for_metric_expression(
                 scope=scope, bound=bound, bundle=bundle,
             )
             # Type-priority (highest wins): query m.type, saved DatasetMetric.datatype,
             # then aggregation-aware inference.
             explicit_type = m.datatype or _saved_dataset_metric_type(
-                scope=scope, bundle=bundle, expression=formula,
+                scope=scope, bundle=bundle, expression=expression,
             )
             m_type = explicit_type or _type_for_metric_expression(scope=scope, bound=bound, bundle=bundle)
             declared.append(DeclaredMetric(
@@ -1372,13 +1372,13 @@ def _td_granularity(td: TimeDimension, *, bundle: ResolvedSourceBundle) -> Granu
 
 def _check_field_granularities(*, bundle: ResolvedSourceBundle) -> None:
     """Every dataset field's declared granularity names a known granularity."""
-    for model in bundle.datasets_by_name.values():
-        for column in model.fields:
-            if column.granularity is not None:
+    for dataset in bundle.datasets_by_name.values():
+        for field in dataset.fields:
+            if field.granularity is not None:
                 check_granularity_known(
-                    name=str(column.granularity),
-                    granularity=resolve_granularity(column.granularity, defined=bundle.granularities),
-                    defined=bundle.granularities, where=f"field {column.name!r} of dataset {model.name!r}",
+                    name=str(field.granularity),
+                    granularity=resolve_granularity(field.granularity, defined=bundle.granularities),
+                    defined=bundle.granularities, where=f"field {field.name!r} of dataset {dataset.name!r}",
                 )
 
 
@@ -1476,20 +1476,20 @@ def _snap_frame_bound(
     if not is_frame_bound(key=cj, time_fields=grans_by_field.keys()):
         return cj
     assert isinstance(cj, ArithmeticKey)
-    column, literal = cj.operands
+    field, literal = cj.operands
     op = cj.op
-    if column not in grans_by_field:
-        column, literal, op = literal, column, _MIRROR[op]
+    if field not in grans_by_field:
+        field, literal, op = literal, field, _MIRROR[op]
     assert isinstance(literal, LiteralKey) and isinstance(literal.value, date)
     value = _as_datetime(literal.value)
     if op in _UPPER_OPS:
-        upper_seen.add(column)
+        upper_seen.add(field)
         value = min(value, now)
     snapped = _snapped_value(
-        value, grans=grans_by_field[column], is_date=field_type(column) is DataType.DATE,
+        value, grans=grans_by_field[field], is_date=field_type(field) is DataType.DATE,
     )
     return ArithmeticKey(
-        op=">=" if op in _LOWER_OPS else "<", operands=(column, LiteralKey(value=snapped)),
+        op=">=" if op in _LOWER_OPS else "<", operands=(field, LiteralKey(value=snapped)),
     )
 
 
@@ -1512,8 +1512,8 @@ def _snap_whole_periods(
             if td_key.granularity not in grans:
                 grans.append(td_key.granularity)
     conflicts = [
-        GranularityConflict(field=dotted_key_display(column), granularities=(a, b))
-        for column, grans in grans_by_field.items()
+        GranularityConflict(field=dotted_key_display(field), granularities=(a, b))
+        for field, grans in grans_by_field.items()
         for i, a in enumerate(grans) for b in grans[i + 1:]
         if not (nests_into(a, b) or nests_into(b, a))
     ]
@@ -1531,11 +1531,11 @@ def _snap_whole_periods(
             "value_key": vk, "referenced_keys": tuple(walk_value_keys(vk)),
         }))
     added = []
-    for column, grans in grans_by_field.items():
-        if column in upper_seen:
+    for field, grans in grans_by_field.items():
+        if field in upper_seen:
             continue
-        upper = _snapped_value(now, grans=grans, is_date=field_type(column) is DataType.DATE)
-        vk = ArithmeticKey(op="<", operands=(column, LiteralKey(value=upper)))
+        upper = _snapped_value(now, grans=grans, is_date=field_type(field) is DataType.DATE)
+        vk = ArithmeticKey(op="<", operands=(field, LiteralKey(value=upper)))
         added.append(BoundFilter(value_key=vk, phase=Phase.ROW, referenced_keys=tuple(walk_value_keys(vk))))
     return (
         [*snapped[:n_date_range], *added, *snapped[n_date_range:]],
@@ -1624,7 +1624,7 @@ def _check_time_dimension(
     bundle: ResolvedSourceBundle, granularity: Granularity,
 ) -> DataType:
     """The checker's time-dimension rules (P9): row-level and homed (an expression), temporal, re-bucketing; its checked type."""
-    column_type = btd.field_type
+    field_type = btd.field_type
     if btd.is_expression:
         source = _td_source(btd.bound)
         check_spine_time_dimension(
@@ -1637,16 +1637,16 @@ def _check_time_dimension(
                 crossing=row_expression_crossing(source=source, host_dataset=scope.population, bundle=bundle),
                 anchor=".".join((scope.population.name, *source_anchor_path(source))),
             )
-        column_type = time_dimension_type(source, field_type=scope_field_type(scope=scope, bundle=bundle))
+        field_type = time_dimension_type(source, field_type=scope_field_type(scope=scope, bundle=bundle))
     check_time_dimension_field(
         name=td.field,
-        field_type=column_type,
+        field_type=field_type,
         requested_granularity=granularity,
         bucketed_leaves=btd.bucketed_leaves,
         is_expression=btd.is_expression,
     )
-    assert column_type is not None  # the checker refuses a non-temporal one
-    return column_type
+    assert field_type is not None  # the checker refuses a non-temporal one
+    return field_type
 
 
 def _passes_grain_kwargs(text: str) -> bool:

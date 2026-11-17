@@ -360,10 +360,10 @@ def _raise_if_broken_join_walk(
     whose first hop is NOT a relationship hop is opaque (physical
     ``schema.table.column`` — relationship-target-beats-schema precedence) and returns
     without raising."""
-    models = {**datasets_by_name, source_dataset.name: datasets_by_name.get(source_dataset.name, source_dataset)}
-    if resolve_hop(current=source_dataset, token=path[0], datasets_by_name=models) is None:
+    datasets = {**datasets_by_name, source_dataset.name: datasets_by_name.get(source_dataset.name, source_dataset)}
+    if resolve_hop(current=source_dataset, token=path[0], datasets_by_name=datasets) is None:
         return
-    miss = walk_miss(root=source_dataset, path=path, datasets_by_name=models)
+    miss = walk_miss(root=source_dataset, path=path, datasets_by_name=datasets)
     if miss is None:
         return
     raise UnresolvableDimensionRelationshipError(
@@ -436,14 +436,14 @@ def collect_root_scope_joined_paths(
     "crosses a relationship."
     """
     root_ids = root_scope_field_ids(parsed=parsed)
-    models_by_name = bundle.datasets_by_name
+    datasets_by_name = bundle.datasets_by_name
     seen: Set[Tuple[str, ...]] = set()
     ordered: List[Tuple[str, ...]] = []
     for _node, quals, _leaf in reference_sites(parsed, root_ids):
         path = _lenient_path(
             qualifiers=quals, source_dataset=source_dataset,
             owner_alias=source_relation,
-            datasets_by_name=models_by_name,
+            datasets_by_name=datasets_by_name,
         )
         if not path:
             continue  # host-anchored or opaque
@@ -572,11 +572,11 @@ def _process_reference_site(
     )
     if located is None:
         return None
-    target_model, canonical_alias = located
+    target_dataset, canonical_alias = located
     owner = visited[-1] if visited else site
     # Mode-A SQL names a field exactly.
     target_col = resolve_generated_field(
-        dataset=target_model, name=leaf, location=".".join(owner) if owner else None, quoted=True,
+        dataset=target_dataset, name=leaf, location=".".join(owner) if owner else None, quoted=True,
     )
     if target_col is not None:
         leaf = target_col.name
@@ -584,10 +584,10 @@ def _process_reference_site(
     # bare field, never the masked value — matching the save-time cycle rule).
     if (
         target_col is None or not target_col.needs_expansion
-        or (target_model.name, leaf) in physical_read_exempt
+        or (target_dataset.name, leaf) in physical_read_exempt
     ):
         return _requalify(node=node, alias=canonical_alias, leaf=leaf)
-    key = (target_model.name, leaf)
+    key = (target_dataset.name, leaf)
     if key in visited:
         cycle_start = visited.index(key)
         cycle = (*visited[cycle_start:], key)
@@ -596,7 +596,7 @@ def _process_reference_site(
     # NOT inherited into a referenced field's definition, or a real cross-field
     # cycle (x.filter→y, y.sql→x) would be silently read as physical (Codex).
     value_sql = _expand_target_field(
-        target_col=target_col, target_dataset=target_model,
+        target_col=target_col, target_dataset=target_dataset,
         canonical_alias=canonical_alias, full_path=full_path,
         datasets_by_name=datasets_by_name, dialect=dialect, visited=(*visited, key),
         alias_resolver=alias_resolver, crossed_paths=crossed_paths,

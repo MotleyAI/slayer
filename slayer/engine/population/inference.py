@@ -560,10 +560,10 @@ async def spine_datasource(
         datasources = await storage.list_datasources()
         if len(datasources) == 1:
             return datasources[0]
-    _scopes, ds_by_model = await _classification_scopes(
+    _scopes, ds_by_dataset = await _classification_scopes(
         storage=storage, data_source=None, anchors=anchors,
     )
-    return _resolve_datasource(ds_by_dataset=ds_by_model, data_source=None, anchors=anchors)
+    return _resolve_datasource(ds_by_dataset=ds_by_dataset, data_source=None, anchors=anchors)
 
 
 # --------------------------------------------------------------------------- #
@@ -594,7 +594,7 @@ async def infer_population(
     if not syntactic:
         raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
 
-    scopes, ds_by_model = await _classification_scopes(
+    scopes, ds_by_dataset = await _classification_scopes(
         storage=storage, data_source=data_source, anchors=syntactic
     )
 
@@ -616,17 +616,17 @@ async def infer_population(
             ),
         )
 
-    ds = _resolve_datasource(ds_by_dataset=ds_by_model, data_source=data_source, anchors=anchors)
-    models_by_name = scopes[ds]  # the winning datasource always holds a loaded anchor
+    ds = _resolve_datasource(ds_by_dataset=ds_by_dataset, data_source=data_source, anchors=anchors)
+    datasets_by_name = scopes[ds]  # the winning datasource always holds a loaded anchor
 
     items = determination_items(
-        query, datasets_by_name=models_by_name, dataset_scopes=list(scopes.values())
+        query, datasets_by_name=datasets_by_name, dataset_scopes=list(scopes.values())
     )
     if not items:
         raise PopulationInferenceError(PopulationErrorReason.EMPTY_DETERMINATION)
 
     verdicts = evaluate_candidates(
-        items=items, candidates=sorted(models_by_name), datasets_by_name=models_by_name
+        items=items, candidates=sorted(datasets_by_name), datasets_by_name=datasets_by_name
     )
     winner, tied = select_from_verdicts(verdicts)
     if winner is not None:
@@ -637,7 +637,7 @@ async def infer_population(
     pairs = {
         p.describe(): None
         for v in verdicts for it in v.unreachable_items
-        for p in item_blockers(root=v.dataset_name, item=it, datasets_by_name=models_by_name)
+        for p in item_blockers(root=v.dataset_name, item=it, datasets_by_name=datasets_by_name)
     }
     blocked = [v for v in verdicts if v.ambiguous_blocked]
     if blocked:
@@ -651,6 +651,6 @@ async def infer_population(
             ]),
         )
     raise PopulationInferenceError(
-        PopulationErrorReason.NO_VIABLE_CANDIDATE, candidates=sorted(models_by_name),
+        PopulationErrorReason.NO_VIABLE_CANDIDATE, candidates=sorted(datasets_by_name),
         detail="; ".join(pairs) or None,
     )

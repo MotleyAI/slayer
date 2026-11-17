@@ -62,8 +62,8 @@ def narrowing_datasets(datasets: Sequence[SlayerDataset]) -> dict[Identity, list
     by_id = {(m.data_source, m.name): m for m in datasets}
     reads = {key: datasets_read_by(m, datasets=datasets) for key, m in by_id.items()}
     out: dict[Identity, list[Identity]] = {}
-    for key, model in by_id.items():
-        own = set(model.access_tags)
+    for key, dataset in by_id.items():
+        own = set(dataset.access_tags)
         narrowing = sorted(
             r for r in _closure(key, reads=reads)
             if r in by_id and by_id[r].access_tags and not (own and own <= set(by_id[r].access_tags))
@@ -126,16 +126,16 @@ class _Reads:
         self.definitions(dataset, scope=self.stored_scope(dataset))
 
     def definitions(self, dataset: SlayerDataset, *, scope: QueryScope) -> None:
-        for column in dataset.fields:
-            self.field(host=dataset, name=column.name, scope=scope)
+        for field in dataset.fields:
+            self.field(host=dataset, name=field.name, scope=scope)
         for sql in dataset.filters:
             self.fragment(sql, host=dataset, scope=scope)
         for agg in dataset.aggregations:
             for quals, leaf in default_reference_sites(agg):
                 self.ref((*quals, leaf), host=dataset, scope=scope)
-        for measure in dataset.metrics:
-            if measure.name:
-                self.metric(host=dataset, name=measure.name, scope=scope)
+        for metric in dataset.metrics:
+            if metric.name:
+                self.metric(host=dataset, name=metric.name, scope=scope)
 
     def field(self, *, host: SlayerDataset, name: str, scope: QueryScope) -> None:
         col = host.get_field(name, quoted=True)
@@ -147,10 +147,10 @@ class _Reads:
             self.fragment(col.filter, host=host, scope=scope)
 
     def metric(self, *, host: SlayerDataset, name: str, scope: QueryScope) -> None:
-        measure = host.get_metric(name)
-        if measure is None or not measure.expression or not self._first_visit(host, f"metric:{name}"):
+        metric = host.get_metric(name)
+        if metric is None or not metric.expression or not self._first_visit(host, f"metric:{name}"):
             return
-        for parts in text_paths(measure.expression, root=None):
+        for parts in text_paths(metric.expression, root=None):
             self.ref(parts, host=host, scope=scope)
 
     def _first_visit(self, host: SlayerDataset, key: str) -> bool:

@@ -450,7 +450,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                     f"invalid YAML in {path} — {exc}. Delete the file and re-run "
                     f"`slayer ingest` to recreate it."
                 ) from exc
-            model = await self._migrate_and_refine_on_load(
+            dataset = await self._migrate_and_refine_on_load(
                 name=name, data=data, data_source=data_source,
             )
         # Admit only a stable read. A legacy migration write-back rewrites the
@@ -458,8 +458,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         # reads the now-current file and caches it normally.
         admit = _cache_admit(path=path, key_before=key_before)
         if admit is not None:
-            self._model_cache[path] = (admit, model)
-        return model.model_copy(deep=True)
+            self._model_cache[path] = (admit, dataset)
+        return dataset.model_copy(deep=True)
 
     async def _delete_dataset_row(
         self, *, data_source: str, name: str,

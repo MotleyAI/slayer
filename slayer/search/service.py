@@ -414,11 +414,11 @@ async def _lookup_bare_datasource_canonical(
     known = await storage.list_datasources()
     if ds not in known:
         return LookupMissing()
-    models = failures.skip(await storage.load_datasets(data_source=ds))
+    datasets = failures.skip(await storage.load_datasets(data_source=ds))
     cfg = await storage.get_datasource(ds)
     ds_description = cfg.description if cfg is not None else None
     pair = render_datasource_pair(
-        name=ds, datasets=models, description=ds_description,
+        name=ds, datasets=datasets, description=ds_description,
     )
     return LookupFound(
         kind=pair.kind, text=pair.text, description=pair.description,
@@ -434,19 +434,19 @@ async def _lookup_dataset_or_leaf_canonical(
     storage: StorageBackend,
 ) -> LookupResult:
     """Render a ``<ds>.<dataset>[.<leaf>]`` canonical, or report it hidden / missing."""
-    model = await storage.get_dataset_or_builtin(dataset_name, data_source=ds)
-    if model is None:
+    dataset = await storage.get_dataset_or_builtin(dataset_name, data_source=ds)
+    if dataset is None:
         return LookupMissing()
-    if model.hidden:
+    if dataset.hidden:
         return LookupHidden(reason="hidden dataset")
-    for re in collect_dataset_entity_pairs(dataset=model):
+    for re in collect_dataset_entity_pairs(dataset=dataset):
         if re.canonical_id == canonical:
             return LookupFound(
                 kind=re.kind, text=re.text, description=re.description,
             )
     if leaf is not None:
-        for column in model.fields:
-            if column.name == leaf and column.hidden:
+        for field in dataset.fields:
+            if field.name == leaf and field.hidden:
                 return LookupHidden(reason="hidden field")
     return LookupMissing()
 
@@ -495,9 +495,9 @@ def _group_field_hits(
         segments = hit.id.split(".")
         if len(segments) != 3:
             continue
-        data_source, model_name, column_name = segments
-        groups.setdefault((data_source, model_name), []).append(
-            (idx, hit, column_name)
+        data_source, dataset_name, field_name = segments
+        groups.setdefault((data_source, dataset_name), []).append(
+            (idx, hit, field_name)
         )
     return groups
 
@@ -552,11 +552,11 @@ class SearchService:
         refreshed_by_idx: dict[int, SearchHit] = {}
         await asyncio.gather(*[
             self._refresh_group_worker(
-                ds_name=ds, dataset_name=model_name,
+                ds_name=ds, dataset_name=dataset_name,
                 members=members, refreshed_by_idx=refreshed_by_idx,
                 compact=compact,
             )
-            for (ds, model_name), members in groups.items()
+            for (ds, dataset_name), members in groups.items()
         ])
         if not refreshed_by_idx:
             return results
@@ -576,7 +576,7 @@ class SearchService:
         """Profile one dataset's field hits in a single owner call; write changed hits into ``refreshed_by_idx``."""
         assert self._engine is not None  # caller-guarded
         try:
-            model = await self._storage.get_dataset(
+            dataset = await self._storage.get_dataset(
                 dataset_name, data_source=ds_name,
             )
         except Exception as exc:  # NOSONAR(S112) — best-effort
@@ -585,16 +585,16 @@ class SearchService:
                 ds_name, dataset_name, exc,
             )
             return
-        if model is None:
+        if dataset is None:
             return
         hits = [
-            (idx, hit, col) for idx, hit, column_name in members
-            if (col := model.get_field(column_name)) is not None
+            (idx, hit, col) for idx, hit, field_name in members
+            if (col := dataset.get_field(field_name)) is not None
         ]
         if not hits:
             return
         outcome = await ensure_samples_fresh(
-            dataset=model, fields=[col for _, _, col in hits],
+            dataset=dataset, fields=[col for _, _, col in hits],
             engine=self._engine, storage=self._storage,
         )
         scoped = self._engine.policy is not None
@@ -603,7 +603,7 @@ class SearchService:
                 continue
             update: dict[str, Any] = {"description": fresh.description}
             if not compact:
-                update["text"] = render_field_text(dataset=model, field=fresh)
+                update["text"] = render_field_text(dataset=dataset, field=fresh)
             refreshed_by_idx[idx] = hit.model_copy(update=update)
 
     # --- Read side ---
@@ -708,12 +708,12 @@ class SearchService:
 
         corpus: Corpus | None = None
         if question_active:
-            all_models, datasources, datasource_descriptions = (
+            all_datasets, datasources, datasource_descriptions = (
                 await self._collect_index_corpus(datasource=datasource, failures=failures)
             )
             corpus = build_in_memory_corpus(
                 memories=all_memories,
-                datasets=all_models,
+                datasets=all_datasets,
                 datasources=datasources,
                 datasource_descriptions=datasource_descriptions,
             )
@@ -1112,15 +1112,15 @@ class SearchService:
             f"{ds}.{name}" for ds, name in await self._storage._list_all_dataset_identities()
             if datasource is None or ds == datasource
         }
-        for model in failures.skip(await self._storage.load_datasets(data_source=datasource)):
-            ds, name = model.data_source, model.name
-            for column in model.fields:
-                out.add(f"{ds}.{name}.{column.name}")
-            for measure in model.metrics:
-                if measure.name is None:
+        for dataset in failures.skip(await self._storage.load_datasets(data_source=datasource)):
+            ds, name = dataset.data_source, dataset.name
+            for field in dataset.fields:
+                out.add(f"{ds}.{name}.{field.name}")
+            for metric in dataset.metrics:
+                if metric.name is None:
                     continue
-                out.add(f"{ds}.{name}.{measure.name}")
-            for agg in model.aggregations:
+                out.add(f"{ds}.{name}.{metric.name}")
+            for agg in dataset.aggregations:
                 out.add(f"{ds}.{name}.{agg.name}")
         return out
 
@@ -1187,14 +1187,14 @@ class SearchService:
         datasources = await self._storage.list_datasources()
         if datasource is not None:
             datasources = [d for d in datasources if d == datasource]
-        models = failures.skip(await self._storage.load_datasets(data_source=datasource))
+        datasets = failures.skip(await self._storage.load_datasets(data_source=datasource))
         for ds_name in datasources:
-            models.extend(await self._storage.builtin_datasets(ds_name))
+            datasets.extend(await self._storage.builtin_datasets(ds_name))
         descriptions: dict[str, str | None] = {}
         for ds_name in datasources:
             cfg = await self._storage.get_datasource(ds_name)
             descriptions[ds_name] = cfg.description if cfg is not None else None
-        return models, datasources, descriptions
+        return datasets, datasources, descriptions
 
 
 async def handle_edit_refresh(
@@ -1207,12 +1207,12 @@ async def handle_edit_refresh(
     dataset_level_change: bool,
 ) -> list[str]:
     """``edit_dataset`` refresh: re-sample changed fields (all on a dataset-level change), then re-embed; failures warn."""
-    model = await storage.get_dataset(name=dataset_name, data_source=data_source)
-    if model is None:
+    dataset = await storage.get_dataset(name=dataset_name, data_source=data_source)
+    if dataset is None:
         return [f"dataset {dataset_name!r} not found in datasource {data_source!r}"]
     only = None if dataset_level_change else changed_fields
     warnings = await refresh_table_backed_dataset_sampled(
-        dataset=model, engine=engine, storage=storage, only_fields=only,
+        dataset=dataset, engine=engine, storage=storage, only_fields=only,
     )
     # Reload so the embedding text matches the refreshed dataset's content_hash.
     reloaded = await storage.get_dataset(name=dataset_name, data_source=data_source)

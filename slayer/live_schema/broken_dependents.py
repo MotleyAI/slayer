@@ -113,8 +113,8 @@ async def broken_dependents(
         return BorrowedSqlClient(client)
 
     async def breaks_alone(dep: _Dependent, cause: tuple[str, str]) -> bool:
-        model = _one_retype(stored=by_name[cause[0]], final=finals[cause[0]], field=cause[1])
-        async with query_engine.short_lived_engine(DatasetOverlayStorage(storage, datasets=[model]),
+        dataset = _one_retype(stored=by_name[cause[0]], final=finals[cause[0]], field=cause[1])
+        async with query_engine.short_lived_engine(DatasetOverlayStorage(storage, datasets=[dataset]),
                                                    client_factory=lend) as alone:
             try:
                 await _plan(alone, dep, data_source=datasource.name)

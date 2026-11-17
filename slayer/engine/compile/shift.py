@@ -33,24 +33,24 @@ def _series_flags(node: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> T
     """(has_transform, has_cross_model_agg) over a composite; a placeholder
     resolves to its original aggregate."""
     has_transform = False
-    has_cross_model = False
+    has_cross_dataset = False
     if isinstance(node, TransformKey):
         has_transform = True
     elif isinstance(node, AggregateKey):
         if source_anchor_path(node.source):
-            has_cross_model = True
+            has_cross_dataset = True
     elif is_placeholder(node):
         original = to_original.get(node)
         if original is None:
-            has_cross_model = True  # unknown placeholder — fail closed
+            has_cross_dataset = True  # unknown placeholder — fail closed
         else:
             return _series_flags(original, to_original=to_original)
     elif not isinstance(node, (FieldKey, FieldSqlKey, TimeTruncKey)):
         for child in node.children():
             t, x = _series_flags(child, to_original=to_original)
             has_transform = has_transform or t
-            has_cross_model = has_cross_model or x
-    return has_transform, has_cross_model
+            has_cross_dataset = has_cross_dataset or x
+    return has_transform, has_cross_dataset
 
 
 def _series_mode(inner: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> bool:
@@ -60,8 +60,8 @@ def _series_mode(inner: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> b
     if isinstance(inner, TransformKey) or is_boolean_shaped(inner):
         return True
     if isinstance(inner, (ArithmeticKey, ScalarCallKey, CastKey, ListSetKey)):
-        has_transform, has_cross_model = _series_flags(inner, to_original=to_original)
-        return has_transform or has_cross_model
+        has_transform, has_cross_dataset = _series_flags(inner, to_original=to_original)
+        return has_transform or has_cross_dataset
     return False
 
 

@@ -240,11 +240,11 @@ class TestFlavorAOrderByUnprojected:
         HOST-rooted CTE computes the per-group extreme over the crossed join and
         the outer query orders on that CTE's column, so nothing is unbound."""
         orders, joined = _orders_customers_regions()
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "sum(amount)", "name": "rev"}],
-            order=[OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+            "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
+        })
         sql = _norm(await _engine_generate(
             query=query, model=orders, extra_models=joined,
         ))
@@ -281,13 +281,13 @@ class TestFlavorAOrderByUnprojected:
         the query grain and joins back NULL-safely, so the outer ORDER BY names a
         column the wrapper actually projects."""
         orders, joined = _orders_customers_regions()
-        query = SlayerQuery(
-            population="orders",
-            time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            metrics=[{"expression": "cumsum(sum(amount))", "name": "cs"}],  # windowed -> combined CTE path
-            filter=["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
-            order=[OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
+            "metrics": [{"expression": "cumsum(sum(amount))", "name": "cs"}],  # windowed -> combined CTE path
+            "filter": ["customers.regions.name == 'US'"],  # pulls the join into resolved_joins
+            "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
+        })
         sql = _norm(await _engine_generate(
             query=query, model=orders, extra_models=joined,
         ))

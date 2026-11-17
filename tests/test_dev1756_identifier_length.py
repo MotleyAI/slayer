@@ -719,14 +719,14 @@ class TestCteNames:
         ))
         engine = SlayerQueryEngine(storage=storage)
         prepared = await engine._prepare_pipeline(
-            query=SlayerQuery(
-                population="ShiftOrders",
-                time_dimensions=[{"field": {"name": "created_at"}, "granularity": "month"}],
-                metrics=[
+            query=SlayerQuery.model_validate({
+                "population": "ShiftOrders",
+                "time_dimensions": [{"field": {"name": "created_at"}, "granularity": "month"}],
+                "metrics": [
                     {"expression": "sum(revenue)"},
                     {"expression": "time_shift(sum(revenue), -1)", "name": long_transform_name},
                 ],
-            ),
+            }),
             named_queries={}, runtime_kwarg={},
         )
         sql = prepared.sql

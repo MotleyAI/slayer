@@ -19,9 +19,9 @@ class DatasetOverlayStorage(AccessFilteredStorage):
 
     async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         target = await self._resolve_target_or_none(name, data_source=data_source)
-        model = self._overlay.get(target) if target is not None else None
-        if model is not None:
-            return model.model_copy(deep=True)
+        dataset = self._overlay.get(target) if target is not None else None
+        if dataset is not None:
+            return dataset.model_copy(deep=True)
         return await self._inner.get_dataset(name, data_source=data_source)
 
     async def graph_fingerprint(self) -> str | None:

@@ -474,14 +474,14 @@ async def _render_ingest_result(
             return await _empty_ingest_message(schema_name=schema_name, client=client)
         return "Datasource already in sync — no additive changes."
 
-    new_models = [a for a in additions if a.created]
+    new_datasets = [a for a in additions if a.created]
     updated = [a for a in additions if not a.created and _addition_has_changes(a)]
     unchanged = [
         a for a in additions if not a.created and not _addition_has_changes(a)
     ]
 
     lines: list[str] = []
-    lines.extend(_render_new_datasets_section(new_models))
+    lines.extend(_render_new_datasets_section(new_datasets))
     lines.extend(_render_updated_section(updated))
     lines.extend(_render_unchanged_section(unchanged))
     if datasource_described:
@@ -1493,11 +1493,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # partial success rather than failing the already-committed save.
         refresh_warning: str | None = None
         if description is not None and description != old_description:
-            models_in_ds = DocumentLoadFailures().skip(await storage.load_datasets(data_source=name))
+            datasets_in_ds = DocumentLoadFailures().skip(await storage.load_datasets(data_source=name))
             try:
                 await search_service.refresh_datasource(
                     name=name,
-                    datasets=models_in_ds,
+                    datasets=datasets_in_ds,
                     description=ds.description,
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort post-save refresh

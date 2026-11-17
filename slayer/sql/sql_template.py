@@ -275,10 +275,10 @@ def placeholder_names(text: str, dialect: str) -> frozenset[str]:
 
 def aggregation_reads(*, agg: str, definition: Aggregation | None, dialect: str) -> frozenset[str]:
     """Names ``agg`` reads when rendered: its expression's placeholders, else a built-in's own parameters."""
-    formula = rendered_expression(agg=agg, definition=definition)
-    if formula is None:
+    expression = rendered_expression(agg=agg, definition=definition)
+    if expression is None:
         return frozenset(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
-    return placeholder_names(formula, dialect)
+    return placeholder_names(expression, dialect)
 
 
 @lru_cache(maxsize=1024)

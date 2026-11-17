@@ -369,17 +369,17 @@ def canonical_aggregate_alias(  # NOSONAR(S3776) — sequential dispatch over th
         leaf = expression_source_leaf(key.source)
 
     if profile in ("cross_dataset_cte", "cte_schema"):
-        measure_name: str = leaf or "*"
+        metric_name: str = leaf or "*"
     elif is_star:
-        measure_name = "*"
+        metric_name = "*"
     elif leaf is None:
         # declared_name: explicit placeholder, NOT the star form; stage_formula declines.
         return f"_agg_{key.agg}" if profile == "declared_name" else None
     else:
-        measure_name = leaf
+        metric_name = leaf
 
     canonical = canonical_agg_name(
-        metric_name=measure_name,
+        metric_name=metric_name,
         aggregation_name=key.agg,
         agg_args=[_alias_param(a) for a in key.args] or None,
         agg_kwargs={k: _alias_param(v) for k, v in key.kwargs} or None,

@@ -145,8 +145,8 @@ async def _find_leaf_in_priority_winner(
     all_dses = await storage.list_datasources()
     # Walk priority list first, then any unlisted datasources.
     for ds in priority + [d for d in all_dses if d not in priority]:
-        models = await _all_datasets_in_datasource(storage, ds)
-        matches = [m for m in models if _dataset_has_leaf(m, leaf)]
+        datasets = await _all_datasets_in_datasource(storage, ds)
+        matches = [m for m in datasets if _dataset_has_leaf(m, leaf)]
         if matches:
             return ds, matches
     return None, []
@@ -191,18 +191,18 @@ def _dotted_canonical(
     # dataset reached by walking the rest.
     leaf_segment = rest[-1]
     try:
-        leaf_model = _walk_relationship_path(starting_dataset, rest[:-1], datasets_by_name=datasets_by_name)
+        leaf_dataset = _walk_relationship_path(starting_dataset, rest[:-1], datasets_by_name=datasets_by_name)
     except EntityResolutionError:
         # The walk failed before reaching the last segment — fall
         # through to the "every segment is a relationship" interpretation
         # below.
-        leaf_model = None
-    if leaf_model is not None and _dataset_has_leaf(leaf_model, leaf_segment):
-        return f"{leaf_model.data_source}.{leaf_model.name}.{leaf_segment}"
+        leaf_dataset = None
+    if leaf_dataset is not None and _dataset_has_leaf(leaf_dataset, leaf_segment):
+        return f"{leaf_dataset.data_source}.{leaf_dataset.name}.{leaf_segment}"
     # No leaf attribute — every segment must be a relationship target, with
     # the path terminating at the joined dataset itself (§3.2 step 3).
-    final_model = _walk_relationship_path(starting_dataset, rest, datasets_by_name=datasets_by_name)
-    return f"{final_model.data_source}.{final_model.name}"
+    final_dataset = _walk_relationship_path(starting_dataset, rest, datasets_by_name=datasets_by_name)
+    return f"{final_dataset.data_source}.{final_dataset.name}"
 
 
 async def _resolve_dotted_against_dataset(storage: StorageBackend, starting_dataset: SlayerDataset, rest: list[str]) -> str:
@@ -295,9 +295,9 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
                 f"'{raw}' is not a valid entity reference; use the "
                 f"'count(<dataset>.*)' form."
             )
-        model_part = prefix[:-2]
+        dataset_part = prefix[:-2]
         return await resolve_entity(
-            model_part, storage=storage, source_dataset=source_dataset
+            dataset_part, storage=storage, source_dataset=source_dataset
         )
 
     segments = prefix.split(".")
@@ -322,10 +322,10 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
         # NOT abort a perfectly valid datasource-prefixed reference, so we
         # treat the ambiguity as "yes, also a dataset" and keep going.
         try:
-            ds_as_model = await storage.resolve_dataset_identity(ds)
+            ds_as_dataset = await storage.resolve_dataset_identity(ds)
         except AmbiguousDatasetError:
-            ds_as_model = (ds, ds)
-        if ds_as_model is not None:
+            ds_as_dataset = (ds, ds)
+        if ds_as_dataset is not None:
             warnings.append(
                 f"'{ds}' is both a datasource and a dataset; interpreted "
                 f"as datasource. To force the dataset interpretation, "
@@ -334,14 +334,14 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
         rest = segments[1:]
         if not rest:
             return EntityResolution(canonical_forms=[ds], warnings=warnings)
-        model_name = rest[0]
-        model = await storage.get_dataset(model_name, data_source=ds)
-        if model is None:
+        dataset_name = rest[0]
+        dataset = await storage.get_dataset(dataset_name, data_source=ds)
+        if dataset is None:
             raise EntityResolutionError(
-                f"No dataset '{model_name}' in datasource '{ds}'."
+                f"No dataset '{dataset_name}' in datasource '{ds}'."
             )
         canonical = await _resolve_dotted_against_dataset(
-            storage, model, rest[1:]
+            storage, dataset, rest[1:]
         )
         return EntityResolution(
             canonical_forms=[canonical], warnings=warnings
@@ -362,23 +362,23 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
         # Try as a dataset first (§4.3 step 5).
         identity = await storage.resolve_dataset_identity(leaf)
         if identity is not None:
-            ds_winner, model_name = identity
+            ds_winner, dataset_name = identity
             # Case A: any other dataset in the priority-winner ds with
             # this name as a field / metric / custom-agg?
-            other_models = [
+            other_datasets = [
                 m
                 for m in await _all_datasets_in_datasource(storage, ds_winner)
-                if m.name != model_name and _dataset_has_leaf(m, leaf)
+                if m.name != dataset_name and _dataset_has_leaf(m, leaf)
             ]
-            if other_models:
-                names = sorted(m.name for m in other_models)
+            if other_datasets:
+                names = sorted(m.name for m in other_datasets)
                 warnings.append(
                     f"'{leaf}' is both a dataset and a field on "
                     f"{names}; resolved as the dataset. Qualify as "
                     f"<dataset>.{leaf} to refer to the field."
                 )
             return EntityResolution(
-                canonical_forms=[f"{ds_winner}.{model_name}"],
+                canonical_forms=[f"{ds_winner}.{dataset_name}"],
                 warnings=warnings,
             )
 
@@ -413,11 +413,11 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
             f"'{head}' is neither a known datasource nor a saved "
             f"dataset. (segment of '{raw}')."
         )
-    ds_winner, model_name = identity
-    model = await storage.get_dataset(model_name, data_source=ds_winner)
-    assert model is not None, "resolve_dataset_identity returned a stale match"
+    ds_winner, dataset_name = identity
+    dataset = await storage.get_dataset(dataset_name, data_source=ds_winner)
+    assert dataset is not None, "resolve_dataset_identity returned a stale match"
     canonical = await _resolve_dotted_against_dataset(
-        storage, model, segments[1:]
+        storage, dataset, segments[1:]
     )
     return EntityResolution(
         canonical_forms=[canonical], warnings=warnings
@@ -496,8 +496,8 @@ class _ExtensionScope(BaseModel):
 
     def _extended(self, name: str) -> SlayerDataset | None:
         """Dataset ``name`` when the query changes it (stored datasets resolve through storage, as outside a query)."""
-        model = self.scope.datasets.get(name)
-        return model if model is not None and model is not self.stored.get(name) else None
+        dataset = self.scope.datasets.get(name)
+        return dataset if dataset is not None and dataset is not self.stored.get(name) else None
 
     async def resolve(self, token: EntityToken, *, host: SlayerDataset) -> list[EntityResolution]:
         source, agg = token if isinstance(token, tuple) else (token, None)
@@ -549,8 +549,8 @@ class _ExtensionScope(BaseModel):
         if (star and agg != "count") or (not star and len(segments) < 2):
             return None
         if star:
-            model = self._dataset(segments, host=host)
-            return f"{model.data_source}.{model.name}" if model is not None else None
+            dataset = self._dataset(segments, host=host)
+            return f"{dataset.data_source}.{dataset.name}" if dataset is not None else None
         heads = [(host, list(drop_root_qualifier(segments, host.spelling, quoted=())))]
         routed = self.scope.resolve(segments[:-1], root=host)
         if routed is not None and routed[1]:
@@ -570,21 +570,21 @@ class _ExtensionScope(BaseModel):
         if mark in self.expanded:
             return []
         self.expanded.add(mark)
-        column = owner.get_field(name)
-        if column is not None:
+        field = owner.get_field(name)
+        if field is not None:
             reachable = {**self.scope.datasets, owner.name: owner}
             out: list[EntityResolution] = []
-            for model_name, leaf in definition_reads(field=column, host=owner, reachable=reachable):
-                target = reachable[model_name]
+            for dataset_name, leaf in definition_reads(field=field, host=owner, reachable=reachable):
+                target = reachable[dataset_name]
                 if leaf in target.query_local_names:
                     out.extend(await self._field_reads(owner=target, name=leaf))
                 else:
                     out.append(EntityResolution(canonical_forms=[f"{target.data_source}.{target.name}.{leaf}"]))
             return out
-        measure = owner.get_metric(name)
-        if measure is None or not measure.expression:
+        metric = owner.get_metric(name)
+        if metric is None or not metric.expression:
             return []
-        return [r for token in _field_entity_tokens("expression", measure.expression) for r in await self.resolve(token, host=owner)]
+        return [r for token in _field_entity_tokens("expression", metric.expression) for r in await self.resolve(token, host=owner)]
 
 
 async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[SlayerQuery, SlayerDataset]:
@@ -599,10 +599,10 @@ async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[Slaye
             raise EntityResolutionError(f"Could not infer the query's population: {exc}") from exc
         src, data_source = choice.dataset_name, choice.data_source
         query = query.model_copy(update={"population": src})
-    model = await stored_dataset(storage, name=src, data_source=data_source)
-    if model is None:
+    dataset = await stored_dataset(storage, name=src, data_source=data_source)
+    if dataset is None:
         raise EntityResolutionError(f"Source dataset not found: {src!r}.")
-    return query, model
+    return query, dataset
 
 
 async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk over each SlayerQuery field (population → dimensions → time_dimensions → metrics → filters); each branch is independently simple and parallels the SlayerQuery shape
@@ -623,14 +623,14 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
 
     # 1. population — a saved dataset name or the population the engine infers — then the datasets
     # its extensions name.
-    query, source_model = await _rooted(query, storage=storage)
-    ds = source_model.data_source
-    stored = await _datasource_datasets(storage, source_model)
+    query, source_dataset = await _rooted(query, storage=storage)
+    ds = source_dataset.data_source
+    stored = await _datasource_datasets(storage, source_dataset)
     query_scope = query_scopes([query], datasets_by_ds={ds: stored}, data_source=ds)[0][0]
     query = query_scope.query or query
-    _add([f"{source_model.data_source}.{source_model.name}"])
+    _add([f"{source_dataset.data_source}.{source_dataset.name}"])
     for name in extension_dataset_names(query):
-        extended = await storage.get_dataset(name, data_source=source_model.data_source or None)
+        extended = await storage.get_dataset(name, data_source=source_dataset.data_source or None)
         if extended is not None:
             _add([f"{extended.data_source}.{extended.name}"])
 
@@ -639,7 +639,7 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
         d.name for d in query.dimensions or [] if isinstance(d, ComputedDimension) and d.name
     } | {td.name for td in query.time_dimensions or [] if td.name}
     scope = _ExtensionScope(storage=storage, scope=query_scope, stored=stored)
-    root = query_scope.host or source_model
+    root = query_scope.host or source_dataset
     for kind, text in query_field_texts(query):
         for token in _field_entity_tokens(kind, text):
             if isinstance(token, str) and token in local_names:

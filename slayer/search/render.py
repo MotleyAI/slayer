@@ -158,11 +158,11 @@ def render_dataset_text(*, dataset: SlayerDataset) -> str:
     if dataset.filters:
         # Non-named children: include each filter expression in full.
         lines.append("Filters: " + "; ".join(dataset.filters))
-    visible_columns = [c for c in dataset.fields if not c.hidden]
-    if visible_columns:
+    visible_fields = [c for c in dataset.fields if not c.hidden]
+    if visible_fields:
         lines.append(
             "Columns: " + _named_children_csv(
-                [(c.name, "field") for c in visible_columns]
+                [(c.name, "field") for c in visible_fields]
             )
         )
     if dataset.metrics:
@@ -385,23 +385,23 @@ def collect_dataset_entity_pairs(
         text=render_dataset_text(dataset=dataset),
         description=dataset.description,
     )]
-    for column in dataset.fields:
-        if column.hidden and not include_hidden:
+    for field in dataset.fields:
+        if field.hidden and not include_hidden:
             continue
         out.append(RenderedEntity(
-            canonical_id=f"{qualifier}.{column.name}",
+            canonical_id=f"{qualifier}.{field.name}",
             kind="field",
-            text=render_field_text(dataset=dataset, field=column),
-            description=column.description,
+            text=render_field_text(dataset=dataset, field=field),
+            description=field.description,
         ))
-    for measure in dataset.metrics:
-        if measure.name is None:
+    for metric in dataset.metrics:
+        if metric.name is None:
             continue
         out.append(RenderedEntity(
-            canonical_id=f"{qualifier}.{measure.name}",
+            canonical_id=f"{qualifier}.{metric.name}",
             kind="metric",
-            text=render_metric_text(dataset=dataset, metric=measure),
-            description=measure.description,
+            text=render_metric_text(dataset=dataset, metric=metric),
+            description=metric.description,
         ))
     for aggregation in dataset.aggregations:
         out.append(RenderedEntity(

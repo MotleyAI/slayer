@@ -48,19 +48,19 @@ def _surviving_candidates(
     """Live FKs not yet represented by any edge; an exact-inverse pair keeps one half."""
     stored = {relationship_signature(dataset_name=m.name, relationship=j) for m in datasets.values() for j in m.relationships}
     chosen: dict[RelationshipSignature, tuple[str, DatasetRelationship]] = {}
-    for model_name in sorted(candidates):
-        for join in candidates[model_name]:
+    for dataset_name in sorted(candidates):
+        for join in candidates[dataset_name]:
             if join.to not in datasets:
                 continue
-            sig = relationship_signature(dataset_name=model_name, relationship=join)
+            sig = relationship_signature(dataset_name=dataset_name, relationship=join)
             if sig in stored:
                 continue
             prev = chosen.get(sig)
             if prev is None or _inverse_survivor(
                 dataset_a=prev[0], relationship_a=prev[1].model_dump(mode="json"),
-                dataset_b=model_name, relationship_b=join.model_dump(mode="json"),
-            ) == model_name:
-                chosen[sig] = (model_name, join.model_copy(update={"name": None}))
+                dataset_b=dataset_name, relationship_b=join.model_dump(mode="json"),
+            ) == dataset_name:
+                chosen[sig] = (dataset_name, join.model_copy(update={"name": None}))
     return chosen
 
 
@@ -70,8 +70,8 @@ def _assign_names(
     """Names for every unnamed edge of a parallel set holding a FK-backed edge."""
     groups: dict[tuple[str, str], list[tuple[str, int, DatasetRelationship]]] = defaultdict(list)
     incident: dict[str, set[str]] = defaultdict(set)
-    for declaring, model_joins in relationships.items():
-        for i, join in enumerate(model_joins):
+    for declaring, dataset_relationships in relationships.items():
+        for i, join in enumerate(dataset_relationships):
             pair = tuple(sorted((declaring, join.to)))
             groups[(pair[0], pair[1])].append((declaring, i, join))
             if join.name:
@@ -116,13 +116,13 @@ def plan_fk_edges(*, datasets: dict[str, SlayerDataset], candidates: dict[str, l
 
     named: dict[str, list[str]] = defaultdict(list)
     out: dict[str, SlayerDataset] = {}
-    for model_name, model in datasets.items():
+    for dataset_name, dataset in datasets.items():
         final = [
-            j.model_copy(update={"name": names[(model_name, i)]}) if (model_name, i) in names else j
-            for i, j in enumerate(joins[model_name])
+            j.model_copy(update={"name": names[(dataset_name, i)]}) if (dataset_name, i) in names else j
+            for i, j in enumerate(joins[dataset_name])
         ]
-        named[model_name] = [names[(model_name, i)] for i in range(len(final)) if (model_name, i) in names]
-        out[model_name] = model.model_copy(update={"relationships": final}) if final != model.relationships else model
+        named[dataset_name] = [names[(dataset_name, i)] for i in range(len(final)) if (dataset_name, i) in names]
+        out[dataset_name] = dataset.model_copy(update={"relationships": final}) if final != dataset.relationships else dataset
     return FkEdgePlan(
         datasets=out,
         added={n: [out[n].relationships[len(datasets[n].relationships) + k] for k in range(len(js))] for n, js in added.items()},

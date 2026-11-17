@@ -338,12 +338,12 @@ class TestBasicQueries:
         self, generator: SQLGenerator, orders_model: SlayerDataset
     ) -> None:
         # Regression: a canonical "ASCENDING" must normalize to asc so the generator's strict ``direction == "asc"`` check does NOT fall through to DESC.
-        query = SlayerQuery(
-            population="orders",
-            metrics=[DatasetMetric(expression="count(*)")],
-            dimensions=[FieldRef(name="status")],
-            order=[{"field": "status", "direction": "ASCENDING"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [DatasetMetric(expression="count(*)")],
+            "dimensions": [FieldRef(name="status")],
+            "order": [{"field": "status", "direction": "ASCENDING"}],
+        })
         sql = await _generate(generator, query, orders_model)
         assert "ORDER BY" in sql
         assert "DESC" not in sql.upper()
@@ -743,12 +743,12 @@ class TestFields:
         assert 'ORDER BY "orders.created_at"' in norm
 
     async def test_consecutive_periods_uses_reset_group_ctes(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
-        query = SlayerQuery(
-            population="orders",
-            dimensions=[FieldRef(name="status")],
-            time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            metrics=[{"expression": "consecutive_periods(sum(revenue) > 0)", "name": "positive_streak"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "dimensions": [FieldRef(name="status")],
+            "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
+            "metrics": [{"expression": "consecutive_periods(sum(revenue) > 0)", "name": "positive_streak"}],
+        })
         sql = await _generate(generator=generator, query=query, model=orders_model)
         norm = _norm(sql)
         assert "cp_reset_" in norm
@@ -9736,12 +9736,12 @@ class TestBigQueryAliasMangling:
 
     async def test_no_dotted_aliases_in_bigquery_sql(self, orders_model: SlayerDataset) -> None:
         gen = SQLGenerator(dialect="bigquery")
-        query = SlayerQuery(
-            population="orders",
-            metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(revenue)")],
-            dimensions=[FieldRef(name="status")],
-            order=[{"field": "count", "direction": "desc"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(revenue)")],
+            "dimensions": [FieldRef(name="status")],
+            "order": [{"field": "count", "direction": "desc"}],
+        })
         sql = await _generate(gen, query, orders_model)
         # Every backtick-quoted column alias must not contain a dot (BigQuery rejects it). Scope to AS `...` and ORDER/GROUP BY so dotted table FQ refs (backticked segments) don't trip the check.
         ALIAS_PATTERNS = [
@@ -10232,12 +10232,12 @@ class TestWindowedMeasureGuards:
         assert "__regroup__" not in sql
 
     async def test_windowed_mixed_aggregate_filter_raises(self, orders_model: SlayerDataset) -> None:
-        query = SlayerQuery(
-            population="orders",
-            time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
-            metrics=[{"expression": "sum(revenue, window='90d')", "name": "rev_w"}],
-            filter=["sum(revenue, window='90d') > 100 and sum(revenue) > 50"],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
+            "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_w"}],
+            "filter": ["sum(revenue, window='90d') > 100 and sum(revenue) > 50"],
+        })
         # A filter mixing a windowed and a plain aggregate now renders instead of raising; scope-closed and fully lowered.
         sql = await _engine_generate(query=query, model=orders_model)
         assert_scope_closed(sql, dialect="postgres")

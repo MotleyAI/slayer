@@ -659,10 +659,10 @@ class TestSavedMeasureRouting:
 
     async def test_routed_unnamed_saved_measure_type_via_saved_model(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
-        qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery(
-            population="Invoice", dimensions=["status"],
-            metrics=[{"expression": "Consumer.aov"}],
-        )])
+        qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
+            "population": "Invoice", "dimensions": ["status"],
+            "metrics": [{"expression": "Consumer.aov"}],
+        })])
         saved = await engine.save_dataset(qb)
         measure_cols = [c for c in saved.fields if c.name != "status"]
         assert len(measure_cols) == 1
@@ -687,10 +687,10 @@ class TestSavedMeasureRouting:
         """A re-rooted short-form saved measure (``Consumer.aov`` is itself a nested
         ``sum(amount) / count(*)`` formula) persists and re-resolves on reload."""
         engine = await _chain_engine(tmp_path)
-        qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery(
-            population="Invoice", dimensions=["status"],
-            metrics=[{"expression": "Consumer.aov", "name": "a"}],
-        )])
+        qb = SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
+            "population": "Invoice", "dimensions": ["status"],
+            "metrics": [{"expression": "Consumer.aov", "name": "a"}],
+        })])
         await engine.save_dataset(qb)
         resp = await engine.execute(
             query=SlayerQuery.model_validate({"population": "qb", "metrics": [{"expression": "count(*)"}]}),

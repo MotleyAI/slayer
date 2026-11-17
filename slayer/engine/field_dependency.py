@@ -192,8 +192,8 @@ def _node_dependencies(
 ) -> list[tuple[str, str]]:
     """Dependency edges leaving ``node = (dataset, col)``; empty when the dataset or
     field is missing (a dead-end, not an error)."""
-    model_name, col_name = node
-    host = reachable.get(model_name)
+    dataset_name, col_name = node
+    host = reachable.get(dataset_name)
     if host is None:
         return []
     col = host.get_field(col_name, quoted=True)
@@ -311,10 +311,10 @@ def _iter_arity_refs(
 ) -> Iterator[tuple[DatasetField, tuple[str, ...], str, tuple[str, ...]]]:
     """Yield ``(field, hop_path, leaf, quals)`` for every arity-bearing reference —
     ``quals`` is the raw pre-strip spelling, for the error's ``reference``."""
-    for column in dataset.fields:
-        for fragment in _arity_reference_sources(column):
+    for field in dataset.fields:
+        for fragment in _arity_reference_sources(field):
             for quals, leaf in _fragment_refs(fragment) or []:
-                yield column, _hop_path(quals=quals, host=dataset), leaf, tuple(quals)
+                yield field, _hop_path(quals=quals, host=dataset), leaf, tuple(quals)
 
 
 def _check_reference_arity(
@@ -326,13 +326,13 @@ def _check_reference_arity(
     ``DerivedFieldFanningError``; an unproven hop warns once per
     ``(field, hop)``; to-one/unresolvable/unloaded/ambiguous skip."""
     warned: set[tuple[str, str]] = set()
-    for column, path, leaf, quals in _iter_arity_refs(dataset=dataset):
+    for field, path, leaf, quals in _iter_arity_refs(dataset=dataset):
         reference = ".".join((*quals, leaf))
         try:
             verdict = _classify_hop_path(host=dataset, path=path, reachable=reachable)
         except CircularRelationshipPathError as exc:
             raise DerivedFieldCircularError(
-                field=column.name, reference=reference, root_dataset=dataset.name,
+                field=field.name, reference=reference, root_dataset=dataset.name,
                 revisited=exc.revisited, hop=exc.hop, via=exc.via,
             ) from exc
         if verdict is None:
@@ -340,23 +340,23 @@ def _check_reference_arity(
         status, hop = verdict
         if status == "fanning":
             raise DerivedFieldFanningError(
-                field=column.name, dataset=dataset.name, hop=hop, reference=reference,
+                field=field.name, dataset=dataset.name, hop=hop, reference=reference,
             )
-        key = (column.name, hop)
+        key = (field.name, hop)
         if key in warned:
             continue
         warned.add(key)
         warnings.warn(
-            _unproven_arity_message(field=column.name, dataset=dataset.name, hop=hop),
+            _unproven_arity_message(field=field.name, dataset=dataset.name, hop=hop),
             UserWarning, stacklevel=2,
         )
 
 
 def _definitions(dataset: SlayerDataset) -> Iterator[tuple[DatasetField | None, str]]:
     """``(field or None for a dataset filter, fragment)`` for every Mode-A definition on ``dataset``."""
-    for column in dataset.fields:
-        for fragment in _arity_reference_sources(column):
-            yield column, fragment
+    for field in dataset.fields:
+        for fragment in _arity_reference_sources(field):
+            yield field, fragment
     for sql in dataset.filters or []:
         yield None, sql
 
@@ -369,25 +369,25 @@ def definition_heads(datasets: list[SlayerDataset]) -> list[str]:
     """The first relationship hops ``datasets``' Mode-A definitions spell, deduplicated in order."""
     heads = (
         path[0]
-        for model in datasets
-        for _column, fragment in _definitions(model)
+        for dataset in datasets
+        for _field, fragment in _definitions(dataset)
         for quals, _leaf in _fragment_refs(fragment) or []
-        if (path := _hop_path(quals=quals, host=model))
+        if (path := _hop_path(quals=quals, host=dataset))
     )
     return list(dict.fromkeys(heads))
 
 
 def check_definition_reach(*, dataset: SlayerDataset, reachable: dict[str, SlayerDataset]) -> None:
     """Reject a Mode-A definition on ``dataset`` naming a dataset no relationship path reaches from it."""
-    models = {**reachable, dataset.name: dataset}
-    for column, fragment in _definitions(dataset):
+    datasets = {**reachable, dataset.name: dataset}
+    for field, fragment in _definitions(dataset):
         for quals, leaf in _fragment_refs(fragment) or []:
             path = _hop_path(quals=quals, host=dataset)
-            unreached = unreachable_target(root=dataset, token=path[0], datasets_by_name=models) if path else None
+            unreached = unreachable_target(root=dataset, token=path[0], datasets_by_name=datasets) if path else None
             if unreached is not None:
                 raise UnreachableDefinitionError(
                     dataset=dataset.name, reference=".".join((*quals, leaf)), unreached=unreached,
-                    definition=_definition_label(field=column, fragment=fragment),
+                    definition=_definition_label(field=field, fragment=fragment),
                 )
 
 
@@ -395,18 +395,18 @@ def check_definition_ambiguity(*, dataset: SlayerDataset, reachable: dict[str, S
     """Reject a Mode-A definition on ``dataset`` whose path crosses an ambiguous hop: a field's
     as :class:`DerivedFieldAmbiguousError`, a dataset filter's as the base error naming it. A
     revisit met first on the path is left to the circular verdict."""
-    models = {**reachable, dataset.name: dataset}
-    for column, fragment in _definitions(dataset):
+    datasets = {**reachable, dataset.name: dataset}
+    for field, fragment in _definitions(dataset):
         for quals, leaf in _fragment_refs(fragment) or []:
             reference = ".".join((*quals, leaf))
             try:
-                walk(root=dataset, path=_hop_path(quals=quals, host=dataset), datasets_by_name=models)
+                walk(root=dataset, path=_hop_path(quals=quals, host=dataset), datasets_by_name=datasets)
             except CircularRelationshipPathError:
                 continue
             except AmbiguousRelationshipPathError as exc:
-                if column is not None:
+                if field is not None:
                     raise DerivedFieldAmbiguousError(
-                        field=column.name, dataset=dataset.name, reference=reference, error=exc,
+                        field=field.name, dataset=dataset.name, reference=reference, error=exc,
                     ) from exc
                 raise AmbiguousRelationshipPathError(
                     source_dataset=exc.source_dataset, target_dataset=exc.target_dataset,
@@ -463,12 +463,12 @@ def _broken_references(
     *, host: SlayerDataset, before: dict[str, SlayerDataset], after: dict[str, SlayerDataset],
 ) -> Iterator[tuple[str, str, str]]:
     """``(definition label, reference, how it broke)`` for each of ``host``'s references broken by the save."""
-    for column, fragment in _definitions(host):
+    for field, fragment in _definitions(host):
         for quals, leaf in _fragment_refs(fragment) or []:
             path = _hop_path(quals=quals, host=host)
             broken = _ref_break(host=host, path=path, before=before, after=after) if path else None
             if broken is not None:
-                yield _definition_label(field=column, fragment=fragment), ".".join((*quals, leaf)), broken
+                yield _definition_label(field=field, fragment=fragment), ".".join((*quals, leaf)), broken
 
 
 def validate_derived_fields(
@@ -537,11 +537,11 @@ def _references(
         owner, chain = resolved
         on_path = (*via, *(edge.to for edge in chain))
         yield owner, leaf, on_path
-        column = owner.get_field(leaf, quoted=True)
-        if column is None or (owner.name, leaf) in seen:
+        field = owner.get_field(leaf, quoted=True)
+        if field is None or (owner.name, leaf) in seen:
             continue
         seen.add((owner.name, leaf))
-        for inner in _arity_reference_sources(column):
+        for inner in _arity_reference_sources(field):
             yield from _references(inner, host=owner, reachable=reachable, via=on_path, seen=seen)
 
 
@@ -583,11 +583,11 @@ def check_dataset_filters(*, dataset: SlayerDataset, reachable: dict[str, Slayer
     reading its own dataset (:class:`DatasetFilterCycleError`, only a cycle through ``dataset``)."""
     if not dataset.filters:
         return
-    models = {**reachable, dataset.name: dataset}
+    datasets = {**reachable, dataset.name: dataset}
     for fragment in dataset.filters:
         validate_dataset_filter(mf=fragment, references=(
-            (owner, leaf) for owner, leaf, _path in filter_references(fragment, host=dataset, reachable=models)
+            (owner, leaf) for owner, leaf, _path in filter_references(fragment, host=dataset, reachable=datasets)
         ))
-    cycle = _filter_cycle(dataset=dataset, reachable=models)
+    cycle = _filter_cycle(dataset=dataset, reachable=datasets)
     if cycle is not None:
         raise DatasetFilterCycleError(cycle)

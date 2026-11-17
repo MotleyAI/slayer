@@ -183,11 +183,11 @@ class TestDownstreamStageFlatRefs:
                        "name": "robot_details__modelseriesval"}],
             dimensions=["status"],
         )
-        stage2 = SlayerQuery(
-            population="stage1",
-            metrics=[{"expression": "robot_details.modelseriesval"}],
-            dimensions=["status"],
-        )
+        stage2 = SlayerQuery.model_validate({
+            "population": "stage1",
+            "metrics": [{"expression": "robot_details.modelseriesval"}],
+            "dimensions": ["status"],
+        })
         bundle = _bundle()
         with pytest.raises(IllegalScopeReferenceError):
             plan_stages(queries=[stage1, stage2], bundle=bundle)

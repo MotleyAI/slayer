@@ -520,10 +520,10 @@ class _Translator:
                 reason = self._residual_violation(node)
                 if reason:
                     raise Unconvertible(reason)
-            formula = self._substitute(new_root.sql(normalize_functions="lower"), ref_by_token)
+            expression = self._substitute(new_root.sql(normalize_functions="lower"), ref_by_token)
         except Unconvertible as exc:
             return self._fail(str(exc))
-        return ExprResult(ok=True, expression=formula, materialized=self.policy.materialized, warnings=self.warnings)
+        return ExprResult(ok=True, expression=expression, materialized=self.policy.materialized, warnings=self.warnings)
 
     def _residual_names(self, tree: exp.Expr) -> list[exp.Column]:
         """Fields outside every aggregate that the policy reads as metrics."""

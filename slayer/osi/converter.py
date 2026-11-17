@@ -452,13 +452,13 @@ class OsiToSlayerConverter:
         return [d.name for d in doc.datasets if d.name in self._models]
 
     def _build_metrics_for(self, doc: OSIDocument) -> None:
-        doc_models = self._doc_datasets(doc)
+        doc_datasets = self._doc_datasets(doc)
         for ds in doc.datasets:
             if ds.name in self._models:
                 for metric in ds.metrics or []:
-                    self._metric(metric=metric, doc=doc, home=ds.name, doc_datasets=doc_models)
+                    self._metric(metric=metric, doc=doc, home=ds.name, doc_datasets=doc_datasets)
         for metric in doc.metrics or []:
-            self._metric(metric=metric, doc=doc, home=None, doc_datasets=doc_models)
+            self._metric(metric=metric, doc=doc, home=None, doc_datasets=doc_datasets)
 
     def _metric(self, metric: OSIMetric, *, doc: OSIDocument, home: str | None, doc_datasets: list[str]) -> None:
         """Restore ``metric``'s SLayer metric when its payload matches, else convert its SQL."""
@@ -470,17 +470,17 @@ class OsiToSlayerConverter:
             assert isinstance(payload, ext.MetricPayload)
             built = _build_meta(ctx=metric.ai_context, extensions=metric.nonportable_extensions,
                                 extra={"osi_datatype": metric.datatype} if metric.datatype else None)
-            measure = payload.metric.model_copy(update={"meta": {**(built or {}), **(payload.metric.meta or {})}
+            slayer_metric = payload.metric.model_copy(update={"meta": {**(built or {}), **(payload.metric.meta or {})}
                                                          or None})
-            self._pending.append(_PendingMetric(dataset=payload.dataset, metric=measure, label=f"Metric {metric.name!r}",
+            self._pending.append(_PendingMetric(dataset=payload.dataset, metric=slayer_metric, label=f"Metric {metric.name!r}",
                                                  osi_metric=metric, doc=doc, home=home))
             return
         if found is not None:
             self._warn(f"Metric {metric.name!r}: {_EDITED}", dataset_name=home, metric_name=metric.name,
                        category=_EXTENSION, severity="info", suggestion=_EDITED)
-        measure = self._build_metric(metric=metric, doc=doc, home=home, doc_datasets=doc_datasets)
-        if found is not None and measure is not None:
-            self._apply_metric_attributes(measure, payload=found[0])
+        slayer_metric = self._build_metric(metric=metric, doc=doc, home=home, doc_datasets=doc_datasets)
+        if found is not None and slayer_metric is not None:
+            self._apply_metric_attributes(slayer_metric, payload=found[0])
 
     @staticmethod
     def _apply_metric_attributes(metric: DatasetMetric, *, payload: ext.Payload) -> None:
@@ -576,11 +576,11 @@ class OsiToSlayerConverter:
         live = self._datasource.source(sql=query)
         if isinstance(live, str):
             raise _MetadataUnavailable(live)
-        columns = [_typed_field(name=name, data_type=typed[0], db_type=live.result_types[name].lossy_db_type)
+        fields = [_typed_field(name=name, data_type=typed[0], db_type=live.result_types[name].lossy_db_type)
                    for name, typed in live.columns.items()]
         self._live[ds.name] = live
         return SlayerDataset(name=ds.name, sql=query, data_source=self.data_source,
-                           fields=columns)
+                           fields=fields)
 
     def _declare_fields(self, dataset: SlayerDataset, ds: OSIDataset) -> None:
         """Current spec: the dataset's fields are exactly the declared fields."""
@@ -795,8 +795,8 @@ class OsiToSlayerConverter:
             return None
         probed = self._probe_expression_type(dataset=dataset, expr=sql)
         if probed is not None:
-            column = _typed_field(name=field.name, sql=sql, data_type=probed.type, db_type=probed.lossy_db_type)
-            return column, probed.type
+            slayer_field = _typed_field(name=field.name, sql=sql, data_type=probed.type, db_type=probed.lossy_db_type)
+            return slayer_field, probed.type
         shadowed = physical.get(field.name)
         fallback = declared or (shadowed.datatype if shadowed is not None else None) or DataType.DOUBLE
         element = shadowed.element_type if shadowed is not None else None
@@ -872,15 +872,15 @@ class OsiToSlayerConverter:
 
     def _build_relationship(self, rel: OSIRelationship, doc: OSIDocument) -> None:
         src = rel.from_dataset
-        doc_models = self._doc_datasets(doc)
-        if src not in doc_models:
+        doc_datasets = self._doc_datasets(doc)
+        if src not in doc_datasets:
             self._warn(
                 f"Relationship {rel.name!r} references source dataset {src!r}, "
                 f"which is not imported from its document; skipping.",
                 category="relationship",
             )
             return
-        if rel.to not in doc_models:
+        if rel.to not in doc_datasets:
             self._warn(
                 f"Relationship {rel.name!r} targets dataset {rel.to!r}, which is not "
                 f"imported from its document; skipping.",
@@ -946,9 +946,9 @@ class OsiToSlayerConverter:
 
     def _drop_invalid_cross_dataset_fields(self) -> bool:
         dropped = False
-        for model in self._models.values():
-            for col, bad in self._invalid_cross_dataset_fields(model):
-                self._revert_or_drop_field(dataset=model, col=col, bad=bad)
+        for dataset in self._models.values():
+            for col, bad in self._invalid_cross_dataset_fields(dataset):
+                self._revert_or_drop_field(dataset=dataset, col=col, bad=bad)
                 dropped = True
         return dropped
 
@@ -988,15 +988,15 @@ class OsiToSlayerConverter:
     def _drop_stale_relationships(self) -> bool:
         """Drop relationships whose key fields were removed by field validation."""
         dropped = False
-        for model in self._models.values():
-            stale = [j for j in model.relationships if self._relationship_fields_missing(dataset=model, relationship=j)]
-            for join in stale:
-                model.relationships.remove(join)
+        for dataset in self._models.values():
+            stale = [j for j in dataset.relationships if self._relationship_fields_missing(dataset=dataset, relationship=j)]
+            for relationship in stale:
+                dataset.relationships.remove(relationship)
                 dropped = True
                 self._warn(
-                    f"Relationship from {model.name!r} to {join.to!r} "
+                    f"Relationship from {dataset.name!r} to {relationship.to!r} "
                     f"references a field removed during validation; dropping.",
-                    dataset_name=model.name, category="relationship",
+                    dataset_name=dataset.name, category="relationship",
                 )
         return dropped
 
@@ -1008,9 +1008,9 @@ class OsiToSlayerConverter:
 
     def _type_cross_dataset_fields(self) -> None:
         """Type a derived field that is exactly one cross-dataset ref from the field its chain of such refs ends at."""
-        for model in self._models.values():
-            for col in model.fields:
-                end = self._ref_chain_end(dataset=model, col=col)
+        for dataset in self._models.values():
+            for col in dataset.fields:
+                end = self._ref_chain_end(dataset=dataset, col=col)
                 if end is not None:
                     col.datatype, col.element_type = end.datatype, end.element_type
 
@@ -1039,8 +1039,8 @@ class OsiToSlayerConverter:
         target = self._walk_join_alias(host=dataset, alias=".".join(quals))
         if target is None:
             return None
-        column = next((c for c in target.fields if c.name == parts[-1]), None)
-        return None if column is None else (target, column)
+        field = next((c for c in target.fields if c.name == parts[-1]), None)
+        return None if field is None else (target, field)
 
     def _relationship_fields_missing(self, dataset: SlayerDataset, relationship: DatasetRelationship) -> bool:
         target = self._models.get(relationship.to)
@@ -1094,15 +1094,15 @@ class OsiToSlayerConverter:
         )
 
     def _dataset_has_field(self, dataset_name: str, field: str) -> bool:
-        model = self._models.get(dataset_name)
-        return model is not None and name_taken(field, (c.name for c in model.fields))
+        dataset = self._models.get(dataset_name)
+        return dataset is not None and name_taken(field, (c.name for c in dataset.fields))
 
     def _dataset_has_name(self, dataset_name: str, name: str) -> bool:
         """Whether ``name`` is taken by a field or metric (one shared namespace)."""
-        model = self._models.get(dataset_name)
-        if model is None:
+        dataset = self._models.get(dataset_name)
+        if dataset is None:
             return False
-        return name_taken(name, [*(c.name for c in model.fields), *(m.name for m in model.metrics if m.name)])
+        return name_taken(name, [*(c.name for c in dataset.fields), *(m.name for m in dataset.metrics if m.name)])
 
     def _missing_relationship_fields(self, rel: OSIRelationship) -> list[str]:
         """Qualified relationship key names that are not plain base fields of their dataset."""
@@ -1214,13 +1214,13 @@ class OsiToSlayerConverter:
         if home is None:
             return self._convert_metric(metric, tree=tree, home=home, doc_datasets=doc_datasets)
         # Helpers stay only when the metric converts.
-        columns = self._models[home].fields
-        columns.extend(helpers.values())
-        measure = self._convert_metric(metric, tree=tree, home=home, doc_datasets=doc_datasets)
-        if measure is None:
+        fields = self._models[home].fields
+        fields.extend(helpers.values())
+        slayer_metric = self._convert_metric(metric, tree=tree, home=home, doc_datasets=doc_datasets)
+        if slayer_metric is None:
             added = {id(h) for h in helpers.values()}
-            columns[:] = [c for c in columns if id(c) not in added]
-        return measure
+            fields[:] = [c for c in fields if id(c) not in added]
+        return slayer_metric
 
     def _convert_metric(self, metric: OSIMetric, *, tree: exp.Expr, home: str | None,
                          doc_datasets: list[str]) -> DatasetMetric | None:
@@ -1233,8 +1233,8 @@ class OsiToSlayerConverter:
             return None  # already reported
 
         # Metrics and fields share one namespace on the anchor dataset.
-        anchor_model = self._models[anchor]
-        if name_taken(metric.name, (m.name for m in anchor_model.metrics if m.name)):
+        anchor_dataset = self._models[anchor]
+        if name_taken(metric.name, (m.name for m in anchor_dataset.metrics if m.name)):
             self._unconv(
                 f"Metric {metric.name!r} duplicates an existing metric on "
                 f"dataset {anchor!r}.",
@@ -1264,7 +1264,7 @@ class OsiToSlayerConverter:
         # Build the metric before materializing fields, so a rejected metric leaves no orphans.
         try:
             parse_expr(result.expression)
-            measure = DatasetMetric(
+            slayer_metric = DatasetMetric(
                 expression=result.expression,
                 name=metric.name,
                 description=render_description(explicit=metric.description, ctx=metric.ai_context),
@@ -1280,11 +1280,11 @@ class OsiToSlayerConverter:
             return None
 
         self._materialize_fields(result.materialized)
-        anchor_model.metrics.append(measure)
+        anchor_dataset.metrics.append(slayer_metric)
         for w in result.warnings:
             self._warn(f"Metric {metric.name!r}: {w}", metric_name=metric.name,
                        category="dialect", severity="info")
-        return measure
+        return slayer_metric
 
     def _select_anchor(self, metric_name: str, tree: exp.Expr, doc_datasets: list[str],
                        owner_of: OwnerOf) -> str | None:
@@ -1380,11 +1380,11 @@ class OsiToSlayerConverter:
 
     def _materialize_fields(self, materialized: list[MaterializedField]) -> None:
         for mc in materialized:
-            model = self._models.get(mc.owning_dataset)
-            if model is None or any(c.name == mc.name for c in model.fields):
+            dataset = self._models.get(mc.owning_dataset)
+            if dataset is None or any(c.name == mc.name for c in dataset.fields):
                 continue
-            probed = self._probe_expression_type(dataset=model, expr=self._physical_sql(model, mc.sql))
-            model.fields.append(_typed_field(
+            probed = self._probe_expression_type(dataset=dataset, expr=self._physical_sql(dataset, mc.sql))
+            dataset.fields.append(_typed_field(
                 name=mc.name, sql=mc.sql, hidden=True,
                 data_type=probed.type if probed is not None else DataType.DOUBLE,
                 db_type=probed.lossy_db_type if probed is not None else None,
@@ -1422,45 +1422,45 @@ class OsiToSlayerConverter:
         built = _build_meta(ctx=rel.ai_context, extensions=rel.nonportable_extensions)
         relationships: list[tuple[SlayerDataset, DatasetRelationship]] = []
         for declaration in payload.declarations:
-            model, join = self._models.get(declaration.dataset), declaration.relationship
-            target = self._models.get(join.to)
+            dataset, relationship = self._models.get(declaration.dataset), declaration.relationship
+            target = self._models.get(relationship.to)
             problem = None
-            if model is None or target is None:
-                problem = f"joins {declaration.dataset!r} to {join.to!r}, which are not both imported"
-            elif any(j.to == join.to and j.name == join.name for j in model.relationships):
-                problem = f"duplicates a relationship from {model.name!r} to {join.to!r}"
+            if dataset is None or target is None:
+                problem = f"joins {declaration.dataset!r} to {relationship.to!r}, which are not both imported"
+            elif any(j.to == relationship.to and j.name == relationship.name for j in dataset.relationships):
+                problem = f"duplicates a relationship from {dataset.name!r} to {relationship.to!r}"
             else:
-                errors = [relationship_key_error(dataset=model.name, target=target.name, key=a, side=model.name,
-                                         fields=model.fields) or
-                          relationship_key_error(dataset=model.name, target=target.name, key=b, side=target.name,
+                errors = [relationship_key_error(dataset=dataset.name, target=target.name, key=a, side=dataset.name,
+                                         fields=dataset.fields) or
+                          relationship_key_error(dataset=dataset.name, target=target.name, key=b, side=target.name,
                                          fields=target.fields)
-                          for a, b in join.join_pairs]
+                          for a, b in relationship.join_pairs]
                 problem = next((str(e).splitlines()[0] for e in errors if e is not None), None)
             if problem is not None:
                 self._warn(f"Relationship {rel.name!r}: its SLayer relationship {problem}; imported as a plain "
                            f"many-to-one relationship.", dataset_name=rel.from_dataset, category=_EXTENSION,
                            suggestion="Import every dataset the relationship connects.")
                 return False
-            assert model is not None
-            relationships.append((model, join.model_copy(update={"meta": {**(built or {}), **(join.meta or {})} or None})))
-        for model, join in relationships:
-            model.relationships.append(join)
+            assert dataset is not None
+            relationships.append((dataset, relationship.model_copy(update={"meta": {**(built or {}), **(relationship.meta or {})} or None})))
+        for dataset, relationship in relationships:
+            dataset.relationships.append(relationship)
         return True
 
     def _restore_dataset_attributes(self) -> None:
         """Dataset attributes Ossie has no place for, and the SLayer-only fields, from each dataset payload."""
         for name, (payload, _) in self._dataset_payloads.items():
-            model = self._models.get(name)
-            if model is None:
+            dataset = self._models.get(name)
+            if dataset is None:
                 continue
-            model.hidden = payload.hidden
-            model.access_tags = list(payload.access_tags)
-            model.aggregations = list(payload.aggregations)
-            model.meta = {**(model.meta or {}), **(payload.meta or {})} or None
-            if payload.default_time_dimension is None or model.get_field(payload.default_time_dimension):
-                model.default_time_dimension = payload.default_time_dimension
-            for column in payload.fields:
-                self._restore_field(model, column)
+            dataset.hidden = payload.hidden
+            dataset.access_tags = list(payload.access_tags)
+            dataset.aggregations = list(payload.aggregations)
+            dataset.meta = {**(dataset.meta or {}), **(payload.meta or {})} or None
+            if payload.default_time_dimension is None or dataset.get_field(payload.default_time_dimension):
+                dataset.default_time_dimension = payload.default_time_dimension
+            for field in payload.fields:
+                self._restore_field(dataset, field)
 
     def _restore_field(self, dataset: SlayerDataset, field: DatasetField) -> None:
         bad = [] if not field.sql else self._unresolvable_cross_dataset_refs(dataset=dataset, sql=field.sql)
@@ -1474,9 +1474,9 @@ class OsiToSlayerConverter:
     def _restore_metrics(self) -> None:
         """Add restored and SLayer-only metrics once everything they reference exists; a remaining one falls back."""
         for name, (payload, _) in self._dataset_payloads.items():
-            for measure in payload.metrics:
-                self._pending.append(_PendingMetric(dataset=name, metric=measure,
-                                                     label=f"SLayer-only metric {measure.name or measure.expression!r}"))
+            for metric in payload.metrics:
+                self._pending.append(_PendingMetric(dataset=name, metric=metric,
+                                                     label=f"SLayer-only metric {metric.name or metric.expression!r}"))
         pending, errors = list(self._pending), {}
         while pending:
             remaining = []
@@ -1492,17 +1492,17 @@ class OsiToSlayerConverter:
             self._fall_back(item, error=errors[id(item)])
 
     def _add_metric(self, item: _PendingMetric) -> str | None:
-        model = self._models.get(item.dataset)
-        if model is None:
+        dataset = self._models.get(item.dataset)
+        if dataset is None:
             return f"its dataset {item.dataset!r} is not imported"
         if item.metric.name and self._dataset_has_name(item.dataset, item.metric.name):
             return f"its name collides on {item.dataset!r}"
-        model.metrics.append(item.metric)
+        dataset.metrics.append(item.metric)
         try:
-            bind_dataset_expression(item.metric.expression, dataset=model, datasets=list(self._models.values()),
+            bind_dataset_expression(item.metric.expression, dataset=dataset, datasets=list(self._models.values()),
                                dialect=self._target)
         except Exception as exc:  # noqa: BLE001 — any binding failure keeps it pending
-            model.metrics.remove(item.metric)
+            dataset.metrics.remove(item.metric)
             return str(exc).splitlines()[0]
         return None
 
@@ -1520,33 +1520,33 @@ class OsiToSlayerConverter:
     def _restore_fields(self) -> None:
         """Field attributes; the value/filter split only where the field's fingerprint matches."""
         for (name, field), (payload, matched) in self._field_payloads.items():
-            model = self._models.get(name)
-            column = model.get_field(field) if model is not None else None
-            if model is None or column is None:
+            dataset = self._models.get(name)
+            slayer_field = dataset.get_field(field) if dataset is not None else None
+            if dataset is None or slayer_field is None:
                 continue
             content = payload.field
-            column.hidden, column.format = content.hidden, content.format
-            column.meta = {**(column.meta or {}), **(content.meta or {})} or None
+            slayer_field.hidden, slayer_field.format = content.hidden, content.format
+            slayer_field.meta = {**(slayer_field.meta or {}), **(content.meta or {})} or None
             if not matched:
                 self._warn(f"Field {field!r} of {name!r}: {_EDITED}", dataset_name=name, category=_EXTENSION,
                            severity="info", suggestion=_EDITED)
                 continue
             parts = [p for p in (content.sql, content.filter) if p]
-            if any(self._unresolvable_cross_dataset_refs(dataset=model, sql=p) for p in parts):
+            if any(self._unresolvable_cross_dataset_refs(dataset=dataset, sql=p) for p in parts):
                 self._warn(f"Field {field!r} of {name!r}: its SLayer definition does not resolve; kept its "
                            f"expression.", dataset_name=name, category=_EXTENSION, severity="info",
                            suggestion=_IMPORT_INPUTS)
                 continue
-            column.sql, column.filter = content.sql, content.filter
-            column.datatype = content.datatype or column.datatype
+            slayer_field.sql, slayer_field.filter = content.sql, content.filter
+            slayer_field.datatype = content.datatype or slayer_field.datatype
             # Type-dependent, so restored only with the type.
-            column.granularity, column.allowed_aggregations = content.granularity, content.allowed_aggregations
+            slayer_field.granularity, slayer_field.allowed_aggregations = content.granularity, content.allowed_aggregations
 
     def _restore_sources(self) -> None:
         """Table/SQL with row filters in place; saved queries handed back for the engine to validate."""
         for name, (payload, matched) in self._dataset_payloads.items():
-            model = self._models.get(name)
-            if model is None:
+            dataset = self._models.get(name)
+            if dataset is None:
                 continue
             if not matched:
                 self._warn(f"Dataset {name!r}: {_EDITED}", dataset_name=name, category=_EXTENSION, severity="info",
@@ -1554,10 +1554,10 @@ class OsiToSlayerConverter:
                 continue
             source = payload.source
             if source.source_queries is None:
-                model.sql_table, model.sql, model.filters = source.sql_table, source.sql, list(source.filters)
+                dataset.sql_table, dataset.sql, dataset.filters = source.sql_table, source.sql, list(source.filters)
                 continue
             try:
-                restored = model.model_copy(update={
+                restored = dataset.model_copy(update={
                     "sql": None, "sql_table": None, "filters": [], "fields": [],
                     "source_queries": [SlayerQuery.model_validate(q) for q in source.source_queries],
                     "query_variables": dict(source.query_variables),

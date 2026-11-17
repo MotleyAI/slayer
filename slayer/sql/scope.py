@@ -232,11 +232,11 @@ class ScopeFrame(BaseModel):
         is the scope root, byte-identical to before.
         """
         if owner_path:
-            owner_model = resolved_terminal(
+            owner_dataset = resolved_terminal(
                 root=self.root_dataset, path=owner_path,
                 datasets_by_name=self._datasets_by_name(),
             )
-            assert owner_model is not None, (
+            assert owner_dataset is not None, (
                 f"owner_path {owner_path!r} does not resolve from "
                 f"{self.root_dataset.name!r}"
             )
@@ -246,7 +246,7 @@ class ScopeFrame(BaseModel):
             )
             self._register_path_prefixes(owner_path)
         else:
-            owner_model = self.root_dataset
+            owner_dataset = self.root_dataset
             alias_path = self.root_relation
         prequoted = prequote_reserved_identifiers(
             sql, dialect=self.dialect.sqlglot_name,
@@ -260,14 +260,14 @@ class ScopeFrame(BaseModel):
         # collected STRUCTURALLY via ``crossed_paths`` rather than by re-scanning
         # the internal-alias output.
         self._register_join_paths(
-            raw_ast, owner_dataset=owner_model, owner_relation=alias_path,
+            raw_ast, owner_dataset=owner_dataset, owner_relation=alias_path,
             owner_path=owner_path,
         )
 
         try:
             expanded = expand_derived_refs_sync(
                 sql=prequoted,
-                dataset=owner_model,
+                dataset=owner_dataset,
                 alias_path=alias_path,
                 datasets_by_name=self._datasets_by_name(),
                 dialect=self.dialect.sqlglot_name,
@@ -422,9 +422,9 @@ class ScopeFrame(BaseModel):
                 column, zoned=self.dialect.is_zoned_db_type(getattr(declared, "db_type", None)),
             )
         if isinstance(ref, FieldSqlKey):
-            model = self._dataset_for(ref.dataset)
+            dataset = self._dataset_for(ref.dataset)
             col = next(
-                (c for c in model.fields if c.name == ref.field_name), None,
+                (c for c in dataset.fields if c.name == ref.field_name), None,
             )
             # A derived field ON a JOINED dataset (``path`` non-empty,
             # e.g. ``stores.tier`` where ``tier`` lives on the joined ``stores``)
@@ -444,7 +444,7 @@ class ScopeFrame(BaseModel):
             self._register_path_prefixes(owner_path)
             if col is None:
                 expanded = expand_derived_refs_sync(
-                    sql=ref.field_name, dataset=model, alias_path=alias_path,
+                    sql=ref.field_name, dataset=dataset, alias_path=alias_path,
                     datasets_by_name=self._datasets_by_name(),
                     dialect=self.dialect.sqlglot_name, owner_path=owner_path,
                     alias_resolver=self._alias_resolver(),
@@ -455,7 +455,7 @@ class ScopeFrame(BaseModel):
             # and filter expand through the same door at ``owner_path``.
             expanded = expand_field_definition_sync(
                 field=col,
-                dataset=model,
+                dataset=dataset,
                 alias_path=alias_path,
                 datasets_by_name=self._datasets_by_name(),
                 dialect=self.dialect.sqlglot_name,
@@ -522,8 +522,8 @@ class ScopeFrame(BaseModel):
         """
         if name == self.root_dataset.name:
             return self.root_dataset
-        model = self.bundle.get_referenced_dataset(name)
-        if model is None:
+        dataset = self.bundle.get_referenced_dataset(name)
+        if dataset is None:
             known = sorted(
                 {self.root_dataset.name}
                 | {m.name for m in self.bundle.referenced_datasets},
@@ -541,7 +541,7 @@ class ScopeFrame(BaseModel):
                     "source bundle (reachable from the source dataset via relationships)."
                 ),
             )
-        return model
+        return dataset
 
     def _parse(self, sql: str) -> exp.Expression:
         return parse_expression(sql=sql, target_dialect=self.dialect)

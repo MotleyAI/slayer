@@ -592,13 +592,13 @@ def apply_demo_enrichment(dataset: SlayerDataset) -> bool:
 
     by_name: dict[str, DatasetField] = {c.name: c for c in dataset.fields}
     for col_name, col_spec in spec.fields.items():
-        column = by_name.get(col_name)
-        if column is not None and _enrich_field(column, col_spec):
+        field = by_name.get(col_name)
+        if field is not None and _enrich_field(field, col_spec):
             changed = True
 
-    new_measures = _new_named_entries(dataset.metrics, spec.metrics)
-    if new_measures:
-        dataset.metrics = list(dataset.metrics) + new_measures
+    new_metrics = _new_named_entries(dataset.metrics, spec.metrics)
+    if new_metrics:
+        dataset.metrics = list(dataset.metrics) + new_metrics
         changed = True
 
     new_aggs = _new_named_entries(dataset.aggregations, spec.aggregations)
@@ -1026,10 +1026,10 @@ def ingest_demo_datasets(*, storage: StorageBackend, datasource: DatasourceConfi
         raise SlayerError(f"Demo setup did not store the datasets {', '.join(missing)}" + (f" ({causes})" if causes else ""))
     datasets: list[SlayerDataset] = []
     for table in TABLE_NAMES:
-        model = stored[table]
-        if apply_demo_enrichment(model):
-            run_sync(storage.save_dataset(model))
-        datasets.append(model)
+        dataset = stored[table]
+        if apply_demo_enrichment(dataset):
+            run_sync(storage.save_dataset(dataset))
+        datasets.append(dataset)
     return datasets
 
 

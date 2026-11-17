@@ -765,16 +765,16 @@ def _check_field_metric_namespace(
             f"Dataset '{dataset_name}': every DatasetMetric in 'metrics' must "
             f"have a name. Unnamed expressions: {unnamed}."
         )
-    measure_names_seq = [m.name for m in metrics if m.name is not None]
-    measure_dupes = sorted(
-        {n for n in measure_names_seq if measure_names_seq.count(n) > 1}
+    metric_names_seq = [m.name for m in metrics if m.name is not None]
+    metric_dupes = sorted(
+        {n for n in metric_names_seq if metric_names_seq.count(n) > 1}
     )
-    if measure_dupes:
+    if metric_dupes:
         raise ValueError(
-            f"Dataset '{dataset_name}': duplicate metric names: {measure_dupes}. "
+            f"Dataset '{dataset_name}': duplicate metric names: {metric_dupes}. "
             f"Each named DatasetMetric must have a unique name within a dataset."
         )
-    overlap = sorted(set(col_names_seq) & set(measure_names_seq))
+    overlap = sorted(set(col_names_seq) & set(metric_names_seq))
     if overlap:
         raise ValueError(
             f"Dataset '{dataset_name}': name collision between fields and "

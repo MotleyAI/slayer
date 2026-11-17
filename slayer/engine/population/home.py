@@ -153,10 +153,10 @@ def _determines_all(
     *, path: Path, input_paths: List[Path], host_dataset: SlayerDataset,
     datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
 ) -> bool:
-    model_at_p = walk_key_path(dataset=host_dataset, path=path, bundle=bundle)
-    return model_at_p is not None and all(
+    dataset_at_p = walk_key_path(dataset=host_dataset, path=path, bundle=bundle)
+    return dataset_at_p is not None and all(
         attributable_from_root(
-            host_path=q, target_path=path, root_dataset=model_at_p,
+            host_path=q, target_path=path, root_dataset=dataset_at_p,
             datasets_by_name=datasets_by_name, host_name=host_dataset.name,
         )
         for q in input_paths

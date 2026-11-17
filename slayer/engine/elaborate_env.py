@@ -218,15 +218,15 @@ def type_position_conjunct(
     if not field_blockers:
         return ConjunctTyping(MaskTyping.FIELD, 1 if attached else 0)
     if has_metric_position:
-        measure_blockers = row_refs_off_grain(cj, dim_keys)
-        if not measure_blockers:
+        metric_blockers = row_refs_off_grain(cj, dim_keys)
+        if not metric_blockers:
             return ConjunctTyping(MaskTyping.METRIC, 1)
         raise PositionTypingError(
             summary=f"This {position} expression is valid as neither a field nor a "
             f"metric. Field typing failed: it references "
             f"{', '.join(_key_display(k) for k in field_blockers)}, available "
             f"only after aggregation. Metric typing failed: it references "
-            f"row-level {', '.join(_key_display(k) for k in measure_blockers)}, "
+            f"row-level {', '.join(_key_display(k) for k in metric_blockers)}, "
             f"not available at the query grain (not among the query "
             f"dimensions).",
             suggestion="Split the top-level AND conjuncts so each resolves "
@@ -478,7 +478,7 @@ def type_and_split_filters(
     route differently. Returns (rebuilt prebound, typings aligned with its filters)."""
     old = list(prebound.bound_filters)
     dim_keys, row_agg_set = position_typing_context(prebound)
-    has_measure_position = prebound.distinct_dimension_values is not False
+    has_metric_position = prebound.distinct_dimension_values is not False
 
     def _has_partitioned_ref(vk: ValueKey) -> bool:
         # ANY partitioned / cross-dataset / crossing aggregate ref forces the split so
@@ -494,7 +494,7 @@ def type_and_split_filters(
     def _typed(cj: ValueKey) -> ConjunctTyping:
         return type_position_conjunct(
             cj, dim_keys=dim_keys, row_agg_set=row_agg_set,
-            has_metric_position=has_measure_position,
+            has_metric_position=has_metric_position,
         )
 
     texts = list(prebound.bound_filter_texts)
@@ -647,8 +647,8 @@ def validate_dataset_filter(*, mf: str, references: Iterable[Tuple[SlayerDataset
                 location=f"dataset filter {mf!r}",
                 suggestion="Use query-level filters for metric conditions.",
             )
-        column = owner.get_field(col)
-        if column is not None and column.sql and has_window_function(column.sql):
+        field = owner.get_field(col)
+        if field is not None and field.sql and has_window_function(field.sql):
             raise DatasetFilterError(
                 summary=f"The dataset filter references field {col!r} whose "
                 f"SQL contains a window function.",
@@ -907,14 +907,14 @@ def check_unrelated_row_read(
     """A row-level read of a dataset no relationship path reaches, outside an aggregation's inputs, raises."""
     if reference is None:
         return
-    column = reference.source if isinstance(reference, TimeTruncKey) else reference
-    ref = key_display(column)
+    field = reference.source if isinstance(reference, TimeTruncKey) else reference
+    ref = key_display(field)
     spelling = population.spelling
     raise UnrelatedDatasetError(
         summary=f"{ref} reads {dataset}, which no relationship path reaches from the population "
         f"{spelling}: it meets {spelling} as a product, so it is read only through aggregates.",
         location=location,
-        suggestion=_unrelated_read_remedy(column, ref=ref, population=population),
+        suggestion=_unrelated_read_remedy(field, ref=ref, population=population),
     )
 
 
@@ -1060,10 +1060,10 @@ def check_time_dimension_field(
     for leaf, upstream in bucketed_leaves:
         if requested_granularity == upstream or nests_into(upstream, requested_granularity):
             continue
-        column = "field" if leaf == name else f"field {leaf!r}"
+        field = "field" if leaf == name else f"field {leaf!r}"
         raise TimeDimensionFieldError(
             summary=f"Cannot re-bucket to '{requested_granularity}': the "
-            f"{column} is already bucketed at '{upstream}', which "
+            f"{field} is already bucketed at '{upstream}', which "
             f"does not nest into '{requested_granularity}'.",
             location=f"time dimension {name!r}",
             suggestion="Request the same or a nesting-coarser granularity, or "
@@ -1294,11 +1294,11 @@ def date_only_notices(
                 gran is not None and nests_into(TimeGranularity.DAY, gran)):
             continue
         operand = _operand_display(key.operand)
-        column = _field_parts(key.operand)
+        field = _field_parts(key.operand)
         notice = date_only_notice(
             comparison=key_display(key), operand=operand, date=date_text,
             whole_day=whole_day_spelling(operand=operand, op=key.op, date=date_text),
-            variables=_binding_variables(variables, key=key, field=column) if column else (),
+            variables=_binding_variables(variables, key=key, field=field) if field else (),
         )
         out.setdefault(notice.message, notice)
     return list(out.values())
@@ -1308,12 +1308,12 @@ def saved_date_only_notices(
     dataset: SlayerDataset, *, datasets_by_name: Mapping[str, Optional[SlayerDataset]],
 ) -> List[DateOnlyMidnightWarning]:
     """The notices for ``dataset``'s saved metrics and field filters, typed through its relationships to ``datasets_by_name``."""
-    models = {n: m for n, m in datasets_by_name.items() if m is not None}
+    datasets = {n: m for n, m in datasets_by_name.items() if m is not None}
     out: Dict[str, DateOnlyMidnightWarning] = {}
     texts = [*(m.expression for m in dataset.metrics), *(c.filter for c in dataset.fields if c.filter)]
     for text in texts:
         for site in scan_date_only(text).sites:
-            if _saved_field_type(dataset, parts=site.parts, datasets_by_name=models) is not DataType.TIMESTAMP:
+            if _saved_field_type(dataset, parts=site.parts, datasets_by_name=datasets) is not DataType.TIMESTAMP:
                 continue
             notice = date_only_notice(
                 comparison=text[site.start:site.end], operand=site.operand, date=site.date, whole_day=site.twin,
@@ -1336,8 +1336,8 @@ def _saved_field_type(
         name = match_name(name=leaf, declared=[c.name for c in owner.fields], quoted=False) if owner else None
     except (AmbiguousRelationshipPathError, AmbiguousReferenceError, CircularRelationshipPathError):
         return None
-    column = owner.get_field(name) if owner is not None and name is not None else None
-    return column.datatype if column is not None else None
+    field = owner.get_field(name) if owner is not None and name is not None else None
+    return field.datatype if field is not None else None
 
 
 def date_only_notice(
@@ -1831,10 +1831,10 @@ def _check_known_elements(key: ValueKey, *, typing: ListTyping, reading: str) ->
 
 def _check_list_in(key: InKey, *, typing: ListTyping) -> None:
     if typing.is_list(key.field):
-        column = _operand_display(key.field)
+        field = _operand_display(key.field)
         raise ListTypeError(
-            summary=f"`{column}` is a list and cannot be IN a list of scalars.",
-            suggestion=f"Use contains_any({column}, [...]), compare whole lists with {column} IN ([...], [...]), "
+            summary=f"`{field}` is a list and cannot be IN a list of scalars.",
+            suggestion=f"Use contains_any({field}, [...]), compare whole lists with {field} IN ([...], [...]), "
             f"or filter {_list_display(key.field)} IN (...).",
         )
 
@@ -2199,12 +2199,12 @@ def check_partition_key_resolves(
         )
     if maps_to_bucket or lenient:
         return
-    is_column = isinstance(pk, (FieldKey, FieldSqlKey))
+    is_field = isinstance(pk, (FieldKey, FieldSqlKey))
     raise PartitionKeyError(
-        summary=f"The partition_by {'field' if is_column else 'key'} '{dotted_key_display(pk)}' is not a "
+        summary=f"The partition_by {'field' if is_field else 'key'} '{dotted_key_display(pk)}' is not a "
         f"query dimension.",
         location=label,
-        suggestion=f"Add it to dimensions/time_dimensions{'' if is_column else ' (as a computed dimension)'}, "
+        suggestion=f"Add it to dimensions/time_dimensions{'' if is_field else ' (as a computed dimension)'}, "
         f"or choose one of: {', '.join(available_dims) or '(none)'}.",
     )
 
@@ -2561,14 +2561,14 @@ def build_environment(
     dim_roots = [
         dm.bound.value_key for dm in prebound.declared_metrics[:n_leading]
     ]
-    measure_roots = [
+    metric_roots = [
         dm.bound.value_key for dm in prebound.declared_metrics[n_leading:]
     ]
     filter_roots = [bf.value_key for bf in prebound.bound_filters]
     order_roots = [spec.bound.value_key for spec in prebound.order_specs]
 
     terms = _terms_for(
-        [*dim_roots, *measure_roots, *filter_roots, *order_roots],
+        [*dim_roots, *metric_roots, *filter_roots, *order_roots],
         home=home, query_grain=query_grain, home_paths=home_paths,
     )
 
@@ -2594,7 +2594,7 @@ def build_environment(
 
     return ElaboratedQuery(
         dimensions=_entries(dim_roots, [_FIELD] * len(dim_roots)),
-        metrics=_entries(measure_roots, [_METRIC] * len(measure_roots)),
+        metrics=_entries(metric_roots, [_METRIC] * len(metric_roots)),
         filters=_entries(
             filter_roots, [_VERDICT_OF[ct.typing] for ct in filter_typings],
         ),

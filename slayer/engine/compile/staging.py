@@ -204,7 +204,7 @@ def stage_slots(
     )
     stages = {s.id: stager.stage_of(s) for s in all_slots}
 
-    needs_column = _compute_needs_field(
+    needs_field = _compute_needs_field(
         all_slots=all_slots, by_key=by_key, by_id=by_id, stages=stages,
         masks=masks, order=order, projection=projection,
         attach_plans=regroup_attach_plans,
@@ -212,9 +212,9 @@ def stage_slots(
     )
 
     return (
-        _assign(row_slots, stages=stages, needs_field=needs_column, to_original=to_original),
-        _assign(aggregate_slots, stages=stages, needs_field=needs_column, to_original=to_original),
-        _assign(combined_expression_slots, stages=stages, needs_field=needs_column,
+        _assign(row_slots, stages=stages, needs_field=needs_field, to_original=to_original),
+        _assign(aggregate_slots, stages=stages, needs_field=needs_field, to_original=to_original),
+        _assign(combined_expression_slots, stages=stages, needs_field=needs_field,
                 to_original=to_original),
     )
 

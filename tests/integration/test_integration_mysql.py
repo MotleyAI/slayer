@@ -981,10 +981,10 @@ class TestMySQLStatAggregations:
         )
 
     async def test_stddev_pop_native_mysql(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "stddev_pop(total)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "stddev_pop(total)"}],
+        })
         result = await mysql_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_stddev_pop"]) == pytest.approx(
@@ -1077,10 +1077,10 @@ class TestMySQLStatAggregations:
         )
 
     async def test_covar_pop_variance_decomposition_mysql(self, mysql_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "covar_pop(total, other=customer_id)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "covar_pop(total, other=customer_id)"}],
+        })
         result = await mysql_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]

@@ -110,9 +110,9 @@ def with_own_extension(dataset: Optional[SlayerDataset], query: SlayerQuery) -> 
 def query_field_texts(query: SlayerQuery) -> Iterator[Tuple[FieldKind, str]]:
     """Every reference-bearing text of ``query`` — dimensions, time dimensions, metrics, filters, order — and its kind."""
     yield from _dimension_texts(query)
-    for measure in query.metrics or []:
-        if measure.expression:
-            yield "expression", measure.expression
+    for metric in query.metrics or []:
+        if metric.expression:
+            yield "expression", metric.expression
     for f in query.filter or []:
         yield "filter", f
     for item in query.order or []:
@@ -145,16 +145,16 @@ def extend_datasets(
     """
     out = dict(datasets)
     for extension in query.extensions or []:
-        model = lookup(extension.source_name, out)
-        if model is not None:
-            out[model.name] = overlay_metrics(model, extension)
+        dataset = lookup(extension.source_name, out)
+        if dataset is not None:
+            out[dataset.name] = overlay_metrics(dataset, extension)
     merge = EdgeMerge(datasets=out, reserved_names=reserved_names, stored_edge_names=stored_edge_names)
     inner = [
-        (extension.source_name, join)
+        (extension.source_name, relationship)
         for extension in query.extensions or [] if extension.source_name in merge.datasets
-        for join in extension.relationships or []
-        if _merged(declaring=extension.source_name, relationship=join, merge=merge, lookup=lookup, on_conflict=on_conflict)
-        and join.join_type is JoinType.INNER
+        for relationship in extension.relationships or []
+        if _merged(declaring=extension.source_name, relationship=relationship, merge=merge, lookup=lookup, on_conflict=on_conflict)
+        and relationship.join_type is JoinType.INNER
     ]
     # Tokens come from the final graph: a later declaration may name an edge an earlier one created.
     final = EdgeMerge(datasets=merge.datasets)
@@ -337,7 +337,7 @@ def _data_sources(
 
     if data_source is not None and (not names or holds(datasets_by_ds.get(data_source, {}))):
         return [data_source]
-    holders = sorted(ds for ds, models in datasets_by_ds.items() if holds(models))
+    holders = sorted(ds for ds, ds_datasets in datasets_by_ds.items() if holds(ds_datasets))
     return holders or ([data_source] if data_source is not None else [])
 
 
@@ -385,14 +385,14 @@ def _inner_ref(
 def _extended(
     name: str, *, datasets: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle, where: Optional[str],
 ) -> SlayerDataset:
-    model = datasets.get(name)
-    if name == TIME_SPINE_DATASET or (model is not None and is_spine(model)):
+    dataset = datasets.get(name)
+    if name == TIME_SPINE_DATASET or (dataset is not None and is_spine(dataset)):
         raise TimeSpineError(
             summary=f"{TIME_SPINE_DATASET!r} cannot be extended.",
             suggestion="Bucket its timestamp in time_dimensions; add fields or relationships to the datasets instead.",
         )
-    if model is not None:
-        return model
+    if dataset is not None:
+        return dataset
     failure = bundle.splice_failures.get(name)
     if failure is not None:
         raise failure
@@ -423,7 +423,7 @@ def apply_query_extensions(
             raise QueryExtensionError(f"{where}: {exc}" if where else str(exc)) from exc
         raise exc
 
-    models, restrictions = extend_datasets(
+    datasets, restrictions = extend_datasets(
         query, universe, where=where, on_conflict=conflict,
         lookup=lambda name, models: _extended(name, datasets=models, bundle=bundle, where=where),
         reserved_names=_reserved_names(universe, bundle),
@@ -432,21 +432,21 @@ def apply_query_extensions(
             *(j.name for m in universe.values() for j in m.relationships if j.name and not j.query_local),
         ],
     )
-    source = models[bundle.population.name] if bundle.population is not None else None
+    source = datasets[bundle.population.name] if bundle.population is not None else None
     bundle = bundle.model_copy(update={
         "population": source,
-        "referenced_datasets": [models.get(m.name, m) for m in bundle.referenced_datasets],
+        "referenced_datasets": [datasets.get(m.name, m) for m in bundle.referenced_datasets],
         "inner_restrictions": (*bundle.inner_restrictions, *restrictions),
     })
-    return _extended_scope(scope, query=query, datasets=models, source=source), bundle
+    return _extended_scope(scope, query=query, datasets=datasets, source=source), bundle
 
 
 def _universe(bundle: ResolvedSourceBundle) -> Dict[str, SlayerDataset]:
     out: Dict[str, SlayerDataset] = {}
     if bundle.population is not None:
         out[bundle.population.name] = bundle.population
-    for model in bundle.referenced_datasets:
-        out.setdefault(model.name, model)
+    for dataset in bundle.referenced_datasets:
+        out.setdefault(dataset.name, dataset)
     return out
 
 

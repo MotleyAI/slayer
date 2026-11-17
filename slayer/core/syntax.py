@@ -1653,9 +1653,9 @@ def metric_dependency_problems(
                           fields=fields, relationship_path=relationship_path)
     own: Dict[int, Optional[str]] = {}
     deps: Dict[int, set] = {}
-    for i, (_name, formula) in enumerate(expressions):
+    for i, (_name, expression) in enumerate(expressions):
         try:
-            refs, problem = _metric_refs(parse_expr(formula), scope=scope)
+            refs, problem = _metric_refs(parse_expr(expression), scope=scope)
         except ValueError as e:
             refs, problem = set(), str(e)
         own[i], deps[i] = problem, refs

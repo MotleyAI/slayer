@@ -92,25 +92,25 @@ def _apply_misplaced_metric(
     if not query.metrics or dataset is None:
         return query, []
 
-    measure_formula_names = {m.name for m in dataset.metrics}
-    column_names = {c.name for c in dataset.fields}
+    metric_expression_names = {m.name for m in dataset.metrics}
+    field_names = {c.name for c in dataset.fields}
 
-    new_measures = list(query.metrics)
+    new_metrics = list(query.metrics)
     moved_dims: List[FieldRef] = []
     emitted: List[NormalizationWarning] = []
 
     kept: List = []
-    for i, m in enumerate(new_measures):
-        formula = getattr(m, "expression", None)
-        if not isinstance(formula, str):
+    for i, m in enumerate(new_metrics):
+        expression = getattr(m, "expression", None)
+        if not isinstance(expression, str):
             kept.append(m)
             continue
-        bare = _bare_name(formula, root=dataset.spelling)
+        bare = _bare_name(expression, root=dataset.spelling)
         # A bare name of a saved metric stays a metric; of a field, it moves to dimensions.
-        if bare is None or bare in measure_formula_names:
+        if bare is None or bare in metric_expression_names:
             kept.append(m)
             continue
-        if bare in column_names:
+        if bare in field_names:
             moved_dims.append(FieldRef.from_string(bare))
             emitted.append(NormalizationWarning(
                 rule_id="MISPLACED_METRIC",

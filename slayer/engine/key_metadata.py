@@ -154,11 +154,11 @@ def scope_field_element(*, scope: DatasetScope | StageSchema, bundle: ResolvedSo
 
 def key_element_type(key: ValueKey, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> Optional[DataType]:
     """The element type of a list-valued ``key`` (``UNKNOWN`` when it cannot be told); ``None`` for a scalar."""
-    column_type = scope_field_type(scope=scope, bundle=bundle)
-    if not list_valued(key, field_type=column_type):
+    field_type = scope_field_type(scope=scope, bundle=bundle)
+    if not list_valued(key, field_type=field_type):
         return None
     element = list_element_type(
-        key, field_type=column_type, field_element=scope_field_element(scope=scope, bundle=bundle),
+        key, field_type=field_type, field_element=scope_field_element(scope=scope, bundle=bundle),
     )
     return element or DataType.UNKNOWN
 
@@ -183,9 +183,9 @@ def scope_zoned_timestamp(*, scope: DatasetScope | StageSchema, bundle: Resolved
     dialect = bundle_dialect(bundle)
     if not dialect.zoned_timestamp_db_types or isinstance(scope, StageSchema) or scope.population is None:
         return lambda _key: False
-    model, models_by_name = scope.population, bundle.datasets_by_name
+    dataset, datasets_by_name = scope.population, bundle.datasets_by_name
     return lambda key: dialect.is_zoned_db_type(
-        getattr(dataset_field(dataset=model, datasets_by_name=models_by_name, key=key), "db_type", None))
+        getattr(dataset_field(dataset=dataset, datasets_by_name=datasets_by_name, key=key), "db_type", None))
 
 
 def date_scalar_type(key: ValueKey, *, field_type: FieldTypeFn) -> Optional[DataType]:
@@ -204,17 +204,17 @@ def _typed_by_value(key: ValueKey) -> bool:
 
 def stage_metric_type(key: ValueKey, *, schema: StageSchema) -> Optional[DataType]:
     """``type`` for a metric over a stage's flat fields."""
-    column_type = stage_field_type(schema)
-    if list_valued(key, field_type=column_type):
+    field_type = stage_field_type(schema)
+    if list_valued(key, field_type=field_type):
         return DataType.ARRAY
     if _typed_by_value(key):
-        return value_type(key, field_type=column_type)
-    date_type = date_scalar_type(key, field_type=column_type)
+        return value_type(key, field_type=field_type)
+    date_type = date_scalar_type(key, field_type=field_type)
     if date_type is not None or not isinstance(key, AggregateKey):
         return date_type
     return aggregation_result_type(
         metric_name="*" if isinstance(key.source, StarKey) else None, aggregation=key.agg,
-        source_type=aggregation_source_type(key.source, field_type=column_type),
+        source_type=aggregation_source_type(key.source, field_type=field_type),
     )[0]
 
 

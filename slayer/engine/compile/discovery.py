@@ -212,12 +212,12 @@ def discover_roots(
 ) -> List[RootDisposition]:
     """Every producer root of ``prebound``, one disposition per consumer occurrence."""
     w = _Walker(prebound=prebound, scope=scope, bundle=bundle)
-    measure_typed = frozenset(
+    metric_typed = frozenset(
         i for i, ct in enumerate(filter_typings) if ct.typing == MaskTyping.METRIC
     )
     for r in consumer_roots(
         declared_metrics=prebound.declared_metrics, order_specs=prebound.order_specs,
-        bound_filters=prebound.bound_filters, metric_typed=measure_typed,
+        bound_filters=prebound.bound_filters, metric_typed=metric_typed,
     ):
         dm = r.metric
         declared = dm.datatype if dm is not None and dm.type_is_explicit else None

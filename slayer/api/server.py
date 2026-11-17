@@ -492,12 +492,12 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         data_source: str | None = None,
     ) -> list[dict[str, Any]]:
         result = []
-        for model in DocumentLoadFailures().skip(await storage.load_datasets(data_source=data_source)):
-            if model.hidden:
+        for dataset in DocumentLoadFailures().skip(await storage.load_datasets(data_source=data_source)):
+            if dataset.hidden:
                 continue
-            entry: dict[str, Any] = {"name": model.name, "data_source": model.data_source}
-            if model.description:
-                entry["description"] = model.description
+            entry: dict[str, Any] = {"name": dataset.name, "data_source": dataset.data_source}
+            if dataset.description:
+                entry["description"] = dataset.description
             result.append(entry)
         datasources = [data_source] if data_source is not None else await storage.list_datasources()
         for ds_name in datasources:
@@ -525,7 +525,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         data_source: str | None = None,
     ) -> dict[str, Any]:
         try:
-            model = await storage.get_dataset_or_builtin(name, data_source=data_source)
+            dataset = await storage.get_dataset_or_builtin(name, data_source=data_source)
         except AmbiguousDatasetError as exc:
             raise HTTPException(
                 status_code=409,
@@ -534,9 +534,9 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     f"or PUT /datasources/priority to disambiguate."
                 ),
             )
-        if model is None:
+        if dataset is None:
             raise HTTPException(status_code=404, detail=f"Dataset '{name}' not found")
-        data = model.model_dump(exclude_none=True)
+        data = dataset.model_dump(exclude_none=True)
         if "fields" in data:
             data["fields"] = [c for c in data["fields"] if not c.get("hidden")]
         return data

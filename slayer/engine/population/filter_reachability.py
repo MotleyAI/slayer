@@ -38,14 +38,14 @@ def _resolve_key_field(
     *, key: FieldSqlKey, anchor_dataset: SlayerDataset | None, bundle: ResolvedSourceBundle,
 ) -> tuple[SlayerDataset | None, DatasetField | None]:
     """The (dataset, field) a ``FieldSqlKey`` names, or ``(None, None)``."""
-    model = (
+    dataset = (
         anchor_dataset if key.dataset == getattr(anchor_dataset, "name", None)
         else bundle.get_referenced_dataset(key.dataset)
     )
-    if model is None:
+    if dataset is None:
         return None, None
-    return model, next(
-        (c for c in model.fields if c.name == key.field_name), None,
+    return dataset, next(
+        (c for c in dataset.fields if c.name == key.field_name), None,
     )
 
 
@@ -115,10 +115,10 @@ def _derived_def_touches_anchor(
     fragment falls back to ``col.name`` — an implicit reference at the field's
     own path (host-local for a ``path=()`` field), never dropped.
     """
-    model, col = _resolve_key_field(
+    dataset, col = _resolve_key_field(
         key=key, anchor_dataset=anchor_dataset, bundle=bundle,
     )
-    if model is None or col is None:
+    if dataset is None or col is None:
         return True  # nothing resolvable — a bare field name on the anchor
     fragments = [frag for frag in (col.sql or col.name, col.filter) if frag]
     if not fragments:
@@ -126,7 +126,7 @@ def _derived_def_touches_anchor(
     return any(
         _fragment_touches_anchor(
             _expanded_fragment_ast(
-                fragment=frag, dataset=model, field_name=key.field_name,
+                fragment=frag, dataset=dataset, field_name=key.field_name,
                 key_path=tuple(key.path), anchor_relation=anchor_relation,
                 bundle=bundle, cache=cache,
             ),
@@ -182,7 +182,7 @@ def recompute_filter_reachability(planned_query: PlannedQuery, *, bundle: Resolv
     stored value would still be anchored at the parent root and the two would
     differ.
     """
-    anchor_model = planned_query.render_source_dataset or bundle.population
+    anchor_dataset = planned_query.render_source_dataset or bundle.population
     anchor_relation = planned_query.source_relation
     slots_by_id = {
         s.id: s
@@ -200,7 +200,7 @@ def recompute_filter_reachability(planned_query: PlannedQuery, *, bundle: Resolv
             filter_id=mask.slot_id,
             has_host_local_ref=key_has_host_local_ref(
                 key=key,
-                anchor_dataset=anchor_model,
+                anchor_dataset=anchor_dataset,
                 anchor_relation=anchor_relation,
                 bundle=bundle,
                 cache=cache,

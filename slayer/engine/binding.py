@@ -206,7 +206,7 @@ class MetricResolutionCtx(BaseModel):
 
 def _fmt_metric_chain(chain: Tuple[Tuple[str, str], ...]) -> List[str]:
     """Render a ``(dataset, metric)`` chain as ``dataset.metric`` steps for errors."""
-    return [f"{model}.{measure}" for model, measure in chain]
+    return [f"{dataset}.{metric}" for dataset, metric in chain]
 
 
 def bind_expr(
@@ -227,12 +227,12 @@ def bind_expr(
     ``dimension_alias_map`` resolves ``partition_by=<computed dim name>`` to
     the dimension's bound key; it applies ONLY there."""
     _reject_placeholders(parsed)
-    measure_ctx = (
+    metric_ctx = (
         MetricResolutionCtx(depth_limit=_metric_depth_limit())
         if allow_metrics else None
     )
     value_key = _bind(
-        parsed, scope=scope, bundle=bundle, in_filter=False, alias_map=alias_map, metric_ctx=measure_ctx,
+        parsed, scope=scope, bundle=bundle, in_filter=False, alias_map=alias_map, metric_ctx=metric_ctx,
         dim_alias_map=dimension_alias_map,
     )
     return BoundExpr(
@@ -287,11 +287,11 @@ def bind_time_dimension(
             is_expression=True,
         )
     bound_col = _resolve_field_ref(parsed, scope=scope, bundle=bundle)
-    column_type, upstream = _field_facts(bound_col, scope=scope, bundle=bundle)
+    field_type, upstream = _field_facts(bound_col, scope=scope, bundle=bundle)
     routed = _canonical_if_routed(parsed=parsed, value_key=bound_col)
     return BoundTimeDimension(
         bound=BoundExpr(value_key=TimeTruncKey(source=bound_col, granularity=resolved), routed_dotted=routed),
-        field_type=column_type,
+        field_type=field_type,
         bucketed_leaves=() if upstream is None else ((text, upstream),),
     )
 
@@ -358,8 +358,8 @@ def _bucketed_leaves(
     for leaf in walk_value_keys(source):
         if not isinstance(leaf, (FieldKey, FieldSqlKey)):
             continue
-        column_type, upstream = _field_facts(leaf, scope=scope, bundle=bundle)
-        if upstream is not None and column_type in (DataType.DATE, DataType.TIMESTAMP):
+        field_type, upstream = _field_facts(leaf, scope=scope, bundle=bundle)
+        if upstream is not None and field_type in (DataType.DATE, DataType.TIMESTAMP):
             out.setdefault(".".join((*field_path(leaf), field_leaf(leaf))), upstream)
     return tuple(out.items())
 
@@ -612,13 +612,13 @@ def _bind_cast(
     except ValueError as e:
         raise CastTypeError(summary=str(e), suggestion="cast to a type this database has.") from None
     data_type, element_type = cast_slayer_type(parsed.type_text, dialect=bundle.dialect)
-    column_type = scope_field_type(scope=scope, bundle=bundle)
-    if parsed.try_ and data_type in (DataType.INT, DataType.DOUBLE) and boolean_valued(source, field_type=column_type):
+    field_type = scope_field_type(scope=scope, bundle=bundle)
+    if parsed.try_ and data_type in (DataType.INT, DataType.DOUBLE) and boolean_valued(source, field_type=field_type):
         source = CastKey(source=source, type_text="INT", data_type=DataType.INT)  # a boolean reads as its 1 / 0
     return CastKey(
         source=source, type_text=parsed.type_text, data_type=data_type, try_=parsed.try_,
         element_type=element_type,
-        numeric_source=_try_cast_source(source, field_type=column_type) if parsed.try_ else None,
+        numeric_source=_try_cast_source(source, field_type=field_type) if parsed.try_ else None,
     )
 
 
@@ -691,7 +691,7 @@ def _bind_in(
             f"_bind_in: expected TupleLit on RHS of {parsed.op!r}, got "
             f"{type(parsed.right).__name__}."
         )
-    column = _bind(parsed.left, **ctx)
+    field = _bind(parsed.left, **ctx)
     values = tuple(
         LiteralKey(value=normalize_scalar(elt.value))
         for elt in parsed.right.elements
@@ -707,7 +707,7 @@ def _bind_in(
             f"{parsed.op!r} over the non-null values."
         )
     return InKey(
-        field=column,
+        field=field,
         values=values,
         negated=(parsed.op == _NOT_IN),
     )
@@ -785,30 +785,30 @@ def _resolve_ref(
             scope_summary=_NO_ANCHOR_SCOPE_SUMMARY,
             suggestion=None,
         )
-    model = scope.population
+    dataset = scope.population
 
     # A ``__``-bearing name is not special: it resolves like any other name.
-    col = resolve_generated_field(dataset=model, name=name, quoted=quoted)
+    col = resolve_generated_field(dataset=dataset, name=name, quoted=quoted)
     if col is not None:
         if col.needs_expansion:
-            return FieldSqlKey(path=(), dataset=model.name, field_name=col.name)
+            return FieldSqlKey(path=(), dataset=dataset.name, field_name=col.name)
         return FieldKey(path=(), leaf=col.name)
 
     # No field: a saved metric resolves inline in an eligible position.
-    mm = model.get_metric(name, quoted=quoted)
+    mm = dataset.get_metric(name, quoted=quoted)
     if mm is not None:
         return _resolve_saved_metric(
-            metric=mm, terminal_dataset=model, scope=scope, bundle=bundle,
+            metric=mm, terminal_dataset=dataset, scope=scope, bundle=bundle,
             metric_ctx=metric_ctx, ref_text=name, host_path=(),
         )
     raise UnknownReferenceError(
         name=name,
         scope_kind="DatasetScope",
         scope_summary=(
-            f"dataset {model.spelling!r} fields: "
-            f"{[c.name for c in model.fields]}"
+            f"dataset {dataset.spelling!r} fields: "
+            f"{[c.name for c in dataset.fields]}"
         ),
-        suggestion=_name_suggestion(name=name, dataset=model),
+        suggestion=_name_suggestion(name=name, dataset=dataset),
     )
 
 
@@ -838,8 +838,8 @@ def _walk_relationship_chain(
     ``parts`` is the full dotted ref, for error messages; ``quoted`` flags each of
     its segments; ``original_parts`` (pre-self-prefix-strip, defaulting to
     ``parts``) spells the reference in full, ``original_quoted`` flagging its segments."""
-    models_by_name = bundle.datasets_by_name
-    models_by_name.setdefault(host.name, host)
+    datasets_by_name = bundle.datasets_by_name
+    datasets_by_name.setdefault(host.name, host)
     spelled = parts if original_parts is None else original_parts
     hop_quoted = quoted[:len(hop_path)]
     written = tuple(
@@ -847,45 +847,45 @@ def _walk_relationship_chain(
     )
     refusal = partial(
         _flat_spelling_refusal, host=host, hop_path=hop_path, leaf=leaf, spelled=spelled,
-        written=written, quoted=quoted, datasets_by_name=models_by_name,
+        written=written, quoted=quoted, datasets_by_name=datasets_by_name,
     )
     try:
-        walked = walk_terminal(root=host, path=hop_path, datasets_by_name=models_by_name, quoted=hop_quoted)
+        walked = walk_terminal(root=host, path=hop_path, datasets_by_name=datasets_by_name, quoted=hop_quoted)
     except CircularRelationshipPathError as e:
         raise refusal() or CircularRelationshipPathError(
             reference=".".join(spelled), root_dataset=host.spelling,
-            revisited=_dataset_spelling(e.revisited, datasets_by_name=models_by_name), hop=e.hop,
-            via=_dataset_spelling(e.via, datasets_by_name=models_by_name),
+            revisited=_dataset_spelling(e.revisited, datasets_by_name=datasets_by_name), hop=e.hop,
+            via=_dataset_spelling(e.via, datasets_by_name=datasets_by_name),
         ) from None
     if walked is not None:
         return walked
-    miss = walk_miss(root=host, path=hop_path, datasets_by_name=models_by_name, quoted=hop_quoted)
+    miss = walk_miss(root=host, path=hop_path, datasets_by_name=datasets_by_name, quoted=hop_quoted)
     assert miss is not None
     if miss.kind == "unloaded":
         assert miss.target is not None
-        match_name(name=miss.target, declared=models_by_name, quoted=False)  # raises when several match by case
+        match_name(name=miss.target, declared=datasets_by_name, quoted=False)  # raises when several match by case
         raise _target_not_in_bundle(parts=parts, target=miss.target)
     broken = len(hop_path) != 1
     flat = refusal() if broken else None
     if flat is not None:
         raise flat
     _reject_opaque_elements(
-        host=host, hop_path=hop_path, index=miss.index, parts=parts, datasets_by_name=models_by_name, quoted=hop_quoted,
+        host=host, hop_path=hop_path, index=miss.index, parts=parts, datasets_by_name=datasets_by_name, quoted=hop_quoted,
     )
     if broken:
         raise _broken_chain_error(
-            host=host, hop_path=hop_path, leaf=leaf, parts=parts, miss=miss, datasets_by_name=models_by_name,
+            host=host, hop_path=hop_path, leaf=leaf, parts=parts, miss=miss, datasets_by_name=datasets_by_name,
             quoted=hop_quoted,
         )
     return _route_edgeless_hop(
         host=host, hop=miss.token, leaf=leaf, parts=parts,
-        datasets_by_name=models_by_name, quoted=bool(hop_quoted) and hop_quoted[0],
+        datasets_by_name=datasets_by_name, quoted=bool(hop_quoted) and hop_quoted[0],
     )
 
 
 def _dataset_spelling(name: str, *, datasets_by_name: Dict[str, SlayerDataset]) -> str:
-    model = datasets_by_name.get(name)
-    return name if model is None else model.spelling
+    dataset = datasets_by_name.get(name)
+    return name if dataset is None else dataset.spelling
 
 
 def _quoted_segment(name: str, *, quoted: bool) -> str:
@@ -912,16 +912,16 @@ def _flat_spelling_refusal(
             return None
         if walked is None:
             return None
-        model = walked[0]
+        dataset = walked[0]
         exact = any(quoted[k:])
-        col = peek_dataset_field(dataset=model, name="__".join(tokens[k:]), quoted=exact)
+        col = peek_dataset_field(dataset=dataset, name="__".join(tokens[k:]), quoted=exact)
         if col is not None:
             prefix = (*written, *(_quoted_segment(t, quoted=q) for t, q in zip(hop_path[:k], quoted)))
             flat = ".".join((*prefix, _quoted_segment(col.name, quoted=exact)))
             reference = ".".join(spelled)
             return UnknownReferenceError(
                 name=reference, scope_kind="DatasetScope",
-                scope_summary=f"dataset {model.spelling!r} fields: {[c.name for c in model.fields]}",
+                scope_summary=f"dataset {dataset.spelling!r} fields: {[c.name for c in dataset.fields]}",
                 suggestion=f"{reference!r} spells the flattened field {col.name!r}; read it by its flat name {flat!r}.",
             )
     return None
@@ -934,11 +934,11 @@ def _reject_opaque_elements(
     """A hop naming a list of opaque elements: they have no element access."""
     walked = walk_terminal(root=host, path=hop_path[:index], datasets_by_name=datasets_by_name, quoted=quoted[:index])
     hop_quoted = index < len(quoted) and quoted[index]
-    column = walked[0].get_field(hop_path[index], quoted=hop_quoted) if walked is not None else None
-    if column is not None and column.datatype is DataType.ARRAY:
+    field = walked[0].get_field(hop_path[index], quoted=hop_quoted) if walked is not None else None
+    if field is not None and field.datatype is DataType.ARRAY:
         raise UnknownReferenceError(
             name=".".join(parts), scope_kind="DatasetScope",
-            scope_summary=f"list field {column.name!r} holds opaque (UNKNOWN) elements, which have no element access",
+            scope_summary=f"list field {field.name!r} holds opaque (UNKNOWN) elements, which have no element access",
             suggestion=(
                 "Declare the field's element_type to reach its elements; on the list itself, "
                 "count() counts non-NULL lists (not elements) and IS NULL tests for a missing list."
@@ -1154,11 +1154,11 @@ def _unresolved_dotted_error(
     """Error: a dotted leaf matching neither field nor saved metric; names
     both namespaces and offers close matches."""
     dotted = ".".join(parts)
-    columns = [c.name for c in terminal_dataset.fields]
-    measures = [m.name for m in terminal_dataset.metrics if m.name]
+    fields = [c.name for c in terminal_dataset.fields]
+    metrics = [m.name for m in terminal_dataset.metrics if m.name]
     detail = (
         f"{dotted!r} is neither a field nor a saved metric on "
-        f"{terminal_dataset.spelling!r}. Fields: {columns}; saved metrics: {measures}."
+        f"{terminal_dataset.spelling!r}. Fields: {fields}; saved metrics: {metrics}."
     )
     match = _name_suggestion(name=parts[-1], dataset=terminal_dataset)
     if match:
@@ -1229,8 +1229,8 @@ def _resolve_saved_metric(
             parsed, scope=scope, bundle=bundle, in_filter=False, metric_ctx=child,
         )
     # Cross-dataset: bind against the target, then prepend into host coordinates.
-    host_model = scope.population
-    assert host_model is not None
+    host_dataset = scope.population
+    assert host_dataset is not None
     target_scope = DatasetScope(population=terminal_dataset)
     target_bundle = _rerooted_bundle(bundle=bundle, target=terminal_dataset)
     bound = _bind(
@@ -1369,10 +1369,10 @@ def _reject_non_numeric_expression_agg(
     """A numeric-only aggregation over a text or temporal expression fails here, not in the database."""
     if agg not in NUMERIC_ONLY_AGGREGATIONS:
         return
-    column_type = scope_field_type(scope=scope, bundle=bundle)
-    if boolean_valued(source, field_type=column_type):
+    field_type = scope_field_type(scope=scope, bundle=bundle)
+    if boolean_valued(source, field_type=field_type):
         return
-    if (temporal := temporal_type(source, field_type=column_type)) is not None:
+    if (temporal := temporal_type(source, field_type=field_type)) is not None:
         kind = temporal.value
     elif _expression_is_confidently_text(
         source, dataset=scope.population if isinstance(scope, DatasetScope) else None,
@@ -1535,8 +1535,8 @@ def _bind_date_trunc(parsed: DateTrunc, *, source: ValueKey, bundle: ResolvedSou
 def _aggregation_parameters(agg: str, *, bundle: ResolvedSourceBundle) -> List[str]:
     """The keyword names a call of ``agg`` may take: a built-in's, or any dataset definition's, plus the routing ones."""
     names = ["partition_by", "window", *BUILTIN_AGGREGATION_PARAM_ORDER.get(normalize_aggregation_name(agg), ())]
-    for model in _bundle_datasets(bundle):
-        definition = aggregation_definition(owner=model, agg=agg)
+    for dataset in _bundle_datasets(bundle):
+        definition = aggregation_definition(owner=dataset, agg=agg)
         if definition is None:
             continue
         names += _declared_agg_param_names(agg=definition.name, source=None, bundle=bundle, definition=definition)
@@ -1886,22 +1886,22 @@ def _validate_agg_eligibility(
     don't apply (gate 0 still validates the name); unresolvable targets pass
     through (best-effort).
     """
-    owner_model, leaf = _resolve_agg_owner(source, bundle)
-    if owner_model is None:
+    owner_dataset, leaf = _resolve_agg_owner(source, bundle)
+    if owner_dataset is None:
         return _known_aggregation(normalize_aggregation_name(agg), BUILTIN_AGGREGATIONS, bundle=bundle)
     # Alias healing — custom aggregation named like an alias wins.
-    custom_names = {a.name for a in (owner_model.aggregations or [])}
-    definition = aggregation_definition(owner=owner_model, agg=agg)
+    custom_names = {a.name for a in (owner_dataset.aggregations or [])}
+    definition = aggregation_definition(owner=owner_dataset, agg=agg)
     if definition is not None:
-        _record_shadow(owner=owner_model, definition=definition, written=agg)
+        _record_shadow(owner=owner_dataset, definition=definition, written=agg)
     effective = definition.name if definition is not None else normalize_aggregation_name(agg)
     # Gate 0: unknown-name-first (precedence over PK / whitelist / type).
     _known_aggregation(effective, BUILTIN_AGGREGATIONS | custom_names, bundle=bundle)
-    col = None if leaf is None else next((c for c in owner_model.fields if c.name == leaf), None)
+    col = None if leaf is None else next((c for c in owner_dataset.fields if c.name == leaf), None)
     if col is None:
         return effective
     reason = _field_agg_refusal(
-        col=col, fields=owner_model.fields, agg=effective, custom=effective in custom_names,
+        col=col, fields=owner_dataset.fields, agg=effective, custom=effective in custom_names,
     )
     if reason is not None and col.datatype is DataType.ARRAY:
         raise ListTypeError(
@@ -2332,14 +2332,14 @@ def _check_library_literals(parsed: ScalarCall, *, bundle: ResolvedSourceBundle)
 
 def _json_input(arg: ValueKey, *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle) -> ValueKey:
     """``json_value``'s input: TEXT as is, a native JSON field read as its own type (``CAST(col AS JSONB)``)."""
-    column_type = scope_field_type(scope=scope, bundle=bundle)
+    field_type = scope_field_type(scope=scope, bundle=bundle)
     db_type = _json_db_type(arg, scope=scope, bundle=bundle)
     if db_type is not None:
         return CastKey(source=arg, type_text=db_type, data_type=DataType.UNKNOWN)
-    declared = column_type(arg) if isinstance(arg, (FieldKey, FieldSqlKey)) else None
+    declared = field_type(arg) if isinstance(arg, (FieldKey, FieldSqlKey)) else None
     if declared in (None, DataType.TEXT) and not (
-        numeric_valued(arg, field_type=column_type) or boolean_valued(arg, field_type=column_type)
-        or temporal_type(arg, field_type=column_type) is not None
+        numeric_valued(arg, field_type=field_type) or boolean_valued(arg, field_type=field_type)
+        or temporal_type(arg, field_type=field_type) is not None
     ):
         return arg
     raise ScalarOperandTypeError(
@@ -2396,10 +2396,10 @@ def _reject_windowed_field_sql(
     for k in refs:
         if not isinstance(k, FieldSqlKey):
             continue
-        model = _lookup_dataset(name=k.dataset, scope=scope, bundle=bundle)
-        if model is None:
+        dataset = _lookup_dataset(name=k.dataset, scope=scope, bundle=bundle)
+        if dataset is None:
             continue
-        col = next((c for c in model.fields if c.name == k.field_name), None)
+        col = next((c for c in dataset.fields if c.name == k.field_name), None)
         if col is None or col.sql is None:
             continue
         if has_window_function(col.sql):

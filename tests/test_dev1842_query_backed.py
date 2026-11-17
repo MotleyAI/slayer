@@ -97,15 +97,15 @@ class TestExtensionMeasuresOverQueryBacked:
                 })],
             ))
             engine = SlayerQueryEngine(storage=storage)
-            query = SlayerQuery(
-                population="qb_base", extensions=[DatasetExtension(
+            query = SlayerQuery.model_validate({
+                "population": "qb_base", "extensions": [DatasetExtension(
                     source_name="qb_base",
                     metrics=[DatasetMetric(name="doubled",
                                            expression="sum(amount_sum) * 2")],
                 )],
-                dimensions=["status"],
-                metrics=[{"expression": "doubled", "name": "r"}],
-            )
+                "dimensions": ["status"],
+                "metrics": [{"expression": "doubled", "name": "r"}],
+            })
             resp = await engine.execute(query, dry_run=True)
             assert resp.sql is not None
 
@@ -117,13 +117,13 @@ class TestExtensionMeasuresOverQueryBacked:
             name="t", data_source="ds", sql_table="t",
             fields=[DatasetField(name="amount", datatype=DataType.DOUBLE)],
         )
-        query = SlayerQuery(
-            population="t", extensions=[DatasetExtension(
+        query = SlayerQuery.model_validate({
+            "population": "t", "extensions": [DatasetExtension(
                 source_name="t",
                 metrics=[DatasetMetric(name="scaled", expression="sum(amount) * 100")],
             )],
-            metrics=[{"expression": "scaled", "name": "r"}],
-        )
+            "metrics": [{"expression": "scaled", "name": "r"}],
+        })
         sql = await _engine_generate(
             query=query, model=base, dialect="duckdb", validate=False,
         )
@@ -141,14 +141,14 @@ class TestExtensionMeasuresOverQueryBacked:
             for m in dev1842_models():
                 await storage.save_dataset(m, _validate=False)
             engine = SlayerQueryEngine(storage=storage)
-            query = SlayerQuery(
-                population="orders", extensions=[DatasetExtension(
+            query = SlayerQuery.model_validate({
+                "population": "orders", "extensions": [DatasetExtension(
                     source_name="orders",
                     metrics=[DatasetMetric(name="ext_aov", expression="customers.aov")],
                 )],
-                dimensions=["customers.tier"],
-                metrics=[{"expression": "ext_aov", "name": "r"}],
-            )
+                "dimensions": ["customers.tier"],
+                "metrics": [{"expression": "ext_aov", "name": "r"}],
+            })
             resp = await engine.execute(query, dry_run=True)
             assert resp.sql is not None
 
@@ -164,13 +164,13 @@ class TestSameNameExtensionRejected:
             fields=[DatasetField(name="amount", datatype=DataType.DOUBLE)],
             metrics=[DatasetMetric(name="sh", expression="sum(amount)")],
         )
-        query = SlayerQuery(
-            population="t", extensions=[DatasetExtension(
+        query = SlayerQuery.model_validate({
+            "population": "t", "extensions": [DatasetExtension(
                 source_name="t",
                 metrics=[DatasetMetric(name="sh", expression="sum(amount) * 100")],
             )],
-            metrics=[{"expression": "sh", "name": "r"}],
-        )
+            "metrics": [{"expression": "sh", "name": "r"}],
+        })
         with pytest.raises(ValueError, match=r"duplicate measure names"):
             await _engine_generate(
                 query=query, model=base, dialect="duckdb", validate=False,
@@ -221,15 +221,15 @@ class TestStageExtensionMeasuresOverQueryBacked:
                     "metrics": [{"expression": "sum(amount)"}],
                 })],
             ))
-            stage = SlayerQuery(
-                population="qb_base", extensions=[DatasetExtension(
+            stage = SlayerQuery.model_validate({
+                "population": "qb_base", "extensions": [DatasetExtension(
                     source_name="qb_base",
                     metrics=[DatasetMetric(name="doubled",
                                            expression="sum(amount_sum) * 2")],
                 )],
-                dimensions=["status"],
-                metrics=[{"expression": "doubled", "name": "r"}],
-            )
+                "dimensions": ["status"],
+                "metrics": [{"expression": "doubled", "name": "r"}],
+            })
             root = SlayerQuery(population="orders", dimensions=["status"])
             bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(
                 query=root, storage=storage, data_source="ds",

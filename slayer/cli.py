@@ -1460,10 +1460,10 @@ async def _refresh_samples_async(*, args: _RefreshSamplesArgs, engine: SlayerQue
         datasources = [data_source]
     for ds in datasources:
         if datasets:
-            for model_name in datasets:
-                m = await storage.get_dataset(model_name, data_source=ds)
+            for dataset_name in datasets:
+                m = await storage.get_dataset(dataset_name, data_source=ds)
                 if m is None:
-                    unresolved_datasets.append(f"{ds}.{model_name}")
+                    unresolved_datasets.append(f"{ds}.{dataset_name}")
                     continue
                 errs = await refresh_table_backed_dataset_sampled(
                     dataset=m, engine=engine, storage=storage,
@@ -1593,11 +1593,11 @@ async def _migrate_types_workflow(args, *, engine: SlayerQueryEngine, inner: Sto
     """Refine every in-scope dataset through the engine's clients; the number refined."""
     data_source_filter = getattr(args, "data_source", None)
     refined_total = 0
-    for ds_name, model_name in await inner._list_all_dataset_identities():
+    for ds_name, dataset_name in await inner._list_all_dataset_identities():
         if data_source_filter and ds_name != data_source_filter:
             continue
         if await _refine_one_dataset_for_cli(
-            inner=inner, engine=engine, ds_name=ds_name, dataset_name=model_name, dry_run=dry_run,
+            inner=inner, engine=engine, ds_name=ds_name, dataset_name=dataset_name, dry_run=dry_run,
         ):
             refined_total += 1
     return refined_total
@@ -1693,9 +1693,9 @@ async def _refine_one_dataset_for_cli(
         upgraded=upgraded, types_before=types_before_refinement,
     )
     if not dry_run:
-        model = SlayerDataset.model_validate(upgraded)
+        dataset = SlayerDataset.model_validate(upgraded)
         # Save-time validation loads peers, which may still need refining through the engine.
-        await engine.storage.save_dataset(model)
+        await engine.storage.save_dataset(dataset)
     return True
 
 
@@ -1822,7 +1822,7 @@ def _prepare_demo(args, storage, *, stream=None):
     out = stream if stream is not None else sys.stderr
     storage_path = _storage_path(args)
     try:
-        ds, models, db_built = ensure_demo_datasource(
+        ds, datasets, db_built = ensure_demo_datasource(
             storage,
             storage_path=storage_path,
             ingest_datasets=True,
@@ -1835,7 +1835,7 @@ def _prepare_demo(args, storage, *, stream=None):
     state = "generated" if db_built else "reused"
     print(
         f"Demo ready: {state} {ds.database}; datasource '{ds.name}', "
-        f"{len(models)} dataset(s) available.",
+        f"{len(datasets)} dataset(s) available.",
         file=out,
     )
 
@@ -2013,18 +2013,18 @@ def _resolve_validate_scope(args: argparse.Namespace, storage: StorageBackend) -
                 file=sys.stderr,
             )
             sys.exit(1)
-    model = getattr(args, "dataset", None)
-    if not model:
+    dataset = getattr(args, "dataset", None)
+    if not dataset:
         return
     identities = run_sync(storage._list_all_dataset_identities())
     # Datasets are keyed by (data_source, name), so an unscoped run matches the
     # name in every datasource that has one.
     if not any(
-        name == model and (not args.datasource or ds == args.datasource)
+        name == dataset and (not args.datasource or ds == args.datasource)
         for ds, name in identities
     ):
         where = f"datasource '{args.datasource}'" if args.datasource else storage_path
-        print(f"Dataset '{model}' not found in {where}", file=sys.stderr)
+        print(f"Dataset '{dataset}' not found in {where}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -2207,15 +2207,15 @@ async def _validate_datasets_workflow(args, engine: SlayerQueryEngine) -> None:
             print(f"Datasource '{ds_name}' failed validation: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    join_safety = await _collect_relationship_safety_findings(args, storage)
+    relationship_safety = await _collect_relationship_safety_findings(args, storage)
     if as_json:
         report = await _collect_cardinality_report(args, engine)
-        _print_validate_json(entries=entries, report=report, relationship_safety=join_safety)
+        _print_validate_json(entries=entries, report=report, relationship_safety=relationship_safety)
         _exit_on_scan_failures(report)
         return
 
     _print_drift_section(entries, headed=wants_cardinality)
-    _print_relationship_safety_section(join_safety)
+    _print_relationship_safety_section(relationship_safety)
     # Clean first: profiling a dataset we are about to repair is wasted work.
     deletes = [e for e in entries if not isinstance(e, REPORT_ONLY_FINDINGS)]
     if bool(getattr(args, "force_clean", False)) and deletes:
@@ -2305,14 +2305,14 @@ async def _import_datasource(storage: StorageBackend, name: str) -> tuple[Dataso
 async def _save_imported_dbt_datasets(*, storage: StorageBackend, datasets: list[SlayerDataset]) -> int:
     """Save and report each imported dataset; returns the hidden count."""
     hidden_count = 0
-    for model in datasets:
-        await storage.save_dataset(model)
-        suffix = " [hidden]" if model.hidden else ""
-        if model.hidden:
+    for dataset in datasets:
+        await storage.save_dataset(dataset)
+        suffix = " [hidden]" if dataset.hidden else ""
+        if dataset.hidden:
             hidden_count += 1
         print(
-            f"Imported dataset: {model.name}{suffix} "
-            f"({len(model.fields)} fields, {len(model.metrics)} metrics)"
+            f"Imported dataset: {dataset.name}{suffix} "
+            f"({len(dataset.fields)} fields, {len(dataset.metrics)} metrics)"
         )
     return hidden_count
 
@@ -2342,15 +2342,15 @@ async def _import_cube_workflow(args, engine: SlayerQueryEngine) -> None:
     except UndecidableIdentifierCaseError as exc:
         _fail(str(exc))
     saved = 0
-    for model in result.datasets:
+    for dataset in result.datasets:
         try:
-            await storage.save_dataset(model)
+            await storage.save_dataset(dataset)
             saved += 1
         except Exception as exc:  # noqa: BLE001 — one bad dataset shouldn't abort the import
             result.report.add(CubeConversionIssue(
                 category=CubeIssueCategory.SAVE_FAILED, severity="error",
-                cube=model.name,
-                message=f"Failed to save dataset '{model.name}': {exc}"))
+                cube=dataset.name,
+                message=f"Failed to save dataset '{dataset.name}': {exc}"))
 
     _print_cube_import_summary(result, include_hidden=args.include_hidden)
     report_path = _write_cube_report(result, args)
@@ -2362,14 +2362,14 @@ async def _import_cube_workflow(args, engine: SlayerQueryEngine) -> None:
 
 
 def _print_cube_import_summary(result: CubeConversionResult, *, include_hidden: bool) -> None:
-    for model in result.datasets:
-        if model.hidden and not include_hidden:
+    for dataset in result.datasets:
+        if dataset.hidden and not include_hidden:
             continue
-        suffix = " [hidden]" if model.hidden else ""
-        kind = " (view)" if (model.meta or {}).get("cube_kind") == "view" else ""
+        suffix = " [hidden]" if dataset.hidden else ""
+        kind = " (view)" if (dataset.meta or {}).get("cube_kind") == "view" else ""
         print(
-            f"Imported dataset: {model.name}{kind}{suffix} "
-            f"({len(model.fields)} fields, {len(model.metrics)} metrics)"
+            f"Imported dataset: {dataset.name}{kind}{suffix} "
+            f"({len(dataset.fields)} fields, {len(dataset.metrics)} metrics)"
         )
     for severity in ("error", "warning", "info"):
         for issue in result.report.by_severity(severity):
@@ -2415,19 +2415,19 @@ def _run_export_osi(args: _ExportOsiArgs):
 
 async def _restore_query_backed(engine: SlayerQueryEngine, result: OsiConversionResult) -> None:
     """Save each restored query-backed dataset through the engine, inputs first; a failure keeps the sql-mode dataset."""
-    pending = {model.name: model for model in result.query_backed}
+    pending = {dataset.name: dataset for dataset in result.query_backed}
     while pending:
         ready = [m for m in pending.values()
                  if not {q.population for q in m.source_queries or [] if isinstance(q.population, str)} & set(pending)
                  or len(pending) == 1]
-        for model in ready or list(pending.values()):
-            del pending[model.name]
+        for dataset in ready or list(pending.values()):
+            del pending[dataset.name]
             try:
-                await engine.save_dataset(model)
+                await engine.save_dataset(dataset)
             except Exception as exc:  # noqa: BLE001 — per-dataset isolation; reported
                 result.warnings.append(ConversionWarning(
-                    dataset_name=model.name, category="extension", severity="info",
-                    message=f"Query-backed dataset {model.name!r} does not restore ({exc}); kept as a sql-mode "
+                    dataset_name=dataset.name, category="extension", severity="info",
+                    message=f"Query-backed dataset {dataset.name!r} does not restore ({exc}); kept as a sql-mode "
                             f"dataset over its source.",
                     suggestion="Import every dataset its saved queries read.",
                 ))
@@ -2463,11 +2463,11 @@ async def _import_osi_workflow(args, engine: SlayerQueryEngine) -> None:
     except OsiConversionError as exc:
         _fail(str(exc))
 
-    for model in result.datasets:
-        await storage.save_dataset(model)
+    for dataset in result.datasets:
+        await storage.save_dataset(dataset)
         print(
-            f"Imported dataset: {model.name} "
-            f"({len(model.fields)} fields, {len(model.metrics)} metrics)"
+            f"Imported dataset: {dataset.name} "
+            f"({len(dataset.fields)} fields, {len(dataset.metrics)} metrics)"
         )
     await _restore_query_backed(engine, result)
 
@@ -2489,34 +2489,34 @@ def _datasets_list(storage: StorageBackend, args) -> None:
     if not names and not builtins:
         print("No datasets found.")
         return
-    models = {m.name: m for m in DocumentLoadFailures().skip(run_sync(storage.load_datasets()))}
+    datasets = {m.name: m for m in DocumentLoadFailures().skip(run_sync(storage.load_datasets()))}
     for name in names:
-        model = models.get(name)
-        if model is None or model.hidden:
+        dataset = datasets.get(name)
+        if dataset is None or dataset.hidden:
             continue
-        desc = f"  — {model.description}" if model.description else ""
+        desc = f"  — {dataset.description}" if dataset.description else ""
         print(f"{name}{desc}")
-    for model in builtins:
-        print(f"{model.name}  — {model.description}")
+    for dataset in builtins:
+        print(f"{dataset.name}  — {dataset.description}")
 
 
 def _datasets_show(storage: StorageBackend, args) -> None:
-    model = run_sync(storage.get_dataset_or_builtin(args.name))
-    if model is None:
+    dataset = run_sync(storage.get_dataset_or_builtin(args.name))
+    if dataset is None:
         _fail(f"Dataset '{args.name}' not found.")
-    data = model.model_dump(mode="json", exclude_none=True)
+    data = dataset.model_dump(mode="json", exclude_none=True)
     print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
 
 
 def _datasets_create(storage, args) -> None:
     with open(args.file) as f:
         data = yaml.safe_load(f)
-    model = SlayerDataset.model_validate(data)
+    dataset = SlayerDataset.model_validate(data)
     # Route through engine.save_model so query-backed datasets get cache
     # populated (and user-supplied cache fields are rejected).
     engine = SlayerQueryEngine(storage=storage)
-    engine.run_sync(engine.save_dataset(model))
-    print(f"Created dataset '{model.name}'.")
+    engine.run_sync(engine.save_dataset(dataset))
+    print(f"Created dataset '{dataset.name}'.")
 
 
 def _datasets_delete(storage: StorageBackend, args) -> None:
@@ -2691,13 +2691,13 @@ def _persist_ingested_datasets(datasets: list[SlayerDataset], storage: StorageBa
         print("Aborted before writing datasets.", file=sys.stderr)
         sys.exit(1)
 
-    for model in datasets:
+    for dataset in datasets:
         try:
-            run_sync(storage.save_dataset(model))
+            run_sync(storage.save_dataset(dataset))
         except ValueError as e:
-            print(f"Skipped {model.name}: {e}")
+            print(f"Skipped {dataset.name}: {e}")
             continue
-        print(f"Ingested: {model.name} ({len(model.fields)} fields, {len(model.metrics)} metrics)")
+        print(f"Ingested: {dataset.name} ({len(dataset.fields)} fields, {len(dataset.metrics)} metrics)")
 
 
 def _run_datasources_create(args, storage):
@@ -2852,11 +2852,11 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
         return
 
     try:
-        models = ingest_demo_datasets(storage=storage, datasource=ds)
+        datasets = ingest_demo_datasets(storage=storage, datasource=ds)
     except Exception as e:
         _fail(f"Ingestion failed: {e}")
-    for model in models:
-        print(f"Ingested: {model.name} ({len(model.fields)} fields, {len(model.metrics)} metrics)")
+    for dataset in datasets:
+        print(f"Ingested: {dataset.name} ({len(dataset.fields)} fields, {len(dataset.metrics)} metrics)")
 
 
 def _load_query_arg(value):

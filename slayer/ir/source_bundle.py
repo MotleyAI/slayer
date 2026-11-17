@@ -87,8 +87,8 @@ class ResolvedSourceBundle(BaseModel):
 
     def definition_view(self) -> "ResolvedSourceBundle":
         """This bundle as stored definitions see it: without anything a query extension added."""
-        models = [*([self.population] if self.population is not None else []), *self.referenced_datasets]
-        if not any(m.extended for m in models):
+        datasets = [*([self.population] if self.population is not None else []), *self.referenced_datasets]
+        if not any(m.extended for m in datasets):
             return self
         return self.model_copy(update={
             "population": self.population.definition_view() if self.population is not None else None,
@@ -139,11 +139,11 @@ class ResolvedSourceBundle(BaseModel):
 
 def overlay_metrics(base: SlayerDataset, ext: DatasetExtension) -> SlayerDataset:
     """``base`` with ``ext``'s metrics, marked query-local."""
-    measures = list(ext.metrics or [])
-    if not measures:
+    metrics = list(ext.metrics or [])
+    if not metrics:
         return base
-    merged = base.model_copy(update={"metrics": [*base.metrics, *measures]}).with_query_local(
-        base.query_local_names | {m.name for m in measures if m.name})
+    merged = base.model_copy(update={"metrics": [*base.metrics, *metrics]}).with_query_local(
+        base.query_local_names | {m.name for m in metrics if m.name})
     if not merged.source_queries:
         _check_field_metric_namespace(dataset_name=merged.name, fields=merged.fields, metrics=merged.metrics)
     return merged
@@ -152,8 +152,8 @@ def overlay_metrics(base: SlayerDataset, ext: DatasetExtension) -> SlayerDataset
 def apply_extension_overlay(base: SlayerDataset, ext: DatasetExtension) -> SlayerDataset:
     """``base`` extended by ``ext`` alone: its relationships merged with ``base``'s own edges."""
     merge = EdgeMerge(datasets={base.name: overlay_metrics(base, ext)})
-    for join in ext.relationships or []:
-        merge.add(declaring=base.name, relationship=join)
+    for relationship in ext.relationships or []:
+        merge.add(declaring=base.name, relationship=relationship)
     return merge.datasets[base.name]
 
 
@@ -200,7 +200,7 @@ def dataset_from_stage_schema(
     grain = schema.grain or []
     composite = len(grain) > 1
     field_sql = field_sql or {}
-    model = SlayerDataset(
+    dataset = SlayerDataset(
         name="_stage",
         data_source=data_source,
         sql_table="_stage" if sql is None else None,
@@ -221,14 +221,14 @@ def dataset_from_stage_schema(
             for c in schema.fields
         ],
     )
-    joins = list(saved.relationships) if saved is not None else []
+    relationships = list(saved.relationships) if saved is not None else []
     # Relationships attach after the rename (validators skip model_copy), so check their keys here.
-    _check_relationship_keys(dataset_name=name, fields=model.fields, relationships=joins)
+    _check_relationship_keys(dataset_name=name, fields=dataset.fields, relationships=relationships)
     # A minted stage identity carries the reserved prefix the name validator rejects.
-    return model.model_copy(update={
+    return dataset.model_copy(update={
         "name": name, "sql_table": name if sql is None else None,
         "default_time_dimension": default_time_dimension or schema.default_time_dimension,
-        "relationships": joins,
+        "relationships": relationships,
         "filters": list(saved.filters) if saved is not None else [],
     }).with_spelling(schema.display_name if schema.display_name != name else None)
 

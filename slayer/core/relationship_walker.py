@@ -154,10 +154,10 @@ def reverse_token(edge: OrientedRelationship) -> str:
 def _spellings(edge: OrientedRelationship) -> tuple[tuple[str, ...], ...]:
     """An edge's names by precedence: edge name, a query stage's spelling (it shadows a same-named dataset), dataset name
     (never a stage's minted identity), then its query-local aliases."""
-    model = edge.to if edge.target_spelling is None else None
+    dataset = edge.to if edge.target_spelling is None else None
     return (
         tuple(n for n in (edge.name,) if n is not None), tuple(n for n in (edge.target_spelling,) if n is not None),
-        tuple(n for n in (model,) if n is not None), tuple(edge.aliases),
+        tuple(n for n in (dataset,) if n is not None), tuple(edge.aliases),
     )
 
 
@@ -184,23 +184,23 @@ def _orient(
 ) -> OrientedRelationship:
     """Orient ``relationship`` (declared on ``declaring``) so its source is ``from_dataset``."""
     if from_dataset == declaring:
-        to_model = relationship.to
+        to_dataset = relationship.to
         pairs = [list(p) for p in relationship.join_pairs]
         cardinality = relationship.cardinality
     else:
-        to_model = declaring
+        to_dataset = declaring
         pairs = [[p[1], p[0]] for p in relationship.join_pairs]
         cardinality = invert_cardinality(relationship.cardinality)
     return OrientedRelationship(
         source_dataset=from_dataset,
-        to=to_model,
+        to=to_dataset,
         join_pairs=pairs,
         join_type=relationship.join_type,
         cardinality=cardinality,
         name=relationship.name,
         declaring_dataset=declaring,
         source_spelling=spellings.get(from_dataset),
-        target_spelling=spellings.get(to_model),
+        target_spelling=spellings.get(to_dataset),
         aliases=relationship.aliases,
     )
 
@@ -326,11 +326,11 @@ def list_child(*, parent: SlayerDataset, field: DatasetField) -> SlayerDataset:
 def with_list_children(datasets_by_name: Dict[str, SlayerDataset]) -> Dict[str, SlayerDataset]:
     """``datasets_by_name`` plus the element child of every list field."""
     out = dict(datasets_by_name)
-    for model in datasets_by_name.values():
-        for column in model.list_fields():
-            name = list_child_name(parent=model.name, field=column.name)
+    for dataset in datasets_by_name.values():
+        for field in dataset.list_fields():
+            name = list_child_name(parent=dataset.name, field=field.name)
             if name not in out:
-                out[name] = list_child(parent=model, field=column)
+                out[name] = list_child(parent=dataset, field=field)
     return out
 
 
@@ -366,9 +366,9 @@ def _hop_target(*, edge: OrientedRelationship, current: SlayerDataset, datasets_
     """The dataset ``edge`` reaches from ``current``; a list child is minted when the map lacks it."""
     target = datasets_by_name.get(edge.to)
     if target is None and edge.lateral is not None and edge.cardinality is RelationshipCardinality.ONE_TO_MANY:
-        column = current.get_field(edge.lateral)
-        if column is not None:
-            return list_child(parent=current, field=column)
+        field = current.get_field(edge.lateral)
+        if field is not None:
+            return list_child(parent=current, field=field)
     return target
 
 
@@ -382,8 +382,8 @@ def is_unrelated_edge(edge: OrientedRelationship) -> bool:
 
 
 def _declared_toward(dataset: SlayerDataset, target: str, *, spine: bool) -> list[DatasetRelationship]:
-    joins = spine_relationships(dataset, datasets_by_name={TIME_SPINE_DATASET: dataset}) if spine else dataset.relationships
-    return [j for j in joins if j.to == target]
+    relationships = spine_relationships(dataset, datasets_by_name={TIME_SPINE_DATASET: dataset}) if spine else dataset.relationships
+    return [j for j in relationships if j.to == target]
 
 
 def edges_between(*, source: SlayerDataset, target: SlayerDataset) -> list[OrientedRelationship]:
@@ -608,11 +608,11 @@ def walk_terminal(
     quoted: Sequence[bool] = (),
 ) -> tuple[SlayerDataset, tuple[str, ...]] | None:
     """``(terminal dataset, canonical path)`` of :func:`walk`, ``None`` where it misses; raises as it does."""
-    models = with_list_children({**datasets_by_name, root.name: datasets_by_name.get(root.name, root)})
-    chain = walk(root=root, path=path, datasets_by_name=models, quoted=quoted)
+    datasets = with_list_children({**datasets_by_name, root.name: datasets_by_name.get(root.name, root)})
+    chain = walk(root=root, path=path, datasets_by_name=datasets, quoted=quoted)
     if chain is None:
         return None
-    return (models[chain[-1].to] if chain else root), canonical_path(chain)
+    return (datasets[chain[-1].to] if chain else root), canonical_path(chain)
 
 
 def follow(
@@ -637,8 +637,8 @@ def _owner_stack(
         return None
     if chain is None:
         return None
-    models = with_list_children(datasets_by_name)
-    return [root, *(models[e.to] for e in chain)]
+    datasets = with_list_children(datasets_by_name)
+    return [root, *(datasets[e.to] for e in chain)]
 
 
 def _incident_named(
@@ -705,27 +705,27 @@ def _cancelling_walk(
     tokens: Sequence[str],
     datasets_by_name: dict[str, SlayerDataset],
 ) -> tuple[tuple[str, ...] | None, tuple[str, str, str] | None]:
-    models = dict(datasets_by_name)
-    models.setdefault(root.name, root)
-    models = with_list_children(models)
-    stack = _owner_stack(root=root, owner_path=owner_path, datasets_by_name=models)
+    datasets = dict(datasets_by_name)
+    datasets.setdefault(root.name, root)
+    datasets = with_list_children(datasets)
+    stack = _owner_stack(root=root, owner_path=owner_path, datasets_by_name=datasets)
     if stack is None:
         return None, None
     path_tokens: list[str] = list(owner_path)
     for token in tokens:
-        edge = _incident_named(current=stack[-1], token=token, datasets_by_name=models)
+        edge = _incident_named(current=stack[-1], token=token, datasets_by_name=datasets)
         if edge is None:
             cancel_at = next((i for i in reversed(range(len(stack))) if stack[i].spelling == token), None)
             if cancel_at is not None:
                 del stack[cancel_at + 1:]
                 del path_tokens[cancel_at:]
                 continue
-            edge = resolve_hop(current=stack[-1], token=token, datasets_by_name=models)
+            edge = resolve_hop(current=stack[-1], token=token, datasets_by_name=datasets)
         if edge is None:
             return None, None
         if any(m.name == edge.to for m in stack):
             return None, (token, edge.to, stack[-1].name)
-        nxt = models.get(edge.to)
+        nxt = datasets.get(edge.to)
         if nxt is None:
             return None, None
         stack.append(nxt)
@@ -736,16 +736,16 @@ def _cancelling_walk(
 def _terminal(
     *, root: SlayerDataset, path: Sequence[str], datasets_by_name: dict[str, SlayerDataset], revisits: bool,
 ) -> SlayerDataset | None:
-    models = dict(datasets_by_name)
-    models.setdefault(root.name, root)
-    models = with_list_children(models)
+    datasets = dict(datasets_by_name)
+    datasets.setdefault(root.name, root)
+    datasets = with_list_children(datasets)
     try:
-        chain, _miss = _walk(root=root, path=path, datasets_by_name=models, revisits=revisits)
+        chain, _miss = _walk(root=root, path=path, datasets_by_name=datasets, revisits=revisits)
     except (AmbiguousRelationshipPathError, CircularRelationshipPathError):
         return None
     if chain is None:
         return None
-    return models.get(chain[-1].to) if chain else root
+    return datasets.get(chain[-1].to) if chain else root
 
 
 def terminal_dataset(

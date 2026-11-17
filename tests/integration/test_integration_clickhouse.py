@@ -809,10 +809,10 @@ class TestClickHouseStatAggregations:
         )
 
     async def test_stddev_pop_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "stddev_pop(total)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "stddev_pop(total)"}],
+        })
         result = await clickhouse_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_stddev_pop"]) == pytest.approx(
@@ -867,10 +867,10 @@ class TestClickHouseStatAggregations:
         ) == pytest.approx(expected, rel=1e-6)
 
     async def test_covar_pop_native_clickhouse(self, clickhouse_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "covar_pop(total, other=customer_id)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "covar_pop(total, other=customer_id)"}],
+        })
         result = await clickhouse_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
@@ -1324,7 +1324,7 @@ class TestClickHouseDecimalPreservation:
     async def test_inferred_decimal_sum_preserves_exact_value(
         self, clickhouse_decimal_env: SlayerQueryEngine, measure, result_key, expected
     ) -> None:
-        query = SlayerQuery(population="decimal_orders", metrics=[{"expression": measure}])
+        query = SlayerQuery.model_validate({"population": "decimal_orders", "metrics": [{"expression": measure}]})
         result = await clickhouse_decimal_env.execute(query=query)
         sql = (await clickhouse_decimal_env.execute(query=query, dry_run=True)).sql
 

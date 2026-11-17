@@ -83,27 +83,27 @@ async def build_resolved_source_bundle(
     for q in [*named_queries.values(), query]:
         _reject_chain_source(spec=q.population, chain=splice_chain)
 
-    source_model = await _resolve_source_spec(
+    source_dataset = await _resolve_source_spec(
         follow_sibling_chain(spec=query.population, named_queries=named_queries),
         storage=storage, data_source=data_source,
     )
 
     # Relationships never cross datasource boundaries: scope the walk by the source
     # dataset's own data_source, falling back to the hint only when it carries none.
-    walk_ds = source_model.data_source or data_source or None
+    walk_ds = source_dataset.data_source or data_source or None
     await _check_spine_spellings(storage=storage, spellings=respelled_spine, data_source=walk_ds)
     spine_clash = walk_ds is not None and (
         await storage.get_dataset(TIME_SPINE_DATASET, data_source=walk_ds)
     ) is not None
     peer_names, peer_edge_names = await _datasource_names(storage=storage, data_source=walk_ds, failures=failures)
     query, named_queries = respelled_stages(query, named_queries, datasets=[*peer_names, TIME_SPINE_DATASET])
-    referenced_models, query_backed = await _referenced_datasets(
-        query=query, source_dataset=source_model, named_queries=named_queries,
+    referenced_datasets, query_backed = await _referenced_datasets(
+        query=query, source_dataset=source_dataset, named_queries=named_queries,
         storage=storage, data_source=walk_ds, chain=splice_chain, spine_clash=spine_clash, failures=failures,
     )
-    source_model = query_host(source_model, query=query)
+    source_dataset = query_host(source_dataset, query=query)
 
-    stage_source_models = await _stage_source_datasets(
+    stage_source_datasets = await _stage_source_datasets(
         named_queries=named_queries, storage=storage, data_source=walk_ds or data_source,
     )
     query_variables = merge_query_variables(
@@ -111,18 +111,18 @@ async def build_resolved_source_bundle(
         stage=query.variables,
         outer=outer_variables,
         # A query-backed root's own defaults layer its spliced stages, not the root.
-        dataset_defaults=None if source_model.source_queries else source_model.query_variables,
+        dataset_defaults=None if source_dataset.source_queries else source_dataset.query_variables,
     )
 
-    ds = await storage.get_datasource(source_model.data_source) if source_model.data_source else None
+    ds = await storage.get_datasource(source_dataset.data_source) if source_dataset.data_source else None
     return ResolvedSourceBundle(
         dialect=dialect_for_ds_type(ds.type if ds else None).sqlglot_name,
         datasource_type=ds.type if ds else None,
-        population=source_model,
-        referenced_datasets=referenced_models,
+        population=source_dataset,
+        referenced_datasets=referenced_datasets,
         named_queries=dict(named_queries),
         query=query,
-        stage_source_datasets=stage_source_models,
+        stage_source_datasets=stage_source_datasets,
         query_variables=query_variables,
         datasource_hint=data_source,
         stage_displays=dict(stage_displays),
@@ -217,12 +217,12 @@ async def _named_components(
     for name in names:
         if name in known:
             continue
-        model = await _frontier_dataset(name=name, all_datasets={}, storage=storage, ds=data_source)
-        if model is None:
+        dataset = await _frontier_dataset(name=name, all_datasets={}, storage=storage, ds=data_source)
+        if dataset is None:
             continue
         fresh = [
             m for m in await _collect_referenced_datasets(
-                source_dataset=model, named_queries={}, storage=storage, data_source=data_source,
+                source_dataset=dataset, named_queries={}, storage=storage, data_source=data_source,
                 failures=failures,
             )
             if m.name not in known
@@ -254,20 +254,20 @@ async def _split_query_backed(
     query_backed: Dict[str, SlayerDataset] = {}
     pending = list(datasets)
     while pending:
-        model = pending.pop(0)
-        if model.name in referenced or model.name in query_backed:
+        dataset = pending.pop(0)
+        if dataset.name in referenced or dataset.name in query_backed:
             continue
-        if not model.source_queries:
-            referenced[model.name] = model
+        if not dataset.source_queries:
+            referenced[dataset.name] = dataset
             pending.extend(m for m in await _named_components(
-                names=definition_heads([model]),
+                names=definition_heads([dataset]),
                 known={*chain, *referenced, *query_backed, *(p.name for p in pending)},
                 storage=storage, data_source=data_source, failures=failures,
             ) if not is_spine(m))
             continue
-        query_backed[model.name] = model
+        query_backed[dataset.name] = dataset
         pending.extend(await _stage_base_components(
-            dataset=model, skip=[*chain, *query_backed], known={*referenced, *query_backed},
+            dataset=dataset, skip=[*chain, *query_backed], known={*referenced, *query_backed},
             storage=storage, data_source=data_source, failures=failures,
         ))
     return list(referenced.values()), query_backed
@@ -320,13 +320,13 @@ async def _preseed_sibling_datasets(
     for sib in named_queries.values():
         spec = follow_sibling_chain(spec=sib.population, named_queries=named_queries)
         try:
-            sib_model = await _resolve_source_spec(
+            sib_dataset = await _resolve_source_spec(
                 spec, storage=storage, data_source=data_source
             )
         except ValueError as exc:
             logger.debug("sibling source resolution failed for %r: %s", spec, exc)
             continue
-        preseeded.setdefault(sib_model.name, sib_model)
+        preseeded.setdefault(sib_dataset.name, sib_dataset)
     return preseeded
 
 
@@ -351,9 +351,9 @@ async def _frontier_dataset(
     ds: Optional[str],
 ) -> Optional[SlayerDataset]:
     """The named dataset, loading it on demand; absent targets resolve to None."""
-    model = all_datasets.get(name)
-    if model is not None:
-        return model
+    dataset = all_datasets.get(name)
+    if dataset is not None:
+        return dataset
     try:
         return await storage.get_dataset(name, data_source=ds)
     except Exception as exc:  # best-effort; absent target is fine
@@ -378,17 +378,17 @@ async def _bfs_connected_component(
         if name in visited:
             continue
         visited.add(name)
-        model = await _frontier_dataset(
+        dataset = await _frontier_dataset(
             name=name, all_datasets=all_datasets, storage=storage, ds=ds,
         )
-        if model is None:
+        if dataset is None:
             continue
-        collected.setdefault(name, model)
+        collected.setdefault(name, dataset)
         frontier.extend(
-            n for n in incident_dataset_names(dataset=model, datasets_by_name={**universe, name: model})
+            n for n in incident_dataset_names(dataset=dataset, datasets_by_name={**universe, name: dataset})
             if n not in visited
         )
-        frontier.extend(_case_ambiguous_targets(dataset=model, universe=universe))
+        frontier.extend(_case_ambiguous_targets(dataset=dataset, universe=universe))
     return collected
 
 
@@ -396,10 +396,10 @@ def _case_ambiguous_targets(*, dataset: SlayerDataset, universe: Dict[str, Slaye
     """The datasets a relationship target of ``dataset`` equals only case-insensitively, when several: a hop through it then
     fails as ambiguous instead of unknown."""
     out: List[str] = []
-    for join in dataset.relationships:
-        if join.to in universe:
+    for relationship in dataset.relationships:
+        if relationship.to in universe:
             continue
-        folded = join.to.casefold()
+        folded = relationship.to.casefold()
         hits = [n for n in universe if n.casefold() == folded]
         out.extend(hits if len(hits) > 1 else [])
     return out
@@ -427,14 +427,14 @@ async def _collect_referenced_datasets(
         storage=storage, data_source=data_source,
     )
     ds = data_source or source_dataset.data_source
-    all_models = await _load_datasource_peers(
+    all_datasets = await _load_datasource_peers(
         preseeded=preseeded, ds=ds, storage=storage, failures=failures,
     )
-    universe = {**all_models, TIME_SPINE_DATASET: source_dataset} if is_spine(source_dataset) else all_models
+    universe = {**all_datasets, TIME_SPINE_DATASET: source_dataset} if is_spine(source_dataset) else all_datasets
     collected = await _bfs_connected_component(
         # The spine reaches every dataset (a query-backed one's axis is known only once spliced).
-        seeds=list(all_models if is_spine(source_dataset) else preseeded),
-        all_datasets=all_models, universe=universe, storage=storage, ds=ds,
+        seeds=list(all_datasets if is_spine(source_dataset) else preseeded),
+        all_datasets=all_datasets, universe=universe, storage=storage, ds=ds,
     )
     ordered = [source_dataset]
     ordered.extend(m for n, m in collected.items() if n != source_dataset.name)
@@ -452,19 +452,19 @@ async def _resolve_source_spec(
         return spine_dataset(data_source=data_source)
     if spec is None:
         raise ValueError("A query without population has no stored source to resolve.")
-    model = await stored_dataset(storage, name=spec, data_source=data_source)
-    if model is None:
+    dataset = await stored_dataset(storage, name=spec, data_source=data_source)
+    if dataset is None:
         raise DatasetNotFoundError(spec)
-    return model
+    return dataset
 
 
 async def stored_dataset(
     storage: "StorageBackend", *, name: str, data_source: Optional[str],
 ) -> Optional[SlayerDataset]:
     """The stored dataset ``name`` reaches (``slayer.core.names.match_name``)."""
-    model = await storage.get_dataset(name, data_source=data_source)
-    if model is not None:
-        return model
+    dataset = await storage.get_dataset(name, data_source=data_source)
+    if dataset is not None:
+        return dataset
     found = match_name(name=name, declared=await storage.list_datasets(data_source=data_source), quoted=False)
     return None if found is None else await storage.get_dataset(found, data_source=data_source)
 
@@ -488,9 +488,9 @@ class _DatasetReadCache:
     ) -> Optional[SlayerDataset]:
         key = (name, data_source)
         if key not in self._models:
-            model = await self._inner.get_dataset(name, data_source=data_source)
-            self._models[key] = model
-            if model is not None:
+            dataset = await self._inner.get_dataset(name, data_source=data_source)
+            self._models[key] = dataset
+            if dataset is not None:
                 # a hint-less read also answers the concrete-datasource key
-                self._models.setdefault((name, model.data_source), model)
+                self._models.setdefault((name, dataset.data_source), dataset)
         return self._models[key]

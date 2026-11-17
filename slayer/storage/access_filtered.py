@@ -68,8 +68,8 @@ class _View(BaseModel):
         return any(cid == prefix or cid.startswith(f"{prefix}.") for cid in hidden)
 
     def pruned(self, dataset: SlayerDataset) -> SlayerDataset:
-        joins = [j for j in dataset.relationships if (dataset.data_source, j.to) not in self.hidden]
-        return dataset if len(joins) == len(dataset.relationships) else dataset.model_copy(update={"relationships": joins})
+        relationships = [j for j in dataset.relationships if (dataset.data_source, j.to) not in self.hidden]
+        return dataset if len(relationships) == len(dataset.relationships) else dataset.model_copy(update={"relationships": relationships})
 
 
 def _prior_tags(dataset: SlayerDataset, *, view: _View) -> list[str]:
@@ -183,8 +183,8 @@ class AccessFilteredStorage(StorageBackend):
         if self._bypass:
             return await self._inner.get_dataset(name, data_source=data_source)
         target = await self._resolve_target_or_none(name, data_source=data_source)
-        model = (await self._view()).datasets.get(target) if target is not None else None
-        return model.model_copy(deep=True) if model is not None else None
+        dataset = (await self._view()).datasets.get(target) if target is not None else None
+        return dataset.model_copy(deep=True) if dataset is not None else None
 
     async def _load_raw_dataset_dict(self, *, name: str, data_source: str) -> dict | None:
         if self._bypass:
@@ -204,9 +204,9 @@ class AccessFilteredStorage(StorageBackend):
         if _validate:
             names = [n for ds, n in view.identities if ds == dataset.data_source]
             check_relationship_target_spellings(dataset, names=names, peers={})
-            for join in dataset.relationships:
-                if (dataset.data_source, join.to) not in view.datasets:
-                    raise UnknownRelationshipTargetError(dataset=dataset.name, target=join.to)
+            for relationship in dataset.relationships:
+                if (dataset.data_source, relationship.to) not in view.datasets:
+                    raise UnknownRelationshipTargetError(dataset=dataset.name, target=relationship.to)
             await self.validate_for_save(dataset, failures=failures)
         merged = self._merged(dataset, view=view)
         try:

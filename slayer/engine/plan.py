@@ -380,20 +380,20 @@ class _StagePlanner:
         if spliced is not None:
             self._check_context(spliced, context)
             return True
-        model = self.bundle.query_backed.get(name)
-        if name in self.inert or model is None:
+        dataset = self.bundle.query_backed.get(name)
+        if name in self.inert or dataset is None:
             return False
-        if model.data_source and model.data_source != self.data_source:
+        if dataset.data_source and dataset.data_source != self.data_source:
             if explicit:
                 raise ValueError(
-                    f"Query-backed dataset {name!r} is in datasource {model.data_source!r}; "
+                    f"Query-backed dataset {name!r} is in datasource {dataset.data_source!r}; "
                     f"a statement reads one datasource ({self.data_source!r})."
                 )
             self.inert.add(name)
             return False
         before = self.state.snapshot()
         try:
-            self._splice(name, dataset=model, chain=(*chain, name), context=context)
+            self._splice(name, dataset=dataset, chain=(*chain, name), context=context)
         except Exception as exc:
             if explicit:
                 raise
@@ -466,9 +466,9 @@ class _StagePlanner:
         return base
 
     def _base_time_dimension(self, name: str) -> Optional[str]:
-        model = self.bundle.query_backed[name]
-        private = {q.name: q for q in model.source_queries or [] if q.name}
-        stages: list[SlayerQuery] = topologically_order_stages(list(model.source_queries or []))
+        dataset = self.bundle.query_backed[name]
+        private = {q.name: q for q in dataset.source_queries or [] if q.name}
+        stages: list[SlayerQuery] = topologically_order_stages(list(dataset.source_queries or []))
         if not stages:
             return None
         spec = follow_sibling_chain(spec=stages[-1].population, named_queries=private)
@@ -479,8 +479,8 @@ class _StagePlanner:
         """The enclosing query-backed datasets' variables, outer ones overriding inner."""
         out: Dict[str, Any] = {}
         for name in reversed(chain):
-            model = self.bundle.query_backed.get(name)
-            out.update(model.query_variables if model is not None else {})
+            dataset = self.bundle.query_backed.get(name)
+            out.update(dataset.query_variables if dataset is not None else {})
         return out
 
     def _context(self, *, chain: Tuple[str, ...]) -> Dict[str, Any]:

@@ -93,9 +93,9 @@ def _expressions(stage: SlayerQuery) -> Iterator[str]:
     yield from (td.field for td in stage.time_dimensions or [] if isinstance(td.field, str))
     yield from stage.filter or []
     yield from (o.raw_expression for o in stage.order or [] if o.raw_expression)
-    for measure in (m for e in stage.extensions or [] for m in e.metrics or []):
-        if measure.expression:
-            yield measure.expression
+    for metric in (m for e in stage.extensions or [] for m in e.metrics or []):
+        if metric.expression:
+            yield metric.expression
 
 
 def query_features(query: Any) -> QueryFeatures:

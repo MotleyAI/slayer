@@ -111,16 +111,16 @@ def _field_for_row_slot(
     if isinstance(key, TimeTruncKey):
         key = key.source
     if isinstance(key, FieldKey):
-        model = _dataset_for_path(bundle=bundle, path=key.path)
+        dataset = _dataset_for_path(bundle=bundle, path=key.path)
         leaf = key.leaf
     elif isinstance(key, FieldSqlKey):
-        model = bundle.get_referenced_dataset(key.dataset) or bundle.population
+        dataset = bundle.get_referenced_dataset(key.dataset) or bundle.population
         leaf = key.field_name
     else:
         return None
-    if model is None:
+    if dataset is None:
         return None
-    return model.get_field(leaf)
+    return dataset.get_field(leaf)
 
 
 def _owning_dataset_for_agg_source(*, src, bundle: ResolvedSourceBundle):
@@ -138,24 +138,24 @@ def _metric_format(
     if isinstance(key, AggregateKey):
         src = key.source
         if isinstance(src, StarKey):
-            measure_name: Optional[str] = "*"
+            metric_name: Optional[str] = "*"
         elif isinstance(src, EXPRESSION_SOURCE_KINDS):
             # An expression source classifies by its aggregation's
             # value class alone (the derived leaf is never a real field, so
             # PRESERVING inherits nothing — plain numeric by default).
-            measure_name = expression_source_leaf(src)
+            metric_name = expression_source_leaf(src)
         else:
-            measure_name = getattr(src, "leaf", None) or getattr(
+            metric_name = getattr(src, "leaf", None) or getattr(
                 src, "field_name", None
             )
-        model = _owning_dataset_for_agg_source(src=src, bundle=bundle)
-        if measure_name is None or model is None:
+        dataset = _owning_dataset_for_agg_source(src=src, bundle=bundle)
+        if metric_name is None or dataset is None:
             return NumberFormat(type=NumberFormatType.FLOAT)
         root = bundle.population
-        column_type = dataset_field_type(dataset=root, datasets_by_name=bundle.datasets_by_name) if root else None
+        field_type = dataset_field_type(dataset=root, datasets_by_name=bundle.datasets_by_name) if root else None
         return _infer_aggregated_format(
-            dataset=model, metric_name=measure_name, aggregation=key.agg,
-            source_type=aggregation_source_type(src, field_type=column_type) if column_type else None,
+            dataset=dataset, metric_name=metric_name, aggregation=key.agg,
+            source_type=aggregation_source_type(src, field_type=field_type) if field_type else None,
         )
     return NumberFormat(type=NumberFormatType.FLOAT)
 
@@ -170,12 +170,12 @@ def _metric_label(
     if isinstance(key, AggregateKey):
         src = key.source
         if isinstance(src, (FieldKey, FieldSqlKey)):
-            model = _owning_dataset_for_agg_source(src=src, bundle=bundle)
+            dataset = _owning_dataset_for_agg_source(src=src, bundle=bundle)
             leaf = getattr(src, "leaf", None) or getattr(
                 src, "field_name", None,
             )
-            if model is not None and leaf is not None:
-                col = model.get_field(leaf)
+            if dataset is not None and leaf is not None:
+                col = dataset.get_field(leaf)
                 if col is not None:
                     return col.label
     return None
@@ -226,12 +226,12 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
             if label or fmt:
                 dim_meta[rk] = FieldMetadata(label=label, format=fmt)
         else:
-            measure_slot = (
+            metric_slot = (
                 slot.model_copy(update={"key": original})
                 if is_combined_placeholder else slot
             )
-            fmt = _metric_format(slot=measure_slot, bundle=bundle)
-            label = _metric_label(slot=measure_slot, bundle=bundle)
+            fmt = _metric_format(slot=metric_slot, bundle=bundle)
+            label = _metric_label(slot=metric_slot, bundle=bundle)
             if label or fmt:
                 metric_meta[rk] = FieldMetadata(label=label, format=fmt)
 

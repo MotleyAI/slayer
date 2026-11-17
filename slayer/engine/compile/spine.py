@@ -77,10 +77,10 @@ def _as_datetime(value: object) -> datetime:
 
 def _bound(conjunct: ArithmeticKey, spine: FieldKey) -> Tuple[str, datetime]:
     """``("lower" | "upper", instant)`` of one frame bound; an upper instant is exclusive."""
-    column, literal = conjunct.operands
+    field, literal = conjunct.operands
     op = conjunct.op
-    if column != spine:
-        column, literal, op = literal, column, _MIRROR[op]
+    if field != spine:
+        field, literal, op = literal, field, _MIRROR[op]
     assert isinstance(literal, LiteralKey)
     value = _as_datetime(literal.value)
     if op in (">=", ">"):
@@ -200,15 +200,15 @@ def check_axis_rebucket(
     spine = spine_field(host)
     if not (isinstance(host_key, TimeTruncKey) and host_key.source == spine and isinstance(rerooted, TimeTruncKey)):
         return
-    column = rerooted.source
-    if not isinstance(column, (FieldKey, FieldSqlKey)):
+    field = rerooted.source
+    if not isinstance(field, (FieldKey, FieldSqlKey)):
         return
-    owner = walk_key_path(dataset=root, path=tuple(column.path), bundle=bundle)
-    leaf = field_leaf(column)
+    owner = walk_key_path(dataset=root, path=tuple(field.path), bundle=bundle)
+    leaf = field_leaf(field)
     col = owner.get_field(leaf) if owner is not None else None
     if col is None or col.granularity is None:
         return
-    name = ".".join((*column.path, leaf))
+    name = ".".join((*field.path, leaf))
     upstream = resolve_granularity(col.granularity, defined=bundle.granularities)
     check_time_dimension_field(
         name=name, field_type=col.datatype, requested_granularity=rerooted.granularity,

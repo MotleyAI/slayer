@@ -142,11 +142,11 @@ def _reads(
     *, agg: str, definition: Optional[Aggregation], bundle: ResolvedSourceBundle,
 ) -> frozenset[str]:
     """The parameters ``agg`` reads, its expression parsed (an invalid one fails here)."""
-    formula = rendered_expression(agg=agg, definition=definition)
-    if formula is None:
+    expression = rendered_expression(agg=agg, definition=definition)
+    if expression is None:
         return frozenset(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
     try:
-        return sql_template(text=formula, dialect=bundle.dialect).placeholder_names
+        return sql_template(text=expression, dialect=bundle.dialect).placeholder_names
     except SqlTemplateError as e:
         raise SqlTemplateError(f"Aggregation '{agg}': {e}") from e
 

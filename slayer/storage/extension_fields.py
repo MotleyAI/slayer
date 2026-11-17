@@ -162,23 +162,23 @@ class _Stage:
             text = extension_field_text(raw, owner=owner, what=what)
         except ValueError as exc:
             raise UnconvertibleStoredQueryError(str(exc)) from exc
-        model = self.scope.datasets[owner]
+        dataset = self.scope.datasets[owner]
         stored = owner not in self.scope.siblings
         if raw.get("sql") is None:
-            if stored and not _visible(model, name):
+            if stored and not _visible(dataset, name):
                 raise UnconvertibleStoredQueryError(f"{what}, which names no visible field of {owner!r}")
             return _ExtensionField(owner=owner, name=name, tree=Ref(name=name), derived=False, label=raw.get("label"))
-        if stored and model.get_field(name) is not None:
+        if stored and dataset.get_field(name) is not None:
             raise UnconvertibleStoredQueryError(f"{what}, named like a field of {owner!r}")
         return _ExtensionField(owner=owner, name=name, tree=parse_expr(text), derived=True, label=raw.get("label"))
 
     def _check_relationship_keys(self, extension: dict) -> None:
         owner = self._owner(extension.get("source_name"))
-        for join in (j for j in extension.get("relationships") or [] if isinstance(j, dict)):
-            target = join.get("to")
+        for relationship in (j for j in extension.get("relationships") or [] if isinstance(j, dict)):
+            target = relationship.get("to")
             target_owner = (self._dataset_named(target, quoted=False) or target) if isinstance(target, str) else target
             if any((owner, pair[0]) in self.fields or (target_owner, pair[1]) in self.fields
-                   for pair in join.get("join_pairs") or []):
+                   for pair in relationship.get("join_pairs") or []):
                 raise UnconvertibleStoredQueryError(f"an extension relationship of {owner!r} keyed on an extension field")
 
     # -- resolution ----------------------------------------------------------
@@ -189,12 +189,12 @@ class _Stage:
         start = self._start(hops, leaf=leaf, quoted=quoted, root=root)
         if start is None:
             return None
-        prefix, model, rest = start
-        resolved = self.scope.resolve(rest, root=model) if rest else ((), [])
+        prefix, dataset, rest = start
+        resolved = self.scope.resolve(rest, root=dataset) if rest else ((), [])
         if resolved is None:
             return None
         path, chain = resolved
-        owner = chain[-1].to if chain else model.name
+        owner = chain[-1].to if chain else dataset.name
         name = self._field_named(owner, leaf=leaf, quoted=quoted[-1])
         return ((*prefix, *path), (owner, name)) if name is not None else None
 
@@ -203,9 +203,9 @@ class _Stage:
         own = [n for o, n in self.fields if o == owner]
         if not own:
             return None
-        model = self.scope.datasets.get(owner)
+        dataset = self.scope.datasets.get(owner)
         try:
-            found = match_name(name=leaf, declared=[*own, *(c.name for c in model.fields)] if model else own,
+            found = match_name(name=leaf, declared=[*own, *(c.name for c in dataset.fields)] if dataset else own,
                                quoted=quoted)
         except AmbiguousReferenceError as exc:
             raise UnconvertibleStoredQueryError(f"a reference {leaf!r} that matches several fields of "
@@ -231,13 +231,13 @@ class _Stage:
         """Field ``key``'s expression with every extension field it reads expanded, read from its owner."""
         if key in self._expanded:
             return self._expanded[key]
-        column = self.fields[key]
-        if not column.derived:
-            return column.tree
+        field = self.fields[key]
+        if not field.derived:
+            return field.tree
         if key in self._visiting:
             raise UnconvertibleStoredQueryError(f"a dependency cycle among extension fields through {key[1]!r}")
         self._visiting.add(key)
-        tree = self._inlined(column.tree, root=self.scope.datasets[column.owner])
+        tree = self._inlined(field.tree, root=self.scope.datasets[field.owner])
         self._visiting.discard(key)
         self._expanded[key] = tree
         return tree
@@ -340,8 +340,8 @@ class _Stage:
 
 
 def _visible(dataset: SlayerDataset, name: str) -> bool:
-    column = dataset.get_field(name)
-    return column is not None and not column.hidden
+    field = dataset.get_field(name)
+    return field is not None and not field.hidden
 
 
 def _parts(ref: Any) -> Tuple[str, ...]:

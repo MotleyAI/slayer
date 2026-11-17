@@ -238,12 +238,12 @@ class TestExpressionSql:
         assert any("amount_cost_sum" in col for col in resp.columns)
 
     async def test_stage_scope_expression(self) -> None:
-        stage1 = SlayerQuery(
-            name="stage1",
-            population="orders",
-            dimensions=["status"],
-            metrics=[{"expression": "sum(amount - cost)"}],
-        )
+        stage1 = SlayerQuery.model_validate({
+            "name": "stage1",
+            "population": "orders",
+            "dimensions": ["status"],
+            "metrics": [{"expression": "sum(amount - cost)"}],
+        })
         root = SlayerQuery.model_validate({
             "population": "stage1",
             "dimensions": ["status"],

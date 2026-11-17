@@ -301,10 +301,10 @@ class InspectService:
 
     async def _load_visible_datasets(self, ds_name: str) -> list[SlayerDataset]:
         """Visible, name-sorted datasets of one datasource, built-in datasets included."""
-        models = await load_visible_datasets(self._storage, ds_name)
-        models.extend(await self._storage.builtin_datasets(ds_name))
-        models.sort(key=lambda m: m.name)
-        return models
+        datasets = await load_visible_datasets(self._storage, ds_name)
+        datasets.extend(await self._storage.builtin_datasets(ds_name))
+        datasets.sort(key=lambda m: m.name)
+        return datasets
 
     async def _inspect_collection_dataset(
         self,
@@ -353,14 +353,14 @@ class InspectService:
         descriptions_max_chars: int | None,
     ) -> str:
         entries: list[dict[str, Any]] = []
-        for ds, models in groups:
-            if models is None:
+        for ds, datasets in groups:
+            if datasets is None:
                 entries.append(
                     {"data_source": ds, "error": "invalid config", "datasets": []}
                 )
             else:
                 entries.append(json.loads(render_datasets_summary(
-                    datasource_name=ds, datasets=models, fmt="json",
+                    datasource_name=ds, datasets=datasets, fmt="json",
                     compact=False, descriptions_max_chars=descriptions_max_chars,
                 )))
         return json.dumps({
@@ -377,12 +377,12 @@ class InspectService:
         descriptions_max_chars: int | None,
     ) -> str:
         blocks: list[str] = []
-        for ds, models in groups:
-            if models is None:
+        for ds, datasets in groups:
+            if datasets is None:
                 blocks.append(f"Datasource '{ds}' has an invalid config.")
                 continue
             blocks.append(render_datasets_summary(
-                datasource_name=ds, datasets=models, fmt="markdown",
+                datasource_name=ds, datasets=datasets, fmt="markdown",
                 compact=False, descriptions_max_chars=descriptions_max_chars,
             ))
         return BLOCK_SEP.join(blocks)
@@ -604,9 +604,9 @@ class InspectService:
                 })
             return self._markdown_with_warnings(trunc_desc or "", warnings)
 
-        models = await self._load_visible_datasets(ds_name)
+        datasets = await self._load_visible_datasets(ds_name)
         granularities = [g.model_dump(mode="json") for g in (cfg.granularities if cfg is not None else [])]
-        saved = saved_queries_index(models, max_chars=descriptions_max_chars)
+        saved = saved_queries_index(datasets, max_chars=descriptions_max_chars)
 
         if fmt == "json":
             return json.dumps({
@@ -618,7 +618,7 @@ class InspectService:
                     dataset_skeleton_fields(
                         dataset=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
                     )
-                    for m in models
+                    for m in datasets
                 ],
                 "warnings": warnings,
             }, indent=2, default=str)
@@ -630,7 +630,7 @@ class InspectService:
             md_lines.append("Custom granularities: " + ", ".join(
                 f"`{g['name']}` ({g['multiple']} × {g['base']} from {g['origin']})" for g in granularities
             ))
-        for m in models:
+        for m in datasets:
             md_lines.append(f"\n## `{m.name}`")
             md_lines.append(
                 render_dataset_skeleton(
@@ -666,9 +666,9 @@ class InspectService:
                 f"datasource-qualified dataset id (e.g. '<ds>.<dataset>') or a "
                 f"bare dataset name."
             ))
-        ds_name, model_name = canonical.split(".", 1)
-        model = await self._storage.get_dataset_or_builtin(model_name, data_source=ds_name)
-        if model is None:
+        ds_name, dataset_name = canonical.split(".", 1)
+        dataset = await self._storage.get_dataset_or_builtin(dataset_name, data_source=ds_name)
+        if dataset is None:
             return _OneResult(None, True, (
                 f"Dataset '{canonical}' not found "
                 f"(reference '{reference}')."
@@ -677,10 +677,10 @@ class InspectService:
             # DB-free skeleton; short-circuits the full renderer's DB work.
             saved_queries = saved_queries_index(
                 await self._load_visible_datasets(ds_name), max_chars=descriptions_max_chars,
-            ).get(model.name)
+            ).get(dataset.name)
             if fmt == "json":
                 payload = dict(dataset_skeleton_fields(
-                    dataset=model, max_chars=descriptions_max_chars, saved_queries=saved_queries,
+                    dataset=dataset, max_chars=descriptions_max_chars, saved_queries=saved_queries,
                 ))
                 payload["canonical_id"] = canonical
                 payload["entity_type"] = "dataset"
@@ -689,13 +689,13 @@ class InspectService:
                     canonical, False, json.dumps(payload, indent=2, default=str),
                 )
             body = render_dataset_skeleton(
-                dataset=model, max_chars=descriptions_max_chars, saved_queries=saved_queries,
+                dataset=dataset, max_chars=descriptions_max_chars, saved_queries=saved_queries,
             )
             return _OneResult(canonical, False, self._markdown_with_warnings(
-                f"# `{model.name}`\n{body}", warnings,
+                f"# `{dataset.name}`\n{body}", warnings,
             ))
         rendered = await render_dataset_inspection(
-            dataset=model,
+            dataset=dataset,
             storage=self._storage,
             engine=self._engine,
             num_rows=num_rows,
@@ -761,19 +761,19 @@ class InspectService:
                 f"'{reference}' resolved to '{canonical}', which is not a "
                 f"{entity_type} (expected a '<ds>.<dataset>.<leaf>' id)."
             ))
-        ds_name, model_name, leaf = canonical.split(".", 2)
-        model = await self._storage.get_dataset(model_name, data_source=ds_name)
-        if model is None:
+        ds_name, dataset_name, leaf = canonical.split(".", 2)
+        dataset = await self._storage.get_dataset(dataset_name, data_source=ds_name)
+        if dataset is None:
             return _OneResult(None, True, (
-                f"Dataset '{ds_name}.{model_name}' not found "
+                f"Dataset '{ds_name}.{dataset_name}' not found "
                 f"(reference '{reference}')."
             ))
 
-        model =await self._maybe_refresh_leaf_sample(
-            dataset=model, entity_type=entity_type, compact=compact, leaf=leaf,
+        dataset =await self._maybe_refresh_leaf_sample(
+            dataset=dataset, entity_type=entity_type, compact=compact, leaf=leaf,
         )
 
-        pairs = collect_dataset_entity_pairs(dataset=model, include_hidden=True)
+        pairs = collect_dataset_entity_pairs(dataset=dataset, include_hidden=True)
         matches = [
             p for p in pairs
             if p.canonical_id == canonical and p.kind == entity_type
@@ -788,7 +788,7 @@ class InspectService:
             return _OneResult(canonical, False, body)
         return _OneResult(canonical, True, self._leaf_lookup_error(
             canonical=canonical, entity_type=entity_type, leaf=leaf,
-            ds_name=ds_name, dataset_name=model_name, pairs=pairs,
+            ds_name=ds_name, dataset_name=dataset_name, pairs=pairs,
             match_count=len(matches),
         ))
 

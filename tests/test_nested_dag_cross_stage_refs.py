@@ -1286,12 +1286,12 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 "dimensions": ["customers.regions.name"],
                 "metrics": [{"expression": "sum(customers.revenue)"}],
             })
-            outer = SlayerQuery(
-                population="s1",
-                dimensions=["customers__regions__name"],
-                distinct_dimension_values=False,
-                order=[{"field": "customers__revenue_sum"}],
-            )
+            outer = SlayerQuery.model_validate({
+                "population": "s1",
+                "dimensions": ["customers__regions__name"],
+                "distinct_dimension_values": False,
+                "order": [{"field": "customers__revenue_sum"}],
+            })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
             outer_select = _outermost_select(sql)
@@ -1328,12 +1328,12 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
                 "dimensions": ["customers.regions.name"],
                 "metrics": [{"expression": "sum(customers.revenue)"}],
             })
-            outer = SlayerQuery(
-                population="s1",
-                dimensions=["customers__regions__name"],
-                distinct_dimension_values=False,
-                order=[{"field": "s1.customers__revenue_sum"}],
-            )
+            outer = SlayerQuery.model_validate({
+                "population": "s1",
+                "dimensions": ["customers__regions__name"],
+                "distinct_dimension_values": False,
+                "order": [{"field": "s1.customers__revenue_sum"}],
+            })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
             order = _outermost_select(sql).args.get("order")

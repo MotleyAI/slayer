@@ -179,9 +179,9 @@ class TestNamedEdgeValidationConsumers:
         self, named_engine,
     ) -> None:
         await self._augment_customers(named_engine)
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "billing_customer.total_b", "name": "r"}])
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "billing_customer.total_b", "name": "r"}]})
         # A second ``orders`` occurrence over every order (10 + 20 + 30), as from ``customers``.
         resp = await named_engine.execute(query)
         assert resp.data[0]["orders.r"] == 60.0

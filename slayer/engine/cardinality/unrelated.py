@@ -86,8 +86,8 @@ def stamp_unrelated(
 ) -> SlayerDataset:
     """``host`` as ``query``'s population, carrying the unrelated datasets the frame names
     among the bundle's datasets plus ``extra`` (unspliced query-backed placeholders)."""
-    models = {**bundle.datasets_by_name, **{m.name: m for m in extra}}
-    found = unrelated_targets(host=host, names=first_hop_names(query), datasets_by_name=models)
+    datasets = {**bundle.datasets_by_name, **{m.name: m for m in extra}}
+    found = unrelated_targets(host=host, names=first_hop_names(query), datasets_by_name=datasets)
     return host.with_unrelated(found) if found != host.unrelated_datasets else host
 
 
@@ -104,11 +104,11 @@ class ProductSides:
     """Which side of each product hop a population's references read, by dependency closure (engine P10)."""
 
     def __init__(self, *, host: SlayerDataset, bundle: ResolvedSourceBundle) -> None:
-        models = bundle.datasets_by_name
+        datasets = bundle.datasets_by_name
         self.host = host
         self.bundle = bundle
         # A product hop's canonical token is its target's spelling.
-        self.tokens = {models[n].spelling: n for n in host.unrelated_datasets if n in models}
+        self.tokens = {datasets[n].spelling: n for n in host.unrelated_datasets if n in datasets}
 
     def crossed(self, leaf: ValueKey) -> frozenset[str]:
         """The spellings of the unrelated datasets ``leaf``'s dependency closure reaches."""

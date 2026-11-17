@@ -60,10 +60,10 @@ def elaborate_query(
             stage_schemas=stage_schemas,
         )
     if isinstance(scope, DatasetScope) and scope.population is not None:
-        models = bundle.datasets_by_name
+        datasets = bundle.datasets_by_name
         with unobserved():
-            for model in datasets_read_closure(query, host=scope.population, datasets=list(models.values())):
-                check_dataset_filters(dataset=model, reachable=models)
+            for dataset in datasets_read_closure(query, host=scope.population, datasets=list(datasets.values())):
+                check_dataset_filters(dataset=dataset, reachable=datasets)
     sides = ProductSides(host=scope.population, bundle=bundle) if isinstance(scope, DatasetScope) and (
         scope.population is not None) else None
     crossing = crossing_local_root_predicate(scope=scope, bundle=bundle)
@@ -138,7 +138,7 @@ def _environment_fields(
     stage_schemas: Dict[str, StageSchema],
 ) -> Dict[str, Any]:
     dim_keys, row_agg_set = position_typing_context(prebound)
-    model = scope.population if isinstance(scope, DatasetScope) else None
+    dataset = scope.population if isinstance(scope, DatasetScope) else None
     home_roots = [
         *(dm.bound.value_key for dm in prebound.declared_metrics),
         *(bf.value_key for bf in prebound.bound_filters),
@@ -149,7 +149,7 @@ def _environment_fields(
         n_dims=prebound.n_dims, n_time_dimensions=prebound.n_time_dimensions,
     )
     home_paths = resolve_aggregate_homes(
-        roots=home_roots, host_dataset=model,
+        roots=home_roots, host_dataset=dataset,
         datasets_by_name=bundle.datasets_by_name, bundle=bundle,
         dim_keys=[dm.bound.value_key for dm in dim_dms],
         td_keys=[dm.bound.value_key for dm in td_dms],
@@ -157,7 +157,7 @@ def _environment_fields(
     )
     env = build_environment(
         prebound=prebound,
-        home=home_dataset(scope=scope, dataset=model),
+        home=home_dataset(scope=scope, dataset=dataset),
         dim_keys=dim_keys,
         row_agg_set=row_agg_set,
         filter_typings=filter_typings,

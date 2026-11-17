@@ -879,10 +879,10 @@ class TestPostgresStatAggregations:
         )
 
     async def test_stddev_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "stddev_pop(total)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "stddev_pop(total)"}],
+        })
         result = await pg_env.execute(query=query)
         amounts = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         assert float(result.data[0]["orders.total_stddev_pop"]) == pytest.approx(
@@ -939,10 +939,10 @@ class TestPostgresStatAggregations:
         ) == pytest.approx(expected, rel=1e-9)
 
     async def test_covar_pop_native_postgres(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "covar_pop(total, other=customer_id)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "covar_pop(total, other=customer_id)"}],
+        })
         result = await pg_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]
@@ -1180,10 +1180,10 @@ class TestPostgresDev1576Heals:
     async def test_round_one_arg_over_double_executes(
         self, pg_env: SlayerQueryEngine,
     ) -> None:
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "round(sum(amount_d) / 8.0)", "name": "r"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "round(sum(amount_d) / 8.0)", "name": "r"}],
+        })
         result = await pg_env.execute(query=query)
         assert float(result.data[0]["orders.r"]) == pytest.approx(109.0)
 
@@ -1203,10 +1203,10 @@ class TestPostgresDev1576Heals:
         assert result.data[0]["orders.status_count_distinct"] == 3
 
     async def test_stddev_alias_executes(self, pg_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "stddev(total)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "stddev(total)"}],
+        })
         result = await pg_env.execute(query=query)
         # Sample stddev of [100,200,50,150,75,300] (mean 145.83) ≈ 92.76.
         assert float(result.data[0]["orders.total_stddev_samp"]) == pytest.approx(

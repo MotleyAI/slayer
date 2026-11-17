@@ -399,11 +399,11 @@ class TestVirtualModelColumns:
             m = SlayerDataset(
                 name="qb_with_declared_type",
                 data_source="ds",
-                source_queries=[SlayerQuery(
-                    population="orders",
-                    metrics=[{"expression": "adjusted_total"}],
-                    dimensions=["status"],
-                )],
+                source_queries=[SlayerQuery.model_validate({
+                    "population": "orders",
+                    "metrics": [{"expression": "adjusted_total"}],
+                    "dimensions": ["status"],
+                })],
             )
             saved = await engine.save_dataset(m)
             col = next(c for c in saved.fields if c.name == "adjusted_total")
@@ -439,14 +439,14 @@ class TestVirtualModelColumns:
             m = SlayerDataset(
                 name="qb_saved_measure_type",
                 data_source="ds",
-                source_queries=[SlayerQuery(
-                    population="orders",
+                source_queries=[SlayerQuery.model_validate({
+                    "population": "orders",
                     # Bare-ref + explicit ``name="rounded_total"`` keeps
                     # the column alias as the user-chosen name so the
                     # test can look it up unambiguously.
-                    metrics=[{"expression": "rounded_total", "name": "rounded_total"}],
-                    dimensions=["status"],
-                )],
+                    "metrics": [{"expression": "rounded_total", "name": "rounded_total"}],
+                    "dimensions": ["status"],
+                })],
             )
             saved = await engine.save_dataset(m)
             col = next(c for c in saved.fields if c.name == "rounded_total")

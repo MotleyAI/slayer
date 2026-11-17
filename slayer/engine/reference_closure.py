@@ -281,14 +281,14 @@ def _definition_ref(
 ) -> Optional[ValueKey]:
     """One definition reference as an anchor-relative field key, else ``None``."""
     hops = quals[1:] if quals[:1] == (owner.name,) else quals
-    models = {**bundle.datasets_by_name, owner.name: owner}
+    datasets = {**bundle.datasets_by_name, owner.name: owner}
     try:
-        chain = walk(root=owner, path=hops, datasets_by_name=models)
+        chain = walk(root=owner, path=hops, datasets_by_name=datasets)
     except (AmbiguousRelationshipPathError, CircularRelationshipPathError):
         return None
     if chain is None:
         return None
-    target = models.get(chain[-1].to) if chain else owner
+    target = datasets.get(chain[-1].to) if chain else owner
     path = (*key.path, *canonical_path(chain))
     if target is owner and leaf == col.name:
         return FieldKey(path=path, leaf=leaf)  # a filter reading its own physical column

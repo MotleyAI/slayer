@@ -104,9 +104,9 @@ def safe_reachable(
     if chain is None:
         return False
     for edge in chain:
-        target_model = datasets_by_name.get(edge.to)
-        if target_model is None or not provably_to_one(
-            edge=edge, target_dataset=target_model
+        target_dataset = datasets_by_name.get(edge.to)
+        if target_dataset is None or not provably_to_one(
+            edge=edge, target_dataset=target_dataset
         ):
             return False
     return True
@@ -142,14 +142,14 @@ def audit_relationship_safety(
     The forward-unproven edges carry their consequence and remedies;
     data-contradicted declarations are appended as separate error findings."""
     # Relationships resolve within the parent dataset's datasource — no cross-datasource shadowing.
-    models_by_key = {(m.data_source, m.name): m for m in datasets}
+    datasets_by_key = {(m.data_source, m.name): m for m in datasets}
     findings: list[RelationshipSafetyFinding] = []
-    for model in datasets:
-        for join in model.relationships:
-            target = models_by_key.get((model.data_source, join.to))
+    for dataset in datasets:
+        for relationship in dataset.relationships:
+            target = datasets_by_key.get((dataset.data_source, relationship.to))
             if target is not None:
-                findings.extend(_key_findings(dataset=model, relationship=join, target=target))
-                findings.append(_edge_finding(dataset=model, relationship=join, target=target))
+                findings.extend(_key_findings(dataset=dataset, relationship=relationship, target=target))
+                findings.append(_edge_finding(dataset=dataset, relationship=relationship, target=target))
     if detection is not None:
         findings.extend(
             _contradiction_finding(finding)
@@ -261,11 +261,11 @@ def _route_via_common_prefix(
     longest common prefix — the reversed per-hop tokens of ``target_path`` past
     it — then forward along ``host_path``'s own suffix (an empty ``host_path`` gives
     the reverse path back to the host); an ambiguous reverse hop propagates."""
-    host_model = datasets_by_name.get(host_name)
-    host_token = host_model.spelling if host_model is not None else host_name
-    if host_model is None or not target_path:
+    host_dataset = datasets_by_name.get(host_name)
+    host_token = host_dataset.spelling if host_dataset is not None else host_name
+    if host_dataset is None or not target_path:
         return (host_token, *host_path)
-    chain = follow(root=host_model, path=target_path, datasets_by_name=datasets_by_name)
+    chain = follow(root=host_dataset, path=target_path, datasets_by_name=datasets_by_name)
     if chain is None:
         return (host_token, *host_path)
     cp = _common_prefix_len(target_path, host_path)
@@ -571,9 +571,9 @@ def assert_partition_key_attributable(
     host_m = scope.population if isinstance(scope, DatasetScope) else None
     if host_m is None:
         return
-    models_by_name = bundle.datasets_by_name
+    datasets_by_name = bundle.datasets_by_name
     hp = key_host_path(pk)
-    if crosses_product_hop(host=host_m, path=hp, datasets_by_name=models_by_name):
+    if crosses_product_hop(host=host_m, path=hp, datasets_by_name=datasets_by_name):
         return  # a row-level read across a product hop: the checker refuses it (Axiom 3.1)
     if not hp:
         # Path-less derived key: a fan from its own host is a mode-invariant safety
@@ -585,12 +585,12 @@ def assert_partition_key_attributable(
         host_name = host_m.name if target else None
     attributable = key_attributable_from_root(
         key=pk, target_path=target, root_dataset=root,
-        datasets_by_name=models_by_name, bundle=bundle, host_dataset=host_m,
+        datasets_by_name=datasets_by_name, bundle=bundle, host_dataset=host_m,
         host_name=host_name,
     )
     reason = None if attributable else key_broadcast_reason(
         key=pk, target_path=target, root_dataset=root,
-        datasets_by_name=models_by_name, bundle=bundle, host_dataset=host_m,
+        datasets_by_name=datasets_by_name, bundle=bundle, host_dataset=host_m,
         host_name=host_name,
     )
     check_partition_key_attributable(
@@ -613,12 +613,12 @@ def shared_relationship_key_reroot(
         )
     except AmbiguousRelationshipPathError:
         return None
-    root_model = datasets_by_name.get(edge.to) if edge is not None else None
-    if edge is None or root_model is None:
+    root_dataset = datasets_by_name.get(edge.to) if edge is not None else None
+    if edge is None or root_dataset is None:
         return None
     for src, tgt in edge.join_pairs:
         if src == leaf:
-            return field_default_key(path=(), leaf=tgt, base=root_model)
+            return field_default_key(path=(), leaf=tgt, base=root_dataset)
     return None
 
 
@@ -835,7 +835,7 @@ def crossing_local_root_predicate(
     *, scope: DatasetScope | StageSchema, bundle: ResolvedSourceBundle,
 ) -> Callable[[ValueKey], bool]:
     """Predicate for a LOCAL plain aggregate whose inputs cross a relationship (desugars onto a HOST-rooted producer); windowed / ranked roots excluded."""
-    host_model = scope.population if isinstance(scope, DatasetScope) else None
+    host_dataset = scope.population if isinstance(scope, DatasetScope) else None
 
     def _pred(k: ValueKey) -> bool:
         return (
@@ -848,8 +848,8 @@ def crossing_local_root_predicate(
             and k.locus != "host"
             and window_kwarg_of(k) is None
             and not is_ranked(k)
-            and host_model is not None
-            and _crosses(k, host=host_model)
+            and host_dataset is not None
+            and _crosses(k, host=host_dataset)
         )
 
     def _crosses(k: AggregateKey, *, host: SlayerDataset) -> bool:

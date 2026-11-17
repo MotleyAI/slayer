@@ -1290,30 +1290,30 @@ class SQLGenerator:
         self, planned_query, *, bundle: ResolvedSourceBundle, as_cte_body: bool = False, producer_kernel=None,
     ) -> exp.Select:
         """Compose one planned query with its root's field types in reach of alias-mode renders."""
-        source_model = bundle.population
-        if source_model is None:
+        source_dataset = bundle.population
+        if source_dataset is None:
             raise ValueError(
                 "generate_from_planned requires bundle.source_model to be set",
             )
-        model_types = dataset_field_type(dataset=source_model, datasets_by_name=bundle.datasets_by_name)
+        dataset_types = dataset_field_type(dataset=source_dataset, datasets_by_name=bundle.datasets_by_name)
         placeholders = {
             sub.placeholder: dt
             for attach in planned_query.regroup_attach_plans
             for sub in attach.substitutions
-            if (dt := temporal_type(sub.original_key, field_type=model_types) or (
-                DataType.ARRAY if list_valued(sub.original_key, field_type=model_types) else None
+            if (dt := temporal_type(sub.original_key, field_type=dataset_types) or (
+                DataType.ARRAY if list_valued(sub.original_key, field_type=dataset_types) else None
             )) is not None
         }
-        model_elements = dataset_field_element(dataset=source_model, datasets_by_name=bundle.datasets_by_name)
+        dataset_elements = dataset_field_element(dataset=source_dataset, datasets_by_name=bundle.datasets_by_name)
         elements = {
             sub.placeholder: element
             for attach in planned_query.regroup_attach_plans
             for sub in attach.substitutions
-            if (element := list_element_type(sub.original_key, field_type=model_types,
-                                             field_element=model_elements)) is not None
+            if (element := list_element_type(sub.original_key, field_type=dataset_types,
+                                             field_element=dataset_elements)) is not None
         }
         self._gen_placeholder_types.append((placeholders, elements))
-        self._gen_column_types.append(lambda key: placeholders.get(key) or model_types(key))
+        self._gen_column_types.append(lambda key: placeholders.get(key) or dataset_types(key))
         # The outermost spine render declares every sequence CTE rendered within it (nested producers included).
         owns_spine = planned_query.spine is not None and not self._gen_spines
         outer_spine_ctes = self._gen_spine_ctes
@@ -1353,7 +1353,7 @@ class SQLGenerator:
     ) -> exp.Select:
         """Compose a typed ``PlannedQuery`` as one statement AST."""
 
-        source_model = bundle.population
+        source_dataset = bundle.population
         source_relation = planned_query.source_relation
         spine_mark = len(self._gen_spine_ctes)
 
@@ -1415,7 +1415,7 @@ class SQLGenerator:
         ) = self._build_base_select_for_planned(
             planned_query=planned_query,
             bundle=bundle,
-            source_dataset=source_model,
+            source_dataset=source_dataset,
             source_relation=source_relation,
             base_render_order=base_render_order,
             slots_by_id=slots_by_id,
@@ -1426,7 +1426,7 @@ class SQLGenerator:
         where_clause, having_clause = self._build_where_having_from_planned(
             planned_query=planned_query,
             source_relation=source_relation,
-            source_dataset=source_model,
+            source_dataset=source_dataset,
             bundle=bundle,
             aliases_by_slot_id=aliases_by_slot_id,
             regroup_env=regroup_env,
@@ -1436,7 +1436,7 @@ class SQLGenerator:
         if where_clause is not None:
             base_select = base_select.where(where_clause)
         for cond in self._semi_join_exists_conditions(
-            planned_query=planned_query, source_dataset=source_model,
+            planned_query=planned_query, source_dataset=source_dataset,
             source_relation=source_relation, bundle=bundle,
         ):
             base_select = base_select.where(cond)
@@ -1485,7 +1485,7 @@ class SQLGenerator:
                     planned_query=planned_query,
                     source_relation=source_relation,
                     slots_by_id=slots_by_id,
-                    source_dataset=source_model,
+                    source_dataset=source_dataset,
                     bundle=bundle,
                     aliases_by_slot_id=aliases_by_slot_id,
                 )
@@ -1505,7 +1505,7 @@ class SQLGenerator:
             tail_phase="base",
             planned_query=planned_query,
             bundle=bundle,
-            source_dataset=source_model,
+            source_dataset=source_dataset,
             source_relation=source_relation,
             slots_by_id=slots_by_id,
             regroup_env=regroup_env,
@@ -2444,7 +2444,7 @@ class SQLGenerator:
             ),
             src_leaf="_w_value",
         )
-        formula = rendered_expression(agg=key.agg, definition=definition)
+        expression = rendered_expression(agg=key.agg, definition=definition)
         if isinstance(key.source, StarKey):
             # ``*`` is only legal with count (as in the plain path); any other
             # aggregation over the star would silently become ``<agg>(1)``.
@@ -2456,7 +2456,7 @@ class SQLGenerator:
             # ``count(*)`` takes no inputs but its own ``window=`` (plain-path guard);
             # a stray arg/kwarg would otherwise be projected and silently ignored.
             extra_kwargs = [(k, v) for k, v in key.kwargs if k != "window"]
-            if key.args or (extra_kwargs and not formula):
+            if key.args or (extra_kwargs and not expression):
                 raise ValueError(
                     f"'count(*)' takes no args or kwargs other than window; got "
                     f"args={key.args!r}, kwargs={extra_kwargs!r}."
@@ -2627,9 +2627,9 @@ class SQLGenerator:
             alias=full_agg_alias,
             dataset_name="_src",
             type=agg_slot.type,
-            expression=formula,
+            expression=expression,
             agg_kwargs=self._agg_param_exprs(
-                key=key, expression=formula, resolved=picked_kwarg_exprs, scope=src_scope,
+                key=key, expression=expression, resolved=picked_kwarg_exprs, scope=src_scope,
             ),
             input_type=aggregation_source_type(key.source, field_type=src_scope.field_type),
         )
@@ -2801,15 +2801,15 @@ class SQLGenerator:
                 f"non-aggregate slot.",
             )
 
-        root_model = host_source_dataset
+        root_dataset = host_source_dataset
         root_relation = host_source_relation
 
         allocator = self._gen_allocator or self._new_allocator()
-        self._reserve_dataset_field_names(allocator, root_model)
+        self._reserve_dataset_field_names(allocator, root_dataset)
 
         def _frame(*, attached=None) -> ScopeFrame:
             return self._scope_frame(
-                dataset=root_model, relation=root_relation,
+                dataset=root_dataset, relation=root_relation,
                 bundle=bundle, allocator=allocator, attached_fields=attached,
             )
 
@@ -2839,7 +2839,7 @@ class SQLGenerator:
                 )
             else:
                 expr = self._ranked_scope_expr(
-                    key=member.ranked_key, root_dataset=root_model,
+                    key=member.ranked_key, root_dataset=root_dataset,
                     root_relation=root_relation, bundle=bundle, scope=ranked_scope,
                 )
             # PARTITION BY takes the raw expression (evaluated in the ranked scope where its joins bind); the outer
@@ -2857,7 +2857,7 @@ class SQLGenerator:
             ))
 
         value_expr = self._ranked_value_expr(
-            key=local_key, root_dataset=root_model,
+            key=local_key, root_dataset=root_dataset,
             root_relation=root_relation, bundle=bundle, scope=ranked_scope,
         )
         # A FILTER ranks the passing rows first and picks only a passing row's value.
@@ -2870,14 +2870,14 @@ class SQLGenerator:
             )))
         value_ref = ranked_scope.materialize_for(value_expr, consumer=cte_scope)
         ranking_time = self._ranked_scope_expr(
-            key=plan.ranking_time_key, root_dataset=root_model,
+            key=plan.ranking_time_key, root_dataset=root_dataset,
             root_relation=root_relation, bundle=bundle, scope=ranked_scope,
             cast_derived=False,
         )
 
         where_parts = self._ranked_cte_where(
             plan=plan, planned_query=planned_query,
-            bundle=bundle, root_dataset=root_model, root_relation=root_relation,
+            bundle=bundle, root_dataset=root_dataset, root_relation=root_relation,
             scope=ranked_scope,
         )
 
@@ -2886,7 +2886,7 @@ class SQLGenerator:
         )
 
         from_expr, joins = self._build_from_and_joins(
-            source_dataset=root_model, source_relation=root_relation,
+            source_dataset=root_dataset, source_relation=root_relation,
             joined_paths=ranked_scope.join_paths.as_list(), bundle=bundle,
         )
         inner = exp.Select()
@@ -2973,7 +2973,7 @@ class SQLGenerator:
 
     def _render_kernel_producer_body(self, *, planned_query, bundle: ResolvedSourceBundle, kernel) -> exp.Select:
         """The aggregate phase of a ranked / trailing-window kernel producer"""
-        source_model = bundle.population
+        source_dataset = bundle.population
         source_relation = planned_query.source_relation
         slots_by_id = {
             s.id: s
@@ -2990,7 +2990,7 @@ class SQLGenerator:
         if kernel.kind == "association":
             body = self._render_association_producer_body(
                 planned_query=planned_query, bundle=bundle, kernel=kernel,
-                source_dataset=source_model, source_relation=source_relation,
+                source_dataset=source_dataset, source_relation=source_relation,
                 slots_by_id=slots_by_id, regroup_env=regroup_env,
                 regroup_join_specs=regroup_join_specs,
             )
@@ -3005,7 +3005,7 @@ class SQLGenerator:
                 bundle=bundle,
                 planned_query=planned_query,
                 slots_by_id=slots_by_id,
-                host_source_dataset=source_model,
+                host_source_dataset=source_dataset,
                 host_source_relation=source_relation,
                 full_agg_alias=self._full_alias_for_slot(
                     slot=agg_slot, source_relation=source_relation, alias_index={},
@@ -3030,7 +3030,7 @@ class SQLGenerator:
                 )
                 if kernel.endpoints is not None else self._build_windowed_grain_base(
                     planned_query=planned_query, plan=plan, slots_by_id=slots_by_id,
-                    aliases_by_slot_id=aliases_by_slot_id, source_dataset=source_model,
+                    aliases_by_slot_id=aliases_by_slot_id, source_dataset=source_dataset,
                     source_relation=source_relation, bundle=bundle,
                     regroup_env=regroup_env, regroup_join_specs=regroup_join_specs,
                 )
@@ -3040,7 +3040,7 @@ class SQLGenerator:
                 alias=exp.TableAlias(this=exp.to_identifier("_base")),
             )
             body, _ = self._render_window_metric_cte_from_planned(
-                plan=plan, agg_slot=agg_slot, source_dataset=source_model,
+                plan=plan, agg_slot=agg_slot, source_dataset=source_dataset,
                 source_relation=source_relation, bundle=bundle,
                 planned_query=planned_query, slots_by_id=slots_by_id,
                 aliases_by_slot_id=aliases_by_slot_id,
@@ -3130,15 +3130,15 @@ class SQLGenerator:
             # attached composite; render it through the scope (its placeholders
             # resolve to the carrier columns) and pick it once per cell.
             value_expr = render_value_key(key=agg_slot.key.source, ctx=ctx)
-            formula = rendered_expression(agg=agg_slot.key.agg, definition=self._resolve_aggregation_def(
+            expression = rendered_expression(agg=agg_slot.key.agg, definition=self._resolve_aggregation_def(
                 key=agg_slot.key, source_dataset=source_dataset, src_leaf=picked_alias,
             ))
             spec = AggRenderSpec(
                 name=picked_alias, sql=None, aggregation=agg_slot.key.agg,
                 alias=agg_alias, dataset_name="_base", type=agg_slot.type,
-                expression=formula,
+                expression=expression,
                 agg_kwargs=self._agg_param_exprs(
-                    key=agg_slot.key, expression=formula, scope=scope,
+                    key=agg_slot.key, expression=expression, scope=scope,
                     skip=frozenset(picked_names),
                 ),
                 input_type=aggregation_source_type(agg_slot.key.source, field_type=scope.field_type),
@@ -3252,16 +3252,16 @@ class SQLGenerator:
         # Level 2 aggregates over the picked rows per grain; ``count(*)`` counts
         # the entity rows (COUNT(*)), every other family runs over ``_v``.
         if is_star:
-            formula = rendered_expression(
+            expression = rendered_expression(
                 agg=agg_slot.key.agg, definition=self._resolve_aggregation_def(
                     key=agg_slot.key, source_dataset=source_dataset, src_leaf="*",
                 ))
             level2_spec = AggRenderSpec(
                 name="", sql=None, aggregation=agg_slot.key.agg,
                 alias=agg_alias, dataset_name="_base", type=agg_slot.type,
-                expression=formula,
+                expression=expression,
                 agg_kwargs=self._agg_param_exprs(
-                    key=agg_slot.key, expression=formula, resolved=picked_kwarg_exprs,
+                    key=agg_slot.key, expression=expression, resolved=picked_kwarg_exprs,
                     scope=scope,
                 ),
             )
@@ -3396,7 +3396,7 @@ class SQLGenerator:
     ) -> exp.Select:
         """Render a ``PlannedQuery`` that carries one or more COMBINED"""
 
-        source_model = bundle.population
+        source_dataset = bundle.population
         source_relation = planned_query.source_relation
 
         slots_by_id = {
@@ -3498,7 +3498,7 @@ class SQLGenerator:
                 # and the correlated EXISTS still gate the whole result (no matching host row -> 0 rows).
                 placeholder_allocator = self._gen_allocator or self._new_allocator()
                 placeholder_scope = self._scope_frame(
-                    dataset=source_model, relation=source_relation,
+                    dataset=source_dataset, relation=source_relation,
                     bundle=bundle, allocator=placeholder_allocator,
                 )
                 self._resolve_where_filter_joins_via_scope(
@@ -3506,9 +3506,9 @@ class SQLGenerator:
                     scope=placeholder_scope,
                     skip_filter_ids=placeholder_skip_ids,
                 )
-                assert source_model is not None
+                assert source_dataset is not None
                 placeholder_from, placeholder_joins = self._build_from_and_joins(
-                    source_dataset=source_model,
+                    source_dataset=source_dataset,
                     source_relation=source_relation,
                     joined_paths=placeholder_scope.join_paths.as_list(),
                     bundle=bundle,
@@ -3523,14 +3523,14 @@ class SQLGenerator:
                 base_where, _base_having = self._build_where_having_from_planned(
                     planned_query=planned_query,
                     source_relation=source_relation,
-                    source_dataset=source_model,
+                    source_dataset=source_dataset,
                     bundle=bundle,
                     skip_filter_ids=placeholder_skip_ids,
                 )
                 if base_where is not None:
                     base_select = base_select.where(base_where)
                 for cond in self._semi_join_exists_conditions(
-                    planned_query=planned_query, source_dataset=source_model,
+                    planned_query=planned_query, source_dataset=source_dataset,
                     source_relation=source_relation, bundle=bundle,
                 ):
                     base_select = base_select.where(cond)
@@ -3558,7 +3558,7 @@ class SQLGenerator:
             ) = self._build_base_select_for_planned(
                 planned_query=planned_query,
                 bundle=bundle,
-                source_dataset=source_model,
+                source_dataset=source_dataset,
                 source_relation=source_relation,
                 base_render_order=base_render_order,
                 slots_by_id=slots_by_id,
@@ -3571,7 +3571,7 @@ class SQLGenerator:
             base_where, base_having = self._build_where_having_from_planned(
                 planned_query=planned_query,
                 source_relation=source_relation,
-                source_dataset=source_model,
+                source_dataset=source_dataset,
                 bundle=bundle,
                 skip_filter_ids=routed_ids,
                 aliases_by_slot_id=aliases_by_slot_id,
@@ -3581,7 +3581,7 @@ class SQLGenerator:
             if base_where is not None:
                 base_select = base_select.where(base_where)
             for cond in self._semi_join_exists_conditions(
-                planned_query=planned_query, source_dataset=source_model,
+                planned_query=planned_query, source_dataset=source_dataset,
                 source_relation=source_relation, bundle=bundle,
             ):
                 base_select = base_select.where(cond)
@@ -3779,17 +3779,17 @@ class SQLGenerator:
         if outer_where_filters:
             # Map every cross-dataset aggregate slot (filtered-local AND forward) to its _cm_ column: a mixed AGGREGATE
             # filter resolves both operands outer, so mapping only filtered-local ones makes the forward operand raise.
-            cross_model_agg_slot_to_cm: Dict[str, AttachedValue] = {}
+            cross_dataset_agg_slot_to_cm: Dict[str, AttachedValue] = {}
             for _ph_key, _cm in regroup_placeholder_to_cm.items():
                 _ph_slot = slot_by_key.get(_ph_key)
                 if _ph_slot is not None:
-                    cross_model_agg_slot_to_cm[_ph_slot.id] = _cm
+                    cross_dataset_agg_slot_to_cm[_ph_slot.id] = _cm
             for fp in outer_where_filters:
                 rendered = render_value_key(
                     key=fp.expression.value_key,
                     ctx=self._outer_wrapper_render_ctx(
                         slot_by_key=slot_by_key,
-                        cross_dataset_agg_slot_to_cm=cross_model_agg_slot_to_cm,
+                        cross_dataset_agg_slot_to_cm=cross_dataset_agg_slot_to_cm,
                         aliases_by_slot_id=aliases_by_slot_id,
                     ),
                 )
@@ -3818,7 +3818,7 @@ class SQLGenerator:
                 reused_names=reused_combined_ctes,
                 planned_query=planned_query,
                 bundle=bundle,
-                source_dataset=source_model,
+                source_dataset=source_dataset,
                 source_relation=source_relation,
                 slots_by_id=slots_by_id,
                 regroup_env={
@@ -4379,14 +4379,14 @@ class SQLGenerator:
     ) -> List[Tuple[OrientedRelationship, SlayerDataset]]:
         """``(OrientedRelationship, next_dataset)`` hops of a bound (possibly composed) relationship ``path``;
         ``ValueError`` when it does not resolve, ``AmbiguousRelationshipPathError`` on an ambiguous hop."""
-        models_by_name = bundle.datasets_by_name
-        models_by_name.setdefault(source_dataset.name, source_dataset)
-        chain = follow(root=source_dataset, path=tuple(path), datasets_by_name=models_by_name)
+        datasets_by_name = bundle.datasets_by_name
+        datasets_by_name.setdefault(source_dataset.name, source_dataset)
+        chain = follow(root=source_dataset, path=tuple(path), datasets_by_name=datasets_by_name)
         if chain is None:
             raise ValueError(
                 f"Joined path {tuple(path)!r} does not resolve from dataset {source_dataset.name!r}.",
             )
-        return [(edge, models_by_name[edge.to]) for edge in chain]
+        return [(edge, datasets_by_name[edge.to]) for edge in chain]
 
     def _build_from_and_joins(
         self,
@@ -4418,20 +4418,20 @@ class SQLGenerator:
             chain = self._oriented_hop_chain(
                 source_dataset=source_dataset, path=path, bundle=bundle,
             )
-            prev_model = source_dataset
-            for hop_idx, (edge, next_model) in enumerate(chain):
+            prev_dataset = source_dataset
+            for hop_idx, (edge, next_dataset) in enumerate(chain):
                 next_alias = self._join_alias(
                     root=source_relation, path=path[: hop_idx + 1],
                 )
                 if next_alias not in emitted_aliases:
                     joins.append(self._hop_join(
-                        edge=edge, prev_dataset=prev_model, next_dataset=next_model,
+                        edge=edge, prev_dataset=prev_dataset, next_dataset=next_dataset,
                         current_alias=current_alias, next_alias=next_alias, bundle=bundle,
                         distinct_lists=distinct_lists,
                     ))
                     emitted_aliases.add(next_alias)
                 current_alias = next_alias
-                prev_model = next_model
+                prev_dataset = next_dataset
         return base_from, joins
 
     def _list_relation(
@@ -4513,19 +4513,19 @@ class SQLGenerator:
         chain = self._oriented_hop_chain(
             source_dataset=source_dataset, path=path, bundle=bundle,
         )
-        current_model = source_dataset
-        for hop_idx, (_edge, next_model) in enumerate(chain):
+        current_dataset = source_dataset
+        for hop_idx, (_edge, next_dataset) in enumerate(chain):
             current_alias = self._join_alias(
                 root=source_relation, path=path[: hop_idx + 1],
             )
-            current_model = next_model
+            current_dataset = next_dataset
         col_def = next(
-            (c for c in current_model.fields if c.name == leaf), None,
+            (c for c in current_dataset.fields if c.name == leaf), None,
         )
         if col_def is None:
             raise ValueError(
                 f"Field {leaf!r} not found on joined dataset "
-                f"{current_model.name!r}.",
+                f"{current_dataset.name!r}.",
             )
         column = exp.Column(this=exp.to_identifier(leaf), table=exp.to_identifier(current_alias))
         return self._dialect.read_column(column, zoned=self._dialect.is_zoned_db_type(col_def.db_type))
@@ -4603,7 +4603,7 @@ class SQLGenerator:
                 f"got {type(key).__name__}",
             )
 
-        measure = render_value_key(
+        metric = render_value_key(
             key=key.input,
             ctx=self._alias_render_ctx(
                 slot_id_by_key=slot_id_by_key,
@@ -4701,17 +4701,17 @@ class SQLGenerator:
             )
 
         if op == "cumsum":
-            return _over(exp.Sum(this=measure), order=time_order)
+            return _over(exp.Sum(this=metric), order=time_order)
         if op == "lag":
             n = abs(_normalise_periods(kwarg_map.get("periods", 1)))
             return _over(
-                exp.Lag(this=measure, offset=exp.Literal.number(n)),
+                exp.Lag(this=metric, offset=exp.Literal.number(n)),
                 order=time_order,
             )
         if op == "lead":
             n = abs(_normalise_periods(kwarg_map.get("periods", 1)))
             return _over(
-                exp.Lead(this=measure, offset=exp.Literal.number(n)),
+                exp.Lead(this=metric, offset=exp.Literal.number(n)),
                 order=time_order,
             )
         if op == "ntile":
@@ -4723,17 +4723,17 @@ class SQLGenerator:
                     f"ntile requires a positive integer n, got {n!r}",
                 )
             return self._rank_family_window(
-                fn=exp.Ntile(this=exp.Literal.number(n)), metric=measure,
+                fn=exp.Ntile(this=exp.Literal.number(n)), metric=metric,
                 partition_by=partition_by, descending=False,
             )
         if op in _RANK_WINDOW_FNS:
             return self._rank_family_window(
-                fn=_RANK_WINDOW_FNS[op](), metric=measure, partition_by=partition_by,
+                fn=_RANK_WINDOW_FNS[op](), metric=metric, partition_by=partition_by,
                 descending=kwarg_map.get("direction") == "desc",
             )
         if op == "first":
             return _over(
-                exp.FirstValue(this=measure),
+                exp.FirstValue(this=metric),
                 order=time_order, spec=unbounded_frame,
             )
         if op == "last":
@@ -4744,7 +4744,7 @@ class SQLGenerator:
                 )
             # last is first over the reversed time axis, so it takes the descending order.
             return _over(
-                exp.FirstValue(this=measure),
+                exp.FirstValue(this=metric),
                 order=exp.Order(expressions=[
                     self._window_ordered(time_col.copy(), descending=True),
                 ]),
@@ -5265,23 +5265,23 @@ class SQLGenerator:
     ) -> "Optional[Expression]":
         """The rendered expression for a derived (``FieldSqlKey``) field."""
         if key.path:
-            owner_model = self._walk_join_path_dataset(
+            owner_dataset = self._walk_join_path_dataset(
                 source_dataset=source_dataset, path=key.path, bundle=bundle,
             )
-            if owner_model is None:
+            if owner_dataset is None:
                 return None
             owner_relation = "__".join(key.path)
         else:
-            owner_model = source_dataset
+            owner_dataset = source_dataset
             owner_relation = source_relation
         expanded_sql = self._expand_derived_field_sql(
-            source_dataset=owner_model, source_relation=owner_relation,
+            source_dataset=owner_dataset, source_relation=owner_relation,
             field_name=key.field_name, bundle=bundle,
             owner_path=tuple(key.path), root_relation=source_relation,
             crossed_paths=crossed_paths,
         )
         col = next(
-            (c for c in owner_model.fields if c.name == key.field_name), None,
+            (c for c in owner_dataset.fields if c.name == key.field_name), None,
         )
         return _wrap_cast_for_type(
             dialect=self._dialect, expr=self._parse(expanded_sql),
@@ -5417,16 +5417,16 @@ class SQLGenerator:
                 join_pairs=tuple((s.physical_name, t.physical_name) for s, t in keys),
                 quoted=tuple((s.physical_quoted, t.physical_quoted) for s, t in keys),
             ))
-        node_models = {(): dataset, **{p: chain[-1][1] for p, chain in chains.items()}}
+        node_datasets = {(): dataset, **{p: chain[-1][1] for p, chain in chains.items()}}
 
         def table(hop, leading: bool) -> Tuple[Expression, str]:
             if hop.lateral is None:
                 return self._emit_relation(
-                    dataset=node_models[tuple(hop.node_path)], alias=path_alias(hop.node_path), bundle=bundle,
+                    dataset=node_datasets[tuple(hop.node_path)], alias=path_alias(hop.node_path), bundle=bundle,
                 ), "CROSS"
             parent_path = tuple(hop.node_path[:-1])
             relation = self._list_relation(
-                parent=node_models[parent_path], field=hop.lateral, parent_alias=path_alias(parent_path),
+                parent=node_datasets[parent_path], field=hop.lateral, parent_alias=path_alias(parent_path),
                 alias=path_alias(hop.node_path), bundle=bundle, leading=leading,
             )
             return relation.relation, relation.join_kind
@@ -5527,11 +5527,11 @@ class SQLGenerator:
             )
         if isinstance(time_field, FieldSqlKey):
             if time_field.path:
-                joined_model = self._walk_join_path_dataset(
+                joined_dataset = self._walk_join_path_dataset(
                     source_dataset=source_dataset, path=time_field.path,
                     bundle=bundle,
                 )
-                if joined_model is None:
+                if joined_dataset is None:
                     raise ValueError(
                         f"Time dimension references derived field "
                         f"{time_field.field_name!r} over relationship path "
@@ -5541,7 +5541,7 @@ class SQLGenerator:
                 # A joined derived TIME dim whose sql crosses a further join must anchor inner refs at the host-path
                 # alias, not the bare direct-join alias, or the FROM references an unjoined table.
                 expanded_sql = self._expand_derived_field_sql(
-                    source_dataset=joined_model,
+                    source_dataset=joined_dataset,
                     source_relation="__".join(time_field.path),
                     field_name=time_field.field_name,
                     bundle=bundle,
@@ -5549,7 +5549,7 @@ class SQLGenerator:
                     root_relation=source_relation,
                     cast=False,
                 )
-                owner = joined_model
+                owner = joined_dataset
             else:
                 expanded_sql = self._expand_derived_field_sql(
                     source_dataset=source_dataset,
@@ -5663,15 +5663,15 @@ class SQLGenerator:
                 _add(k.path)
             elif isinstance(k, FieldSqlKey):
                 _add(k.path)
-                model = (
+                dataset = (
                     self._walk_join_path_dataset(
                         source_dataset=source_dataset, path=k.path, bundle=bundle,
                     ) if k.path
                     else source_dataset
                 )
-                if model is not None:
+                if dataset is not None:
                     _derived_paths(
-                        dataset=model,
+                        dataset=dataset,
                         relation="__".join(k.path) if k.path else source_relation,
                         field_name=k.field_name,
                         owner_path=tuple(k.path),
@@ -5829,8 +5829,8 @@ class SQLGenerator:
                 ) if bundle is not None else None
             ) or source_dataset
             agg_def = self._resolve_aggregation_def(key=key, source_dataset=owner, src_leaf="*")
-            formula = rendered_expression(agg=key.agg, definition=agg_def)
-            if key.args or (key.kwargs and not formula):
+            expression = rendered_expression(agg=key.agg, definition=agg_def)
+            if key.args or (key.kwargs and not expression):
                 raise ValueError(
                     f"'count(*)' takes no args or kwargs; got "
                     f"args={key.args!r}, kwargs={key.kwargs!r}."
@@ -5850,9 +5850,9 @@ class SQLGenerator:
                 alias=full_alias,
                 dataset_name=source_relation,
                 type=slot_type,
-                expression=formula,
+                expression=expression,
                 agg_kwargs=self._agg_param_exprs(
-                    key=key, expression=formula, resolved=resolved_agg_kwargs, scope=star_scope,
+                    key=key, expression=expression, resolved=resolved_agg_kwargs, scope=star_scope,
                 ),
             )
         param_scope = scope or self._throwaway_frame(
@@ -5930,7 +5930,7 @@ class SQLGenerator:
                     self._resolve_sql(sql=sql_text, name=col.name, dataset_name=source_relation, type=column_type),
                     zoned=True,
                 ) if self._dialect.is_zoned_db_type(col.db_type) else None
-            formula = rendered_expression(agg=key.agg, definition=agg_def)
+            expression = rendered_expression(agg=key.agg, definition=agg_def)
             return AggRenderSpec(
                 name=col.name,
                 sql=sql_text,
@@ -5943,9 +5943,9 @@ class SQLGenerator:
                 element_type=element_type,
                 value=zoned_value,
                 agg_kwargs=self._agg_param_exprs(
-                    key=key, expression=formula, resolved=resolved_agg_kwargs, scope=param_scope,
+                    key=key, expression=expression, resolved=resolved_agg_kwargs, scope=param_scope,
                 ),
-                expression=formula,
+                expression=expression,
                 time_field=None,
             )
         if isinstance(source, _EXPRESSION_SOURCE_KINDS):
@@ -5962,7 +5962,7 @@ class SQLGenerator:
             value = apply_ast_rewrites(
                 tree=param_scope.resolve(source), target_dialect=self._dialect, parse_dialect=self._dialect,
             )
-            formula = rendered_expression(agg=key.agg, definition=agg_def)
+            expression = rendered_expression(agg=key.agg, definition=agg_def)
             return AggRenderSpec(
                 name=expr_leaf,
                 sql=None,
@@ -5975,9 +5975,9 @@ class SQLGenerator:
                 input_type=input_type,
                 element_type=element_type,
                 agg_kwargs=self._agg_param_exprs(
-                    key=key, expression=formula, resolved=resolved_agg_kwargs, scope=param_scope,
+                    key=key, expression=expression, resolved=resolved_agg_kwargs, scope=param_scope,
                 ),
-                expression=formula,
+                expression=expression,
                 time_field=None,
             )
         raise NotImplementedError(
@@ -6008,16 +6008,16 @@ class SQLGenerator:
         ]
 
     def _hop_dataset(self, *, name: str, bundle: ResolvedSourceBundle) -> SlayerDataset:
-        model = bundle.get_referenced_dataset(name)
-        if model is None and bundle.population is not None \
+        dataset = bundle.get_referenced_dataset(name)
+        if dataset is None and bundle.population is not None \
                 and bundle.population.name == name:
-            model = bundle.population
-        if model is None:
+            dataset = bundle.population
+        if dataset is None:
             raise ValueError(
                 f"Semi-join hop target {name!r} is not in the resolved "
                 f"source bundle."
             )
-        return model
+        return dataset
 
 
     def _build_semi_join_exists(
@@ -6037,7 +6037,7 @@ class SQLGenerator:
             )
 
         in_group = {tuple(h.node_path) for h in group.hops}
-        node_models = {(): source_dataset.name, **{tuple(h.node_path): h.to for h in group.hops}}
+        node_datasets = {(): source_dataset.name, **{tuple(h.node_path): h.to for h in group.hops}}
 
         def _table(hop: SemiJoinHop, leading: bool) -> Tuple[Expression, str]:
             if hop.lateral is None:
@@ -6047,7 +6047,7 @@ class SQLGenerator:
                 ), "CROSS"
             parent_path = tuple(hop.node_path[:-1])
             relation = self._list_relation(
-                parent=bundle.datasets_by_name[node_models[parent_path]], field=hop.lateral,
+                parent=bundle.datasets_by_name[node_datasets[parent_path]], field=hop.lateral,
                 parent_alias=_alias(parent_path), alias=_alias(hop.node_path), bundle=bundle, leading=leading,
             )
             return relation.relation, relation.join_kind
@@ -6070,7 +6070,7 @@ class SQLGenerator:
             conjuncts.append(exp.Paren(this=rendered) if isinstance(rendered, (exp.And, exp.Or)) else rendered)
         leaves, plain = _leaf_list_predicates(group=group, conjuncts=conjuncts, alias=_alias)
         conditions = [*plain, *(
-            self._element_test(hop=hop, predicates=predicates, node_datasets=node_models,
+            self._element_test(hop=hop, predicates=predicates, node_datasets=node_datasets,
                                source_relation=source_relation, bundle=bundle, alias=_alias)
             for hop, predicates in leaves
         )]
@@ -6543,15 +6543,15 @@ def _user_authored_exemptions(
         return [s for s in (get("name"), get("sql"), get("filter")) if s]
 
     surfaces: List[str] = []
-    models = [
+    datasets = [
         *([bundle.population] if bundle.population is not None else []),
         *bundle.referenced_datasets,
         *bundle.stage_source_datasets.values(),
     ]
-    for model in models:
-        surfaces.extend(s for s in (model.sql, model.sql_table) if s)
-        surfaces.extend(model.filters)
-        for col in model.fields:
+    for dataset in datasets:
+        surfaces.extend(s for s in (dataset.sql, dataset.sql_table) if s)
+        surfaces.extend(dataset.filters)
+        for col in dataset.fields:
             surfaces.extend(_col_surfaces(col))
     tokens: set[str] = set()
     quote_styles = [d._identifier_quote_anchors()]

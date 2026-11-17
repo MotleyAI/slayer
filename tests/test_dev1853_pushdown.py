@@ -141,9 +141,9 @@ class TestReverseRoundTripComposes:
                 DatasetMetric(name="order_total", expression="sum(orders.amount)"),
             ]
             await storage.save_dataset(customers)
-            query = SlayerQuery(
-                population="orders",
-                metrics=[{"expression": "customers.order_total", "name": "x"}])
+            query = SlayerQuery.model_validate({
+                "population": "orders",
+                "metrics": [{"expression": "customers.order_total", "name": "x"}]})
             # A second ``orders`` occurrence over every order, orphan included (mirror parity).
             resp = await engine.execute(query)
             assert resp.data[0]["orders.x"] == CHAIN_REVERSE_AGG_TOTAL

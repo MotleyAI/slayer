@@ -560,10 +560,10 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         s for s in _INSPECT_SECTIONS_OMITTABLE if s not in included_set
     ]
 
-    truncated_model_desc = _truncate_description(dataset.description, descriptions_max_chars)
+    truncated_dataset_desc = _truncate_description(dataset.description, descriptions_max_chars)
     out_sections: list[str] = [f"# Dataset: `{dataset.name}`"]
-    if truncated_model_desc:
-        out_sections.append(truncated_model_desc)
+    if truncated_dataset_desc:
+        out_sections.append(truncated_dataset_desc)
 
     meta: list[str] = []
     if dataset.data_source:
@@ -619,10 +619,10 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             data_source=dataset.data_source or None,
         )
 
-    visible_columns = [c for c in dataset.fields if not c.hidden]
+    visible_fields = [c for c in dataset.fields if not c.hidden]
     if "fields" in included_set:
         col_rows: list[dict[str, Any]] = []
-        for c in visible_columns:
+        for c in visible_fields:
             aggs = ", ".join(c.allowed_aggregations) if c.allowed_aggregations else "all"
             sampled_col = sampled_by_name.get(c.name)
             col_rows.append({
@@ -648,16 +648,16 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
             f"## Fields ({len(col_rows)})\n\n"
             + _markdown_table(rows=col_rows, fields=col_columns)
         )
-    elif visible_columns:
-        csv = ", ".join(_md_code_span(c.name) for c in visible_columns)
+    elif visible_fields:
+        csv = ", ".join(_md_code_span(c.name) for c in visible_fields)
         out_sections.append(
-            f"## Fields ({len(visible_columns)} — names only)\n\n{csv}"
+            f"## Fields ({len(visible_fields)} — names only)\n\n{csv}"
         )
 
     if "metrics" in included_set:
-        measure_rows: list[dict[str, Any]] = []
+        metric_rows: list[dict[str, Any]] = []
         for mm in dataset.metrics:
-            measure_rows.append({
+            metric_rows.append({
                 "name": mm.name,
                 "expression": mm.expression,
                 "label": mm.label,
@@ -665,9 +665,9 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 "meta": _format_meta(mm.meta),
             })
         out_sections.append(
-            f"## Metrics ({len(measure_rows)})\n\n"
+            f"## Metrics ({len(metric_rows)})\n\n"
             + _markdown_table(
-                rows=measure_rows,
+                rows=metric_rows,
                 fields=["name", "expression", "label", "description", "meta"],
             )
         )
@@ -712,19 +712,19 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
 
     hops = await _oriented_hops(dataset, storage, failures=failures)
     if "relationships" in included_set:
-        join_rows: list[dict[str, Any]] = []
+        relationship_rows: list[dict[str, Any]] = []
         for h in hops:
             pairs = "; ".join(f"{src} = {tgt}" for src, tgt in h.join_pairs)
-            join_rows.append({
+            relationship_rows.append({
                 "name": h.name or "",
                 "to": h.to,
                 "join_pairs": pairs,
                 "cardinality": str(h.cardinality) if h.cardinality else "",
             })
         out_sections.append(
-            f"## Relationships ({len(join_rows)})\n\n"
+            f"## Relationships ({len(relationship_rows)})\n\n"
             + _markdown_table(
-                rows=join_rows,
+                rows=relationship_rows,
                 fields=["name", "to", "join_pairs", "cardinality"],
             )
         )
@@ -844,7 +844,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
     if fmt == "json":
         payload: dict[str, Any] = {
             "dataset_name": dataset.name,
-            "description": truncated_model_desc,
+            "description": truncated_dataset_desc,
             "data_source": dataset.data_source,
             "source_type": _source_type_for(dataset),
         }
@@ -864,7 +864,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
         # Fields
         if "fields" in included_set:
             col_payloads: list[dict[str, Any]] = []
-            for c in visible_columns:
+            for c in visible_fields:
                 sampled_col = sampled_by_name.get(c.name)
                 col_payloads.append({
                     "name": c.name,
@@ -892,8 +892,8 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                     "distinct_count": sampled_col.distinct_count if sampled_col is not None else None,
                 })
             payload["fields"] = col_payloads
-        elif visible_columns:
-            payload["columns_names"] = [c.name for c in visible_columns]
+        elif visible_fields:
+            payload["columns_names"] = [c.name for c in visible_fields]
 
         # Metrics
         if "metrics" in included_set:

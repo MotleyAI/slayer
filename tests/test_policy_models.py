@@ -617,7 +617,7 @@ def test_policy_unknown_version_rejected():
 
 
 def test_policy_column_dict_with_kind():
-    policy = SessionPolicy(ruleset={"kind": "column", "field": "org", "value": "x"})
+    policy = SessionPolicy.model_validate({"ruleset": {"kind": "column", "field": "org", "value": "x"}})
     assert isinstance(policy.ruleset, FieldFilterRuleset)
 
 

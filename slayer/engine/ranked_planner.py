@@ -50,13 +50,13 @@ def _temporal_row_dimension_key(
     bundle: ResolvedSourceBundle,
 ) -> Optional[ValueKey]:
     """The first row-level dimension typed DATE / TIMESTAMP — never a bucket, which ties a cell's rows."""
-    column_type = dataset_field_type(dataset=source_dataset, datasets_by_name=bundle.datasets_by_name)
+    field_type = dataset_field_type(dataset=source_dataset, datasets_by_name=bundle.datasets_by_name)
     for key in row_keys:
         if isinstance(key, TimeTruncKey) or any(
             isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(key)
         ):
             continue
-        if temporal_type(key, field_type=column_type) is not None:
+        if temporal_type(key, field_type=field_type) is not None:
             return key
     return None
 

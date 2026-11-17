@@ -617,10 +617,10 @@ class TestDuckDBStatAggregations:
         ) == pytest.approx(expected, rel=1e-9)
 
     async def test_covar_pop_native_duckdb(self, duckdb_env: SlayerQueryEngine) -> None:
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "covar_pop(total, other=customer_id)"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "covar_pop(total, other=customer_id)"}],
+        })
         result = await duckdb_env.execute(query=query)
         xs = [100.0, 200.0, 50.0, 150.0, 75.0, 300.0]
         ys = [1.0, 1.0, 2.0, 2.0, 3.0, 3.0]

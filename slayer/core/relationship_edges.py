@@ -210,10 +210,10 @@ class EdgeMerge:
         self._alias_edges[alias] = edge
 
     def _replace(self, match: _Candidate, relationship: DatasetRelationship) -> DatasetRelationship:
-        model = self.datasets[match.declaring]
-        joins = list(model.relationships)
-        joins[match.index] = relationship
-        self.datasets[match.declaring] = model.model_copy(update={"relationships": joins})
+        dataset = self.datasets[match.declaring]
+        relationships = list(dataset.relationships)
+        relationships[match.index] = relationship
+        self.datasets[match.declaring] = dataset.model_copy(update={"relationships": relationships})
         return relationship
 
     def _edge(self, *, declaring: str, relationship: DatasetRelationship, from_dataset: str, token: str | None) -> ExtensionEdge:
@@ -277,9 +277,9 @@ def resolve_relationship_refs(*, dataset: SlayerDataset, refs: Iterable[str | Re
     """The distinct relationships ``refs`` address; raises ``ValueError`` on a missing or ambiguous one."""
     out: list[DatasetRelationship] = []
     for ref in refs:
-        join = resolve_relationship_ref(dataset=dataset, ref=ref)
-        if not any(join is j for j in out):
-            out.append(join)
+        relationship = resolve_relationship_ref(dataset=dataset, ref=ref)
+        if not any(relationship is j for j in out):
+            out.append(relationship)
     return out
 
 

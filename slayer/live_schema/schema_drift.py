@@ -201,12 +201,12 @@ def touches(reads: StatementReads, entry: Any) -> bool:
         return (entry.dataset_name, entry.field) in reads.columns
     if not isinstance(entry, EditDatasetDelete):
         return False
-    model, remove = entry.dataset_name, entry.remove
+    dataset, remove = entry.dataset_name, entry.remove
     return bool(entry.remove_filters) or any((
-        any((model, c) in reads.columns for c in remove.fields),
-        any((model, m) in reads.metrics for m in remove.metrics),
-        any((model, a) in reads.aggregations for a in remove.aggregations),
-        any(_reads_edge(reads.relationships, dataset=model, edge=e) for e in remove.relationship_edges),
+        any((dataset, c) in reads.columns for c in remove.fields),
+        any((dataset, m) in reads.metrics for m in remove.metrics),
+        any((dataset, a) in reads.aggregations for a in remove.aggregations),
+        any(_reads_edge(reads.relationships, dataset=dataset, edge=e) for e in remove.relationship_edges),
     ))
 
 
@@ -883,8 +883,8 @@ def _ref_edges(*, ref: str, scope: QueryScope, root: str | None = None) -> list[
 def _stage_refs(stage: SlayerQuery) -> list[str]:
     """Every field reference of one stage: metrics, dimensions, time dimensions, filters."""
     refs = [
-        ref for m in stage.metrics or [] if (formula := getattr(m, "expression", None))
-        for ref in _metric_expression_refs(formula)
+        ref for m in stage.metrics or [] if (expression := getattr(m, "expression", None))
+        for ref in _metric_expression_refs(expression)
     ]
     refs += [
         ref for d in stage.dimensions or []
@@ -952,8 +952,8 @@ def _check_stage_against_base(
     state: _CascadeState,
 ) -> set[str]:
     """Dropped field (PKs excluded — rule 7) and extension-metric names on ``base_name`` the stage's ``refs`` read."""
-    own_measures = {m.name for e in stage.extensions or [] if e.source_name == base_name for m in e.metrics or []}
-    cascadable = state.cascadable(base_name) | (state.dropped_metrics.get(base_name, set()) & own_measures)
+    own_metrics = {m.name for e in stage.extensions or [] if e.source_name == base_name for m in e.metrics or []}
+    cascadable = state.cascadable(base_name) | (state.dropped_metrics.get(base_name, set()) & own_metrics)
     if not cascadable:
         return set()
     return _refs_on_base(refs=refs, base_name=base_name, scope=scope) & cascadable
@@ -1043,7 +1043,7 @@ def _stage_cascade_state(*, stage: SlayerQuery, scope: QueryScope, state: _Casca
         edit_entries={},
         whole_entries={},
         dropped_cols={name: set(cols) for name, cols in state.dropped_cols.items()},
-        dropped_metrics={name: set(measures) for name, measures in state.dropped_metrics.items()},
+        dropped_metrics={name: set(metrics) for name, metrics in state.dropped_metrics.items()},
         dropped_relationships={name: list(refs) for name, refs in state.dropped_relationships.items()},
         pk_per_dataset=state.pk_per_dataset,
     )
@@ -1051,8 +1051,8 @@ def _stage_cascade_state(*, stage: SlayerQuery, scope: QueryScope, state: _Casca
     changed = True
     while changed:
         changed = False
-        for model in extended:
-            changed = _cascade_dataset(dataset=model, state=local) or changed
+        for dataset in extended:
+            changed = _cascade_dataset(dataset=dataset, state=local) or changed
     return local
 
 
@@ -1197,17 +1197,17 @@ def _metric_drop_cause(
     *, ref: str, dataset: SlayerDataset, state: _CascadeState
 ) -> str | None:
     """Reason string if the metric ref resolves to a dropped field/metric, else None."""
-    tgt_model, leaf = _resolve_dotted_ref_to_dataset(
+    tgt_dataset, leaf = _resolve_dotted_ref_to_dataset(
         source_dataset=dataset,
         dotted_ref=ref,
         datasets_by_name=state.datasets_by_name,
     )
-    if tgt_model is None or tgt_model.data_source != dataset.data_source:
+    if tgt_dataset is None or tgt_dataset.data_source != dataset.data_source:
         return None
-    if leaf in state.cascadable(tgt_model.name):
-        return f"references dropped field {tgt_model.name}.{leaf!r}"
-    if leaf in state.dropped_metrics.get(tgt_model.name, set()):
-        return f"references dropped metric {tgt_model.name}.{leaf!r}"
+    if leaf in state.cascadable(tgt_dataset.name):
+        return f"references dropped field {tgt_dataset.name}.{leaf!r}"
+    if leaf in state.dropped_metrics.get(tgt_dataset.name, set()):
+        return f"references dropped metric {tgt_dataset.name}.{leaf!r}"
     return None
 
 
@@ -1229,10 +1229,10 @@ def _cascade_metrics(*, dataset: SlayerDataset, state: _CascadeState) -> bool:
     """Rule 2: ``DatasetMetric.expression`` referencing a dropped field or metric."""
     changed = False
     dropped_set = state.dropped_metrics.get(dataset.name, set())
-    for measure in dataset.metrics:
-        if measure.name is None or measure.name in dropped_set:
+    for metric in dataset.metrics:
+        if metric.name is None or metric.name in dropped_set:
             continue
-        refs = _metric_expression_refs(measure.expression)
+        refs = _metric_expression_refs(metric.expression)
         cause = _first_dropped_cause(refs=refs, dataset=dataset, state=state)
         if cause is None:
             continue
@@ -1240,8 +1240,8 @@ def _cascade_metrics(*, dataset: SlayerDataset, state: _CascadeState) -> bool:
             edit_entries=state.edit_entries,
             dropped_metrics=state.dropped_metrics,
             dataset=dataset,
-            metric_name=measure.name,
-            reason=f"Expression {measure.expression!r} {cause}",
+            metric_name=metric.name,
+            reason=f"Expression {metric.expression!r} {cause}",
         ):
             changed = True
     return changed
@@ -1299,22 +1299,22 @@ def _cascade_filters(*, dataset: SlayerDataset, state: _CascadeState) -> bool:
         if entry is not None and filter_str in entry.remove_filters:
             continue
         for col_ref in _filter_refs(filter_str):
-            tgt_model, leaf = _resolve_dotted_ref_to_dataset(
+            tgt_dataset, leaf = _resolve_dotted_ref_to_dataset(
                 source_dataset=dataset,
                 dotted_ref=col_ref,
                 datasets_by_name=state.datasets_by_name,
             )
             if (
-                tgt_model is None
-                or tgt_model.data_source != dataset.data_source
-                or leaf not in state.cascadable(tgt_model.name)
+                tgt_dataset is None
+                or tgt_dataset.data_source != dataset.data_source
+                or leaf not in state.cascadable(tgt_dataset.name)
             ):
                 continue
             if _add_remove_filter(
                 edit_entries=state.edit_entries,
                 dataset=dataset,
                 filter_text=filter_str,
-                reason=f"Filter references dropped field {tgt_model.name}.{leaf!r}",
+                reason=f"Filter references dropped field {tgt_dataset.name}.{leaf!r}",
             ):
                 changed = True
             break
@@ -1337,24 +1337,24 @@ def _cascade_query_backed(
     whole_dropped_names = set(state.whole_entries.keys())
     # Every dataset in the DS is a candidate base for cross-dataset dotted refs.
     candidate_base_names = set(state.datasets_by_name.keys())
-    for model in datasets:
-        if model.name in state.whole_entries or not model.source_queries:
+    for dataset in datasets:
+        if dataset.name in state.whole_entries or not dataset.source_queries:
             continue
         reason = _query_backed_should_whole_drop(
-            qb_dataset=model,
+            qb_dataset=dataset,
             state=state,
             whole_dropped_datasets=whole_dropped_names,
             candidate_base_names=candidate_base_names,
         )
         if reason is None:
             continue
-        state.whole_entries[model.name] = WholeDatasetDelete(
-            dataset_name=model.name,
-            data_source=model.data_source,
+        state.whole_entries[dataset.name] = WholeDatasetDelete(
+            dataset_name=dataset.name,
+            data_source=dataset.data_source,
             reasons=[reason],
         )
         # Treat all fields as dropped so further rounds propagate transitively.
-        state.dropped_cols[model.name] = {c.name for c in model.fields}
+        state.dropped_cols[dataset.name] = {c.name for c in dataset.fields}
         changed = True
     return changed
 
@@ -1382,8 +1382,8 @@ def _cascade_one_pass(
     )
 
     changed = False
-    for model in datasets:
-        if model.name not in whole_entries and _cascade_dataset(dataset=model, state=state):
+    for dataset in datasets:
+        if dataset.name not in whole_entries and _cascade_dataset(dataset=dataset, state=state):
             changed = True
 
     if _cascade_query_backed(datasets=datasets, state=state):
@@ -1445,10 +1445,10 @@ def _seed_state_from_diffs(
 ) -> None:
     """Populate the cascade state dicts from the base per-dataset diffs."""
     for diffs in diffs_iterables:
-        for model_name, (entry, cols) in diffs.items():
+        for dataset_name, (entry, cols) in diffs.items():
             _seed_one_diff_entry(
-                dataset_name=model_name,
-                dataset=datasets_by_name.get(model_name),
+                dataset_name=dataset_name,
+                dataset=datasets_by_name.get(dataset_name),
                 entry=entry,
                 cols=cols,
                 edit_entries=edit_entries,
@@ -1486,11 +1486,11 @@ def compute_datasource_drops(
     dropped_cols: dict[str, set[str]] = {}
     dropped_metrics: dict[str, set[str]] = {}
     dropped_relationships: _DroppedRelationships = {}
-    models_by_name = {m.name: m for m in datasets}
+    datasets_by_name = {m.name: m for m in datasets}
 
     _seed_state_from_diffs(
         diffs_iterables=(sql_table_diffs, sql_diffs),
-        datasets_by_name=models_by_name,
+        datasets_by_name=datasets_by_name,
         edit_entries=edit_entries,
         whole_entries=whole_entries,
         dropped_cols=dropped_cols,
@@ -1498,19 +1498,19 @@ def compute_datasource_drops(
         dropped_relationships=dropped_relationships,
     )
 
-    pk_per_model = {m.name: _pk_fields(m) for m in datasets}
+    pk_per_dataset = {m.name: _pk_fields(m) for m in datasets}
 
     # Iterate to fixed point — safety bound, DAGs converge in <10 passes.
     for _ in range(100):
         if not _cascade_one_pass(
             datasets=datasets,
-            datasets_by_name=models_by_name,
+            datasets_by_name=datasets_by_name,
             edit_entries=edit_entries,
             whole_entries=whole_entries,
             dropped_cols=dropped_cols,
             dropped_metrics=dropped_metrics,
             dropped_relationships=dropped_relationships,
-            pk_per_dataset=pk_per_model,
+            pk_per_dataset=pk_per_dataset,
         ):
             break
 
@@ -2224,8 +2224,8 @@ async def _dataset_schema_tokens(datasets: list[SlayerDataset], *, client: SqlCl
     catalog this connection cannot reach is left out, as enumeration leaves it out."""
     dialect = dialect_for_ds_type(client.datasource.type)
     tokens: set[str] = set()
-    for model in datasets:
-        at = sql_table_location(model.sql_table or "", dialect=dialect)
+    for dataset in datasets:
+        at = sql_table_location(dataset.sql_table or "", dialect=dialect)
         try:
             ref = await table_schema_ref(catalog=at.catalog, schema=at.schema_name, client=client)
         except ValueError:
@@ -2340,14 +2340,14 @@ async def _collect_sql_diffs(
     )
     # A zero-row trial carries column types only where the cursor reports them.
     compare_types = dialect_for_ds_type(datasource.type).cursor_reports_types
-    for model in sql_datasets:
-        trial = trials[model.sql or ""]
-        out[model.name] = diff_sql_dataset(
-            dataset=model, live_columns=trial.live_columns, invalid_sql=trial.invalid_sql,
+    for dataset in sql_datasets:
+        trial = trials[dataset.sql or ""]
+        out[dataset.name] = diff_sql_dataset(
+            dataset=dataset, live_columns=trial.live_columns, invalid_sql=trial.invalid_sql,
         )
         if findings is not None and compare_types:
             findings.extend(sql_dataset_retype_findings(
-                dataset=model, live_columns=trial.live_columns,
+                dataset=dataset, live_columns=trial.live_columns,
                 temporal_text=dialect_for_ds_type(datasource.type).temporal_text_compatible,
             ))
     return out

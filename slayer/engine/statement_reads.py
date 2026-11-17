@@ -37,14 +37,14 @@ def statement_reads(
         root = own.population
         if root is None:
             continue
-        models = with_list_children({**own.datasets_by_name, root.name: root})
+        datasets = with_list_children({**own.datasets_by_name, root.name: root})
         # Closed in the plan's own universe: a stored dataset and another stage's inline namesake never mix.
         local = StatementReads()
         for root_name, root_key in plan_value_keys_by_root(plan):
-            key_root = models.get(root_name, root) if root_name else root
+            key_root = datasets.get(root_name, root) if root_name else root
             for key in walk_value_keys(root_key):
-                _add_key(local, key=key, root=key_root, datasets=models)
-        _close_fields(local, datasets=models)
+                _add_key(local, key=key, root=key_root, datasets=datasets)
+        _close_fields(local, datasets=datasets)
         reads.columns |= local.columns
         reads.relationships |= local.relationships
         reads.aggregations |= local.aggregations
@@ -83,12 +83,12 @@ def _close_fields(reads: StatementReads, *, datasets: dict[str, SlayerDataset]) 
     """Add every field a read derived field's definition reads, transitively."""
     pending = list(reads.columns)
     while pending:
-        model_name, column_name = pending.pop()
-        host = datasets.get(model_name)
-        column = host.get_field(column_name, quoted=True) if host is not None else None
-        if host is None or column is None:
+        dataset_name, field_name = pending.pop()
+        host = datasets.get(dataset_name)
+        field = host.get_field(field_name, quoted=True) if host is not None else None
+        if host is None or field is None:
             continue
-        for read in definition_reads(field=column, host=host, reachable=datasets):
+        for read in definition_reads(field=field, host=host, reachable=datasets):
             if read not in reads.columns:
                 reads.columns.add(read)
                 pending.append(read)

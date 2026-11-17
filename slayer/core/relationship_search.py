@@ -91,8 +91,8 @@ class _Graph:
     def incident(self, name: str) -> list[_Hop]:
         hops: list[_Hop] | None = self._memo.get(name)
         if hops is None:
-            model = self.datasets[name]
-            edges = neighbors(dataset=model, datasets_by_name=self.datasets)
+            dataset = self.datasets[name]
+            edges = neighbors(dataset=dataset, datasets_by_name=self.datasets)
             hops = []
             for e in edges:
                 target = self.datasets.get(e.to)
@@ -160,13 +160,13 @@ def blocking_pairs(
     *, root: SlayerDataset, target: str, datasets_by_name: dict[str, SlayerDataset],
 ) -> list[UnaddressablePair]:
     """The unaddressable pairs between what ``root`` routes to and ``target``."""
-    models = {**datasets_by_name, root.name: root}
-    reached = set(shortest_routes(root=root, datasets_by_name=models))
-    if target in reached or target not in models:
+    datasets = {**datasets_by_name, root.name: root}
+    reached = set(shortest_routes(root=root, datasets_by_name=datasets))
+    if target in reached or target not in datasets:
         return []
-    reaching = _Graph(models).relevant(root=None, target=target)
+    reaching = _Graph(datasets).relevant(root=None, target=target)
     return [
-        p for p in unaddressable_pairs(datasets_by_name=models)
+        p for p in unaddressable_pairs(datasets_by_name=datasets)
         if any(a in reached and b in reaching
                for a, b in ((p.source_dataset, p.to), (p.to, p.source_dataset)))
     ]

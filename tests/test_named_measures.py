@@ -45,10 +45,10 @@ class TestNamedMeasureSQL:
         )
         inline = _orders_model()
 
-        saved_query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "aov", "name": "result"}],
-        )
+        saved_query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "aov", "name": "result"}],
+        })
         inline_query = SlayerQuery(
             population="orders",
             metrics=[{"expression": formula, "name": "result"}],
@@ -74,16 +74,16 @@ class TestNamedMeasureSQL:
             DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP)
         )
 
-        saved_query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "cumsum(aov)", "name": "result"}],
-            time_dimensions=[{"field": "created_at", "granularity": "month"}],
-        )
-        inline_query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": f"cumsum({formula})", "name": "result"}],
-            time_dimensions=[{"field": "created_at", "granularity": "month"}],
-        )
+        saved_query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "cumsum(aov)", "name": "result"}],
+            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+        })
+        inline_query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": f"cumsum({formula})", "name": "result"}],
+            "time_dimensions": [{"field": "created_at", "granularity": "month"}],
+        })
 
         saved_sql = await _generate(saved_query, with_saved)
         inline_sql = await _generate(inline_query, inline)
@@ -97,14 +97,14 @@ class TestNamedMeasureSQL:
         )
         inline = _orders_model()
 
-        saved_query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "aov * 1.1", "name": "result"}],
-        )
-        inline_query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": f"{formula} * 1.1", "name": "result"}],
-        )
+        saved_query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "aov * 1.1", "name": "result"}],
+        })
+        inline_query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": f"{formula} * 1.1", "name": "result"}],
+        })
 
         saved_sql = await _generate(saved_query, with_saved)
         inline_sql = await _generate(inline_query, inline)
@@ -120,10 +120,10 @@ class TestNamedMeasureSQL:
         )
         inline = _orders_model()
 
-        chained_query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "b", "name": "result"}],
-        )
+        chained_query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "b", "name": "result"}],
+        })
         inline_query = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"expression": "sum(revenue)", "name": "result"}],
@@ -143,10 +143,10 @@ class TestNamedMeasureSQL:
                 DatasetMetric(name="b", expression="a"),
             ]
         )
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "a", "name": "result"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "a", "name": "result"}],
+        })
 
         with pytest.raises(
             ValueError, match=r"Cyclic reference in named-measure expansion"
@@ -160,10 +160,10 @@ class TestNamedMeasureSQL:
         model = _orders_model(
             measures=[DatasetMetric(name="aov", expression="sum(revenue)")]
         )
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "nonexistent", "name": "result"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "nonexistent", "name": "result"}],
+        })
 
         with pytest.raises(
             ValueError, match=r"Cannot resolve reference 'nonexistent'"
@@ -174,10 +174,10 @@ class TestNamedMeasureSQL:
         model = _orders_model(
             measures=[DatasetMetric(name="aov_net", expression="sum(revenue)")]
         )
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "aov_nett", "name": "result"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "aov_nett", "name": "result"}],
+        })
 
         with pytest.raises(ValueError, match="Did you mean 'aov_net'"):
             await _generate(query, model)
@@ -198,10 +198,10 @@ class TestNamedMeasureSQL:
 
     async def test_bare_column_in_expression_asks_for_an_aggregation(self) -> None:
         model = _orders_model()
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "round(revenue, 2)", "name": "result"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "round(revenue, 2)", "name": "result"}],
+        })
 
         with pytest.raises(
             ValueError, match="needs an aggregation inside an expression"
@@ -243,10 +243,10 @@ class TestNamedMeasureSQL:
         # Bypass the model validator by appending after construction.
         model.metrics.append(DatasetMetric(name="aov", expression="avg(revenue)"))
 
-        query = SlayerQuery(
-            population="orders",
-            metrics=[{"expression": "aov", "name": "result"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "metrics": [{"expression": "aov", "name": "result"}],
+        })
 
         with pytest.raises(ValueError, match=r"duplicate measure names"):
             await _generate(query, model)
@@ -278,12 +278,12 @@ class TestBareNamedMeasureAliasing:
                 DatasetMetric(name="companies_count", expression="count_distinct(revenue)"),
             ]
         )
-        query = SlayerQuery(
-            population="orders",
-            dimensions=["status"],
-            metrics=["companies_count"],
-            order=[{"field": "companies_count", "direction": "desc"}],
-        )
+        query = SlayerQuery.model_validate({
+            "population": "orders",
+            "dimensions": ["status"],
+            "metrics": ["companies_count"],
+            "order": [{"field": "companies_count", "direction": "desc"}],
+        })
         sql = await _generate(query, model)
         # The ORDER BY reference must point at the alias we actually emitted.
         assert '"orders.companies_count"' in sql

@@ -101,11 +101,11 @@ def _field_fingerprint(field: DatasetField) -> str:
 
 
 def _dataset_fingerprint(dataset: SlayerDataset) -> str:
-    columns = sorted(
+    fields = sorted(
         (c.model_dump(mode="json", exclude=set(_SAMPLE_FIELDS)) for c in dataset.fields),
         key=lambda d: str(d.get("name")),
     )
-    return _digest({"dataset": dataset.model_dump(mode="json", exclude={"fields"}), "fields": columns})
+    return _digest({"dataset": dataset.model_dump(mode="json", exclude={"fields"}), "fields": fields})
 
 
 def _first_line(exc: BaseException) -> str:
@@ -185,11 +185,11 @@ async def _profile_numeric_temporal(
     *, dataset: SlayerDataset, fields: list[DatasetField], engine: SlayerQueryEngine,
 ) -> list[_Sample]:
     """One batched min/max query (a list's over its elements); raises on query failure."""
-    measures = [
+    metrics = [
         {"expression": f"{agg}({_values_ref(c)})", "name": f"_slayer_range_{c.name}_{agg}"}
         for c in fields for agg in ("min", "max")
     ]
-    q = SlayerQuery.model_validate({"population": dataset.name, "metrics": measures})
+    q = SlayerQuery.model_validate({"population": dataset.name, "metrics": metrics})
     with range_read():
         r = await engine.execute(query=q, data_source=dataset.data_source or None)
     row = r.data[0] if r.data else {}
@@ -416,9 +416,9 @@ async def refresh_table_backed_dataset_sampled(
     """Force-refresh samples of a table-backed dataset (others skipped); returns error strings."""
     if not _is_table_backed(dataset):
         return []
-    columns = [c for c in dataset.fields if only_fields is None or c.name in only_fields]
+    fields = [c for c in dataset.fields if only_fields is None or c.name in only_fields]
     outcome = await ensure_samples_fresh(
-        dataset=dataset, fields=columns, engine=engine, storage=storage, force=True,
+        dataset=dataset, fields=fields, engine=engine, storage=storage, force=True,
     )
     return outcome.errors
 
@@ -431,6 +431,6 @@ async def refresh_all_table_backed_sampled(
 ) -> list[str]:
     """Force-refresh every table-backed dataset in ``data_source``; returns error strings."""
     errors: list[str] = []
-    for model in DocumentLoadFailures().skip(await storage.load_datasets(data_source=data_source)):
-        errors.extend(await refresh_table_backed_dataset_sampled(dataset=model, engine=engine, storage=storage))
+    for dataset in DocumentLoadFailures().skip(await storage.load_datasets(data_source=data_source)):
+        errors.extend(await refresh_table_backed_dataset_sampled(dataset=dataset, engine=engine, storage=storage))
     return errors

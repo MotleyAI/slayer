@@ -157,8 +157,8 @@ def _collect_render_pairs(
             description=descriptions.get(ds),
         )
         out.append((pair.canonical_id, pair.kind, pair.text, pair.description))
-    for model in visible_datasets:
-        for re in collect_dataset_entity_pairs(dataset=model):
+    for dataset in visible_datasets:
+        for re in collect_dataset_entity_pairs(dataset=dataset):
             out.append((re.canonical_id, re.kind, re.text, re.description))
     for memory in memories:
         # Memories surface ``Memory.description`` directly so the search
@@ -202,10 +202,10 @@ def build_in_memory_corpus(
     # processing within microseconds.
     writer = index.writer(num_threads=1)
 
-    visible_models = [m for m in datasets if not m.hidden]
+    visible_datasets = [m for m in datasets if not m.hidden]
     pairs = _collect_render_pairs(
         memories=memories,
-        visible_datasets=visible_models,
+        visible_datasets=visible_datasets,
         datasources=datasources,
         datasource_descriptions=datasource_descriptions,
     )

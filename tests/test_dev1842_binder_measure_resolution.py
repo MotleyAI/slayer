@@ -54,8 +54,8 @@ def _model(measures) -> SlayerDataset:
 
 async def _gen(model, formula, **kw) -> str:
     return await _engine_generate(
-        query=SlayerQuery(population="orders",
-                          metrics=[{"expression": formula, "name": "x"}], **kw),
+        query=SlayerQuery.model_validate({"population": "orders",
+                                          "metrics": [{"expression": formula, "name": "x"}], **kw}),
         model=model, dialect="duckdb", validate=False,
     )
 

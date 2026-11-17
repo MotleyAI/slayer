@@ -176,11 +176,11 @@ class TestCrossModelPlannerTriggerPredicate:
 
     def test_same_model_filter_does_not_trigger(self):
         host = _claim_amount()
-        q = SlayerQuery(
-            population="claim_amount",
-            metrics=[{"expression": "sum(paid_amount)"}],
-            dimensions=["claim.claim_number"],
-        )
+        q = SlayerQuery.model_validate({
+            "population": "claim_amount",
+            "metrics": [{"expression": "sum(paid_amount)"}],
+            "dimensions": ["claim.claim_number"],
+        })
         planned = plan_query(query=q, bundle=_bundle(host))
         assert planned.regroup_attach_plans == [], (
             f"Same-model filter must not trigger isolation; got attaches: {planned.regroup_attach_plans}"
@@ -486,11 +486,11 @@ def _s5_bundle(host: SlayerDataset | None = None) -> ResolvedSourceBundle:
 
 
 def _s5_plans(formula: str, *, dimensions=None, **plan_kwargs):
-    q = SlayerQuery(
-        population="orders",
-        metrics=[{"expression": formula, "name": "m0"}],
-        dimensions=dimensions,
-    )
+    q = SlayerQuery.model_validate({
+        "population": "orders",
+        "metrics": [{"expression": formula, "name": "m0"}],
+        "dimensions": dimensions,
+    })
     planned = plan_query(query=q, bundle=_s5_bundle(), **plan_kwargs)
     # Keep only HOST-rooted PLAIN-kernel producers (ranked/windowed roots excluded).
     return planned, [
