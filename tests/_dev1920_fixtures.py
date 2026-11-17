@@ -20,6 +20,7 @@ from slayer.core.query import SlayerQuery
 from slayer.database import engine_factory
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_keys import CURRENT_KEYS, dataset_in
 from slayer.storage.sqlite_conn import transaction
 from tests._granularity_rename_fixtures import write_raw_store
 
@@ -105,14 +106,15 @@ def orders_doc(*, version: int | None = STORED_VERSIONS["SlayerModel"], metrics:
                **extra: Any) -> dict:
     """``version=None`` is a fresh (unversioned) payload."""
     doc: dict[str, Any] = {
-        "name": "orders", "sql_table": "orders", "data_source": DS, "fields": _ORDER_COLUMNS,
-        "relationships": [{"to": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}],
+        "name": "orders", "sql_table": "orders", "data_source": DS, "columns": _ORDER_COLUMNS,
+        "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}],
         **extra,
     }
-    if version is not None:
-        doc["version"] = version
     if metrics:
         doc["measures"] = list(metrics)
+    if version is None:
+        return dataset_in(doc, CURRENT_KEYS)
+    doc["version"] = version
     return doc
 
 

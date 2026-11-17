@@ -131,7 +131,7 @@ QUERY_POSITIONS = [
     pytest.param("order", [{"column": "rank(amount:sum, direction='desc')"}],
                  [{"column": "rank(sum(amount), direction='desc')"}], id="order-expression"),
     pytest.param("order", [{"amount:sum": "desc"}], [{"sum(amount)": "desc"}], id="order-shorthand"),
-    pytest.param("source_model", {"source_name": "orders", "metrics": [{"name": "m", "expression": "amount:sum"}]},
+    pytest.param("source_model", {"source_name": "orders", "measures": [{"name": "m", "formula": "amount:sum"}]},
                  {"source_name": "orders", "metrics": [{"name": "m", "expression": "sum(amount)"}]},
                  id="model-extension-measure"),
 ]
@@ -140,7 +140,8 @@ QUERY_POSITIONS = [
 class TestQueryPositions:
     @pytest.mark.parametrize(("field", "stored", "functional"), QUERY_POSITIONS)
     def test_loads_as_the_fresh_functional_query(self, field: str, stored: Any, functional: Any) -> None:
-        assert _stored(**{field: stored}).model_dump() == _fresh(**{field: functional}).model_dump()
+        fresh_field = {"source_model": "population"}.get(field, field)
+        assert _stored(**{field: stored}).model_dump() == _fresh(**{fresh_field: functional}).model_dump()
 
     def test_saved_query_stage(self) -> None:
         model = SlayerDataset.model_validate(query_backed_doc(
@@ -166,16 +167,16 @@ class TestExecution:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_granularity_spans(self, make_store: StoreFactory, dialect: str) -> None:  # noqa: F811
         storage = await make_store(dialect=dialect, granularities=[FISCAL_QUARTER])
-        by_month = _stored(metrics=["sum(amount)"], time_dimensions=[{"field": "created_at",
+        by_month = _stored(measures=["sum(amount)"], time_dimensions=[{"dimension": "created_at",
                                                                         "granularity": "month"}],
-                           order=[{"field": {"name": "created_at_month"}, "direction": "desc",
+                           order=[{"column": {"name": "created_at_month"}, "direction": "desc",
                                    "raw_formula": "created_at:month"}])
         [order] = by_month.order or []
         assert order.raw_expression == "date_trunc('month', created_at)"
         assert rows(await run(storage, by_month)) == rows(await run(storage, _fresh(
             metrics=["sum(amount)"], time_dimensions=[{"field": "created_at", "granularity": "month"}],
             order=[{"field": "date_trunc('month', created_at)", "direction": "desc"}])))
-        by_fiscal = _stored(metrics=["sum(amount)"], dimensions=[
+        by_fiscal = _stored(measures=["sum(amount)"], dimensions=[
             {"name": "created_at_fiscal_quarter", "expression": "created_at:fiscal_quarter"}])
         [dim] = by_fiscal.dimensions or []
         assert isinstance(dim, ComputedDimension)
@@ -191,8 +192,8 @@ class TestExecution:
             orders_doc(), customers_doc(), regions_doc(), query_backed_doc(name="rev_q", stage=stage)])
         resp = await run(storage, {"population": "rev_q", "dimensions": ["status"], "metrics": ["sum(rev)"]})
         assert {r["rev_q.status"]: r["rev_q.rev_sum"] for r in rows(resp)} == {"paid": 80.0, "new": 70.0}
-        extended = stored_query(source_model={"source_name": "orders", "metrics": [
-            {"name": "m", "expression": "amount:sum"}]}, measures=["m"])
+        extended = stored_query(source_model={"source_name": "orders", "measures": [
+            {"name": "m", "formula": "amount:sum"}]}, measures=["m"])
         assert rows(await run(storage, extended)) == [{"orders.m": 150.0}]
 
 
@@ -323,8 +324,8 @@ async def _assert_refused_unrewritten(storage: Any, payload: dict) -> None:
 class TestLeftAlone:
     def test_unparseable_text_is_kept_with_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         with _messages(caplog) as messages:
-            model = _model(metrics=[{"name": "good", "expression": "amount:sum"},
-                                     {"name": "broken", "expression": "amount:sum +"}])
+            model = _model(metrics=[{"name": "good", "formula": "amount:sum"},
+                                     {"name": "broken", "formula": "amount:sum +"}])
         assert [m.expression for m in model.metrics] == ["sum(amount)", "amount:sum +"]
         assert [m for m in messages if "orders" in m and "measures['broken'].formula" in m], messages
 
