@@ -131,6 +131,7 @@ def test_output_checks_take_no_other_expectation(other):
         ({"error": "E", "known_bug": "b"}, "error: no other expectation"),
         ({"buggy_rows": [[1]]}, "need known_bug"),
         ({"buggy_error": "E"}, "need known_bug"),
+        ({"buggy_row_count": 0}, "need known_bug"),
         ({"known_bug": "b", "warning": "w"}, "known_bug ignores warning"),
     ],
 )
@@ -146,7 +147,14 @@ def test_expectations_that_all_run_are_accepted(expect):
     run_slayer.SlayerBlock.model_validate({"query": _QUERY, "expect": expect})
 
 
-@pytest.mark.parametrize("source", [{"osi_roundtrip": {}}, {"steps": [{"tool": "inspect", "args": {}}]}])
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"osi_roundtrip": {}},
+        {"steps": [{"tool": "inspect", "args": {}}]},
+        {"steps": [{"tool": "query", "args": {"dry_run": True}}]},
+    ],
+)
 def test_output_checks_on_a_report_or_tool_output_are_accepted(source):
     run_slayer.SlayerBlock.model_validate({**source, "expect": {"contains": ["x"], "lacks": ["y"]}})
 

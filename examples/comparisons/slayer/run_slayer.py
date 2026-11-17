@@ -59,6 +59,11 @@ class Compare(BaseModel):
     columns_exact: bool = False
 
 
+def _is_set(v: Any) -> bool:
+    """Identity checks, so an expected ``0`` still counts."""
+    return v is not None and v is not False and v != []
+
+
 class SlayerExpect(BaseModel):
     model_config = ConfigDict(extra="forbid")
     error: Optional[str] = None
@@ -76,7 +81,7 @@ class SlayerExpect(BaseModel):
     @model_validator(mode="after")
     def _none_skipped(self) -> "SlayerExpect":
         """Reject combinations whose evaluation would silently skip one of the checks."""
-        given = {f for f in self.model_fields_set if getattr(self, f) not in (None, False, [])}
+        given = {f for f in self.model_fields_set if _is_set(getattr(self, f))}
         for label, own in (("same_models", {"same_models"}), ("error", {"error"}),
                            ("contains / lacks", {"contains", "lacks"})):
             if given & own and given - own:
@@ -154,7 +159,9 @@ class SlayerBlock(BaseModel):
         ex = self.expect if isinstance(self.expect, SlayerExpect) else SlayerExpect()
         if ex.same_models and (self.osi_roundtrip is None or self.query is not None):
             raise ValueError("same_models needs osi_roundtrip without query")
-        rows = self.query is not None or self.run_by_name is not None or (self.steps and self.steps[-1].tool == "query")
+        last = self.steps[-1] if self.steps else None
+        rows = (self.query is not None or self.run_by_name is not None
+                or (last is not None and last.tool == "query" and not last.args.get("dry_run")))
         if (ex.contains or ex.lacks) and rows:
             raise ValueError("contains / lacks check a report or tool output, not query rows")
         return self
