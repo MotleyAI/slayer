@@ -10,6 +10,7 @@ from slayer.core.enums import TimeGranularity
 
 if TYPE_CHECKING:
     from slayer.core.join_walker import OrientedJoin  # noqa: F401
+    from slayer.live_schema.schema_drift import ToDeleteEntry
 
 
 class SlayerError(ValueError):
@@ -104,7 +105,7 @@ class SchemaDriftError(SlayerError):
     def __init__(
         self,
         models: list[str],
-        to_delete: list[Any],
+        to_delete: "Sequence[ToDeleteEntry]",
         original: BaseException,
         findings: list[Any] | None = None,
     ) -> None:

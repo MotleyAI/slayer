@@ -10,6 +10,7 @@ from typing import Any, Optional
 from slayer.core.enums import DataType
 from slayer.core.models import Column, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
+from slayer.core.warnings import BroadcastGrainWarningPayload
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
 from tests._dev1737_fixtures import TableSpec, seed_backend
@@ -397,5 +398,5 @@ def by_bucket(resp: SlayerResponse, names: Iterable[str], *, bucket: str = "time
     return out
 
 
-def broadcast_warnings(resp: SlayerResponse) -> list:
-    return [w for w in (resp.warnings or []) if getattr(w, "kind", None) == "broadcast"]
+def broadcast_warnings(resp: SlayerResponse) -> list[BroadcastGrainWarningPayload]:
+    return [w for w in (resp.warnings or []) if isinstance(w, BroadcastGrainWarningPayload)]

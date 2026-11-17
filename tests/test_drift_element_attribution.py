@@ -255,7 +255,8 @@ class TestInvalidSqlModel:
         async with _env(tmp_path, *_shop(), broken) as env:
             entries = [e for e in await env.engine.validate_models(data_source="ds") if e.model_name == "sq_broken"]
             err = await _unwrapped(env.engine, {"source_model": "sq_broken", "measures": [{"formula": "count(*)"}]})
-        assert [(type(e), e.cause) for e in entries] == [(WholeModelDelete, "invalid_sql")], entries
+        assert [(type(e), e.cause if isinstance(e, WholeModelDelete) else None) for e in entries] == [
+            (WholeModelDelete, "invalid_sql")], entries
         assert "no_such_function" in str(err).lower(), err
 
 

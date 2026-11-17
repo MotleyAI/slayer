@@ -18,6 +18,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import (
     DriftSnapshot,
     EditModelDelete,
+    ToDeleteEntry,
     validate_datasource,
 )
 from slayer.engine.statement_reads import StatementReads
@@ -124,7 +125,7 @@ def _live(connection: Any, layout: _Layout, *, schemas: list[str] | None) -> _La
     return _LayoutClient(connection, layout, schemas=schemas)
 
 
-def _verdicts(entries: list[Any]) -> list[tuple[str, str, list[str]]]:
+def _verdicts(entries: list[ToDeleteEntry]) -> list[tuple[str, str, list[str]]]:
     return sorted(
         (type(e).__name__, e.model_name, list(e.remove.columns) if isinstance(e, EditModelDelete) else [])
         for e in entries
@@ -154,7 +155,7 @@ class TestScope:
 
 @pytest.mark.parametrize("snapshot", [False, True], ids=["validate_models", "snapshot"])
 class TestValidateModels:
-    async def _validate(self, models: list[SlayerModel], *, client: _LayoutClient, snapshot: bool) -> list[Any]:
+    async def _validate(self, models: list[SlayerModel], *, client: _LayoutClient, snapshot: bool) -> list[ToDeleteEntry]:
         return await validate_datasource(
             datasource=_DS, models=models, client=client,
             snapshot=DriftSnapshot(created_at=0.0) if snapshot else None,

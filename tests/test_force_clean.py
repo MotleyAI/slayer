@@ -157,12 +157,12 @@ class TestApplyDriftDeletes:
         # Inject a save failure on the orders edit.
         original_save = engine.storage.save_model
 
-        async def flaky(model):
+        async def flaky(model: SlayerModel) -> None:
             if model.name == "orders":
                 raise RuntimeError("disk full")
             return await original_save(model)
 
-        with patch.object(engine.storage, "save_model", side_effect=flaky):
+        with patch.object(engine.storage, "save_model", autospec=True, side_effect=flaky):
             deletes = [
                 EditModelDelete(
                     model_name="orders",

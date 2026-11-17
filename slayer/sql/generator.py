@@ -70,6 +70,7 @@ from slayer.ir.planned import (
     MaskTyping,
     PlannedQuery,
     RankedGrainMember,
+    RegroupAttachPlan,
     SemiJoinFilter,
     SemiJoinHop,
     SpineFactor,
@@ -694,7 +695,7 @@ def _effective_src_filters(*, lowered_filters, plan) -> list:
 _BARE_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 
 
-def _apply_joins(*, select, joins):
+def _apply_joins(*, select: exp.Select, joins) -> exp.Select:
     """Apply ``(join_expr, on_expr, join_type)`` triples to ``select`` in order (``ARRAY``: ClickHouse's ARRAY JOIN)."""
     for join_expr, on_expr, join_type in joins:
         if join_type == "ARRAY":
@@ -744,10 +745,10 @@ class _SemiJoinOps:
         self.table = table
         self.attached = attached
 
-    def is_attached(self, hop) -> bool:
+    def is_attached(self, hop: SemiJoinHop) -> bool:
         return tuple(hop.node_path) in self.attached
 
-    def eqs(self, *, hop, parent: str, parent_name=None) -> List[Any]:
+    def eqs(self, *, hop: SemiJoinHop, parent: str, parent_name=None) -> List[Any]:
         """``parent_name`` maps a parent key and its quoting to the spine column projecting it."""
         alias = self.alias(tuple(hop.node_path))
         return [
@@ -756,7 +757,7 @@ class _SemiJoinOps:
             for (pc, hc), (pq, hq) in zip(hop.join_pairs, _hop_quoting(hop))
         ]
 
-    def join(self, *, inner, hop, eqs: List[Any]):
+    def join(self, *, inner: exp.Select, hop: SemiJoinHop, eqs: List[Any]) -> exp.Select:
         relation, kind = self.table(hop, False)
         if hop.lateral is not None:
             return _apply_joins(select=inner, joins=[(relation, None, kind)])
@@ -764,12 +765,12 @@ class _SemiJoinOps:
         return inner.join(relation, on=on, join_type="left" if hop.null_extended else "inner")
 
 
-def _hop_quoting(hop) -> List[Tuple[bool, bool]]:
+def _hop_quoting(hop: SemiJoinHop) -> List[Tuple[bool, bool]]:
     """Per key pair, whether each side's stored SQL quotes it."""
     return list(hop.quoted) or [(False, False)] * len(hop.join_pairs)
 
 
-def _spine_projection(*, ops: _SemiJoinOps, hops):
+def _spine_projection(*, ops: _SemiJoinOps, hops: Sequence[SemiJoinHop]):
     """The spine's distinct outer correlation columns: ``{(parent, col, quoted): name}``
     and their projection list; a column's alias is quoted as its key is."""
     spine_cols: Dict[Tuple[str, str, bool], str] = {}
@@ -789,7 +790,7 @@ def _spine_projection(*, ops: _SemiJoinOps, hops):
     return spine_cols, projection
 
 
-def _semi_join_spine(*, ops: _SemiJoinOps, hops, inner):
+def _semi_join_spine(*, ops: _SemiJoinOps, hops: Sequence[SemiJoinHop], inner: exp.Select) -> exp.Select:
     """Spine shape: FROM a one-row derived table projecting the outer correlation
     keys; attached hops LEFT/INNER join ON it, deeper hops ON their parent."""
     spine_alias = ops.alias(("__slayer_spine",))
@@ -4078,7 +4079,7 @@ class SQLGenerator:
         return rename
 
     def _prepare_combined_regroup_attaches(  # NOSONAR(S3776) — one cohesive combined-attach render (producer CTE → placeholder env → join-back); the phases share local state and reads clearer inline.
-        self, *, planned_query, bundle, source_relation, slot_by_key,
+        self, *, planned_query: PlannedQuery, bundle, source_relation, slot_by_key,
     ):
         """Render each combined regroup producer as a ``_cm_*`` CTE."""
         ctes: List[Node] = []
@@ -4183,7 +4184,7 @@ class SQLGenerator:
         )
 
     @staticmethod
-    def _regroup_attach_identity(attach):
+    def _regroup_attach_identity(attach: RegroupAttachPlan):
         """Structural identity of a regroup attach's producer: the"""
         return (
             frozenset(sub.original_key for sub in attach.substitutions),
@@ -4191,7 +4192,7 @@ class SQLGenerator:
         )
 
     def _prepare_regroup_attaches(  # NOSONAR(S3776) — one linear pass over the planned regroup producers (dedup → render → hoist); splitting would thread the CTE registry through every helper
-        self, *, planned_query, bundle, dedup_producers=None,
+        self, *, planned_query: PlannedQuery, bundle, dedup_producers=None,
     ):
         """Render each regroup producer as a ``_cm_*`` CTE."""
         dedup_producers = dedup_producers or {}
@@ -4852,7 +4853,7 @@ class SQLGenerator:
     ) -> Tuple[str, str, List[Tuple[str, str]]]:
         """The re-aggregation regime's shifted relation: the slot's shifted producer,
         rendered once per identity (a base producer it interns with is read as is)."""
-        planned_query = render.planned_query
+        planned_query: PlannedQuery = render.planned_query
         attach = next(
             (a for a in planned_query.regroup_attach_plans
              if a.attach_phase == "shifted" and a.shift_of == slot.id),
@@ -4893,6 +4894,7 @@ class SQLGenerator:
                     f"{host_key!r} is not materialised.",
                 )
             pairs.append((host_alias, col_by_sid[producer_sid]))
+        assert attach.answer_slot_id is not None
         return cte_name, col_by_sid[attach.answer_slot_id], pairs
 
     def _producer_ctes(

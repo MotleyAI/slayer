@@ -22,7 +22,7 @@ from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import IngestableObject
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.live_schema.schema_drift import EditModelDelete, LiveTable, WholeModelDelete
+from slayer.live_schema.schema_drift import EditModelDelete, LiveTable, ToDeleteEntry, WholeModelDelete
 from slayer.live_schema.schema_scope import SchemaRef
 from slayer.database import sqlite_introspect
 from slayer.database.client import DatabaseUnavailable, SlayerSQLClient
@@ -214,7 +214,8 @@ async def _fails_with_drift(
 
 
 def _blamed(err: SchemaDriftError) -> set[str]:
-    return {e.model_name for e in err.to_delete}
+    entries: list[ToDeleteEntry] = err.to_delete
+    return {e.model_name for e in entries}
 
 
 _EXPLAIN = pytest.mark.parametrize("explain", [False, True], ids=["data-query", "explain"])

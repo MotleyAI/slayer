@@ -13,6 +13,7 @@ import pytest
 
 from slayer.core.errors import AmbiguousJoinPathError
 from slayer.engine.plan import plan_query
+from slayer.ir.planned import SemiJoinHop
 
 from tests._dev1840_fixtures import (
     ModelMeasure,
@@ -42,7 +43,7 @@ def _attach(planned, root):
     return matches[0]
 
 
-def _pairs(hop):
+def _pairs(hop: SemiJoinHop) -> list[tuple[str, ...]]:
     return [tuple(p) for p in hop.join_pairs]
 
 

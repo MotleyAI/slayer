@@ -9,10 +9,10 @@ import os
 import signal
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from importlib.metadata import PackageNotFoundError, version
 from types import FrameType
-from typing import Any, ClassVar, Literal, NoReturn, TypedDict
+from typing import Any, ClassVar, Literal, NoReturn, TypedDict, TypeVar
 from urllib.parse import parse_qs, urlparse
 
 import yaml
@@ -53,7 +53,13 @@ from slayer.engine.profiling import (
     refresh_table_backed_model_sampled,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.live_schema.schema_drift import REPORT_ONLY_FINDINGS, NarrowedAccessFinding, RetypeFinding
+from slayer.live_schema.schema_drift import (
+    REPORT_ONLY_FINDINGS,
+    DriftReportEntry,
+    EditModelDelete,
+    NarrowedAccessFinding,
+    RetypeFinding,
+)
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
 from slayer.osi.converter import OsiConversionError, OsiConversionResult, OsiToSlayerConverter
@@ -1907,6 +1913,8 @@ async def _ingest_workflow(args, engine: SlayerQueryEngine) -> None:
         sys.exit(1)
 
 
+_DriftEntryT = TypeVar("_DriftEntryT", bound=DriftReportEntry)
+
 _REMOVE_SECTIONS = (
     ("columns", "drop columns"),
     ("measures", "drop measures"),
@@ -1915,7 +1923,7 @@ _REMOVE_SECTIONS = (
 )
 
 
-def _format_edit_entry_lines(entry) -> list[str]:
+def _format_edit_entry_lines(entry: EditModelDelete) -> list[str]:
     lines = [f"EDIT MODEL: {entry.model_name} (datasource: {entry.data_source})"]
     for attr, label in _REMOVE_SECTIONS:
         values = getattr(entry.remove, attr)
@@ -1926,7 +1934,7 @@ def _format_edit_entry_lines(entry) -> list[str]:
     return lines
 
 
-def _format_validate_models_output(entries) -> str:
+def _format_validate_models_output(entries: Sequence[DriftReportEntry]) -> str:
     """Render a List[ToDeleteEntry] as human-readable text for CLI output."""
     if not entries:
         return "No drift detected."
@@ -1975,7 +1983,7 @@ def _indent_block(text: str, *, indent: str = "  ") -> str:
                      for line in text.split("\n"))
 
 
-def _resolve_validate_scope(args, storage: StorageBackend) -> None:
+def _resolve_validate_scope(args: argparse.Namespace, storage: StorageBackend) -> None:
     """Fail fast on a typoed --datasource / --model.
 
     Either would otherwise yield an empty report, indistinguishable from
@@ -2004,7 +2012,9 @@ def _resolve_validate_scope(args, storage: StorageBackend) -> None:
         sys.exit(1)
 
 
-async def _validate_each_datasource(engine: SlayerQueryEngine, ds_names: list[str]) -> list[tuple]:
+async def _validate_each_datasource(
+    engine: SlayerQueryEngine, ds_names: list[str],
+) -> list[tuple[str, list[DriftReportEntry] | BaseException]]:
     """Validate every datasource concurrently, pairing each result with its name."""
     results = await asyncio.gather(
         *(engine.validate_models(data_source=name) for name in ds_names),
@@ -2013,7 +2023,9 @@ async def _validate_each_datasource(engine: SlayerQueryEngine, ds_names: list[st
     return list(zip(ds_names, results))
 
 
-async def _collect_drift(args, engine: SlayerQueryEngine, storage) -> tuple[list, list]:
+async def _collect_drift(
+    args: argparse.Namespace, engine: SlayerQueryEngine, storage: StorageBackend,
+) -> tuple[list[DriftReportEntry], list[tuple[str, BaseException]]]:
     """``(entries, failures)`` for the requested scope, filtered by ``--model``.
 
     Datasources are validated concurrently but attributed one by one:
@@ -2026,7 +2038,7 @@ async def _collect_drift(args, engine: SlayerQueryEngine, storage) -> tuple[list
     else:
         ds_names = await storage.list_datasources()
 
-    entries: list = []
+    entries: list[DriftReportEntry] = []
     failures: list[tuple[str, BaseException]] = []
     for ds_name, result in await _validate_each_datasource(engine, ds_names):
         # gather() reports a cancelled child as a CancelledError value; that is
@@ -2040,13 +2052,13 @@ async def _collect_drift(args, engine: SlayerQueryEngine, storage) -> tuple[list
     return _filter_entries_by_model(entries, getattr(args, "model", None)), failures
 
 
-def _filter_entries_by_model(entries: list, model: str | None) -> list:
+def _filter_entries_by_model(entries: list[_DriftEntryT], model: str | None) -> list[_DriftEntryT]:
     if not model:
         return entries
     return [e for e in entries if e.model_name == model]
 
 
-async def _collect_cardinality_report(args, engine: SlayerQueryEngine):
+async def _collect_cardinality_report(args: argparse.Namespace, engine: SlayerQueryEngine):
     """Profile join arity, or ``None`` when neither cardinality flag is set."""
     persist = bool(getattr(args, "persist_cardinality", False))
     if not (persist or getattr(args, "cardinality", False)):
@@ -2061,14 +2073,14 @@ async def _collect_cardinality_report(args, engine: SlayerQueryEngine):
         _fail(f"validate-models: cardinality profiling failed: {exc}")
 
 
-async def _collect_all_models(args, storage: StorageBackend) -> list:
+async def _collect_all_models(args: argparse.Namespace, storage: StorageBackend) -> list:
     """Every model in the requested datasource scope (for join-safety audit)."""
     ds_names = [args.datasource] if args.datasource else await storage.list_datasources()
     failures = DocumentLoadFailures()
     return [m for ds in ds_names for m in failures.skip(await storage.load_models(data_source=ds))]
 
 
-async def _collect_join_safety_findings(args, storage: StorageBackend) -> list[JoinSafetyFinding]:
+async def _collect_join_safety_findings(args: argparse.Namespace, storage: StorageBackend) -> list[JoinSafetyFinding]:
     """Joins whose arity is neither declared m:1/1:1 nor structurally proven —
     metrics crossing them broadcast."""
     findings = audit_join_safety(models=await _collect_all_models(args=args, storage=storage))
@@ -2119,7 +2131,9 @@ def _print_cardinality_section(report) -> None:
     print(_format_cardinality_report_text(report, indent="  "))
 
 
-async def _apply_force_clean(args, engine: SlayerQueryEngine, entries) -> None:
+async def _apply_force_clean(
+    args: argparse.Namespace, engine: SlayerQueryEngine, entries: Sequence[DriftReportEntry],
+) -> None:
     """Prompt for and apply the drift deletes; exits 1 on residual/errors."""
     if not _confirm(
         f"\nApply {len(entries)} delete(s) to storage?",

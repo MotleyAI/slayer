@@ -17,6 +17,7 @@ Integration coverage on DuckDB lives in
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from unittest.mock import patch
 
@@ -39,6 +40,7 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import (
+    DriftReportEntry,
     EditModelDelete,
     LiveTable,
     RemoveSpec,
@@ -103,19 +105,19 @@ def _live_orders(
     )
 
 
-def _entry_for(model_name: str, entries: list) -> object | None:
+def _entry_for(model_name: str, entries: Sequence[DriftReportEntry]) -> object | None:
     for e in entries:
         if e.model_name == model_name:
             return e
     return None
 
 
-def _delete_for(model_name: str, entries: list) -> object | None:
+def _delete_for(model_name: str, entries: Sequence[DriftReportEntry]) -> object | None:
     return next((e for e in entries if e.model_name == model_name
                  and isinstance(e, (EditModelDelete, WholeModelDelete))), None)
 
 
-def _retype_for(entries: list, column: str) -> dict:
+def _retype_for(entries: Sequence[DriftReportEntry], column: str) -> dict:
     (finding,) = [d for e in entries if (d := e.model_dump(mode="json")).get("finding") == "retype"
                   and d.get("column") == column]
     return finding

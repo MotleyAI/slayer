@@ -495,7 +495,7 @@ async def _duckdb_idempotent_setup(tmp_path: Path) -> tuple[YAMLStorage, Datasou
     return storage, ds
 
 
-def _addition_for(name: str, additions) -> ModelAddition | None:
+def _addition_for(name: str, additions: list[ModelAddition]) -> ModelAddition | None:
     return next((a for a in additions if a.model_name == name), None)
 
 

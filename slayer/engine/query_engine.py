@@ -136,7 +136,6 @@ from slayer.ir.planned import (
     _iter_plans_with_producers,
     _walk_regroup_attaches,
     emitted_plans,
-    is_spliced,
     plan_has_semi_join_filters,
     plans_read_clock,
     planned_keys,
@@ -1394,7 +1393,8 @@ class SlayerQueryEngine:
         plans = emitted_plans(planned_list, kept_stages=kept)
         reads |= {
             p.stage_schema.display.model for p in plans
-            if is_spliced(p) and p.stage_schema is not None and p.stage_schema.display is not None
+            if p.stage_schema is not None and p.stage_schema.display is not None
+            and p.stage_schema.display.model is not None
         }
         emitted_ids = {id(p) for p in plans}
         labels = [
@@ -2018,7 +2018,7 @@ class SlayerQueryEngine:
             findings = [f for f in found if schema_drift.touches(reads, f)]
             if filtered or findings:
                 raise SchemaDriftError(
-                    models=sorted({e.model_name for e in [*filtered, *findings]}),
+                    models=sorted({e.model_name for e in filtered} | {f.model_name for f in findings}),
                     to_delete=filtered,
                     original=err,
                     findings=findings,
@@ -2559,8 +2559,8 @@ class SlayerQueryEngine:
 
     async def apply_drift_deletes(
         self,
-        deletes: "Sequence[schema_drift.EditModelDelete | schema_drift.WholeModelDelete | schema_drift.NarrowedAccessFinding | schema_drift.RetypeFinding]",
-    ) -> "Any":
+        deletes: "Sequence[schema_drift.DriftReportEntry]",
+    ) -> "schema_drift.ApplyDriftResult":
         """Apply each ``ToDeleteEntry`` → ``ApplyDriftResult``; per-entry failures land in ``errors``, ``residual`` from a re-validate."""
         applied: List[schema_drift.AppliedEntry] = []
         errors: List[schema_drift.ApplyError] = []
@@ -2855,7 +2855,7 @@ class SlayerQueryEngine:
 
     async def validate_models(
         self, data_source: Optional[str] = None
-    ) -> "List[Any]":
+    ) -> "List[schema_drift.DriftReportEntry]":
         """Diff persisted models against live schemas → minimal deletes (read-only; ``None`` = all datasources)."""
         ds_names = [data_source] if data_source is not None else await self.storage.list_datasources()
         if not ds_names:
@@ -2868,7 +2868,7 @@ class SlayerQueryEngine:
         results = await asyncio.gather(
             *(self._validate_datasource(n, narrowed=narrowed) for n in ds_names), return_exceptions=True
         )
-        out: List = []
+        out: List[schema_drift.DriftReportEntry] = []
         for r in results:
             if isinstance(r, BaseException):
                 logger.warning("validate_models: per-DS validation failed: %s", r)
@@ -2878,7 +2878,7 @@ class SlayerQueryEngine:
 
     async def _validate_datasource(
         self, data_source: str, *, narrowed: Dict[Tuple[str, str], List[Tuple[str, str]]],
-    ) -> "List[Any]":
+    ) -> "List[schema_drift.DriftReportEntry]":
         """One datasource's drift deletes, unloadable models and narrowed-access findings."""
         ds = await self.storage.get_datasource(data_source)
         if ds is None:

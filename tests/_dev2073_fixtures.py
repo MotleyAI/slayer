@@ -14,6 +14,7 @@ from slayer.core.enums import DataType, JoinCardinality
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
+from slayer.live_schema.schema_drift import IdempotentIngestResult, ModelAddition
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.database.client import SqlClient
@@ -128,7 +129,7 @@ class Live(BaseModel):
         """The workspace engine's client for the live datasource."""
         return self.engine().client_for(self.ds)
 
-    async def ingest(self):
+    async def ingest(self) -> IdempotentIngestResult:
         return await ingest_datasource_idempotent(datasource=self.ds, storage=self.storage, client=self.client())
 
     async def model(self, name: str) -> SlayerModel:
@@ -173,7 +174,7 @@ async def live(script: str, *, dialect: str = "sqlite") -> AsyncGenerator[Live]:
             await workspace.aclose()
 
 
-def addition_for(result, model_name: str):
+def addition_for(result: IdempotentIngestResult, model_name: str) -> ModelAddition:
     return next(a for a in result.additions if a.model_name == model_name)
 
 

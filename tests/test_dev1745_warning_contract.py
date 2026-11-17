@@ -32,7 +32,7 @@ from slayer.mcp.server import create_mcp_server
 from slayer.sql.generator import SQLGenerator
 from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
 from slayer.core.query import SlayerQuery
-from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -155,11 +155,11 @@ def _two_plan_query() -> SlayerQuery:
     )
 
 
-def _pushed(response) -> list:
+def _pushed(response: SlayerResponse) -> list[SemiJoinPushedWarningPayload]:
     """Semi-join-pushed payloads on a SlayerResponse."""
     return [
         w for w in (response.warnings or [])
-        if getattr(w, "kind", None) == "semi_join_pushed"
+        if isinstance(w, SemiJoinPushedWarningPayload)
     ]
 
 

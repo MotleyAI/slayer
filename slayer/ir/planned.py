@@ -6,7 +6,7 @@ from datetime import datetime
 
 import functools
 from enum import Enum, IntEnum
-from typing import Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Tuple, Union, cast
+from typing import AbstractSet, Dict, Hashable, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple, Union, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -851,16 +851,16 @@ def _walk_regroup_attaches(planned):
     yield from walk(planned)
 
 
-def is_spliced(planned) -> bool:
+def is_spliced(planned: PlannedQuery) -> bool:
     """Whether ``planned`` is a stage spliced in from a stored query-backed model."""
     schema = planned.stage_schema
     return schema is not None and schema.display is not None and schema.display.model is not None
 
 
-def emitted_plans(planned_list, *, kept_stages) -> list:
+def emitted_plans(planned_list: Sequence[PlannedQuery], *, kept_stages: AbstractSet[str]) -> list[PlannedQuery]:
     """The stages a rendered statement emits: the root, every own stage, each spliced stage it reaches."""
     root = planned_list[-1]
     return [
         p for p in planned_list
-        if p is root or not is_spliced(p) or p.stage_schema.relation_name in kept_stages
+        if p is root or p.stage_schema is None or not is_spliced(p) or p.stage_schema.relation_name in kept_stages
     ]

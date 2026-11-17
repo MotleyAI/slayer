@@ -15,6 +15,7 @@ from sqlglot import exp
 import slayer.engine.query_engine as query_engine_module
 from slayer.core.format import NumberFormatType
 from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import SQLGLOT_NAMES, get_dialect
 from slayer.storage.yaml_storage import YAMLStorage
@@ -329,7 +330,7 @@ class TestExtensions:
 # Warnings raised inside a spliced model.
 # --------------------------------------------------------------------------- #
 class TestSplicedWarnings:
-    async def test_broadcast_inside_a_query_backed_model_is_visible(self, engine) -> None:
+    async def test_broadcast_inside_a_query_backed_model_is_visible(self, engine: SlayerQueryEngine) -> None:
         q = query(source_model="bcast_qb", dimensions=["status"], measures=[m("sum(amt2)", "t")])
         with pytest.warns(UserWarning):
             resp = await engine.execute(q)
@@ -340,7 +341,7 @@ class TestSplicedWarnings:
         assert "bcast_qb" in w.location, w.location
         assert INTERNAL not in w.location
 
-    async def test_consumer_warnings_equal_the_explicit_splice(self, engine) -> None:
+    async def test_consumer_warnings_equal_the_explicit_splice(self, engine: SlayerQueryEngine) -> None:
         consumer = query(
             name="r", **_join("orders", "cust_rev", [["customer_id", "customer_id"]]),
             dimensions=["status"],
@@ -348,7 +349,7 @@ class TestSplicedWarnings:
             to_many_handling="broadcast")
         with pytest.warns(UserWarning):
             got = await engine.execute(consumer)
-        spliced = [*explicit_splice(cust_rev_model()), consumer]
+        spliced: list[SlayerQuery | dict[str, Any]] = [*explicit_splice(cust_rev_model()), consumer]
         with pytest.warns(UserWarning):
             ref = await engine.execute(spliced)
         assert sorted_rows(got.data) == sorted_rows(ref.data)

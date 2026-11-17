@@ -790,7 +790,7 @@ def _entity_seeded(*, grain: Grain, model: SlayerModel, at: Tuple[str, ...]) -> 
 
 
 def _hop_pins(
-    *, edge, tgt: SlayerModel, grain: Grain,
+    *, edge: OrientedJoin, tgt: SlayerModel, grain: Grain,
     path: Tuple[str, ...], i: int, pinned_before: bool,
 ) -> bool:
     """The to-one target of ``edge`` stays pinned iff its own entity key is seeded,

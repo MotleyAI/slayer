@@ -9,7 +9,7 @@ per-node identity so repeated models bind distinct aliases.
 from __future__ import annotations
 
 from slayer.engine.plan import plan_query
-from slayer.ir.planned import _walk_regroup_attaches
+from slayer.ir.planned import SemiJoinHop, _walk_regroup_attaches
 
 from tests._dev1840_fixtures import (
     ModelMeasure,
@@ -35,7 +35,7 @@ def _attach(planned, root):
     return matches[0]
 
 
-def _pairs(hop):
+def _pairs(hop: SemiJoinHop) -> list[tuple[str, ...]]:
     return [tuple(p) for p in hop.join_pairs]
 
 

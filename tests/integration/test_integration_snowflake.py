@@ -729,7 +729,7 @@ def test_auto_ingest_discovers_joins(sf_datasource, sf_transient_schema) -> None
     # orders → customers / products. ModelJoin stores join_pairs as
     # [[source_col, target_col], ...]; flatten the first pair for the
     # standard single-column FK case.
-    def _first_pair(j) -> tuple[str, str]:
+    def _first_pair(j: ModelJoin) -> tuple[str, str]:
         pair = j.join_pairs[0]
         return (pair[0].lower(), pair[1].lower())
 

@@ -15,6 +15,8 @@ from __future__ import annotations
 from typing import List
 
 from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
+from slayer.core.warnings import AssociatedWarningPayload, SemiJoinPushedWarningPayload
+from slayer.engine.query_engine import SlayerResponse
 
 from tests._dev1836_fixtures import (
     broadcast_warnings,
@@ -102,16 +104,16 @@ def cust_q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def associated_warnings(resp) -> list:
+def associated_warnings(resp: SlayerResponse) -> list[AssociatedWarningPayload]:
     """The response's ``kind == "associated"`` warnings (non-additive cells)."""
     return [w for w in (resp.warnings or [])
-            if getattr(w, "kind", None) == "associated"]
+            if isinstance(w, AssociatedWarningPayload)]
 
 
-def pushed_filter_infos(resp) -> list:
+def pushed_filter_infos(resp: SlayerResponse) -> list[SemiJoinPushedWarningPayload]:
     """The response's semi-join-pushed informational entries."""
     return [w for w in (resp.warnings or [])
-            if getattr(w, "kind", None) == "semi_join_pushed"]
+            if isinstance(w, SemiJoinPushedWarningPayload)]
 
 
 # Oracles — hand-computed from the ``_dev1840_fixtures`` dataset (per-cell = distinct entities).

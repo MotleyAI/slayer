@@ -17,7 +17,7 @@ from slayer.core.models import (
     SlayerModel,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.live_schema.schema_drift import EditModelDelete, WholeModelDelete
+from slayer.live_schema.schema_drift import DriftReportEntry, EditModelDelete, WholeModelDelete
 from slayer.storage.yaml_storage import YAMLStorage
 from typing import Any
 
@@ -141,7 +141,7 @@ def duckdb_drift_env(tmp_path):
     return engine, str(db_path)
 
 
-def _find(name: str, entries):
+def _find(name: str, entries: list[DriftReportEntry]) -> DriftReportEntry | None:
     for e in entries:
         if e.model_name == name:
             return e

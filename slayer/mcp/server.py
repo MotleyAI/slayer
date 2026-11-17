@@ -47,6 +47,7 @@ from slayer.live_schema.ingestion import (
     key_read_failures_header,
     list_ingestable_objects,
 )
+from slayer.live_schema.schema_drift import IdempotentIngestResult, IngestionError, ModelAddition, ToDeleteEntry
 from slayer.live_schema.schema_scope import schema_ref_from_token, validate_scope_args
 from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine, SlayerResponse
@@ -303,7 +304,7 @@ async def _empty_ingest_message(*, schema_name: str, client: SqlClient) -> str:
     )
 
 
-def _addition_has_changes(a: Any) -> bool:
+def _addition_has_changes(a: ModelAddition) -> bool:
     """True when a non-created addition carries any change worth rendering."""
     return bool(
         a.new_columns
@@ -316,7 +317,7 @@ def _addition_has_changes(a: Any) -> bool:
     )
 
 
-def _render_new_models_section(new_models: list[Any]) -> list[str]:
+def _render_new_models_section(new_models: list[ModelAddition]) -> list[str]:
     if not new_models:
         return []
     lines = [f"Created {len(new_models)} new model(s):"]
@@ -330,7 +331,7 @@ def _render_new_models_section(new_models: list[Any]) -> list[str]:
     return lines
 
 
-def _addition_update_details(a: Any) -> list[str]:
+def _addition_update_details(a: ModelAddition) -> list[str]:
     """Detail fragments for one non-created addition, in CLI-renderer order."""
     details = []
     if a.new_columns:
@@ -354,7 +355,7 @@ def _addition_update_details(a: Any) -> list[str]:
     return details
 
 
-def _render_updated_section(updated: list[Any]) -> list[str]:
+def _render_updated_section(updated: list[ModelAddition]) -> list[str]:
     if not updated:
         return []
     lines = [f"Updated {len(updated)} existing model(s):"]
@@ -363,7 +364,7 @@ def _render_updated_section(updated: list[Any]) -> list[str]:
     return lines
 
 
-def _render_unchanged_section(unchanged: list[Any]) -> list[str]:
+def _render_unchanged_section(unchanged: list[ModelAddition]) -> list[str]:
     if not unchanged:
         return []
     return [
@@ -372,7 +373,7 @@ def _render_unchanged_section(unchanged: list[Any]) -> list[str]:
     ]
 
 
-def _render_drift_section(to_delete: list[Any]) -> list[str]:
+def _render_drift_section(to_delete: list[ToDeleteEntry]) -> list[str]:
     if not to_delete:
         return []
     out = ["", "Pending drift (run validate_models / apply manually):"]
@@ -430,7 +431,7 @@ def _render_broken_dependents_section(broken: list[Any]) -> list[str]:
     return ["", f"Broken by a list re-type ({len(broken)}):", *(f"- {b.human_message()}" for b in broken)]
 
 
-def _render_errors_section(errors: list[Any]) -> list[str]:
+def _render_errors_section(errors: list[IngestionError]) -> list[str]:
     if not errors:
         return []
     out = ["", f"Errors ({len(errors)}):"]
@@ -439,7 +440,7 @@ def _render_errors_section(errors: list[Any]) -> list[str]:
 
 
 async def _render_ingest_result(
-    result: Any,
+    result: IdempotentIngestResult,
     *,
     schema_name: str,
     ds: DatasourceConfig,

@@ -10,6 +10,7 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Collection, Iterable
 from contextlib import asynccontextmanager
 from typing import (
+    TYPE_CHECKING,
     Annotated,
     Any,
     Literal,
@@ -230,6 +231,9 @@ class NarrowedAccessFinding(BaseModel):
 #: Validation entries that report rather than delete.
 REPORT_ONLY_FINDINGS = (NarrowedAccessFinding, RetypeFinding)
 
+#: One entry of a ``validate_models`` report.
+DriftReportEntry = EditModelDelete | WholeModelDelete | NarrowedAccessFinding | RetypeFinding
+
 
 def unloadable_model_delete(*, error: StoredDocumentLoadError) -> WholeModelDelete:
     """The validation report's entry for a stored model that cannot be loaded."""
@@ -271,6 +275,14 @@ class IngestionError(BaseModel):
     error: str
 
 
+if TYPE_CHECKING:
+    from slayer.live_schema.ingestion import InternalTable
+
+    _HiddenInternals = list[InternalTable]
+else:
+    _HiddenInternals = list  # items are InternalTable; the import is circular
+
+
 class IdempotentIngestResult(BaseModel):
     """Combined return shape of the idempotent ``ingest_datasource`` pass."""
 
@@ -282,7 +294,7 @@ class IdempotentIngestResult(BaseModel):
     # Every live object discovered this pass; entries are IngestableObject.
     objects: list[Any] = Field(default_factory=list)
     # ELT/migration bookkeeping modelled hidden; entries are InternalTable.
-    hidden_internals: list[Any] = Field(default_factory=list)
+    hidden_internals: _HiddenInternals = Field(default_factory=list)
     # True when the datasource description was filled from the BigQuery dataset.
     datasource_described: bool = False
     # Message naming schemas discovered but not ingested this pass, or None.

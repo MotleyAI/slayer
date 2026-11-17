@@ -16,6 +16,7 @@ moved to its supported table — that flip is enforced there, not here.)
 from __future__ import annotations
 
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,8 @@ import pytest
 import slayer
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
+from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.ir.planned import RegroupAttachPlan
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
@@ -42,7 +45,7 @@ from tests._dev1836_fixtures import (
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
-async def exec_backend(request):
+async def exec_backend(request: pytest.FixtureRequest) -> AsyncIterator[tuple[str, SlayerQueryEngine]]:
     async for engine in make_exec_engine(request):
         yield request.param, engine
 
@@ -205,8 +208,8 @@ class TestCrossModelSourceInComputedDimension:
             bundle=_bundle(),
         )
 
-        def _all_nested(plans) -> list:
-            out = []
+        def _all_nested(plans: list[RegroupAttachPlan]) -> list[RegroupAttachPlan]:
+            out: list[RegroupAttachPlan] = []
             for p in plans:
                 inner = p.producer_plan.regroup_attach_plans
                 out.extend(inner)
@@ -224,7 +227,9 @@ class TestCrossModelSourceInComputedDimension:
 class TestIntermediateHopDimensions:
     """The former generator raise for shared-grain dims on intermediate hops."""
 
-    async def test_intermediate_hop_dim_associates_by_default(self, exec_backend):
+    async def test_intermediate_hop_dim_associates_by_default(
+        self, exec_backend: tuple[str, SlayerQueryEngine],
+    ):
         """A region's population is not attributable per customer, so by default each
         tier aggregates the distinct regions its customers reach."""
         _, engine = exec_backend

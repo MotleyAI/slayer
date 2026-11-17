@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import datetime
 
 import pytest
@@ -53,7 +54,7 @@ PER_GROUP_ROWS = {
 
 
 @pytest.fixture(params=BACKENDS)
-async def engine(request):
+async def engine(request: pytest.FixtureRequest) -> AsyncIterator[SlayerQueryEngine]:
     async with spine_engine(request.param) as eng:
         yield eng
 
@@ -165,7 +166,7 @@ class TestAxes:
         assert "metric 'c' would broadcast" in str(exc.value)
         assert "time_spine" in str(exc.value)
 
-    async def test_a_dataset_with_no_to_one_route_associates_by_default(self, engine) -> None:
+    async def test_a_dataset_with_no_to_one_route_associates_by_default(self, engine: SlayerQueryEngine) -> None:
         query = spine_query(measures=[m("count(customers.id)", "c")], date_range=JAN_MAR)
         default = await engine.execute(query)
         assoc = await engine.execute(query.model_copy(update={"to_many_handling": "associate"}))

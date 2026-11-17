@@ -667,7 +667,7 @@ class TestIdempotencyAndReporting:
         second = await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         for result in (first, second):
-            entry = next(iter(result.hidden_internals))
+            entry: InternalTable = next(iter(result.hidden_internals))
             assert entry.table_name == "_dlt_loads__x"
             assert entry.model_name == "_dlt_loads__x"
 

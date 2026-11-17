@@ -1434,7 +1434,10 @@ class TestStringCoercion:
 
     def test_dimensions_plain_strings(self) -> None:
         query = SlayerQuery(source_model="orders", dimensions=["status", "customers.name"])
+        assert query.dimensions is not None
         assert len(query.dimensions) == 2
+        assert isinstance(query.dimensions[0], ColumnRef)
+        assert isinstance(query.dimensions[1], ColumnRef)
         assert query.dimensions[0].name == "status"
         assert query.dimensions[0].model is None
         assert query.dimensions[1].name == "name"
@@ -1454,7 +1457,9 @@ class TestStringCoercion:
             source_model="orders",
             dimensions=["status", {"name": "customers.name", "label": "Customer"}],
         )
+        assert query.dimensions is not None
         assert len(query.dimensions) == 2
+        assert isinstance(query.dimensions[1], ColumnRef)
         assert query.dimensions[0].name == "status"
         assert query.dimensions[1].name == "name"
         assert query.dimensions[1].model == "customers"

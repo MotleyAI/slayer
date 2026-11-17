@@ -54,7 +54,7 @@ def _shift_slots(pq: PlannedQuery, *, series: bool) -> list:
             and s.key.op == "time_shift" and s.series is series]
 
 
-def _shifted(pq: PlannedQuery) -> list:
+def _shifted(pq: PlannedQuery) -> list[RegroupAttachPlan]:
     return [a for a in pq.regroup_attach_plans if a.attach_phase == "shifted"]
 
 

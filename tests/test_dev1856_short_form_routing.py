@@ -26,6 +26,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import (
     EditModelDelete,
     RemoveSpec,
+    ToDeleteEntry,
     WholeModelDelete,
     compute_datasource_drops,
 )
@@ -816,7 +817,7 @@ class TestSchemaDriftRouting:
         )
 
     @staticmethod
-    def _entry_for(name: str, entries):
+    def _entry_for(name: str, entries: list[ToDeleteEntry]) -> ToDeleteEntry | None:
         return next((e for e in entries if e.model_name == name), None)
 
     def test_dropping_routed_column_cascades(self) -> None:

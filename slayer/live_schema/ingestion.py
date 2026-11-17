@@ -2090,7 +2090,7 @@ async def _empty_ingest_message(
 _KIND_LABELS = {"view": " [view]", "materialized_view": " [materialized view]"}
 
 
-def _updated_detail_lines(addition) -> list[str]:
+def _updated_detail_lines(addition: "schema_drift.ModelAddition") -> list[str]:
     """The ``Updated: <model> (...)`` detail fragments, in display order."""
     described = getattr(addition, "described_columns", []) or []
     widened = getattr(addition, "widened_columns", []) or []
@@ -2113,7 +2113,7 @@ def _updated_detail_lines(addition) -> list[str]:
 
 
 def _print_ingest_addition(
-    addition, *, file: TextIO | None = None
+    addition: "schema_drift.ModelAddition", *, file: TextIO | None = None
 ) -> None:
     out = file if file is not None else sys.stdout
     # Label non-table objects — a view-backed model has no PK and no joins.
@@ -2134,9 +2134,9 @@ def _print_ingest_addition(
 
 def _print_report_section(
     *,
-    entries: list,
+    entries: list[_T],
     header: str,
-    line: Callable[[Any], str],
+    line: Callable[[_T], str],
     out: TextIO,
     footer: str | None = None,
 ) -> None:
@@ -2150,7 +2150,7 @@ def _print_report_section(
         print(footer, file=out)
 
 
-def _hidden_internal_line(entry) -> str:
+def _hidden_internal_line(entry: InternalTable) -> str:
     """``<table>: <tool>``, appending the model name (needed to un-hide) when it differs."""
     target = entry.table_name
     if entry.model_name != entry.table_name:
@@ -2186,8 +2186,9 @@ def _print_ingest_drift_and_errors(
     out = file if file is not None else sys.stdout
     if getattr(result, "datasource_described", False):
         print("Datasource description imported.", file=out)
+    to_delete: list[schema_drift.ToDeleteEntry] = getattr(result, "to_delete", None) or []
     _print_report_section(
-        entries=getattr(result, "to_delete", None) or [],
+        entries=to_delete,
         header="\nPending drift (run `slayer validate-models` to inspect):",
         line=lambda e: f"{e.tool}: {e.model_name}",
         out=out,
@@ -2237,7 +2238,7 @@ def _print_ingest_drift_and_errors(
         line=lambda e: e.human_message(),
         out=out,
     )
-    errors = getattr(result, "errors", None) or []
+    errors: list[schema_drift.IngestionError] = getattr(result, "errors", None) or []
     _print_report_section(
         entries=errors,
         header=f"\nErrors ({len(errors)}):",
@@ -2256,6 +2257,12 @@ class StartupIngestFailure(BaseModel):
     error: str
 
 
+if TYPE_CHECKING:
+    _DriftPending = list[schema_drift.ToDeleteEntry]
+else:
+    _DriftPending = list  # items are ToDeleteEntry; schema_drift imports this module
+
+
 class StartupIngestSummary(BaseModel):
     """Outcome of :func:`ingest_all_datasources_idempotent`.
 
@@ -2268,7 +2275,7 @@ class StartupIngestSummary(BaseModel):
 
     succeeded: list[str] = Field(default_factory=list)
     failures: list[StartupIngestFailure] = Field(default_factory=list)
-    drift_pending: list[Any] = Field(default_factory=list)
+    drift_pending: _DriftPending = Field(default_factory=list)
 
 
 async def ingest_all_datasources_idempotent(

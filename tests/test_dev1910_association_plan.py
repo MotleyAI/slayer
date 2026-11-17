@@ -38,7 +38,7 @@ def _akernel(att) -> AssociationProducerKernel:
     return att.kernel
 
 
-def _rerooted_paths(att, leaf: str):
+def _rerooted_paths(att: RegroupAttachPlan, leaf: str):
     """Producer-side (home-rooted) grain key paths for ``leaf`` — the producer
     slot each join_pair points at, where the reroot shows."""
     slots = {s.id: s for s in att.producer_plan.row_slots}

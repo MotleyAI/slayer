@@ -37,6 +37,7 @@ from slayer.live_schema.schema_drift import (
     IdempotentIngestResult,
     IngestionError,
     ModelAddition,
+    ToDeleteEntry,
     WholeModelDelete,
 )
 from slayer.storage.yaml_storage import YAMLStorage
@@ -341,7 +342,8 @@ class TestOrchestrator:
         )
 
         assert len(summary.drift_pending) == 2
-        names = {entry.model_name for entry in summary.drift_pending}
+        pending: list[ToDeleteEntry] = summary.drift_pending
+        names = {entry.model_name for entry in pending}
         assert names == {"dropped_table"}
         sources = {entry.data_source for entry in summary.drift_pending}
         assert sources == {"a", "b"}

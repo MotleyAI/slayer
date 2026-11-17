@@ -21,6 +21,7 @@ from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.types import CallToolResult
 from pydantic import BaseModel, ValidationError
 
 from scripts.doc_examples import REPO_ROOT, DocQuery, load_page
@@ -211,7 +212,7 @@ def cli_leg(opts: Options, queries: list[DocQuery], *, leg: Path) -> list[GateFa
     return failures
 
 
-def _tool_text(result: Any) -> str:
+def _tool_text(result: CallToolResult) -> str:
     """The single text content item of a successful tool result."""
     texts = [c.text for c in result.content if getattr(c, "type", None) == "text"]
     if result.isError:

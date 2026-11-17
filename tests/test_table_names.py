@@ -144,7 +144,7 @@ async def _ingest(*, datasource: DatasourceConfig, storage: YAMLStorage,
         engine.close()
 
 
-async def _validate(storage: YAMLStorage) -> list[object]:
+async def _validate(storage: YAMLStorage) -> Sequence[object]:
     engine = SlayerQueryEngine(storage=storage)
     try:
         return await engine.validate_models(data_source=DS)
