@@ -24,6 +24,7 @@ from slayer.memories.models import Memory
 from slayer.database import engine_factory
 from slayer.storage import migrations as mig
 from slayer.storage.base import StorageBackend
+from slayer.storage.document_keys import LEGACY_KEYS, dataset_in, keys_for
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -37,13 +38,14 @@ FILLED = "rank(sum(amount), direction='desc')"
 
 
 def _model_dict(*, measures: list[dict], version: Any = 12, **extra) -> dict:
-    data = sales_dataset().model_dump(mode="json", exclude_none=True)
+    """``sales`` stored at ``version`` (fresh when ``None``), spelled as that version stores it."""
+    data = dataset_in(sales_dataset().model_dump(mode="json", exclude_none=True), LEGACY_KEYS)
     data.pop("version", None)
     if version is not None:
         data["version"] = version
     data["measures"] = measures
     data.update(extra)
-    return data
+    return dataset_in(data, keys_for(entity="SlayerModel", version=version or mig.CURRENT_VERSIONS["SlayerModel"]))
 
 
 def _migrated_formula(formula: str) -> str:
@@ -169,15 +171,17 @@ class TestRewrite:
 # Stored queries: every Mode-B field, nested and inline.
 # --------------------------------------------------------------------------- #
 def _query_dict(version: Any = 4) -> dict:
+    """A query stored at ``version`` (fresh when ``None``), spelled as that version stores it."""
+    k = keys_for(entity="SlayerQuery", version=version or mig.CURRENT_VERSIONS["SlayerQuery"])
     data: dict = {
-        "population": "sales",
+        k.population: "sales",
         "dimensions": ["region", {"expression": "rank(sum(amount, partition_by=region))", "name": "rk"}],
-        "metrics": [
+        k.query_metrics: [
             "rank(sum(amount)) + 1",
-            {"expression": "iif(dense_rank(sum(amount, partition_by=[region])) <= 2, 1, 0)", "name": "top"},
+            {k.expression: "iif(dense_rank(sum(amount, partition_by=[region])) <= 2, 1, 0)", "name": "top"},
         ],
-        "filter": ["rank(sum(amount, partition_by=region)) <= 3 and city <> 'rank('"],
-        "order": [{"field": "abs(rank(sum(amount)))", "direction": "asc"}],
+        k.query_filter: ["rank(sum(amount, partition_by=region)) <= 3 and city <> 'rank('"],
+        "order": [{k.order_field: "abs(rank(sum(amount)))", "direction": "asc"}],
         "main_time_dimension": "rank(sum(amount))",
     }
     if version is not None:
@@ -205,15 +209,19 @@ class TestStoredQuery:
 
     @pytest.mark.parametrize("version", [4, None])
     def test_source_queries_of_a_stored_model(self, version):
-        data = _model_dict(measures=[], source_queries=[_query_dict(version=version)])
+        stage = _query_dict()
+        if version is None:
+            del stage["version"]  # stored without a version of its own
+        data = _model_dict(measures=[], source_queries=[stage])
         data.pop("sql_table", None)
         data.pop("columns", None)
+        data.pop("fields", None)
         [q] = SlayerDataset.model_validate(data).source_queries or []
         _assert_query_filled(q)
 
     def test_inline_extension_measures_of_a_stored_query(self):
-        ext = {"source_name": "sales", "metrics": [{"name": "x", "expression": BARE}]}
-        q = SlayerQuery.model_validate({**_query_dict(version=4), "population": ext})
+        ext = {"source_name": "sales", "measures": [{"name": "x", "formula": BARE}]}
+        q = SlayerQuery.model_validate({**_query_dict(version=4), "source_model": ext})
         assert q.population == "sales"
         assert ((q.extensions or [])[0].metrics or [])[0].expression == FILLED
 
@@ -232,7 +240,7 @@ class TestPayloadVersions:
         v = mig.CURRENT_VERSIONS["SlayerQuery"] if version == "current" else None
         q = SlayerQuery.model_validate({**_query_dict(version=v)})
         assert (q.metrics or [])[0].expression == "rank(sum(amount)) + 1"
-        assert q.filter == _query_dict()["filters"]
+        assert q.filter == _query_dict(version=v)["filter"]
 
     @pytest.mark.parametrize("version", [None, "current"])
     def test_fresh_or_current_model_untouched(self, version):
@@ -244,6 +252,7 @@ class TestPayloadVersions:
         data = _model_dict(measures=[], version=None, source_queries=[_query_dict(version=None)])
         data.pop("sql_table", None)
         data.pop("columns", None)
+        data.pop("fields", None)
         [q] = SlayerDataset.model_validate(data).source_queries or []
         assert (q.metrics or [])[0].expression == "rank(sum(amount)) + 1"
 
@@ -329,15 +338,15 @@ class TestStorageLoad:
         assert model.metrics[0].expression == FILLED
         raw = await _raw(storage, "sales")
         assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert raw["measures"][0]["formula"] == FILLED
+        assert raw["metrics"][0]["expression"] == FILLED
         resp = await _execute(storage, SlayerQuery.model_validate(
             {"population": "sales", "dimensions": ["region"], "metrics": ["r"]}))
         assert {k[0]: v["sales.r"] for k, v in rows_by(resp, "sales.region").items()} == RANK_DESC
 
     async def test_unversioned_model_with_unversioned_nested_query(self, seed: Seeder):
         qb = {"name": "qb", "data_source": "test",
-              "source_queries": [{"population": "sales", "dimensions": ["region"],
-                                  "metrics": [{"expression": BARE, "name": "r"}]}]}
+              "source_queries": [{"source_model": "sales", "dimensions": ["region"],
+                                  "measures": [{"formula": BARE, "name": "r"}]}]}
         storage = await seed(models=[_model_dict(measures=[]), qb])
         model = await storage.get_dataset("qb", data_source="test")
         assert model is not None
@@ -347,7 +356,7 @@ class TestStorageLoad:
     async def test_unversioned_memory_and_query(self, seed: Seeder):
         storage = await seed(memories=[{
             "id": "m1", "learning": "top regions",
-            "query": {"population": "sales", "metrics": [BARE], "filter": [f"{BARE} <= 2"]},
+            "query": {"source_model": "sales", "measures": [BARE], "filters": [f"{BARE} <= 2"]},
         }])
         mem = await storage.get_memory("m1")
         assert mem.query is not None
