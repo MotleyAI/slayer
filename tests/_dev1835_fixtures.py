@@ -258,7 +258,7 @@ LAST_BY_SHIPPED = {"North": 10.0, "South": 25.0, None: 60.0}
 FIRST_BY_SHIPPED = {"North": 20.0, "South": 25.0, None: 60.0}
 
 
-def shipped_orders_model() -> SlayerDataset:
+def shipped_orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
@@ -311,7 +311,7 @@ async def make_shipped_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
         pytest.importorskip("duckdb")
     seed = _seed_shipped_duckdb if dialect == "duckdb" else _seed_shipped_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=[shipped_orders_model()],
+        dialect=dialect, seed=seed, datasets=[shipped_orders_dataset()],
     ) as (engine, _db):
         yield engine
 
@@ -357,5 +357,5 @@ __all__ = [
     "UNION_WM_DIM", "UNION_WM_RANK", "W90_RATIO", "WM_X", "cte_aliases",
     "dev1835_models", "dim_key", "gen", "make_exec_engine",
     "make_shipped_exec_engine", "month_key", "month_td", "q", "rows_by",
-    "shipped_orders_model", "with_nulls",
+    "shipped_orders_dataset", "with_nulls",
 ]

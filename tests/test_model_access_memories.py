@@ -158,28 +158,28 @@ class TestMemoryStripping:
 
 class TestEmbeddings:
     @pytest.fixture
-    def model_name(self) -> str:
+    def dataset_name(self) -> str:
         return embedding_client.current_model()
 
-    async def test_listing_omits_hidden_rows(self, store: AccessStore, model_name: str) -> None:
-        rows = await view(store, "fin").list_embeddings(embedding_model_name=model_name)
+    async def test_listing_omits_hidden_rows(self, store: AccessStore, dataset_name: str) -> None:
+        rows = await view(store, "fin").list_embeddings(embedding_model_name=dataset_name)
         assert {r.canonical_id for r in rows} == set(EMBEDDED) - HIDDEN_EMBEDDINGS_FOR_FIN
 
     @pytest.mark.parametrize("canonical_id", sorted(HIDDEN_EMBEDDINGS_FOR_FIN))
-    async def test_hidden_row_is_absent(self, store: AccessStore, model_name: str, canonical_id: str) -> None:
+    async def test_hidden_row_is_absent(self, store: AccessStore, dataset_name: str, canonical_id: str) -> None:
         fin = view(store, "fin")
-        assert await fin.get_embedding(canonical_id=canonical_id, embedding_model_name=model_name) is None
+        assert await fin.get_embedding(canonical_id=canonical_id, embedding_model_name=dataset_name) is None
 
-    async def test_visible_row_is_present(self, store: AccessStore, model_name: str) -> None:
-        row = await view(store, "fin").get_embedding(canonical_id=f"{DS}.fin.amount", embedding_model_name=model_name)
+    async def test_visible_row_is_present(self, store: AccessStore, dataset_name: str) -> None:
+        row = await view(store, "fin").get_embedding(canonical_id=f"{DS}.fin.amount", embedding_model_name=dataset_name)
         assert row is not None
 
-    async def test_batch_read_omits_hidden_rows(self, store: AccessStore, model_name: str) -> None:
+    async def test_batch_read_omits_hidden_rows(self, store: AccessStore, dataset_name: str) -> None:
         rows = await view(store, "fin").get_embeddings_for_canonical_ids(
-            canonical_ids=sorted(EMBEDDED), embedding_model_name=model_name,
+            canonical_ids=sorted(EMBEDDED), embedding_model_name=dataset_name,
         )
         assert set(rows) == set(EMBEDDED) - HIDDEN_EMBEDDINGS_FOR_FIN
 
-    async def test_bypass_reads_every_row(self, store: AccessStore, model_name: str) -> None:
-        rows = await view(store, bypass=True).list_embeddings(embedding_model_name=model_name)
+    async def test_bypass_reads_every_row(self, store: AccessStore, dataset_name: str) -> None:
+        rows = await view(store, bypass=True).list_embeddings(embedding_model_name=dataset_name)
         assert {r.canonical_id for r in rows} == set(EMBEDDED)

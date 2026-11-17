@@ -36,7 +36,7 @@ from slayer.sql.dialects import trino as trino_dialect_module
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1737_fixtures import (
     DateCase,
-    all_models,
+    all_datasets,
     assert_case,
     assert_value,
     check_server_scenarios,
@@ -48,23 +48,23 @@ from tests._dev1737_fixtures import (
 from tests._dev2120_fixtures import (
     LIB,
     check_library,
-    contractors_model,
+    contractors_dataset,
     contractors_statements,
-    lib_model,
+    lib_dataset,
     server_table_statements as dev2120_table_statements,
 )
 from tests._cast_fixtures import check_try_cast_targets
-from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
+from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
-from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
     seed_statements,
-    streak_model,
+    streak_dataset,
 )
-from tests.integration._dev2015_server import check_all, server_models, server_models_ts, server_statements, with_granularities
+from tests.integration._dev2015_server import check_all, server_datasets, server_datasets_ts, server_statements, with_granularities
 from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 
 pytest.importorskip("testcontainers.trino")
@@ -159,10 +159,10 @@ def _ds_config(container, schema: str, *, name: str = _DS, catalog: str = _CATAL
     )
 
 
-def _storage(base_dir: str, datasource: DatasourceConfig, models: Iterable[SlayerDataset]) -> YAMLStorage:
+def _storage(base_dir: str, datasource: DatasourceConfig, datasets: Iterable[SlayerDataset]) -> YAMLStorage:
     storage = YAMLStorage(base_dir=base_dir)
     run_sync(storage.save_datasource(datasource))
-    for model in models:
+    for model in datasets:
         run_sync(storage.save_dataset(model))
     return storage
 
@@ -202,7 +202,7 @@ _BASE_SEED = [
 ]
 
 
-def _base_models() -> list[SlayerDataset]:
+def _base_datasets() -> list[SlayerDataset]:
     return [
         SlayerDataset(
             name="orders", sql_table="orders", data_source=_DS,
@@ -231,7 +231,7 @@ def _base_models() -> list[SlayerDataset]:
                 DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         ),
-        streak_model(_DS),
+        streak_dataset(_DS),
     ]
 
 
@@ -239,7 +239,7 @@ def _base_models() -> list[SlayerDataset]:
 def _trino_base(trino_container, tmp_path_factory):
     with _seeded_schema(trino_container, _BASE_SEED) as schema:
         storage = _storage(
-            str(tmp_path_factory.mktemp("trino_env")), _ds_config(trino_container, schema), _base_models(),
+            str(tmp_path_factory.mktemp("trino_env")), _ds_config(trino_container, schema), _base_datasets(),
         )
         yield storage, schema
 
@@ -274,7 +274,7 @@ async def _week_buckets(engine: SlayerQueryEngine, *, column: str, granularity: 
 @pytest.mark.integration
 class TestTrinoQueries:
     async def test_try_cast_integer_targets(self, trino_env: SlayerQueryEngine) -> None:
-        await check_try_cast_targets(trino_env, model="orders")
+        await check_try_cast_targets(trino_env, dataset="orders")
 
     async def test_count_all(self, trino_env: SlayerQueryEngine) -> None:
         result = await trino_env.execute(query=SlayerQuery.model_validate({
@@ -621,7 +621,7 @@ _CROSS_ORDERS = [
 
 
 @pytest.fixture
-def trino_cross_model_env(trino_container, tmp_path):
+def trino_cross_dataset_env(trino_container, tmp_path):
     seed = [
         "CREATE TABLE customers (id INTEGER, name VARCHAR, region VARCHAR, score DOUBLE)",
         "CREATE TABLE orders (id INTEGER, status VARCHAR, amount DOUBLE, customer_id INTEGER, "
@@ -658,8 +658,8 @@ def trino_cross_model_env(trino_container, tmp_path):
 
 @pytest.mark.integration
 class TestCrossModelAndMultistageTrino:
-    async def test_cross_model_measure(self, trino_cross_model_env: SlayerQueryEngine) -> None:
-        result = await trino_cross_model_env.execute(query=SlayerQuery(
+    async def test_cross_model_measure(self, trino_cross_dataset_env: SlayerQueryEngine) -> None:
+        result = await trino_cross_dataset_env.execute(query=SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="avg(customers.avg_score)")],
@@ -668,53 +668,53 @@ class TestCrossModelAndMultistageTrino:
         assert result.row_count == 3
         assert [float(r["orders.customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
 
-    async def test_query_list_named(self, trino_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_query_list_named(self, trino_cross_dataset_env: SlayerQueryEngine) -> None:
         inner = SlayerQuery(
             name="monthly", population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
         )
         outer = SlayerQuery(population="monthly", metrics=[DatasetMetric(expression="count(*)")])
-        result = await trino_cross_model_env.execute(query=[inner, outer])
+        result = await trino_cross_dataset_env.execute(query=[inner, outer])
         assert result.data[0]["monthly._count"] == 3
 
-    async def test_create_model_from_query(self, trino_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_create_model_from_query(self, trino_cross_dataset_env: SlayerQueryEngine) -> None:
         source = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
         )
-        saved = await trino_cross_model_env.create_dataset_from_query(query=source, name="trino_monthly")
+        saved = await trino_cross_dataset_env.create_dataset_from_query(query=source, name="trino_monthly")
         assert saved.source_queries is not None
-        result = await trino_cross_model_env.execute(
+        result = await trino_cross_dataset_env.execute(
             query=SlayerQuery(population="trino_monthly", metrics=[DatasetMetric(expression="count(*)")])
         )
         assert result.data[0]["trino_monthly._count"] == 3
 
-    async def test_sql_dimension(self, trino_cross_model_env: SlayerQueryEngine) -> None:
-        result = await trino_cross_model_env.execute(query=SlayerQuery(
+    async def test_sql_dimension(self, trino_cross_dataset_env: SlayerQueryEngine) -> None:
+        result = await trino_cross_dataset_env.execute(query=SlayerQuery(
             population="orders",
             dimensions=[ComputedDimension(expression="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier")],
             metrics=[DatasetMetric(expression="count(*)")],
         ))
         assert {r["orders.tier"]: r["orders._count"] for r in result.data} == {"high": 3, "low": 3}
 
-    async def test_grouped_counts_across_join_sum_to_total(self, trino_cross_model_env: SlayerQueryEngine) -> None:
-        result = await trino_cross_model_env.execute(query=SlayerQuery.model_validate({
+    async def test_grouped_counts_across_join_sum_to_total(self, trino_cross_dataset_env: SlayerQueryEngine) -> None:
+        result = await trino_cross_dataset_env.execute(query=SlayerQuery.model_validate({
             "population": "orders", "dimensions": ["customers.region"],
             "metrics": [{"expression": "count(*)", "name": "n"}],
         }))
         assert {r["orders.customers.region"]: int(r["orders.n"]) for r in result.data} == {"US": 4, "EU": 2}
 
-    async def test_joined_measure_keeps_rows(self, trino_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_joined_measure_keeps_rows(self, trino_cross_dataset_env: SlayerQueryEngine) -> None:
         def query(*measures: str) -> SlayerQuery:
             return SlayerQuery.model_validate({
                 "population": "orders", "dimensions": ["status"],
                 "metrics": [{"formula": f} for f in measures],
             })
 
-        narrow = await trino_cross_model_env.execute(query=query("count(*)"))
-        wide = await trino_cross_model_env.execute(query=query("count(*)", "avg(customers.avg_score)"))
+        narrow = await trino_cross_dataset_env.execute(query=query("count(*)"))
+        wide = await trino_cross_dataset_env.execute(query=query("count(*)", "avg(customers.avg_score)"))
         assert wide.row_count == narrow.row_count == 2
         assert {r["orders.status"]: r["orders._count"] for r in wide.data} == {"completed": 4, "pending": 2}
 
@@ -1218,7 +1218,7 @@ def _trino_dates_storage(trino_container, tmp_path_factory):
     with _seeded_schema(trino_container, seed) as schema:
         yield _storage(
             str(tmp_path_factory.mktemp("trino_dates")), _ds_config(trino_container, schema),
-            all_models(data_source=_DS),
+            all_datasets(data_source=_DS),
         )
 
 
@@ -1279,7 +1279,7 @@ def _trino_spine_storage(trino_container, tmp_path_factory):
     with _seeded_schema(trino_container, server_statements("trino")) as schema:
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("trino_spine")))
         base = _ds_config(trino_container, schema)
-        for name, models in (("tr", server_models(data_source="tr")), ("tr_ts", server_models_ts(data_source="tr_ts"))):
+        for name, models in (("tr", server_datasets(data_source="tr")), ("tr_ts", server_datasets_ts(data_source="tr_ts"))):
             run_sync(storage.save_datasource(with_granularities(base, name=name)))
             for model in models:
                 run_sync(storage.save_dataset(model))
@@ -1323,7 +1323,7 @@ def _trino_dev2120_storage(trino_container, tmp_path_factory):
     with _seeded_schema(trino_container, dev2120_table_statements(LIB, dialect="trino")) as schema:
         yield _storage(
             str(tmp_path_factory.mktemp("trino_dev2120")), _ds_config(trino_container, schema),
-            [lib_model(data_source=_DS)],
+            [lib_dataset(data_source=_DS)],
         )
 
 
@@ -1345,8 +1345,8 @@ def _trino_lists(trino_container, tmp_path_factory):
     with _seeded_schema(trino_container, statements) as schema:
         ds = _ds_config(trino_container, schema)
         yield _storage(str(tmp_path_factory.mktemp("trino_lists")), ds,
-                       [contractors_model(data_source=_DS), assignments_model(data_source=_DS),
-                        mixed_numbers_model(data_source=_DS)]), ds
+                       [contractors_dataset(data_source=_DS), assignments_dataset(data_source=_DS),
+                        mixed_numbers_dataset(data_source=_DS)]), ds
 
 
 @pytest.mark.integration

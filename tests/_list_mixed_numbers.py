@@ -51,7 +51,7 @@ def mixed_numbers_statements(*, dialect: str, prefix: str = "") -> list[str]:
             insert]
 
 
-def mixed_numbers_model(*, data_source: str, explicit_sql: bool = False) -> SlayerDataset:
+def mixed_numbers_dataset(*, data_source: str, explicit_sql: bool = False) -> SlayerDataset:
     columns = [DatasetField(name="id", datatype=DataType.INT, primary_key=True),
                DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INT),
                DatasetField(name="prices", datatype=DataType.ARRAY, element_type=DataType.DOUBLE)]

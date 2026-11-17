@@ -386,14 +386,14 @@ def _windowed_query(**kw) -> SlayerQuery:
     return SlayerQuery.model_validate(base)
 
 
-async def _wm_sql(query: SlayerQuery, model: SlayerDataset, **kw) -> str:
+async def _wm_sql(query: SlayerQuery, dataset: SlayerDataset, **kw) -> str:
     # DEV-1835: windowed producers now render under uniform ``_cm_`` naming.
-    sql = await _engine_generate(query=query, model=model, validate=False, **kw)
+    sql = await _engine_generate(query=query, dataset=dataset, validate=False, **kw)
     assert "_cm_" in sql, sql
     return sql
 
 
-async def _plan(query: SlayerQuery, model: SlayerDataset, *, extra_models=None):
+async def _plan(query: SlayerQuery, dataset: SlayerDataset, *, extra_datasets=None):
     """Plan ``query`` against ``model`` and return the ``PlannedQuery``.
 
     Used by the column-set tests, which assert on planner state rather than
@@ -404,8 +404,8 @@ async def _plan(query: SlayerQuery, model: SlayerDataset, *, extra_models=None):
         await storage.save_datasource(
             DatasourceConfig(name="test", type="sqlite", database=":memory:"),
         )
-        await storage.save_dataset(model)
-        for extra in extra_models or []:
+        await storage.save_dataset(dataset)
+        for extra in extra_datasets or []:
             await storage.save_dataset(extra)
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         return plan_query(query=query, bundle=bundle)
@@ -871,8 +871,8 @@ def _shift_query(**kw) -> SlayerQuery:
     return SlayerQuery.model_validate(base)
 
 
-async def _shifted_body(query: SlayerQuery, model: SlayerDataset, **kw) -> str:
-    sql = await _engine_generate(query=query, model=model, validate=False, **kw)
+async def _shifted_body(query: SlayerQuery, dataset: SlayerDataset, **kw) -> str:
+    sql = await _engine_generate(query=query, dataset=dataset, validate=False, **kw)
     return _extract_cte_body(sql, r"shifted_\w+")
 
 

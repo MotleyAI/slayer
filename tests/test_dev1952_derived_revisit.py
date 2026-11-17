@@ -56,10 +56,10 @@ from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev1832_fixtures import make_exec_engine as _dev1832_make_engine
 from tests._dev1832_fixtures import orders_q as _dev1931_orders_q
-from tests._dev1853_fixtures import chain_models
+from tests._dev1853_fixtures import chain_datasets
 from tests._dev1900_fixtures import make_exec_engine as _dev1900_make_engine
 from tests._dev1900_fixtures import orders_q as _dev1900_orders_q
-from tests._dev1931_fixtures import dev1931_models
+from tests._dev1931_fixtures import dev1931_datasets
 from tests._engine_helpers import seeded_exec_engine
 
 DS = "ds"
@@ -178,10 +178,10 @@ class TestErrorVocabulary:
 # returns ``None``); they fail only if a consumer forgets to catch the new raise.
 # --------------------------------------------------------------------------- #
 def _chain() -> dict[str, SlayerDataset]:
-    return {m.name: m for m in chain_models()}
+    return {m.name: m for m in chain_datasets()}
 
 
-def _self_join_model() -> SlayerDataset:
+def _self_relationship_dataset() -> SlayerDataset:
     """A model carrying a named ``parent`` self-join edge, built via
     ``model_construct`` to bypass ``SlayerModel._reject_self_relationships`` — a real
     self-join is rejected at construction, so save/query paths never see one;
@@ -217,7 +217,7 @@ class TestWalkerRaisesOnRevisit:
                     datasets_by_name=models) is None
 
     def test_self_join_first_hop_raises(self) -> None:
-        model = _self_join_model()
+        model = _self_relationship_dataset()
         with pytest.raises(CircularRelationshipPathError) as ei:
             walk(root=model, path=("parent",), datasets_by_name={"customers": model})
         assert ei.value.hop == "parent"
@@ -572,7 +572,7 @@ def _seed_duckdb(db_path: str) -> None:
     con.close()
 
 
-def _revisit_query_models() -> list[SlayerDataset]:
+def _revisit_query_datasets() -> list[SlayerDataset]:
     """One rich graph; the query selects the circular definition under test."""
     customers = _customers(
         cols=(
@@ -587,7 +587,7 @@ def _revisit_query_models() -> list[SlayerDataset]:
     return [_regions(), customers, _orders()]
 
 
-def _unresolved_query_models() -> list[SlayerDataset]:
+def _unresolved_query_datasets() -> list[SlayerDataset]:
     """``ghost`` is declared but never saved — its path is refused as unresolvable
     before it could revisit."""
     customers = _customers(
@@ -598,25 +598,25 @@ def _unresolved_query_models() -> list[SlayerDataset]:
     return [_regions(), customers, _orders()]
 
 
-async def _make_engine(dialect: str, models: list[SlayerDataset]):
+async def _make_engine(dialect: str, datasets: list[SlayerDataset]):
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=models, datasource=DS, validate=False,
+        dialect=dialect, seed=seed, datasets=datasets, datasource=DS, validate=False,
     ) as (engine, _db):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def qengine(request):
-    async for e in _make_engine(request.param, _revisit_query_models()):
+    async for e in _make_engine(request.param, _revisit_query_datasets()):
         yield e
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unresolved_engine(request):
-    async for e in _make_engine(request.param, _unresolved_query_models()):
+    async for e in _make_engine(request.param, _unresolved_query_datasets()):
         yield e
 
 
@@ -763,7 +763,7 @@ async def reroot_engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def default_engine(request):
-    async for e in _dev1832_make_engine(request=request, models=dev1931_models()):
+    async for e in _dev1832_make_engine(request=request, datasets=dev1931_datasets()):
         yield e
 
 
@@ -782,9 +782,9 @@ class TestViaHostRerootUnchanged:
 
 class TestDefinitionDefaultsUnchanged:
     @staticmethod
-    async def _value(engine, formula: str) -> float:
+    async def _value(engine, expression: str) -> float:
         resp = await engine.execute(
-            _dev1931_orders_q(measures=[DatasetMetric(expression=formula, name="w")]))
+            _dev1931_orders_q(measures=[DatasetMetric(expression=expression, name="w")]))
         return float(resp.data[0]["orders.w"])
 
     async def test_scalar_default_matches_explicit(self, default_engine) -> None:

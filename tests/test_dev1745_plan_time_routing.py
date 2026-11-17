@@ -125,8 +125,8 @@ class TestGeneratorConsumesThePlanVerbatim:
 
     async def _sql(self, query: SlayerQuery) -> str:
         return await _engine_generate(
-            query=query, model=_orders(), dialect="postgres",
-            validate=False, extra_models=[_customers()],
+            query=query, dataset=_orders(), dialect="postgres",
+            validate=False, extra_datasets=[_customers()],
         )
 
     @staticmethod

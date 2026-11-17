@@ -1230,7 +1230,7 @@ async def test_last_with_multihop_joined_time_dimension(joined_time_env):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-async def cross_model_env(tmp_path):
+async def cross_dataset_env(tmp_path):
     """SQLite env with orders + customers models and an explicit join."""
     db_path = tmp_path / "test.db"
     with transaction(str(db_path)) as conn:
@@ -1276,9 +1276,9 @@ async def cross_model_env(tmp_path):
     return SlayerQueryEngine(storage=storage)
 
 
-async def test_cross_model_measure_monthly(cross_model_env):
+async def test_cross_model_measure_monthly(cross_dataset_env):
     """Cross-model measure: monthly order count + avg customer score from joined model."""
-    engine = cross_model_env
+    engine = cross_dataset_env
 
     query = SlayerQuery(
         population="orders",
@@ -1298,10 +1298,10 @@ async def test_cross_model_measure_monthly(cross_model_env):
     assert [r["orders.customers.avg_score_avg"] for r in response.data] == pytest.approx([90.0, 60.0, 85.0])
 
 
-async def test_cross_model_measure_no_join_raises(cross_model_env):
+async def test_cross_model_measure_no_join_raises(cross_dataset_env):
     """An unreachable cross-model measure target is route-aware-rejected:
     ``UnresolvableDimensionJoinError`` (a ``ValueError``) with no route to target."""
-    engine = cross_model_env
+    engine = cross_dataset_env
 
     query = SlayerQuery(
         population="orders",
@@ -1311,7 +1311,7 @@ async def test_cross_model_measure_no_join_raises(cross_model_env):
         await engine.execute(query)
 
 
-async def test_cross_model_measure_with_target_join_filters(cross_model_env):
+async def test_cross_model_measure_with_target_join_filters(cross_dataset_env):
     """Cross-model measure CTE must include filters reachable from the target model.
 
     Based on Q9 benchmark: policy_amount.total_policy_amount:sum with filters on
@@ -1320,7 +1320,7 @@ async def test_cross_model_measure_with_target_join_filters(cross_model_env):
     policy_amount's join graph. Without the re-rooted subquery fix, these filters
     would be stripped from the cross-model CTE, producing wrong aggregates.
     """
-    engine = cross_model_env
+    engine = cross_dataset_env
     tmp = tempfile.mkdtemp()
     db_path = f"{tmp}/test.db"
     with transaction(db_path) as conn:
@@ -1419,9 +1419,9 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
     assert data_by_policy["POL-002"]["policy.policy_amount.total_policy_amount_sum"] == pytest.approx(300.0)
 
 
-async def test_transform_on_cross_model(cross_model_env):
+async def test_transform_on_cross_model(cross_dataset_env):
     """Transforms on cross-model measures work (applied after the cross-model join)."""
-    engine = cross_model_env
+    engine = cross_dataset_env
 
     # cumsum of avg customer score per month
     query = SlayerQuery(
@@ -1523,9 +1523,9 @@ async def test_create_model_from_query(integration_env: SlayerQueryEngine):
     assert result2.data[0]["monthly_summary.total_amount_sum_sum"] == pytest.approx(750.0)
 
 
-async def test_query_list_with_joins(cross_model_env):
+async def test_query_list_with_joins(cross_dataset_env):
     """A query list where the main query joins to a named sub-query."""
-    engine = cross_model_env
+    engine = cross_dataset_env
 
     # Sub-query: average customer score per customer
     sub = SlayerQuery(
@@ -1561,7 +1561,7 @@ async def test_query_list_with_joins(cross_model_env):
     assert [r["orders.customer_scores.avg_score_avg_avg"] for r in response.data] == pytest.approx([90.0, 60.0, 85.0])
 
 
-async def test_sibling_stage_joins_dag(cross_model_env):
+async def test_sibling_stage_joins_dag(cross_dataset_env):
     """3-stage DAG: a non-final named stage joins a prior named stage.
 
     ``kpis`` aggregates per customer; ``tagged``
@@ -1574,7 +1574,7 @@ async def test_sibling_stage_joins_dag(cross_model_env):
     enrichment time because ``the legacy query-backed wrap`` dropped the named_queries
     dict when enriching a non-final stage.
     """
-    engine = cross_model_env
+    engine = cross_dataset_env
     queries = [
         SlayerQuery(
             name="kpis",

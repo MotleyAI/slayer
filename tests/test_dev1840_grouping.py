@@ -15,7 +15,7 @@ from tests._dev1840_fixtures import (
     DatasetMetric,
     SPEND_BAND_170,
     bundle,
-    dev1840_models,
+    dev1840_datasets,
     q,
 )
 
@@ -24,8 +24,8 @@ CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 RM = DatasetMetric(expression="sum(stores.rent)", name="rm")
 
 
-def _plan(query, models=None):
-    return plan_query(query=query, bundle=bundle(models))
+def _plan(query, datasets=None):
+    return plan_query(query=query, bundle=bundle(datasets))
 
 
 def _attach(planned: PlannedQuery, root: str) -> RegroupAttachPlan:
@@ -56,7 +56,7 @@ class TestGrouping:
         att = _attach(_plan(
             q(dimensions=["customers.tier"], measures=[CM],
               filters=["channel = 'web'", "customers.plans.level = 'basic'"]),
-            models=dev1840_models(strong_plans=False),
+            datasets=dev1840_datasets(strong_plans=False),
         ), "customers")
         sjs = list(att.producer_plan.semi_join_filters)
         assert len(sjs) == 2

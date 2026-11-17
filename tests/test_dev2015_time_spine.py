@@ -33,11 +33,11 @@ from tests._dev2015_fixtures import (
     broadcast_warnings,
     bucket_key,
     by_bucket,
-    calendar_models,
+    calendar_datasets,
     m,
     num,
     spine_engine,
-    spine_models,
+    spine_datasets,
     spine_query,
     spine_td,
     value,
@@ -60,7 +60,7 @@ async def engine(request: pytest.FixtureRequest) -> AsyncIterator[SlayerQueryEng
 
 
 def _per_group(**extra) -> SlayerQuery:
-    return spine_query(measures=PER_GROUP, date_range=JAN_MAR, dimensions=["customers.region"], **extra)
+    return spine_query(metrics=PER_GROUP, date_range=JAN_MAR, dimensions=["customers.region"], **extra)
 
 
 def _canon(rows: list[dict]) -> list[tuple]:
@@ -99,7 +99,7 @@ class TestReservedName:
         clash = SlayerDataset(name="time_spine", sql_table="customers", data_source="test",
                             fields=[DatasetField(name="timestamp", datatype=DataType.DATE, primary_key=True)])
         await engine.storage._save_dataset_impl(clash)
-        query = spine_query(measures=TWO_FACTS)
+        query = spine_query(metrics=TWO_FACTS)
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute(query, dry_run=True)
         msg = str(exc.value)
@@ -126,24 +126,24 @@ class TestReservedName:
 
 class TestAxes:
     async def test_declared_and_sole_column_axes_are_wired(self, engine) -> None:
-        resp = await engine.execute(spine_query(measures=TWO_FACTS[:2]))
+        resp = await engine.execute(spine_query(metrics=TWO_FACTS[:2]))
         assert by_bucket(resp, ["o", "r"]) == {k: v[:2] for k, v in TWO_FACT_ROWS.items()}
         assert broadcast_warnings(resp) == []
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_two_temporal_columns_mean_no_axis(self, backend) -> None:
-        async with spine_engine(backend, models=spine_models(shipments="two_dates")) as eng:
-            resp = await eng.execute(spine_query(measures=[m("sum(shipments.weight)", "w")],
+        async with spine_engine(backend, datasets=spine_datasets(shipments="two_dates")) as eng:
+            resp = await eng.execute(spine_query(metrics=[m("sum(shipments.weight)", "w")],
                                                  to_many_handling="broadcast"))
             assert by_bucket(resp, ["w"]) == {k: (7.0,) for k in MONTHS}
             assert [w.metric for w in broadcast_warnings(resp)]
             assert "w" in broadcast_warnings(resp)[0].metric
-            strict = spine_query(measures=[m("sum(shipments.weight)", "w")], to_many_handling="error")
+            strict = spine_query(metrics=[m("sum(shipments.weight)", "w")], to_many_handling="error")
             with pytest.raises((SlayerError, ValueError)):
                 await eng.execute(strict)
 
     async def test_a_measure_on_an_axisless_p_broadcasts(self, engine) -> None:
-        query = spine_query(measures=[m("count(customers.id)", "c")], date_range=JAN_MAR,
+        query = spine_query(metrics=[m("count(customers.id)", "c")], date_range=JAN_MAR,
                             dimensions=["customers.region"], to_many_handling="broadcast")
         resp = await engine.execute(query)
         assert by_bucket(resp, ["c"], by=["region"]) == {(g, k): (1.0,) for g in "NSE" for k in MONTHS[:3]}
@@ -155,7 +155,7 @@ class TestAxes:
 
     async def test_a_dataset_with_no_to_one_route_broadcasts(self, engine) -> None:
         # customers shares a component with the facts, but every hop toward them fans.
-        query = spine_query(measures=[m("count(customers.id)", "c")], date_range=JAN_MAR,
+        query = spine_query(metrics=[m("count(customers.id)", "c")], date_range=JAN_MAR,
                             to_many_handling="broadcast")
         resp = await engine.execute(query)
         assert by_bucket(resp, ["c"]) == {k: (3.0,) for k in MONTHS[:3]}
@@ -167,7 +167,7 @@ class TestAxes:
         assert "time_spine" in str(exc.value)
 
     async def test_a_dataset_with_no_to_one_route_associates_by_default(self, engine: SlayerQueryEngine) -> None:
-        query = spine_query(measures=[m("count(customers.id)", "c")], date_range=JAN_MAR)
+        query = spine_query(metrics=[m("count(customers.id)", "c")], date_range=JAN_MAR)
         default = await engine.execute(query)
         assoc = await engine.execute(query.model_copy(update={"to_many_handling": "associate"}))
         assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))
@@ -176,7 +176,7 @@ class TestAxes:
 
     async def test_only_the_routeless_measure_broadcasts_beside_a_fact(self, engine) -> None:
         resp = await engine.execute(spine_query(
-            measures=[m("sum(orders.amount)", "o"), m("count(customers.id)", "c")], date_range=JAN_MAR,
+            metrics=[m("sum(orders.amount)", "o"), m("count(customers.id)", "c")], date_range=JAN_MAR,
             to_many_handling="broadcast",
         ))
         assert by_bucket(resp, ["o", "c"]) == {k: (TWO_FACT_ROWS[k][0], 3.0) for k in MONTHS[:3]}
@@ -187,7 +187,7 @@ class TestAxes:
             "name": "firsts", "population": "orders", "dimensions": ["customer_id"],
             "metrics": [m("min(order_date)", "first_order")],
         })
-        resp = await engine.execute([firsts, spine_query(measures=[m("count(firsts.customer_id)", "c")])])
+        resp = await engine.execute([firsts, spine_query(metrics=[m("count(firsts.customer_id)", "c")])])
         assert by_bucket(resp, ["c"]) == {
             "2025-01": (2.0,), **{k: (0.0,) for k in MONTHS[1:]},
         }
@@ -199,8 +199,8 @@ class TestAxes:
             "time_dimensions": [{"field": "order_date", "granularity": "day"}],
             "metrics": [m("sum(amount)", "rev"), m("min(customers.signed_up_at)", "signup")],
         })
-        async with spine_engine(backend, models=spine_models(signed_up_at=True)) as eng:
-            resp = await eng.execute([stage, spine_query(measures=[m("sum(ob.rev)", "rev")])])
+        async with spine_engine(backend, datasets=spine_datasets(signed_up_at=True)) as eng:
+            resp = await eng.execute([stage, spine_query(metrics=[m("sum(ob.rev)", "rev")])])
         assert by_bucket(resp, ["rev"]) == {"2025-01": (150.0,), "2025-02": (70.0,),
                                             **{k: (None,) for k in MONTHS[2:]}}
 
@@ -214,8 +214,8 @@ class TestAxes:
         })
         got = {}
         for default in (None, "return_date"):
-            models = spine_models(signed_up_at=True, returns_default=default)
-            async with spine_engine(backend, models=models) as eng:
+            models = spine_datasets(signed_up_at=True, returns_default=default)
+            async with spine_engine(backend, datasets=models) as eng:
                 resp = await eng.execute(query)
             got[default] = {bucket_key(value(r, "return_date")): float(value(r, "cs")) for r in resp.data}
         assert got[None] == got["return_date"] == {"2025-02": 20.0, "2025-03": 10.0, "2025-05": 25.0}
@@ -224,7 +224,7 @@ class TestAxes:
     async def test_sole_column_default_feeds_last(self, backend) -> None:
         query = SlayerQuery.model_validate({"population": "returns", "metrics": [m("last(amount)", "l")]})
         for default in (None, "return_date"):
-            async with spine_engine(backend, models=spine_models(returns_default=default)) as eng:
+            async with spine_engine(backend, datasets=spine_datasets(returns_default=default)) as eng:
                 resp = await eng.execute(query)
             assert float(value(resp.data[0], "l")) == 5.0, default
 
@@ -235,25 +235,25 @@ class TestAxes:
 
 class TestRouting:
     async def test_dataset_without_axis_reaches_through_its_parent(self, engine) -> None:
-        resp = await engine.execute(spine_query(measures=[m("sum(order_items.qty)", "q")]))
+        resp = await engine.execute(spine_query(metrics=[m("sum(order_items.qty)", "q")]))
         assert by_bucket(resp, ["q"]) == {"2025-01": (6.0,), "2025-02": (4.0,), **{k: (None,) for k in MONTHS[2:]}}
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_own_axis_beats_a_parents_axis(self, backend) -> None:
-        async with spine_engine(backend, models=spine_models(signed_up_at=True)) as eng:
-            resp = await eng.execute(spine_query(measures=TWO_FACTS[:2]))
+        async with spine_engine(backend, datasets=spine_datasets(signed_up_at=True)) as eng:
+            resp = await eng.execute(spine_query(metrics=TWO_FACTS[:2]))
         assert by_bucket(resp, ["o", "r"]) == {k: v[:2] for k, v in TWO_FACT_ROWS.items()}
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_equal_length_routes_fail_loudly(self, backend) -> None:
-        async with spine_engine(backend, models=spine_models(shipments="two_parents")) as eng:
-            query = spine_query(measures=[m("count(shipments.id)", "c")])
+        async with spine_engine(backend, datasets=spine_datasets(shipments="two_parents")) as eng:
+            query = spine_query(metrics=[m("count(shipments.id)", "c")])
             with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
                 await eng.execute(query)
             assert "shipments.orders" in str(exc.value)
             assert "shipments.returns" in str(exc.value)
             # Only a query needing that route raises.
-            resp = await eng.execute(spine_query(measures=TWO_FACTS))
+            resp = await eng.execute(spine_query(metrics=TWO_FACTS))
             assert by_bucket(resp, ["o", "r", "n"]) == TWO_FACT_ROWS
 
     async def test_existing_queries_never_route_through_the_spine(self, engine) -> None:
@@ -283,7 +283,7 @@ class TestRouting:
 
 class TestPopulation:
     async def test_every_month_both_facts(self, engine) -> None:
-        resp = await engine.execute(spine_query(measures=TWO_FACTS))
+        resp = await engine.execute(spine_query(metrics=TWO_FACTS))
         assert by_bucket(resp, ["o", "r", "n"]) == TWO_FACT_ROWS
         assert resp.warnings == []
 
@@ -295,19 +295,19 @@ class TestPopulation:
         inferred = await engine.execute(_per_group())
         explicit = await engine.execute(_per_group(source_model="customers"))
         assert _canon(explicit.data) == _canon(inferred.data)
-        spine_only = await engine.execute(spine_query(measures=TWO_FACTS))
-        named = await engine.execute(spine_query(measures=TWO_FACTS, source_model="time_spine"))
+        spine_only = await engine.execute(spine_query(metrics=TWO_FACTS))
+        named = await engine.execute(spine_query(metrics=TWO_FACTS, source_model="time_spine"))
         assert _canon(named.data) == _canon(spine_only.data)
 
     async def test_result_keys(self, engine) -> None:
         resp = await engine.execute(_per_group())
         assert set(resp.data[0]) == {"time_spine.timestamp", "customers.region", "customers.o", "customers.r"}
-        resp = await engine.execute(spine_query(measures=TWO_FACTS))
+        resp = await engine.execute(spine_query(metrics=TWO_FACTS))
         assert set(resp.data[0]) == {"time_spine.timestamp", "time_spine.o", "time_spine.r", "time_spine.n"}
 
     async def test_two_spine_time_dimensions(self, engine) -> None:
         resp = await engine.execute(spine_query(
-            measures=TWO_FACTS[:1],
+            metrics=TWO_FACTS[:1],
             time_dimensions=[spine_td(granularity="year"), spine_td(granularity="month")],
         ))
         pairs = sorted((bucket_key(value(r, "timestamp.year"), width=4), bucket_key(value(r, "timestamp.month")))
@@ -321,25 +321,25 @@ class TestPopulation:
 
         edit = (lambda ms: [x for x in ms if x["name"] != "r"]) if variant == "drop" else (
             lambda ms: [*ms, m("avg(orders.amount)", "a")])
-        base = await engine.execute(spine_query(measures=TWO_FACTS))
-        other = await engine.execute(spine_query(measures=edit(TWO_FACTS)))
+        base = await engine.execute(spine_query(metrics=TWO_FACTS))
+        other = await engine.execute(spine_query(metrics=edit(TWO_FACTS)))
         assert cells(other) == cells(base)
         base = await engine.execute(_per_group())
-        other = await engine.execute(spine_query(measures=edit(PER_GROUP), date_range=JAN_MAR,
+        other = await engine.execute(spine_query(metrics=edit(PER_GROUP), date_range=JAN_MAR,
                                                  dimensions=["customers.region"]))
         assert cells(other, by=["region"]) == cells(base, by=["region"])
 
     @pytest.mark.parametrize("dimensions", [[], ["customers.region"]], ids=["unit", "per-group"])
     async def test_without_measures(self, engine, dimensions) -> None:
-        resp = await engine.execute(spine_query(measures=[], date_range=JAN_MAR, dimensions=dimensions))
+        resp = await engine.execute(spine_query(metrics=[], date_range=JAN_MAR, dimensions=dimensions))
         cells = sorted((*(value(r, "region") for _ in dimensions), bucket_key(r["time_spine.timestamp"]))
                        for r in resp.data)
         regions = ["E", "N", "S"] if dimensions else [None]
         assert cells == sorted((*([g] if dimensions else []), k) for g in regions for k in MONTHS[:3])
 
 
-def _monthly_stage(*, measures=None, date_range=JAN_MAR, **extra) -> SlayerQuery:
-    return spine_query(measures=measures or [m("sum(orders.amount)", "o")], date_range=date_range,
+def _monthly_stage(*, metrics=None, date_range=JAN_MAR, **extra) -> SlayerQuery:
+    return spine_query(metrics=metrics or [m("sum(orders.amount)", "o")], date_range=date_range,
                        name="monthly", **extra)
 
 
@@ -363,7 +363,7 @@ class TestSpineStages:
         }
 
     async def test_a_spine_stage_feeding_a_spine_query(self, engine) -> None:
-        resp = await engine.execute([_monthly_stage(), spine_query(measures=[m("sum(monthly.o)", "t")])])
+        resp = await engine.execute([_monthly_stage(), spine_query(metrics=[m("sum(monthly.o)", "t")])])
         assert by_bucket(resp, ["t"]) == {"2025-01": (150.0,), "2025-02": (70.0,),
                                           **{k: (None,) for k in MONTHS[2:]}}
 
@@ -389,7 +389,7 @@ class TestSpineStages:
         (m("min(time_spine.timestamp)", "o"), {}),
     ], ids=["count-star", "min-timestamp"])
     async def test_aggregation_over_the_spine_inside_a_stage(self, engine, measure, extra) -> None:
-        query = [_monthly_stage(measures=[measure], **extra), _over_monthly()]
+        query = [_monthly_stage(metrics=[measure], **extra), _over_monthly()]
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute(query, dry_run=True)
         assert "time_spine" in str(exc.value)
@@ -402,32 +402,32 @@ class TestSpineStages:
 class TestBounds:
     @pytest.mark.parametrize("date_range", [None, [None, "2025-03-31"]], ids=["none", "upper-only"])
     async def test_missing_lower_bound(self, engine, date_range) -> None:
-        query = spine_query(measures=TWO_FACTS, date_range=date_range)
+        query = spine_query(metrics=TWO_FACTS, date_range=date_range)
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute(query, dry_run=True)
         assert "lower bound" in str(exc.value).lower()
 
     async def test_bound_filters_bound_the_spine(self, engine) -> None:
         resp = await engine.execute(spine_query(
-            measures=TWO_FACTS, date_range=None,
+            metrics=TWO_FACTS, date_range=None,
             filters=["time_spine.timestamp >= '2025-04-01'", "time_spine.timestamp < '2025-07-01'"],
         ))
         assert by_bucket(resp, ["o", "r", "n"]) == {k: TWO_FACT_ROWS[k] for k in MONTHS[3:]}
 
     async def test_mid_bucket_lower_bound_keeps_the_bucket_not_the_rows(self, engine) -> None:
-        resp = await engine.execute(spine_query(measures=TWO_FACTS, date_range=["2025-01-15", "2025-02-28"]))
+        resp = await engine.execute(spine_query(metrics=TWO_FACTS, date_range=["2025-01-15", "2025-02-28"]))
         assert by_bucket(resp, ["o", "r", "n"]) == {"2025-01": (50.0, None, 1.0), "2025-02": (70.0, 20.0, 1.0)}
 
     async def test_exclusive_period_upper_bound(self, engine) -> None:
-        resp = await engine.execute(spine_query(measures=TWO_FACTS, date_range=["2025-01", "2025-02"]))
+        resp = await engine.execute(spine_query(metrics=TWO_FACTS, date_range=["2025-01", "2025-02"]))
         assert set(by_bucket(resp, ["o"])) == {"2025-01", "2025-02"}
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_implied_upper_bound_is_the_current_bucket(self, backend) -> None:
         async with spine_engine(backend, clock=PinnedClock(D(2025, 3, 2, 12))) as eng:
-            resp = await eng.execute(spine_query(measures=TWO_FACTS, date_range=["2025-01-01", None]))
+            resp = await eng.execute(spine_query(metrics=TWO_FACTS, date_range=["2025-01-01", None]))
             assert by_bucket(resp, ["o", "r", "n"]) == {k: TWO_FACT_ROWS[k] for k in MONTHS[:3]}
-            relative = await eng.execute(spine_query(measures=TWO_FACTS, date_range="last 3 months"))
+            relative = await eng.execute(spine_query(metrics=TWO_FACTS, date_range="last 3 months"))
             assert by_bucket(relative, ["o", "r", "n"]) == {
                 "2024-12": (None, None, 0.0), "2025-01": TWO_FACT_ROWS["2025-01"], "2025-02": TWO_FACT_ROWS["2025-02"],
             }
@@ -435,14 +435,14 @@ class TestBounds:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_implied_upper_bound_follows_the_finest_granularity(self, backend) -> None:
         async with spine_engine(backend, clock=PinnedClock(D(2025, 3, 2, 12))) as eng:
-            resp = await eng.execute(spine_query(measures=TWO_FACTS, granularity="day",
+            resp = await eng.execute(spine_query(metrics=TWO_FACTS, granularity="day",
                                                  date_range=["2025-02-27", None]))
         days = sorted(by_bucket(resp, ["o"], width=10))
         assert days == ["2025-02-27", "2025-02-28", "2025-03-01", "2025-03-02"]
 
     async def test_bounds_stay_frame_bounds(self, engine) -> None:
         resp = await engine.execute(spine_query(
-            measures=[m("time_shift(sum(orders.amount), -1)", "prev"), m("sum(orders.amount, window='2m')", "w")],
+            metrics=[m("time_shift(sum(orders.amount), -1)", "prev"), m("sum(orders.amount, window='2m')", "w")],
             date_range=["2025-02-01", "2025-03-31"],
         ))
         assert by_bucket(resp, ["prev", "w"]) == {"2025-02": (150.0, 220.0), "2025-03": (70.0, 70.0)}
@@ -450,7 +450,7 @@ class TestBounds:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_whole_periods_only_excludes_the_current_bucket(self, backend) -> None:
         async with spine_engine(backend, clock=PinnedClock(D(2025, 3, 15, 12))) as eng:
-            resp = await eng.execute(spine_query(measures=TWO_FACTS, date_range=["2025-01-01", None],
+            resp = await eng.execute(spine_query(metrics=TWO_FACTS, date_range=["2025-01-01", None],
                                                  whole_periods_only=True))
         assert set(by_bucket(resp, ["o"])) == {"2025-01", "2025-02"}
 
@@ -461,7 +461,7 @@ class TestBounds:
 
 class TestFilters:
     async def test_a_fact_filter_keeps_every_month(self, engine) -> None:
-        resp = await engine.execute(spine_query(measures=TWO_FACTS[:2], filters=["orders.amount > 60"]))
+        resp = await engine.execute(spine_query(metrics=TWO_FACTS[:2], filters=["orders.amount > 60"]))
         assert by_bucket(resp, ["o", "r"]) == {
             "2025-01": (100.0, None), "2025-02": (70.0, 20.0), "2025-03": (None, None),
             "2025-04": (None, None), "2025-05": (None, 5.0), "2025-06": (None, None),
@@ -478,13 +478,13 @@ class TestFilters:
         ["time_spine.timestamp >= '2025-01-01' and time_spine.timestamp < '2025-04-01' and customers.region = 'N'"],
     ], ids=["separate", "one-conjunction"])
     async def test_bounds_and_a_p_filter(self, engine, filters) -> None:
-        resp = await engine.execute(spine_query(measures=PER_GROUP, date_range=None, filters=filters))
+        resp = await engine.execute(spine_query(metrics=PER_GROUP, date_range=None, filters=filters))
         assert by_bucket(resp, ["o", "r"]) == {
             "2025-01": (100.0, None), "2025-02": (70.0, 20.0), "2025-03": (None, None),
         }
 
     async def test_non_bound_spine_filter(self, engine) -> None:
-        query = spine_query(measures=TWO_FACTS, filters=["date_part('day_of_week', time_spine.timestamp) = 1"])
+        query = spine_query(metrics=TWO_FACTS, filters=["date_part('day_of_week', time_spine.timestamp) = 1"])
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute(query, dry_run=True)
         msg = str(exc.value)
@@ -502,7 +502,7 @@ class TestNoCountableRows:
         (m("min(time_spine.timestamp)", "t"), {}),
     ], ids=["count-star", "min-timestamp"])
     async def test_aggregation_over_the_spine(self, engine, measure, extra) -> None:
-        query = spine_query(measures=[measure], **extra)
+        query = spine_query(metrics=[measure], **extra)
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute(query, dry_run=True)
         assert "time_spine" in str(exc.value)
@@ -543,7 +543,7 @@ class TestNoCountableRows:
 
 class TestDenseSeries:
     async def test_transforms_over_a_filled_series(self, engine) -> None:
-        resp = await engine.execute(spine_query(measures=[
+        resp = await engine.execute(spine_query(metrics=[
             m("change(sum(orders.amount))", "chg"),
             m("cumsum(sum(orders.amount))", "cs"),
             m("consecutive_periods(count(returns.id) > 0)", "cp"),
@@ -561,7 +561,7 @@ class TestDenseSeries:
         ]
 
     async def test_a_fill_value(self, engine) -> None:
-        resp = await engine.execute(spine_query(measures=[
+        resp = await engine.execute(spine_query(metrics=[
             m("coalesce(sum(orders.amount), 0)", "f"), m("cumsum(coalesce(sum(orders.amount), 0))", "cf"),
         ]))
         got = by_bucket(resp, ["f", "cf"])
@@ -576,14 +576,14 @@ class TestDenseSeries:
 
 class TestRebucketing:
     async def test_monthly_model_on_a_daily_spine(self, engine) -> None:
-        daily = spine_query(measures=[m("sum(monthly.rev)", "rev")], granularity="day")
+        daily = spine_query(metrics=[m("sum(monthly.rev)", "rev")], granularity="day")
         with pytest.raises(TimeDimensionFieldError) as exc:
             await engine.execute(daily, dry_run=True)
         msg = str(exc.value)
         assert "order_date" in msg
         assert "month" in msg
         assert "day" in msg
-        resp = await engine.execute(spine_query(measures=[m("sum(monthly.rev)", "rev")], granularity="quarter"))
+        resp = await engine.execute(spine_query(metrics=[m("sum(monthly.rev)", "rev")], granularity="quarter"))
         assert by_bucket(resp, ["rev"]) == {"2025-01": (220.0,), "2025-04": (None,)}
 
 
@@ -605,7 +605,7 @@ class TestTenancyAndCache:
     async def test_policy_scopes_the_facts_not_the_calendar(self, engine) -> None:
         scoped = SlayerQueryEngine(storage=engine.storage, policy=_region_policy())
         try:
-            resp = await scoped.execute(spine_query(measures=TWO_FACTS[:2]))
+            resp = await scoped.execute(spine_query(metrics=TWO_FACTS[:2]))
         finally:
             scoped.close()
         assert by_bucket(resp, ["o", "r"]) == {
@@ -617,7 +617,7 @@ class TestTenancyAndCache:
     async def test_cache_hit_within_the_bucket_miss_after_rollover(self, backend, monkeypatch: pytest.MonkeyPatch) -> None:
         calls = _data_calls(monkeypatch)
         clock = PinnedClock(D(2025, 3, 2, 12))
-        query = spine_query(measures=TWO_FACTS, date_range=["2025-01-01", None])
+        query = spine_query(metrics=TWO_FACTS, date_range=["2025-01-01", None])
         async with spine_engine(backend, clock=clock) as eng:
             await eng.execute(query, cache=True)
             clock.now = D(2025, 3, 20, 9)
@@ -635,12 +635,12 @@ class TestTenancyAndCache:
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_calendar_model_parity(backend) -> None:
-    async with spine_engine(backend, models=calendar_models()) as eng:
+    async with spine_engine(backend, datasets=calendar_datasets()) as eng:
         cal = await eng.execute(SlayerQuery.model_validate({
             "population": "calendar", "metrics": TWO_FACTS,
             "time_dimensions": [{"field": "date", "granularity": "month", "date_range": JAN_JUN}],
         }))
-        spine = await eng.execute(spine_query(measures=TWO_FACTS))
+        spine = await eng.execute(spine_query(metrics=TWO_FACTS))
     assert cal.warnings == []
     assert by_bucket(cal, ["o", "r", "n"], bucket="calendar.date") == TWO_FACT_ROWS
     assert by_bucket(spine, ["o", "r", "n"]) == TWO_FACT_ROWS
@@ -654,7 +654,7 @@ async def test_calendar_model_parity(backend) -> None:
 @pytest.mark.parametrize(("year", "rows"), [(2025, 35_040), (2024, 35_136)])
 async def test_quarter_hour_year(backend, year, rows) -> None:
     async with spine_engine(backend) as eng:
-        resp = await eng.execute(spine_query(measures=[m("count(orders.id)", "n")], granularity="quarter_hour",
+        resp = await eng.execute(spine_query(metrics=[m("count(orders.id)", "n")], granularity="quarter_hour",
                                              date_range=[f"{year}-01-01", f"{year}-12-31"]))
     assert len(resp.data) == rows
     assert sum(int(value(r, "n")) for r in resp.data) == (3 if year == 2025 else 0)

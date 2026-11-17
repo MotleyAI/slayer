@@ -19,7 +19,7 @@ from tests._dev1840_fixtures import (
     _CUSTOMERS_ROWS,
     _ORDERS_ROWS,
     _REGIONS_ROWS,
-    dev1840_models,
+    dev1840_datasets,
     month_key,
     rows_by,
     signup_month_td,
@@ -68,10 +68,10 @@ _CUST_REGION: Dict[int, Optional[str]] = {
     c[_C_ID]: _REGION_NAME.get(c[_C_REGION]) for c in _CUSTOMERS_ROWS}
 
 
-def keyless_declared_models() -> List[SlayerDataset]:
+def keyless_declared_datasets() -> List[SlayerDataset]:
     """customers without a unique key, the orders → customers hop declared
     many-to-one: association cannot dedup, the parameter's key stays provable."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     cust = next(m for m in models if m.name == "customers")
     cust.fields = [
         (c.model_copy(update={"primary_key": False}) if c.name == "id" else c)
@@ -257,7 +257,7 @@ __all__ = [
     "WINDOWED_CUSTOM_PARAM",
     "WINDOWED_CONSTITUENT", "CUMSUM_PARAM", "UNPARSE_PARAM", "OWN_FAN_BADPOP",
     "OWN_FAN_STATUS", "UNDETERMINED_PARAM", "LAST_HOST", "LAST_BADPOP",
-    "keyless_declared_models", "mode_q", "ordered_month_td", "signup_month_td",
+    "keyless_declared_datasets", "mode_q", "ordered_month_td", "signup_month_td",
     "wavg_by_tier", "mixed_global", "mixed_by_tier", "recursive_global",
     "recursive_by_tier", "ranked_global", "ranked_by_tier",
     "windowed_constituent_by_month", "windowed_param_by_month",

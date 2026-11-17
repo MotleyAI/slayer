@@ -32,7 +32,7 @@ from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
 from tests._dev1747_fixtures import (
     cte_map,
     dev1747_bundle,
-    dev1747_models,
+    dev1747_datasets,
     order_by_text,
     order_terms,
     outermost_select,
@@ -110,9 +110,9 @@ def _order_columns(sql: str, *, dialect: str = "postgres"):
 
 
 async def _sql(query: SlayerQuery, *, dialect: str = "postgres") -> str:
-    models = dev1747_models()
+    models = dev1747_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:], dialect=dialect,
+        query=query, dataset=models[0], extra_datasets=models[1:], dialect=dialect,
     )
 
 

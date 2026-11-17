@@ -30,8 +30,8 @@ from tests._dev1832_fixtures import (
     HOST_DISCOUNT_BY_STATUS,
     MIXED_SUM_BY_REGION,
     DatasetMetric,
-    dev1832_models,
-    dev1832_unparseable_models,
+    dev1832_datasets,
+    dev1832_unparseable_datasets,
     gen,
     make_exec_engine,
     month_td,
@@ -93,12 +93,12 @@ async def exec_backend(request):
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_net(request):
     """Engine whose orders carry a derived ``net`` column and a ``my_agg``."""
-    models = dev1832_models()
+    models = dev1832_datasets()
     orders = next(m for m in models if m.name == "orders")
     orders.fields.append(DatasetField(name="net", datatype=DataType.DOUBLE, sql="amount - cost"))
     orders.aggregations = [*(orders.aggregations or []),
                            Aggregation(name="my_agg", expression="AVG({value})")]
-    async for e in make_exec_engine(request, models=models):
+    async for e in make_exec_engine(request, datasets=models):
         yield e
 
 
@@ -106,10 +106,10 @@ def _cells(resp, dim: str, name: str, root: str = "orders") -> dict:
     return {k[0]: v[f"{root}.{name}"] for k, v in rows_by(resp, f"{root}.{dim}").items()}
 
 
-async def _val(engine, formula: str, **q) -> dict:
+async def _val(engine, expression: str, **q) -> dict:
     """{status cell: value} for a single measure grouped by status."""
     resp = await engine.execute(
-        orders_q(dimensions=["status"], measures=[DatasetMetric(expression=formula, name="m")], **q))
+        orders_q(dimensions=["status"], measures=[DatasetMetric(expression=expression, name="m")], **q))
     return _cells(resp, "status", "m")
 
 
@@ -304,9 +304,9 @@ class TestExpressionSourceTyping:
     async def test_unanalysable_leaf_fails_closed(self):
         query = orders_q(measures=[
             DatasetMetric(expression="sum(amount - customers.regions.unparseable)", name="m")])
-        models = dev1832_unparseable_models()
+        models = dev1832_unparseable_datasets()
         with pytest.raises(ValueError, match="(?i)analy") as ei:
-            await gen(query, models=models)
+            await gen(query, datasets=models)
         assert "unparseable" in str(ei.value)
 
     async def test_first_over_expression_is_the_ranked_aggregate(self):

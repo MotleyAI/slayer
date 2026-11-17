@@ -48,18 +48,18 @@ from tests._dev1847_fixtures import (
     associated_warnings,
     broadcast_warnings,
     chain_q,
-    corders_model,
-    customers_model,
+    corders_dataset,
+    customers_dataset,
     degenerate_warnings,
-    dev1847_models,
+    dev1847_datasets,
     make_exec_engine,
     reagg,
-    regions_model,
+    regions_dataset,
     rows_by,
-    sales_model,
+    sales_dataset,
     sales_q,
 )
-from tests._engine_helpers import models_bundle, seeded_exec_engine
+from tests._engine_helpers import datasets_bundle, seeded_exec_engine
 
 INNER_CUST = "sum(amount, partition_by=customer_id)"
 
@@ -122,10 +122,10 @@ def _num(v: Any) -> Optional[float]:
     return None if v is None else float(v)
 
 
-def _cells(resp, keys: List[str], measure: str, norm=None) -> Dict[Tuple, Any]:
+def _cells(resp, keys: List[str], metric: str, norm=None) -> Dict[Tuple, Any]:
     norms = norm or [lambda v: v] * len(keys)
     return {
-        tuple(n(k) for n, k in zip(norms, key)): row[measure]
+        tuple(n(k) for n, k in zip(norms, key)): row[metric]
         for key, row in rows_by(resp, *keys).items()
     }
 
@@ -145,7 +145,7 @@ def _no_grain_warnings(resp) -> None:
 
 
 def _sales_variant() -> SlayerDataset:
-    s = sales_model()
+    s = sales_dataset()
     extra_cols = [
         DatasetField(name="city_upper", datatype=DataType.TEXT, sql="UPPER(city)"),
         DatasetField(name="city_len", datatype=DataType.INT, sql="LENGTH(city)"),
@@ -173,13 +173,13 @@ def _sales_variant() -> SlayerDataset:
     })
 
 
-def _variant_models() -> List[SlayerDataset]:
-    c = customers_model()
+def _variant_datasets() -> List[SlayerDataset]:
+    c = customers_dataset()
     c = c.model_copy(update={"aggregations": [
         Aggregation(name="wsum", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="region_id")]),
     ]})
-    return [_sales_variant(), regions_model(), c, corders_model()]
+    return [_sales_variant(), regions_dataset(), c, corders_dataset()]
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -190,7 +190,7 @@ async def exec_engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def variant_engine(request):
-    async for engine in make_exec_engine(request, models=_variant_models()):
+    async for engine in make_exec_engine(request, datasets=_variant_datasets()):
         yield engine
 
 
@@ -199,10 +199,10 @@ async def fanning_engine(request):
     if request.param == "duckdb":
         pytest.importorskip("duckdb")
     seed = f40._seed_duckdb if request.param == "duckdb" else f40._seed_sqlite
-    models = [f40.regions_model(), f40.plans_model(), f40.stores_model(),
-              f40.customers_model(declare_reverse=True),
-              f40.orders_model(customers_edge=False)]
-    async with seeded_exec_engine(dialect=request.param, seed=seed, models=models) as (
+    models = [f40.regions_dataset(), f40.plans_dataset(), f40.stores_dataset(),
+              f40.customers_dataset(declare_reverse=True),
+              f40.orders_dataset(customers_edge=False)]
+    async with seeded_exec_engine(dialect=request.param, seed=seed, datasets=models) as (
         engine, _db,
     ):
         yield engine
@@ -561,10 +561,10 @@ def _sum(by: Optional[List[ValueKey]]) -> AggregateKey:
                         partition_keys=None if by is None else Grain.of(by))
 
 
-def _determines(key: ValueKey, grain: Grain = CR, models=None, host: str = "sales") -> bool:
-    mbn = {m.name: m for m in (models or [_sales_variant(), *dev1847_models()[1:]])}
+def _determines(key: ValueKey, grain: Grain = CR, datasets=None, host: str = "sales") -> bool:
+    mbn = {m.name: m for m in (datasets or [_sales_variant(), *dev1847_datasets()[1:]])}
     return grain_determines(key=key, grain=grain, host_dataset=mbn[host],
-                            datasets_by_name=mbn, bundle=models_bundle(mbn))
+                            datasets_by_name=mbn, bundle=datasets_bundle(mbn))
 
 
 def _derived(name: str) -> FieldSqlKey:
@@ -605,9 +605,9 @@ class TestCombinator:
         assert _determines(key) is expected
 
     def test_mixed_fanning_child(self):
-        models = [f40.regions_model(), f40.plans_model(), f40.stores_model(),
-                  f40.customers_model(declare_reverse=True),
-                  f40.orders_model(customers_edge=False)]
+        models = [f40.regions_dataset(), f40.plans_dataset(), f40.stores_dataset(),
+                  f40.customers_dataset(declare_reverse=True),
+                  f40.orders_dataset(customers_edge=False)]
         tier_gold = _eq(FieldKey(leaf="tier"), _lit("gold"))
         last_ok = _eq(FieldSqlKey(dataset="customers", field_name="last_status"), _lit("ok"))
         grain = Grain.of([FieldKey(leaf="id")])

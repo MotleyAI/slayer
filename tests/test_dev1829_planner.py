@@ -24,11 +24,11 @@ from slayer.core.query import DatasetMetric, SlayerQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 
-from tests._dev1739_fixtures import dev1739_models, gen, month_td
+from tests._dev1739_fixtures import dev1739_datasets, gen, month_td
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1739_models()
+    models = dev1739_datasets()
     return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 

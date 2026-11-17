@@ -46,19 +46,19 @@ def _convert(project: DbtProject) -> ConversionResult:
     return DbtToSlayerConverter(project=project, data_source="test").convert()
 
 
-def _model(result: ConversionResult, name: str = "orders"):
+def _dataset(result: ConversionResult, name: str = "orders"):
     return next(m for m in result.datasets if m.name == name)
 
 
-def _measure(result: ConversionResult, name: str, model: str = "orders"):
-    return next(m for m in _model(result, model).metrics if m.name == name)
+def _metric(result: ConversionResult, name: str, dataset: str = "orders"):
+    return next(m for m in _dataset(result, dataset).metrics if m.name == name)
 
 
-def _column_for(result: ConversionResult, formula: str, model: str = "orders"):
+def _column_for(result: ConversionResult, expression: str, dataset: str = "orders"):
     """The Column referenced by the leading ``<agg>(<col>, ...)`` in a formula."""
-    match = re.match(r"\s*\w+\(\s*(\w+)\s*[,)]", formula)
-    assert match is not None, f"formula not in <agg>(<col>...) form: {formula!r}"
-    return next(c for c in _model(result, model).fields if c.name == match.group(1))
+    match = re.match(r"\s*\w+\(\s*(\w+)\s*[,)]", expression)
+    assert match is not None, f"formula not in <agg>(<col>...) form: {expression!r}"
+    return next(c for c in _dataset(result, dataset).fields if c.name == match.group(1))
 
 
 def _all_report_entries(result: ConversionResult):
@@ -86,7 +86,7 @@ def test_percentile_emits_p_value() -> None:
         ],
     )
     result = _convert(project)
-    m = _measure(result, "p95_latency")
+    m = _metric(result, "p95_latency")
     assert m.expression == "percentile(latency, p=0.95)"
 
 
@@ -101,7 +101,7 @@ def test_percentile_without_value_clean_fails() -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "p_nope" for m in _model(result).metrics)
+    assert all(m.name != "p_nope" for m in _dataset(result).metrics)
     entries = _all_report_entries(result)
     assert any("p_nope" in (e.metric_name or e.message) for e in entries)
 
@@ -119,7 +119,7 @@ def test_percentile_discrete_or_approx_flag_clean_fails(flag: str) -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "p_flag" for m in _model(result).metrics)
+    assert all(m.name != "p_flag" for m in _dataset(result).metrics)
     assert any("p_flag" in (e.metric_name or e.message) for e in _all_report_entries(result))
 
 
@@ -150,7 +150,7 @@ def test_ratio_metric_guards_denominator_with_nullif() -> None:
         ],
     )
     result = _convert(project)
-    aov = _measure(result, "aov")
+    aov = _metric(result, "aov")
     assert aov.expression == "total_amount / nullif(order_count, 0)"
 
 
@@ -168,7 +168,7 @@ def test_sum_boolean_wraps_case_when() -> None:
         ],
     )
     result = _convert(project)
-    m = _measure(result, "paid_orders")
+    m = _metric(result, "paid_orders")
     assert re.fullmatch(r"sum\(\w+\)", m.expression)
     col = _column_for(result, m.expression)
     assert col.sql is not None
@@ -209,7 +209,7 @@ def test_offset_window_maps_to_time_shift() -> None:
         ],
     )
     result = _convert(project)
-    growth = _measure(result, "revenue_growth")
+    growth = _metric(result, "revenue_growth")
     norm = growth.expression.replace(" ", "")
     assert "time_shift(" in growth.expression
     assert "-1" in norm
@@ -235,7 +235,7 @@ def test_negative_offset_window_shifts_forward() -> None:
             ),
         ],
     )
-    shifted = parse_expr(_measure(_convert(project), "revenue_lead").expression)
+    shifted = parse_expr(_metric(_convert(project), "revenue_lead").expression)
     assert isinstance(shifted, TransformCall)
     assert shifted.args[0] == Literal(value=Decimal(1))
 
@@ -267,7 +267,7 @@ def test_offset_to_grain_clean_fails() -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "rev_vs_month_start" for m in _model(result).metrics)
+    assert all(m.name != "rev_vs_month_start" for m in _dataset(result).metrics)
     assert any("rev_vs_month_start" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
@@ -294,7 +294,7 @@ def test_metric_level_filter_pushes_into_leaf_column() -> None:
         ],
     )
     result = _convert(project)
-    m = _measure(result, "us_revenue")
+    m = _metric(result, "us_revenue")
     col = _column_for(result, m.expression)
     assert col.filter is not None
     assert "region" in col.filter
@@ -327,12 +327,12 @@ def test_ratio_per_input_filters_push_down_independently() -> None:
         ],
     )
     result = _convert(project)
-    cols = _model(result).fields
+    cols = _dataset(result).fields
     filters = [c.filter for c in cols if c.filter]
     assert any(f and "region" in f and "US" in f for f in filters)
     assert any(f and "dept" in f and "sales" in f for f in filters)
     # nullif guard preserved around the (now filtered) denominator
-    assert "nullif(" in _measure(result, "us_margin_ratio").expression
+    assert "nullif(" in _metric(result, "us_margin_ratio").expression
 
 
 def test_filter_accepts_list_intersection() -> None:
@@ -357,7 +357,7 @@ def test_filter_accepts_list_intersection() -> None:
         metrics=[metric],
     )
     result = _convert(project)
-    m = _measure(result, "scoped_revenue")
+    m = _metric(result, "scoped_revenue")
     col = _column_for(result, m.expression)
     assert col.filter is not None
     assert "region" in col.filter
@@ -434,7 +434,7 @@ def test_conversion_metric_stashes_funnel_params_in_meta() -> None:
         })],
     )
     result = _convert(project)
-    orders = _model(result)
+    orders = _dataset(result)
     assert all(m.name != "visit_to_purchase" for m in orders.metrics)
     stash = (orders.meta or {}).get("dbt_unconverted", [])
     entry = next(e for e in stash if e["name"] == "visit_to_purchase")
@@ -489,7 +489,7 @@ def test_windowed_cumulative_clean_fails() -> None:
         metrics=[metric],
     )
     result = _convert(project)
-    assert all(m.name != "rolling_7d_revenue" for m in _model(result).metrics)
+    assert all(m.name != "rolling_7d_revenue" for m in _dataset(result).metrics)
     assert any("rolling_7d_revenue" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
@@ -508,7 +508,7 @@ def test_grain_to_date_cumulative_clean_fails() -> None:
         metrics=[metric],
     )
     result = _convert(project)
-    assert all(m.name != "mtd_revenue" for m in _model(result).metrics)
+    assert all(m.name != "mtd_revenue" for m in _dataset(result).metrics)
     assert any("mtd_revenue" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
@@ -523,7 +523,7 @@ def test_unbounded_cumulative_still_cumsum() -> None:
                            type_params=DbtMetricTypeParams.model_validate({"measure": "revenue"}))],
     )
     result = _convert(project)
-    assert _measure(result, "running_revenue").expression == "cumsum(revenue)"
+    assert _metric(result, "running_revenue").expression == "cumsum(revenue)"
 
 
 def test_cumulative_non_default_period_agg_clean_fails() -> None:
@@ -540,7 +540,7 @@ def test_cumulative_non_default_period_agg_clean_fails() -> None:
         metrics=[metric],
     )
     result = _convert(project)
-    assert all(m.name != "running_last" for m in _model(result).metrics)
+    assert all(m.name != "running_last" for m in _dataset(result).metrics)
     # Must fail specifically because period_agg != FIRST — not merely because
     # the (nested) measure ref was not resolved.
     assert any(
@@ -561,7 +561,7 @@ def test_config_meta_preserved_on_model() -> None:
         "measures": [{"name": "revenue", "agg": "sum", "expr": "amount"}],
     })
     result = _convert(DbtProject(semantic_models=[sm]))
-    model = _model(result)
+    model = _dataset(result)
     assert model.meta is not None
     assert model.meta.get("team") == "growth"
 
@@ -576,7 +576,7 @@ def test_clean_fail_stashes_raw_construct_in_meta() -> None:
     result = _convert(DbtProject(
         semantic_models=[DbtSemanticModel(name="orders", model="orders", measures=[measure])],
     ))
-    model = _model(result)
+    model = _dataset(result)
     blob = model.meta or {}
     # The dropped semantics are retained in the model's meta, not thrown away.
     assert any(
@@ -655,8 +655,8 @@ def test_offset_window_plural_granularity_normalized() -> None:
         ],
     )
     result = _convert(project)
-    f = _measure(result, "rev_2w").expression.replace(" ", "").lower()
-    assert "time_shift(" in _measure(result, "rev_2w").expression
+    f = _metric(result, "rev_2w").expression.replace(" ", "").lower()
+    assert "time_shift(" in _metric(result, "rev_2w").expression
     assert "-2" in f
     assert "week" in f
     assert "weeks" not in f
@@ -686,7 +686,7 @@ def test_offset_window_custom_granularity_clean_fails() -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "rev_fortnight" for m in _model(result).metrics)
+    assert all(m.name != "rev_fortnight" for m in _dataset(result).metrics)
     assert any("rev_fortnight" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
@@ -710,8 +710,8 @@ def test_same_measure_different_filters_make_distinct_columns() -> None:
         ],
     )
     result = _convert(project)
-    us_col = _column_for(result, _measure(result, "us_rev").expression)
-    eu_col = _column_for(result, _measure(result, "eu_rev").expression)
+    us_col = _column_for(result, _metric(result, "us_rev").expression)
+    eu_col = _column_for(result, _metric(result, "eu_rev").expression)
     assert us_col.name != eu_col.name
     assert "US" in (us_col.filter or "")
     assert "EU" in (eu_col.filter or "")
@@ -733,8 +733,8 @@ def test_same_measure_same_filter_reuses_one_column() -> None:
         ],
     )
     result = _convert(project)
-    a = _column_for(result, _measure(result, "us_rev_a").expression)
-    b = _column_for(result, _measure(result, "us_rev_b").expression)
+    a = _column_for(result, _metric(result, "us_rev_a").expression)
+    b = _column_for(result, _metric(result, "us_rev_b").expression)
     assert a.name == b.name
 
 
@@ -770,8 +770,8 @@ def test_cross_model_filter_pushes_down_when_join_reachable() -> None:
         filter="{{ Dimension('customer__region') }} = 'US'",
     )
     result = _convert(_orders_customers_project(metric))
-    m = _measure(result, "us_revenue", model="orders")
-    col = _column_for(result, m.expression, model="orders")
+    m = _metric(result, "us_revenue", dataset="orders")
+    col = _column_for(result, m.expression, dataset="orders")
     assert col.filter is not None
     assert "region" in col.filter
     assert "US" in col.filter
@@ -786,7 +786,7 @@ def test_cross_model_filter_unreachable_clean_fails() -> None:
         filter="{{ Dimension('warehouse__zone') }} = 'A'",
     )
     result = _convert(_orders_customers_project(metric))
-    assert all(m.name != "zone_revenue" for m in _model(result, "orders").metrics)
+    assert all(m.name != "zone_revenue" for m in _dataset(result, "orders").metrics)
     assert any("zone_revenue" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
@@ -830,7 +830,7 @@ def test_cross_model_filter_multi_hop_clean_fails() -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "zone_a_revenue" for m in _model(result, "orders").metrics)
+    assert all(m.name != "zone_a_revenue" for m in _dataset(result, "orders").metrics)
     assert any("zone_a_revenue" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
@@ -860,7 +860,7 @@ def test_cross_model_filter_foreign_entity_without_owner_clean_fails() -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "vendor_x_revenue" for m in _model(result).metrics)
+    assert all(m.name != "vendor_x_revenue" for m in _dataset(result).metrics)
     assert any("vendor_x_revenue" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
@@ -894,9 +894,9 @@ def test_derived_ref_to_measure_filtered_simple_metric_keeps_filter() -> None:
     )
     result = _convert(project)
     # The derived formula references the filtered metric, not the bare base measure.
-    assert "web_revenue" in _measure(result, "web_rev_plus_one").expression
+    assert "web_revenue" in _metric(result, "web_rev_plus_one").expression
     # And web_revenue itself materialized with a channel filter.
-    web = _measure(result, "web_revenue")
+    web = _metric(result, "web_revenue")
     col = _column_for(result, web.expression)
     assert col.filter is not None
     assert "channel" in col.filter
@@ -923,7 +923,7 @@ def test_filtered_simple_metric_over_non_additive_measure_clean_fails() -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "us_balance" for m in _model(result).metrics)
+    assert all(m.name != "us_balance" for m in _dataset(result).metrics)
     assert any("us_balance" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
@@ -954,9 +954,9 @@ def test_derived_input_filter_over_fill_nulls_metric_converts() -> None:
         ],
     )
     result = _convert(project)
-    measure = next(m for m in _model(result).metrics if m.name == "us_gap_rev")
+    measure = next(m for m in _dataset(result).metrics if m.name == "us_gap_rev")
     assert measure.expression.replace(" ", "").startswith("coalesce(")
-    assert any(c.filter and "region" in c.filter and "US" in c.filter for c in _model(result).fields)
+    assert any(c.filter and "region" in c.filter and "US" in c.filter for c in _dataset(result).fields)
 
 
 def test_ratio_input_filter_over_fill_nulls_metric_keeps_the_fill() -> None:
@@ -984,7 +984,7 @@ def test_ratio_input_filter_over_fill_nulls_metric_keeps_the_fill() -> None:
         ],
     )
     result = _convert(project)
-    measure = next(m for m in _model(result).metrics if m.name == "us_rev_per_order")
+    measure = next(m for m in _dataset(result).metrics if m.name == "us_rev_per_order")
     assert "coalesce(" in measure.expression.replace(" ", "")
 
 
@@ -1020,7 +1020,7 @@ def test_input_filter_intersects_referenced_metric_filter() -> None:
         ],
     )
     result = _convert(project)
-    m = _measure(result, "us_web_revenue")
+    m = _metric(result, "us_web_revenue")
     col = _column_for(result, m.expression)
     assert col.filter is not None
     assert "region" in col.filter
@@ -1065,7 +1065,7 @@ def test_cross_model_filter_ambiguous_multi_owner_entity_clean_fails() -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "tier_x_revenue" for m in _model(result).metrics)
+    assert all(m.name != "tier_x_revenue" for m in _dataset(result).metrics)
     assert any("tier_x_revenue" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
@@ -1096,7 +1096,7 @@ def test_derived_input_referencing_unsupported_simple_clean_fails() -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "rev_minus_gap" for m in _model(result).metrics)
+    assert all(m.name != "rev_minus_gap" for m in _dataset(result).metrics)
     assert any("rev_minus_gap" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
@@ -1119,7 +1119,7 @@ def test_measure_less_simple_metric_clean_fails() -> None:
         metrics=[metric],
     )
     result = _convert(project)
-    assert all(m.name != "agg_only" for m in _model(result).metrics)
+    assert all(m.name != "agg_only" for m in _dataset(result).metrics)
     assert any("agg_only" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
@@ -1136,7 +1136,7 @@ def test_importer_maps_count_distinct_approx_measure() -> None:
         ],
     )
     result = _convert(project)
-    assert _measure(result, "uniq_cust").expression == "count_distinct_approx(customer_id)"
+    assert _metric(result, "uniq_cust").expression == "count_distinct_approx(customer_id)"
 
 
 # ───────────────── Part 3.3 — offset on multi-aggregate input clean-fails ─────────────────
@@ -1173,7 +1173,7 @@ def test_offset_window_on_ratio_input_clean_fails() -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "aov_growth" for m in _model(result).metrics)
+    assert all(m.name != "aov_growth" for m in _dataset(result).metrics)
     assert any("aov_growth" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
@@ -1206,7 +1206,7 @@ def test_metric_filter_and_input_filter_intersect() -> None:
         ],
     )
     result = _convert(project)
-    cols = [c for c in _model(result).fields if c.filter]
+    cols = [c for c in _dataset(result).fields if c.filter]
     # numerator leaf: BOTH the metric-level (region) and input-level (channel) filters
     num = [c for c in cols if "channel" in (c.filter or "")]
     assert num
@@ -1229,7 +1229,7 @@ def test_config_meta_preserved_on_dimension_and_measure() -> None:
                       "config": {"meta": {"owner": "finance"}}}],
     })
     result = _convert(DbtProject(semantic_models=[sm]))
-    model = _model(result)
+    model = _dataset(result)
     region = next(c for c in model.fields if c.name == "region")
     assert (region.meta or {}).get("pii") is False
     revenue = next(m for m in model.metrics if m.name == "revenue")
@@ -1240,7 +1240,7 @@ def test_semantic_model_label_preserved_in_meta() -> None:
     sm = DbtSemanticModel(name="orders", model="orders", label="Customer Orders",
                           measures=[DbtMeasure(name="revenue", agg="sum", expr="amount")])
     result = _convert(DbtProject(semantic_models=[sm]))
-    assert (_model(result).meta or {}).get("label") == "Customer Orders"
+    assert (_dataset(result).meta or {}).get("label") == "Customer Orders"
 
 
 # ───────────────── Part 4 — percentile dialect caveat (MySQL / T-SQL) ─────────────────
@@ -1284,7 +1284,7 @@ def test_filtered_percentile_metric_preserves_p() -> None:
         ],
     )
     result = _convert(project)
-    m = _measure(result, "us_latency_p95")
+    m = _metric(result, "us_latency_p95")
     assert re.fullmatch(r"percentile\(\w+, p=0\.95\)", m.expression)
     col = _column_for(result, m.expression)
     assert col.filter is not None
@@ -1325,7 +1325,7 @@ def test_filtered_sum_boolean_metric_builds_case_int_column() -> None:
         ],
     )
     result = _convert(project)
-    m = _measure(result, "us_paid_orders")
+    m = _metric(result, "us_paid_orders")
     assert re.fullmatch(r"sum\(\w+\)", m.expression)
     col = _column_for(result, m.expression)
     assert col.datatype == DataType.INT
@@ -1369,7 +1369,7 @@ def test_derived_input_filter_pushes_down() -> None:
         ],
     )
     result = _convert(project)
-    cols = [c for c in _model(result).fields if c.filter]
+    cols = [c for c in _dataset(result).fields if c.filter]
     assert any(c.filter and "region" in c.filter and "US" in c.filter for c in cols)
 
 
@@ -1402,7 +1402,7 @@ def test_derived_input_filter_on_multi_aggregate_clean_fails() -> None:
         ],
     )
     result = _convert(project)
-    assert all(m.name != "us_aov_plus_one" for m in _model(result).metrics)
+    assert all(m.name != "us_aov_plus_one" for m in _dataset(result).metrics)
     assert any("us_aov_plus_one" in (e.metric_name or e.message)
                for e in _all_report_entries(result))
 
@@ -1435,7 +1435,7 @@ def test_offset_window_object_form_parses() -> None:
         ],
     )
     result = _convert(project)
-    f = _measure(result, "rev_obj_offset").expression.replace(" ", "").lower()
+    f = _metric(result, "rev_obj_offset").expression.replace(" ", "").lower()
     assert "time_shift(" in f
     assert "-1" in f
     assert "month" in f

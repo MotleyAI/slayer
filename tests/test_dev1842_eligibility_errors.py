@@ -25,7 +25,7 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-def _assert_names_saved_measure(message: str) -> None:
+def _assert_names_saved_metric(message: str) -> None:
     low = message.lower()
     assert "saved measure" in low, message
     assert "aov" in message, message
@@ -41,7 +41,7 @@ class TestIneligiblePositions:
         with pytest.raises(ValueError) as ei:
             await gen(query)
         message = str(ei.value)
-        _assert_names_saved_measure(message)
+        _assert_names_saved_metric(message)
         assert "takes no aggregation" in message
         assert "customers.aov" in message
 
@@ -50,7 +50,7 @@ class TestIneligiblePositions:
                   measures=[{"formula": "sum(amount)", "name": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
-        _assert_names_saved_measure(str(ei.value))
+        _assert_names_saved_metric(str(ei.value))
 
     async def test_unselected_filter_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
@@ -58,7 +58,7 @@ class TestIneligiblePositions:
                   filters=["customers.aov > 100"])
         with pytest.raises(ValueError) as ei:
             await gen(query)
-        _assert_names_saved_measure(str(ei.value))
+        _assert_names_saved_metric(str(ei.value))
 
     async def test_order_by_formula_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
@@ -66,7 +66,7 @@ class TestIneligiblePositions:
                   order=[{"column": "customers.aov", "direction": "desc"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
-        _assert_names_saved_measure(str(ei.value))
+        _assert_names_saved_metric(str(ei.value))
 
     async def test_partition_by_member_errors(self) -> None:
         query = q(dimensions=["customers.tier"],
@@ -74,7 +74,7 @@ class TestIneligiblePositions:
                              "name": "a"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
-        _assert_names_saved_measure(str(ei.value))
+        _assert_names_saved_metric(str(ei.value))
 
     async def test_legal_positions_are_named(self) -> None:
         """At least one ineligible-position error must say WHERE the reference is
@@ -107,7 +107,7 @@ class TestRawRowQueries:
                   order=[{"column": "customers.aov", "direction": "desc"}])
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await gen(query)
-        _assert_names_saved_measure(str(ei.value))
+        _assert_names_saved_metric(str(ei.value))
 
 
 class TestUnresolvableDottedLeaf:

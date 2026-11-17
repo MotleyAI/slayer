@@ -108,7 +108,7 @@ from tests._engine_helpers import _engine_generate
 # --------------------------------------------------------------------------- #
 # Models.
 # --------------------------------------------------------------------------- #
-def regions_model() -> SlayerDataset:
+def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
@@ -119,7 +119,7 @@ def regions_model() -> SlayerDataset:
     )
 
 
-def plans_model(*, strong: bool = True) -> SlayerDataset:
+def plans_dataset(*, strong: bool = True) -> SlayerDataset:
     # `strong` puts a PK on the join-target column: provably m:1 vs unproven.
     return SlayerDataset(
         name="plans", data_source="test", sql_table="plans",
@@ -131,7 +131,7 @@ def plans_model(*, strong: bool = True) -> SlayerDataset:
     )
 
 
-def stores_model() -> SlayerDataset:
+def stores_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="stores", data_source="test", sql_table="stores",
         fields=[
@@ -143,7 +143,7 @@ def stores_model() -> SlayerDataset:
     )
 
 
-def customers_model(*, declare_reverse: bool = False) -> SlayerDataset:
+def customers_dataset(*, declare_reverse: bool = False) -> SlayerDataset:
     """``declare_reverse=True``: customers OWNS the orders edge (1:N) and the
     ``last_status`` Mode-A probe; orders then declares no customers edge — one
     symmetric edge either way (DEV-1853)."""
@@ -174,7 +174,7 @@ def customers_model(*, declare_reverse: bool = False) -> SlayerDataset:
     )
 
 
-def orders_model(*, customers_edge: bool = True) -> SlayerDataset:
+def orders_dataset(*, customers_edge: bool = True) -> SlayerDataset:
     joins = [
         DatasetRelationship(to="stores",
                   join_pairs=[["store_co", "co"], ["store_no", "no"]]),
@@ -202,7 +202,7 @@ def orders_model(*, customers_edge: bool = True) -> SlayerDataset:
     )
 
 
-def agents_model() -> SlayerDataset:
+def agents_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="agents", data_source="test", sql_table="agents",
         fields=[
@@ -213,7 +213,7 @@ def agents_model() -> SlayerDataset:
     )
 
 
-def reviews_model() -> SlayerDataset:
+def reviews_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="reviews", data_source="test", sql_table="reviews",
         fields=[
@@ -223,7 +223,7 @@ def reviews_model() -> SlayerDataset:
     )
 
 
-def tickets_model() -> SlayerDataset:
+def tickets_dataset() -> SlayerDataset:
     # TWO unnamed parallel edges to agents: any hop across the pair fails closed.
     return SlayerDataset(
         name="tickets", data_source="test", sql_table="tickets",
@@ -243,20 +243,20 @@ def tickets_model() -> SlayerDataset:
     )
 
 
-def dev1840_models(*, declare_reverse: bool = False,
+def dev1840_datasets(*, declare_reverse: bool = False,
                    strong_plans: bool = True) -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
     return [
-        orders_model(customers_edge=not declare_reverse),
-        customers_model(declare_reverse=declare_reverse),
-        regions_model(),
-        stores_model(),
-        plans_model(strong=strong_plans),
+        orders_dataset(customers_edge=not declare_reverse),
+        customers_dataset(declare_reverse=declare_reverse),
+        regions_dataset(),
+        stores_dataset(),
+        plans_dataset(strong=strong_plans),
     ]
 
 
-def ambiguity_models() -> List[SlayerDataset]:
-    return [tickets_model(), agents_model(), reviews_model()]
+def ambiguity_datasets() -> List[SlayerDataset]:
+    return [tickets_dataset(), agents_dataset(), reviews_dataset()]
 
 
 # --------------------------------------------------------------------------- #
@@ -272,11 +272,11 @@ def tq(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def bundle(models: Optional[List[SlayerDataset]] = None) -> ResolvedSourceBundle:
-    models = models if models is not None else dev1840_models()
+def bundle(datasets: Optional[List[SlayerDataset]] = None) -> ResolvedSourceBundle:
+    datasets = datasets if datasets is not None else dev1840_datasets()
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=models[0], referenced_datasets=models[1:],
+        population=datasets[0], referenced_datasets=datasets[1:],
     )
 
 
@@ -288,10 +288,10 @@ def signup_month_td() -> List[TimeDimension]:
 
 
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb",
-              models: Optional[List[SlayerDataset]] = None) -> str:
-    models = models if models is not None else dev1840_models()
+              datasets: Optional[List[SlayerDataset]] = None) -> str:
+    datasets = datasets if datasets is not None else dev1840_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=datasets[0], extra_datasets=datasets[1:],
         dialect=dialect, validate=False,
     )
 
@@ -443,7 +443,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerDataset]] = None,
+    request, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture; each test module
     wraps this in ``@pytest.fixture`` so the fixture name lives where used."""
@@ -452,7 +452,7 @@ async def make_exec_engine(
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=models if models is not None else dev1840_models(),
+        dialect=dialect, seed=seed, datasets=datasets if datasets is not None else dev1840_datasets(),
     ) as (engine, _db):
         yield engine
 
@@ -463,9 +463,9 @@ def month_key(value) -> str:
 
 
 __all__ = [
-    "orders_model", "customers_model", "regions_model", "stores_model",
-    "plans_model", "agents_model", "tickets_model", "reviews_model",
-    "dev1840_models", "ambiguity_models",
+    "orders_dataset", "customers_dataset", "regions_dataset", "stores_dataset",
+    "plans_dataset", "agents_dataset", "tickets_dataset", "reviews_dataset",
+    "dev1840_datasets", "ambiguity_datasets",
     "q", "tq", "bundle", "gen", "signup_month_td", "month_key", "rows_by",
     "broadcast_warnings", "make_exec_engine",
     "SPEND_ALL_BY_TIER", "SPEND_APP_BY_TIER", "SPEND_APP_TOTAL",

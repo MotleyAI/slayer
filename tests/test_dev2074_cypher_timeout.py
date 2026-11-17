@@ -28,7 +28,7 @@ DATASOURCES = "MATCH (d:Datasource) RETURN d.id AS id"
 _EDGES = {0: [1], 1: [2, 0], 2: [0, 1]}
 
 
-def _model(i: int) -> SlayerDataset:
+def _dataset(i: int) -> SlayerDataset:
     targets = _EDGES[i]
     return SlayerDataset(
         name=f"m{i}", sql_table=f"m{i}", data_source="shop",
@@ -45,7 +45,7 @@ async def cyclic_storage() -> AsyncIterator[YAMLStorage]:
         storage = YAMLStorage(base_dir=tmpdir)
         await storage.save_datasource(DatasourceConfig(name="shop", type="sqlite", database=":memory:"))
         for i in _EDGES:
-            await storage.save_dataset(_model(i), _validate=False)
+            await storage.save_dataset(_dataset(i), _validate=False)
         clear_cache()
         yield storage
         clear_cache()

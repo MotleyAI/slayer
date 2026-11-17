@@ -8,7 +8,7 @@ import pytest
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev1737_fixtures import (
     DateCase,
-    all_models,
+    all_datasets,
     assert_case,
     check_server_scenarios,
     matrix_cases,
@@ -34,7 +34,7 @@ async def pg_dates(postgresql, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
         cur.execute(stmt)
     postgresql.commit()
     async with pg_query_engine(client_datasource(postgresql.info, name="testpg"), base_dir=str(tmp_path),
-                               models=all_models(data_source="testpg")) as engine:
+                               models=all_datasets(data_source="testpg")) as engine:
         yield engine
 
 

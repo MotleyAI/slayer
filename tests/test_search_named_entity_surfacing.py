@@ -47,7 +47,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 # ---------------------------------------------------------------------------
 
 
-def _make_corpus_models() -> list[SlayerDataset]:
+def _make_corpus_datasets() -> list[SlayerDataset]:
     return [
         SlayerDataset(
             name="orders",
@@ -138,7 +138,7 @@ async def storage() -> AsyncIterator[YAMLStorage]:
         await s.save_datasource(
             DatasourceConfig(name="empty_ds", type="sqlite", database=":memory:"),
         )
-        for m in _make_corpus_models():
+        for m in _make_corpus_datasets():
             await s.save_dataset(m)
         yield s
 

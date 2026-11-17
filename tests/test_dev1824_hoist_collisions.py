@@ -148,7 +148,7 @@ class TestCaseFoldingDialect:
 LONG_PREFIX = "metric_" + "x" * 60
 
 
-def _long_names_model() -> SlayerDataset:
+def _long_names_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="t", data_source="test", sql_table="t",
         default_time_dimension="at",
@@ -164,7 +164,7 @@ def _long_names_model() -> SlayerDataset:
 
 class TestTruncatingDialect:
     async def test_fitted_producer_names_do_not_collide(self) -> None:
-        model = _long_names_model()
+        model = _long_names_dataset()
         query = SlayerQuery(
             population=model.name,
             dimensions=["grp"],
@@ -177,5 +177,5 @@ class TestTruncatingDialect:
                 ),
             ],
         )
-        sql = await _engine_generate(query=query, model=model, dialect="postgres")
+        sql = await _engine_generate(query=query, dataset=model, dialect="postgres")
         _assert_flat_and_unique(sql, dialect="postgres", max_ident_bytes=63)

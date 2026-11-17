@@ -18,10 +18,10 @@ from tests._dev1841_fixtures import (
     TimeDimension,
     TimeGranularity,
     assoc_q,
-    column_default_agg_models,
-    crossing_input_models,
+    field_default_agg_datasets,
+    crossing_input_datasets,
     error_q,
-    keyless_root_models,
+    keyless_root_datasets,
     make_exec_engine,
     status_key,
 )
@@ -47,19 +47,19 @@ async def exec_backend(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_keyless(request):
-    async for engine in make_exec_engine(request, models=keyless_root_models()):
+    async for engine in make_exec_engine(request, datasets=keyless_root_datasets()):
         yield request.param, engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_crossing(request):
-    async for engine in make_exec_engine(request, models=crossing_input_models()):
+    async for engine in make_exec_engine(request, datasets=crossing_input_datasets()):
         yield request.param, engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_coldef(request):
-    async for engine in make_exec_engine(request, models=column_default_agg_models()):
+    async for engine in make_exec_engine(request, datasets=field_default_agg_datasets()):
         yield request.param, engine
 
 

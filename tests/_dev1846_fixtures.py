@@ -42,7 +42,7 @@ from tests._engine_helpers import seeded_exec_engine
 from tests._engine_helpers import _engine_generate
 
 
-def regions_model() -> SlayerDataset:
+def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
@@ -52,7 +52,7 @@ def regions_model() -> SlayerDataset:
     )
 
 
-def sales_model() -> SlayerDataset:
+def sales_dataset() -> SlayerDataset:
     """Host: ``wrevenue_sum`` crosses ``sales → regions`` (join-crossing leaf);
     ``hi_rev`` is a column-filtered projection of ``revenue``."""
     return SlayerDataset(
@@ -84,15 +84,15 @@ def sales_model() -> SlayerDataset:
     )
 
 
-def dev1846_models() -> List[SlayerDataset]:
+def dev1846_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
-    return [sales_model(), regions_model()]
+    return [sales_dataset(), regions_dataset()]
 
 
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb") -> str:
-    models = dev1846_models()
+    models = dev1846_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=False,
     )
 
@@ -151,7 +151,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1846_models()) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev1846_datasets()) as (engine, _db):
         yield engine
 
 
@@ -170,7 +170,7 @@ def rows_by(resp, *keys) -> dict:
 
 
 __all__ = [
-    "sales_model", "regions_model", "dev1846_models",
+    "sales_dataset", "regions_dataset", "dev1846_datasets",
     "gen", "month_td", "make_exec_engine", "month_key", "rows_by",
     "SlayerQuery", "DatasetMetric", "FieldRef", "TimeDimension",
     "TimeGranularity",

@@ -17,7 +17,7 @@ from slayer.sql.generator import SQLGenerator
 
 from tests._dev1836_fixtures import (
     DatasetMetric,
-    dev1836_models,
+    dev1836_datasets,
     make_exec_engine,
     q,
 )
@@ -42,7 +42,7 @@ async def exec_backend(request):
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1836_models()
+    models = dev1836_datasets()
     return ResolvedSourceBundle(
         dialect="postgres",
         population=models[0], referenced_datasets=list(models[1:]),

@@ -23,7 +23,7 @@ from tests._dev2215_fixtures import (
     count_by,
     day,
     dev2215_engine,
-    dev2215_models,
+    dev2215_datasets,
     ids,
     m,
     num,
@@ -136,8 +136,8 @@ class TestDateTrunc:
             "2023-04-01": 1, "2024-04-01": 4, "2025-04-01": 1}
 
     async def test_unit_never_captured_by_an_aggregation(self) -> None:
-        models = dev2215_models(aggregations=[Aggregation(name="fiscal_year", expression="SUM({value}) * 10")])
-        async with dev2215_engine("sqlite", models=models) as eng:
+        models = dev2215_datasets(aggregations=[Aggregation(name="fiscal_year", expression="SUM({value}) * 10")])
+        async with dev2215_engine("sqlite", datasets=models) as eng:
             resp = await eng.execute(q(dimensions=["date_trunc('fiscal_year', order_date)"],
                                        measures=[m("fiscal_year(amount)")]))
         assert {day(r["orders.order_date"]): num(r["orders.v"]) for r in resp.data} == {

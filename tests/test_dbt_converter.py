@@ -742,7 +742,7 @@ class TestParserRoundTrip:
         assert rev_measure.expression == "sum(amount)"
 
 
-def _sample_slayer_model(name: str = "raw_events") -> SlayerDataset:
+def _sample_slayer_dataset(name: str = "raw_events") -> SlayerDataset:
     """A realistic result of introspecting a regular dbt model."""
     return SlayerDataset(
         name=name,
@@ -824,7 +824,7 @@ class TestRegularModelConversion:
 
     def test_opt_in_with_engine_produces_hidden_model(self) -> None:
         project = _project_with_orphan()
-        fake_model = _sample_slayer_model(name="raw_events")
+        fake_model = _sample_slayer_dataset(name="raw_events")
 
         with patch.object(converter_module, "introspect_table_to_dataset", new=AsyncMock(return_value=fake_model)):
             result = _convert_hidden(project)
@@ -857,7 +857,7 @@ class TestRegularModelConversion:
         # Regular model named the same as the semantic model — must be skipped
         # so the semantic (visible) model is not shadowed.
         project = _project_with_orphan(orphan_name="orders")
-        fake_model = _sample_slayer_model(name="orders")
+        fake_model = _sample_slayer_dataset(name="orders")
 
         with patch.object(converter_module, "introspect_table_to_dataset", new=AsyncMock(return_value=fake_model)):
             result = _convert_hidden(project)
@@ -872,7 +872,7 @@ class TestRegularModelConversion:
         project.regular_models.append(DbtRegularModel(name="orders", schema_name="staging", alias="orders"))
 
         with patch.object(converter_module, "introspect_table_to_dataset",
-                          new=AsyncMock(side_effect=lambda **kw: _sample_slayer_model(name=kw["table_name"]))):
+                          new=AsyncMock(side_effect=lambda **kw: _sample_slayer_dataset(name=kw["table_name"]))):
             result = _convert_hidden(project)
 
         assert [m.name for m in result.datasets if m.hidden] == ["raw_events"]
@@ -882,7 +882,7 @@ class TestHiddenModelDescriptionPrecedence:
     """Curated dbt descriptions win over DB comments; DB comments fill gaps."""
 
     def _convert_with_db_comments(self, project) -> SlayerDataset:
-        fake_model = _sample_slayer_model(name="raw_events")
+        fake_model = _sample_slayer_dataset(name="raw_events")
         fake_model.description = "db table comment"
         for c in fake_model.fields:
             if c.name == "event_id":
@@ -1755,13 +1755,13 @@ def _renamed_keys_project() -> DbtProject:
     )
 
 
-def _renamed_keys_models() -> list[SlayerDataset]:
+def _renamed_keys_datasets() -> list[SlayerDataset]:
     return DbtToSlayerConverter(project=_renamed_keys_project(), data_source="test").convert().datasets
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def renamed_keys_engine(request):
-    async for engine in make_exec_engine(request, models=_renamed_keys_models()):
+    async for engine in make_exec_engine(request, datasets=_renamed_keys_datasets()):
         yield engine
 
 
@@ -1769,7 +1769,7 @@ class TestEntityExprResolvesPhysically:
     """An entity ``expr`` is a physical column: it keys the join through the column reading it."""
 
     def test_keys_resolve_to_the_renamed_dimensions(self) -> None:
-        models = {m.name: m for m in _renamed_keys_models()}
+        models = {m.name: m for m in _renamed_keys_datasets()}
         assert models["orders"].relationships[0].join_pairs == [["customer_id", "customer_key"]]
         assert models["orders"].get_field("cust_fk") is None
         assert models["customers"].get_field("customer_pk") is None
@@ -1782,4 +1782,4 @@ class TestEntityExprResolvesPhysically:
             "population": "orders", "dimensions": ["customers.name"],
             "metrics": [{"expression": "sum(amount)", "name": "amt"}],
         }))
-        assert cells(resp, dim_suffix="customers.name", measure="amt") == AMOUNT_BY_CUSTOMER
+        assert cells(resp, dim_suffix="customers.name", metric="amt") == AMOUNT_BY_CUSTOMER

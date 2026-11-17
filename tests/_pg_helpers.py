@@ -49,12 +49,12 @@ def client_datasource(info: Any, *, name: str = "pg") -> DatasourceConfig:
 
 @contextlib.asynccontextmanager
 async def pg_query_engine(
-    ds: DatasourceConfig, *, base_dir: str, models: Sequence[SlayerDataset] = (), validate: bool = True,
+    ds: DatasourceConfig, *, base_dir: str, datasets: Sequence[SlayerDataset] = (), validate: bool = True,
     **engine_kwargs: Any,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """``owned_query_engine`` over a fresh ``YAMLStorage`` holding ``ds`` and ``models``."""
     storage = YAMLStorage(base_dir=base_dir)
     async with owned_query_engine(storage=storage, datasources=[ds], **engine_kwargs) as engine:
-        for model in models:
+        for model in datasets:
             await storage.save_dataset(model, _validate=validate)
         yield engine

@@ -21,7 +21,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.base import StorageBackend
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders_t",
@@ -47,14 +47,14 @@ async def _engine_with_orders(*extra_models: SlayerDataset) -> tuple[SlayerQuery
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
     await storage.save_datasource(_ds())
-    await storage.save_dataset(_orders_model())
+    await storage.save_dataset(_orders_dataset())
     for m in extra_models:
         await storage.save_dataset(m)
     engine = SlayerQueryEngine(storage=storage)
     return engine, tmp
 
 
-async def _expand_stage_as_model(
+async def _expand_stage_as_dataset(
     *,
     engine: SlayerQueryEngine,
     stage: SlayerQuery,
@@ -831,7 +831,7 @@ class TestJoinTargetIsQueryBacked:
         engine, tmp = await _engine_with_orders()
         try:
             alpha, beta = await asyncio.gather(
-                _expand_stage_as_model(
+                _expand_stage_as_dataset(
                     engine=engine,
                     stage=SlayerQuery.model_validate({
                         "population": "orders",
@@ -840,7 +840,7 @@ class TestJoinTargetIsQueryBacked:
                     }),
                     name="alpha",
                 ),
-                _expand_stage_as_model(
+                _expand_stage_as_dataset(
                     engine=engine,
                     stage=SlayerQuery.model_validate({
                         "population": "orders",
@@ -1359,7 +1359,7 @@ class TestMultiStageMeasureRename:
                 "dimensions": ["region"],
                 "metrics": [{"expression": "sum(amount)"}],
             })
-            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_default")
+            virtual = await _expand_stage_as_dataset(engine=engine, stage=stage, name="qb_default")
             col_names = [c.name for c in virtual.fields]
             assert "amount_sum" in col_names, (
                 f"unnamed measure must keep canonical 'amount_sum', got: {col_names}"
@@ -1378,7 +1378,7 @@ class TestMultiStageMeasureRename:
                 "dimensions": ["region"],
                 "metrics": [{"expression": "sum(amount)", "name": "amount_sum"}],
             })
-            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_collide")
+            virtual = await _expand_stage_as_dataset(engine=engine, stage=stage, name="qb_collide")
             col_names = [c.name for c in virtual.fields]
             assert col_names.count("amount_sum") == 1, (
                 f"name=canonical must not duplicate the column, got: {col_names}"
@@ -1398,7 +1398,7 @@ class TestMultiStageMeasureRename:
                 "dimensions": ["region"],
                 "metrics": [{"expression": "sum(amount)", "name": "rev"}],
             })
-            virtual = await _expand_stage_as_model(engine=engine, stage=stage, name="qb_alias")
+            virtual = await _expand_stage_as_dataset(engine=engine, stage=stage, name="qb_alias")
             col_names = [c.name for c in virtual.fields]
             assert "rev" in col_names, (
                 f"user-supplied 'name' must surface as a virtual column, got: {col_names}"

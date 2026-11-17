@@ -17,17 +17,17 @@ from tests._dev2102_fixtures import (
     DS,
     TOTAL_AMOUNT,
     TOTAL_CREDIT,
-    base_models,
+    base_datasets,
     by_key,
     customers,
     ext,
     join,
     orders,
     q,
-    respelled_model,
+    respelled_dataset,
     rows,
     shop,
-    with_models,
+    with_datasets,
 )
 
 TIER_LABEL = {"name": "tier_label", "sql": "upper(tier)", "type": "TEXT"}
@@ -54,7 +54,7 @@ class TestExtendingAnyModel:
                      measures=[AMOUNT])
         async with shop(dialect) as engine:
             got = by_key(await engine.execute(computed), "orders.tier_label", "orders.a")
-        async with shop(dialect, with_models(stored)) as engine:
+        async with shop(dialect, with_datasets(stored)) as engine:
             expected = by_key(await engine.execute(q(
                 source_model="orders", dimensions=["customers.tier_label"], measures=[AMOUNT])),
                 "orders.customers.tier_label", "orders.a")
@@ -87,7 +87,7 @@ class TestExtendingAnyModel:
             ext("orders", joins=[join("cust_spend", [["customer_id", "customer_id"]])]),
             ext("cust_spend", measures=[{"name": "spent2", "formula": "sum(spent * 2)"}]),
         ])
-        async with shop(dialect, with_models(_cust_spend())) as engine:
+        async with shop(dialect, with_datasets(_cust_spend())) as engine:
             resp = await engine.execute(query)
         assert by_key(resp, "orders.customer_id", "orders.s2") == {
             1: 60.0, 2: 60.0, 3: 10.0, 4: 80.0, 5: 30.0, None: 14.0}
@@ -106,7 +106,7 @@ class TestExtendingAnyModel:
               extensions=[ext("inner", measures=[mm])]),
             q(source_model="s", measures=[{"formula": "sum(mm)", "name": "t"}]),
         ]
-        async with shop(dialect, with_models(_cust_spend())) as engine:
+        async with shop(dialect, with_datasets(_cust_spend())) as engine:
             got = await engine.execute(over_model)
             expected = await engine.execute(explicit)
         assert float(got.data[0]["s.t"]) == float(expected.data[0]["s.t"]) == TOTAL_AMOUNT
@@ -128,7 +128,7 @@ class TestScope:
             "metrics": [{"expression": "customers.credit_total", "name": "a"}]})])
         query = q(source_model="tl_rev", measures=[{"formula": "sum(a)", "name": "t"}],
                   extensions=[ext("customers", measures=[CREDIT_TOTAL])])
-        async with shop(dialect, with_models(qb)) as engine:
+        async with shop(dialect, with_datasets(qb)) as engine:
             with pytest.raises(SlayerError, match="credit_total"):
                 await engine.execute(query)
 
@@ -137,7 +137,7 @@ class TestScope:
             DatasetMetric(name="labels", expression="count_distinct(regions.name)")]})
         query = q(source_model="orders", measures=["labels"],
                   extensions=[ext("orders", joins=[join("regions", [["ship_region_id", "id"]])])])
-        async with shop(dialect, with_models(stored)) as engine:
+        async with shop(dialect, with_datasets(stored)) as engine:
             with pytest.raises(SlayerError, match="regions"):
                 await engine.execute(query)
 
@@ -166,7 +166,7 @@ class TestModelNameCase:
     async def test_an_extension_reaches_a_model_saved_in_another_case(self, dialect, spelled: str) -> None:
         query = q(source_model="orders", measures=[{"formula": "Customers.credit_total", "name": "ct"}],
                   extensions=[ext(spelled, measures=[CREDIT_TOTAL])])
-        async with shop(dialect, respelled_model(base_models(), name="customers", spelling="Customers")) as engine:
+        async with shop(dialect, respelled_dataset(base_datasets(), name="customers", spelling="Customers")) as engine:
             resp = await engine.execute(query)
         assert float(resp.data[0]["orders.ct"]) == TOTAL_CREDIT
 
@@ -174,7 +174,7 @@ class TestModelNameCase:
         stage = q(name="big_orders", source_model="orders", dimensions=["id", "customer_id"])
         root = q(source_model="big_orders", dimensions=["customers.name"],
                  extensions=[ext("big_orders", joins=[join("customers", [["customer_id", "id"]])])])
-        async with shop(dialect, respelled_model(base_models(), name="customers", spelling="Customers")) as engine:
+        async with shop(dialect, respelled_dataset(base_datasets(), name="customers", spelling="Customers")) as engine:
             resp = await engine.execute([stage, root])
         assert {r[resp.columns[0]] for r in resp.data} == {"Ann", "Bob", "Cid", "Dee", "Eve", None}
 
@@ -182,7 +182,7 @@ class TestModelNameCase:
         stage = q(name="customers", source_model="addresses", dimensions=["id", "city"])
         root = q(source_model="customers", measures=[{"formula": "cities", "name": "t"}],
                  extensions=[ext("CUSTOMERS", measures=[{"name": "cities", "formula": "count_distinct(upper(city))"}])])
-        async with shop(dialect, respelled_model(base_models(), name="customers", spelling="Customers")) as engine:
+        async with shop(dialect, respelled_dataset(base_datasets(), name="customers", spelling="Customers")) as engine:
             resp = await engine.execute([stage, root])
         assert resp.data[0]["customers.t"] == 4
 

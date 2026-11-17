@@ -21,7 +21,7 @@ from slayer.sql.dialects import _tier2, dialect_for_ds_type, get_dialect
 from slayer.sql.dialects._tier2 import PrestoDialect
 from slayer.sql.dialects.trino import PrestoFamilyDialect, TrinoDialect
 
-from tests._dev1737_fixtures import dt_model
+from tests._dev1737_fixtures import dt_dataset
 from tests._engine_helpers import _engine_generate
 
 TG = TimeGranularity
@@ -316,7 +316,7 @@ _DATE_QUERY = SlayerQuery.model_validate({
 
 
 async def _date_query_sql(ds_type: str) -> str:
-    return await _engine_generate(query=_DATE_QUERY, model=dt_model(), dialect=ds_type)
+    return await _engine_generate(query=_DATE_QUERY, dataset=dt_dataset(), dialect=ds_type)
 
 
 async def test_trino_date_query_uses_fixed_grammar() -> None:

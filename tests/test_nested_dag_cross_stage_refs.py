@@ -36,7 +36,7 @@ def _ds() -> DatasourceConfig:
     return DatasourceConfig(name="test_ds", type="sqlite", database=":memory:")
 
 
-def _countries_model() -> SlayerDataset:
+def _countries_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="countries",
         sql_table="countries",
@@ -48,7 +48,7 @@ def _countries_model() -> SlayerDataset:
     )
 
 
-def _regions_model() -> SlayerDataset:
+def _regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions",
         sql_table="regions",
@@ -63,7 +63,7 @@ def _regions_model() -> SlayerDataset:
     )
 
 
-def _customers_model() -> SlayerDataset:
+def _customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers",
         sql_table="customers",
@@ -77,7 +77,7 @@ def _customers_model() -> SlayerDataset:
     )
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -98,10 +98,10 @@ async def _engine_with_join_chain() -> tuple[SlayerQueryEngine, tempfile.Tempora
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
     await storage.save_datasource(_ds())
-    await storage.save_dataset(_countries_model())
-    await storage.save_dataset(_regions_model())
-    await storage.save_dataset(_customers_model())
-    await storage.save_dataset(_orders_model())
+    await storage.save_dataset(_countries_dataset())
+    await storage.save_dataset(_regions_dataset())
+    await storage.save_dataset(_customers_dataset())
+    await storage.save_dataset(_orders_dataset())
     engine = SlayerQueryEngine(storage=storage)
     return engine, tmp
 
@@ -148,10 +148,10 @@ async def _engine_with_real_sqlite(
     await storage.save_datasource(
         DatasourceConfig(name="test_ds", type="sqlite", database=str(db_path))
     )
-    await storage.save_dataset(_countries_model())
-    await storage.save_dataset(_regions_model())
-    await storage.save_dataset(_customers_model())
-    await storage.save_dataset(_orders_model())
+    await storage.save_dataset(_countries_dataset())
+    await storage.save_dataset(_regions_dataset())
+    await storage.save_dataset(_customers_dataset())
+    await storage.save_dataset(_orders_dataset())
     return SlayerQueryEngine(storage=storage)
 
 
@@ -826,7 +826,7 @@ class TestNoSpuriousBreadcrumb:
     def test_table_backed_model_has_no_origin(self) -> None:
         """A real table-backed `SlayerModel` constructed normally has
         `source_model_origin is None`."""
-        m = _orders_model()
+        m = _orders_dataset()
         assert m.source_dataset_origin is None
 
 

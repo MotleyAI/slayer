@@ -15,8 +15,8 @@ from slayer.flight.handlers import FlightHandlers
 from slayer.facade.translator import QueryResult
 from tests._gateway_harness import (
     GatewayFactory,
-    customers_model,
-    orders_model,
+    customers_dataset,
+    orders_dataset,
     seed_shop,
     shop_datasource,
     shop_storage,
@@ -46,7 +46,7 @@ async def test_flight_builder_passes_the_factory_to_its_engine(tmp_path: Path, m
     db = str(tmp_path / "shop.db")
     seed_shop(db)
     storage = await shop_storage(
-        str(tmp_path / "store"), datasource=shop_datasource(db), models=[orders_model(), customers_model()],
+        str(tmp_path / "store"), datasource=shop_datasource(db), datasets=[orders_dataset(), customers_dataset()],
     )
     captured: dict[str, Any] = {}
 
@@ -70,7 +70,7 @@ async def test_flight_server_stop_closes_the_factory_clients(tmp_path: Path, mon
     db = str(tmp_path / "shop.db")
     seed_shop(db)
     storage = await shop_storage(
-        str(tmp_path / "store"), datasource=shop_datasource(db), models=[orders_model(), customers_model()],
+        str(tmp_path / "store"), datasource=shop_datasource(db), datasets=[orders_dataset(), customers_dataset()],
     )
     captured: dict[str, Any] = {}
 
@@ -95,7 +95,7 @@ async def test_flight_query_execution_leaves_custom_clients_open(tmp_path: Path)
     db = str(tmp_path / "shop.db")
     seed_shop(db)
     storage = await shop_storage(
-        str(tmp_path / "store"), datasource=shop_datasource(db), models=[orders_model(), customers_model()],
+        str(tmp_path / "store"), datasource=shop_datasource(db), datasets=[orders_dataset(), customers_dataset()],
     )
     factory = GatewayFactory()
     handlers = FlightHandlers(engine=SlayerQueryEngine(storage=storage, client_factory=factory))

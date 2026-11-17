@@ -507,7 +507,7 @@ class TestFlattenerDelegation:
         )
 
 
-def _orders_named_model(measures=None) -> SlayerDataset:
+def _orders_named_dataset(metrics=None) -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -517,17 +517,17 @@ def _orders_named_model(measures=None) -> SlayerDataset:
             DatasetField(name="status", sql="status", datatype=DataType.TEXT),
             DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
         ],
-        metrics=measures or [],
+        metrics=metrics or [],
     )
 
 
 class TestBareNamedMeasureResultKey:
     async def test_bare_named_measure_projects_under_name(self) -> None:
-        model = _orders_named_model(
-            measures=[DatasetMetric(name="rev_total", expression="sum(revenue)")]
+        model = _orders_named_dataset(
+            metrics=[DatasetMetric(name="rev_total", expression="sum(revenue)")]
         )
         query = SlayerQuery(population="orders", metrics=["rev_total"])
-        sql = await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, dataset=model)
         cols = _outer_select_columns(sql)
         assert "orders.rev_total" in cols, cols
         assert "orders.revenue_sum" not in cols, cols
@@ -535,14 +535,14 @@ class TestBareNamedMeasureResultKey:
     async def test_explicit_name_overrides_saved_name(self) -> None:
         """Guard (Codex F4): an explicit ``name`` on the query measure wins
         over the saved measure's own name."""
-        model = _orders_named_model(
-            measures=[DatasetMetric(name="rev_total", expression="sum(revenue)")]
+        model = _orders_named_dataset(
+            metrics=[DatasetMetric(name="rev_total", expression="sum(revenue)")]
         )
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="rev_total", name="custom")],
         )
-        sql = await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, dataset=model)
         cols = _outer_select_columns(sql)
         assert "orders.custom" in cols, cols
         assert "orders.rev_total" not in cols
@@ -550,8 +550,8 @@ class TestBareNamedMeasureResultKey:
     async def test_bare_named_measure_order_by_with_dimension(self) -> None:
         """The DEV-1443 shape: ORDER BY the bare measure name resolves to the
         emitted alias even with a dimension present."""
-        model = _orders_named_model(
-            measures=[DatasetMetric(name="companies", expression="count_distinct(revenue)")]
+        model = _orders_named_dataset(
+            metrics=[DatasetMetric(name="companies", expression="count_distinct(revenue)")]
         )
         query = SlayerQuery(
             population="orders",
@@ -559,7 +559,7 @@ class TestBareNamedMeasureResultKey:
             metrics=["companies"],
             order=[OrderItem(field="companies", direction="desc")],
         )
-        sql = await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, dataset=model)
         assert '"orders.companies"' in sql, sql
         assert "revenue_count_distinct" not in sql, sql
 
@@ -569,14 +569,14 @@ class TestBareNamedMeasureResultKey:
         as the bare form, so it preserves the measure NAME exactly like the bare reference — the
         two are equivalent, not divergent. Pinned so the equivalence is
         explicit."""
-        model = _orders_named_model(
-            measures=[DatasetMetric(name="rev_total", expression="sum(revenue)")]
+        model = _orders_named_dataset(
+            metrics=[DatasetMetric(name="rev_total", expression="sum(revenue)")]
         )
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="orders.rev_total")],
         )
-        sql = await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, dataset=model)
         cols = _outer_select_columns(sql)
         assert "orders.rev_total" in cols, cols
         assert "orders.revenue_sum" not in cols
@@ -592,7 +592,7 @@ class TestBareNamedMeasureResultKey:
         # invocation per exception assertion).
         colliding = DatasetMetric(name="status", expression="sum(revenue)")
         with pytest.raises(ValueError, match="name collision"):
-            _orders_named_model(measures=[colliding])
+            _orders_named_dataset(metrics=[colliding])
 
 
 # ---------------------------------------------------------------------------
@@ -641,7 +641,7 @@ class TestTimeShiftCteDecollision:
                 ),
             ],
         )
-        sql = await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, dataset=model)
         # Every CTE name in the statement is unique (regex over WITH/`,` heads).
         all_ctes = re.findall(r'(?:WITH|,)\s*"?(\w+)"?\s+AS\s*\(', sql)
         assert len(all_ctes) == len(set(all_ctes)), (
@@ -687,7 +687,7 @@ class TestTimeShiftCteDecollision:
                 ),
             ],
         )
-        sql = await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, dataset=model)
         cols = _outer_select_columns(sql, dialect="postgres")
         # The user measure keeps its own key.
         assert "orders._time_shift_inner" in cols, cols
@@ -726,7 +726,7 @@ class TestTimeShiftCteDecollision:
                              name="qty_streak"),
             ],
         )
-        sql = await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, dataset=model)
         all_ctes = re.findall(r'(?:WITH|,)\s*"?(\w+)"?\s+AS\s*\(', sql)
         assert len(all_ctes) == len(set(all_ctes)), (
             f"duplicate CTE names: {all_ctes}\n{sql}"

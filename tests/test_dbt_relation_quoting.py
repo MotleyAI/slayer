@@ -16,7 +16,7 @@ from slayer.ingest_report import ConversionResult
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import denoted_name
 from slayer.sql.render.parse import parse_query, parse_table
-from tests._dev2171_fixtures import column, entries, models_of, write_yaml
+from tests._dev2171_fixtures import column, entries, datasets_of, write_yaml
 from tests._engine_helpers import _engine_generate
 
 DS = "ds"
@@ -43,20 +43,20 @@ def _import(tmp_path: Path, *, dialect: str, semantic_models: list[dict[str, Any
     return DbtToSlayerConverter(project=parse_dbt_project(str(root)), data_source=DS, target_dialect=dialect).convert()
 
 
-def _relation(model: SlayerDataset, *, dialect: str) -> list[str]:
+def _relation(dataset: SlayerDataset, *, dialect: str) -> list[str]:
     """The catalog names of the one relation ``model`` reads, as SLayer reads its stored text."""
     sql_dialect = get_dialect(dialect)
-    if model.sql_table is not None:
-        table = parse_table(name=model.sql_table, dialect=sql_dialect)
+    if dataset.sql_table is not None:
+        table = parse_table(name=dataset.sql_table, dialect=sql_dialect)
     else:
-        assert model.sql is not None
-        (table,) = parse_query(sql=model.sql, target_dialect=sql_dialect).find_all(exp.Table)
+        assert dataset.sql is not None
+        (table,) = parse_query(sql=dataset.sql, target_dialect=sql_dialect).find_all(exp.Table)
     return [denoted_name(p, dialect=dialect) for p in cast(list[exp.Identifier], table.parts)]
 
 
-async def _generated_relation(model: SlayerDataset, *, dialect: str) -> list[tuple[str, bool]]:
-    sql = await _engine_generate(query=SlayerQuery.model_validate({"population": model.name, "dimensions": ["qty"]}),
-                                 model=model, dialect=dialect)
+async def _generated_relation(dataset: SlayerDataset, *, dialect: str) -> list[tuple[str, bool]]:
+    sql = await _engine_generate(query=SlayerQuery.model_validate({"population": dataset.name, "dimensions": ["qty"]}),
+                                 dataset=dataset, dialect=dialect)
     (table,) = parse_query(sql=sql, target_dialect=get_dialect(dialect)).find_all(exp.Table)
     return [(p.name, p.quoted) for p in cast(list[exp.Identifier], table.parts)]
 
@@ -65,12 +65,12 @@ async def _generated_relation(model: SlayerDataset, *, dialect: str) -> list[tup
 
 def test_postgres_default_keeps_the_case(tmp_path: Path) -> None:
     result = _import(tmp_path, dialect="postgres", semantic_models=[ITEMS])
-    assert _relation(models_of(result)["items"], dialect="postgres") == ["OrderItems"]
+    assert _relation(datasets_of(result)["items"], dialect="postgres") == ["OrderItems"]
 
 
 def test_project_turns_identifier_quoting_off(tmp_path: Path) -> None:
     result = _import(tmp_path, dialect="postgres", semantic_models=[ITEMS], quoting={"identifier": False})
-    assert _relation(models_of(result)["items"], dialect="postgres") == ["orderitems"]
+    assert _relation(datasets_of(result)["items"], dialect="postgres") == ["orderitems"]
 
 
 def test_models_directory_reads_the_project_quoting(tmp_path: Path) -> None:
@@ -103,12 +103,12 @@ def test_a_directory_outside_the_model_paths_ignores_the_parent_project(tmp_path
 
 
 async def test_snowflake_default_folds(tmp_path: Path) -> None:
-    items = models_of(_import(tmp_path, dialect="snowflake", semantic_models=[ITEMS]))["items"]
+    items = datasets_of(_import(tmp_path, dialect="snowflake", semantic_models=[ITEMS]))["items"]
     assert await _generated_relation(items, dialect="snowflake") == [("orderitems", False)]
 
 
 async def test_snowflake_with_identifier_quoting_on(tmp_path: Path) -> None:
-    items = models_of(_import(tmp_path, dialect="snowflake", semantic_models=[ITEMS],
+    items = datasets_of(_import(tmp_path, dialect="snowflake", semantic_models=[ITEMS],
                               quoting={"identifier": True}))["items"]
     assert await _generated_relation(items, dialect="snowflake") == [("OrderItems", True)]
 
@@ -124,7 +124,7 @@ def test_source_flags_apply_part_by_part(tmp_path: Path, dialect: str, quoting: 
     fold = str.lower if dialect == "postgres" else str.upper
     expected = [name if quoting.get(part, DEFAULT_QUOTING[dialect]) else fold(name)
                 for part, name in (("database", "Analytics"), ("schema", "Raw"), ("identifier", "Orders"))]
-    assert _relation(models_of(result)["m"], dialect=dialect) == expected
+    assert _relation(datasets_of(result)["m"], dialect=dialect) == expected
 
 
 @pytest.mark.parametrize("dialect", ["postgres", "snowflake"])
@@ -134,7 +134,7 @@ def test_project_quoting_does_not_reach_a_source(tmp_path: Path, dialect: str) -
                      sql={"src": "SELECT * FROM {{ source('raw', 'orders') }}"})
     fold = str.lower if dialect == "postgres" else str.upper
     expected = [name if DEFAULT_QUOTING[dialect] else fold(name) for name in ("Analytics", "Raw", "Orders")]
-    assert _relation(models_of(result)["m"], dialect=dialect) == expected
+    assert _relation(datasets_of(result)["m"], dialect=dialect) == expected
 
 
 def test_source_schema_quoting_off_on_postgres(tmp_path: Path) -> None:
@@ -142,7 +142,7 @@ def test_source_schema_quoting_off_on_postgres(tmp_path: Path) -> None:
               "tables": [{"name": "orders", "identifier": "Orders"}]}
     result = _import(tmp_path, dialect="postgres", semantic_models=[SRC], sources=[source],
                      sql={"src": "SELECT * FROM {{ source('raw', 'orders') }}"})
-    assert _relation(models_of(result)["m"], dialect="postgres") == ["raw", "Orders"]
+    assert _relation(datasets_of(result)["m"], dialect="postgres") == ["raw", "Orders"]
 
 
 def test_per_model_override_is_reported(tmp_path: Path) -> None:
@@ -150,7 +150,7 @@ def test_per_model_override_is_reported(tmp_path: Path) -> None:
     result = _import(tmp_path, dialect="postgres", semantic_models=[SRC], sources=[source], sql={
         "src": "{{ config(quoting={'identifier': false}) }}\nSELECT * FROM {{ source('raw', 'orders') }}"})
     assert [e for e in entries(result, "src") if "quoting" in e.message.lower()]
-    assert _relation(models_of(result)["m"], dialect="postgres") == ["raw", "Orders"]
+    assert _relation(datasets_of(result)["m"], dialect="postgres") == ["raw", "Orders"]
 
 
 def test_table_quoting_overrides_its_source(tmp_path: Path) -> None:
@@ -158,14 +158,14 @@ def test_table_quoting_overrides_its_source(tmp_path: Path) -> None:
               "tables": [{"name": "orders", "identifier": "Orders", "quoting": {"identifier": False}}]}
     result = _import(tmp_path, dialect="postgres", semantic_models=[SRC], sources=[source],
                      sql={"src": "SELECT * FROM {{ source('raw', 'orders') }}"})
-    assert _relation(models_of(result)["m"], dialect="postgres") == ["raw", "orders"]
+    assert _relation(datasets_of(result)["m"], dialect="postgres") == ["raw", "orders"]
     assert not [e for e in entries(result, "raw") if "not applied" in e.message]
 
 
 def test_non_boolean_flag_is_reported(tmp_path: Path) -> None:
     result = _import(tmp_path, dialect="postgres", semantic_models=[ITEMS], quoting={"identifier": "{{ var('q') }}"})
     assert [e for e in entries(result, "identifier") if "quoting" in e.message.lower()]
-    assert _relation(models_of(result)["items"], dialect="postgres") == ["OrderItems"]
+    assert _relation(datasets_of(result)["items"], dialect="postgres") == ["OrderItems"]
 
 
 # ── source() names the declared relation ──────────────────────────────────
@@ -179,18 +179,18 @@ def _sourced(tmp_path: Path, source_call: str, sources: list[dict[str, Any]],
 def test_declared_schema_and_identifier(tmp_path: Path) -> None:
     result = _sourced(tmp_path, "source('raw', 'orders')",
                       [{"name": "raw", "schema": "raw_v2", "tables": [{"name": "orders", "identifier": "orders_tbl"}]}])
-    assert _relation(models_of(result)["m"], dialect="postgres") == ["raw_v2", "orders_tbl"]
+    assert _relation(datasets_of(result)["m"], dialect="postgres") == ["raw_v2", "orders_tbl"]
 
 
 def test_declared_defaults(tmp_path: Path) -> None:
     result = _sourced(tmp_path, "source('raw', 'orders')", [{"name": "raw", "tables": [{"name": "orders"}]}])
-    assert _relation(models_of(result)["m"], dialect="postgres") == ["raw", "orders"]
+    assert _relation(datasets_of(result)["m"], dialect="postgres") == ["raw", "orders"]
 
 
 def test_undeclared_source_is_reported(tmp_path: Path) -> None:
     result = _sourced(tmp_path, "source('legacy', 'events')", [{"name": "raw", "tables": [{"name": "orders"}]}])
     assert entries(result, "legacy.events")
-    assert _relation(models_of(result)["m"], dialect="postgres") == ["legacy", "events"]
+    assert _relation(datasets_of(result)["m"], dialect="postgres") == ["legacy", "events"]
 
 
 def test_duplicate_source_declaration_is_reported_and_the_first_wins(tmp_path: Path) -> None:
@@ -199,13 +199,13 @@ def test_duplicate_source_declaration_is_reported_and_the_first_wins(tmp_path: P
                       [{"name": "raw", "schema": "raw_first", "tables": [{"name": "orders"}]}],
                       schema_files={"zz_more.yml": second})
     assert entries(result, "raw")
-    assert _relation(models_of(result)["m"], dialect="postgres") == ["raw_first", "orders"]
+    assert _relation(datasets_of(result)["m"], dialect="postgres") == ["raw_first", "orders"]
 
 
 def test_package_qualified_ref_follows_the_policy(tmp_path: Path) -> None:
     result = _import(tmp_path, dialect="snowflake", semantic_models=[SRC],
                      sql={"src": "SELECT * FROM {{ ref('shop', 'Other') }}"})
-    assert _relation(models_of(result)["m"], dialect="snowflake") == ["OTHER"]
+    assert _relation(datasets_of(result)["m"], dialect="snowflake") == ["OTHER"]
 
 
 # ── logical references stay; physical entity expressions fold ─────────────
@@ -217,7 +217,7 @@ ORDERS = {"name": "orders", "model": "ref('orders')",
 
 
 def test_entity_expr_reads_the_folded_column(tmp_path: Path) -> None:
-    orders = models_of(_import(tmp_path, dialect="postgres", semantic_models=[ORDERS]))["orders"]
+    orders = datasets_of(_import(tmp_path, dialect="postgres", semantic_models=[ORDERS]))["orders"]
     keys = [c for c in orders.fields if c.primary_key]
     assert [c.physical_name for c in keys] == ["orderid"]
 
@@ -225,7 +225,7 @@ def test_entity_expr_reads_the_folded_column(tmp_path: Path) -> None:
 def test_metric_filter_with_a_mixed_case_logical_dimension_is_unchanged(tmp_path: Path) -> None:
     metric = {"name": "paid_revenue", "type": "simple", "type_params": {"measure": {
         "name": "revenue", "filter": "{{ Dimension('order_id__Status') }} = 'paid'"}}}
-    orders = models_of(_import(tmp_path, dialect="postgres", semantic_models=[ORDERS], metrics=[metric]))["orders"]
+    orders = datasets_of(_import(tmp_path, dialect="postgres", semantic_models=[ORDERS], metrics=[metric]))["orders"]
     measure = orders.get_metric("paid_revenue")
     assert measure is not None
     assert measure.expression == "sum(revenue_filtered)"
@@ -235,5 +235,5 @@ def test_metric_filter_with_a_mixed_case_logical_dimension_is_unchanged(tmp_path
 def test_member_without_an_expr_reads_its_folded_name(tmp_path: Path) -> None:
     sm = {"name": "orders", "model": "ref('orders')",
           "dimensions": [{"name": "OrderDate", "type": "time", "type_params": {"time_granularity": "day"}}]}
-    orders = models_of(_import(tmp_path, dialect="postgres", semantic_models=[sm]))["orders"]
+    orders = datasets_of(_import(tmp_path, dialect="postgres", semantic_models=[sm]))["orders"]
     assert column(orders, "OrderDate").physical_name == "orderdate"

@@ -196,36 +196,36 @@ class TestHostGrainWrapStaysLegal:
     across a to-many or unproven hop (green pins)."""
 
     @staticmethod
-    def _order_query(*, model: str, name: str, direction: str):
+    def _order_query(*, dataset: str, name: str, direction: str):
         return q(dimensions=["status"], measures=[M],
-                 order=[OrderItem(field=FieldRef(name=name, dataset=model),
+                 order=[OrderItem(field=FieldRef(name=name, dataset=dataset),
                                   direction=direction)])
 
     async def test_wrap_over_to_many_hop_asc(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(self._order_query(
-            model="tags", name="factor", direction="asc"))
+            dataset="tags", name="factor", direction="asc"))
         statuses = [r["orders.status"] for r in resp.data]
         assert statuses == ["new", "ok"], (statuses, FACTOR_MIN_BY_STATUS)
 
     async def test_wrap_over_to_many_hop_desc(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(self._order_query(
-            model="tags", name="factor", direction="desc"))
+            dataset="tags", name="factor", direction="desc"))
         statuses = [r["orders.status"] for r in resp.data]
         assert statuses == ["ok", "new"], (statuses, FACTOR_MAX_BY_STATUS)
 
     async def test_wrap_over_proven_hop(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(self._order_query(
-            model="customers", name="tier", direction="asc"))
+            dataset="customers", name="tier", direction="asc"))
         statuses = [r["orders.status"] for r in resp.data]
         assert statuses == ["new", "ok"], statuses
 
     async def test_wrap_source_over_unproven_hop_stays_legal(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(self._order_query(
-            model="customers.segments", name="label", direction="desc"))
+            dataset="customers.segments", name="label", direction="desc"))
         statuses = [r["orders.status"] for r in resp.data]
         assert statuses == ["ok", "new"], statuses
         by = rows_by(resp, "orders.status")

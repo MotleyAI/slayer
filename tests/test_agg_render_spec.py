@@ -62,13 +62,13 @@ from slayer.sql.render.aggregates import resolve_agg_entry
 # tests instantiate the generator to invoke it (see ``_invoke`` below).
 
 
-def _invoke(slot, key, *, source_model, source_relation, full_alias):
+def _invoke(slot, key, *, source_dataset, source_relation, full_alias):
     """Thin shim — instantiate SQLGenerator and invoke the new builder."""
     gen = SQLGenerator(dialect="postgres")
     return gen._build_agg_render_spec_from_planned(  # type: ignore[attr-defined]
         slot=slot,
         key=key,
-        source_dataset=source_model,
+        source_dataset=source_dataset,
         source_relation=source_relation,
         full_alias=full_alias,
     )
@@ -79,7 +79,7 @@ def _invoke(slot, key, *, source_model, source_relation, full_alias):
 # ---------------------------------------------------------------------------
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     """Local source model used by the bulk of the tests."""
     return SlayerDataset(
         name="orders",
@@ -253,7 +253,7 @@ class TestBuilderStarKey:
         spec = _invoke(
             slot=slot,
             key=key,
-            source_model=_orders_model(),
+            source_dataset=_orders_dataset(),
             source_relation="orders",
             full_alias="orders._count",
         )
@@ -270,12 +270,12 @@ class TestBuilderStarKey:
     def test_non_count_star_raises(self):
         key = AggregateKey(source=StarKey(), agg="sum")
         slot = _slot(key, declared_name="_sum", public_name="_sum")
-        source_model = _orders_model()
+        source_model = _orders_dataset()
         with pytest.raises(ValueError, match=r"not allowed with measure '\*'"):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=source_model,
+                source_dataset=source_model,
                 source_relation="orders",
                 full_alias="orders._sum",
             )
@@ -283,12 +283,12 @@ class TestBuilderStarKey:
     def test_star_with_args_raises(self):
         key = AggregateKey(source=StarKey(), agg="count", args=(Decimal("1"),))
         slot = _slot(key, declared_name="_count", public_name="_count")
-        source_model = _orders_model()
+        source_model = _orders_dataset()
         with pytest.raises(ValueError, match=r"count\(\*\).* no args"):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=source_model,
+                source_dataset=source_model,
                 source_relation="orders",
                 full_alias="orders._count",
             )
@@ -300,12 +300,12 @@ class TestBuilderStarKey:
             kwargs=(("p", Decimal("0.5")),),
         )
         slot = _slot(key, declared_name="_count", public_name="_count")
-        source_model = _orders_model()
+        source_model = _orders_dataset()
         with pytest.raises(ValueError, match=r"count\(\*\).* no args or kwargs"):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=source_model,
+                source_dataset=source_model,
                 source_relation="orders",
                 full_alias="orders._count",
             )
@@ -328,7 +328,7 @@ class TestBuilderColumnKey:
         spec = _invoke(
             slot=slot,
             key=key,
-            source_model=_orders_model(),
+            source_dataset=_orders_dataset(),
             source_relation="orders",
             full_alias="orders.amount_sum",
         )
@@ -363,7 +363,7 @@ class TestBuilderColumnKey:
         spec = _invoke(
             slot=slot,
             key=key,
-            source_model=_orders_model(),
+            source_dataset=_orders_dataset(),
             source_relation="orders",
             full_alias="orders.net_amount_sum",
         )
@@ -381,7 +381,7 @@ class TestBuilderColumnKey:
         # that surfaces a different ValueError (e.g. a setup failure) still
         # fails loudly. Legacy emits exactly:
         #     "Aggregate source column 'nonexistent' not found on model 'orders'"
-        source_model = _orders_model()
+        source_model = _orders_dataset()
         with pytest.raises(
             ValueError,
             match=r"Aggregate source column 'nonexistent' not found on model 'orders'",
@@ -389,7 +389,7 @@ class TestBuilderColumnKey:
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=source_model,
+                source_dataset=source_model,
                 source_relation="orders",
                 full_alias="orders.x_sum",
             )
@@ -418,7 +418,7 @@ class TestBuilderCustomAggregation:
         spec = _invoke(
             slot=slot,
             key=key,
-            source_model=_orders_model(),
+            source_dataset=_orders_dataset(),
             source_relation="orders",
             full_alias="orders.amount_rolling_avg",
         )
@@ -432,12 +432,12 @@ class TestBuilderCustomAggregation:
             agg="not_a_real_agg",
         )
         slot = _slot(key, declared_name="amount_x", public_name="amount_x")
-        source_model = _orders_model()
+        source_model = _orders_dataset()
         with pytest.raises(AggregationNotAllowedError, match=r"unknown aggregation"):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=source_model,
+                source_dataset=source_model,
                 source_relation="orders",
                 full_alias="orders.amount_x",
             )
@@ -446,7 +446,7 @@ class TestBuilderCustomAggregation:
         # A model-level override of a BUILT-IN aggregation (``weighted_avg`` with
         # a default ``weight=quantity``) binds its default onto the key, and the
         # builder carries the override's formula.
-        orders = _orders_model()
+        orders = _orders_dataset()
         key = bind_expr(
             parse_expr("weighted_avg(amount)"), scope=DatasetScope(population=orders),
             bundle=ResolvedSourceBundle(dialect="postgres", population=orders),
@@ -457,7 +457,7 @@ class TestBuilderCustomAggregation:
             slot=_slot(key, declared_name="amount_weighted_avg",
                        public_name="amount_weighted_avg", slot_type=DataType.DOUBLE),
             key=key,
-            source_model=orders,
+            source_dataset=orders,
             source_relation="orders",
             full_alias="orders.amount_weighted_avg",
         )
@@ -483,7 +483,7 @@ class TestBuilderCustomAggregation:
         spec = _invoke(
             slot=slot,
             key=key,
-            source_model=_orders_model(),
+            source_dataset=_orders_dataset(),
             source_relation="orders",
             full_alias="orders.amount_sum",
         )
@@ -512,7 +512,7 @@ class TestBuilderParametric:
         spec = _invoke(
             slot=slot,
             key=key,
-            source_model=_orders_model(),
+            source_dataset=_orders_dataset(),
             source_relation="orders",
             full_alias="orders.amount_percentile_p_0_5",
         )
@@ -537,7 +537,7 @@ class TestBuilderParametric:
         spec = _invoke(
             slot=slot,
             key=key,
-            source_model=_orders_model(),
+            source_dataset=_orders_dataset(),
             source_relation="orders",
             full_alias="orders.amount_corr",
         )
@@ -573,7 +573,7 @@ class TestBuilderCrossModelKwargPath:
         spec = _invoke(
             slot=slot,
             key=key,
-            source_model=_orders_model(),
+            source_dataset=_orders_dataset(),
             source_relation="orders",
             full_alias="orders.amount_weighted_avg",
         )
@@ -601,7 +601,7 @@ class TestBuilderCrossModelKwargPath:
             public_name="amount_weighted_avg",
             slot_type=DataType.DOUBLE,
         )
-        orders = _orders_model()
+        orders = _orders_dataset()
         customers = SlayerDataset(
             name="customers", data_source="prod", sql_table="customers",
             fields=[
@@ -638,14 +638,14 @@ class TestBuilderCrossModelKwargPath:
             public_name="amount_weighted_avg",
             slot_type=DataType.DOUBLE,
         )
-        orders = _orders_model()
+        orders = _orders_dataset()
         with pytest.raises(
             AggregationNotAllowedError, match=r"kwarg .* references ColumnKey",
         ):
             _invoke(
                 slot=slot,
                 key=key,
-                source_model=orders,
+                source_dataset=orders,
                 source_relation="orders",
                 full_alias="orders.amount_weighted_avg",
             )
@@ -680,7 +680,7 @@ class TestBuilderCrossModelKwargPath:
         spec = _invoke(
             slot=slot,
             key=local_key,
-            source_model=customers,
+            source_dataset=customers,
             source_relation="customers",
             full_alias="customers.amount_weighted_avg",
         )
@@ -713,7 +713,7 @@ class TestBuilderTypePropagation:
         spec = _invoke(
             slot=slot,
             key=key,
-            source_model=_orders_model(),
+            source_dataset=_orders_dataset(),
             source_relation="orders",
             full_alias="orders.amount_count",
         )
@@ -734,7 +734,7 @@ class TestBuilderTypePropagation:
         spec = _invoke(
             slot=slot,
             key=key,
-            source_model=_orders_model(),
+            source_dataset=_orders_dataset(),
             source_relation="orders",
             full_alias="orders.amount_sum",
         )
@@ -747,7 +747,7 @@ class TestBuilderTypePropagation:
         spec = _invoke(
             slot=None,
             key=key,
-            source_model=_orders_model(),
+            source_dataset=_orders_dataset(),
             source_relation="orders",
             full_alias="orders.amount_sum",
         )

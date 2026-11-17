@@ -15,7 +15,7 @@ from tests._dev2046_fixtures import (
     VIP_ASSOC_SUM_BY_REGION,
     by_dim,
     by_month,
-    dev2046_models,
+    dev2046_datasets,
     m,
     month_td,
     orders_q,
@@ -38,7 +38,7 @@ async def pg_engine(postgresql, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
         cur.execute(stmt)
     postgresql.commit()
     async with pg_query_engine(client_datasource(postgresql.info), base_dir=str(tmp_path),
-                               models=dev2046_models(data_source="pg")) as engine:
+                               models=dev2046_datasets(data_source="pg")) as engine:
         yield engine
 
 

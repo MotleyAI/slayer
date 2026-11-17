@@ -40,11 +40,11 @@ def _daily() -> SlayerDataset:
     )
 
 
-def _query(*, source_model: str, measure: str, date_range: list) -> SlayerQuery:
+def _query(*, source_dataset: str, metric: str, date_range: list) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "population": source_model,
+        "population": source_dataset,
         "time_dimensions": [TimeDimension(field="created_at", granularity="month", date_range=date_range)],
-        "metrics": [{"expression": measure, "name": "m0"}],
+        "metrics": [{"expression": metric, "name": "m0"}],
     })
 
 
@@ -64,13 +64,13 @@ class TestOneSidedRangePlans:
 
     @pytest.mark.parametrize(("date_range", "bound"), ONE_SIDED)
     async def test_plain_model(self, date_range, bound) -> None:
-        query = _query(source_model="orders", measure="sum(amount)", date_range=date_range)
-        _assert_one_sided(await _engine_generate(query=query, model=_orders()), bound)
+        query = _query(source_dataset="orders", metric="sum(amount)", date_range=date_range)
+        _assert_one_sided(await _engine_generate(query=query, dataset=_orders()), bound)
 
     @pytest.mark.parametrize(("date_range", "bound"), ONE_SIDED)
     async def test_source_queries_model(self, date_range, bound) -> None:
-        query = _query(source_model="daily", measure="max(rev)", date_range=date_range)
-        sql = await _engine_generate(query=query, model=_orders(), extra_models=[_daily()])
+        query = _query(source_dataset="daily", metric="max(rev)", date_range=date_range)
+        sql = await _engine_generate(query=query, dataset=_orders(), extra_datasets=[_daily()])
         _assert_one_sided(sql, bound)
 
 
@@ -78,7 +78,7 @@ class TestBothBoundsMissing:
 
     def test_rejected_at_construction_naming_the_dimension(self) -> None:
         with pytest.raises(pydantic.ValidationError) as exc_info:
-            _query(source_model="orders", measure="sum(amount)", date_range=[None, None])
+            _query(source_dataset="orders", metric="sum(amount)", date_range=[None, None])
         assert "created_at" in str(exc_info.value), exc_info.value
 
 
@@ -86,9 +86,9 @@ class TestWellFormedRangeStillPlans:
 
     async def test_two_string_bounds_emit_the_half_open_range(self) -> None:
         query = _query(
-            source_model="orders", measure="sum(amount)",
+            source_dataset="orders", metric="sum(amount)",
             date_range=["2024-01-01", "2024-12-31"],
         )
-        sql = await _engine_generate(query=query, model=_orders())
+        sql = await _engine_generate(query=query, dataset=_orders())
         assert "2024-01-01" in sql
         assert "2025-01-01" in sql

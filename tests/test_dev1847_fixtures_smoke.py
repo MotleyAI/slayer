@@ -37,9 +37,9 @@ from tests._dev1847_fixtures import (
     SHAPE_B_BAND_THRESHOLD,
     SHAPE_B_BAND_TOTAL,
     SHAPE_B_GROUP_SUM,
-    dev1847_models,
+    dev1847_datasets,
     make_exec_engine,
-    source_queries_equiv_model,
+    source_queries_equiv_dataset,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -201,8 +201,8 @@ class TestSourceQueriesRealizesOracle:
 
     @pytest.fixture(params=["sqlite", "duckdb"])
     async def engine(self, request):
-        models = dev1847_models() + [source_queries_equiv_model()]
-        async for eng in make_exec_engine(request, models=models):
+        models = dev1847_datasets() + [source_queries_equiv_dataset()]
+        async for eng in make_exec_engine(request, datasets=models):
             yield eng
 
     async def test_source_queries_matches_headline_oracle(self, engine: SlayerQueryEngine):

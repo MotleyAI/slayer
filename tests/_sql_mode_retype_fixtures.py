@@ -37,7 +37,7 @@ def sql_shapes(*, table: str, column: str, untypeable: str | None) -> list[Any]:
     return shapes
 
 
-def stale_sql_model(*, sql: str, column: str, data_source: str) -> SlayerDataset:
+def stale_sql_dataset(*, sql: str, column: str, data_source: str) -> SlayerDataset:
     """The model as stored before list columns: the list typed ``DOUBLE``."""
     return SlayerDataset(name=MODEL, sql=sql, data_source=data_source, fields=[
         DatasetField(name="id", datatype=DataType.INT, primary_key=True),

@@ -42,13 +42,13 @@ from tests._dev1743_fixtures import (
 from tests._engine_helpers import _engine_generate
 
 
-async def _engine_with(models, *, dialect="postgres"):
+async def _engine_with(datasets, *, dialect="postgres"):
     """Build an engine over ``models`` saved through the ENGINE (save-time pass)."""
     d = tempfile.mkdtemp()
     storage = YAMLStorage(base_dir=d)
     await storage.save_datasource(DatasourceConfig(name="test", type=dialect))
     engine = SlayerQueryEngine(storage=storage)
-    for m in models:
+    for m in datasets:
         await engine.save_dataset(m)
     return engine
 
@@ -84,7 +84,7 @@ class TestDunderTargetResolves:
         host = self._host_with_label()
         sql = await _engine_generate(
             query=SlayerQuery(population="orders", dimensions=["region_label"]),
-            model=host, extra_models=[dunder_target()],
+            dataset=host, extra_datasets=[dunder_target()],
         )
         # The dim's physical table is joined and its label column read.
         assert "customer_region_dim" in sql
@@ -150,7 +150,7 @@ class TestLegacyDunderIsHardErrorAtGeneration:
         extras = [chain_customers(), chain_regions()]
         with pytest.raises(ValueError) as ei:
             await _engine_generate(
-                query=query, model=model, extra_models=extras,
+                query=query, dataset=model, extra_datasets=extras,
                 validate=False,  # bypass save-time pass; door must still fire
             )
         msg = str(ei.value)
@@ -240,7 +240,7 @@ class TestExactHostQualifier:
         )
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(doubled)"}]}),
-            model=host,
+            dataset=host,
         )
         assert "amount" in sql
 
@@ -250,7 +250,7 @@ class TestExactHostQualifier:
 # Column.filter and SlayerModel.filters (the plan changes all three).
 # --------------------------------------------------------------------------- #
 class TestFilterSurfacesResolve:
-    def _host(self, *, col_filter=None, model_filters=None) -> SlayerDataset:
+    def _host(self, *, col_filter=None, dataset_filters=None) -> SlayerDataset:
         return SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             fields=[
@@ -260,7 +260,7 @@ class TestFilterSurfacesResolve:
             ],
             relationships=[DatasetRelationship(to="customers",
                              join_pairs=[["customer_id", "id"]])],
-            filters=list(model_filters) if model_filters else [],
+            filters=list(dataset_filters) if dataset_filters else [],
         )
 
     @pytest.mark.asyncio
@@ -274,7 +274,7 @@ class TestFilterSurfacesResolve:
     @pytest.mark.asyncio
     async def test_model_filter_legacy_dunder_is_d2(self) -> None:
         engine = await _engine_with([chain_regions(), chain_customers()])
-        host = self._host(model_filters=["customers__regions.name = 'US'"])
+        host = self._host(dataset_filters=["customers__regions.name = 'US'"])
         with pytest.raises(ValueError) as ei:
             await engine.save_dataset(host)
         assert "customers.regions.name" in str(ei.value)
@@ -307,7 +307,7 @@ class TestAmbiguityImpossible:
         sql = await _engine_generate(
             query=SlayerQuery(population="host",
                               dimensions=["chain_val", "direct_val"]),
-            model=self._host(), extra_models=[ai_a(), ai_b(), ai_a__b()],
+            dataset=self._host(), extra_datasets=[ai_a(), ai_b(), ai_a__b()],
         )
         # The chain's leaf table and the direct model's table are BOTH joined
         # (assert on parsed exp.Table names, not a raw substring).
@@ -320,7 +320,7 @@ class TestAmbiguityImpossible:
 # Deep dotted chain (5 name parts -> nested Dot AST, not flat Column.parts) [C4].
 # --------------------------------------------------------------------------- #
 class TestDeepDottedChainResolves:
-    def _four_hop_models(self):
+    def _four_hop_datasets(self):
         d = lambda name, cols, joins=(): SlayerDataset(  # noqa: E731
             name=name, data_source="test", sql_table=name,
             fields=cols, relationships=list(joins),
@@ -351,10 +351,10 @@ class TestDeepDottedChainResolves:
 
     @pytest.mark.asyncio
     async def test_five_part_chain_resolves(self) -> None:
-        host, extra = self._four_hop_models()
+        host, extra = self._four_hop_datasets()
         sql = await _engine_generate(
             query=SlayerQuery(population="hh", dimensions=["deep"]),
-            model=host, extra_models=extra,
+            dataset=host, extra_datasets=extra,
         )
         # Every hop's physical table is actually joined (parsed exp.Table names,
         # not a raw substring — the aliases are the __-joined path aa__bb__cc__dd).

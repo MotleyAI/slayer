@@ -8,7 +8,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.profiling import ensure_samples_fresh
-from tests._dev2120_fixtures import contractors_engine, contractors_model
+from tests._dev2120_fixtures import contractors_engine, contractors_dataset
 from slayer.engine.query_engine import SlayerQueryEngine
 
 
@@ -25,8 +25,8 @@ def _record(*, engine, monkeypatch: pytest.MonkeyPatch) -> list[SlayerQuery]:
     return log
 
 
-async def _profile(engine: SlayerQueryEngine, name: str, monkeypatch: pytest.MonkeyPatch, *, model: SlayerDataset | None = None):
-    stored = await engine.storage.get_dataset((model or contractors_model()).name, data_source="test")
+async def _profile(engine: SlayerQueryEngine, name: str, monkeypatch: pytest.MonkeyPatch, *, dataset: SlayerDataset | None = None):
+    stored = await engine.storage.get_dataset((dataset or contractors_dataset()).name, data_source="test")
     assert stored is not None
     column = stored.get_field(name)
     assert column is not None
@@ -69,7 +69,7 @@ class TestOpaqueElements:
         grids = SlayerDataset(name="grids", sql_table="grids", data_source="test", fields=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
             DatasetField(name="grid", datatype=DataType.ARRAY, element_type=DataType.UNKNOWN)])
-        async with contractors_engine(models=[contractors_model(), grids], extra=GRIDS) as e:
-            grid, _, log = await _profile(e, "grid", monkeypatch, model=grids)
+        async with contractors_engine(datasets=[contractors_dataset(), grids], extra=GRIDS) as e:
+            grid, _, log = await _profile(e, "grid", monkeypatch, dataset=grids)
         assert log == []
         assert grid.sampled_values is None

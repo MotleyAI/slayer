@@ -17,7 +17,7 @@ from slayer.core.models import SlayerDataset
 from slayer.core.warnings import LibraryNameShadowWarning
 from slayer.engine.query_engine import SlayerResponse
 from slayer.mcp.server import create_mcp_server
-from tests._library_names_fixtures import agg, measure, memory_doc, saved_query_doc, stored_engine, t_doc
+from tests._library_names_fixtures import agg, metric, memory_doc, saved_query_doc, stored_engine, t_doc
 from tests._stored_upgrade_fixtures import DS
 
 _REVERSE = agg("reverse")
@@ -51,28 +51,28 @@ async def _both(call: Awaitable[SlayerResponse]) -> tuple[list[tuple[str, str, s
 _SHADOW = [("t", "reverse", "reverse")]
 
 
-def _query(formula: str = "reverse(a)", **body: Any) -> dict:
-    return {"population": "t", "metrics": [measure(formula)], **body}
+def _query(expression: str = "reverse(a)", **body: Any) -> dict:
+    return {"population": "t", "metrics": [metric(expression)], **body}
 
 
 class TestSaveAndLoad:
     async def test_save(self) -> None:
         fresh = {k: v for k, v in t_doc(aggregations=[_REVERSE]).items() if k != "version"}
         model = SlayerDataset.model_validate(fresh)
-        async with stored_engine(models=[]) as engine:
+        async with stored_engine(datasets=[]) as engine:
             with _python_shadows() as raised:
                 await engine.save_dataset(model)
         assert _names(raised) == _SHADOW
 
     async def test_load(self) -> None:
-        async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
+        async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
             with _python_shadows() as raised:
                 assert await engine.storage.get_dataset("t", data_source=DS) is not None
         assert _SHADOW[0] in _names(raised)
 
     async def test_no_warning_for_a_builtin_override(self) -> None:
         doc = t_doc(aggregations=[agg("collect"), agg("sum", "MAX({value})")])
-        async with stored_engine(models=[doc]) as engine:
+        async with stored_engine(datasets=[doc]) as engine:
             with _python_shadows() as raised:
                 model = await engine.storage.get_dataset("t", data_source=DS)
                 assert model is not None
@@ -83,7 +83,7 @@ class TestSaveAndLoad:
 
 class TestEveryResponse:
     async def test_executed_and_cached(self) -> None:
-        async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
+        async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
             first = await _both(engine.execute(_query(), cache=True))
             second = await _both(engine.execute(_query(), cache=True))
             assert engine.cache_size == 1
@@ -91,24 +91,24 @@ class TestEveryResponse:
 
     @pytest.mark.parametrize("mode", ["dry_run", "explain"])
     async def test_not_executed(self, mode: str) -> None:
-        async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
+        async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
             flags: dict[str, Any] = {mode: True}
             got = await _both(engine.execute(_query(), **flags))
         assert got == (_SHADOW, _SHADOW)
 
     async def test_no_warning_without_a_shadowing_call(self) -> None:
-        async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
+        async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
             got = await _both(engine.execute(_query("sum(a)")))
         assert got == ([], [])
 
     async def test_a_pruned_stage_is_not_announced(self) -> None:
         stages = [
-            {"name": "unused", "population": "t", "metrics": [measure("reverse(a)", "r")]},
-            {"name": "s1", "population": "t", "dimensions": ["s"], "metrics": [measure("sum(a)", "total")]},
-            {"population": "s1", "metrics": [measure("sum(total)", "grand")]},
+            {"name": "unused", "population": "t", "metrics": [metric("reverse(a)", "r")]},
+            {"name": "s1", "population": "t", "dimensions": ["s"], "metrics": [metric("sum(a)", "total")]},
+            {"population": "s1", "metrics": [metric("sum(total)", "grand")]},
         ]
-        query = {"population": "qb", "metrics": [measure("sum(grand)")]}
-        async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
+        query = {"population": "qb", "metrics": [metric("sum(grand)")]}
+        async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 await engine.create_dataset_from_query(query=stages, name="qb")
@@ -118,29 +118,29 @@ class TestEveryResponse:
         assert got == ([], [])
 
     async def test_a_library_call_in_another_model_is_not_announced(self) -> None:
-        async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
+        async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
             got = await _both(engine.execute({
                 "population": "t", "dimensions": [{"expression": "reverse(customers.name)", "name": "rn"}],
-                "metrics": [measure("count(*)")]}))
+                "metrics": [metric("count(*)")]}))
         assert got == ([], [])
 
 
 class TestEveryContainer:
     async def test_a_stored_measure(self) -> None:
-        doc = t_doc(aggregations=[_REVERSE], measures=[{"name": "rev", "formula": "reverse(a)"}])
-        async with stored_engine(models=[doc]) as engine:
+        doc = t_doc(aggregations=[_REVERSE], metrics=[{"name": "rev", "formula": "reverse(a)"}])
+        async with stored_engine(datasets=[doc]) as engine:
             got = await _both(engine.execute(_query("rev")))
         assert got == (_SHADOW, _SHADOW)
 
     async def test_a_saved_query(self) -> None:
         saved = saved_query_doc(name="rev_q", stage=_query())
-        async with stored_engine(models=[t_doc(aggregations=[_REVERSE]), saved]) as engine:
+        async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE]), saved]) as engine:
             got = await _both(engine.execute("rev_q"))
         assert got == (_SHADOW, _SHADOW)
 
     async def test_a_memory_query(self) -> None:
         mem = memory_doc(memory_id="m_rev", query=_query())
-        async with stored_engine(models=[t_doc(aggregations=[_REVERSE])], memories=[mem]) as engine:
+        async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])], memories=[mem]) as engine:
             stored = await engine.storage.get_memory("m_rev")
             assert stored.query is not None
             got = await _both(engine.execute(stored.query))
@@ -150,13 +150,13 @@ class TestEveryContainer:
 class TestEverySpelling:
     @pytest.mark.parametrize("spelling", sorted(SCALAR_SPELLINGS))
     async def test_a_parser_spelling(self, spelling: str) -> None:
-        async with stored_engine(models=[t_doc(aggregations=[agg(spelling)])]) as engine:
+        async with stored_engine(datasets=[t_doc(aggregations=[agg(spelling)])]) as engine:
             got = await _both(engine.execute(_query(f"{spelling}(a)")))
         assert got == ([("t", spelling, spelling)],) * 2
 
     @pytest.mark.parametrize(("formula", "written"), [("REVERSE(a)", "REVERSE"), ("t.reverse(a)", "reverse")])
     async def test_the_function_as_written(self, formula: str, written: str) -> None:
-        async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
+        async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
             got = await _both(engine.execute(_query(formula)))
         assert got == ([("t", "reverse", written)],) * 2
 
@@ -168,7 +168,7 @@ def _shadow_dicts(entries: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
 class TestEverySurface:
     @pytest.mark.parametrize("dry_run", [False, True], ids=["executed", "dry-run"])
     async def test_rest(self, dry_run: bool) -> None:
-        async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
+        async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
             client = TestClient(create_app(storage=engine.storage))
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -177,7 +177,7 @@ class TestEverySurface:
         assert _shadow_dicts(resp.json().get("warnings") or []) == _SHADOW
 
     async def test_mcp(self) -> None:
-        async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
+        async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])]) as engine:
             server: Any = create_mcp_server(storage=engine.storage)  # call_tool's annotation omits its (blocks, dict) tuple
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")

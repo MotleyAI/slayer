@@ -43,7 +43,7 @@ def _seed(db_path: str) -> None:
         cur.executemany("INSERT INTO t VALUES (?, ?, ?, ?, ?, ?)", _ROWS)
 
 
-def _model(*, arrays: bool) -> SlayerDataset:
+def _dataset(*, arrays: bool) -> SlayerDataset:
     columns = [
         DatasetField(name="id", datatype=DataType.INT, primary_key=True),
         DatasetField(name="amount", datatype=DataType.DOUBLE),
@@ -77,7 +77,7 @@ class _Run:
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def run(request) -> AsyncIterator[_Run]:
     async with seeded_exec_engine(dialect=request.param, seed=_seed,
-                                  models=[_model(arrays=request.param == "duckdb")]) as (engine, _db):
+                                  datasets=[_dataset(arrays=request.param == "duckdb")]) as (engine, _db):
         yield _Run(engine=engine, dialect=request.param)
 
 
@@ -119,10 +119,10 @@ async def test_profiling_sends_no_extension(run: _Run, monkeypatch: pytest.Monke
     assert [q for q in log if q.extensions] == []
 
 
-def _restricted_model() -> SlayerDataset:
+def _restricted_dataset() -> SlayerDataset:
     """``_model`` with most range columns' ``allowed_aggregations`` excluding ``min`` / ``max``."""
     whitelist = {"amount": ["sum"], "double_amount": ["sum"], "qty": ["sum"], "ordered_at": ["count"]}
-    model = _model(arrays=False)
+    model = _dataset(arrays=False)
     return model.model_copy(update={"fields": [
         c.model_copy(update={"allowed_aggregations": whitelist[c.name]}) if c.name in whitelist else c
         for c in model.fields]})
@@ -130,7 +130,7 @@ def _restricted_model() -> SlayerDataset:
 
 @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
 async def test_a_column_whitelist_does_not_stop_its_range(dialect: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    async with seeded_exec_engine(dialect=dialect, seed=_seed, models=[_restricted_model()]) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=_seed, datasets=[_restricted_dataset()]) as (engine, _db):
         sampled, _ = await _profile(_Run(engine=engine, dialect=dialect), monkeypatch)
         assert {k: sampled[k] for k in _EXPECTED} == _EXPECTED
         authored = SlayerQuery.model_validate({"population": "t", "metrics": ["min(amount)"]})

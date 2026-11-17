@@ -190,7 +190,7 @@ def test_pre_existing_v7_data_still_validates() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _model_with_cardinality() -> SlayerDataset:
+def _dataset_with_cardinality() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -213,7 +213,7 @@ def _model_with_cardinality() -> SlayerDataset:
 async def test_yaml_roundtrip_preserves_cardinality_and_unique() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         storage = YAMLStorage(base_dir=tmp)
-        await storage.save_dataset(_model_with_cardinality())
+        await storage.save_dataset(_dataset_with_cardinality())
         loaded = await storage.get_dataset("orders", data_source="testds")
         assert loaded is not None
         assert loaded.relationships[0].cardinality is RelationshipCardinality.MANY_TO_ONE
@@ -224,7 +224,7 @@ async def test_yaml_roundtrip_preserves_cardinality_and_unique() -> None:
 async def test_sqlite_roundtrip_preserves_cardinality_and_unique() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         storage = SQLiteStorage(db_path=f"{tmp}/s.db")
-        await storage.save_dataset(_model_with_cardinality())
+        await storage.save_dataset(_dataset_with_cardinality())
         loaded = await storage.get_dataset("orders", data_source="testds")
         assert loaded is not None
         assert loaded.relationships[0].cardinality is RelationshipCardinality.MANY_TO_ONE

@@ -21,7 +21,7 @@ from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import DeprecatedInputWarning
 from slayer.engine.query_engine import SlayerQueryEngine
-from tests._dev1840_fixtures import _seed_sqlite, dev1840_models
+from tests._dev1840_fixtures import _seed_sqlite, dev1840_datasets
 from tests._engine_helpers import build_exec_engine
 
 SAVED = "by_status"
@@ -90,7 +90,7 @@ async def orders_engine() -> AsyncGenerator[SlayerQueryEngine]:
     with tempfile.TemporaryDirectory() as tmp:
         db_path = os.path.join(tmp, "data.sqlite")
         _seed_sqlite(db_path)
-        engine = await build_exec_engine(db_path, dialect="sqlite", models=dev1840_models())
+        engine = await build_exec_engine(db_path, dialect="sqlite", datasets=dev1840_datasets())
         try:
             await engine.save_dataset(SlayerDataset(name=SAVED, source_queries=[saved_stage()]))
             yield engine

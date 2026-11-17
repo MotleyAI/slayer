@@ -285,17 +285,17 @@ class TestTypingErrors:
 class TestDateOnlyTextStorage:
     @pytest.mark.parametrize("filt", ["ts in '2025-03-01'", "ts >= '2025-03-01 00:00:00'"])
     async def test_date_only_text_matches_like_midnight(self, engine, filt) -> None:
-        assert await ids(engine, filt, model="mixed") == {1, 2, 4, 5, 6}
+        assert await ids(engine, filt, dataset="mixed") == {1, 2, 4, 5, 6}
 
     async def test_date_only_equality_matches_midnight_text(self, engine) -> None:
-        assert await ids(engine, "ts = '2025-03-01'", model="mixed") == {1, 2}
+        assert await ids(engine, "ts = '2025-03-01'", dataset="mixed") == {1, 2}
 
     async def test_millisecond_resolution(self, engine) -> None:
-        assert await ids(engine, "ts >= '2025-03-01 10:00:00.250'", model="mixed") == {4, 6}
-        assert await ids(engine, "ts < '2025-03-01 10:00:00.250'", model="mixed") == {1, 2, 3, 5}
+        assert await ids(engine, "ts >= '2025-03-01 10:00:00.250'", dataset="mixed") == {4, 6}
+        assert await ids(engine, "ts < '2025-03-01 10:00:00.250'", dataset="mixed") == {1, 2, 3, 5}
 
     async def test_below_the_day(self, engine) -> None:
-        assert await ids(engine, "ts < '2025-03-01'", model="mixed") == {3}
+        assert await ids(engine, "ts < '2025-03-01'", dataset="mixed") == {3}
 
 
 class TestSqliteTimestampSpelling:
@@ -310,10 +310,10 @@ class TestSqliteTimestampSpelling:
     ])
     async def test_t_storage_matches_space_storage(self, sqlite_engine, filt) -> None:
         spaced = await ids(sqlite_engine, filt)
-        assert await ids(sqlite_engine, filt, model="ev_t") == spaced
+        assert await ids(sqlite_engine, filt, dataset="ev_t") == spaced
 
     async def test_t_storage_sub_day_bound(self, sqlite_engine) -> None:
-        assert await ids(sqlite_engine, "ts < '2025-03-01 10:00:00'", model="ev_t") & {12, 13} == {12}
+        assert await ids(sqlite_engine, "ts < '2025-03-01 10:00:00'", dataset="ev_t") & {12, 13} == {12}
 
 
 class TestGranularityCalls:

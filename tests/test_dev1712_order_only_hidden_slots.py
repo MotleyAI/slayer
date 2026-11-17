@@ -59,7 +59,7 @@ def _outer_order_by_names(sql: str, *, dialect: str = "postgres") -> list[str]:
     return names
 
 
-async def _save_models(storage: YAMLStorage) -> SlayerDataset:
+async def _save_datasets(storage: YAMLStorage) -> SlayerDataset:
     await storage.save_dataset(SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
@@ -113,12 +113,12 @@ async def _save_models(storage: YAMLStorage) -> SlayerDataset:
 async def engine(tmp_path):
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-    orders = await _save_models(storage)
+    orders = await _save_datasets(storage)
     return SlayerQueryEngine(storage=storage), orders
 
 
-async def _sql(engine_and_model, query: SlayerQuery) -> str:
-    engine, _ = engine_and_model
+async def _sql(engine_and_dataset, query: SlayerQuery) -> str:
+    engine, _ = engine_and_dataset
     resp = await engine.execute(query, dry_run=True)
     return resp.sql or ""
 
@@ -152,7 +152,7 @@ async def exec_engine(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=str(db_path))
     )
-    await _save_models(storage)
+    await _save_datasets(storage)
     return SlayerQueryEngine(storage=storage)
 
 

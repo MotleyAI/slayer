@@ -25,14 +25,14 @@ from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1866_fixtures import DS_CHAIN, chain_models
+from tests._dev1866_fixtures import DS_CHAIN, chain_datasets
 
 DS_LIT = "ds_lit"
 DS_FANROUTE = "ds_fanroute"
 DS_TWOROUTES = "ds_tworoutes"
 
 
-def lit_models() -> list[SlayerDataset]:
+def lit_datasets() -> list[SlayerDataset]:
     """stores —(unknown card)→ plants, plus the to-one route stores → hub → plants."""
     plants = SlayerDataset(
         name="plants", data_source=DS_LIT, sql_table="plants",
@@ -79,7 +79,7 @@ def lit_models() -> list[SlayerDataset]:
     return [plants, hub, stores]
 
 
-def fanroute_models() -> list[SlayerDataset]:
+def fanroute_datasets() -> list[SlayerDataset]:
     """firm → office to-one; office → desks fans out (unique route overall)."""
     office = SlayerDataset(
         name="office", data_source=DS_FANROUTE, sql_table="office",
@@ -119,15 +119,15 @@ def fanroute_models() -> list[SlayerDataset]:
     return [office, firm, desks]
 
 
-def lit_models_by_name() -> dict[str, SlayerDataset]:
-    return {m.name: m for m in lit_models()}
+def lit_datasets_by_name() -> dict[str, SlayerDataset]:
+    return {m.name: m for m in lit_datasets()}
 
 
-def fanroute_models_by_name() -> dict[str, SlayerDataset]:
-    return {m.name: m for m in fanroute_models()}
+def fanroute_datasets_by_name() -> dict[str, SlayerDataset]:
+    return {m.name: m for m in fanroute_datasets()}
 
 
-def tworoutes_models() -> list[SlayerDataset]:
+def tworoutes_datasets() -> list[SlayerDataset]:
     """sale → cust → city and sale → store → city, every hop to-one."""
     city = SlayerDataset(
         name="city", data_source=DS_TWOROUTES, sql_table="city",
@@ -185,10 +185,10 @@ def tworoutes_models() -> list[SlayerDataset]:
 
 
 _TOPOLOGIES: list[tuple[str, list[SlayerDataset]]] = [
-    (DS_CHAIN, chain_models()),
-    (DS_LIT, lit_models()),
-    (DS_FANROUTE, fanroute_models()),
-    (DS_TWOROUTES, tworoutes_models()),
+    (DS_CHAIN, chain_datasets()),
+    (DS_LIT, lit_datasets()),
+    (DS_FANROUTE, fanroute_datasets()),
+    (DS_TWOROUTES, tworoutes_datasets()),
 ]
 
 

@@ -34,7 +34,7 @@ from slayer.sql.scope_check import assert_scope_closed
 from tests._dev1832_fixtures import (
     DatasetMetric,
     cust_q,
-    dev1832_models,
+    dev1832_datasets,
     gen,
     make_exec_engine,
     month_key,
@@ -101,7 +101,7 @@ def _cm_ctes(sql: str) -> list[str]:
 
 
 def _monthly_bundle() -> ResolvedSourceBundle:
-    models = dev1832_models()
+    models = dev1832_datasets()
     monthly = next(m for m in models if m.name == "monthly")
     return ResolvedSourceBundle(
         dialect="duckdb",

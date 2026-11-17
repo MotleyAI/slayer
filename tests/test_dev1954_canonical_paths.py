@@ -40,7 +40,7 @@ from tests._dev1954_fixtures import (
     SPEND_BY_RNAME,
     WPOP_BY_RNAME,
     by_key,
-    dev1954_models,
+    dev1954_datasets,
     execution_spy,
     make_exec_engine,
     orders_q,
@@ -55,12 +55,12 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
         yield e
 
 
-def _mbn(models=None) -> Dict[str, SlayerDataset]:
-    return {m.name: m for m in (models or dev1954_models())}
+def _mbn(datasets=None) -> Dict[str, SlayerDataset]:
+    return {m.name: m for m in (datasets or dev1954_datasets())}
 
 
 def _bundle(root: str = "orders") -> ResolvedSourceBundle:
-    models = dev1954_models()
+    models = dev1954_datasets()
     src = next(m for m in models if m.name == root)
     return ResolvedSourceBundle(
         dialect="postgres",
@@ -75,9 +75,9 @@ def _bind(text: str, *, root: str = "orders"):
     return bind_expr(parse_expr(text), scope=_scope(root), bundle=_bundle(root))
 
 
-def _parallel_models():
+def _parallel_datasets():
     """customers → regions on two named edges ``hr`` and ``hr2``."""
-    models = dev1954_models()
+    models = dev1954_datasets()
     customers = next(m for m in models if m.name == "customers")
     customers.relationships.append(DatasetRelationship(
         to="regions", join_pairs=[["region_id", "id"]], name="hr2"))
@@ -494,8 +494,8 @@ class TestCanonicalSpellingsUnchanged:
 
 
 
-def _stage_scope(stage: SlayerQuery, models_by_name: dict) -> QueryScope:
-    return query_scopes([stage], datasets_by_ds={"ds": models_by_name}, data_source="ds")[0][0]
+def _stage_scope(stage: SlayerQuery, datasets_by_name: dict) -> QueryScope:
+    return query_scopes([stage], datasets_by_ds={"ds": datasets_by_name}, data_source="ds")[0][0]
 
 
 class TestSchemaDriftAttribution:
@@ -509,7 +509,7 @@ class TestSchemaDriftAttribution:
 
     @pytest.mark.parametrize("ref", ["customers.regions.rname", "regions.rname"])
     def test_ambiguous_attributes_to_nothing(self, ref) -> None:
-        M = _mbn(_parallel_models())
+        M = _mbn(_parallel_datasets())
         graph = _stage_scope(orders_q(), M)
         assert schema_drift._attribute_ref_to_base(  # noqa: SLF001
             ref=ref, base_name="regions", scope=graph) is None

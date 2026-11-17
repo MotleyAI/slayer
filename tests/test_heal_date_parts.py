@@ -17,8 +17,8 @@ from tests._query_heal_fixtures import (
     BACKENDS,
     assert_equivalent,
     heal_engine,
-    heal_models,
-    orders_model,
+    heal_datasets,
+    orders_dataset,
     table,
 )
 
@@ -190,8 +190,8 @@ class TestAmbiguousWeekdays:
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_custom_aggregation_named_weekday_still_works(self, backend: str) -> None:
-        orders = orders_model(aggregations=[Aggregation(name="weekday", expression="MAX({value})")])
-        async with heal_engine(backend, models=heal_models(orders=orders)) as eng:
+        orders = orders_dataset(aggregations=[Aggregation(name="weekday", expression="MAX({value})")])
+        async with heal_engine(backend, datasets=heal_datasets(orders=orders)) as eng:
             resp = await eng.execute({"population": "orders", "dimensions": ["region"], "metrics": ["weekday(amount)"]})
         assert {r["orders.region"]: r[resp.columns[1]] for r in resp.data} == {"US": 50.0, "EU": 60.0, None: 70.0}
 

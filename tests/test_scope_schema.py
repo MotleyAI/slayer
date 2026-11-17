@@ -19,7 +19,7 @@ from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.scope import DatasetScope, StageField, StageSchema
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         data_source="prod",
@@ -153,7 +153,7 @@ class TestStageSchema:
 
 class TestModelScope:
     def test_with_source_model(self):
-        m = _orders_model()
+        m = _orders_dataset()
         scope = DatasetScope(population=m)
         assert scope.population is m
 

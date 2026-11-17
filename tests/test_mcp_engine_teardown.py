@@ -91,13 +91,13 @@ async def _call(server, *, name: str, arguments: dict[str, Any] | None = None) -
     return content_blocks[0].text
 
 
-async def _query_count(server, *, source_model: str) -> int:
+async def _query_count(server, *, source_dataset: str) -> int:
     """Run the ``query`` tool for ``count(*)`` and return the integer count."""
     text = await _call(
         server, name="query",
         arguments={
             "query": {
-                "population": source_model,
+                "population": source_dataset,
                 "metrics": [{"expression": "count(*)"}],
             },
             "format": "json",
@@ -107,7 +107,7 @@ async def _query_count(server, *, source_model: str) -> int:
     # attributes/warnings are present — strict-parse and unwrap either.
     payload = json.loads(text)
     row = payload[0] if isinstance(payload, list) else payload["data"][0]
-    return int(row[f"{source_model}._count"])
+    return int(row[f"{source_dataset}._count"])
 
 
 class TestContractAttribute:
@@ -134,7 +134,7 @@ class TestContractAttribute:
             return await original(self, *args, **kwargs)
 
         monkeypatch.setattr(SlayerQueryEngine, "execute", _spy)
-        await _query_count(server, source_model="t")
+        await _query_count(server, source_dataset="t")
 
         assert captured["self"] is server._slayer_engine
 
@@ -205,7 +205,7 @@ class TestAcloseDisposesCachedClients:
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
 
-        assert await _query_count(server, source_model="t") == 3
+        assert await _query_count(server, source_dataset="t") == 3
         engine = server._slayer_engine
         assert len(engine._sql_clients) == 1
         client = next(iter(engine._sql_clients.values()))
@@ -229,7 +229,7 @@ class TestAcloseDisposesCachedClients:
         sync_dispose_spy.assert_not_called()
 
         # Reusable after disposal — the sync path still serves the same data.
-        assert await _query_count(server, source_model="t") == 3
+        assert await _query_count(server, source_dataset="t") == 3
 
 
 class TestAcloseNoOpSafeAndReusable:
@@ -241,17 +241,17 @@ class TestAcloseNoOpSafeAndReusable:
         # No query yet — nothing opened. Must not raise.
         await server._slayer_engine.aclose()
         # And the engine is still usable.
-        assert await _query_count(server, source_model="t") == 3
+        assert await _query_count(server, source_dataset="t") == 3
 
     async def test_query_after_aclose_still_works(
         self, workspace: Path,
     ) -> None:
         storage = await _seed_storage(workspace)
         server = create_mcp_server(storage=storage)
-        assert await _query_count(server, source_model="t") == 3
+        assert await _query_count(server, source_dataset="t") == 3
         await server._slayer_engine.aclose()
         # Async engine lazily recreated / sync path intact.
-        assert await _query_count(server, source_model="t") == 3
+        assert await _query_count(server, source_dataset="t") == 3
 
 
 class TestSqlModeDriftClientReachable:
@@ -295,7 +295,7 @@ class TestSqlModeDriftClientReachable:
         engine = server._slayer_engine
 
         # Query the sql-mode model — caches a client under the datasource key.
-        assert await _query_count(server, source_model="sv") == 3
+        assert await _query_count(server, source_dataset="sv") == 3
         assert len(engine._sql_clients) == 1
         key = next(iter(engine._sql_clients.keys()))
         client_before = engine._sql_clients[key]

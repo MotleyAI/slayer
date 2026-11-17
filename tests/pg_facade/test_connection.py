@@ -50,8 +50,8 @@ class _FakeWriter:
 
 
 class _FakeStorage:
-    def __init__(self, models_by_ds, *, schema_by_ds=None, priority=None) -> None:
-        self._models_by_ds = models_by_ds
+    def __init__(self, datasets_by_ds, *, schema_by_ds=None, priority=None) -> None:
+        self._models_by_ds = datasets_by_ds
         self._schema_by_ds = schema_by_ds or {}
         self._priority = priority or []
 
@@ -88,7 +88,7 @@ class _FakeEngine:
         return types.SimpleNamespace(data=self.data)
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         data_source="jaffle",
@@ -104,7 +104,7 @@ def _orders_model() -> SlayerDataset:
 
 
 def _storage() -> _FakeStorage:
-    return _FakeStorage({"jaffle": [_orders_model()]})
+    return _FakeStorage({"jaffle": [_orders_dataset()]})
 
 
 class _CapturingEngine:
@@ -2375,7 +2375,7 @@ async def test_bind_empty_string_user_model_int_column() -> None:
 # --- DEV-1594: multi-datasource catalog + per-connection scoping -------------
 
 
-def _employees_model():
+def _employees_dataset():
     return SlayerDataset(
         name="employees", data_source="hr", sql_table="employees",
         fields=[
@@ -2400,7 +2400,7 @@ async def _run_conn(input_bytes, *, storage, engine, storage_provider=None,
 
 
 async def test_multi_datasource_query_routes_to_owning_datasource() -> None:
-    storage = _FakeStorage({"jaffle": [_orders_model()], "hr": [_employees_model()]})
+    storage = _FakeStorage({"jaffle": [_orders_dataset()], "hr": [_employees_dataset()]})
     engine = _CapturingEngine([])
     inp = _startup(user="u", database="acme") + _query("SELECT id FROM employees") + _terminate()
     writer, _ = await _run_conn(inp, storage=storage, engine=engine)
@@ -2410,7 +2410,7 @@ async def test_multi_datasource_query_routes_to_owning_datasource() -> None:
 
 async def test_custom_postgres_schema_separates_and_routes() -> None:
     storage = _FakeStorage(
-        {"jaffle": [_orders_model()], "hr": [_employees_model()]},
+        {"jaffle": [_orders_dataset()], "hr": [_employees_dataset()]},
         schema_by_ds={"hr": "people"},
     )
     engine = _CapturingEngine([])
@@ -2427,8 +2427,8 @@ async def test_custom_postgres_schema_separates_and_routes() -> None:
 async def test_storage_provider_scopes_connection_after_auth() -> None:
     # Static storage has only jaffle; the provider swaps in an hr-only store
     # post-auth. Querying employees succeeds only if the provider's store won.
-    static_storage = _FakeStorage({"jaffle": [_orders_model()]})
-    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    static_storage = _FakeStorage({"jaffle": [_orders_dataset()]})
+    scoped_storage = _FakeStorage({"hr": [_employees_dataset()]})
     engine = _CapturingEngine([])
 
     async def provider(principal):
@@ -2446,10 +2446,10 @@ async def test_storage_provider_scopes_connection_after_auth() -> None:
 
 async def test_scoped_catalog_reads_the_scoped_engine_storage_view() -> None:
     engine = _CapturingEngine([])
-    engine.storage = _FakeStorage({"hr": [_employees_model()]})  # type: ignore[attr-defined]
+    engine.storage = _FakeStorage({"hr": [_employees_dataset()]})  # type: ignore[attr-defined]
 
     async def provider(principal):
-        return _FakeStorage({"jaffle": [_orders_model()]})
+        return _FakeStorage({"jaffle": [_orders_dataset()]})
 
     inp = _startup(user="u", database="acme") + _query("SELECT id FROM employees") + _terminate()
     writer, _ = await _run_conn(
@@ -2461,7 +2461,7 @@ async def test_scoped_catalog_reads_the_scoped_engine_storage_view() -> None:
 
 
 async def test_storage_provider_storage_closed_on_connection_end() -> None:
-    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    scoped_storage = _FakeStorage({"hr": [_employees_dataset()]})
     closed = {"called": False}
 
     async def _aclose():
@@ -2502,7 +2502,7 @@ async def test_storage_provider_engine_disposed_on_connection_end() -> None:
     """``_close_scoped_storage`` must dispose the engine ``_resolve_scope``
     built — without this, a long-lived facade with ``storage_provider``
     leaks one engine's worth of async SQL-client pools per session."""
-    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    scoped_storage = _FakeStorage({"hr": [_employees_dataset()]})
     aclosed = {"engine": False, "storage": False}
 
     async def _storage_aclose():
@@ -2528,7 +2528,7 @@ async def test_storage_provider_engine_disposed_on_connection_end() -> None:
 
 
 async def test_scoped_engine_closes_even_when_its_release_fails() -> None:
-    scoped_storage = _FakeStorage({"hr": [_employees_model()]})
+    scoped_storage = _FakeStorage({"hr": [_employees_dataset()]})
     closed = {"engine": False}
 
     async def _failing_aclose():
@@ -2592,8 +2592,8 @@ async def test_static_storage_aclose_not_called_when_scope_swap_did_not_run() ->
 class _RefreshableStorage(_FakeStorage):
     """Fake storage whose content and fingerprint can be mutated mid-test."""
 
-    def __init__(self, models_by_ds, *, fingerprint: str) -> None:
-        super().__init__(models_by_ds)
+    def __init__(self, datasets_by_ds, *, fingerprint: str) -> None:
+        super().__init__(datasets_by_ds)
         self.fingerprint = fingerprint
 
     async def graph_fingerprint(self) -> str:  # NOSONAR(S7503) — async to satisfy the awaited interface
@@ -2619,7 +2619,7 @@ async def _seed_catalog(conn: PgConnection, storage) -> None:
 
 
 async def test_refresh_rebuilds_catalog_when_fingerprint_changes() -> None:
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = _refresh_conn(storage)
     await _seed_catalog(conn, storage)
     before = conn._catalog
@@ -2636,14 +2636,14 @@ async def test_refresh_rebuilds_catalog_when_fingerprint_changes() -> None:
 
 
 async def test_refresh_skips_when_fingerprint_unchanged() -> None:
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = _refresh_conn(storage)
     await _seed_catalog(conn, storage)
     before = conn._catalog
 
     # Content changes but the fingerprint doesn't -> the cheap check
     # short-circuits and we never pay for a rebuild.
-    storage._models_by_ds["jaffle"].append(_orders_model())
+    storage._models_by_ds["jaffle"].append(_orders_dataset())
 
     await conn._maybe_refresh_catalog()
 
@@ -2651,7 +2651,7 @@ async def test_refresh_skips_when_fingerprint_unchanged() -> None:
 
 
 async def test_refresh_skips_mid_transaction() -> None:
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = _refresh_conn(storage)
     await _seed_catalog(conn, storage)
     before = conn._catalog
@@ -2665,7 +2665,7 @@ async def test_refresh_skips_mid_transaction() -> None:
 
 
 async def test_refresh_disabled_by_default_never_rebuilds() -> None:
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = PgConnection(
         asyncio.StreamReader(), _FakeWriter(),
         engine=_FakeEngine([]), storage=storage,
@@ -2685,7 +2685,7 @@ async def test_refresh_swallows_fingerprint_error_and_keeps_catalog() -> None:
         async def graph_fingerprint(self) -> str:
             raise RuntimeError("storage unreachable")  # not an OSError
 
-    storage = _BoomFingerprint({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _BoomFingerprint({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = _refresh_conn(storage)
     await _seed_catalog(conn, storage)
     before = conn._catalog
@@ -2697,7 +2697,7 @@ async def test_refresh_swallows_fingerprint_error_and_keeps_catalog() -> None:
 
 
 async def test_refresh_swallows_build_error_and_keeps_catalog() -> None:
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = _refresh_conn(storage)
     await _seed_catalog(conn, storage)
     before = conn._catalog
@@ -2721,7 +2721,7 @@ async def test_describe_triggers_catalog_refresh() -> None:
     # Regression: Describe advertises the RowDescription, so it must refresh
     # too — not only Execute — or a mid-window edit could make the later
     # Execute's rows disagree with the already-sent RowDescription.
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = _refresh_conn(storage)  # ttl 0.0 -> always re-checks
     await _seed_catalog(conn, storage)
     before = conn._catalog
@@ -2738,7 +2738,7 @@ async def test_describe_triggers_catalog_refresh() -> None:
 
 async def test_describe_pins_execute_to_same_catalog_within_window() -> None:
     ttl = 30.0  # realistic window (NOT 0)
-    storage = _RefreshableStorage({"jaffle": [_orders_model()]}, fingerprint="v1")
+    storage = _RefreshableStorage({"jaffle": [_orders_dataset()]}, fingerprint="v1")
     conn = PgConnection(
         asyncio.StreamReader(), _FakeWriter(),
         engine=_FakeEngine([]), storage=storage,

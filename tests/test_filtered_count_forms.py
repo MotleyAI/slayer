@@ -31,7 +31,7 @@ from slayer.core.query import SlayerQuery
 from tests._engine_helpers import _engine_generate
 
 
-async def _gen(formula: str) -> str:
+async def _gen(expression: str) -> str:
     model = SlayerDataset(
         name="orders", sql_table="orders", data_source="t",
         fields=[
@@ -40,8 +40,8 @@ async def _gen(formula: str) -> str:
             DatasetField(name="cust", sql="customer_id", datatype=DataType.INT, filter="region = 'US'"),
         ],
     )
-    q = SlayerQuery(population="orders", metrics=[DatasetMetric(expression=formula)])
-    return await _engine_generate(query=q, model=model, dialect="postgres")
+    q = SlayerQuery(population="orders", metrics=[DatasetMetric(expression=expression)])
+    return await _engine_generate(query=q, dataset=model, dialect="postgres")
 
 
 async def test_filtered_count_uses_case_inside_count() -> None:

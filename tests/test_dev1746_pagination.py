@@ -17,7 +17,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 
 from tests._dev1746_fixtures import (
-    dev1746_models,
+    dev1746_datasets,
     make_sqlite_engine,
     outer_clause_sql,
     outer_statement,
@@ -95,9 +95,9 @@ SHAPES = {
 
 
 async def _gen_sql(query: SlayerQuery, *, dialect: str) -> str:
-    models = dev1746_models()
+    models = dev1746_datasets()
     return await _engine_generate(
-        query=query, model=models[0], dialect=dialect, extra_models=models[1:],
+        query=query, dataset=models[0], dialect=dialect, extra_datasets=models[1:],
     )
 
 

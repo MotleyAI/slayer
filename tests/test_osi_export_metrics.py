@@ -15,10 +15,10 @@ from slayer.core.errors import SlayerError
 from slayer.core.models import Aggregation, DatasourceConfig, DatasetRelationship
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
-    BASIC_MEASURES, DATASOURCE, PG_DDL, col, customers, measure, orders, orders_columns, to_customers, visits,
+    BASIC_MEASURES, DATASOURCE, PG_DDL, col, customers, slayer_metric, orders, orders_columns, to_customers, visits,
 )
 from tests._osi_export_helpers import (
-    Env, all_metrics, carries, dataset, export, export_models, expression_sql, field, make_env, metric, reimport,
+    Env, all_metrics, carries, dataset, export, export_datasets, expression_sql, field, make_env, metric, reimport,
     relationships, rows, run_sql, same_sql, save,
 )
 from tests._pg_helpers import pg_database
@@ -37,18 +37,18 @@ def _sql(entity: dict[str, Any] | None) -> str:
 
 
 async def test_dataset_scoped_metric(env) -> None:
-    result = await export_models(env, customers(), orders(measures=BASIC_MEASURES))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES))
     assert same_sql(_sql(metric(dataset(result.document, "orders"), "revenue")), "SUM(amount)")
 
 
 async def test_measure_reference_expanded(env) -> None:
-    result = await export_models(env, customers(), orders(measures=BASIC_MEASURES))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES))
     assert same_sql(_sql(metric(dataset(result.document, "orders"), "aov")), "SUM(amount) / COUNT(*)")
 
 
 async def test_measure_over_another_model_is_a_component_on_that_model(env) -> None:
-    model = orders(measures=[*BASIC_MEASURES, measure("customer_discount", "sum(customers.discount)")])
-    result = await export_models(env, customers(), model)
+    model = orders(metrics=[*BASIC_MEASURES, slayer_metric("customer_discount", "sum(customers.discount)")])
+    result = await export_datasets(env, customers(), model)
     cust_metrics = dataset(result.document, "customers").get("metrics") or []
     assert any(same_sql(_sql(m), "SUM(discount)") for m in cust_metrics)
     assert metric(dataset(result.document, "orders"), "customer_discount") is None
@@ -58,8 +58,8 @@ async def test_measure_over_another_model_is_a_component_on_that_model(env) -> N
 
 
 async def test_cross_model_ratio_is_model_scoped(env) -> None:
-    ratio = measure("aov_per_customer", "sum(amount) / count_distinct(customers.id)")
-    result = await export_models(env, customers(), orders(measures=[*BASIC_MEASURES, ratio]))
+    ratio = slayer_metric("aov_per_customer", "sum(amount) / count_distinct(customers.id)")
+    result = await export_datasets(env, customers(), orders(metrics=[*BASIC_MEASURES, ratio]))
     assert same_sql(_sql(metric(result.document, "aov_per_customer")),
                     "SUM(orders.amount) / COUNT(DISTINCT customers.id)")
 
@@ -69,8 +69,8 @@ async def test_ambiguous_route_measure_is_slayer_only(env) -> None:
                        cardinality=None)
     model = orders(columns=[*orders_columns(), col("region_code", DataType.INT, "quantity")],
                    joins=[to_customers(name="buyer"), second],
-                   measures=[*BASIC_MEASURES, measure("ratio", "sum(amount) / count_distinct(buyer.id)")])
-    result = await export_models(env, customers(), model)
+                   metrics=[*BASIC_MEASURES, slayer_metric("ratio", "sum(amount) / count_distinct(buyer.id)")])
+    result = await export_datasets(env, customers(), model)
     assert all(m["name"] != "ratio" for m in all_metrics(result.document))
     assert carries(dataset(result.document, "orders"), "sum(amount) / count_distinct(buyer.id)")
 
@@ -97,7 +97,7 @@ _AGGREGATES = [
 
 @pytest.mark.parametrize(("formula", "expected"), _AGGREGATES)
 async def test_aggregate_sql(env, formula: str, expected: str) -> None:
-    result = await export_models(env, customers(), orders(measures=[measure("m", formula)]))
+    result = await export_datasets(env, customers(), orders(metrics=[slayer_metric("m", formula)]))
     assert same_sql(_sql(metric(dataset(result.document, "orders"), "m")), expected)
 
 
@@ -106,7 +106,7 @@ async def test_aggregate_sql(env, formula: str, expected: str) -> None:
 async def test_masked_column_aggregates_read_the_masked_field(env, formula: str) -> None:
     masked = col("amount", sql="amount", filter="status = 'completed'")
     columns = [masked if c.name == "amount" else c for c in orders_columns()]
-    result = await export_models(env, customers(), orders(columns=columns, measures=[measure("m", formula)]))
+    result = await export_datasets(env, customers(), orders(columns=columns, metrics=[slayer_metric("m", formula)]))
     orders_ds = dataset(result.document, "orders")
     tree = sqlglot.parse_one(_sql(metric(orders_ds, "m")), read="snowflake")
     assert tree.find(exp.Filter) is None
@@ -115,7 +115,7 @@ async def test_masked_column_aggregates_read_the_masked_field(env, formula: str)
 
 async def test_percentile_on_sqlite_is_standard(tmp_path: Path) -> None:
     lite = await make_env(tmp_path, dialect="sqlite")
-    result = await export_models(lite, customers(), orders(measures=[measure("p90", "percentile(amount, 0.9)")]))
+    result = await export_datasets(lite, customers(), orders(metrics=[slayer_metric("p90", "percentile(amount, 0.9)")]))
     assert same_sql(_sql(metric(dataset(result.document, "orders"), "p90")),
                     "PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY amount)")
 
@@ -127,13 +127,13 @@ def _paid_metric_sql(document: dict[str, Any], *, target: str) -> str:
 @pytest.mark.parametrize("dialect", ["duckdb", "sqlite"])
 async def test_boolean_sum_counts_trues(tmp_path: Path, dialect: str) -> None:
     local = await make_env(tmp_path, dialect=dialect)
-    result = await export_models(local, customers(), orders(measures=[measure("paid", "sum(is_paid)")]))
+    result = await export_datasets(local, customers(), orders(metrics=[slayer_metric("paid", "sum(is_paid)")]))
     target = "duckdb" if dialect == "duckdb" else "sqlite"
     assert run_sql(local, f"SELECT {_paid_metric_sql(result.document, target=target)} FROM orders") == [(3,)]
 
 
 async def test_boolean_sum_counts_trues_on_postgres(env, postgresql_proc: Any) -> None:
-    result = await export_models(env, customers(), orders(measures=[measure("paid", "sum(is_paid)")]))
+    result = await export_datasets(env, customers(), orders(metrics=[slayer_metric("paid", "sum(is_paid)")]))
     with pg_database(postgresql_proc, statements=PG_DDL, name="osi_export_pg") as pg:
         with psycopg.connect(host=pg.host, port=pg.port, user=pg.username, dbname=pg.database) as conn:
             sql = f"SELECT {_paid_metric_sql(result.document, target='postgres')} FROM orders"
@@ -142,7 +142,7 @@ async def test_boolean_sum_counts_trues_on_postgres(env, postgresql_proc: Any) -
 
 
 async def test_approximate_distinct_count_is_dialect_only(env) -> None:
-    result = await export_models(env, customers(), orders(measures=[measure("approx", "count_distinct_approx(customer_id)")]))
+    result = await export_datasets(env, customers(), orders(metrics=[slayer_metric("approx", "count_distinct_approx(customer_id)")]))
     approx = metric(dataset(result.document, "orders"), "approx")
     assert approx is not None
     assert "sql" not in approx["expression"]
@@ -152,27 +152,27 @@ async def test_approximate_distinct_count_is_dialect_only(env) -> None:
 
 
 async def test_custom_aggregation_inlined(env) -> None:
-    model = orders(measures=[measure("trimmed", "trimmed_sum(amount)")])
+    model = orders(metrics=[slayer_metric("trimmed", "trimmed_sum(amount)")])
     model.aggregations = [Aggregation(name="trimmed_sum", expression="SUM(CASE WHEN {value} < 15 THEN {value} END)")]
-    result = await export_models(env, customers(), model)
+    result = await export_datasets(env, customers(), model)
     assert same_sql(_sql(metric(dataset(result.document, "orders"), "trimmed")),
                     "SUM(CASE WHEN amount < 15 THEN amount END)")
 
 
 async def test_generated_metric_names_unique_in_scope(env) -> None:
-    model = orders(measures=[*BASIC_MEASURES, measure("customer_discount", "sum(customers.discount)"),
-                             measure("discount_total", "sum(customers.discount) * 2")])
-    cust = customers(measures=[measure("customer_discount", "sum(discount)")])
-    result = await export_models(env, cust, model)
+    model = orders(metrics=[*BASIC_MEASURES, slayer_metric("customer_discount", "sum(customers.discount)"),
+                             slayer_metric("discount_total", "sum(customers.discount) * 2")])
+    cust = customers(metrics=[slayer_metric("customer_discount", "sum(discount)")])
+    result = await export_datasets(env, cust, model)
     for container in [*result.document["datasets"], result.document]:
         names = [m["name"] for m in container.get("metrics") or []]
         assert len(names) == len(set(names))
 
 
 async def test_relocated_metric_name_unique_under_case_folding(env) -> None:
-    model = orders(measures=[*BASIC_MEASURES, measure("customer_discount", "sum(customers.discount)")])
-    cust = customers(measures=[measure("CUSTOMER_DISCOUNT", "sum(discount)")])
-    result = await export_models(env, cust, model)
+    model = orders(metrics=[*BASIC_MEASURES, slayer_metric("customer_discount", "sum(customers.discount)")])
+    cust = customers(metrics=[slayer_metric("CUSTOMER_DISCOUNT", "sum(discount)")])
+    result = await export_datasets(env, cust, model)
     names = [m["name"].lower() for m in dataset(result.document, "customers").get("metrics") or []]
     assert len(names) == 2
     assert len(set(names)) == 2
@@ -181,8 +181,8 @@ async def test_relocated_metric_name_unique_under_case_folding(env) -> None:
 async def test_relationship_and_metric_names_unique_document_wide(env) -> None:
     to_cust = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
                         cardinality=RelationshipCardinality.MANY_TO_ONE)
-    ratio = measure("aov_per_customer", "sum(amount) / count_distinct(customers.id)")
-    result = await export_models(env, customers(), orders(measures=[*BASIC_MEASURES, ratio]),
+    ratio = slayer_metric("aov_per_customer", "sum(amount) / count_distinct(customers.id)")
+    result = await export_datasets(env, customers(), orders(metrics=[*BASIC_MEASURES, ratio]),
                                  visits(joins=[to_cust]))
     names = [r["name"].lower() for r in relationships(result.document)]
     names += [m["name"].lower() for m in result.document.get("metrics") or []]
@@ -195,7 +195,7 @@ async def test_case_ambiguous_identifier_is_quoted(env) -> None:
     await save(env, customers())
     # Unvalidated save: a grandfathered ``status``/``Status`` collision a validated save would refuse.
     await YAMLStorage(base_dir=str(env.store)).save_dataset(
-        orders(columns=columns, measures=[measure("n_types", "count_distinct(Status)")]), _validate=False)
+        orders(columns=columns, metrics=[slayer_metric("n_types", "count_distinct(Status)")]), _validate=False)
     result = await export(env)
     tree = sqlglot.parse_one(_sql(metric(dataset(result.document, "orders"), "n_types")), read="snowflake")
     [ident] = [c.this for c in tree.find_all(exp.Column)]
@@ -211,8 +211,8 @@ async def test_case_ambiguous_identifier_is_quoted(env) -> None:
 # ─────────────────────── portable vs dialect-only fields ───────────────────
 
 async def test_portable_field_expression(env) -> None:
-    model = orders(columns=[*orders_columns(), col("gross", sql="price * quantity")], measures=BASIC_MEASURES)
-    gross = field(dataset((await export_models(env, customers(), model)).document, "orders"), "gross")
+    model = orders(columns=[*orders_columns(), col("gross", sql="price * quantity")], metrics=BASIC_MEASURES)
+    gross = field(dataset((await export_datasets(env, customers(), model)).document, "orders"), "gross")
     assert gross is not None
     assert same_sql(gross["expression"]["sql"], "price * quantity")
     assert "dialects" not in gross["expression"]
@@ -225,7 +225,7 @@ async def test_dialect_only_field_expression(tmp_path: Path) -> None:
     await storage.save_datasource(DatasourceConfig(name=DATASOURCE, type="postgres", host="127.0.0.1", port=1,
                                                    database="none"))
     model = orders(columns=[*orders_columns(), col("month_label", DataType.TEXT, "to_char(ordered_on, 'YYYY-MM')")],
-                   joins=[], measures=BASIC_MEASURES)
+                   joins=[], metrics=BASIC_MEASURES)
     await storage.save_dataset(model, _validate=False)
     label = field(dataset((await export(pg)).document, "orders"), "month_label")
     assert label is not None

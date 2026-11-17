@@ -29,12 +29,12 @@ from tests._dev2215_fixtures import (
     BACKENDS,
     TIER1,
     dev2215_engine,
-    dev2215_models,
-    ledger_model,
+    dev2215_datasets,
+    ledger_dataset,
     m,
     messages,
     num,
-    orders_model,
+    orders_dataset,
     q,
     recorded_warnings,
     single,
@@ -141,7 +141,7 @@ class TestFolding:
         ]
         async with dev2215_engine("duckdb") as eng:
             if error is None:
-                assert num(single(await eng.execute(stages), "c", model="s")) == 5.0
+                assert num(single(await eng.execute(stages), "c", dataset="s")) == 5.0
             else:
                 with pytest.raises(error):
                     await eng.execute(stages)
@@ -188,7 +188,7 @@ class TestFolding:
 class TestExactSpellingWins:
     async def test_exact_spelling_in_a_colliding_model(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(source_model="ledger", measures=[m("sum(Revenue)", "a"), m("sum(revenue)", "b")]))
-        assert (num(single(resp, "a", model="ledger")), num(single(resp, "b", model="ledger"))) == (3.0, 30.0)
+        assert (num(single(resp, "a", dataset="ledger")), num(single(resp, "b", dataset="ledger"))) == (3.0, 30.0)
 
     async def test_ambiguous_spelling(self, engine: SlayerQueryEngine) -> None:
         query = q(source_model="ledger", measures=[m("sum(REVENUE)")])
@@ -202,7 +202,7 @@ class TestExactSpellingWins:
 
     async def test_quoting_resolves_the_ambiguity(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(source_model="ledger", measures=[m('sum("Revenue")')]))
-        assert num(single(resp, model="ledger")) == 3.0
+        assert num(single(resp, dataset="ledger")) == 3.0
 
 
 # --------------------------------------------------------------------------- #
@@ -222,29 +222,29 @@ class TestCanonicalKeys:
 # --------------------------------------------------------------------------- #
 # Saves never introduce a case collision
 # --------------------------------------------------------------------------- #
-def _with_measure(model: SlayerDataset, name: str) -> SlayerDataset:
-    return model.model_copy(update={"metrics": [*model.metrics, DatasetMetric(name=name, expression="sum(amount)")]})
+def _with_metric(dataset: SlayerDataset, name: str) -> SlayerDataset:
+    return dataset.model_copy(update={"metrics": [*dataset.metrics, DatasetMetric(name=name, expression="sum(amount)")]})
 
 
 class TestSaveCollisions:
     async def test_a_new_column_measure_collision_is_refused(self, storage: StorageBackend) -> None:
-        await storage.save_dataset(orders_model())
-        model = _with_measure(orders_model(), "Amount")
+        await storage.save_dataset(orders_dataset())
+        model = _with_metric(orders_dataset(), "Amount")
         with pytest.raises(SlayerError) as err:
             await storage.save_dataset(model)
         assert "amount" in str(err.value)
         assert "Amount" in str(err.value)
 
     async def test_a_new_aggregation_collision_is_refused(self, storage: StorageBackend) -> None:
-        model = orders_model(aggregations=[Aggregation(name="Share", expression="AVG({value})")])
+        model = orders_dataset(aggregations=[Aggregation(name="Share", expression="AVG({value})")])
         with pytest.raises(SlayerError) as err:
             await storage.save_dataset(model)
         assert "Share" in str(err.value)
         assert "share" in str(err.value)
 
     async def test_a_new_join_name_collision_is_refused(self, storage: StorageBackend) -> None:
-        await storage.save_dataset(dev2215_models()[1])
-        model = orders_model().model_copy(update={"joins": [
+        await storage.save_dataset(dev2215_datasets()[1])
+        model = orders_dataset().model_copy(update={"joins": [
             DatasetRelationship(to="customers", name="buyer", join_pairs=[["customer_id", "id"]]),
             DatasetRelationship(to="customers", name="Buyer", join_pairs=[["customer_id", "id"]]),
         ]})
@@ -262,38 +262,38 @@ class TestSaveCollisions:
     ], ids=["stage-names", "result-names"])
     async def test_a_saved_query_collision_is_refused(self, storage: StorageBackend,
                                                       source_queries: list[dict[str, Any]]) -> None:
-        await storage.save_dataset(orders_model())
+        await storage.save_dataset(orders_dataset())
         model = SlayerDataset.model_validate({"name": "saved", "data_source": "test", "source_queries": source_queries})
         with pytest.raises(SlayerError):
             await storage.save_dataset(model)
 
     async def test_model_names_in_a_datasource(self, storage: StorageBackend) -> None:
-        await storage.save_dataset(orders_model())
-        model = orders_model().model_copy(update={"name": "Orders"})
+        await storage.save_dataset(orders_dataset())
+        model = orders_dataset().model_copy(update={"name": "Orders"})
         with pytest.raises(SlayerError) as err:
             await storage.save_dataset(model)
         assert "orders" in str(err.value)
         assert "Orders" in str(err.value)
 
     async def test_a_grandfathered_collision_keeps_working(self, storage: StorageBackend) -> None:
-        await storage.save_dataset(ledger_model(), _validate=False)
+        await storage.save_dataset(ledger_dataset(), _validate=False)
         with recorded_warnings() as caught:
-            await storage.save_dataset(ledger_model())
-            await storage.save_dataset(ledger_model().model_copy(update={"description": "edited"}))
+            await storage.save_dataset(ledger_dataset())
+            await storage.save_dataset(ledger_dataset().model_copy(update={"description": "edited"}))
         assert len(messages(caught, "Revenue", "revenue")) >= 2
 
     async def test_removing_and_reintroducing_a_collision(self, storage: StorageBackend) -> None:
-        await storage.save_dataset(ledger_model(), _validate=False)
-        without = ledger_model().model_copy(update={"columns": [c for c in ledger_model().fields if c.name != "revenue"]})
+        await storage.save_dataset(ledger_dataset(), _validate=False)
+        without = ledger_dataset().model_copy(update={"columns": [c for c in ledger_dataset().fields if c.name != "revenue"]})
         await storage.save_dataset(without)
-        model = ledger_model()
+        model = ledger_dataset()
         with pytest.raises(SlayerError) as err:
             await storage.save_dataset(model)
         assert "Revenue" in str(err.value)
         assert "revenue" in str(err.value)
 
     async def test_a_grandfathered_collision_warns_on_load(self, storage: StorageBackend) -> None:
-        await storage.save_dataset(ledger_model(), _validate=False)
+        await storage.save_dataset(ledger_dataset(), _validate=False)
         with recorded_warnings() as caught:
             await storage.get_dataset("ledger", data_source="test")
         assert messages(caught, "Revenue", "revenue")
@@ -303,7 +303,7 @@ class TestSaveCollisions:
         assert warnings_mentioning(resp, "Revenue", "revenue")
 
     async def test_a_facade_query_reading_the_model_returns_the_warning(self, engine: SlayerQueryEngine) -> None:
-        catalog = build_catalog(datasets_by_datasource={"test": dev2215_models()})
+        catalog = build_catalog(datasets_by_datasource={"test": dev2215_datasets()})
         result = translate("SELECT id FROM ledger", catalog)
         assert isinstance(result, QueryResult)
         assert warnings_mentioning(await engine.execute(result.query), "Revenue", "revenue")
@@ -329,19 +329,19 @@ async def test_result_names_colliding_by_case_are_refused(engine: SlayerQueryEng
 
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_result_names_colliding_by_case_are_refused_on_every_dialect(dialect: str) -> None:
-    first, *rest = dev2215_models()
+    first, *rest = dev2215_datasets()
     query = q(measures=COLLIDING)
     with pytest.raises(SlayerError):
-        await _engine_generate(query=query, model=first, extra_models=rest, dialect=dialect, validate=False)
+        await _engine_generate(query=query, dataset=first, extra_datasets=rest, dialect=dialect, validate=False)
 
 
 async def test_a_stored_query_with_colliding_names_keeps_running() -> None:
     saved = SlayerDataset.model_validate({"name": "saved", "data_source": "test", "source_queries": [
         {"population": "orders", "metrics": [{"expression": "sum(amount)", "name": "Total"},
                                                 {"expression": "count(*)", "name": "total"}]}]})
-    async with dev2215_engine("sqlite", models=[*dev2215_models(), saved]) as eng:
+    async with dev2215_engine("sqlite", datasets=[*dev2215_datasets(), saved]) as eng:
         resp = await eng.execute(q(source_model="saved", measures=[m("sum(Total)", "a")]))
-    assert num(single(resp, "a", model="saved")) == 160.0
+    assert num(single(resp, "a", dataset="saved")) == 160.0
 
 
 @pytest.mark.parametrize(("parts", "quoted", "expected"), [

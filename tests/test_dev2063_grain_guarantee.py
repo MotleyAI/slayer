@@ -35,7 +35,7 @@ from slayer.ir.planned import (
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.generator import generate_from_planned
 
-from tests._dev1739_fixtures import dev1739_models, make_exec_engine, month_key, month_td
+from tests._dev1739_fixtures import dev1739_datasets, make_exec_engine, month_key, month_td
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -201,7 +201,7 @@ class TestProducerGrainCoverage:
 # PlannedQuery.grain — the planner-owned grain fact.
 # --------------------------------------------------------------------------- #
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1739_models()
+    models = dev1739_datasets()
     return ResolvedSourceBundle(dialect="duckdb", population=models[0], referenced_datasets=models[1:])
 
 
@@ -273,7 +273,7 @@ def _dim(sid: str = "d", key: FieldKey = _REGION) -> ValueSlot:
                      stage=_BASE, needs_field=True)
 
 
-def _measure(sid: str = "m") -> ValueSlot:
+def _metric(sid: str = "m") -> ValueSlot:
     return ValueSlot(id=sid, key=_SUM, declared_name="s", public_name="s", public_aliases=["s"],
                      phase=Phase.AGGREGATE, stage=_BASE, needs_field=True)
 
@@ -285,7 +285,7 @@ def _hidden(sid: str, key, *, needs_column: bool = True) -> ValueSlot:
 
 def _producer() -> PlannedQuery:
     return PlannedQuery(source_relation="orders", row_slots=[_dim("p_d")],
-                        aggregate_slots=[_measure("p_m")], projection=["p_d", "p_m"], grain=["p_d"])
+                        aggregate_slots=[_metric("p_m")], projection=["p_d", "p_m"], grain=["p_d"])
 
 
 def _row_attach(host_key: FieldKey = _REGION) -> RegroupAttachPlan:
@@ -300,7 +300,7 @@ def _row_attach(host_key: FieldKey = _REGION) -> RegroupAttachPlan:
 def _grouped(*extra_rows: ValueSlot, grain: Optional[list] = None,
              attaches: tuple = ()) -> PlannedQuery:
     return PlannedQuery(
-        source_relation="orders", row_slots=[_dim(), *extra_rows], aggregate_slots=[_measure()],
+        source_relation="orders", row_slots=[_dim(), *extra_rows], aggregate_slots=[_metric()],
         regroup_attach_plans=list(attaches), projection=["d", "m"],
         grain=["d"] if grain is None else grain,
     )
@@ -317,7 +317,7 @@ class TestGrainDeterminationInvariant:
     def test_zero_dimension_grouped_plan_rejects_hidden_base_column(self) -> None:
         _stage_error(lambda: PlannedQuery(
             source_relation="orders", row_slots=[_hidden("h", _CITY)],
-            aggregate_slots=[_measure()], projection=["m"], grain=[],
+            aggregate_slots=[_metric()], projection=["m"], grain=[],
         ))
 
     def test_raw_rows_plan_is_exempt(self) -> None:
@@ -347,7 +347,7 @@ class TestGrainDeterminationInvariant:
     def test_violation_in_a_producer_plan_is_rejected(self) -> None:
         producer = PlannedQuery.model_construct(
             source_relation="orders", row_slots=[_dim("p_d"), _hidden("p_h", _CITY)],
-            aggregate_slots=[_measure("p_m")], projection=["p_d", "p_m"], grain=["p_d"],
+            aggregate_slots=[_metric("p_m")], projection=["p_d", "p_m"], grain=["p_d"],
         )
         attach = RegroupAttachPlan.model_construct(producer_plan=producer, alias_hint="p",
                                                    attach_phase="combined")

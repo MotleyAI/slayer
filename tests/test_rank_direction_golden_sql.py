@@ -17,8 +17,8 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "rank_direction_sql_baseline.js
 ALLOWED_DELTAS: dict[str, str] = {}
 
 
-def _q(formula: str, dimensions: list[str]) -> SlayerQuery:
-    return sales_q(dimensions=dimensions, measures=[DatasetMetric(expression=formula, name="r")])
+def _q(expression: str, dimensions: list[str]) -> SlayerQuery:
+    return sales_q(dimensions=dimensions, measures=[DatasetMetric(expression=expression, name="r")])
 
 
 def _cases() -> dict[str, SlayerQuery]:

@@ -20,13 +20,13 @@ from slayer.engine.population.inference import evaluate_candidates, infer_popula
 
 from tests._dev1866_fixtures import (
     DS_CHAIN,
-    chain_models_by_name,
+    chain_datasets_by_name,
     make_chain_exec_engine,
 )
 from tests._dev1871_fixtures import (
     DS_LIT,
-    fanroute_models_by_name,
-    lit_models_by_name,
+    fanroute_datasets_by_name,
+    lit_datasets_by_name,
     make_routing_storage,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -81,7 +81,7 @@ class TestLiteralPrecedence:
     ) -> None:
         """stores' direct unknown-cardinality edge to plants is used literally;
         the to-one route via hub must not be substituted for it."""
-        models = lit_models_by_name()
+        models = lit_datasets_by_name()
         assert short_form_route_or_none(
             root=models["stores"], target_dataset="plants", datasets_by_name=models,
         ) == ["hub", "plants"]
@@ -109,7 +109,7 @@ class TestFanningRoute:
         """Binding routes firm → desks (unique route, fans out at office →
         desks); determination must reject it — and the full-path spelling
         fails identically."""
-        models = fanroute_models_by_name()
+        models = fanroute_datasets_by_name()
         assert short_form_route_or_none(
             root=models["firm"], target_dataset="desks", datasets_by_name=models,
         ) is not None
@@ -130,7 +130,7 @@ class TestVerdictConsistency:
     either spelling — pinned at the probe-verdict level."""
 
     def test_unreachable_verdict_matches_between_spellings(self) -> None:
-        models = fanroute_models_by_name()
+        models = fanroute_datasets_by_name()
         for item in ("firm.title", "office.firm.title"):
             verdict = evaluate_candidates(
                 items=[item], candidates=["desks"], datasets_by_name=models,
@@ -162,7 +162,7 @@ class TestRoutedHops:
             for v in evaluate_candidates(
                 items=["regions.name"],
                 candidates=["customers", "orders", "regions"],
-                datasets_by_name=chain_models_by_name(),
+                datasets_by_name=chain_datasets_by_name(),
             )
         }
         assert all(v.viable for v in verdicts.values())

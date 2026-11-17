@@ -147,7 +147,7 @@ def seed_dev1747_sqlite(db_path: str) -> None:
         )
 
 
-def _regions_model(*, data_source: str = "test") -> SlayerDataset:
+def _regions_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source=data_source,
         fields=[
@@ -158,7 +158,7 @@ def _regions_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def _customers_model(*, data_source: str = "test") -> SlayerDataset:
+def _customers_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
@@ -171,7 +171,7 @@ def _customers_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def _order_tags_model(*, data_source: str = "test") -> SlayerDataset:
+def _order_tags_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="order_tags", sql_table="order_tags", data_source=data_source,
         fields=[
@@ -182,7 +182,7 @@ def _order_tags_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def _orders_model(*, data_source: str = "test") -> SlayerDataset:
+def _orders_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="created_at",
@@ -221,16 +221,16 @@ def _orders_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def dev1747_models(*, data_source: str = "test") -> List[SlayerDataset]:
+def dev1747_datasets(*, data_source: str = "test") -> List[SlayerDataset]:
     """``orders -> customers -> regions`` plus the 1:N ``order_tags``.
 
     Returned host-first; ``[0]`` is the host and the rest are ``extra_models``.
     """
     return [
-        _orders_model(data_source=data_source),
-        _customers_model(data_source=data_source),
-        _regions_model(data_source=data_source),
-        _order_tags_model(data_source=data_source),
+        _orders_dataset(data_source=data_source),
+        _customers_dataset(data_source=data_source),
+        _regions_dataset(data_source=data_source),
+        _order_tags_dataset(data_source=data_source),
     ]
 
 
@@ -241,7 +241,7 @@ def dev1747_bundle():
     through the engine — §5.10's contract is that the PLAN carries the order
     scope/phase/nulls, so it has to be assertable without rendering.
     """
-    models = dev1747_models()
+    models = dev1747_datasets()
     return ResolvedSourceBundle(
         dialect="postgres",
         population=models[0], referenced_datasets=models[1:],
@@ -251,7 +251,7 @@ def dev1747_bundle():
 async def make_sqlite_engine(base_dir: str, db_path: str) -> SlayerQueryEngine:
     """Storage + engine bound to the seeded SQLite file at ``db_path``."""
     return await make_seeded_sqlite_engine(
-        base_dir=base_dir, db_path=db_path, models=dev1747_models()
+        base_dir=base_dir, db_path=db_path, datasets=dev1747_datasets()
     )
 
 

@@ -29,16 +29,16 @@ async def engine(request):
         yield e
 
 
-async def _filtered_equals_restricted(engine: SlayerQueryEngine, formula: str, **kw) -> None:
+async def _filtered_equals_restricted(engine: SlayerQueryEngine, expression: str, **kw) -> None:
     """``formula FILTER (WHERE paid)`` equals ``formula`` over a query restricted to the paid rows."""
-    filtered = await engine.execute(q(measures=[m(f"{formula} FILTER (WHERE {PAID})")], **kw))
-    restricted = await engine.execute(q(measures=[m(formula)], filters=[PAID], **kw))
+    filtered = await engine.execute(q(measures=[m(f"{expression} FILTER (WHERE {PAID})")], **kw))
+    restricted = await engine.execute(q(measures=[m(expression)], filters=[PAID], **kw))
     key = lambda r: tuple(str(v) for k, v in sorted(r.items()) if k != "orders.v")  # noqa: E731
     got = {key(r): num(r["orders.v"]) for r in filtered.data}
     want = {key(r): num(r["orders.v"]) for r in restricted.data}
     assert got.keys() >= want.keys()
     for k, v in want.items():
-        assert got[k] == pytest.approx(v), (formula, k)
+        assert got[k] == pytest.approx(v), (expression, k)
 
 
 class TestFilterValues:
@@ -83,14 +83,14 @@ class TestFilterValues:
             "population": "balances", "dimensions": ["customer_id"],
             "metrics": [{"expression": "last(balance, updated_at) FILTER (WHERE status = 'active')", "name": "v"}],
         }))
-        assert {int(k): num(v) for k, v in by_key(resp, "customer_id", model="balances").items()} == {1: 150.0, 2: 80.0}
+        assert {int(k): num(v) for k, v in by_key(resp, "customer_id", dataset="balances").items()} == {1: 150.0, 2: 80.0}
 
     async def test_filtered_first_picks_the_oldest_passing_row(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "balances", "dimensions": ["customer_id"],
             "metrics": [{"expression": "first(balance, updated_at) FILTER (WHERE status = 'inactive')", "name": "v"}],
         }))
-        assert {int(k): num(v) for k, v in by_key(resp, "customer_id", model="balances").items()} == {1: 999.0, 2: 70.0}
+        assert {int(k): num(v) for k, v in by_key(resp, "customer_id", dataset="balances").items()} == {1: 999.0, 2: 70.0}
 
     async def test_with_partition_by(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(dimensions=["region", "city"], measures=[

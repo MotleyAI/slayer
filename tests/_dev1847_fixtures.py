@@ -30,7 +30,7 @@ from tests._dev1841_fixtures import associated_warnings
 from tests._engine_helpers import _engine_generate
 
 
-def sales_model() -> SlayerDataset:
+def sales_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="sales", data_source="test", sql_table="sales",
         fields=[
@@ -55,7 +55,7 @@ def sales_model() -> SlayerDataset:
     )
 
 
-def regions_model() -> SlayerDataset:
+def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
@@ -65,7 +65,7 @@ def regions_model() -> SlayerDataset:
     )
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
@@ -77,7 +77,7 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def corders_model() -> SlayerDataset:
+def corders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="corders", data_source="test", sql_table="corders",
         fields=[
@@ -90,12 +90,12 @@ def corders_model() -> SlayerDataset:
     )
 
 
-def dev1847_models() -> List[SlayerDataset]:
+def dev1847_datasets() -> List[SlayerDataset]:
     """``[sales, regions, customers, corders]`` — sales first (engine host)."""
-    return [sales_model(), regions_model(), customers_model(), corders_model()]
+    return [sales_dataset(), regions_dataset(), customers_dataset(), corders_dataset()]
 
 
-def source_queries_equiv_model() -> SlayerDataset:
+def source_queries_equiv_dataset() -> SlayerDataset:
     """The manual two-stage encoding the re-aggregation must match."""
     return SlayerDataset(
         name="avg_city_total_by_region", data_source="test",
@@ -126,9 +126,9 @@ def chain_q(**kw) -> SlayerQuery:
 
 async def gen(query: SlayerQuery, *, dialect: str = "postgres") -> str:
     """Emit SQL for ``query`` against the sales graph at ``dialect`` (dry-run)."""
-    models = dev1847_models()
+    models = dev1847_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=False)
 
 
@@ -323,7 +323,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerDataset]] = None,
+    request, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture."""
     dialect = request.param
@@ -331,7 +331,7 @@ async def make_exec_engine(
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=models if models is not None else dev1847_models(),
+        dialect=dialect, seed=seed, datasets=datasets if datasets is not None else dev1847_datasets(),
     ) as (engine, _db):
         yield engine
 
@@ -344,8 +344,8 @@ def region_key(resp) -> dict:
 __all__ = [
     "DatasetField", "FieldRef", "DataType", "DatasetRelationship", "DatasetMetric",
     "SlayerDataset", "SlayerQuery", "RelationshipCardinality",
-    "sales_model", "regions_model", "customers_model", "corders_model",
-    "dev1847_models", "source_queries_equiv_model",
+    "sales_dataset", "regions_dataset", "customers_dataset", "corders_dataset",
+    "dev1847_datasets", "source_queries_equiv_dataset",
     "sales_q", "chain_q", "reagg", "region_key", "rows_by", "gen",
     "make_exec_engine",
     "broadcast_warnings", "associated_warnings", "degenerate_warnings",

@@ -18,9 +18,9 @@ from slayer.mcp.server import _addition_has_changes, _addition_update_details
 
 from tests._dev2073_fixtures import (
     DS,
-    addresses_model,
+    addresses_dataset,
     join_to,
-    model_store,
+    dataset_store,
     named_pair,
     orders_with,
     unnamed_pair,
@@ -33,9 +33,9 @@ def _orders() -> SlayerDataset:
     return orders_with(*named_pair())
 
 
-async def _inspect(model: SlayerDataset, **kwargs) -> str:
-    async with model_store(addresses_model(), _orders()) as storage:
-        return await render_dataset_inspection(dataset=model, storage=storage, engine=None, **kwargs)
+async def _inspect(dataset: SlayerDataset, **kwargs) -> str:
+    async with dataset_store(addresses_dataset(), _orders()) as storage:
+        return await render_dataset_inspection(dataset=dataset, storage=storage, engine=None, **kwargs)
 
 
 class TestInspectShowsEdgeNames:
@@ -44,7 +44,7 @@ class TestInspectShowsEdgeNames:
         assert sorted(j["name"] for j in payload["joins"]) == EDGE_NAMES
 
     async def test_incoming_hops_carry_names(self) -> None:
-        payload = json.loads(await _inspect(addresses_model(), format="json"))
+        payload = json.loads(await _inspect(addresses_dataset(), format="json"))
         assert sorted(j["name"] for j in payload["joins"]) == EDGE_NAMES
 
     async def test_markdown_join_table_has_a_name_cell(self) -> None:
@@ -66,12 +66,12 @@ def _summary_joins(*models: SlayerDataset) -> dict[str, list[str]]:
 
 class TestModelsSummaryListsAddressableTokens:
     def test_named_parallel_edges_list_their_names(self) -> None:
-        joins = _summary_joins(addresses_model(), _orders())
+        joins = _summary_joins(addresses_dataset(), _orders())
         assert joins["orders"] == EDGE_NAMES
         assert joins["addresses"] == EDGE_NAMES
 
     def test_unnamed_parallel_pair_is_marked_ambiguous(self) -> None:
-        joins = _summary_joins(addresses_model(), orders_with(*unnamed_pair()))
+        joins = _summary_joins(addresses_dataset(), orders_with(*unnamed_pair()))
         assert joins["orders"] == ["addresses (ambiguous: name the edges)"]
 
 
@@ -85,14 +85,14 @@ def _facade_edges(table: FacadeTable) -> set[tuple]:
 
 class TestFacadeCatalogExposesBothOrientations:
     def test_declaring_side_carries_names(self) -> None:
-        catalog = build_catalog(datasets_by_datasource={DS: [_orders(), addresses_model()]})
+        catalog = build_catalog(datasets_by_datasource={DS: [_orders(), addresses_dataset()]})
         assert _facade_edges(_table(catalog, "orders")) == {
             ("billing_address", "addresses", "[['billing_address_id', 'id']]"),
             ("shipping_address", "addresses", "[['shipping_address_id', 'id']]"),
         }
 
     def test_target_side_carries_oriented_incoming_edges(self) -> None:
-        catalog = build_catalog(datasets_by_datasource={DS: [_orders(), addresses_model()]})
+        catalog = build_catalog(datasets_by_datasource={DS: [_orders(), addresses_dataset()]})
         assert _facade_edges(_table(catalog, "addresses")) == {
             ("billing_address", "orders", "[['id', 'billing_address_id']]"),
             ("shipping_address", "orders", "[['id', 'shipping_address_id']]"),
@@ -127,7 +127,7 @@ class TestTranslatorMatchesTheDeclaredEdge:
         assert _dimension_names(result) == ["orders.status"]
 
     def test_parallel_join_uses_the_edge_name(self) -> None:
-        catalog = build_catalog(datasets_by_datasource={DS: [_orders(), addresses_model()]})
+        catalog = build_catalog(datasets_by_datasource={DS: [_orders(), addresses_dataset()]})
         sql = (
             'SELECT "Ship"."city" AS "c" FROM "public"."orders" '
             'LEFT JOIN (SELECT "public"."addresses"."id" AS "id", "public"."addresses"."city" AS "city" '

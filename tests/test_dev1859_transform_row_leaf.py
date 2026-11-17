@@ -22,7 +22,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1846_fixtures import (
     DatasetMetric,
     SlayerQuery,
-    dev1846_models,
+    dev1846_datasets,
     make_exec_engine,
     month_key,
     month_td,
@@ -50,7 +50,7 @@ def _call(op: str, inner: str) -> str:
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1846_models()
+    models = dev1846_datasets()
     return ResolvedSourceBundle(dialect="postgres", population=models[0],
                                 referenced_datasets=models[1:])
 

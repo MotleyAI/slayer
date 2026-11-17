@@ -42,8 +42,8 @@ _UNPORTED_SURFACE = (
 )
 
 
-class _VirtualModelEngine(Protocol):
-    async def _query_as_model(
+class _VirtualDatasetEngine(Protocol):
+    async def _query_as_dataset(
         self, *, inner_query: SlayerQuery, override_name: str | None = None,
     ) -> SlayerDataset: ...
 
@@ -121,7 +121,7 @@ GOLDEN_SQLITE_REPRO_ORDER = (
 # Fixtures — the reported 3-hop chain
 
 
-def _chain_models(
+def _chain_datasets(
     *,
     case_colliding_columns: bool = False,
     decoy_root_column: str | None = None,
@@ -181,7 +181,7 @@ async def _build_engine(tmp_path, *, validate: bool = True, **kw) -> tuple[Slaye
         name=DS, type="postgres", host="localhost", port=5432,
         database="x", username="u", password="p",
     ))
-    models = _chain_models(**kw)
+    models = _chain_datasets(**kw)
     for m in models:
         await storage.save_dataset(m, _validate=validate)
     return SlayerQueryEngine(storage=storage), models[0]
@@ -314,7 +314,7 @@ def _assert_order_by_refs_resolve(sql: str, dialect: str = "postgres") -> None:
                 )
 
 
-async def _sql(engine: SlayerQueryEngine, model, query, *, dialect: str = "postgres", mode: str = "outer") -> str:
+async def _sql(engine: SlayerQueryEngine, dataset, query, *, dialect: str = "postgres", mode: str = "outer") -> str:
     """Emit SQL for ``query`` on ``dialect`` via the branch's dry-run pipeline.
 
     Rebuilds a fresh engine on ``dialect`` from the models the passed engine
@@ -325,20 +325,20 @@ async def _sql(engine: SlayerQueryEngine, model, query, *, dialect: str = "postg
     'wrapped' render mode to select.
     """
     del mode
-    names = await engine.storage.list_datasets(data_source=model.data_source)
+    names = await engine.storage.list_datasets(data_source=dataset.data_source)
     loaded = [
-        await engine.storage.get_dataset(name=n, data_source=model.data_source)
+        await engine.storage.get_dataset(name=n, data_source=dataset.data_source)
         for n in names
     ]
     models = [m for m in loaded if m is not None]
-    root = next(m for m in models if m.name == model.name)
-    extras = [m for m in models if m.name != model.name]
+    root = next(m for m in models if m.name == dataset.name)
+    extras = [m for m in models if m.name != dataset.name]
     return await _engine_generate(
-        query=query, model=root, dialect=dialect, extra_models=extras, validate=False,
+        query=query, dataset=root, dialect=dialect, extra_datasets=extras, validate=False,
     )
 
 
-async def _public_aliases(engine, model, query) -> list[str]:
+async def _public_aliases(engine, dataset, query) -> list[str]:
     """The canonical PUBLIC projection result keys for ``query``.
 
     Read off an unbounded, non-mangling dialect (SQLite) so the outer SELECT's
@@ -346,18 +346,18 @@ async def _public_aliases(engine, model, query) -> list[str]:
     untouched there. Branch replacement for the old
     ``enriched.public_projection_aliases``.
     """
-    sql = await _sql(engine, model, query, dialect="sqlite")
+    sql = await _sql(engine, dataset, query, dialect="sqlite")
     tree = sqlglot.parse_one(sql, dialect="sqlite")
     outer = next(iter(tree.find_all(exp.Select)))
     return list(outer.named_selects)
 
 
-async def _all_aliases(engine, model, query) -> list[str]:
+async def _all_aliases(engine, dataset, query) -> list[str]:
     """Every canonical result key in the statement, public plus hidden
     (e.g. an ORDER-BY-hoisted aggregate that never reaches the outer SELECT).
     Branch replacement for the old ``enriched.all_projection_aliases``.
     """
-    sql = await _sql(engine, model, query, dialect="sqlite")
+    sql = await _sql(engine, dataset, query, dialect="sqlite")
     tree = sqlglot.parse_one(sql, dialect="sqlite")
     seen: set[str] = set()
     out: list[str] = []
@@ -607,9 +607,9 @@ class TestAllProjectionAliases:
 # CTE names (unquoted namespace)
 
 
-def _deep_cross_model_query(*, two_measures: bool = False) -> SlayerQuery:
+def _deep_cross_dataset_query(*, two_metrics: bool = False) -> SlayerQuery:
     measures = [DatasetMetric(expression=f"sum({DEEP}.lifetimeValue)")]
-    if two_measures:
+    if two_metrics:
         measures.append(DatasetMetric(expression=f"avg({DEEP}.lifetimeValue)"))
     return SlayerQuery(
         population="SandboxInvoiceV2",
@@ -630,14 +630,14 @@ class TestCteNames:
 
     async def test_cross_model_cte_name_within_limit(self, chain) -> None:
         engine, model = chain
-        sql = await _sql(engine, model, _deep_cross_model_query())
+        sql = await _sql(engine, model, _deep_cross_dataset_query())
         assert "_cm_" in sql, "no cross-model CTE was generated; test is vacuous"
         _assert_within_limit(sql, 63)
 
     async def test_cte_definition_and_references_agree(self, chain) -> None:
         """A CTE name is unquoted; a truncated definition and untruncated reference must agree."""
         engine, model = chain
-        sql = await _sql(engine, model, _deep_cross_model_query())
+        sql = await _sql(engine, model, _deep_cross_dataset_query())
         tree = sqlglot.parse_one(sql, dialect="postgres")
         defined = [n for n, _ in _cte_names(tree)]
         assert defined, "no CTE generated; test is vacuous"
@@ -649,7 +649,7 @@ class TestCteNames:
     async def test_two_deep_cross_model_ctes_stay_distinct(self, chain) -> None:
         """Two over-limit cross-model CTE names must fit and stay distinct after truncation."""
         engine, model = chain
-        sql = await _sql(engine, model, _deep_cross_model_query(two_measures=True))
+        sql = await _sql(engine, model, _deep_cross_dataset_query(two_metrics=True))
         tree = sqlglot.parse_one(sql, dialect="postgres")
         names = [n for n, _ in _cte_names(tree)]
         assert len(names) >= 2, f"expected two cross-model CTEs\n{sql}"
@@ -746,9 +746,9 @@ def _wrapper_select(vm_sql: str) -> exp.Select:
 class TestVirtualModelShorts:
     pytestmark = pytest.mark.skip(reason=_UNPORTED_SURFACE)
 
-    async def test_short_within_limit_and_matches_column_name(self, chain: tuple[_VirtualModelEngine, SlayerDataset]) -> None:
+    async def test_short_within_limit_and_matches_column_name(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         engine, _ = chain
-        vm = await engine._query_as_model(inner_query=_repro_query())
+        vm = await engine._query_as_dataset(inner_query=_repro_query())
         assert vm.sql is not None
         emitted = {n for n, _ in _projection_aliases(_wrapper_select(vm.sql))}
         for col in vm.fields:
@@ -758,18 +758,18 @@ class TestVirtualModelShorts:
                 f"emits\n{vm.sql}"
             )
 
-    async def test_long_siblings_get_distinct_shorts(self, chain: tuple[_VirtualModelEngine, SlayerDataset]) -> None:
+    async def test_long_siblings_get_distinct_shorts(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         engine, _ = chain
-        vm = await engine._query_as_model(inner_query=_repro_query())
+        vm = await engine._query_as_dataset(inner_query=_repro_query())
         names = [c.name for c in vm.fields]
         assert len(names) == len(set(names))
 
     async def test_short_alias_quoting_matches_the_downstream_reference(
-        self, chain: tuple[_VirtualModelEngine, SlayerDataset],
+        self, chain: tuple[_VirtualDatasetEngine, SlayerDataset],
     ) -> None:
         """The wrapper's ``AS <short>`` is quoted exactly when the downstream reference is."""
         engine, _ = chain
-        vm = await engine._query_as_model(inner_query=_repro_query())
+        vm = await engine._query_as_dataset(inner_query=_repro_query())
         assert vm.sql is not None
         gen = SQLGenerator(dialect="postgres")
         select = _wrapper_select(vm.sql)
@@ -793,10 +793,10 @@ class TestVirtualModelShorts:
                 f"case-folding backend resolves those to different columns\n{vm.sql}"
             )
 
-    async def test_mixed_case_short_is_quoted(self, chain: tuple[_VirtualModelEngine, SlayerDataset]) -> None:
+    async def test_mixed_case_short_is_quoted(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         """The original defect: a mixed-case short emitted bare."""
         engine, _ = chain
-        vm = await engine._query_as_model(inner_query=_repro_query())
+        vm = await engine._query_as_dataset(inner_query=_repro_query())
         assert vm.sql is not None
         mixed = [
             proj for proj in _wrapper_select(vm.sql).expressions
@@ -837,10 +837,10 @@ class TestVirtualModelShorts:
             f"to the same column emits {reference!r}"
         )
 
-    async def test_lowercase_short_stays_bare(self, chain: tuple[_VirtualModelEngine, SlayerDataset]) -> None:
+    async def test_lowercase_short_stays_bare(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         """Mirror image: an all-lowercase short must stay bare on upper-folding backends."""
         engine, _ = chain
-        vm = await engine._query_as_model(inner_query=_repro_query())
+        vm = await engine._query_as_dataset(inner_query=_repro_query())
         assert vm.sql is not None
         lower = [
             proj for proj in _wrapper_select(vm.sql).expressions
@@ -853,9 +853,9 @@ class TestVirtualModelShorts:
                 f"lowercase short {proj.args['alias'].this!r} must stay bare\n{vm.sql}"
             )
 
-    async def test_inner_and_wrapper_agree_on_the_fitted_alias(self, chain: tuple[_VirtualModelEngine, SlayerDataset]) -> None:
+    async def test_inner_and_wrapper_agree_on_the_fitted_alias(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         engine, _ = chain
-        vm = await engine._query_as_model(inner_query=_repro_query())
+        vm = await engine._query_as_dataset(inner_query=_repro_query())
         assert vm.sql is not None
         fitted = get_dialect("postgres").fit_alias(LONG_EMAIL)
         select = _wrapper_select(vm.sql)
@@ -896,7 +896,7 @@ class TestVirtualModelShorts:
         assert "query-backed model column" in str(exc.value)
         assert flat in str(exc.value)
 
-    async def test_caller_supplied_measure_names_are_fitted(self, chain: tuple[_VirtualModelEngine, SlayerDataset]) -> None:
+    async def test_caller_supplied_measure_names_are_fitted(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         """A caller-supplied measure ``name`` bypasses ``_alias_to_short`` and needs its own fitting."""
         engine, _ = chain
         long_a = "z" * 63 + "b"   # 64 bytes
@@ -910,7 +910,7 @@ class TestVirtualModelShorts:
                 {"expression": "avg(totalAmount)", "name": long_b},
             ],
         )
-        vm = await engine._query_as_model(inner_query=query)
+        vm = await engine._query_as_dataset(inner_query=query)
         assert vm.sql is not None
         names = [c.name for c in vm.fields]
         for name in names:
@@ -923,11 +923,11 @@ class TestVirtualModelShorts:
         assert long_a not in vm.sql, vm.sql
         assert long_b not in vm.sql, vm.sql
 
-    async def test_nested_dag_two_levels_agree(self, chain: tuple[_VirtualModelEngine, SlayerDataset]) -> None:
+    async def test_nested_dag_two_levels_agree(self, chain: tuple[_VirtualDatasetEngine, SlayerDataset]) -> None:
         """Two stages: stage 2 references stage 1's virtual-model columns."""
         engine, _ = chain
         stage1 = _repro_query().model_copy(update={"name": "stage1"})
-        vm = await engine._query_as_model(inner_query=stage1, override_name="stage1")
+        vm = await engine._query_as_dataset(inner_query=stage1, override_name="stage1")
         short = next(c.name for c in vm.fields if "email" in c.name.lower())
         stage2 = SlayerQuery.model_validate({
             "population": "stage1",
@@ -1021,7 +1021,7 @@ class TestSweep:
         return [
             _repro_query(),                                   # plain dims + measures
             _repro_query(with_order=True),                    # ORDER BY hoist + outer wrap
-            _deep_cross_model_query(),                        # cross-model CTE (_cm_ + WITH)
+            _deep_cross_dataset_query(),                        # cross-model CTE (_cm_ + WITH)
             SlayerQuery(                                      # arithmetic expression
                 population="SandboxInvoiceV2",
                 dimensions=[FieldRef(name=f"{DEEP}.email")],

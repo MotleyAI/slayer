@@ -16,9 +16,9 @@ from slayer.engine.key_metadata import dimension_key_metadata
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._cast_fixtures import check_array_cast, duckdb_tags_engine
-from tests._dev2101_fixtures import TIER1, customers_model, emit, orders_model, q
+from tests._dev2101_fixtures import TIER1, customers_dataset, emit, orders_dataset, q
 
-ORDERS = orders_model()
+ORDERS = orders_dataset()
 
 
 def _dim(expr: str):
@@ -43,13 +43,13 @@ async def _refused(expr: str, *, dialect: str, needle: str) -> None:
 
 
 def _bind(text: str, *, dialect: str) -> ValueKey:
-    bundle = ResolvedSourceBundle(dialect=dialect, population=ORDERS, referenced_datasets=[customers_model()])
+    bundle = ResolvedSourceBundle(dialect=dialect, population=ORDERS, referenced_datasets=[customers_dataset()])
     return bind_expr(parse_expr(text), scope=DatasetScope(population=ORDERS), bundle=bundle,
                      allow_metrics=True).value_key
 
 
 def _planned_type(text: str, *, dialect: str) -> DataType | None:
-    bundle = ResolvedSourceBundle(dialect=dialect, population=ORDERS, referenced_datasets=[customers_model()])
+    bundle = ResolvedSourceBundle(dialect=dialect, population=ORDERS, referenced_datasets=[customers_dataset()])
     return dimension_key_metadata(dataset=ORDERS, key=_bind(text, dialect=dialect), bundle=bundle)[0]
 
 

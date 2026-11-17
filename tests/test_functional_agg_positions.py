@@ -80,19 +80,19 @@ def _customers(**overrides) -> SlayerDataset:
 async def _dry(
     query,
     *,
-    model: SlayerDataset | None = None,
-    extra_models: list | None = None,
+    dataset: SlayerDataset | None = None,
+    extra_datasets: list | None = None,
     dialect: str = "postgres",
 ):
-    model = model or _orders()
-    extra_models = extra_models if extra_models is not None else [_customers()]
+    dataset = dataset or _orders()
+    extra_datasets = extra_datasets if extra_datasets is not None else [_customers()]
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(
-            DatasourceConfig(name=model.data_source, type=dialect)
+            DatasourceConfig(name=dataset.data_source, type=dialect)
         )
-        await storage.save_dataset(model)
-        for extra in extra_models:
+        await storage.save_dataset(dataset)
+        for extra in extra_datasets:
             await storage.save_dataset(extra)
         engine = SlayerQueryEngine(storage=storage)
         return await engine.execute(query, dry_run=True)
@@ -183,7 +183,7 @@ class TestOrderPosition:
             aggregations=[Aggregation(name="my_agg", expression="AVG({value})")]
         )
         await _dry(_q(measures=["my_agg(price)"], dimensions=["status"],
-                      order=[OrderItem.model_validate({"field": "my_agg(price)", "direction": "desc"})]), model=model)
+                      order=[OrderItem.model_validate({"field": "my_agg(price)", "direction": "desc"})]), dataset=model)
 
     async def test_order_serialization_round_trip(self) -> None:
         q1 = _q(
@@ -209,7 +209,7 @@ class TestOrderPosition:
 class TestModelMeasurePosition:
     async def test_saved_model_measure(self) -> None:
         model = _orders(measures=[DatasetMetric(name="rev", expression="sum(revenue)")])
-        f = await _dry(_q(measures=["rev"], dimensions=["status"]), model=model)
+        f = await _dry(_q(measures=["rev"], dimensions=["status"]), dataset=model)
         assert "orders.rev" in f.columns
 
     async def test_hand_authored_yaml_measure(self, tmp_path) -> None:
@@ -305,7 +305,7 @@ class TestStagePositions:
             "dimensions": ["status"],
             "metrics": ["max(rev)"],
         })
-        f = await _dry(query, model=_orders(), extra_models=[_customers(), backed])
+        f = await _dry(query, dataset=_orders(), extra_datasets=[_customers(), backed])
         assert "daily.rev_max" in f.columns
 
 
@@ -390,7 +390,7 @@ class TestExecuted:
         engine = await make_seeded_sqlite_engine(
             base_dir=os.path.join(str(tmp_path), "store"),
             db_path=db_path,
-            models=[_orders(), _customers()],
+            datasets=[_orders(), _customers()],
         )
         f = await engine.execute(
             _q(

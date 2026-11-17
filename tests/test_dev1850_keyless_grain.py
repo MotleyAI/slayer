@@ -31,7 +31,7 @@ from tests._dev1838_fixtures import (
     DatasetMetric,
     SPEND_BAND,
     cte_aliases,
-    dev1838_models,
+    dev1838_datasets,
     gen,
     make_exec_engine,
     q,
@@ -220,7 +220,7 @@ async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
 
 def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None:
     """The dim's OWN cross-model aggregate in a filter types as FIELD (row-scoped, attached), not measure."""
-    models = dev1838_models()
+    models = dev1838_datasets()
     bundle = ResolvedSourceBundle(
         dialect="postgres",
         population=models[0], referenced_datasets=list(models[1:]),

@@ -23,7 +23,7 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.sql.field_expansion import resolve_ref_target
 
 
-def _model(name: str, cols: list[str], joins: list[DatasetRelationship] | None = None) -> SlayerDataset:
+def _dataset(name: str, cols: list[str], joins: list[DatasetRelationship] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="ds", sql_table=name,
         fields=[DatasetField(name=c) for c in cols],
@@ -36,16 +36,16 @@ def _forward_pair(
     cardinality: RelationshipCardinality | None = RelationshipCardinality.MANY_TO_ONE,
     join_type: JoinType = JoinType.LEFT,
 ) -> dict[str, SlayerDataset]:
-    orders = _model("orders", ["id", "customer_id", "status"], [
+    orders = _dataset("orders", ["id", "customer_id", "status"], [
         DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
                   join_type=join_type, cardinality=cardinality),
     ])
-    customers = _model("customers", ["id", "name"])
+    customers = _dataset("customers", ["id", "name"])
     return {"orders": orders, "customers": customers}
 
 
 def _parallel_pair(*, named: bool) -> dict[str, SlayerDataset]:
-    orders = _model("orders", ["id", "billing_customer_id", "shipping_customer_id"], [
+    orders = _dataset("orders", ["id", "billing_customer_id", "shipping_customer_id"], [
         DatasetRelationship(to="customers",
                   join_pairs=[["billing_customer_id", "id"]],
                   cardinality=RelationshipCardinality.MANY_TO_ONE,
@@ -55,7 +55,7 @@ def _parallel_pair(*, named: bool) -> dict[str, SlayerDataset]:
                   cardinality=RelationshipCardinality.MANY_TO_ONE,
                   name="shipping_customer" if named else None),
     ])
-    customers = _model("customers", ["id", "name"])
+    customers = _dataset("customers", ["id", "name"])
     return {"orders": orders, "customers": customers}
 
 
@@ -100,11 +100,11 @@ class TestOrientation:
 class TestSymmetry:
     def test_declaring_side_does_not_affect_traversal_answers(self) -> None:
         fwd = _forward_pair()
-        rev_customers = _model("customers", ["id", "name"], [
+        rev_customers = _dataset("customers", ["id", "name"], [
             DatasetRelationship(to="orders", join_pairs=[["id", "customer_id"]],
                       cardinality=RelationshipCardinality.ONE_TO_MANY),
         ])
-        rev = {"orders": _model("orders", ["id", "customer_id", "status"]),
+        rev = {"orders": _dataset("orders", ["id", "customer_id", "status"]),
                "customers": rev_customers}
         for source, target in (("orders", "customers"), ("customers", "orders")):
             edge_f = edges_between(source=fwd[source], target=fwd[target])[0]
@@ -177,11 +177,11 @@ class TestResolveHop:
         assert from_customers.join_pairs == [["id", "billing_customer_id"]]
 
     def test_edge_name_resolves_before_model_name(self) -> None:
-        a = _model("a", ["id", "b_id", "c_id"], [
+        a = _dataset("a", ["id", "b_id", "c_id"], [
             DatasetRelationship(to="b", join_pairs=[["b_id", "id"]], name="c"),
             DatasetRelationship(to="c", join_pairs=[["c_id", "id"]]),
         ])
-        models = {"a": a, "b": _model("b", ["id"]), "c": _model("c", ["id"])}
+        models = {"a": a, "b": _dataset("b", ["id"]), "c": _dataset("c", ["id"])}
         edge = resolve_hop(current=models["a"], token="c", datasets_by_name=models)
         assert edge is not None
         assert edge.to == "b"
@@ -189,16 +189,16 @@ class TestResolveHop:
 
 class TestWalk:
     def _chain(self) -> dict[str, SlayerDataset]:
-        orders = _model("orders", ["id", "customer_id"], [
+        orders = _dataset("orders", ["id", "customer_id"], [
             DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
                       cardinality=RelationshipCardinality.MANY_TO_ONE),
         ])
-        customers = _model("customers", ["id", "region_id"], [
+        customers = _dataset("customers", ["id", "region_id"], [
             DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
                       cardinality=RelationshipCardinality.MANY_TO_ONE),
         ])
         return {"orders": orders, "customers": customers,
-                "regions": _model("regions", ["id", "name"])}
+                "regions": _dataset("regions", ["id", "name"])}
 
     def test_single_reverse_hop(self) -> None:
         models = self._chain()

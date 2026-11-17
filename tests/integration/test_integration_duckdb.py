@@ -1448,11 +1448,11 @@ def dev1753_env(_dev1753_storage) -> SlayerQueryEngine:
 
 @pytest.mark.integration
 class TestDev1753GreatestLeastIgnoreNulls:
-    async def _values(self, engine, formula):
+    async def _values(self, engine, expression):
         result = await engine.execute(query=SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="id")],
-            metrics=[DatasetMetric(expression=formula, name="g")],
+            metrics=[DatasetMetric(expression=expression, name="g")],
         ))
         return {int(r["orders.id"]): r["orders.g"] for r in result.data}
 

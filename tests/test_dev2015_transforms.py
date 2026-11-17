@@ -12,7 +12,7 @@ from tests._dev2015_fixtures import (
     MONTHS,
     bucket_key,
     by_bucket,
-    calendar_models,
+    calendar_datasets,
     cg_engine,
     m,
     num,
@@ -30,9 +30,9 @@ async def cg(request):
         yield eng
 
 
-def _orders(*, granularity: str, measures: list) -> SlayerQuery:
+def _orders(*, granularity: str, metrics: list) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "population": "orders", "metrics": measures,
+        "population": "orders", "metrics": metrics,
         "time_dimensions": [{"field": "order_date", "granularity": granularity}],
     })
 
@@ -47,7 +47,7 @@ def _rows(resp, names: list[str], *, column: str = "order_date", width: int = 10
 
 class TestCustomSteps:
     async def test_shift_and_change_by_the_fiscal_year(self, cg) -> None:
-        resp = await cg.execute(_orders(granularity="fiscal_year", measures=[
+        resp = await cg.execute(_orders(granularity="fiscal_year", metrics=[
             m("time_shift(sum(amount), -1)", "prev"), m("change(sum(amount))", "chg"),
             m("change_pct(sum(amount))", "pct"),
         ]))
@@ -57,7 +57,7 @@ class TestCustomSteps:
         assert got[FY[2]][2] == pytest.approx(-0.2)
 
     async def test_custom_unit_on_a_finer_axis(self, cg) -> None:
-        resp = await cg.execute(_orders(granularity="month", measures=[
+        resp = await cg.execute(_orders(granularity="month", metrics=[
             m("time_shift(sum(amount), -1, 'fiscal_year')", "fy"), m("time_shift(sum(amount), -1, 'year')", "y"),
         ]))
         got = _rows(resp, ["fy", "y"], width=7)
@@ -81,7 +81,7 @@ class TestCustomSteps:
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_month_without_home_rows_reads_its_trailing_interval(backend) -> None:
-    async with spine_engine(backend, models=calendar_models()) as eng:
+    async with spine_engine(backend, datasets=calendar_datasets()) as eng:
         resp = await eng.execute(SlayerQuery.model_validate({
             "population": "calendar", "metrics": [m("sum(orders.amount, window='2m')", "w")],
             "time_dimensions": [{"field": "date", "granularity": "month", "date_range": JAN_JUN}],
@@ -117,13 +117,13 @@ class TestTwoHomesPartitionsAndRankedPicks:
             yield eng
 
     async def test_every_cell_reads_its_interval(self, engine) -> None:
-        resp = await engine.execute(spine_query(measures=WINDOWED, dimensions=["customers.region"]))
+        resp = await engine.execute(spine_query(metrics=WINDOWED, dimensions=["customers.region"]))
         names = [x["name"] for x in WINDOWED]
         assert by_bucket(resp, names, by=["region"]) == _expected(names)
 
     @pytest.mark.parametrize("drop", [x["name"] for x in WINDOWED])
     async def test_removing_one_measure_changes_nothing_else(self, engine, drop) -> None:
         kept = [x for x in WINDOWED if x["name"] != drop]
-        resp = await engine.execute(spine_query(measures=kept, dimensions=["customers.region"]))
+        resp = await engine.execute(spine_query(metrics=kept, dimensions=["customers.region"]))
         names = [x["name"] for x in kept]
         assert by_bucket(resp, names, by=["region"]) == _expected(names)

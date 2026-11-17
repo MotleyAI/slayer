@@ -41,10 +41,10 @@ from tests._dev1901_fixtures import (
     WSUM_FAN,
     bundle1901,
     derive_oracles,
-    dev1901_models,
+    dev1901_datasets,
     make_exec_engine,
     orders_q,
-    window_param_models,
+    window_param_datasets,
 )
 from tests import _dev1954_fixtures
 from tests._dev1954_fixtures import RNAME, WPOP_BY_RNAME, by_key
@@ -64,27 +64,27 @@ async def engine(request):
         yield e
 
 
-async def _value(engine, formula: str) -> float:
-    resp = await engine.execute(orders_q(measures=[{"formula": formula, "name": "w"}]))
+async def _value(engine, expression: str) -> float:
+    resp = await engine.execute(orders_q(measures=[{"formula": expression, "name": "w"}]))
     return float(resp.data[0]["orders.w"])
 
 
-async def _by(engine, formula: str, *, dim: str, **kw) -> dict:
+async def _by(engine, expression: str, *, dim: str, **kw) -> dict:
     resp = await engine.execute(orders_q(
-        dimensions=[dim], measures=[{"formula": formula, "name": "w"}], **kw))
+        dimensions=[dim], measures=[{"formula": expression, "name": "w"}], **kw))
     return {r[f"orders.{dim}"]: float(r["orders.w"]) for r in resp.data}
 
 
-async def _by_month(engine, formula: str) -> dict:
+async def _by_month(engine, expression: str) -> dict:
     resp = await engine.execute(orders_q(
-        time_dimensions=TD, measures=[{"formula": formula, "name": "w"}]))
+        time_dimensions=TD, measures=[{"formula": expression, "name": "w"}]))
     return {month_key(r["orders.customers.signup_at"]): float(r["orders.w"])
             for r in resp.data if r["orders.customers.signup_at"] is not None}
 
 
-def _home_path(formula: str) -> tuple:
+def _home_path(expression: str) -> tuple:
     elab = elaborate_query(
-        query=orders_q(measures=[{"formula": formula, "name": "m"}]), bundle=bundle1901())
+        query=orders_q(measures=[{"formula": expression, "name": "m"}]), bundle=bundle1901())
     assert elab.prebound is not None
     root = elab.prebound.declared_metrics[-1].bound.value_key
     assert isinstance(root, AggregateKey), root
@@ -226,23 +226,23 @@ class TestFanningDefaultHomesLikeItsTwin:
 class TestFailClosed:
     async def test_local_kwarg_on_a_fanning_path_stays_refused(self) -> None:
         with pytest.raises(ValueError, match="(?i)unproven join hop") as ei:
-            await _gen("wsum_cust_spend(pop, weight=region_events.value)", source_model="regions")
+            await _gen("wsum_cust_spend(pop, weight=region_events.value)", source_dataset="regions")
         assert "region_events" in str(ei.value)
 
 
-async def _gen(formula: str, *, source_model: str = "orders") -> str:
-    models = sorted(dev1901_models(), key=lambda m: m.name != source_model)
+async def _gen(expression: str, *, source_dataset: str = "orders") -> str:
+    models = sorted(dev1901_datasets(), key=lambda m: m.name != source_dataset)
     return await _engine_generate(
-        query=SlayerQuery(population=source_model,
-                          metrics=[DatasetMetric(expression=formula, name="w")]),
-        model=models[0], extra_models=models[1:], dialect="sqlite", validate=False)
+        query=SlayerQuery(population=source_dataset,
+                          metrics=[DatasetMetric(expression=expression, name="w")]),
+        dataset=models[0], extra_datasets=models[1:], dialect="sqlite", validate=False)
 
 
 class TestWindowReservedAtSave:
     @pytest.mark.parametrize("placeholder", [True, False])
     async def test_save_rejects(self, tmp_path, placeholder: bool) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path))
-        model = window_param_models(placeholder=placeholder)[0]
+        model = window_param_datasets(placeholder=placeholder)[0]
         with pytest.raises(SlayerError, match="(?s)wwin.*trailing|trailing.*wwin"):
             await storage.save_dataset(model)
 

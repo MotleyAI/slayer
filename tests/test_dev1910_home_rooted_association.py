@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1840_fixtures import dev1840_models
+from tests._dev1840_fixtures import dev1840_datasets
 from tests._dev1841_fixtures import (
     ASSOC_BASIC_SPEND_BY_STATUS,
     assoc_q as assoc_status_q,
@@ -72,13 +72,13 @@ async def null_engine_reverse(request):
     """Null-status seed with customers owning the orders 1:N edge, so the fanning
     derived column ``customers.last_status = orders.status`` exists."""
     async for e in make_null_status_engine(
-            request, models=dev1840_models(declare_reverse=True)):
+            request, datasets=dev1840_datasets(declare_reverse=True)):
         yield e
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def weak_engine(request):
-    async for e in make_exec_engine(request, models=dev1840_models(strong_plans=False)):
+    async for e in make_exec_engine(request, datasets=dev1840_datasets(strong_plans=False)):
         yield e
 
 

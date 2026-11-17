@@ -20,7 +20,7 @@ from slayer.engine.compile.stages import _first_unattributable_arg_leaf
 from slayer.engine.population.home import home_path_for
 from slayer.engine.reference_closure import aggregate_input_closure
 from slayer.sql.generator import SQLGenerator
-from tests._dev1901_fixtures import bundle1901, dev1901_models
+from tests._dev1901_fixtures import bundle1901, dev1901_datasets
 from tests._engine_helpers import _engine_generate
 
 AMOUNT = FieldKey(path=(), leaf="amount")
@@ -92,7 +92,7 @@ def test_the_fanning_leaf_is_unsafe_in_both_spellings() -> None:
 
 def test_cross_model_kwarg_gate() -> None:
     """A kwarg on another branch than a cross-model source is refused in both spellings."""
-    customers = next(m for m in dev1901_models() if m.name == "customers")
+    customers = next(m for m in dev1901_datasets() if m.name == "customers")
     stores_rent = FieldKey(path=("stores",), leaf="rent")
     gen = SQLGenerator(dialect="postgres")
     for key in _pair(SPEND, stores_rent):
@@ -102,11 +102,11 @@ def test_cross_model_kwarg_gate() -> None:
                 source_relation="customers", full_alias="customers.spend_wsum")
 
 
-async def _sql(formula: str) -> str:
-    models = dev1901_models()
+async def _sql(expression: str) -> str:
+    models = dev1901_datasets()
     return await _engine_generate(
-        query=SlayerQuery(population="orders", metrics=[DatasetMetric(expression=formula, name="w")]),
-        model=models[0], extra_models=models[1:], dialect="duckdb", validate=False)
+        query=SlayerQuery(population="orders", metrics=[DatasetMetric(expression=expression, name="w")]),
+        dataset=models[0], extra_datasets=models[1:], dialect="duckdb", validate=False)
 
 
 def _joined_tables(sql: str) -> set:

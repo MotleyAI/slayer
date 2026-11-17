@@ -58,7 +58,7 @@ async def _generate_one(query: SlayerQuery, dialect: str):
     models = dev1865_models()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is the contract

@@ -35,7 +35,7 @@ from tests._dev1841_fixtures import (
 from tests._dev1847_fixtures import (
     INNER_CR,
     _seed_sqlite,
-    dev1847_models,
+    dev1847_datasets,
     gen,
     sales_q,
 )
@@ -90,7 +90,7 @@ class TestResidueFiresAtPlanTime:
     old render-time gate — ``plan_query`` (no SQL generation) already raises."""
 
     def test_default_column_parameter_rejected_by_plan_query(self):
-        models = dev1847_models()
+        models = dev1847_datasets()
         bundle = ResolvedSourceBundle(
             dialect="sqlite",
             population=models[0], referenced_datasets=models[1:])
@@ -139,7 +139,7 @@ class TestRestSurfaceResidue:
             db_path = os.path.join(d, "data.sqlite")
             _seed_sqlite(db_path)
             engine = await build_exec_engine(
-                db_path, dialect="sqlite", models=dev1847_models())
+                db_path, dialect="sqlite", datasets=dev1847_datasets())
             yield engine.storage
 
     async def test_residue_maps_to_400(self, sales_storage):

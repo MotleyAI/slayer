@@ -33,7 +33,7 @@ _QUERY = {"population": "orders", "metrics": [{"expression": "sum(amount)", "nam
 _PLAN = [{"StmtText": "plan", "NodeId": 1}]
 
 
-def _orders_model(data_source: str) -> SlayerDataset:
+def _orders_dataset(data_source: str) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         fields=[
@@ -46,7 +46,7 @@ def _orders_model(data_source: str) -> SlayerDataset:
 async def _storage(base: str, datasource: DatasourceConfig) -> YAMLStorage:
     storage = YAMLStorage(base_dir=base)
     await storage.save_datasource(datasource)
-    await storage.save_dataset(_orders_model(datasource.name), _validate=False)
+    await storage.save_dataset(_orders_dataset(datasource.name), _validate=False)
     return storage
 
 

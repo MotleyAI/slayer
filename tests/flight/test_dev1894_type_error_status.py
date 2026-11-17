@@ -43,7 +43,7 @@ def _orders() -> SlayerDataset:
 
 @pytest.fixture
 async def flight_client() -> AsyncIterator[fl.FlightClient]:  # pyright: ignore[reportPrivateImportUsage]
-    async with seeded_exec_engine(dialect="sqlite", seed=_seed, models=[_orders()]) as (engine, _):
+    async with seeded_exec_engine(dialect="sqlite", seed=_seed, datasets=[_orders()]) as (engine, _):
         server = build_server(
             host="127.0.0.1", port=0,
             handlers=FlightHandlers(engine=engine),

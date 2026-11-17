@@ -245,7 +245,7 @@ def _no_emitted_statement_reparse(
 
 
 @pytest.fixture
-def sample_model() -> SlayerDataset:
+def sample_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",

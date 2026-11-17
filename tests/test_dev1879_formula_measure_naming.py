@@ -17,7 +17,7 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import DatasetField, DatasetMetric
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from slayer.core.refs import auto_name_from_expression
-from tests._dev1879_helpers import dry_response, mart_model
+from tests._dev1879_helpers import dry_response, mart_dataset
 from slayer.engine.query_engine import SlayerResponse
 
 
@@ -26,12 +26,12 @@ _KEY_RE = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*")
 
 
 async def _dry(query: SlayerQuery):
-    mart = mart_model(
+    mart = mart_dataset(
         extra_columns=[
             DatasetField(name="revenue", datatype=DataType.DOUBLE),
             DatasetField(name="quantity", datatype=DataType.DOUBLE),
         ],
-        measures=[DatasetMetric(name="aov", expression="sum(revenue) / sum(quantity)")],
+        metrics=[DatasetMetric(name="aov", expression="sum(revenue) / sum(quantity)")],
     )
     return await dry_response(query, mart=mart)
 

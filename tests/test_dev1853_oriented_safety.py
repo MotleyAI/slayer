@@ -14,7 +14,7 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.cardinality.relationship_safety import safe_reachable
 
 
-def _model(name, cols, joins=None):
+def _dataset(name, cols, joins=None):
     return SlayerDataset(name=name, data_source="ds", sql_table=name,
                        fields=cols, relationships=joins or [])
 
@@ -26,15 +26,15 @@ def _pair(*, declare, cardinality, customers_id_pk):
     order_cols = [DatasetField(name="id", primary_key=True),
                   DatasetField(name="customer_id")]
     if declare == "forward":
-        orders = _model("orders", order_cols, [
+        orders = _dataset("orders", order_cols, [
             DatasetRelationship(to="customers",
                       join_pairs=[["customer_id", "id"]],
                       cardinality=cardinality),
         ])
-        customers = _model("customers", customer_cols)
+        customers = _dataset("customers", customer_cols)
     else:
-        orders = _model("orders", order_cols)
-        customers = _model("customers", customer_cols, [
+        orders = _dataset("orders", order_cols)
+        customers = _dataset("customers", customer_cols, [
             DatasetRelationship(to="orders",
                       join_pairs=[["id", "customer_id"]],
                       cardinality=invert_cardinality(cardinality)),
@@ -102,16 +102,16 @@ class TestSafeReachableBidirectional:
                               datasets_by_name=models) is False
 
     def test_two_hop_path_mixing_orientations(self) -> None:
-        orders = _model("orders", [DatasetField(name="id", primary_key=True),
+        orders = _dataset("orders", [DatasetField(name="id", primary_key=True),
                                    DatasetField(name="customer_id")])
-        customers = _model(
+        customers = _dataset(
             "customers",
             [DatasetField(name="id", primary_key=True), DatasetField(name="region_id")],
             [DatasetRelationship(to="orders", join_pairs=[["id", "customer_id"]],
                        cardinality=RelationshipCardinality.ONE_TO_MANY),
              DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
         )
-        regions = _model("regions", [DatasetField(name="id", primary_key=True)])
+        regions = _dataset("regions", [DatasetField(name="id", primary_key=True)])
         models = {"orders": orders, "customers": customers, "regions": regions}
         # orders → customers is the inverted (proven) hop, then forward to regions.
         assert safe_reachable(root=models["orders"],
@@ -119,14 +119,14 @@ class TestSafeReachableBidirectional:
                               datasets_by_name=models) is True
 
     def test_named_edge_token_is_walkable(self) -> None:
-        orders = _model(
+        orders = _dataset(
             "orders",
             [DatasetField(name="id", primary_key=True), DatasetField(name="bill_id")],
             [DatasetRelationship(to="customers", join_pairs=[["bill_id", "id"]],
                        cardinality=RelationshipCardinality.MANY_TO_ONE,
                        name="billing_customer")],
         )
-        customers = _model("customers", [DatasetField(name="id", primary_key=True)])
+        customers = _dataset("customers", [DatasetField(name="id", primary_key=True)])
         models = {"orders": orders, "customers": customers}
         assert safe_reachable(root=models["orders"], path=("billing_customer",),
                               datasets_by_name=models) is True

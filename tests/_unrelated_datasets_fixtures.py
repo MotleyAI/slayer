@@ -77,7 +77,7 @@ def _many_to_one(target: str, column: str) -> DatasetRelationship:
     return DatasetRelationship(to=target, join_pairs=[[column, "id"]], cardinality=RelationshipCardinality.MANY_TO_ONE)
 
 
-def customers_model(**extra: Any) -> SlayerDataset:
+def customers_dataset(**extra: Any) -> SlayerDataset:
     columns = [
         DatasetField(name="id", datatype=DataType.INT, primary_key=True),
         DatasetField(name="city", datatype=DataType.TEXT),
@@ -87,7 +87,7 @@ def customers_model(**extra: Any) -> SlayerDataset:
     return SlayerDataset(name="customers", sql_table="customers", data_source="test", fields=columns, **extra)
 
 
-def events_model() -> SlayerDataset:
+def events_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="events", sql_table="events", data_source="test", default_time_dimension="created_at",
         fields=[
@@ -103,7 +103,7 @@ def events_model() -> SlayerDataset:
     )
 
 
-def users_model() -> SlayerDataset:
+def users_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="users", sql_table="users", data_source="test",
         fields=[
@@ -116,7 +116,7 @@ def users_model() -> SlayerDataset:
     )
 
 
-def orgs_model() -> SlayerDataset:
+def orgs_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orgs", sql_table="orgs", data_source="test",
         fields=[
@@ -127,19 +127,19 @@ def orgs_model() -> SlayerDataset:
     )
 
 
-def main_models() -> list[SlayerDataset]:
-    return [customers_model(), events_model(), users_model(), orgs_model()]
+def main_datasets() -> list[SlayerDataset]:
+    return [customers_dataset(), events_dataset(), users_dataset(), orgs_dataset()]
 
 
 @contextlib.asynccontextmanager
 async def main_engine(
-    backend: str, *, models: Optional[list[SlayerDataset]] = None, event_rows: Optional[list[tuple]] = None,
+    backend: str, *, datasets: Optional[list[SlayerDataset]] = None, event_rows: Optional[list[tuple]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """Executing engine over the main seed."""
     tables = main_tables(event_rows=event_rows)
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, tables),
-        models=main_models() if models is None else models,
+        datasets=main_datasets() if datasets is None else datasets,
     ) as (engine, _db):
         yield engine
 
@@ -165,7 +165,7 @@ def _wide_tables() -> list[TableSpec]:
     )]
 
 
-def _wide_models() -> list[SlayerDataset]:
+def _wide_datasets() -> list[SlayerDataset]:
     def flat(name: str, *columns: DatasetField) -> SlayerDataset:
         return SlayerDataset(
             name=name, sql_table=name, data_source="wide",
@@ -182,12 +182,12 @@ def _wide_models() -> list[SlayerDataset]:
 async def wide_engine(backend: str) -> AsyncGenerator[SlayerQueryEngine]:
     tables = _wide_tables()
     async with seeded_exec_engine(
-        dialect=backend, seed=lambda p: seed_backend(backend, p, tables), models=_wide_models(), datasource="wide",
+        dialect=backend, seed=lambda p: seed_backend(backend, p, tables), datasets=_wide_datasets(), datasource="wide",
     ) as (engine, _db):
         yield engine
 
 
-def wide_measures() -> list[dict[str, str]]:
+def wide_metrics() -> list[dict[str, str]]:
     """Two aggregates per unrelated dataset, three cross-dataset expressions, and ``count(*)``."""
     out = [m("count(*)", "n_customers")]
     for name in WIDE_DATASETS:
@@ -204,8 +204,8 @@ def wide_measures() -> list[dict[str, str]]:
 # Queries, rows, warnings
 # ---------------------------------------------------------------------------
 
-def m(formula: str, name: str) -> dict[str, str]:
-    return {"formula": formula, "name": name}
+def m(expression: str, name: str) -> dict[str, str]:
+    return {"formula": expression, "name": name}
 
 
 RATIO = m("count(events.id) / count(*)", "events_per_customer")

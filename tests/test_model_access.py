@@ -25,7 +25,7 @@ from tests._model_access_fixtures import (
     VISIBLE_TO_FIN,
     AccessStore,
     access_store,
-    model_ids,
+    dataset_ids,
     must_get,
 )
 
@@ -59,7 +59,7 @@ class TestVisibility:
     async def test_tag_intersection_grants_access(self, store: AccessStore) -> None:
         fin = view(store, "fin")
         assert set(await fin.list_datasets(DS)) == VISIBLE_TO_FIN
-        assert model_ids(await fin._list_all_dataset_identities()) == VISIBLE_TO_FIN
+        assert dataset_ids(await fin._list_all_dataset_identities()) == VISIBLE_TO_FIN
 
     async def test_caller_without_tags_sees_only_untagged(self, store: AccessStore) -> None:
         assert set(await view(store).list_datasets(DS)) == UNTAGGED_PUBLIC
@@ -167,20 +167,20 @@ class TestDependents:
 
 class TestModelsReadBy:
     @pytest.fixture
-    async def models(self, store: AccessStore) -> dict[str, SlayerDataset]:
+    async def datasets(self, store: AccessStore) -> dict[str, SlayerDataset]:
         loaded, _ = await store.storage.load_datasets(data_source=DS)
         return {m.name: m for m in loaded}
 
-    def reads(self, subject, models: dict[str, SlayerDataset]) -> set[str]:
-        return model_ids(datasets_read_by(subject, datasets=list(models.values())))
+    def reads(self, subject, datasets: dict[str, SlayerDataset]) -> set[str]:
+        return dataset_ids(datasets_read_by(subject, datasets=list(datasets.values())))
 
-    async def test_declared_join_is_not_a_read(self, models: dict[str, SlayerDataset]) -> None:
-        assert self.reads(models["fin"], models) == set()
-        assert self.reads(models["pub_link"], models) == set()
+    async def test_declared_join_is_not_a_read(self, datasets: dict[str, SlayerDataset]) -> None:
+        assert self.reads(datasets["fin"], datasets) == set()
+        assert self.reads(datasets["pub_link"], datasets) == set()
 
     @pytest.mark.parametrize("name", ["pay", "pay_col", "pay_colfilter", "pay_filter", "pay_measure", "pay_agg"])
-    async def test_definition_paths_read_their_hops(self, models: dict[str, SlayerDataset], name: str) -> None:
-        reads = self.reads(models[name], models)
+    async def test_definition_paths_read_their_hops(self, datasets: dict[str, SlayerDataset], name: str) -> None:
+        reads = self.reads(datasets[name], datasets)
         assert "hr" in reads
         assert "pub" not in reads
 
@@ -188,11 +188,11 @@ class TestModelsReadBy:
         ("hr_summary", {"hr"}), ("hr_rollup", {"hr_summary"}), ("fin_hop", {"fin", "hr"}),
         ("fin_ordered", {"fin", "hr"}), ("fin_report", {"fin"}),
     ])
-    async def test_stage_reads(self, models: dict[str, SlayerDataset], name: str, expected: set[str]) -> None:
-        assert expected <= self.reads(models[name], models)
+    async def test_stage_reads(self, datasets: dict[str, SlayerDataset], name: str, expected: set[str]) -> None:
+        assert expected <= self.reads(datasets[name], datasets)
 
-    async def test_query_reads_its_source_and_hops(self, models: dict[str, SlayerDataset]) -> None:
-        assert {"fin", "hr"} <= self.reads(SlayerQuery.model_validate(MIXED_QUERY), models)
+    async def test_query_reads_its_source_and_hops(self, datasets: dict[str, SlayerDataset]) -> None:
+        assert {"fin", "hr"} <= self.reads(SlayerQuery.model_validate(MIXED_QUERY), datasets)
 
     @pytest.mark.parametrize("stage", [
         {"population": "hr", "extensions": [{"source_name": "hr", "metrics": [{"name": "x", "expression": "sum(salary * 2)"}]}]},
@@ -202,33 +202,33 @@ class TestModelsReadBy:
         {"population": "fin", "time_dimensions": [{"field": "hr.hired_at", "granularity": "month"}]},
         {"population": "fin", "metrics": [{"expression": "sum(amount)"}], "filter": ["hr.dept = 'eng'"]},
     ], ids=["extension-base", "extension-join", "model-join", "time-dimension-hop", "filter-hop"])
-    async def test_query_fields_read_hr(self, models: dict[str, SlayerDataset], stage: dict) -> None:
-        assert "hr" in self.reads(SlayerQuery.model_validate(stage), models)
+    async def test_query_fields_read_hr(self, datasets: dict[str, SlayerDataset], stage: dict) -> None:
+        assert "hr" in self.reads(SlayerQuery.model_validate(stage), datasets)
 
-    async def test_sibling_stage_chain_reads_the_first_source(self, models: dict[str, SlayerDataset]) -> None:
+    async def test_sibling_stage_chain_reads_the_first_source(self, datasets: dict[str, SlayerDataset]) -> None:
         chained = SlayerDataset(name="chained", source_queries=[
             SlayerQuery.model_validate({"name": "s1", "population": "hr", "metrics": [{"expression": "sum(salary)", "name": "t"}]}),
             SlayerQuery.model_validate({"population": "s1", "metrics": [{"expression": "sum(t)"}]}),
         ])
-        reads = self.reads(chained, models)
+        reads = self.reads(chained, datasets)
         assert "hr" in reads
         assert "s1" not in reads
 
-    async def test_saved_measure_reads_are_followed_recursively(self, models: dict[str, SlayerDataset]) -> None:
-        relay = models["pub"].model_copy(update={
+    async def test_saved_measure_reads_are_followed_recursively(self, datasets: dict[str, SlayerDataset]) -> None:
+        relay = datasets["pub"].model_copy(update={
             "name": "relay",
             "relationships": [DatasetRelationship(to="pay_measure", join_pairs=[["id", "id"]])],
             "metrics": [DatasetMetric(name="relayed", expression="pay_measure.hr_salary_total")],
         })
-        assert {"pay_measure", "hr"} <= self.reads(relay, models)
+        assert {"pay_measure", "hr"} <= self.reads(relay, datasets)
 
-    async def test_unresolvable_path_adds_nothing(self, models: dict[str, SlayerDataset]) -> None:
-        stray = models["pub"].model_copy(update={
-            "name": "stray", "fields": [*models["pub"].fields, DatasetField(name="far", sql="nowhere.x")],
+    async def test_unresolvable_path_adds_nothing(self, datasets: dict[str, SlayerDataset]) -> None:
+        stray = datasets["pub"].model_copy(update={
+            "name": "stray", "fields": [*datasets["pub"].fields, DatasetField(name="far", sql="nowhere.x")],
         })
-        assert self.reads(stray, models) == set()
+        assert self.reads(stray, datasets) == set()
 
     @READS_OF_UNLOADABLE
-    async def test_path_reaching_a_placeholder_reads_it(self, models: dict[str, SlayerDataset], sql: str) -> None:
+    async def test_path_reaching_a_placeholder_reads_it(self, datasets: dict[str, SlayerDataset], sql: str) -> None:
         stand_in = placeholder((DS, UNLOADABLE))
-        assert model_ids(datasets_read_by(_unloadable_reader(sql), datasets=[*models.values(), stand_in])) == {UNLOADABLE}
+        assert dataset_ids(datasets_read_by(_unloadable_reader(sql), datasets=[*datasets.values(), stand_in])) == {UNLOADABLE}

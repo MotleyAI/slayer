@@ -44,13 +44,13 @@ def view(store: AccessStore, *tags: str, bypass: bool = False) -> AccessFiltered
     return AccessFilteredStorage(store.storage, tags=set(tags), bypass=bypass)
 
 
-async def save(storage: AccessFilteredStorage, model: SlayerDataset, *, saver: str) -> None:
+async def save(storage: AccessFilteredStorage, dataset: SlayerDataset, *, saver: str) -> None:
     if saver == "storage":
-        await storage.save_dataset(model)
+        await storage.save_dataset(dataset)
         return
     engine = SlayerQueryEngine(storage=storage)
     try:
-        await engine.save_dataset(model)
+        await engine.save_dataset(dataset)
     finally:
         engine.close()
 
@@ -130,16 +130,16 @@ class TestMergedModelWrites:
         assert [j.name for j in stored.relationships] == [PRUNED_EDGE]
 
 
-def _new_model_named_hr(_: SlayerDataset, __: SlayerDataset) -> SlayerDataset:
+def _new_dataset_named_hr(_: SlayerDataset, __: SlayerDataset) -> SlayerDataset:
     return SlayerDataset(name="hr", sql_table="pub_items", data_source=DS,
                        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)])
 
 
-def _edge_named_like_hidden_model(fin: SlayerDataset, _: SlayerDataset) -> SlayerDataset:
+def _edge_named_like_hidden_dataset(fin: SlayerDataset, _: SlayerDataset) -> SlayerDataset:
     return fin.model_copy(update={"relationships": [DatasetRelationship(to="pub", name="hr", join_pairs=[["staff_id", "id"]])]})
 
 
-def _new_model_with_edge_named_like_hidden_model(_: SlayerDataset, __: SlayerDataset) -> SlayerDataset:
+def _new_dataset_with_edge_named_like_hidden_dataset(_: SlayerDataset, __: SlayerDataset) -> SlayerDataset:
     return SlayerDataset(name="pub_edge", sql_table="pub_items", data_source=DS,
                        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
                        relationships=[DatasetRelationship(to="pub", name="hr", join_pairs=[["id", "id"]])])
@@ -159,9 +159,9 @@ def _key_column(fin: SlayerDataset, **update) -> SlayerDataset:
 
 
 CONFLICTS: dict[str, tuple[Callable[[SlayerDataset, SlayerDataset], SlayerDataset], str | None, str]] = {
-    "hidden-model-name": (_new_model_named_hr, "hr", "hr"),
-    "edge-named-like-hidden-model": (_edge_named_like_hidden_model, "hr", "fin"),
-    "new-model-edge-named-like-hidden-model": (_new_model_with_edge_named_like_hidden_model, "hr", "pub_edge"),
+    "hidden-model-name": (_new_dataset_named_hr, "hr", "hr"),
+    "edge-named-like-hidden-model": (_edge_named_like_hidden_dataset, "hr", "fin"),
+    "new-model-edge-named-like-hidden-model": (_new_dataset_with_edge_named_like_hidden_dataset, "hr", "pub_edge"),
     "edge-named-like-pruned-edge": (_edge_named_like_pruned_edge, None, "pub_link"),
     "removed-key-column": (_without_key_column, None, "fin"),
     "expression-key-column": (lambda fin, _: _key_column(fin, sql="id + 0"), None, "fin"),

@@ -73,9 +73,9 @@ from tests._engine_helpers import _engine_generate
 # ---------------------------------------------------------------------------
 
 
-def _orders_model(
+def _orders_dataset(
     *,
-    measures: list[DatasetMetric] | None = None,
+    metrics: list[DatasetMetric] | None = None,
     aggregations: list[Aggregation] | None = None,
     joins: list[DatasetRelationship] | None = None,
 ) -> SlayerDataset:
@@ -90,13 +90,13 @@ def _orders_model(
             DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
         ],
-        metrics=measures or [],
+        metrics=metrics or [],
         aggregations=aggregations or [],
         relationships=joins or [],
     )
 
 
-def _customers_model() -> SlayerDataset:
+def _customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers",
         sql_table="customers",
@@ -267,20 +267,20 @@ class TestCompileAccepts:
         """Case 14b (full path): the colon-in-quoted-string filter MUST
         survive compilation too — the post-substitution measure-ref check
         must not produce a false positive on literal text."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
             filter=["status == 'a:b'"],
             distinct_dimension_values=False,
         )
-        sql = await _engine_generate(query=q, model=model)
+        sql = await _engine_generate(query=q, dataset=model)
         assert "GROUP BY" not in _normalise_sql(sql), sql
 
     async def test_filter_with_var_placeholder_resolves_to_scalar(self) -> None:
         """Case 14a (full path): ``{var}`` resolves to a scalar comparison
         and survives compilation."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -288,7 +288,7 @@ class TestCompileAccepts:
             variables={"threshold": 100},
             distinct_dimension_values=False,
         )
-        sql = await _engine_generate(query=q, model=model)
+        sql = await _engine_generate(query=q, dataset=model)
         assert "GROUP BY" not in _normalise_sql(sql), sql
 
 
@@ -301,14 +301,14 @@ class TestCompileRejects:
     """Each case: query passes Pydantic construction; then compilation
     raises ``DistinctDimensionValuesError``."""
 
-    async def _expect_reject(self, query: SlayerQuery, model: SlayerDataset) -> str:
+    async def _expect_reject(self, query: SlayerQuery, dataset: SlayerDataset) -> str:
         with pytest.raises(DistinctDimensionValuesError) as exc:
-            await _engine_generate(query=query, model=model)
+            await _engine_generate(query=query, dataset=dataset)
         return str(exc.value)
 
     async def test_filter_aggregation(self) -> None:
         """Case 3: ``"sum(revenue) > 100"`` → reject."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -320,7 +320,7 @@ class TestCompileRejects:
 
     async def test_filter_star_count(self) -> None:
         """Case 4: ``"count(*) > 0"`` → reject."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -331,7 +331,7 @@ class TestCompileRejects:
 
     async def test_filter_transform_call(self) -> None:
         """Case 5: ``"rank(sum(amount), direction='desc') <= 5"`` → reject."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -342,7 +342,7 @@ class TestCompileRejects:
 
     async def test_filter_arithmetic_over_aggregation(self) -> None:
         """Case 6: ``"sum(amount) / amount > 0"`` → reject."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -353,7 +353,7 @@ class TestCompileRejects:
 
     async def test_order_raw_formula_contains_measure(self) -> None:
         """Case 7: ``raw_formula="sum(amount)"`` on order → reject."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -364,8 +364,8 @@ class TestCompileRejects:
 
     async def test_order_on_bare_model_measure_name(self) -> None:
         """Case 15: order column resolves to a saved ``ModelMeasure``."""
-        model = _orders_model(
-            measures=[DatasetMetric(expression="sum(amount)", name="aov")],
+        model = _orders_dataset(
+            metrics=[DatasetMetric(expression="sum(amount)", name="aov")],
         )
         q = SlayerQuery(
             population="orders",
@@ -377,8 +377,8 @@ class TestCompileRejects:
 
     async def test_filter_on_bare_model_measure_name(self) -> None:
         """Case 16: filter resolves to a saved ``ModelMeasure``."""
-        model = _orders_model(
-            measures=[DatasetMetric(expression="sum(amount)", name="aov")],
+        model = _orders_dataset(
+            metrics=[DatasetMetric(expression="sum(amount)", name="aov")],
         )
         q = SlayerQuery(
             population="orders",
@@ -390,7 +390,7 @@ class TestCompileRejects:
 
     async def test_filter_custom_aggregation_function_style(self) -> None:
         """Case 16a: filter calls a user-defined custom aggregation."""
-        model = _orders_model(
+        model = _orders_dataset(
             aggregations=[
                 Aggregation(
                     name="weighted_revenue",
@@ -410,7 +410,7 @@ class TestCompileRejects:
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError):
-            await _engine_generate(query=q, model=model)
+            await _engine_generate(query=q, dataset=model)
 
     async def test_order_arithmetic_over_aggregations(self) -> None:
         """Codex + CodeRabbit (PR #172): ``raw_formula`` of arithmetic
@@ -418,7 +418,7 @@ class TestCompileRejects:
         ``ArithmeticField`` with ``agg_refs`` non-empty. Must reject in
         raw-row mode — otherwise hidden aggregate measures get
         materialised and ``GROUP BY`` returns."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -426,12 +426,12 @@ class TestCompileRejects:
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError):
-            await _engine_generate(query=q, model=model)
+            await _engine_generate(query=q, dataset=model)
 
     async def test_order_function_style_aggregate(self) -> None:
         """Case 16b: ``order=[{"column": "sum(amount)"}]`` — function-style
         aggregate via raw_formula. (Equivalent to a measure reference.)"""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -439,11 +439,11 @@ class TestCompileRejects:
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError):
-            await _engine_generate(query=q, model=model)
+            await _engine_generate(query=q, dataset=model)
 
     async def test_filter_post_variable_substitution(self) -> None:
         """Case 16d: a variable cannot inject an aggregation — values bind as literals."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -452,7 +452,7 @@ class TestCompileRejects:
             distinct_dimension_values=False,
         )
         with pytest.raises(ValueError, match="variables supply literal values"):
-            await _engine_generate(query=q, model=model)
+            await _engine_generate(query=q, dataset=model)
 
 
 # ---------------------------------------------------------------------------
@@ -463,7 +463,7 @@ class TestCompileRejects:
 class TestErrorMessage:
     async def test_message_names_offending_filter(self) -> None:
         """Case 29: error message points at the offending filter text."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -471,13 +471,13 @@ class TestErrorMessage:
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError) as exc:
-            await _engine_generate(query=q, model=model)
+            await _engine_generate(query=q, dataset=model)
         # The offending filter text must appear in the message.
         assert "sum(amount) > 100" in str(exc.value)
 
     async def test_message_points_at_the_fix(self) -> None:
         """Case 30: error message includes the remediation hint."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -485,7 +485,7 @@ class TestErrorMessage:
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError) as exc:
-            await _engine_generate(query=q, model=model)
+            await _engine_generate(query=q, dataset=model)
         msg = str(exc.value).lower()
         # Mention either "distinct_dimension_values=True" or "remove" / "drop".
         assert (
@@ -497,7 +497,7 @@ class TestErrorMessage:
     async def test_message_names_offending_order(self) -> None:
         """Order-item form of case 29: error message must name the
         offending order spec, not just filters."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -505,7 +505,7 @@ class TestErrorMessage:
             distinct_dimension_values=False,
         )
         with pytest.raises(DistinctDimensionValuesError) as exc:
-            await _engine_generate(query=q, model=model)
+            await _engine_generate(query=q, dataset=model)
         msg = str(exc.value)
         # Either the offending raw_formula text or "order" must appear.
         assert "sum(amount)" in msg or "order" in msg.lower()
@@ -538,13 +538,13 @@ def _normalise_sql(sql: str) -> str:
 class TestSQLGeneration:
     async def test_flag_false_no_group_by_with_dimensions(self) -> None:
         """Case 17: ``dim=[a,b], flag=False`` emits no GROUP BY."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status"), FieldRef(name="customer_id")],
             distinct_dimension_values=False,
         )
-        sql = await _engine_generate(query=q, model=model)
+        sql = await _engine_generate(query=q, dataset=model)
         assert "GROUP BY" not in _normalise_sql(sql), sql
         # Both columns are projected.
         assert "status" in sql.lower()
@@ -553,7 +553,7 @@ class TestSQLGeneration:
     async def test_flag_false_no_group_by_with_time_dimension(self) -> None:
         """Case 18: time_dims-only emits truncation as a projected column,
         no GROUP BY."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -561,28 +561,28 @@ class TestSQLGeneration:
             ],
             distinct_dimension_values=False,
         )
-        sql = await _engine_generate(query=q, model=model)
+        sql = await _engine_generate(query=q, dataset=model)
         assert "GROUP BY" not in _normalise_sql(sql), sql
         # The DATE_TRUNC expression should appear.
         assert "date_trunc" in sql.lower() or "datetrunc" in sql.lower()
 
     async def test_flag_false_emits_where_clause(self) -> None:
         """Case 19: filter survives, no GROUP BY."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
             filter=["amount > 100"],
             distinct_dimension_values=False,
         )
-        sql = await _engine_generate(query=q, model=model)
+        sql = await _engine_generate(query=q, dataset=model)
         norm = _normalise_sql(sql)
         assert "WHERE" in norm
         assert "GROUP BY" not in norm
 
     async def test_flag_false_emits_order_and_limit(self) -> None:
         """Case 20: ORDER BY + LIMIT survive, no GROUP BY."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -590,7 +590,7 @@ class TestSQLGeneration:
             limit=10,
             distinct_dimension_values=False,
         )
-        sql = await _engine_generate(query=q, model=model)
+        sql = await _engine_generate(query=q, dataset=model)
         norm = _normalise_sql(sql)
         assert "ORDER BY" in norm
         assert "LIMIT" in norm
@@ -598,13 +598,13 @@ class TestSQLGeneration:
 
     async def test_flag_true_default_keeps_dim_only_dedup(self) -> None:
         """Case 21: regression pin — default ``True`` keeps GROUP BY."""
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
             # No explicit flag — default True.
         )
-        sql = await _engine_generate(query=q, model=model)
+        sql = await _engine_generate(query=q, dataset=model)
         assert "GROUP BY" in _normalise_sql(sql), sql
 
 
@@ -619,9 +619,9 @@ class TestCrossModelDimensions:
         no GROUP BY → raw rows surface (duplicates preserved by SQL)."""
         engine, tmp = await _engine_with_storage()
         try:
-            cust = _customers_model()
+            cust = _customers_dataset()
             await engine.storage.save_dataset(cust)
-            orders = _orders_model(
+            orders = _orders_dataset(
                 joins=[
                     DatasetRelationship(
                         to="customers",
@@ -649,7 +649,7 @@ class TestMultiStageDag:
         aggregates from it. Outer SQL has GROUP BY, inner CTE does not."""
         engine, tmp = await _engine_with_storage()
         try:
-            orders = _orders_model()
+            orders = _orders_dataset()
             await engine.storage.save_dataset(orders)
             inner = SlayerQuery(
                 population="orders",
@@ -715,7 +715,7 @@ def _seed_orders_db_at(db_path) -> None:
         cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?, ?)", rows)
 
 
-def _orders_slayer_model_for(data_source: str) -> SlayerDataset:
+def _orders_slayer_dataset_for(data_source: str) -> SlayerDataset:
     """The shared ``SlayerModel`` used by both the async fixture and the
     sync helper. Five columns; the ``id`` PK is restricted to count
     aggregations per SLayer defaults but never used as such here."""
@@ -746,7 +746,7 @@ async def sqlite_orders_env(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
     )
-    await storage.save_dataset(_orders_slayer_model_for("ds"))
+    await storage.save_dataset(_orders_slayer_dataset_for("ds"))
     return SlayerQueryEngine(storage=storage)
 
 
@@ -938,7 +938,7 @@ def _seed_sqlite_storage_sync(tmp_path):
             DatasourceConfig(name="ds", type="sqlite", database=str(db_path))
         )
     )
-    run_sync(storage.save_dataset(_orders_slayer_model_for("ds")))
+    run_sync(storage.save_dataset(_orders_slayer_dataset_for("ds")))
     return storage
 
 

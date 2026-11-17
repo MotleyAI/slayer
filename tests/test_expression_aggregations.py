@@ -101,14 +101,14 @@ def _customers() -> SlayerDataset:
     )
 
 
-async def _dry(query, *, model: SlayerDataset | None = None):
-    model = model or _orders()
+async def _dry(query, *, dataset: SlayerDataset | None = None):
+    dataset = dataset or _orders()
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(
-            DatasourceConfig(name=model.data_source, type="postgres")
+            DatasourceConfig(name=dataset.data_source, type="postgres")
         )
-        await storage.save_dataset(model)
+        await storage.save_dataset(dataset)
         await storage.save_dataset(_customers())
         engine = SlayerQueryEngine(storage=storage)
         return await engine.execute(query, dry_run=True)

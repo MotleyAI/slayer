@@ -82,7 +82,7 @@ def _projection_aliases(sql: str, dialect: str) -> list[str]:
     return [proj.alias_or_name for proj in select.expressions]
 
 
-def _measure_key(resp: SlayerResponse) -> str:
+def _metric_key(resp: SlayerResponse) -> str:
     keys = [c for c in resp.columns if c != "mart.created_at"]
     assert len(keys) == 1, resp.columns
     return keys[0]
@@ -100,7 +100,7 @@ async def test_aliases_valid_per_dialect(shape: str, dialect: str) -> None:
     resp = await dry_response(_shape_query(shape), dialect=dialect)
     sql = resp.sql
     assert sql is not None
-    alias = _emitted_alias(_measure_key(resp), dialect)
+    alias = _emitted_alias(_metric_key(resp), dialect)
     pattern = (
         _BARE_ALIAS_RE if dialect in _DOT_MANGLING else _DOTTED_ALIAS_RE
     )

@@ -168,8 +168,8 @@ class TestDerivedOfDerivedEmission:
 
     async def _sql(self, query: SlayerQuery) -> str:
         return await _engine_generate(
-            query=query, model=_orders(), dialect="postgres", validate=False,
-            extra_models=[_customers(), _regions()],
+            query=query, dataset=_orders(), dialect="postgres", validate=False,
+            extra_datasets=[_customers(), _regions()],
         )
 
     async def test_dimension_on_derived_of_derived(self) -> None:
@@ -241,8 +241,8 @@ async def test_derived_of_derived_executes_on_duckdb() -> None:
             "dimensions": [{"formula": "deep_pop", "name": "deep_pop"}],
             "metrics": [{"expression": "sum(amount)", "name": "m0"}],
         }),
-        model=_orders(), dialect="duckdb", validate=False,
-        extra_models=[_customers(), _regions()],
+        dataset=_orders(), dialect="duckdb", validate=False,
+        extra_datasets=[_customers(), _regions()],
     )
     with duckdb.connect() as con:
         con.execute(

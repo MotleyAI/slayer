@@ -75,8 +75,8 @@ async def test_bigquery_emits_over_dunder_named_model() -> None:
     """
     sql = await _engine_generate(
         query=SlayerQuery(population="orders", dimensions=["region_label"]),
-        model=_host_with_label(),
-        extra_models=[dunder_target()],
+        dataset=_host_with_label(),
+        extra_datasets=[dunder_target()],
         dialect="bigquery",
     )
     assert "customer_region_dim" in sql
@@ -93,8 +93,8 @@ async def test_tsql_emits_over_dunder_named_model() -> None:
     """
     sql = await _engine_generate(
         query=SlayerQuery(population="orders", dimensions=["region_label"]),
-        model=_host_with_label(),
-        extra_models=[dunder_target()],
+        dataset=_host_with_label(),
+        extra_datasets=[dunder_target()],
         dialect="tsql",
     )
     assert "customer_region_dim" in sql

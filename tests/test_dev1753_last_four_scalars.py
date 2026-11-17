@@ -340,12 +340,12 @@ class TestGreatestLeastNullSemanticsSqlite:
     when every argument is NULL. Grouped by ``id`` so each aggregate is over one row,
     isolating the scalar's NULL behavior."""
 
-    async def _values(self, engine, formula):
+    async def _values(self, engine, expression):
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
                 dimensions=[FieldRef(name="id")],
-                metrics=[DatasetMetric(expression=formula, name="g")],
+                metrics=[DatasetMetric(expression=expression, name="g")],
             )
         )
         return {int(r["orders.id"]): r["orders.g"] for r in resp.data}

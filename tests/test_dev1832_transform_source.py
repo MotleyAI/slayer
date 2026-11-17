@@ -54,7 +54,7 @@ from tests._dev1832_fixtures import (
     TimeGranularity,
     broadcast_warnings,
     degenerate_warnings,
-    dev1832_models,
+    dev1832_datasets,
     gen,
     make_exec_engine,
     month_key,
@@ -124,7 +124,7 @@ def _by_month(resp: SlayerResponse, name: str) -> dict:
 
 
 def _monthly_bundle() -> ResolvedSourceBundle:
-    models = dev1832_models()
+    models = dev1832_datasets()
     monthly = next(m for m in models if m.name == "monthly")
     return ResolvedSourceBundle(
         dialect="duckdb",
@@ -133,7 +133,7 @@ def _monthly_bundle() -> ResolvedSourceBundle:
 
 
 def _monthly_multi_bundle() -> ResolvedSourceBundle:
-    models = dev1832_models()
+    models = dev1832_datasets()
     mm = next(m for m in models if m.name == "monthly_multi")
     return ResolvedSourceBundle(
         dialect="duckdb",
@@ -447,16 +447,16 @@ class TestSameOpTransformConstituents:
 # --------------------------------------------------------------------------- #
 # Re-aggregation constituents in a mixed row source execute.
 # --------------------------------------------------------------------------- #
-def _reagg_plan(formula: str):
+def _reagg_plan(expression: str):
     return plan_query(
-        query=monthly_q(measures=[DatasetMetric(expression=formula, name="m")],
+        query=monthly_q(measures=[DatasetMetric(expression=expression, name="m")],
                         time_dimensions=month_td()),
         bundle=_monthly_bundle())
 
 
-def _reagg_multi_plan(formula: str):
+def _reagg_multi_plan(expression: str):
     return plan_query(
-        query=monthly_multi_q(measures=[DatasetMetric(expression=formula, name="m")],
+        query=monthly_multi_q(measures=[DatasetMetric(expression=expression, name="m")],
                               time_dimensions=month_td()),
         bundle=_monthly_multi_bundle())
 

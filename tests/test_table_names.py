@@ -125,10 +125,10 @@ def test_rendered_name_reads_back_as_its_parts(parts: Sequence[str], dialect: st
 
 # ── ingestion stores names that read back (in-process backends) ──────────
 
-async def _query(storage: YAMLStorage, model: str) -> list[dict[str, object]]:
+async def _query(storage: YAMLStorage, dataset: str) -> list[dict[str, object]]:
     engine = SlayerQueryEngine(storage=storage)
     try:
-        return (await engine.execute({"population": model, "dimensions": ["qty"]})).data
+        return (await engine.execute({"population": dataset, "dimensions": ["qty"]})).data
     finally:
         engine.close()
 
@@ -173,7 +173,7 @@ async def duck(tmp_path: Path) -> AsyncGenerator[tuple[DatasourceConfig, YAMLSto
         engine_factory.invalidate_engine(ds)
 
 
-async def _only_model(storage: YAMLStorage) -> SlayerDataset:
+async def _only_dataset(storage: YAMLStorage) -> SlayerDataset:
     (name,) = await storage.list_datasets()
     model = await storage.get_dataset(name)
     assert model is not None
@@ -185,7 +185,7 @@ async def test_ingested_name_with_a_space_reads_back(duck: tuple[DatasourceConfi
                                                      scope: dict[str, Any]) -> None:
     ds, storage = duck
     await _ingest(datasource=ds, storage=storage, **scope)
-    model = await _only_model(storage)
+    model = await _only_dataset(storage)
     assert model.sql_table == 'sales."order items"'
     assert [r[f"{model.name}.qty"] for r in await _query(storage, model.name)] == [6]
     again = await _ingest(datasource=ds, storage=storage, **scope)
@@ -339,7 +339,7 @@ def _key_columns(sql: str, *, dialect: str) -> set[tuple[str, bool]]:
 @pytest.mark.parametrize("dialect", ["snowflake", "postgres"])
 async def test_quoted_join_keys_stay_quoted(cardinality: RelationshipCardinality, query: dict[str, Any], dialect: str) -> None:
     customers, orders = _keyed(cardinality=cardinality)
-    sql = await _engine_generate(query=SlayerQuery.model_validate(query), model=customers, extra_models=[orders],
+    sql = await _engine_generate(query=SlayerQuery.model_validate(query), dataset=customers, extra_datasets=[orders],
                                  dialect=dialect)
     assert _key_columns(sql, dialect=dialect) == {("id", True), ("cust_key", True)}
 

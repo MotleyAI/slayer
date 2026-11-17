@@ -17,7 +17,7 @@ from slayer.core.relationship_search import count_routes, reachable
 from slayer.core.query import SlayerQuery
 from slayer.engine.cardinality.relationship_safety import safe_reachable
 
-from tests._dev1853_fixtures import chain_engine, chain_models
+from tests._dev1853_fixtures import chain_engine, chain_datasets
 
 QUERIES = {
     "reverse_dims": SlayerQuery(
@@ -58,8 +58,8 @@ async def test_declaring_side_gives_identical_sql_and_values(
 
 
 def test_reachability_parity() -> None:
-    fwd = {m.name: m for m in chain_models(declare="forward")}
-    rev = {m.name: m for m in chain_models(declare="reverse")}
+    fwd = {m.name: m for m in chain_datasets(declare="forward")}
+    rev = {m.name: m for m in chain_datasets(declare="reverse")}
     for node in ("orders", "customers", "regions"):
         assert reachable(root=fwd[node], datasets_by_name=fwd) == \
             reachable(root=rev[node], datasets_by_name=rev)
@@ -69,8 +69,8 @@ def test_reachability_parity() -> None:
 
 
 def test_safety_parity() -> None:
-    fwd = {m.name: m for m in chain_models(declare="forward")}
-    rev = {m.name: m for m in chain_models(declare="reverse")}
+    fwd = {m.name: m for m in chain_datasets(declare="forward")}
+    rev = {m.name: m for m in chain_datasets(declare="reverse")}
     probes = [
         ("orders", ("customers",)),
         ("orders", ("customers", "regions")),

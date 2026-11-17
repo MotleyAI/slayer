@@ -43,7 +43,7 @@ from tests._dev1847_fixtures import (
     _SALES_ROWS_WIDE,
     DatasetMetric,
     chain_q,
-    dev1847_models,
+    dev1847_datasets,
     gen,
     make_exec_engine,
     sales_q,
@@ -78,12 +78,12 @@ async def exec_engine(request):
         yield engine
 
 
-def _m(formula: str, name: str = "m") -> DatasetMetric:
-    return DatasetMetric(expression=formula, name=name)
+def _m(expression: str, name: str = "m") -> DatasetMetric:
+    return DatasetMetric(expression=expression, name=name)
 
 
 def _bundle(source: str = "sales") -> ResolvedSourceBundle:
-    models = dev1847_models()
+    models = dev1847_datasets()
     [host] = [m for m in models if m.name == source]
     return ResolvedSourceBundle(dialect="duckdb", population=host,
                                 referenced_datasets=[m for m in models if m is not host])

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1840_fixtures import dev1840_models
+from tests._dev1840_fixtures import dev1840_datasets
 from tests._dev1841_fixtures import (
     ASSOC_APP_SPEND_BY_STATUS,
     ASSOC_BASIC_SPEND_BY_STATUS,
@@ -42,7 +42,7 @@ async def exec_backend(request):
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_weak(request):
     async for engine in make_exec_engine(
-        request, models=dev1840_models(strong_plans=False),
+        request, datasets=dev1840_datasets(strong_plans=False),
     ):
         yield request.param, engine
 

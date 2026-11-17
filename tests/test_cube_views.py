@@ -15,7 +15,7 @@ from slayer.cube.models import (
 )
 from slayer.cube.report import CubeIssueCategory
 from slayer.core.syntax import AggCall, DottedRef, Ref, parse_expr
-from tests._cube_helpers import column, convert, measure, meta
+from tests._cube_helpers import column, convert, metric, meta
 
 
 def _orders_customers_cubes(*, orders_sql_mode: bool = False) -> list[CubeCube]:
@@ -84,7 +84,7 @@ def test_view_root_measure_carries_underlying_column():
     project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
     models, _ = convert(project)
     view = models["orders_overview"]
-    m = measure(view, "total_revenue")
+    m = metric(view, "total_revenue")
     parsed = parse_expr(m.expression)
     assert isinstance(parsed, AggCall), m.expression
     source = parsed.source
@@ -100,14 +100,14 @@ def test_view_joined_measure_is_cross_model_underlying_column_ref():
     project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
     models, _ = convert(project)
     view = models["orders_overview"]
-    m = measure(view, "customers_lifetime_value")  # prefix: "<cube>_<member>"
+    m = metric(view, "customers_lifetime_value")  # prefix: "<cube>_<member>"
     assert m.expression == "sum(customers.ltv)"
 
 
 def test_view_count_measure_maps_to_star_count():
     project = CubeProject(cubes=_orders_customers_cubes(), views=[_view()])
     models, _ = convert(project)
-    assert measure(models["orders_overview"], "count").expression == "count(*)"
+    assert metric(models["orders_overview"], "count").expression == "count(*)"
 
 
 def test_view_reexport_keeps_rolling_window():

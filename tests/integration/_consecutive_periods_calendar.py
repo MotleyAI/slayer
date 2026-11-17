@@ -48,7 +48,7 @@ def seed_statements(
     ]
 
 
-def streak_model(data_source: str) -> SlayerDataset:
+def streak_dataset(data_source: str) -> SlayerDataset:
     return SlayerDataset(
         name="streak_events", sql_table="streak_events", data_source=data_source,
         fields=[

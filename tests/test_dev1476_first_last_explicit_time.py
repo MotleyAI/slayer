@@ -36,7 +36,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 
 
-def _orders_model(with_amount: bool = False) -> SlayerDataset:
+def _orders_dataset(with_amount: bool = False) -> SlayerDataset:
     """Orders joined to customers; ``with_amount`` adds amount/created_at."""
     columns = [
         DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -64,7 +64,7 @@ async def _engine_from_sql(
     *,
     ddl: list[str],
     inserts: list[tuple[str, list[tuple]]],
-    models: list[SlayerDataset],
+    datasets: list[SlayerDataset],
 ) -> SlayerQueryEngine:
     """Build a ``SlayerQueryEngine`` over a throwaway seeded SQLite file."""
     d = tempfile.mkdtemp()
@@ -80,7 +80,7 @@ async def _engine_from_sql(
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    for model in models:
+    for model in datasets:
         await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage)
 
@@ -110,7 +110,7 @@ async def engine_with_seeded_data() -> AsyncIterator[SlayerQueryEngine]:
                 (3, "EU", 70.0, "2023-08-01"),
             ]),
         ],
-        models=[
+        datasets=[
             SlayerDataset(
                 name="customers",
                 sql_table="customers",
@@ -127,7 +127,7 @@ async def engine_with_seeded_data() -> AsyncIterator[SlayerQueryEngine]:
                     ),
                 ],
             ),
-            _orders_model(with_amount=True),
+            _orders_dataset(with_amount=True),
         ],
     )
 
@@ -221,7 +221,7 @@ async def test_cross_model_first_last_uses_target_default_time_dimension() -> No
                 (3, "EU", 70.0, "2023-08-01"),
             ]),
         ],
-        models=[
+        datasets=[
             SlayerDataset(
                 name="customers",
                 sql_table="customers",
@@ -234,7 +234,7 @@ async def test_cross_model_first_last_uses_target_default_time_dimension() -> No
                     DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
                 ],
             ),
-            _orders_model(with_amount=True),
+            _orders_dataset(with_amount=True),
         ],
     )
 
@@ -258,7 +258,7 @@ async def test_cross_model_first_last_with_no_time_at_all_raises() -> None:
             "id INTEGER PRIMARY KEY, region TEXT, amount REAL)",
         ],
         inserts=[],
-        models=[
+        datasets=[
             SlayerDataset(
                 name="customers",
                 sql_table="customers",
@@ -331,7 +331,7 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
                 (2, "NA", 999.0, "2023-08-01", "2024-01-01"),
             ]),
         ],
-        models=[
+        datasets=[
             SlayerDataset(
                 name="customers",
                 sql_table="customers",
@@ -346,7 +346,7 @@ async def test_cross_model_last_with_target_filter_ranks_filtered_rows() -> None
                     DatasetField(name="deleted_at", datatype=DataType.TIMESTAMP),
                 ],
             ),
-            _orders_model(),
+            _orders_dataset(),
         ],
     )
 
@@ -386,7 +386,7 @@ async def test_cross_model_last_over_column_filter_masks_the_newest_row() -> Non
                 (3, "NA", 300.0, "2023-09-01", "inactive"),
             ]),
         ],
-        models=[
+        datasets=[
             SlayerDataset(
                 name="customers",
                 sql_table="customers",
@@ -406,7 +406,7 @@ async def test_cross_model_last_over_column_filter_masks_the_newest_row() -> Non
                     ),
                 ],
             ),
-            _orders_model(),
+            _orders_dataset(),
         ],
     )
 
@@ -442,7 +442,7 @@ async def test_local_last_over_derived_complex_time_col_qualifies_under_join() -
                 (2, "NA", "2099-02-01"),
             ]),
         ],
-        models=[
+        datasets=[
             SlayerDataset(
                 name="customers",
                 sql_table="customers",
@@ -553,14 +553,14 @@ def _planned_slots(query: SlayerQuery, bundle: ResolvedSourceBundle):
 
 
 def _host_scope(
-    gen: SQLGenerator, *, source_model: SlayerDataset, bundle: ResolvedSourceBundle,
+    gen: SQLGenerator, *, source_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
     relation: str | None = None,
 ) -> ScopeFrame:
     alloc = AliasAllocator()
-    rel = relation or source_model.name
+    rel = relation or source_dataset.name
     return ScopeFrame(
         scope_id=alloc.next_scope_id(rel),
-        root_dataset=source_model, root_relation=rel,
+        root_dataset=source_dataset, root_relation=rel,
         bundle=bundle, dialect=gen._dialect, allocator=alloc,
     )
 
@@ -627,7 +627,7 @@ class TestTimeArgJoinDiscovery:
         }
         order = list(sub.projection)
         gen = self._gen()
-        scope = _host_scope(gen, source_model=orders, bundle=bundle)
+        scope = _host_scope(gen, source_dataset=orders, bundle=bundle)
         gen._resolve_agg_inputs_via_scope(
             base_render_order=order, slots_by_id=slots, scope=scope,
         )
@@ -702,7 +702,7 @@ class TestTimeArgJoinDiscovery:
         assert prod_agg.key.locus == "target", prod_agg.key
         assert not any(isinstance(s.key, AggregateKey) for s in slots.values())
         gen = self._gen()
-        scope = _host_scope(gen, source_model=_u_orders(), bundle=bundle)
+        scope = _host_scope(gen, source_dataset=_u_orders(), bundle=bundle)
         seen: list = []
         real = ScopeFrame.resolve
 
@@ -730,7 +730,7 @@ class TestTimeArgJoinDiscovery:
             id="s0", key=key, declared_name="x", public_name="x",
             phase=Phase.AGGREGATE, type=DataType.DOUBLE,
         )
-        scope = _host_scope(gen, source_model=orders, bundle=bundle)
+        scope = _host_scope(gen, source_dataset=orders, bundle=bundle)
         seen: list = []
         real = ScopeFrame.resolve
 
@@ -792,7 +792,7 @@ async def _multi_hop_engine() -> SlayerQueryEngine:
                 (20, "EU", "2021-01-01"),  # opened later → wins `last`
             ]),
         ],
-        models=[
+        datasets=[
             _u_regions(),
             _u_customers(),
             _u_orders(),
@@ -856,7 +856,7 @@ async def test_e2e_local_derived_crossing_time_arg() -> None:
             ]),
             ("INSERT INTO regions VALUES (?,?,?)", [(10, "NA", "2020-01-01")]),
         ],
-        models=[_u_regions(), _u_customers(), orders],
+        datasets=[_u_regions(), _u_customers(), orders],
     )
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "orders",

@@ -41,7 +41,7 @@ from slayer.sql.generator import _lower_positions
 # ---------------------------------------------------------------------------
 
 
-def _orders_model(default_td: str | None = None) -> SlayerDataset:
+def _orders_dataset(default_td: str | None = None) -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         data_source="prod",
@@ -57,7 +57,7 @@ def _orders_model(default_td: str | None = None) -> SlayerDataset:
     )
 
 
-def _customers_model() -> SlayerDataset:
+def _customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers",
         data_source="prod",
@@ -89,7 +89,7 @@ def _orders_with_customers_join() -> SlayerDataset:
 def _bundle_local() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=_orders_model(),
+        population=_orders_dataset(),
         referenced_datasets=[],
     )
 
@@ -98,7 +98,7 @@ def _bundle_joined() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
         population=_orders_with_customers_join(),
-        referenced_datasets=[_customers_model()],
+        referenced_datasets=[_customers_dataset()],
     )
 
 
@@ -109,12 +109,12 @@ def _bundle_joined() -> ResolvedSourceBundle:
 
 class TestResolveMainTimeDimension:
     def test_no_time_dimensions_returns_none(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         q = SlayerQuery(population="orders")
         assert _resolve_main_time_dimension(query=q, dataset=model) is None
 
     def test_single_td_returns_it(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         td = TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,
@@ -124,7 +124,7 @@ class TestResolveMainTimeDimension:
         assert resolved is td
 
     def test_multi_td_no_disambiguator_returns_none(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         td_a = TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,
@@ -137,7 +137,7 @@ class TestResolveMainTimeDimension:
         assert _resolve_main_time_dimension(query=q, dataset=model) is None
 
     def test_multi_td_main_time_dimension_matches_by_leaf(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         td_a = TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,
@@ -216,7 +216,7 @@ class TestResolveMainTimeDimension:
         # Matches legacy: when there's exactly one TD, the resolver
         # returns it regardless of main_time_dimension. main_time_dimension
         # is only consulted as a disambiguator for 2+ TDs.
-        model = _orders_model()
+        model = _orders_dataset()
         td = TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,
@@ -230,7 +230,7 @@ class TestResolveMainTimeDimension:
         assert resolved is td
 
     def test_multi_td_default_time_dimension_falls_back_when_no_main(self) -> None:
-        model = _orders_model(default_td="reviewed_at")
+        model = _orders_dataset(default_td="reviewed_at")
         td_a = TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,
@@ -244,7 +244,7 @@ class TestResolveMainTimeDimension:
         assert resolved is td_b
 
     def test_query_main_td_wins_over_model_default(self) -> None:
-        model = _orders_model(default_td="reviewed_at")
+        model = _orders_dataset(default_td="reviewed_at")
         td_a = TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,
@@ -262,7 +262,7 @@ class TestResolveMainTimeDimension:
         assert resolved is td_a
 
     def test_unknown_main_time_dimension_raises(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         td_a = TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,
@@ -415,7 +415,7 @@ class TestResolveMainTimeDimension:
         # entry in query.time_dimensions, the resolver returns None
         # (legacy behaviour — the default points at a column the user
         # didn't include this query).
-        model = _orders_model(default_td="not_in_query")
+        model = _orders_dataset(default_td="not_in_query")
         td_a = TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,

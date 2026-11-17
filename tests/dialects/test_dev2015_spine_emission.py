@@ -8,7 +8,7 @@ import pytest
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev2015_fixtures import DS_GRANULARITIES, TWO_FACTS, cg_orders_model, m, spine_models, spine_td
+from tests._dev2015_fixtures import DS_GRANULARITIES, TWO_FACTS, cg_orders_dataset, m, spine_datasets, spine_td
 from tests._engine_helpers import _engine_generate
 from tests._time_points_fixtures import PinnedClock
 
@@ -27,9 +27,9 @@ SEQUENCE = {
 
 
 async def _sql(dialect: str, query: dict) -> str:
-    models = [cg_orders_model()] if query.get("source_model") == "orders" else spine_models()
+    models = [cg_orders_dataset()] if query.get("source_model") == "orders" else spine_datasets()
     return await _engine_generate(
-        query=SlayerQuery.model_validate(query), model=models[0], extra_models=models[1:], dialect=dialect, validate=False,
+        query=SlayerQuery.model_validate(query), dataset=models[0], extra_datasets=models[1:], dialect=dialect, validate=False,
         clock=PinnedClock(), datasource_fields=DS_GRANULARITIES,
     )
 

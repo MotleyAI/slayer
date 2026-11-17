@@ -22,7 +22,7 @@ from tests._dev1853_fixtures import (
     _REGIONS_ROWS,
     CHAIN_REVERSE_DIMS_LEFT,
     chain_engine,
-    chain_models,
+    chain_datasets,
     rows_set,
 )
 from tests._pg_helpers import client_datasource, pg_query_engine
@@ -67,7 +67,7 @@ async def test_reverse_hop_duckdb() -> None:
         storage = YAMLStorage(base_dir=f"{d}/store")
         await storage.save_datasource(DatasourceConfig(
             name="test", type="duckdb", database=db_path))
-        for model in chain_models():
+        for model in chain_datasets():
             await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
         resp = await engine.execute(_REVERSE_QUERY)
@@ -93,6 +93,6 @@ async def test_reverse_hop_postgres(postgresql, tmp_path) -> None:
                     _CHAIN_ORDERS_ROWS)
     postgresql.commit()
     async with pg_query_engine(client_datasource(postgresql.info, name="test"), base_dir=str(tmp_path / "store"),
-                               models=chain_models()) as engine:
+                               models=chain_datasets()) as engine:
         resp = await engine.execute(_REVERSE_QUERY)
     assert rows_set(resp, *_KEYS) == CHAIN_REVERSE_DIMS_LEFT

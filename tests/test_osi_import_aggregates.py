@@ -45,7 +45,7 @@ async def test_statistical_aggregate(db: Path, sql: str, aggregation: str, expec
     stat = by_name(result)["orders"].get_metric("stat")
     assert stat is not None
     assert aggregation in stat.expression
-    assert float(await scalar(result=result, db=db, model="orders", formula="stat")) == pytest.approx(expected)
+    assert float(await scalar(result=result, db=db, dataset="orders", expression="stat")) == pytest.approx(expected)
 
 
 async def test_filtered_correlation(db: Path) -> None:
@@ -53,12 +53,12 @@ async def test_filtered_correlation(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(metric)))
     assert not unconverted(result, "r")
     completed = statistics.correlation([10, 7], [1, 3])
-    assert float(await scalar(result=result, db=db, model="orders", formula="r")) == pytest.approx(completed)
+    assert float(await scalar(result=result, db=db, dataset="orders", expression="r")) == pytest.approx(completed)
 
 
 async def test_filtered_sample_stddev(db: Path) -> None:
     result = convert(db=db, docs=documents(_orders(m("sd", "STDDEV_SAMP(amount) FILTER (WHERE status <> 'x')"))))
-    assert float(await scalar(result=result, db=db, model="orders", formula="sd")) == pytest.approx(
+    assert float(await scalar(result=result, db=db, dataset="orders", expression="sd")) == pytest.approx(
         statistics.stdev(_AMOUNTS))
 
 
@@ -70,7 +70,7 @@ async def test_approximate_distinct_count(db: Path) -> None:
     approx = by_name(result)["orders"].get_metric("approx")
     assert approx is not None
     assert "count_distinct_approx" in approx.expression
-    assert await scalar(result=result, db=db, model="orders", formula="approx") == 2
+    assert await scalar(result=result, db=db, dataset="orders", expression="approx") == 2
 
 
 # ─────────────────────────────── time role ─────────────────────────────────

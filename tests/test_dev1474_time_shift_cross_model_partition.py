@@ -108,9 +108,9 @@ def _orders(*, extra=None, filters=None) -> SlayerDataset:
     )
 
 
-async def _gen(query, model, *, extra_models=None, dialect="postgres") -> str:
+async def _gen(query, dataset, *, extra_datasets=None, dialect="postgres") -> str:
     return await _engine_generate(
-        query=query, model=model, extra_models=extra_models or [],
+        query=query, dataset=dataset, extra_datasets=extra_datasets or [],
         dialect=dialect, validate=False,
     )
 
@@ -201,7 +201,7 @@ def _grain_pair_count(on_pred: str, *, marker: str = "IS NOT DISTINCT FROM") -> 
 # --------------------------------------------------------------------------- #
 # The QoQ query shapes (reused by shape + execution tests).
 # --------------------------------------------------------------------------- #
-def _qoq_query(*, measure_formula: str, measure_name: str) -> SlayerQuery:
+def _qoq_query(*, metric_expression: str, metric_name: str) -> SlayerQuery:
     return SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(
@@ -211,7 +211,7 @@ def _qoq_query(*, measure_formula: str, measure_name: str) -> SlayerQuery:
         dimensions=[FieldRef(name="stores.name")],
         metrics=[
             DatasetMetric(expression="sum(order_total)"),
-            DatasetMetric(expression=measure_formula, name=measure_name),
+            DatasetMetric(expression=metric_expression, name=metric_name),
         ],
         order=[OrderItem(field=FieldRef(name="ordered_at"), direction="asc")],
     )
@@ -226,8 +226,8 @@ class TestShiftedCtePartitionShape:
         shifted CTE pulls ``LEFT JOIN stores`` (Law 1), projects the joined dim,
         and the sjoin joins back on it. Today: ``NotImplementedError 7b.12``."""
         sql = await _gen(
-            _qoq_query(measure_formula="change(sum(order_total))", measure_name="qoq"),
-            _orders(), extra_models=[_stores(), _regions()],
+            _qoq_query(metric_expression="change(sum(order_total))", metric_name="qoq"),
+            _orders(), extra_datasets=[_stores(), _regions()],
         )
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores" in shifted, shifted
@@ -257,7 +257,7 @@ class TestShiftedCtePartitionShape:
                 DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
-        sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         # BOTH hops are introduced as real join clauses (not just the alias token
         # appearing somewhere): the direct ``stores`` hop and the second
@@ -318,7 +318,7 @@ class TestShiftedCtePartitionShape:
                 DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
-        sql = await _gen(query, _orders(), extra_models=[stores, _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[stores, _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         # The derived JOINED expression is expanded (UPPER(stores.name), NOT the
@@ -384,7 +384,7 @@ class TestShiftedCtePartitionShape:
         )
         orders, stores, regions = _orders(), _stores(), _regions()
         with pytest.raises(ValueError, match=r"partition_by"):
-            await _gen(query, orders, extra_models=[stores, regions])
+            await _gen(query, orders, extra_datasets=[stores, regions])
 
     async def test_joined_time_axis_pulls_join_into_shifted_cte(self) -> None:
         """When the SHIFT-axis time dimension is itself a joined column
@@ -402,7 +402,7 @@ class TestShiftedCtePartitionShape:
                 DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
-        sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         # The shift-axis time expression IS the joined column — not some unrelated
@@ -436,7 +436,7 @@ class TestShiftedCteJoinedFilter:
             ],
             filter=["stores.name = 'North'"],
         )
-        sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         # The filter predicate is PRESERVED in the shifted CTE's WHERE (not merely
@@ -463,7 +463,7 @@ class TestShiftedCteJoinedFilter:
                 DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
-        sql = await _gen(query, model, extra_models=[_stores(), _regions()])
+        sql = await _gen(query, model, extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         where = _shifted_where(sql)
@@ -548,7 +548,7 @@ class TestLocalOnlyTimeShiftUnchanged:
                 DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
-        sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         assert "JOIN" not in shifted.upper(), shifted
         # The local dim still partitions (no regression on the always-worked path)
@@ -585,7 +585,7 @@ class TestJoinedSecondaryTimeDimension:
                 DatasetMetric(expression="time_shift(sum(order_total), -1)", name="prev"),
             ],
         )
-        sql = await _gen(query, _orders(), extra_models=[_stores(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_stores(), _regions()])
         shifted = _shifted_body(sql)
         assert "LEFT JOIN stores AS stores" in shifted, shifted
         assert re.search(r"GROUP BY[\s\S]*QUARTER['\"][\s\S]*stores\.opened_at", shifted), shifted
@@ -720,7 +720,7 @@ class TestQoQExecutionGroundTruth:
         matches hand-computed per-store deltas, including the NULL-store group
         (whose non-null prev proves the null-safe join-back)."""
         resp = await qoq_engine.execute(_qoq_query(
-            measure_formula="change(sum(order_total))", measure_name="qoq",
+            metric_expression="change(sum(order_total))", metric_name="qoq",
         ))
         by = {
             (r["orders.stores.name"], _quarter_key(r["orders.ordered_at"])): r
@@ -750,7 +750,7 @@ class TestQoQExecutionGroundTruth:
     async def test_change_pct_per_store_matches_hand_computed(self, qoq_engine) -> None:
         """``change_pct`` percentages per store (NULL prior → NULL)."""
         resp = await qoq_engine.execute(_qoq_query(
-            measure_formula="change_pct(sum(order_total))", measure_name="qoq_pct",
+            metric_expression="change_pct(sum(order_total))", metric_name="qoq_pct",
         ))
         by = {
             (r["orders.stores.name"], _quarter_key(r["orders.ordered_at"])): r

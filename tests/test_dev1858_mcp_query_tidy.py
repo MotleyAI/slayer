@@ -260,7 +260,7 @@ async def broadcast_server(tmp_path):
     db_path = str(tmp_path / "data.sqlite")
     fx._seed_sqlite(db_path)
     engine = await build_exec_engine(
-        db_path, dialect="sqlite", models=fx.dev1836_models())
+        db_path, dialect="sqlite", datasets=fx.dev1836_datasets())
     return create_mcp_server(storage=engine.storage)
 
 

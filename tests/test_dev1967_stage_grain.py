@@ -10,7 +10,7 @@ from slayer.core.query import SlayerQuery
 from slayer.core.scope import StageField, StageSchema
 from slayer.engine.plan import plan_query, plan_stages
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from tests._dev1836_fixtures import dev1836_models
+from tests._dev1836_fixtures import dev1836_datasets
 
 MONTH = [{"dimension": "ordered_at", "granularity": "month"}]
 AMOUNT = {"formula": "sum(amount)", "name": "t"}
@@ -18,7 +18,7 @@ CHANNEL_TOTAL = {"expression": "sum(amount, partition_by=channel)", "name": "ct"
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1836_models()
+    models = dev1836_datasets()
     return ResolvedSourceBundle(population=models[0], referenced_datasets=models, dialect="postgres")
 
 
@@ -103,7 +103,7 @@ class TestSiblingStageGrain:
             "population": "c", "dimensions": ["tr"],
             "metrics": [{"expression": "count(*)", "name": "n"}],
         })
-        customers = next(m for m in dev1836_models() if m.name == "customers")
+        customers = next(m for m in dev1836_datasets() if m.name == "customers")
         bundle = _bundle().model_copy(update={"stage_source_models": {"c": customers}})
         planned = plan_stages(queries=[sibling, root], bundle=bundle)
         assert planned[0].stage_schema is not None

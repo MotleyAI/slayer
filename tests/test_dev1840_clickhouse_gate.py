@@ -40,7 +40,7 @@ from tests._dev1840_fixtures import (
     DatasetMetric,
     SPEND_BAND_170,
     bundle,
-    dev1840_models,
+    dev1840_datasets,
     gen,
     q,
 )
@@ -61,7 +61,7 @@ _ORDERS_RULE = RelationshipFilterRule(
 async def _ch_engine(tmp_path, *, policy: SessionPolicy | None = None) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(DatasourceConfig(name="test", type="clickhouse"))
-    for model in dev1840_models():
+    for model in dev1840_datasets():
         await storage.save_dataset(model, _validate=False)
     return SlayerQueryEngine(storage=storage, policy=policy)
 

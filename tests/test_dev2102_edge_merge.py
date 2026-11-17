@@ -23,7 +23,7 @@ from tests._dev2102_fixtures import (
     regions,
     rows,
     shop,
-    with_models,
+    with_datasets,
 )
 
 REGION_PAIRS = [["region_id", "id"]]
@@ -252,7 +252,7 @@ class TestNewEdges:
             ext("customers", joins=[join("regions", REGION_PAIRS, name="home_region")]),
             ext("regions", joins=[join("customers", [["manager_id", "id"]], name="manager")]),
         ])
-        stored = with_models(
+        stored = with_datasets(
             customers(DatasetRelationship(to="regions", name="home_region", join_pairs=REGION_PAIRS)),
             regions().model_copy(update={"joins": [
                 DatasetRelationship(to="customers", name="manager", join_pairs=[["manager_id", "id"]])]}),

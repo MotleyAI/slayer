@@ -26,16 +26,16 @@ from slayer.pg_facade.connection import PgConnection
 from slayer.database.client import ExecutionResult, ResultColumnType, SlayerSQLClient
 from slayer.sql.dialects.base import ExplainStatements, ServerProfile
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._dev1840_fixtures import dev1840_models, q
+from tests._dev1840_fixtures import dev1840_datasets, q
 from tests._gateway_harness import (
     DS_NAME,
     GatewayFactory,
     RecordingClient,
     backend_of,
-    customers_model,
+    customers_dataset,
     no_direct_access,
-    orders_model,
-    paid_sql_model,
+    orders_dataset,
+    paid_sql_dataset,
     seed_shop,
     shop_datasource,
     shop_storage,
@@ -63,7 +63,7 @@ async def shop(tmp_path: Path) -> Shop:
     ds = shop_datasource(db)
     storage = await shop_storage(
         str(tmp_path / "store"), datasource=ds,
-        models=[orders_model(), customers_model(), paid_sql_model()],
+        datasets=[orders_dataset(), customers_dataset(), paid_sql_dataset()],
     )
     return Shop(db=db, datasource=ds, storage=storage)
 
@@ -152,7 +152,7 @@ _PUSHED = q(
 async def _clickhouse_engine(tmp_path: Path, *, profile: ServerProfile, built: list[ProfileClient]) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(DatasourceConfig(name="test", type="clickhouse"))
-    for model in dev1840_models():
+    for model in dev1840_datasets():
         await storage.save_dataset(model, _validate=False)
 
     def factory(datasource: DatasourceConfig) -> ProfileClient:
@@ -218,8 +218,8 @@ class TestOneConstructionPoint:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         for name, db in (("shop", first_db), ("twin1", twin_db), ("twin2", twin_db)):
             await storage.save_datasource(shop_datasource(db, name=name))
-            await storage.save_dataset(orders_model(data_source=name), _validate=False)
-            await storage.save_dataset(customers_model(data_source=name), _validate=False)
+            await storage.save_dataset(orders_dataset(data_source=name), _validate=False)
+            await storage.save_dataset(customers_dataset(data_source=name), _validate=False)
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=storage, client_factory=factory)
         for _ in range(3):
@@ -258,7 +258,7 @@ class TestEngineOwnsItsClients:
         twin_db = str(tmp_path / "twin.db")
         shutil.copy(shop.db, twin_db)
         await shop.storage.save_datasource(shop_datasource(twin_db, name="twin"))
-        await shop.storage.save_dataset(orders_model(data_source="twin"), _validate=False)
+        await shop.storage.save_dataset(orders_dataset(data_source="twin"), _validate=False)
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
         await engine.execute(COUNT_ORDERS, data_source=DS_NAME)
@@ -318,7 +318,7 @@ class TestEngineOwnsItsClients:
         twin_db = str(tmp_path / "twin.db")
         shutil.copy(shop.db, twin_db)
         run_sync(shop.storage.save_datasource(shop_datasource(twin_db, name="twin")))
-        run_sync(shop.storage.save_dataset(orders_model(data_source="twin"), _validate=False))
+        run_sync(shop.storage.save_dataset(orders_dataset(data_source="twin"), _validate=False))
         released: list[str] = []
 
         async def _release(self: SlayerSQLClient) -> None:

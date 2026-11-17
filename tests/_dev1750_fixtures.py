@@ -48,7 +48,7 @@ from tests._engine_helpers import _engine_generate, _extract_cte_body
 # --------------------------------------------------------------------------- #
 # Models — orders (host) → customers → regions.
 # --------------------------------------------------------------------------- #
-def regions_model() -> SlayerDataset:
+def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
@@ -58,7 +58,7 @@ def regions_model() -> SlayerDataset:
     )
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     """``customers`` carries ``spend`` (the target-grain measure for shape (c))
     and a ``signup_at`` a first/last explicit time arg can rank by."""
     return SlayerDataset(
@@ -73,7 +73,7 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def line_items_model() -> SlayerDataset:
+def line_items_dataset() -> SlayerDataset:
     """A 1:N child of ``orders`` (each order has several line items). The
     ``liscaled_sum`` fragment crosses this ONE-TO-MANY join, so a wrong host-base
     isolation would fan the join out and MULTIPLY sibling measures — which is
@@ -88,7 +88,7 @@ def line_items_model() -> SlayerDataset:
     )
 
 
-def orders_model() -> SlayerDataset:
+def orders_dataset() -> SlayerDataset:
     """Host model. ``wscaled_sum`` is declared HERE with a default param crossing
     two hops (``customers__regions.weight``), so ``wscaled_sum(amount)`` is the
     host-rooted crossing-fragment aggregate (shape (b)). ``liscaled_sum`` crosses
@@ -122,18 +122,18 @@ def orders_model() -> SlayerDataset:
     )
 
 
-def dev1750_models() -> List[SlayerDataset]:
+def dev1750_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
-    return [orders_model(), customers_model(), regions_model(), line_items_model()]
+    return [orders_dataset(), customers_dataset(), regions_dataset(), line_items_dataset()]
 
 
 # --------------------------------------------------------------------------- #
 # SQL-shape generation.
 # --------------------------------------------------------------------------- #
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb") -> str:
-    models = dev1750_models()
+    models = dev1750_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=False,
     )
 
@@ -271,7 +271,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1750_models()) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev1750_datasets()) as (engine, _db):
         yield engine
 
 
@@ -290,7 +290,7 @@ def rows_by(resp, *keys) -> dict:
 
 
 __all__ = [
-    "orders_model", "customers_model", "regions_model", "dev1750_models",
+    "orders_dataset", "customers_dataset", "regions_dataset", "dev1750_datasets",
     "gen", "month_td", "shifted_cte_body", "shifted_relation", "base_cte_body", "cte_names",
     "make_exec_engine", "month_key", "rows_by", "SlayerQuery", "DatasetMetric",
     "FieldRef", "TimeDimension", "TimeGranularity",

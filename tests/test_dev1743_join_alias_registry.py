@@ -26,9 +26,9 @@ from sqlglot import exp
 from slayer.core.query import SlayerQuery
 
 from tests._dev1743_fixtures import (
-    ambiguity_impossible_models,
-    chain_models,
-    long_chain_models,
+    ambiguity_impossible_datasets,
+    chain_datasets,
+    long_chain_datasets,
     LONG_DOTTED_PATH,
 )
 from tests._engine_helpers import _engine_generate
@@ -63,7 +63,7 @@ def _all_join_aliases(sql: str, *, dialect: str = "postgres") -> list[str]:
 class TestSpellingCollisionMintsDistinctAliases:
     @pytest.mark.asyncio
     async def test_chain_and_direct_dunder_model_are_distinct(self) -> None:
-        models = ambiguity_impossible_models()
+        models = ambiguity_impossible_datasets()
         host, extra = models[0], models[1:]
         # Project two distinctly-named host columns so both joins land in one
         # SELECT without tripping the orthogonal flat public-name namespace:
@@ -72,7 +72,7 @@ class TestSpellingCollisionMintsDistinctAliases:
         sql = await _engine_generate(
             query=SlayerQuery(population="host",
                               dimensions=["chain_val", "direct_val"]),
-            model=host, extra_models=extra,
+            dataset=host, extra_datasets=extra,
         )
         tbl = _join_table_to_alias(sql)
         # Both distinct physical tables are joined.
@@ -90,12 +90,12 @@ class TestSpellingCollisionMintsDistinctAliases:
 class TestLongChainAliasesAreLengthFitted:
     @pytest.mark.asyncio
     async def test_postgres_63_byte_limit_respected(self) -> None:
-        models = long_chain_models()
+        models = long_chain_datasets()
         host, extra = models[0], models[1:]
         sql = await _engine_generate(
             query=SlayerQuery(population=host.name,
                               dimensions=[LONG_DOTTED_PATH]),
-            model=host, extra_models=extra, dialect="postgres",
+            dataset=host, extra_datasets=extra, dialect="postgres",
         )
         aliases = _all_join_aliases(sql, dialect="postgres")
         assert aliases, f"expected joins in:\n{sql}"
@@ -120,7 +120,7 @@ class TestHostGrainOrderWrapUsesEmittedAlias:
         qualify to the EMITTED chain-leaf alias, not a raw ``"__".join(path)`` —
         which, when a direct model literally named ``a__b`` is also joined,
         silently reads the WRONG physical table (a_b_direct instead of b)."""
-        models = ambiguity_impossible_models()
+        models = ambiguity_impossible_datasets()
         host, extra = models[0], models[1:]
         # Group by the direct model's column, order by the CHAIN path → the
         # planner wraps the un-grouped chain column in a host-grain MIN.
@@ -131,7 +131,7 @@ class TestHostGrainOrderWrapUsesEmittedAlias:
                 "metrics": ["count(*)"],
                 "order": [{"field": "a.b.val", "direction": "asc"}],
             }),
-            model=host, extra_models=extra,
+            dataset=host, extra_datasets=extra,
         )
         tbl = _join_table_to_alias(sql)
         b_alias = tbl["b"]                 # chain leaf physical table
@@ -155,13 +155,13 @@ class TestHostGrainOrderWrapUsesEmittedAlias:
 class TestPlainChainSpellingIsStable:
     @pytest.mark.asyncio
     async def test_single_and_two_hop_alias_spellings(self) -> None:
-        models = chain_models()
+        models = chain_datasets()
         host, extra = models[0], models[1:]
         sql = await _engine_generate(
             query=SlayerQuery(population="orders",
                               dimensions=["customers.name",
                                           "customers.regions.name"]),
-            model=host, extra_models=extra,
+            dataset=host, extra_datasets=extra,
         )
         aliases = set(_all_join_aliases(sql))
         # Preferred spelling unchanged: bare name for the single hop, __-joined
@@ -178,7 +178,7 @@ class TestPlainChainSpellingIsStable:
 class TestTwoRootsSameSpelling:
     @pytest.mark.asyncio
     async def test_cross_model_measure_and_chain_dim_coexist(self) -> None:
-        models = ambiguity_impossible_models()  # host, a, b, a__b
+        models = ambiguity_impossible_datasets()  # host, a, b, a__b
         host, extra = models[0], models[1:]
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({
@@ -186,7 +186,7 @@ class TestTwoRootsSameSpelling:
                 "dimensions": ["a.b.val"],
                 "metrics": ["count(a__b.*)"],
             }),
-            model=host, extra_models=extra,
+            dataset=host, extra_datasets=extra,
         )
         # Both relations are present and the query is structurally valid
         # (_engine_generate scope-checks it): a path-only registry key would

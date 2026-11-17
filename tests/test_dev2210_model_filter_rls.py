@@ -39,7 +39,7 @@ def _id() -> DatasetField:
     return DatasetField(name="id", datatype=DataType.INT, primary_key=True)
 
 
-def _models() -> list[SlayerDataset]:
+def _datasets() -> list[SlayerDataset]:
     return [
         SlayerDataset(name="shipments", data_source="test", sql_table="shipments", fields=[
             _id(), DatasetField(name="order_ref", datatype=DataType.INT), DatasetField(name="carrier", datatype=DataType.TEXT),
@@ -56,7 +56,7 @@ def _models() -> list[SlayerDataset]:
 @pytest.fixture
 async def base() -> AsyncIterator[SlayerQueryEngine]:
     async with seeded_exec_engine(
-        dialect="sqlite", seed=lambda p: seed("sqlite", p, DDL), models=_models(),
+        dialect="sqlite", seed=lambda p: seed("sqlite", p, DDL), datasets=_datasets(),
     ) as (eng, _db):
         yield eng
 

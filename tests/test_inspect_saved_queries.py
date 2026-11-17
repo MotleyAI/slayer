@@ -32,7 +32,7 @@ ON_ORDERS = {
 REVENUE = {"formula": "sum(amount)", "name": "revenue"}
 
 
-def _plain_model(name: str) -> SlayerDataset:
+def _plain_dataset(name: str) -> SlayerDataset:
     return SlayerDataset(name=name, data_source="test", sql_table="orders", fields=[
         DatasetField(name="id", datatype=DataType.INT, primary_key=True),
         DatasetField(name="region", datatype=DataType.TEXT),
@@ -43,8 +43,8 @@ def _plain_model(name: str) -> SlayerDataset:
 @pytest.fixture
 async def storage(tmp_path) -> YAMLStorage:
     store = await build_refine_storage(str(tmp_path))
-    await store.save_dataset(_plain_model("targets"))
-    await store.save_dataset(_plain_model("untouched"))
+    await store.save_dataset(_plain_dataset("targets"))
+    await store.save_dataset(_plain_dataset("untouched"))
     engine = SlayerQueryEngine(storage=store)
     try:
         for name, query in (
@@ -72,8 +72,8 @@ async def storage(tmp_path) -> YAMLStorage:
     return store
 
 
-async def _inspect(storage: YAMLStorage, model: str, **kwargs: Any) -> str:
-    return await InspectService(storage=storage).inspect(reference=f"test.{model}", entity_type="dataset", **kwargs)
+async def _inspect(storage: YAMLStorage, dataset: str, **kwargs: Any) -> str:
+    return await InspectService(storage=storage).inspect(reference=f"test.{dataset}", entity_type="dataset", **kwargs)
 
 
 def _listed(payload: Dict[str, Any]) -> Dict[str, Any]:

@@ -29,7 +29,7 @@ async def engine(request):
         yield e
 
 
-def _measures(source: str, *, suffix: str = "") -> List[DatasetMetric]:
+def _metrics(source: str, *, suffix: str = "") -> List[DatasetMetric]:
     """Every aggregation in ``EMPTY`` over ``source`` plus the boolean ``sum`` / ``max``, named by aggregation."""
     measures = [m(f"{agg}({source}{suffix})", agg) for agg in EMPTY]
     return measures + [m(f"sum({source} > 15{suffix})", "bsum"), m(f"max({source} > 15{suffix})", "bmax")]
@@ -38,21 +38,21 @@ def _measures(source: str, *, suffix: str = "") -> List[DatasetMetric]:
 EXPECTED = {**EMPTY, "bsum": None, "bmax": None}
 
 LOCATIONS: Dict[str, Callable[[], object]] = {
-    "local": lambda: orders_q(dimensions=["region"], measures=_measures("amount"), filters=WEST),
+    "local": lambda: orders_q(dimensions=["region"], measures=_metrics("amount"), filters=WEST),
     "partition": lambda: orders_q(
-        dimensions=["region", "status"], measures=_measures("amount", suffix=", partition_by=region"), filters=WEST,
+        dimensions=["region", "status"], measures=_metrics("amount", suffix=", partition_by=region"), filters=WEST,
     ),
     "window": lambda: orders_q(
-        time_dimensions=month_td(), measures=_measures("amount", suffix=", window='30d'"), filters=WEST,
+        time_dimensions=month_td(), measures=_metrics("amount", suffix=", window='30d'"), filters=WEST,
     ),
-    "cross_model": lambda: orders_q(measures=_measures("customers.score")),
+    "cross_model": lambda: orders_q(measures=_metrics("customers.score")),
     "stage": lambda: [
         {"name": "s1", "population": "orders", "dimensions": ["region", "status"],
          "metrics": [{"expression": "sum(amount)", "name": "x"}]},
-        {"population": "s1", "dimensions": ["region"], "metrics": _measures("x"), "filter": WEST},
+        {"population": "s1", "dimensions": ["region"], "metrics": _metrics("x"), "filter": WEST},
     ],
     "association": lambda: SlayerQuery.model_validate({
-        "population": "orders", "dimensions": ["region"], "metrics": _measures("customers.score"),
+        "population": "orders", "dimensions": ["region"], "metrics": _metrics("customers.score"),
         "to_many_handling": "associate",
     }),
 }

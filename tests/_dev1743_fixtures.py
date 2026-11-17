@@ -79,7 +79,7 @@ def chain_orders() -> SlayerDataset:
     )
 
 
-def chain_models() -> List[SlayerDataset]:
+def chain_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` order (host first, as ``_engine_generate`` wants)."""
     return [chain_orders(), chain_customers(), chain_regions()]
 
@@ -113,7 +113,7 @@ def dunder_target_host() -> SlayerDataset:
     )
 
 
-def dunder_target_models() -> List[SlayerDataset]:
+def dunder_target_datasets() -> List[SlayerDataset]:
     return [dunder_target_host(), dunder_target()]
 
 
@@ -165,7 +165,7 @@ def ai_host() -> SlayerDataset:
     )
 
 
-def ambiguity_impossible_models() -> List[SlayerDataset]:
+def ambiguity_impossible_datasets() -> List[SlayerDataset]:
     return [ai_host(), ai_a(), ai_b(), ai_a__b()]
 
 
@@ -224,7 +224,7 @@ def long_subscription() -> SlayerDataset:
     )
 
 
-def long_chain_models() -> List[SlayerDataset]:
+def long_chain_datasets() -> List[SlayerDataset]:
     """Host-first: subscription → customer → consumer → household."""
     return [long_subscription(), long_customer(), long_consumer(), long_household()]
 
@@ -241,10 +241,10 @@ def datasource(dialect: str = "postgres") -> DatasourceConfig:
 
 __all__ = [
     "DS",
-    "chain_models", "chain_orders", "chain_customers", "chain_regions",
-    "dunder_target_models", "dunder_target", "dunder_target_host",
-    "ambiguity_impossible_models", "ai_host", "ai_a", "ai_b", "ai_a__b",
-    "long_chain_models", "long_subscription", "LONG_DOTTED_PATH",
+    "chain_datasets", "chain_orders", "chain_customers", "chain_regions",
+    "dunder_target_datasets", "dunder_target", "dunder_target_host",
+    "ambiguity_impossible_datasets", "ai_host", "ai_a", "ai_b", "ai_a__b",
+    "long_chain_datasets", "long_subscription", "LONG_DOTTED_PATH",
     "LONG_NAIVE_ALIAS",
     "datasource",
 ]

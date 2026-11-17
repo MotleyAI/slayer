@@ -159,16 +159,16 @@ def by_name(result: ConversionResult) -> dict[str, SlayerDataset]:
     return {model.name: model for model in result.datasets}
 
 
-def cols(model: SlayerDataset) -> dict[str, DatasetField]:
-    return {c.name: c for c in model.fields}
+def cols(dataset: SlayerDataset) -> dict[str, DatasetField]:
+    return {c.name: c for c in dataset.fields}
 
 
-def visible(model: SlayerDataset) -> set[str]:
-    return {c.name for c in model.fields if not c.hidden}
+def visible(dataset: SlayerDataset) -> set[str]:
+    return {c.name for c in dataset.fields if not c.hidden}
 
 
-def hidden(model: SlayerDataset) -> list[DatasetField]:
-    return [c for c in model.fields if c.hidden]
+def hidden(dataset: SlayerDataset) -> list[DatasetField]:
+    return [c for c in dataset.fields if c.hidden]
 
 
 def entries(result: ConversionResult) -> list[ConversionWarning]:
@@ -189,16 +189,16 @@ def unconverted(result: ConversionResult, metric: str) -> bool:
     return not on_a_model and any(e.metric_name == metric for e in result.unconverted_metrics)
 
 
-def measure_home(result: ConversionResult, measure: str) -> SlayerDataset:
-    homes = [model for model in result.datasets if any(meas.name == measure for meas in model.metrics)]
-    assert len(homes) == 1, f"measure {measure!r} on {[h.name for h in homes]}"
+def metric_home(result: ConversionResult, metric: str) -> SlayerDataset:
+    homes = [model for model in result.datasets if any(meas.name == metric for meas in model.metrics)]
+    assert len(homes) == 1, f"measure {metric!r} on {[h.name for h in homes]}"
     return homes[0]
 
 
 async def query(*, result: ConversionResult, db: Path, payload: dict[str, Any],
                 dialect: str = "duckdb") -> list[dict[str, Any]]:
     """Save the imported models over ``db`` and run one query, disposing every engine."""
-    engine = await build_exec_engine(str(db), dialect=dialect, models=result.datasets, datasource=DATASOURCE)
+    engine = await build_exec_engine(str(db), dialect=dialect, datasets=result.datasets, datasource=DATASOURCE)
     try:
         response = await engine.execute(payload)
     finally:
@@ -207,10 +207,10 @@ async def query(*, result: ConversionResult, db: Path, payload: dict[str, Any],
     return response.data
 
 
-async def scalar(*, result: ConversionResult, db: Path, model: str, formula: str,
+async def scalar(*, result: ConversionResult, db: Path, dataset: str, expression: str,
                  dialect: str = "duckdb") -> Any:
     """The single value of ``formula`` over ``model``."""
     rows = await query(result=result, db=db, dialect=dialect,
-                       payload={"population": model, "metrics": [{"expression": formula, "name": "v"}]})
+                       payload={"population": dataset, "metrics": [{"expression": expression, "name": "v"}]})
     assert len(rows) == 1
-    return rows[0][f"{model}.v"]
+    return rows[0][f"{dataset}.v"]

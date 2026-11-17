@@ -26,11 +26,11 @@ from tests._dev2046_fixtures import (
     as_bool,
     by_dim,
     by_month,
-    customers_model,
+    customers_dataset,
     m,
     make_exec_engine,
     month_td,
-    orders_model,
+    orders_dataset,
     orders_q,
     seed_sqlite,
     single,
@@ -181,7 +181,7 @@ class TestComposition:
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "customers", "dimensions": ["name"], "metrics": [m("sum(orders.flag)")],
         }))
-        values = by_dim(resp, "name", model="customers")
+        values = by_dim(resp, "name", dataset="customers")
         assert values == CROSS_MODEL_FLAG_SUM_BY_NAME
         assert not any(isinstance(v, bool) for v in values.values())
 
@@ -238,11 +238,11 @@ class TestComposition:
 class TestGates:
     async def test_avg_allowed_by_default_after_validation(self) -> None:
         """Scenario: a BOOLEAN column without allowed_aggregations validates and serves avg."""
-        models = [orders_model(), customers_model()]
+        models = [orders_dataset(), customers_dataset()]
         flag = models[0].get_field("flag")
         assert flag is not None
         assert flag.allowed_aggregations is None
-        async with seeded_exec_engine(dialect="sqlite", seed=seed_sqlite, models=models, validate=True) as (engine, _):
+        async with seeded_exec_engine(dialect="sqlite", seed=seed_sqlite, datasets=models, validate=True) as (engine, _):
             resp = await engine.execute(orders_q(measures=[m("avg(flag)")]))
             assert _num(single(resp)) == pytest.approx(FLAG_TOTALS["avg"])
 

@@ -30,10 +30,10 @@ def integer_orders() -> SlayerDataset:
     )
 
 
-def _sql(*, model, measures, referenced_models=(), **query_kwargs):
-    bundle = ResolvedSourceBundle(dialect="duckdb", population=model, referenced_datasets=list(referenced_models))
+def _sql(*, dataset, metrics, referenced_datasets=(), **query_kwargs):
+    bundle = ResolvedSourceBundle(dialect="duckdb", population=dataset, referenced_datasets=list(referenced_datasets))
     planned = plan_query(
-        query=SlayerQuery.model_validate({"population": "orders", "metrics": measures, **query_kwargs}),
+        query=SlayerQuery.model_validate({"population": "orders", "metrics": metrics, **query_kwargs}),
         bundle=bundle,
     )
     return generate_from_planned(planned_query=planned, bundle=bundle, dialect="duckdb"), planned
@@ -53,7 +53,7 @@ def _sql(*, model, measures, referenced_models=(), **query_kwargs):
     ],
 )
 def test_inferred_integer_aggregate_preserves_native_range(integer_orders: SlayerDataset, sql_type, amount, aggregation, expected):
-    sql, planned = _sql(model=integer_orders, measures=[f"{aggregation}(amount)"])
+    sql, planned = _sql(dataset=integer_orders, metrics=[f"{aggregation}(amount)"])
     # first/last desugar onto the regroup primitive: their public
     # slot is ROW-phase; the other aggregations keep an AGGREGATE-phase slot.
     slot = next(
@@ -77,7 +77,7 @@ def test_inferred_integer_aggregate_preserves_native_range(integer_orders: Slaye
     [{"formula": "sum(amount)", "type": "INT"}, "as_int"],
 )
 def test_explicit_integer_measure_casts_to_64_bit(integer_orders: SlayerDataset, measure):
-    sql, _ = _sql(model=integer_orders, measures=[measure])
+    sql, _ = _sql(dataset=integer_orders, metrics=[measure])
     assert "CAST(SUM(orders.amount) AS BIGINT)" in sql
     with duckdb.connect() as connection:
         connection.execute("CREATE TABLE orders (id INT, amount INT)")
@@ -95,8 +95,8 @@ def test_explicit_integer_measure_casts_to_64_bit(integer_orders: SlayerDataset,
 )
 def test_integer_range_survives_window_and_shift_paths(integer_orders: SlayerDataset, formula, expected):
     sql, _ = _sql(
-        model=integer_orders,
-        measures=[{"formula": formula, "name": "total"}],
+        dataset=integer_orders,
+        metrics=[{"formula": formula, "name": "total"}],
         time_dimensions=[{"dimension": "created_at", "granularity": "day"}],
     )
     with duckdb.connect() as connection:
@@ -124,9 +124,9 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDa
     if explicit:
         measure["type"] = "INT"
     sql, _ = _sql(
-        model=integer_orders,
-        referenced_models=[customers],
-        measures=[measure],
+        dataset=integer_orders,
+        referenced_datasets=[customers],
+        metrics=[measure],
         dimensions=["created_at"] if reroot else [],
     )
     with duckdb.connect() as connection:
@@ -142,7 +142,7 @@ def test_partitioned_integer_aggregate_preserves_cast_intent(integer_orders: Sla
     measure = {"formula": "sum(amount, partition_by=created_at)", "name": "total"}
     if explicit:
         measure["type"] = "INT"
-    sql, _ = _sql(model=integer_orders, measures=[measure], dimensions=["id", "created_at"])
+    sql, _ = _sql(dataset=integer_orders, metrics=[measure], dimensions=["id", "created_at"])
     with duckdb.connect() as connection:
         connection.execute("CREATE TABLE orders (id INT, amount INT, created_at TIMESTAMP)")
         connection.execute("INSERT INTO orders VALUES (1, 2000000000, '2024-01-01'), (2, 2000000000, '2024-01-01')")
@@ -152,7 +152,7 @@ def test_partitioned_integer_aggregate_preserves_cast_intent(integer_orders: Sla
 
 @pytest.mark.parametrize("values,expected", [([], None), ([None], None), ([None, 4_000_000_001], 4_000_000_001)])
 def test_inferred_integer_sum_preserves_null_and_empty_semantics(integer_orders: SlayerDataset, values, expected):
-    sql, _ = _sql(model=integer_orders, measures=["sum(amount)"])
+    sql, _ = _sql(dataset=integer_orders, metrics=["sum(amount)"])
     with duckdb.connect() as connection:
         connection.execute("CREATE TABLE orders (amount BIGINT)")
         for value in values:
@@ -161,6 +161,6 @@ def test_inferred_integer_sum_preserves_null_and_empty_semantics(integer_orders:
 
 
 def test_query_type_override_wins_over_saved_integer_type(integer_orders: SlayerDataset):
-    sql, planned = _sql(model=integer_orders, measures=[{"formula": "as_int", "type": "DOUBLE"}])
+    sql, planned = _sql(dataset=integer_orders, metrics=[{"formula": "as_int", "type": "DOUBLE"}])
     assert planned.aggregate_slots[0].type is DataType.DOUBLE
     assert "CAST(SUM(orders.amount) AS DOUBLE)" in sql

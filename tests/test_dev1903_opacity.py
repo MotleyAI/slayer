@@ -15,9 +15,9 @@ from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.plan import plan_query
 from slayer.ir.planned import PlannedQuery, RegroupAttachPlan
 
-from tests._dev1840_fixtures import bundle, dev1840_models, make_exec_engine
+from tests._dev1840_fixtures import bundle, dev1840_datasets, make_exec_engine
 from tests._dev1841_fixtures import DatasetMetric
-from tests._dev1900_fixtures import unparseable_derived_models
+from tests._dev1900_fixtures import unparseable_derived_datasets
 from tests._dev1919_fixtures import (
     HEADLINE,
     UNPARSE_PARAM,
@@ -50,8 +50,8 @@ CASES = [
 ]
 
 
-def _north_models() -> List[SlayerDataset]:
-    models = dev1840_models()
+def _north_datasets() -> List[SlayerDataset]:
+    models = dev1840_datasets()
     models[0].fields.append(DatasetField(
         name="north_amount", datatype=DataType.DOUBLE, sql="amount",
         filter="customers.regions.name = 'North'"))
@@ -66,23 +66,23 @@ async def orders_engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def north_engine(request):
-    async for engine in make_exec_engine(request, models=_north_models()):
+    async for engine in make_exec_engine(request, datasets=_north_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unparse_engine(request):
-    async for engine in make_exec_engine(request, models=unparseable_derived_models()):
+    async for engine in make_exec_engine(request, datasets=unparseable_derived_datasets()):
         yield engine
 
 
-def _q(formula: str, mode=None):
+def _q(expression: str, mode=None):
     return mode_q(mode, dimensions=["status"],
-                  measures=[DatasetMetric(expression=formula, name="w")])
+                  measures=[DatasetMetric(expression=expression, name="w")])
 
 
-def _plan(formula: str, models=None, mode=None):
-    return plan_query(query=_q(formula, mode), bundle=bundle(models))
+def _plan(expression: str, datasets=None, mode=None):
+    return plan_query(query=_q(expression, mode), bundle=bundle(datasets))
 
 
 def _host_rooted_wrapping(planned: PlannedQuery, agg: str) -> list[RegroupAttachPlan]:
@@ -122,7 +122,7 @@ class TestOwnClosureStillJudged:
     def test_outer_own_filter_crossing_keeps_host_rooted_producer(self):
         """A ``Column.filter`` riding the outer's own ``ColumnSqlKey`` source still
         crosses: opacity covers attached inputs only."""
-        planned = _plan(NORTH_OUTER, models=_north_models())
+        planned = _plan(NORTH_OUTER, datasets=_north_datasets())
         assert len(_host_rooted_wrapping(planned, "sum")) == 1
 
     async def test_outer_own_filter_crossing_values(self, north_engine):
@@ -132,7 +132,7 @@ class TestOwnClosureStillJudged:
 
     def test_input_own_filter_crossing_is_the_inputs_business(self):
         _assert_inline_with_row_attach(
-            _plan(NORTH_INNER, models=_north_models()),
+            _plan(NORTH_INNER, datasets=_north_datasets()),
             agg="weighted_avg", input_kind=AggregateKey)
 
     async def test_input_own_filter_crossing_values(self, north_engine):
@@ -167,6 +167,6 @@ class TestHostLocusWrap:
         assert [a.attach_phase for a in sub.regroup_attach_plans] == ["row"]
 
     def test_association_wrap_safety_check_fires(self):
-        models = unparseable_derived_models()
+        models = unparseable_derived_datasets()
         with pytest.raises(ValueError, match="no supported dialect can analyse"):
-            _plan(UNPARSE_PARAM, models=models, mode="associate")
+            _plan(UNPARSE_PARAM, datasets=models, mode="associate")

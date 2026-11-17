@@ -42,7 +42,7 @@ def _seed(db_path: str) -> None:
         )
 
 
-def _model(formula: str, *, name: str = "orders", data_source: str = _DS,
+def _dataset(expression: str, *, name: str = "orders", data_source: str = _DS,
            agg: str = "custom_agg", sql: str | None = None) -> SlayerDataset:
     return SlayerDataset(
         name=name,
@@ -53,7 +53,7 @@ def _model(formula: str, *, name: str = "orders", data_source: str = _DS,
             DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
             DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
-        aggregations=[Aggregation(name=agg, expression=formula)],
+        aggregations=[Aggregation(name=agg, expression=expression)],
     )
 
 
@@ -73,7 +73,7 @@ async def seeded(tmp_path: Path) -> AsyncIterator[tuple[SlayerQueryEngine, YAMLS
 class TestEngineCheck:
     async def test_unparseable_formula_rejected_naming_model_and_aggregation(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
-        model = _model(_BROKEN)
+        model = _dataset(_BROKEN)
         with pytest.raises(SlayerError) as ei:
             await engine.save_dataset(model)
         assert "orders" in str(ei.value)
@@ -82,27 +82,27 @@ class TestEngineCheck:
 
     async def test_qualifier_position_placeholder_rejected(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
-        model = _model("SUM({t}.amount)")
+        model = _dataset("SUM({t}.amount)")
         with pytest.raises(SlayerError, match="custom_agg"):
             await engine.save_dataset(model)
         assert await store.get_dataset("orders", data_source=_DS) is None
 
     async def test_query_time_only_placeholder_accepted(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
-        await engine.save_dataset(_model("SUM({value} * {scale})"))
+        await engine.save_dataset(_dataset("SUM({value} * {scale})"))
         assert await store.get_dataset("orders", data_source=_DS) is not None
 
     async def test_formula_without_value_accepted(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
-        await engine.save_dataset(_model("COUNT(*)"))
+        await engine.save_dataset(_dataset("COUNT(*)"))
         assert await store.get_dataset("orders", data_source=_DS) is not None
 
     async def test_unresolvable_datasource_uses_generic_dialect(self, seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
         engine, store = seeded
-        model = _model(_BROKEN, data_source="nowhere")
+        model = _dataset(_BROKEN, data_source="nowhere")
         with pytest.raises(SlayerError, match="custom_agg"):
             await engine.save_dataset(model)
-        await engine.save_dataset(_model("SUM({value})", data_source="nowhere"))
+        await engine.save_dataset(_dataset("SUM({value})", data_source="nowhere"))
         assert await store.get_dataset("orders", data_source="nowhere") is not None
 
     async def test_datasource_dialect_is_used(self, tmp_path: Path) -> None:
@@ -112,7 +112,7 @@ class TestEngineCheck:
         )
         engine = SlayerQueryEngine(storage=store)
         try:
-            await engine.save_dataset(_model(
+            await engine.save_dataset(_dataset(
                 "SUM({value}) + STRUCT_EXTRACT({'a': 1}, 'a')", data_source="duck",
             ))
         finally:
@@ -138,7 +138,7 @@ class TestEngineCheck:
 
         monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy_exec)
         monkeypatch.setattr(YAMLStorage, "save_dataset", _spy_save)
-        model = _model(_BROKEN, sql="SELECT id, amount FROM orders")
+        model = _dataset(_BROKEN, sql="SELECT id, amount FROM orders")
         with pytest.raises(SlayerError):
             await engine.save_dataset(model)
         assert executed == []
@@ -188,7 +188,7 @@ class TestEngineCheck:
 
 
 def _with(agg: Aggregation, *, data_source: str = _DS) -> SlayerDataset:
-    return _model("SUM({value})", data_source=data_source).model_copy(update={"aggregations": [agg]})
+    return _dataset("SUM({value})", data_source=data_source).model_copy(update={"aggregations": [agg]})
 
 
 def _p(*names: str) -> list[AggregationParam]:
@@ -255,7 +255,7 @@ def rest(seeded) -> tuple[TestClient, YAMLStorage]:
 class TestRest:
     async def test_create_rejected(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, store = rest
-        resp = client.post("/models", json=_model(_BROKEN).model_dump(mode="json"))
+        resp = client.post("/models", json=_dataset(_BROKEN).model_dump(mode="json"))
         assert resp.status_code == 400
         assert "orders" in resp.json()["detail"]
         assert "custom_agg" in resp.json()["detail"]
@@ -263,9 +263,9 @@ class TestRest:
 
     async def test_update_rejected_leaves_original(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, store = rest
-        ok = client.post("/models", json=_model("SUM({value})").model_dump(mode="json"))
+        ok = client.post("/models", json=_dataset("SUM({value})").model_dump(mode="json"))
         assert ok.status_code == 200
-        resp = client.put("/models/orders", json=_model(_BROKEN).model_dump(mode="json"))
+        resp = client.put("/models/orders", json=_dataset(_BROKEN).model_dump(mode="json"))
         assert resp.status_code == 400
         kept = await store.get_dataset("orders", data_source=_DS)
         assert kept is not None
@@ -282,7 +282,7 @@ class TestRest:
 
     async def test_non_parameter_query_argument_is_a_comparison_and_400(self, rest) -> None:
         client, _store = rest
-        assert client.post("/models", json=_model("SUM({value})").model_dump(mode="json")).status_code == 200
+        assert client.post("/models", json=_dataset("SUM({value})").model_dump(mode="json")).status_code == 200
 
         def detail(formula: str) -> str:
             resp = client.post("/query", json={"population": "orders", "metrics": [{"expression": formula, "name": "m"}]})
@@ -303,7 +303,7 @@ class TestCli:
     ) -> None:
         _engine, store = seeded
         path = tmp_path / "m.yaml"
-        path.write_text(yaml.safe_dump(_model(_BROKEN).model_dump(mode="json", exclude_none=True)))
+        path.write_text(yaml.safe_dump(_dataset(_BROKEN).model_dump(mode="json", exclude_none=True)))
         monkeypatch.setattr(
             sys, "argv", ["slayer", "models", "--storage", store.base_dir, "create", str(path)],
         )
@@ -371,7 +371,7 @@ class TestMcp:
 
     async def test_edit_model_broken_formula_leaves_original(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, engine, store = mcp
-        await engine.save_dataset(_model("SUM({value})"))
+        await engine.save_dataset(_dataset("SUM({value})"))
         out = await _call(server=server, name="edit_model", arguments={
             "model_name": "orders", "data_source": _DS,
             "aggregations": [{"name": "custom_agg", "formula": _BROKEN}],
@@ -422,7 +422,7 @@ def test_v11_param_named_value_is_dropped_on_load() -> None:
 async def test_direct_storage_save_checks_aggregations(seeded: tuple[SlayerQueryEngine, YAMLStorage]) -> None:
     # CLI importers (dbt, Cube, OSI) persist through storage.save_model directly.
     _engine, store = seeded
-    model = _model("SUM({value}) * {k}").model_copy(update={"aggregations": [Aggregation.model_validate({
+    model = _dataset("SUM({value}) * {k}").model_copy(update={"aggregations": [Aggregation.model_validate({
         "name": "custom_agg", "expression": "SUM({value}) * {k}",
         "params": [{"name": "k", "sql": "2"}, {"name": "unused", "sql": "1"}],
     })]})

@@ -302,10 +302,10 @@ def _skip_labels(report) -> list[str]:
     return [s.table_name for s in report.skipped]
 
 
-async def _query_count(storage: YAMLStorage, model_name: str) -> int:
+async def _query_count(storage: YAMLStorage, dataset_name: str) -> int:
     engine = SlayerQueryEngine(storage=storage)
     resp = await engine.execute(
-        SlayerQuery.model_validate({"population": model_name, "metrics": [{"expression": "count(*)", "name": "n"}]})
+        SlayerQuery.model_validate({"population": dataset_name, "metrics": [{"expression": "count(*)", "name": "n"}]})
     )
     assert resp.row_count == 1, resp.data
     return next(iter(resp.data[0].values()))
@@ -952,9 +952,9 @@ class TestCrossSchemaMergeGuard:
 
 
 class TestValidateModels:
-    async def _validate(self, ds, models):
+    async def _validate(self, ds, datasets):
         async with _client(ds) as client:
-            return await validate_datasource(datasource=ds, datasets=models, client=client)
+            return await validate_datasource(datasource=ds, datasets=datasets, client=client)
 
     async def test_no_whole_model_delete_after_multi_schema_ingest(
         self, basic_db, tmp_path

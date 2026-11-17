@@ -259,4 +259,4 @@ class TestNamingCollision:
             ],
         )
         with pytest.raises(ValueError):
-            await _engine_generate(query=q, model=model, dialect="duckdb", validate=False)
+            await _engine_generate(query=q, dataset=model, dialect="duckdb", validate=False)

@@ -15,7 +15,7 @@ from slayer.engine.binding import _name_suggestion
 from tests._engine_helpers import _engine_generate
 
 
-def _orders_model(measures=None) -> SlayerDataset:
+def _orders_dataset(metrics=None) -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -26,12 +26,12 @@ def _orders_model(measures=None) -> SlayerDataset:
             DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
             DatasetField(name="tax", sql="tax_amount", datatype=DataType.DOUBLE),
         ],
-        metrics=measures or [],
+        metrics=metrics or [],
     )
 
 
-async def _generate(query: SlayerQuery, model: SlayerDataset) -> str:
-    return await _engine_generate(query=query, model=model)
+async def _generate(query: SlayerQuery, dataset: SlayerDataset) -> str:
+    return await _engine_generate(query=query, dataset=dataset)
 
 
 class TestNamedMeasureSQL:
@@ -40,10 +40,10 @@ class TestNamedMeasureSQL:
         ``{formula: "revenue:sum / *:count"}``.
         """
         formula = "sum(revenue) / count(*)"
-        with_saved = _orders_model(
-            measures=[DatasetMetric(name="aov", expression=formula)]
+        with_saved = _orders_dataset(
+            metrics=[DatasetMetric(name="aov", expression=formula)]
         )
-        inline = _orders_model()
+        inline = _orders_dataset()
 
         saved_query = SlayerQuery.model_validate({
             "population": "orders",
@@ -61,10 +61,10 @@ class TestNamedMeasureSQL:
     async def test_in_transform(self) -> None:
         """``cumsum(aov)`` matches ``cumsum(sum(revenue) / count(*))``."""
         formula = "sum(revenue) / count(*)"
-        with_saved = _orders_model(
-            measures=[DatasetMetric(name="aov", expression=formula)]
+        with_saved = _orders_dataset(
+            metrics=[DatasetMetric(name="aov", expression=formula)]
         )
-        inline = _orders_model()
+        inline = _orders_dataset()
 
         # cumsum needs a time dimension — add a dummy one for both
         with_saved.fields.append(
@@ -92,10 +92,10 @@ class TestNamedMeasureSQL:
     async def test_in_arithmetic(self) -> None:
         """``aov * 1.1`` matches inlined."""
         formula = "sum(revenue)"
-        with_saved = _orders_model(
-            measures=[DatasetMetric(name="aov", expression=formula)]
+        with_saved = _orders_dataset(
+            metrics=[DatasetMetric(name="aov", expression=formula)]
         )
-        inline = _orders_model()
+        inline = _orders_dataset()
 
         saved_query = SlayerQuery.model_validate({
             "population": "orders",
@@ -112,13 +112,13 @@ class TestNamedMeasureSQL:
 
     async def test_chained_named_measures(self) -> None:
         """``b → a → revenue:sum`` resolves transitively."""
-        chained = _orders_model(
-            measures=[
+        chained = _orders_dataset(
+            metrics=[
                 DatasetMetric(name="a", expression="sum(revenue)"),
                 DatasetMetric(name="b", expression="a"),
             ]
         )
-        inline = _orders_model()
+        inline = _orders_dataset()
 
         chained_query = SlayerQuery.model_validate({
             "population": "orders",
@@ -137,8 +137,8 @@ class TestNamedMeasureSQL:
         """A cyclic chain in a model's saved measures raises with the chain
         in the error message when a query references it.
         """
-        model = _orders_model(
-            measures=[
+        model = _orders_dataset(
+            metrics=[
                 DatasetMetric(name="a", expression="b"),
                 DatasetMetric(name="b", expression="a"),
             ]
@@ -157,8 +157,8 @@ class TestNamedMeasureSQL:
         """A bare name that is neither a saved measure nor a column still
         produces the existing helpful error.
         """
-        model = _orders_model(
-            measures=[DatasetMetric(name="aov", expression="sum(revenue)")]
+        model = _orders_dataset(
+            metrics=[DatasetMetric(name="aov", expression="sum(revenue)")]
         )
         query = SlayerQuery.model_validate({
             "population": "orders",
@@ -171,8 +171,8 @@ class TestNamedMeasureSQL:
             await _generate(query, model)
 
     async def test_near_miss_bare_name_suggests_the_saved_measure(self) -> None:
-        model = _orders_model(
-            measures=[DatasetMetric(name="aov_net", expression="sum(revenue)")]
+        model = _orders_dataset(
+            metrics=[DatasetMetric(name="aov_net", expression="sum(revenue)")]
         )
         query = SlayerQuery.model_validate({
             "population": "orders",
@@ -183,8 +183,8 @@ class TestNamedMeasureSQL:
             await _generate(query, model)
 
     async def test_aggregating_a_saved_measure_says_to_drop_the_suffix(self) -> None:
-        model = _orders_model(
-            measures=[DatasetMetric(name="aov", expression="sum(revenue)")]
+        model = _orders_dataset(
+            metrics=[DatasetMetric(name="aov", expression="sum(revenue)")]
         )
         query = SlayerQuery.model_validate({
             "population": "orders",
@@ -197,7 +197,7 @@ class TestNamedMeasureSQL:
             await _generate(query, model)
 
     async def test_bare_column_in_expression_asks_for_an_aggregation(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"expression": "round(revenue, 2)", "name": "result"}],
@@ -211,8 +211,8 @@ class TestNamedMeasureSQL:
     def test_name_suggestion_skips_unnamed_measures(self) -> None:
         # Tested directly: the full pipeline rejects unnamed measures at model
         # re-validation, so they only reach the helper via a raw mutation.
-        model = _orders_model(
-            measures=[DatasetMetric(name="aov", expression="sum(revenue)")]
+        model = _orders_dataset(
+            metrics=[DatasetMetric(name="aov", expression="sum(revenue)")]
         )
         model.metrics.append(DatasetMetric(expression="avg(revenue)"))
         assert (
@@ -221,7 +221,7 @@ class TestNamedMeasureSQL:
         )
 
     async def test_unknown_column_suggests_a_close_column(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery.model_validate({
             "population": "orders",
             "metrics": [{"expression": "sum(revenu)", "name": "result"}],
@@ -237,8 +237,8 @@ class TestNamedMeasureSQL:
         raises before the query can run. Replaces the legacy
         enrichment-time guard.
         """
-        model = _orders_model(
-            measures=[DatasetMetric(name="aov", expression="sum(revenue)")]
+        model = _orders_dataset(
+            metrics=[DatasetMetric(name="aov", expression="sum(revenue)")]
         )
         # Bypass the model validator by appending after construction.
         model.metrics.append(DatasetMetric(name="aov", expression="avg(revenue)"))
@@ -259,8 +259,8 @@ class TestBareNamedMeasureAliasing:
     """
 
     async def test_select_alias_uses_measure_name(self) -> None:
-        model = _orders_model(
-            measures=[DatasetMetric(name="rev_total", expression="sum(revenue)")]
+        model = _orders_dataset(
+            metrics=[DatasetMetric(name="rev_total", expression="sum(revenue)")]
         )
         query = SlayerQuery(
             population="orders",
@@ -273,8 +273,8 @@ class TestBareNamedMeasureAliasing:
 
     async def test_order_by_resolves_against_measure_name(self) -> None:
         """The original bug: SELECT aliased by formula, ORDER BY by name."""
-        model = _orders_model(
-            measures=[
+        model = _orders_dataset(
+            metrics=[
                 DatasetMetric(name="companies_count", expression="count_distinct(revenue)"),
             ]
         )

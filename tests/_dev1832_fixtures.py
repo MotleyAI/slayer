@@ -44,18 +44,18 @@ from tests._dev1840_fixtures import rows_by
 from tests._dev1847_fixtures import (
     AVG_CITY_TOTAL_BY_REGION,
     MIXED_SUM_BY_REGION,
-    sales_model,
+    sales_dataset,
 )
 from tests._dev1900_fixtures import (
-    dev1900_models,
-    unparseable_derived_models,
+    dev1900_datasets,
+    unparseable_derived_datasets,
 )
 from tests._engine_helpers import _engine_generate
 
 # --------------------------------------------------------------------------- #
 # Models.
 # --------------------------------------------------------------------------- #
-def monthly_model() -> SlayerDataset:
+def monthly_dataset() -> SlayerDataset:
     """One row per (region, month); a clean running-total substrate."""
     return SlayerDataset(
         name="monthly", data_source="test", sql_table="monthly",
@@ -69,7 +69,7 @@ def monthly_model() -> SlayerDataset:
     )
 
 
-def monthly_multi_model() -> SlayerDataset:
+def monthly_multi_dataset() -> SlayerDataset:
     """Like ``monthly`` but TWO rows per (region, month) — the substrate that
     separates a second-order aggregation's count over operand CELLS (Axiom 2.4,
     no row leaf → home is the operand dataset) from a naive count over base rows."""
@@ -85,15 +85,15 @@ def monthly_multi_model() -> SlayerDataset:
     )
 
 
-def _extend_graph_a(models: List[SlayerDataset]) -> None:
+def _extend_graph_a(datasets: List[SlayerDataset]) -> None:
     """Add DEV-1832's columns/aggregations to the DEV-1900 graph in place."""
-    orders = next(m for m in models if m.name == "orders")
+    orders = next(m for m in datasets if m.name == "orders")
     orders.fields.extend([
         DatasetField(name="cost", datatype=DataType.DOUBLE),
         DatasetField(name="quantity", datatype=DataType.DOUBLE),
         DatasetField(name="weight", datatype=DataType.DOUBLE),
     ])
-    cust = next(m for m in models if m.name == "customers")
+    cust = next(m for m in datasets if m.name == "customers")
     cust.fields.extend([
         DatasetField(name="discount", datatype=DataType.DOUBLE),
         # Filtered joined-model leaf: spend restricted to North customers.
@@ -114,20 +114,20 @@ def _extend_graph_a(models: List[SlayerDataset]) -> None:
         params=[AggregationParam(name="weight", sql="spend * 2")]))
 
 
-def dev1832_models() -> List[SlayerDataset]:
+def dev1832_datasets() -> List[SlayerDataset]:
     """Graph A (extended DEV-1900) + the ``sales``, ``monthly`` and
     ``monthly_multi`` graphs."""
-    models = dev1900_models()
+    models = dev1900_datasets()
     _extend_graph_a(models)
-    return [*models, sales_model(), monthly_model(), monthly_multi_model()]
+    return [*models, sales_dataset(), monthly_dataset(), monthly_multi_dataset()]
 
 
-def dev1832_unparseable_models() -> List[SlayerDataset]:
+def dev1832_unparseable_datasets() -> List[SlayerDataset]:
     """Graph A with ``regions.unparseable`` (no dialect parses it) so an
     expression leaf naming it fails the analyzability check."""
-    models = unparseable_derived_models()
+    models = unparseable_derived_datasets()
     _extend_graph_a(models)
-    return [*models, sales_model(), monthly_model(), monthly_multi_model()]
+    return [*models, sales_dataset(), monthly_dataset(), monthly_multi_dataset()]
 
 
 # --------------------------------------------------------------------------- #
@@ -163,22 +163,22 @@ def month_td() -> List[TimeDimension]:
                           granularity=TimeGranularity.MONTH)]
 
 
-def bundle(models: Optional[List[SlayerDataset]] = None) -> ResolvedSourceBundle:
+def bundle(datasets: Optional[List[SlayerDataset]] = None) -> ResolvedSourceBundle:
     """A ``ResolvedSourceBundle`` rooted at the first model (default: sales,
     the plan-structure root)."""
-    models = models if models is not None else [sales_model(), *dev1832_models()]
+    datasets = datasets if datasets is not None else [sales_dataset(), *dev1832_datasets()]
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=models[0], referenced_datasets=models[1:])
+        population=datasets[0], referenced_datasets=datasets[1:])
 
 
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb",
-              models: Optional[List[SlayerDataset]] = None) -> str:
+              datasets: Optional[List[SlayerDataset]] = None) -> str:
     """Dry-run SQL for ``query`` (no seed; the fail-closed paths raise here)."""
-    models = models if models is not None else dev1832_models()
+    datasets = datasets if datasets is not None else dev1832_datasets()
     return await _engine_generate(
-        query=query, model=next(m for m in models if m.name == query.population),
-        extra_models=[m for m in models if m.name != query.population],
+        query=query, dataset=next(m for m in datasets if m.name == query.population),
+        extra_datasets=[m for m in datasets if m.name != query.population],
         dialect=dialect, validate=False)
 
 
@@ -341,7 +341,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerDataset]] = None,
+    request, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture."""
     dialect = request.param
@@ -349,7 +349,7 @@ async def make_exec_engine(
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=models if models is not None else dev1832_models(),
+        dialect=dialect, seed=seed, datasets=datasets if datasets is not None else dev1832_datasets(),
     ) as (engine, _db):
         yield engine
 
@@ -480,9 +480,9 @@ __all__ = [
     "Aggregation", "AggregationParam", "DatasetField", "FieldRef", "DataType",
     "DatasetMetric", "SlayerDataset", "SlayerQuery", "TimeDimension",
     "TimeGranularity",
-    "monthly_model", "monthly_multi_model",
-    "dev1832_models", "dev1832_unparseable_models",
-    "sales_model",
+    "monthly_dataset", "monthly_multi_dataset",
+    "dev1832_datasets", "dev1832_unparseable_datasets",
+    "sales_dataset",
     "orders_q", "cust_q", "sales_q", "monthly_q", "monthly_multi_q",
     "month_td", "bundle", "gen",
     "make_exec_engine", "rows_by", "status_key", "month_key",

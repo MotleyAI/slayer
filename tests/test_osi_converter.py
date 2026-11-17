@@ -79,9 +79,9 @@ def _reported(result) -> bool:
     return bool(result.warnings or result.unconverted_metrics)
 
 
-def _single_agg(formula: str) -> tuple[str, str]:
+def _single_agg(expression: str) -> tuple[str, str]:
     """``(agg, column)`` of a single-aggregation formula over a bare column."""
-    parsed = parse_expr(formula)
+    parsed = parse_expr(expression)
     assert isinstance(parsed, AggCall)
     assert isinstance(parsed.source, Ref)
     return parsed.agg, parsed.source.name

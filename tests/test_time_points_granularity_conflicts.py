@@ -5,11 +5,11 @@ from __future__ import annotations
 from slayer.core.models import DatasetRelationship
 from slayer.core.query import SlayerQuery
 
-from tests._time_points_fixtures import ev_model, tp_engine
+from tests._time_points_fixtures import ev_dataset, tp_engine
 
 
 async def test_two_spellings_of_one_column_warn() -> None:
-    model = ev_model(name="ev_buyer", table="ev").model_copy(update={"joins": [
+    model = ev_dataset(name="ev_buyer", table="ev").model_copy(update={"joins": [
         DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]], name="buyer"),
     ]})
     query = SlayerQuery.model_validate({

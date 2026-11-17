@@ -74,7 +74,7 @@ from tests._engine_helpers import _engine_generate, _extract_cte_body
 # --------------------------------------------------------------------------- #
 # Models — orders (host) → customers → regions.
 # --------------------------------------------------------------------------- #
-def regions_model() -> SlayerDataset:
+def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
@@ -84,7 +84,7 @@ def regions_model() -> SlayerDataset:
     )
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         default_time_dimension="signup_at",
@@ -99,7 +99,7 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def orders_model() -> SlayerDataset:
+def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
@@ -124,18 +124,18 @@ def orders_model() -> SlayerDataset:
     )
 
 
-def dev1739_models() -> List[SlayerDataset]:
+def dev1739_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
-    return [orders_model(), customers_model(), regions_model()]
+    return [orders_dataset(), customers_dataset(), regions_dataset()]
 
 
 # --------------------------------------------------------------------------- #
 # SQL-shape generation (dry-run) — for golden + scope-closed assertions.
 # --------------------------------------------------------------------------- #
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb", validate: bool = False) -> str:
-    models = dev1739_models()
+    models = dev1739_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=validate,
     )
 
@@ -220,7 +220,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1739_models()) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev1739_datasets()) as (engine, _db):
         yield engine
 
 
@@ -244,7 +244,7 @@ def approx_sum(resp, key) -> float:
 
 
 __all__ = [
-    "orders_model", "customers_model", "regions_model", "dev1739_models",
+    "orders_dataset", "customers_dataset", "regions_dataset", "dev1739_datasets",
     "gen", "month_td", "cm_cte_bodies",
     "make_exec_engine", "month_key", "rows_by", "approx_sum",
     "SlayerQuery", "DatasetMetric", "FieldRef", "TimeDimension", "TimeGranularity",

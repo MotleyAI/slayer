@@ -17,27 +17,27 @@ from slayer.engine.plan import plan_query
 from tests._dev1750_fixtures import (
     DatasetMetric,
     SlayerQuery,
-    customers_model,
-    line_items_model,
+    customers_dataset,
+    line_items_dataset,
     month_td,
-    orders_model,
-    regions_model,
+    orders_dataset,
+    regions_dataset,
 )
 
 
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=orders_model(),
-        referenced_datasets=[customers_model(), regions_model(), line_items_model()],
+        population=orders_dataset(),
+        referenced_datasets=[customers_dataset(), regions_dataset(), line_items_dataset()],
     )
 
 
-def _plan(formula: str, *, name: str = "prev"):
+def _plan(expression: str, *, name: str = "prev"):
     return plan_query(
         query=SlayerQuery(
             population="orders", time_dimensions=month_td(),
-            metrics=[DatasetMetric(expression=formula, name=name)],
+            metrics=[DatasetMetric(expression=expression, name=name)],
         ),
         bundle=_bundle(),
     )

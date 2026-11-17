@@ -115,7 +115,7 @@ SHIFTED_CUMSUM_MONTH_END = {
 }
 
 
-def daily_model() -> SlayerDataset:
+def daily_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="daily", data_source="test", sql_table="daily",
         default_time_dimension="ordered_at",
@@ -151,7 +151,7 @@ async def make_daily_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     dialect = request.param
     seed = _seed_daily_duckdb if dialect == "duckdb" else _seed_daily_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=[daily_model()],
+        dialect=dialect, seed=seed, datasets=[daily_dataset()],
     ) as (engine, _db):
         yield engine
 

@@ -84,7 +84,7 @@ def recent_table(*, today: date) -> TableSpec:
     )
 
 
-def orders_model(*, data_source: str = "test") -> SlayerDataset:
+def orders_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="created_at",
@@ -104,7 +104,7 @@ def orders_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def customers_model(*, data_source: str = "test") -> SlayerDataset:
+def customers_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
@@ -115,7 +115,7 @@ def customers_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def recent_model(*, data_source: str = "test") -> SlayerDataset:
+def recent_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="recent", sql_table="recent", data_source=data_source,
         fields=[
@@ -125,11 +125,11 @@ def recent_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def scenario_models(*, data_source: str = "test") -> list[SlayerDataset]:
+def scenario_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
     return [
-        orders_model(data_source=data_source),
-        customers_model(data_source=data_source),
-        recent_model(data_source=data_source),
+        orders_dataset(data_source=data_source),
+        customers_dataset(data_source=data_source),
+        recent_dataset(data_source=data_source),
     ]
 
 
@@ -162,7 +162,7 @@ DT = TableSpec(
 )
 
 
-def dt_model(*, data_source: str = "test") -> SlayerDataset:
+def dt_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="dt", sql_table="dt", data_source=data_source,
         fields=[
@@ -344,8 +344,8 @@ def assert_value(actual: Any, expected: Any, *, where: str) -> None:
         assert Decimal(str(actual)) == Decimal(expected), f"{where}: expected {expected}, got {actual!r}"
 
 
-def assert_case(data: list[dict[str, Any]], case: DateCase, *, model: str = "dt") -> None:
-    got = {int(r[f"{model}.id"]): r[f"{model}.v"] for r in data}
+def assert_case(data: list[dict[str, Any]], case: DateCase, *, dataset: str = "dt") -> None:
+    got = {int(r[f"{dataset}.id"]): r[f"{dataset}.v"] for r in data}
     assert set(got) == set(case.expected), f"{case.case_id}: row ids {sorted(got)}"
     for rid, expected in case.expected.items():
         assert_value(got[rid], expected, where=f"{case.case_id} id={rid}")
@@ -374,10 +374,10 @@ def seed_backend(backend: str, db_path: str, tables: Iterable[TableSpec]) -> Non
 
 @contextlib.asynccontextmanager
 async def exec_engine(
-    backend: str, *, tables: list[TableSpec], models: list[SlayerDataset],
+    backend: str, *, tables: list[TableSpec], datasets: list[SlayerDataset],
 ) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(
-        dialect=backend, seed=lambda p: seed_backend(backend, p, tables), models=models,
+        dialect=backend, seed=lambda p: seed_backend(backend, p, tables), datasets=datasets,
     ) as (engine, _db):
         yield engine
 
@@ -459,8 +459,8 @@ def server_seed_statements(backend: str, *, today: date) -> list[str]:
     return out
 
 
-def all_models(*, data_source: str) -> list[SlayerDataset]:
-    return [dt_model(data_source=data_source), *scenario_models(data_source=data_source)]
+def all_datasets(*, data_source: str) -> list[SlayerDataset]:
+    return [dt_dataset(data_source=data_source), *scenario_datasets(data_source=data_source)]
 
 
 async def check_server_scenarios(engine: SlayerQueryEngine) -> None:

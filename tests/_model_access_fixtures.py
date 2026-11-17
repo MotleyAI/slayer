@@ -132,7 +132,7 @@ def _pay(name: str, **extra) -> SlayerDataset:
     return SlayerDataset(name=name, sql_table="pay_runs", data_source=DS, fields=columns, relationships=[_staff_join()], **extra)
 
 
-def table_models() -> list[SlayerDataset]:
+def table_datasets() -> list[SlayerDataset]:
     """The table-backed models (saved unvalidated, in this order)."""
     hr_dept = DatasetField(name="dept_label", datatype=DataType.TEXT, sql="hr.dept")
     masked = DatasetField(name="gross_eng", datatype=DataType.DOUBLE, sql="gross", filter="hr.dept = 'eng'")
@@ -183,7 +183,7 @@ def table_models() -> list[SlayerDataset]:
     ]
 
 
-def query_backed_models() -> list[SlayerDataset]:
+def query_backed_datasets() -> list[SlayerDataset]:
     """The query-backed models (saved through the engine, in dependency order)."""
     def qb(name: str, *stages: dict) -> SlayerDataset:
         return SlayerDataset(name=name, source_queries=[SlayerQuery.model_validate(s) for s in stages])
@@ -285,11 +285,11 @@ async def access_store(*, backend: str, dialect: str, unloadable: bool = True) -
         storage = make_storage(backend=backend, base=tmp)
         ds = DatasourceConfig(name=DS, type=dialect, database=db_path)
         await storage.save_datasource(ds)
-        for model in table_models():
+        for model in table_datasets():
             await storage.save_dataset(model, _validate=False)
         engine = SlayerQueryEngine(storage=storage)
         try:
-            for model in query_backed_models():
+            for model in query_backed_datasets():
                 await engine.save_dataset(model)
             await _save_memories(storage)
             await _save_embeddings(storage)
@@ -337,6 +337,6 @@ async def outcome(awaitable) -> tuple[str, str]:
         return type(exc).__name__, str(exc)
 
 
-def model_ids(identities) -> set[str]:
+def dataset_ids(identities) -> set[str]:
     """``{name}`` of the ``DS`` identities in ``identities``."""
     return {name for ds, name in identities if ds == DS}

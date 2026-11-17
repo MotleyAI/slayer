@@ -116,10 +116,10 @@ async def test_whole_periods_default_upper_bound_uses_pin(monkeypatch: pytest.Mo
     monkeypatch.setenv("SLAYER_NOW", "2025-07-15T12:30:00")
     since_may = ["ts >= '2025-05-01'"]
     async with now_engine() as engine:
-        pinned = await monthly(engine, measures=COUNT, filters=since_may, whole_periods_only=True)
+        pinned = await monthly(engine, metrics=COUNT, filters=since_may, whole_periods_only=True)
         explicit_engine = SlayerQueryEngine(storage=engine.storage, clock=lambda: D(2025, 7, 15, 12, 30))
         try:
-            explicit = await monthly(explicit_engine, measures=COUNT, filters=since_may, whole_periods_only=True)
+            explicit = await monthly(explicit_engine, metrics=COUNT, filters=since_may, whole_periods_only=True)
         finally:
             explicit_engine.close()
     assert pinned == explicit

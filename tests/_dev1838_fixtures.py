@@ -98,7 +98,7 @@ from tests._engine_helpers import _engine_generate
 # --------------------------------------------------------------------------- #
 # Models — orders (host) → customers → {regions, segments}; orders → tags.
 # --------------------------------------------------------------------------- #
-def regions_model() -> SlayerDataset:
+def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
@@ -109,7 +109,7 @@ def regions_model() -> SlayerDataset:
     )
 
 
-def segments_model() -> SlayerDataset:
+def segments_dataset() -> SlayerDataset:
     # `code` carries NO primary_key/unique claim AND the data holds two 'a'
     # rows: the customers → segments hop is unproven and genuinely fans.
     return SlayerDataset(
@@ -123,7 +123,7 @@ def segments_model() -> SlayerDataset:
     )
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         default_time_dimension="signup_at",
@@ -143,7 +143,7 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def tags_model() -> SlayerDataset:
+def tags_dataset() -> SlayerDataset:
     # `order_id` has no PK/unique claim; orders 1 and 3 carry two tags each.
     return SlayerDataset(
         name="tags", data_source="test", sql_table="tags",
@@ -155,7 +155,7 @@ def tags_model() -> SlayerDataset:
     )
 
 
-def orders_model() -> SlayerDataset:
+def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
@@ -197,11 +197,11 @@ def orders_model() -> SlayerDataset:
     )
 
 
-def dev1838_models() -> List[SlayerDataset]:
+def dev1838_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
     return [
-        orders_model(), customers_model(), regions_model(), segments_model(),
-        tags_model(),
+        orders_dataset(), customers_dataset(), regions_dataset(), segments_dataset(),
+        tags_dataset(),
     ]
 
 
@@ -233,9 +233,9 @@ SPEND_BAND = (
 
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb",
               validate: bool = False) -> str:
-    models = dev1838_models()
+    models = dev1838_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=validate,
     )
 
@@ -387,7 +387,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1838_models()) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev1838_datasets()) as (engine, _db):
         yield engine
 
 
@@ -411,8 +411,8 @@ def broadcast_warnings(resp) -> list:
 
 
 __all__ = [
-    "orders_model", "customers_model", "regions_model", "segments_model",
-    "tags_model", "dev1838_models",
+    "orders_dataset", "customers_dataset", "regions_dataset", "segments_dataset",
+    "tags_dataset", "dev1838_datasets",
     "q", "gen", "month_td", "month_key", "rows_by", "cte_aliases",
     "broadcast_warnings",
     "BAND25", "BAND", "BAND25_OF", "SPEND_BAND",

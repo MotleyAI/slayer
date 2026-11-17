@@ -14,13 +14,13 @@ from tests._dev1737_fixtures import (
     as_temporal,
     assert_case,
     assert_value,
-    dt_model,
+    dt_dataset,
     exec_engine,
     matrix_cases,
     matrix_query,
-    orders_model,
-    customers_model,
-    scenario_models,
+    orders_dataset,
+    customers_dataset,
+    scenario_datasets,
     scenario_tables,
     sqlite_malformed_seed,
 )
@@ -33,7 +33,7 @@ CASES = matrix_cases()
 @pytest.mark.parametrize("backend", BACKENDS)
 @pytest.mark.parametrize("case", CASES, ids=[c.case_id for c in CASES])
 async def test_matrix(backend: str, case: DateCase) -> None:
-    async with exec_engine(backend, tables=[DT], models=[dt_model()]) as engine:
+    async with exec_engine(backend, tables=[DT], datasets=[dt_dataset()]) as engine:
         resp = await engine.execute(matrix_query(case))
     assert_case(resp.data, case)
 
@@ -41,7 +41,7 @@ async def test_matrix(backend: str, case: DateCase) -> None:
 @pytest.fixture(params=BACKENDS)
 async def orders_engine(request):
     today = datetime.now(timezone.utc).date()
-    async with exec_engine(request.param, tables=scenario_tables(today=today), models=scenario_models()) as engine:
+    async with exec_engine(request.param, tables=scenario_tables(today=today), datasets=scenario_datasets()) as engine:
         yield engine
 
 
@@ -55,9 +55,9 @@ async def _count(engine, *filters: str, **kw) -> int:
     return int(resp.data[0]["orders.n"])
 
 
-async def _by_id(engine, expr: str, *, model: str = "orders") -> dict[int, object]:
-    resp = await engine.execute(_q(source_model=model, dimensions=["id", {"expression": expr, "name": "v"}]))
-    return {int(r[f"{model}.id"]): r[f"{model}.v"] for r in resp.data}
+async def _by_id(engine, expr: str, *, dataset: str = "orders") -> dict[int, object]:
+    resp = await engine.execute(_q(source_model=dataset, dimensions=["id", {"expression": expr, "name": "v"}]))
+    return {int(r[f"{dataset}.id"]): r[f"{dataset}.v"] for r in resp.data}
 
 
 class TestSpecScenarios:
@@ -163,10 +163,10 @@ class TestSpecScenarios:
         assert int(resp.data[0]["recent.n"]) == 1
 
     async def test_clock_relative_sanity(self, orders_engine) -> None:
-        got = await _by_id(orders_engine, "date_diff('day', created_at, now())", model="recent")
+        got = await _by_id(orders_engine, "date_diff('day', created_at, now())", dataset="recent")
         assert got[1] in (0, 1, 2)
         assert got[2] in (39, 40, 41)
-        today = await _by_id(orders_engine, "current_date()", model="recent")
+        today = await _by_id(orders_engine, "current_date()", dataset="recent")
         today_value = as_temporal(today[1])
         assert not isinstance(today_value, datetime)
         assert isinstance(today_value, date)
@@ -202,7 +202,7 @@ class TestSpecScenarios:
 
 async def test_sqlite_malformed_stored_date_is_null() -> None:
     async with seeded_exec_engine(
-        dialect="sqlite", seed=sqlite_malformed_seed, models=[orders_model(), customers_model()],
+        dialect="sqlite", seed=sqlite_malformed_seed, datasets=[orders_dataset(), customers_dataset()],
     ) as (engine, _db):
         for expr in (
             "date_add(order_date, 1, 'month')", "date_part('year', order_date)",

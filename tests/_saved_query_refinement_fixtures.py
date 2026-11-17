@@ -62,7 +62,7 @@ MONTHLY = {"2025-01": 100.0, "2025-02": 105.0, "2025-03": 50.0}
 BY_REGION_MONTH = {("US", "2025-01"): 100.0, ("EU", "2025-02"): 105.0, ("US", "2025-03"): 50.0}
 
 
-def orders_model() -> SlayerDataset:
+def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
@@ -122,7 +122,7 @@ async def save_saved_queries(engine: SlayerQueryEngine) -> None:
 async def populate_refine_storage(storage: StorageBackend, *, db_path: str) -> None:
     """Register the seeded SQLite ``db_path``, the ``orders`` model and the saved queries in ``storage``."""
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db_path))
-    await storage.save_dataset(orders_model())
+    await storage.save_dataset(orders_dataset())
     engine = SlayerQueryEngine(storage=storage)
     try:
         await save_saved_queries(engine)
@@ -145,7 +145,7 @@ async def refine_engine(dialect: str) -> AsyncGenerator[Tuple[SlayerQueryEngine,
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=[orders_model()]) as (engine, db_path):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=[orders_dataset()]) as (engine, db_path):
         await save_saved_queries(engine)
         yield engine, db_path
 

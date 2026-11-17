@@ -15,7 +15,7 @@ from tests._dev1847_fixtures import (
     DatasetMetric,
     SlayerDataset,
     SlayerQuery,
-    dev1847_models,
+    dev1847_datasets,
     gen,
     make_exec_engine,
     reagg,
@@ -26,7 +26,7 @@ from slayer.engine.query_engine import SlayerResponse
 OUTER_AGGS = ["avg", "count", "min", "max", "median"]
 
 
-def _sq_model(outer: str) -> SlayerDataset:
+def _sq_dataset(outer: str) -> SlayerDataset:
     """Two-stage encoding of ``<outer>(sum(amount, partition_by=[city,region]))``
     grouped by region."""
     return SlayerDataset(
@@ -51,8 +51,8 @@ def _by_region_suffix(resp: SlayerResponse, suffix):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_engine(request):
-    models = dev1847_models() + [_sq_model(o) for o in OUTER_AGGS]
-    async for engine in make_exec_engine(request, models=models):
+    models = dev1847_datasets() + [_sq_dataset(o) for o in OUTER_AGGS]
+    async for engine in make_exec_engine(request, datasets=models):
         yield engine
 
 

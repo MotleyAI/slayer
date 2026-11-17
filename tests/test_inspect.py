@@ -830,7 +830,7 @@ class TestModelSamplesWithEngine:
 
 
 class TestCollectModelEntityPairsIncludeHidden:
-    def _model(self) -> SlayerDataset:
+    def _dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="m",
             sql_table="m",
@@ -843,23 +843,23 @@ class TestCollectModelEntityPairsIncludeHidden:
         )
 
     def test_default_excludes_hidden_columns(self) -> None:
-        pairs = collect_dataset_entity_pairs(dataset=self._model())
+        pairs = collect_dataset_entity_pairs(dataset=self._dataset())
         ids = {p.canonical_id for p in pairs}
         assert "mydb.m.visible" in ids
         assert "mydb.m.secret" not in ids
 
     def test_include_hidden_adds_hidden_columns(self) -> None:
-        pairs = collect_dataset_entity_pairs(dataset=self._model(), include_hidden=True)
+        pairs = collect_dataset_entity_pairs(dataset=self._dataset(), include_hidden=True)
         ids = {p.canonical_id for p in pairs}
         assert "mydb.m.secret" in ids
 
     def test_default_returns_empty_for_hidden_model(self) -> None:
-        hidden = self._model()
+        hidden = self._dataset()
         hidden.hidden = True
         assert collect_dataset_entity_pairs(dataset=hidden) == []
 
     def test_include_hidden_emits_for_hidden_model(self) -> None:
-        hidden = self._model()
+        hidden = self._dataset()
         hidden.hidden = True
         pairs = collect_dataset_entity_pairs(dataset=hidden, include_hidden=True)
         ids = {p.canonical_id for p in pairs}
@@ -897,7 +897,7 @@ class TestHiddenStaysOutOfSearch:
 # ---------------------------------------------------------------------------
 
 
-def _orders_like_model() -> SlayerDataset:
+def _orders_like_dataset() -> SlayerDataset:
     """A standalone (no-storage) ``orders`` model mirroring the seed fixture —
     columns id/amount/customer_id/big, one named measure, one aggregation, one
     join. Used to unit-test the pure skeleton helpers."""
@@ -923,7 +923,7 @@ class TestModelSkeletonHelpers:
 
     def test_render_model_skeleton_is_heading_less(self) -> None:
 
-        md = render_dataset_skeleton(dataset=_orders_like_model())
+        md = render_dataset_skeleton(dataset=_orders_like_dataset())
         # The caller prepends the `#`/`##` heading — the helper body must not.
         assert not any(line.startswith("#") for line in md.splitlines())
         assert "One row per placed order." in md
@@ -984,13 +984,13 @@ class TestModelSkeletonHelpers:
 
     def test_render_model_skeleton_truncates_description(self) -> None:
 
-        md = render_dataset_skeleton(dataset=_orders_like_model(), max_chars=4)
+        md = render_dataset_skeleton(dataset=_orders_like_dataset(), max_chars=4)
         assert "One row per placed order." not in md
         assert "Columns: " in md
 
     def test_model_skeleton_fields_shape(self) -> None:
 
-        fields = dataset_skeleton_fields(dataset=_orders_like_model())
+        fields = dataset_skeleton_fields(dataset=_orders_like_dataset())
         assert fields["name"] == "orders"
         assert fields["canonical_id"] == "mydb.orders"
         assert fields["description"] == "One row per placed order."
@@ -1046,7 +1046,7 @@ class TestModelSkeletonHelpers:
 
         # model_copy bypasses validators so we can simulate a not-yet-refined
         # (empty data_source) model and prove the guard.
-        m = _orders_like_model().model_copy(update={"data_source": ""})
+        m = _orders_like_dataset().model_copy(update={"data_source": ""})
         assert dataset_skeleton_fields(dataset=m)["canonical_id"] == "orders"
 
     def test_model_render_module_does_not_import_slayer_mcp(self) -> None:

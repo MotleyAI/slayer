@@ -17,7 +17,7 @@ from tests._dev1836_fixtures import (
     AMOUNT_BY_STATUS,
     DatasetMetric,
     make_exec_engine,
-    orders_model,
+    orders_dataset,
     q,
 )
 from slayer.core.models import SlayerDataset
@@ -30,8 +30,8 @@ async def engine(request):
         yield eng
 
 
-def _pk_names(model: SlayerDataset) -> set[str]:
-    return {c.name for c in model.fields if c.primary_key}
+def _pk_names(dataset: SlayerDataset) -> set[str]:
+    return {c.name for c in dataset.fields if c.primary_key}
 
 
 class TestStamping:
@@ -98,7 +98,7 @@ class TestStampedModelProvesJoins:
               measures=[DatasetMetric(expression="sum(amount)", name="total")]),
             "vm_grain",
         )
-        host = orders_model()
+        host = orders_dataset()
         host.name = "orders_kpi"
         host.relationships.append(DatasetRelationship(
             to="vm_grain",

@@ -15,18 +15,18 @@ def convert(project: CubeProject) -> tuple[dict[str, SlayerDataset], CubeConvers
     return {m.name: m for m in result.datasets}, result.report
 
 
-def measure(model: SlayerDataset, name: str) -> DatasetMetric:
-    m = model.get_metric(name)
-    assert m is not None, f"measure {name} missing on {model.name}"
+def metric(dataset: SlayerDataset, name: str) -> DatasetMetric:
+    m = dataset.get_metric(name)
+    assert m is not None, f"measure {name} missing on {dataset.name}"
     return m
 
 
-def column(model: SlayerDataset, name: str) -> DatasetField:
-    c = model.get_field(name)
-    assert c is not None, f"column {name} missing on {model.name}"
+def column(dataset: SlayerDataset, name: str) -> DatasetField:
+    c = dataset.get_field(name)
+    assert c is not None, f"column {name} missing on {dataset.name}"
     return c
 
 
-def meta(model: SlayerDataset) -> dict[str, Any]:
-    assert model.meta is not None, f"{model.name} has no meta"
-    return model.meta
+def meta(dataset: SlayerDataset) -> dict[str, Any]:
+    assert dataset.meta is not None, f"{dataset.name} has no meta"
+    return dataset.meta

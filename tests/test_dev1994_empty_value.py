@@ -33,13 +33,13 @@ from tests._dev1994_fixtures import (
     SUM_BY_CUSTOMER,
     by,
     col,
-    customers_model,
+    customers_dataset,
     dev1994_engine,
     m,
     month,
-    orders_model,
+    orders_dataset,
     query,
-    regions_model,
+    regions_dataset,
 )
 from slayer.engine.query_engine import SlayerResponse
 
@@ -53,8 +53,8 @@ def dialect(request) -> str:
     return request.param
 
 
-async def _run(dialect: str, models=None, **kw: Any):
-    async with dev1994_engine(dialect, models=models) as e:
+async def _run(dialect: str, datasets=None, **kw: Any):
+    async with dev1994_engine(dialect, datasets=datasets) as e:
         return await e.execute(query(**kw))
 
 
@@ -238,45 +238,45 @@ class TestTransforms:
 # --------------------------------------------------------------------------- #
 class TestOverrides:
     async def test_formula_override_on_owner_stays_null(self, dialect) -> None:
-        models = [regions_model(), customers_model(), orders_model(aggregations=[COUNT_OVERRIDE])]
-        resp = await _run(dialect, models=models, source_model="customers", dimensions=["name"],
+        models = [regions_dataset(), customers_dataset(), orders_dataset(aggregations=[COUNT_OVERRIDE])]
+        resp = await _run(dialect, datasets=models, source_model="customers", dimensions=["name"],
                           measures=[m("count(orders.id)", "c")])
         assert _ints(by(resp.data, resp.columns, key="name", value="c")) == {
             k: None if k in CHILDLESS else v for k, v in ORDERS_BY_CUSTOMER.items()}
 
     async def test_formula_less_declaration_keeps_zero(self, dialect) -> None:
-        models = [regions_model(), customers_model(), orders_model(aggregations=[COUNT_DECLARED])]
-        resp = await _run(dialect, models=models, source_model="customers", dimensions=["name"],
+        models = [regions_dataset(), customers_dataset(), orders_dataset(aggregations=[COUNT_DECLARED])]
+        resp = await _run(dialect, datasets=models, source_model="customers", dimensions=["name"],
                           measures=[m("count(orders.id)", "c")])
         assert _ints(by(resp.data, resp.columns, key="name", value="c")) == ORDERS_BY_CUSTOMER
 
     async def test_custom_aggregation_stays_null(self, dialect) -> None:
         my_count = Aggregation(name="my_count", expression="COUNT({value})")
-        models = [regions_model(), customers_model(), orders_model(aggregations=[my_count])]
-        resp = await _run(dialect, models=models, source_model="customers", dimensions=["name"],
+        models = [regions_dataset(), customers_dataset(), orders_dataset(aggregations=[my_count])]
+        resp = await _run(dialect, datasets=models, source_model="customers", dimensions=["name"],
                           measures=[m("my_count(orders.amount)", "c")])
         assert _ints(by(resp.data, resp.columns, key="name", value="c")) == {
             k: None if k in CHILDLESS else v for k, v in ORDERS_BY_CUSTOMER.items()}
 
     @pytest.mark.parametrize(("declared", "childless"), [(COUNT_OVERRIDE, None), (COUNT_DECLARED, 0)])
     async def test_windowed_consults_the_owner(self, dialect, declared, childless) -> None:
-        models = [regions_model(), customers_model(), orders_model(aggregations=[declared])]
-        resp = await _run(dialect, models=models, source_model="customers", dimensions=["name"],
+        models = [regions_dataset(), customers_dataset(), orders_dataset(aggregations=[declared])]
+        resp = await _run(dialect, datasets=models, source_model="customers", dimensions=["name"],
                           time_dimensions=MONTH_TD,
                           measures=[m("count(orders.id, window='30d')", "w")])
         assert _ints(by(resp.data, resp.columns, key="name", value="w")) == {
             k: childless if k in CHILDLESS else v for k, v in ORDERS_BY_CUSTOMER.items()}
 
     async def test_override_on_query_root_does_not_apply(self, dialect) -> None:
-        models = [regions_model(), customers_model(aggregations=[COUNT_OVERRIDE]), orders_model()]
-        resp = await _run(dialect, models=models, source_model="customers", dimensions=["name"],
+        models = [regions_dataset(), customers_dataset(aggregations=[COUNT_OVERRIDE]), orders_dataset()]
+        resp = await _run(dialect, datasets=models, source_model="customers", dimensions=["name"],
                           measures=[m("count(orders.id)", "c")])
         assert _ints(by(resp.data, resp.columns, key="name", value="c")) == ORDERS_BY_CUSTOMER
 
     async def test_multi_hop_consults_the_terminal_owner(self, dialect) -> None:
-        models = [regions_model(aggregations=[COUNT_OVERRIDE]),
-                  customers_model(aggregations=[COUNT_OVERRIDE]), orders_model()]
-        resp = await _run(dialect, models=models, source_model="regions", dimensions=["name"],
+        models = [regions_dataset(aggregations=[COUNT_OVERRIDE]),
+                  customers_dataset(aggregations=[COUNT_OVERRIDE]), orders_dataset()]
+        resp = await _run(dialect, datasets=models, source_model="regions", dimensions=["name"],
                           measures=[m("count(customers.orders.id)", "co"),
                                     m("count(customers.id)", "cc")])
         assert _ints(by(resp.data, resp.columns, key="name", value="co")) == ORDERS_BY_REGION

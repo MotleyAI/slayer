@@ -72,12 +72,12 @@ def _host_with_flat_collider() -> SlayerDataset:
     )
 
 
-async def _execute_named(models, name: str, *, dialect: str = "postgres"):
+async def _execute_named(datasets, name: str, *, dialect: str = "postgres"):
     """Save ``models`` (validation off) and run ``engine.execute(name)``."""
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig(name=DS, type=dialect))
-        for m in models:
+        for m in datasets:
             await storage.save_dataset(m, _validate=False)
         engine = SlayerQueryEngine(storage=storage)
         return await engine.execute(name, dry_run=True)
@@ -150,7 +150,7 @@ class TestSameNameCollisionGuardLive:
         )
         model = self._orders()
         with pytest.raises(ValueError, match=r"Stage column name collision on 'dup'"):
-            await _engine_generate(query=query, model=model, validate=False)
+            await _engine_generate(query=query, dataset=model, validate=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -249,5 +249,5 @@ class TestComputedDimFlattenCollision:
         extras = [_customers()]
         with pytest.raises(ValueError, match=r"flatten to the same downstream name"):
             await _engine_generate(
-                query=query, model=host, extra_models=extras, validate=False,
+                query=query, dataset=host, extra_datasets=extras, validate=False,
             )

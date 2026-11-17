@@ -15,8 +15,8 @@ from tests._dev2073_fixtures import (
     BILLING_PAIRS,
     DS,
     SHIPPING_PAIRS,
-    addresses_model,
-    model_store,
+    addresses_dataset,
+    dataset_store,
     named_pair,
     orders_with,
     stored_joins,
@@ -26,7 +26,7 @@ from tests._dev2073_fixtures import (
 
 @pytest.fixture
 async def storage() -> AsyncIterator[YAMLStorage]:
-    async with model_store(addresses_model()) as store:
+    async with dataset_store(addresses_dataset()) as store:
         yield store
 
 

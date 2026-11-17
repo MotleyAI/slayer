@@ -41,7 +41,7 @@ from slayer.engine.query_engine import SlayerResponse
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
-def orders_model(*, data_source: str = "test", flag_format: Optional[NumberFormat] = None) -> SlayerDataset:
+def orders_dataset(*, data_source: str = "test", flag_format: Optional[NumberFormat] = None) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="ordered_at",
@@ -59,7 +59,7 @@ def orders_model(*, data_source: str = "test", flag_format: Optional[NumberForma
     )
 
 
-def customers_model(*, data_source: str = "test") -> SlayerDataset:
+def customers_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
@@ -71,15 +71,15 @@ def customers_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def dev2046_models(*, data_source: str = "test") -> List[SlayerDataset]:
-    return [orders_model(data_source=data_source), customers_model(data_source=data_source)]
+def dev2046_datasets(*, data_source: str = "test") -> List[SlayerDataset]:
+    return [orders_dataset(data_source=data_source), customers_dataset(data_source=data_source)]
 
 
 # --------------------------------------------------------------------------- #
 # Query shorthands
 # --------------------------------------------------------------------------- #
-def m(formula: str, name: str = "v") -> DatasetMetric:
-    return DatasetMetric(expression=formula, name=name)
+def m(expression: str, name: str = "v") -> DatasetMetric:
+    return DatasetMetric(expression=expression, name=name)
 
 
 def orders_q(**kw) -> SlayerQuery:
@@ -185,7 +185,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev2046_models()) as (engine, _):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev2046_datasets()) as (engine, _):
         yield engine
 
 
@@ -202,8 +202,8 @@ def as_bool(value) -> Optional[bool]:
     return None if value is None else bool(value)
 
 
-def by_dim(resp, dim: str, name: str = "v", *, model: str = "orders") -> dict:
-    out = {r[f"{model}.{dim}"]: r[f"{model}.{name}"] for r in resp.data}
+def by_dim(resp, dim: str, name: str = "v", *, dataset: str = "orders") -> dict:
+    out = {r[f"{dataset}.{dim}"]: r[f"{dataset}.{name}"] for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for one {dim}"
     return out
 
@@ -215,6 +215,6 @@ def by_month(resp: SlayerResponse, name: str = "v") -> dict:
     return out
 
 
-def single(resp, name: str = "v", *, model: str = "orders"):
+def single(resp, name: str = "v", *, dataset: str = "orders"):
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{model}.{name}"]
+    return resp.data[0][f"{dataset}.{name}"]

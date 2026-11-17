@@ -69,8 +69,8 @@ _INSTRUCTIONS = ("<instructions>",)
 _TOOL_DESCRIPTION = ("<tool description>",)
 
 
-def _field_path(model: str, field: str) -> tuple[str, ...]:
-    return ("$defs", model, "properties", field)
+def _field_path(dataset: str, field: str) -> tuple[str, ...]:
+    return ("$defs", dataset, "properties", field)
 
 
 #: Moved guidance → its only owners among the query texts, the instructions and every help topic.

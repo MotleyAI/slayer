@@ -13,9 +13,9 @@ from slayer.engine.plan import plan_query
 from slayer.ir.planned import AssociationProducerKernel, RegroupAttachPlan
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-from tests._dev1840_fixtures import bundle, dev1840_models
+from tests._dev1840_fixtures import bundle, dev1840_datasets
 from tests._dev1841_fixtures import DatasetMetric, assoc_q
-from tests._dev1900_fixtures import dev1900_models, orders_q
+from tests._dev1900_fixtures import dev1900_datasets, orders_q
 
 CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 HEADLINE = ("weighted_avg(customers.spend, "
@@ -23,7 +23,7 @@ HEADLINE = ("weighted_avg(customers.spend, "
 
 
 def _bundle1900():
-    models = dev1900_models()
+    models = dev1900_datasets()
     return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
@@ -66,7 +66,7 @@ class TestReachableConjunctIsInlined:
         att = _assoc(plan_query(
             query=assoc_q(dimensions=["status"], measures=[CM],
                           filters=["customers.plans.level = 'basic'"]),
-            bundle=bundle(dev1840_models(strong_plans=False))))
+            bundle=bundle(dev1840_datasets(strong_plans=False))))
         assert list(att.producer_plan.semi_join_filters) == []
         assert any("basic" in t for t in att.association_restricted_filter_texts)
 
@@ -92,7 +92,7 @@ class TestSerialization:
         att = _assoc(plan_query(
             query=assoc_q(dimensions=["status"], measures=[CM],
                           filters=["customers.plans.level = 'basic'"]),
-            bundle=bundle(dev1840_models(strong_plans=False))))
+            bundle=bundle(dev1840_datasets(strong_plans=False))))
         restored = RegroupAttachPlan.model_validate(att.model_dump())
         assert (restored.association_restricted_filter_texts
                 == att.association_restricted_filter_texts)

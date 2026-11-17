@@ -16,17 +16,17 @@ from slayer.core.models import (
     SlayerDataset,
 )
 
-from tests._dev1832_fixtures import dev1832_models
+from tests._dev1832_fixtures import dev1832_datasets
 
 
-def _model(models: List[SlayerDataset], name: str) -> SlayerDataset:
-    return next(m for m in models if m.name == name)
+def _dataset(datasets: List[SlayerDataset], name: str) -> SlayerDataset:
+    return next(m for m in datasets if m.name == name)
 
 
-def dev1931_models() -> List[SlayerDataset]:
+def dev1931_datasets() -> List[SlayerDataset]:
     """DEV-1832 Graph A + the DEV-1931 custom aggregations. Host first (orders)."""
-    models = dev1832_models()
-    cust = _model(models=models, name="customers")
+    models = dev1832_datasets()
+    cust = _dataset(datasets=models, name="customers")
     cust.aggregations.extend([
         Aggregation(
             name="wsum_host", expression="SUM({value} * {weight})",
@@ -53,7 +53,7 @@ def dev1931_models() -> List[SlayerDataset]:
             name="wsum_partial", expression="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="regions.plans.fee")]),
     ])
-    regions = _model(models=models, name="regions")
+    regions = _dataset(datasets=models, name="regions")
     # F1: w1 widens the home to customers; w2 (`bad_pop`) crosses the fanning hop.
     regions.aggregations.append(Aggregation(
         name="wfan_widen", expression="SUM({value} * {w1} * {w2})",
@@ -62,7 +62,7 @@ def dev1931_models() -> List[SlayerDataset]:
     return models
 
 
-def ambiguous_owner_models() -> List[SlayerDataset]:
+def ambiguous_owner_datasets() -> List[SlayerDataset]:
     """``o → ag`` via two parallel edges (ambiguous); ``r → ag`` clean. ``wscore``
     (on ``o``) defaults to ``ag.score`` — ambiguous from ``o``, must fail closed,
     never re-anchor at ``r`` where ``ag`` is cleanly reachable."""

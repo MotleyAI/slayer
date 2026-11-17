@@ -1716,7 +1716,7 @@ class TestSubstituteVariables:
         assert q.variables == {"val": "completed"}
 
 
-def _prefix_models() -> list[SlayerDataset]:
+def _prefix_datasets() -> list[SlayerDataset]:
     return [
         SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
@@ -1747,8 +1747,8 @@ def _prefix_models() -> list[SlayerDataset]:
 
 
 async def _prefix_sql(query: dict) -> str:
-    model, *extra = _prefix_models()
-    return await _engine_generate(query=SlayerQuery.model_validate(query), model=model, extra_models=extra)
+    model, *extra = _prefix_datasets()
+    return await _engine_generate(query=SlayerQuery.model_validate(query), dataset=model, extra_datasets=extra)
 
 
 _MONTH = {"dimension": "created_at", "granularity": "month"}

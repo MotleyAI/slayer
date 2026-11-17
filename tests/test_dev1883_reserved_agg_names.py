@@ -25,7 +25,7 @@ class TestGranularityNamesReserved:
     def test_model_with_granularity_named_aggregation_rejected(self) -> None:
         amount = DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)
         with pytest.raises(pydantic.ValidationError, match="week_sunday"):
-            fx.model(
+            fx.dataset(
                 name="orders", sql_table="orders", data_source="test",
                 columns=[amount],
                 aggregations=[{"name": "quarter", "formula": "SUM({x})"}],

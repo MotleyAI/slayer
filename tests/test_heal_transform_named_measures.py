@@ -10,7 +10,7 @@ import pytest
 from slayer.core.models import Aggregation, DatasetMetric
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from tests._query_heal_fixtures import BACKENDS, heal_engine, heal_models, orders_model, table
+from tests._query_heal_fixtures import BACKENDS, heal_engine, heal_datasets, orders_dataset, table
 
 MONTH = {"dimension": "created_at", "granularity": "month"}
 
@@ -97,7 +97,7 @@ class TestSavedMeasureNamedRank:
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_bare_name_reads_measure_and_call_is_transform(self, backend: str) -> None:
-        orders = orders_model(measures=[
+        orders = orders_dataset(metrics=[
             DatasetMetric(name="rank", expression="count(*)"), DatasetMetric(name="n", expression="count(*)"),
         ])
 
@@ -110,7 +110,7 @@ class TestSavedMeasureNamedRank:
                 ],
             }
 
-        async with heal_engine(backend, models=heal_models(orders=orders)) as eng:
+        async with heal_engine(backend, datasets=heal_datasets(orders=orders)) as eng:
             actual = await eng.execute(query("rank"))
             expected = await eng.execute(query("n"))
         assert actual.columns == expected.columns

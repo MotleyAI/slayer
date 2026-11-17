@@ -17,7 +17,7 @@ from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1966_fixtures import customers_model, m, orders_model, query, seed_sqlite
+from tests._dev1966_fixtures import customers_dataset, m, orders_dataset, query, seed_sqlite
 
 
 def _qb(name: str, source: str) -> SlayerDataset:
@@ -32,25 +32,25 @@ _SHAPES = {
 }
 
 
-async def _raise_via(surface: str, engine: SlayerQueryEngine, models: List[SlayerDataset],
+async def _raise_via(surface: str, engine: SlayerQueryEngine, datasets: List[SlayerDataset],
                      start: str) -> BaseException:
     calls: dict[str, Callable[[], Awaitable[object]]] = {
         "consumer": lambda: engine.execute(query(source_model=start, measures=[m("sum(amount)", "t")])),
         "run_by_name": lambda: engine.execute(start),
-        "save_model": lambda: engine.save_dataset(next(x for x in models if x.name == start)),
+        "save_model": lambda: engine.save_dataset(next(x for x in datasets if x.name == start)),
     }
     with pytest.raises(SlayerError) as exc:
         await calls[surface]()
     return exc.value
 
 
-async def _engine(tmp: str, models: List[SlayerDataset], *, omit: str = "") -> Tuple[
+async def _engine(tmp: str, datasets: List[SlayerDataset], *, omit: str = "") -> Tuple[
         SlayerQueryEngine, YAMLStorage]:
     db = os.path.join(tmp, "data.db")
     seed_sqlite(db)
     storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db))
-    for model in [orders_model(), customers_model(), *models]:
+    for model in [orders_dataset(), customers_dataset(), *datasets]:
         if model.name != omit:
             await storage.save_dataset(model, _validate=False)
     return SlayerQueryEngine(storage=storage), storage

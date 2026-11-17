@@ -28,10 +28,10 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._dev1737_fixtures import customers_model, orders_model
+from tests._dev1737_fixtures import customers_dataset, orders_dataset
 
-ORDERS = orders_model()
-CUSTOMERS = customers_model()
+ORDERS = orders_dataset()
+CUSTOMERS = customers_dataset()
 BUNDLE = ResolvedSourceBundle(dialect="postgres", population=ORDERS, referenced_datasets=[CUSTOMERS])
 
 
@@ -51,8 +51,8 @@ async def engine():
     with tempfile.TemporaryDirectory() as tmp:
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=os.path.join(tmp, "x.db")))
-        await storage.save_dataset(orders_model())
-        await storage.save_dataset(customers_model())
+        await storage.save_dataset(orders_dataset())
+        await storage.save_dataset(customers_dataset())
         yield SlayerQueryEngine(storage=storage)
 
 

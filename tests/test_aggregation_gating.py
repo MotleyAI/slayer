@@ -15,7 +15,7 @@ from slayer.core.query import SlayerQuery
 from tests._engine_helpers import _engine_generate
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -29,7 +29,7 @@ def _orders_model() -> SlayerDataset:
     )
 
 
-def _customers_model(extra_columns=None, extra_aggregations=None) -> SlayerDataset:
+def _customers_dataset(extra_columns=None, extra_aggregations=None) -> SlayerDataset:
     columns = [
         DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
         DatasetField(name="name", sql="name", datatype=DataType.TEXT),
@@ -49,16 +49,16 @@ async def _generate_sql(
     *,
     orders: SlayerDataset,
     customers: SlayerDataset,
-    measures: list,
+    metrics: list,
     dialect: str = "postgres",
 ) -> str:
     """Run the typed engine pipeline through the shared ``_engine_generate``
     helper and return the SQL string. Mirrors the original local helper but
     reuses the centralised storage/datasource/dry-run/assert-valid pipeline
     (CodeRabbit PR #153 nitpick on this file)."""
-    query = SlayerQuery(population=orders.name, metrics=measures)
+    query = SlayerQuery(population=orders.name, metrics=metrics)
     return await _engine_generate(
-        query=query, model=orders, extra_models=[customers], dialect=dialect,
+        query=query, dataset=orders, extra_datasets=[customers], dialect=dialect,
     )
 
 
@@ -83,41 +83,41 @@ def _orders_with_status() -> SlayerDataset:
 class TestCrossModelGating:
     async def test_cross_model_pk_aggregation_rejected(self) -> None:
         """``sum(customers.id)`` — PK column, sum is forbidden by the PK rule."""
-        orders = _orders_model()
-        customers = _customers_model()
+        orders = _orders_dataset()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match="primary[- ]key|count"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "sum(customers.id)", "name": "result"}],
+                metrics=[{"formula": "sum(customers.id)", "name": "result"}],
             )
 
     async def test_cross_model_pk_count_allowed(self) -> None:
         """PK + ``count`` is fine."""
         sql = await _generate_sql(
-            orders=_orders_model(),
-            customers=_customers_model(),
-            measures=[{"formula": "count(customers.id)", "name": "result"}],
+            orders=_orders_dataset(),
+            customers=_customers_dataset(),
+            metrics=[{"formula": "count(customers.id)", "name": "result"}],
         )
         assert "COUNT" in sql.upper()
 
     async def test_cross_model_string_sum_rejected(self) -> None:
         """``sum(customers.name)`` — string + sum is forbidden by type defaults."""
-        orders = _orders_model()
-        customers = _customers_model()
+        orders = _orders_dataset()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match="not applicable|string"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "sum(customers.name)", "name": "result"}],
+                metrics=[{"formula": "sum(customers.name)", "name": "result"}],
             )
 
     async def test_cross_model_string_min_allowed(self) -> None:
         """``min(customers.name)`` is allowed (string min/max is type-default-eligible)."""
         sql = await _generate_sql(
-            orders=_orders_model(),
-            customers=_customers_model(),
-            measures=[{"formula": "min(customers.name)", "name": "result"}],
+            orders=_orders_dataset(),
+            customers=_customers_dataset(),
+            metrics=[{"formula": "min(customers.name)", "name": "result"}],
         )
         assert "MIN" in sql.upper()
 
@@ -126,7 +126,7 @@ class TestCrossModelGating:
         ``rating`` is NUMBER (sum is type-eligible) but the whitelist is ``["avg"]``,
         so ``sum(customers.rating)`` must raise.
         """
-        customers = _customers_model(
+        customers = _customers_dataset(
             extra_columns=[
                 DatasetField(
                     name="rating",
@@ -136,17 +136,17 @@ class TestCrossModelGating:
                 ),
             ]
         )
-        orders = _orders_model()
+        orders = _orders_dataset()
         with pytest.raises(ValueError, match="not allowed|allowed_aggregations|whitelist"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "sum(customers.rating)", "name": "result"}],
+                metrics=[{"formula": "sum(customers.rating)", "name": "result"}],
             )
 
     async def test_cross_model_whitelist_match_allowed(self) -> None:
         """A whitelist match works."""
-        customers = _customers_model(
+        customers = _customers_dataset(
             extra_columns=[
                 DatasetField(
                     name="rating",
@@ -157,28 +157,28 @@ class TestCrossModelGating:
             ]
         )
         sql = await _generate_sql(
-            orders=_orders_model(),
+            orders=_orders_dataset(),
             customers=customers,
-            measures=[{"formula": "avg(customers.rating)", "name": "result"}],
+            metrics=[{"formula": "avg(customers.rating)", "name": "result"}],
         )
         assert "AVG" in sql.upper()
 
     async def test_cross_model_unknown_aggregation_rejected(self) -> None:
         """Unknown function name raises with the same message style as local."""
-        orders = _orders_model()
-        customers = _customers_model()
+        orders = _orders_dataset()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match="bogus_agg|not.*aggregation"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "bogus_agg(customers.name)", "name": "result"}],
+                metrics=[{"formula": "bogus_agg(customers.name)", "name": "result"}],
             )
 
     async def test_cross_model_custom_aggregation_allowed(self) -> None:
         """A custom aggregation defined on the joined model bypasses
         type-default eligibility (the formula determines applicability).
         """
-        customers = _customers_model(
+        customers = _customers_dataset(
             extra_aggregations=[
                 Aggregation(
                     name="name_concat",
@@ -187,9 +187,9 @@ class TestCrossModelGating:
             ]
         )
         sql = await _generate_sql(
-            orders=_orders_model(),
+            orders=_orders_dataset(),
             customers=customers,
-            measures=[{"formula": "name_concat(customers.name)", "name": "result"}],
+            metrics=[{"formula": "name_concat(customers.name)", "name": "result"}],
         )
         assert "STRING_AGG" in sql.upper()
 
@@ -233,8 +233,8 @@ class TestStatAggregationEligibility:
     ) -> None:
         sql = await _generate_sql(
             orders=numeric_orders,
-            customers=_customers_model(),
-            measures=[{"formula": f"{agg}(amount)", "name": "result"}],
+            customers=_customers_dataset(),
+            metrics=[{"formula": f"{agg}(amount)", "name": "result"}],
         )
         # Pin the function-call shape: family name immediately followed by
         # the qualified value column. The earlier "( in sql" check passed
@@ -258,8 +258,8 @@ class TestStatAggregationEligibility:
     ) -> None:
         sql = await _generate_sql(
             orders=numeric_orders,
-            customers=_customers_model(),
-            measures=[
+            customers=_customers_dataset(),
+            metrics=[
                 {"formula": f"{agg}(amount, other=quantity)", "name": "result"}
             ],
         )
@@ -274,12 +274,12 @@ class TestStatAggregationEligibility:
     async def test_string_column_rejects_stat_agg(
         self, agg: str, numeric_orders: SlayerDataset,
     ) -> None:
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match="not applicable|string|numeric"):
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                measures=[{"formula": f"{agg}(status)", "name": "result"}],
+                metrics=[{"formula": f"{agg}(status)", "name": "result"}],
             )
 
     @pytest.mark.parametrize(
@@ -290,12 +290,12 @@ class TestStatAggregationEligibility:
         self, agg: str, numeric_orders: SlayerDataset,
     ) -> None:
         # PK columns are restricted to count/count_distinct regardless of type.
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match="primary[- ]key|count"):
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                measures=[{"formula": f"{agg}(id)", "name": "result"}],
+                metrics=[{"formula": f"{agg}(id)", "name": "result"}],
             )
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
@@ -307,12 +307,12 @@ class TestStatAggregationEligibility:
         already covered string LHS, but `corr`/`covar_samp`/`covar_pop`
         with `other=` slipped past it.
         """
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match="not applicable|string|numeric"):
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                measures=[
+                metrics=[
                     {"formula": f"{agg}(status, other=quantity)", "name": "result"}
                 ],
             )
@@ -321,12 +321,12 @@ class TestStatAggregationEligibility:
     async def test_pk_column_rejects_two_arg_stat(
         self, agg: str, numeric_orders: SlayerDataset,
     ) -> None:
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match="primary[- ]key|count"):
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                measures=[
+                metrics=[
                     {"formula": f"{agg}(id, other=quantity)", "name": "result"}
                 ],
             )
@@ -338,12 +338,12 @@ class TestStatAggregationEligibility:
         # Missing required `other=` parameter must raise with a clear message
         # naming the parameter, mirroring weighted_avg's missing-`weight=`
         # behaviour.
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match=r"requires parameter 'other'|other="):
             await _generate_sql(
                 orders=numeric_orders,
                 customers=customers,
-                measures=[{"formula": f"{agg}(amount)", "name": "result"}],
+                metrics=[{"formula": f"{agg}(amount)", "name": "result"}],
             )
 
 
@@ -356,7 +356,7 @@ class TestCrossModelColumnFilter:
         """When a joined-model column has ``filter``, it should appear inside
         the aggregation as a CASE-WHEN — same as for local measures.
         """
-        customers = _customers_model(
+        customers = _customers_dataset(
             extra_columns=[
                 DatasetField(
                     name="completed_rev",
@@ -367,9 +367,9 @@ class TestCrossModelColumnFilter:
             ]
         )
         sql = await _generate_sql(
-            orders=_orders_model(),
+            orders=_orders_dataset(),
             customers=customers,
-            measures=[
+            metrics=[
                 {"formula": "sum(customers.completed_rev)", "name": "result"}
             ],
         )
@@ -384,56 +384,56 @@ class TestDev1576UnknownVsDisallowed:
 
     async def test_unknown_name_raises_unknown_aggregation(self) -> None:
         orders = _orders_with_status()
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match=r"Unknown function 'bogus'"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "bogus(amount)", "name": "result"}],
+                metrics=[{"formula": "bogus(amount)", "name": "result"}],
             )
 
     async def test_unknown_name_lists_known_aggregations(self) -> None:
         orders = _orders_with_status()
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match=r"Known:"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "bogus(amount)", "name": "result"}],
+                metrics=[{"formula": "bogus(amount)", "name": "result"}],
             )
 
     async def test_unknown_name_suggests_close_match(self) -> None:
         # ``stdev`` is a near-miss for stddev_samp/stddev_pop. It is NOT an
         # alias (so §1 leaves it), and enrichment should offer a suggestion.
         orders = _orders_with_status()
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match=r"Did you mean 'stddev_(samp|pop)'"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "stdev(amount)", "name": "result"}],
+                metrics=[{"formula": "stdev(amount)", "name": "result"}],
             )
 
     async def test_type_disallowed_keeps_not_applicable_wording(self) -> None:
         # ``sum`` is a KNOWN aggregation but not eligible for a TEXT column —
         # keep the existing 'not applicable to <TYPE> column' message.
         orders = _orders_with_status()
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match=r"not applicable to TEXT column"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "sum(status)", "name": "result"}],
+                metrics=[{"formula": "sum(status)", "name": "result"}],
             )
 
     async def test_type_disallowed_is_not_reported_as_unknown(self) -> None:
         orders = _orders_with_status()
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError) as exc:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "sum(status)", "name": "result"}],
+                metrics=[{"formula": "sum(status)", "name": "result"}],
             )
         assert "Unknown function" not in str(exc.value)
 
@@ -443,12 +443,12 @@ class TestDev1576UnknownVsDisallowed:
         # aggregation error instead of escaping to SQL generation (where it
         # used to surface as the star-specific message).
         orders = _orders_with_status()
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match=r"Unknown function 'bogus'"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "bogus(*)", "name": "result"}],
+                metrics=[{"formula": "bogus(*)", "name": "result"}],
             )
 
     async def test_custom_agg_known_but_disallowed_keeps_not_allowed(self) -> None:
@@ -473,12 +473,12 @@ class TestDev1576UnknownVsDisallowed:
             aggregations=[Aggregation(name="myagg", expression="SUM({value}) * 2")],
             relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         )
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError) as exc:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "myagg(rating)", "name": "result"}],
+                metrics=[{"formula": "myagg(rating)", "name": "result"}],
             )
         assert "Unknown function" not in str(exc.value)
         assert "not allowed" in str(exc.value)
@@ -500,8 +500,8 @@ class TestDev1576UnknownVsDisallowed:
         )
         sql = await _generate_sql(
             orders=orders,
-            customers=_customers_model(),
-            measures=[{"formula": "myagg(amount)", "name": "result"}],
+            customers=_customers_dataset(),
+            metrics=[{"formula": "myagg(amount)", "name": "result"}],
         )
         assert "SUM" in sql.upper()
 
@@ -510,8 +510,8 @@ class TestDev1576UnknownVsDisallowed:
         # the §3 'Unknown function' error.
         sql = await _generate_sql(
             orders=_orders_with_status(),
-            customers=_customers_model(),
-            measures=[{"formula": "countd(amount)", "name": "result"}],
+            customers=_customers_dataset(),
+            metrics=[{"formula": "countd(amount)", "name": "result"}],
         )
         assert "COUNT(DISTINCT" in sql.upper()
 
@@ -531,8 +531,8 @@ class TestDev1576UnknownVsDisallowed:
             "filter": [f"{raw}(amount) > 5"],
         })
         sql = await _engine_generate(
-            query=query, model=_orders_with_status(),
-            extra_models=[_customers_model()], dialect="postgres",
+            query=query, dataset=_orders_with_status(),
+            extra_datasets=[_customers_dataset()], dialect="postgres",
         )
         up = sql.upper()
         assert "HAVING" in up
@@ -547,9 +547,9 @@ class TestDev1576RoundAbsGeneration:
 
     async def test_round_two_args_postgres_casts_to_numeric(self) -> None:
         sql = await _generate_sql(
-            orders=_orders_model(),
-            customers=_customers_model(),
-            measures=[{"formula": "round(sum(amount), 2)", "name": "r"}],
+            orders=_orders_dataset(),
+            customers=_customers_dataset(),
+            metrics=[{"formula": "round(sum(amount), 2)", "name": "r"}],
             dialect="postgres",
         )
         up = sql.upper()
@@ -559,9 +559,9 @@ class TestDev1576RoundAbsGeneration:
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
     async def test_round_two_args_non_postgres_no_cast(self, dialect: str) -> None:
         sql = await _generate_sql(
-            orders=_orders_model(),
-            customers=_customers_model(),
-            measures=[{"formula": "round(sum(amount), 2)", "name": "r"}],
+            orders=_orders_dataset(),
+            customers=_customers_dataset(),
+            metrics=[{"formula": "round(sum(amount), 2)", "name": "r"}],
             dialect=dialect,
         )
         up = sql.upper()
@@ -572,9 +572,9 @@ class TestDev1576RoundAbsGeneration:
     async def test_round_one_arg_postgres_no_cast(self) -> None:
         # 1-arg round(double precision) exists on Postgres — no cast needed.
         sql = await _generate_sql(
-            orders=_orders_model(),
-            customers=_customers_model(),
-            measures=[{"formula": "round(sum(amount))", "name": "r"}],
+            orders=_orders_dataset(),
+            customers=_customers_dataset(),
+            metrics=[{"formula": "round(sum(amount))", "name": "r"}],
             dialect="postgres",
         )
         up = sql.upper()
@@ -584,9 +584,9 @@ class TestDev1576RoundAbsGeneration:
     @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "duckdb"])
     async def test_abs_generates_unchanged(self, dialect: str) -> None:
         sql = await _generate_sql(
-            orders=_orders_model(),
-            customers=_customers_model(),
-            measures=[{"formula": "abs(sum(amount))", "name": "a"}],
+            orders=_orders_dataset(),
+            customers=_customers_dataset(),
+            metrics=[{"formula": "abs(sum(amount))", "name": "a"}],
             dialect=dialect,
         )
         assert "ABS(" in sql.upper()
@@ -625,33 +625,33 @@ class TestDev1576UnknownNamePrecedence:
         # aggregation name all three must surface 'Unknown function', not
         # the whitelist / PK / type-applicability message.
         orders = self._orders_pk_whitelist_custom()
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError, match=r"Unknown function 'bogus'"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": f"bogus({column})", "name": "result"}],
+                metrics=[{"formula": f"bogus({column})", "name": "result"}],
             )
 
     async def test_known_list_includes_custom_aggregations(self) -> None:
         orders = self._orders_pk_whitelist_custom()
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError) as exc:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "bogus(amount)", "name": "result"}],
+                metrics=[{"formula": "bogus(amount)", "name": "result"}],
             )
         assert "myagg" in str(exc.value)
 
     async def test_no_did_you_mean_for_poor_match(self) -> None:
         orders = self._orders_pk_whitelist_custom()
-        customers = _customers_model()
+        customers = _customers_dataset()
         with pytest.raises(ValueError) as exc:
             await _generate_sql(
                 orders=orders,
                 customers=customers,
-                measures=[{"formula": "zzzzz(amount)", "name": "result"}],
+                metrics=[{"formula": "zzzzz(amount)", "name": "result"}],
             )
         assert "Did you mean" not in str(exc.value)
 
@@ -678,8 +678,8 @@ class TestDev1576CustomAggPrecedence:
         )
         sql = await _generate_sql(
             orders=orders,
-            customers=_customers_model(),
-            measures=[{"formula": "countd(amount)", "name": "result"}],
+            customers=_customers_dataset(),
+            metrics=[{"formula": "countd(amount)", "name": "result"}],
         )
         # The custom formula (… + 1) must win, not the healed builtin
         # count_distinct (plain COUNT(DISTINCT …)).
@@ -689,9 +689,9 @@ class TestDev1576CustomAggPrecedence:
         # Same query on a model WITHOUT a colliding custom agg still heals to
         # the builtin count_distinct.
         sql = await _generate_sql(
-            orders=_orders_model(),
-            customers=_customers_model(),
-            measures=[{"formula": "countd(amount)", "name": "result"}],
+            orders=_orders_dataset(),
+            customers=_customers_dataset(),
+            metrics=[{"formula": "countd(amount)", "name": "result"}],
         )
         assert "COUNT(DISTINCT" in sql.upper()
         assert "+ 1" not in sql

@@ -7,8 +7,8 @@ from collections.abc import AsyncIterator
 import pytest
 
 from slayer.engine.query_engine import SlayerQueryEngine
-from tests._cast_fixtures import check_array_cast, check_try_cast_targets, tags_model, tags_statements
-from tests._dev2101_fixtures import by_key, dev2101_models, q, seed_server
+from tests._cast_fixtures import check_array_cast, check_try_cast_targets, tags_dataset, tags_statements
+from tests._dev2101_fixtures import by_key, dev2101_datasets, q, seed_server
 from tests._pg_helpers import client_datasource, pg_query_engine
 
 pytest.importorskip("pytest_postgresql")
@@ -28,7 +28,7 @@ async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, int
     cur.execute("SELECT current_setting('server_version_num')")
     version_num = int(cur.fetchone()[0])
     postgresql.commit()
-    models = [*dev2101_models(data_source="pg"), tags_model(data_source="pg")]
+    models = [*dev2101_datasets(data_source="pg"), tags_dataset(data_source="pg")]
     async with pg_query_engine(client_datasource(postgresql.info), base_dir=str(tmp_path), models=models) as engine:
         yield engine, version_num
 
@@ -37,7 +37,7 @@ async def test_try_cast_integer_rule(pg) -> None:
     engine, version_num = pg
     if version_num < 160000:
         pytest.skip("Postgres before 16 gets a plain CAST")
-    await check_try_cast_targets(engine, model="orders")
+    await check_try_cast_targets(engine, dataset="orders")
 
 
 async def test_try_cast_fractional_double_column(pg) -> None:

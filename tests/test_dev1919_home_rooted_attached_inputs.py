@@ -22,16 +22,16 @@ from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1840_fixtures import (
     bundle,
-    dev1840_models,
+    dev1840_datasets,
     gen,
     make_exec_engine as make_orders_engine,
 )
 from tests._dev1841_fixtures import DatasetMetric, associated_warnings, broadcast_warnings
-from tests._dev1859_fixtures import assoc_wavg_region_weight, broadcast_wavg_global, customers_wsum_models
+from tests._dev1859_fixtures import assoc_wavg_region_weight, broadcast_wavg_global, customers_wsum_datasets
 from tests._dev1892_fixtures import assert_grain_residue, assert_ref_free
 from tests._dev1900_fixtures import (
     make_exec_engine as make_1900_engine,
-    unparseable_derived_models,
+    unparseable_derived_datasets,
 )
 from tests._dev1919_fixtures import (
     CUMSUM_PARAM,
@@ -51,7 +51,7 @@ from tests._dev1919_fixtures import (
     WINDOWED_CUSTOM_PARAM,
     WINDOWED_PARAM,
     assert_cells,
-    keyless_declared_models,
+    keyless_declared_datasets,
     local_wavg_status_assoc_by_status,
     mixed_by_tier,
     mixed_global,
@@ -74,8 +74,8 @@ from tests._dev1919_fixtures import (
 AMOUNT = DatasetMetric(expression="sum(amount)", name="a")
 
 
-def _m(formula: str) -> DatasetMetric:
-    return DatasetMetric(expression=formula, name="w")
+def _m(expression: str) -> DatasetMetric:
+    return DatasetMetric(expression=expression, name="w")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -86,7 +86,7 @@ async def orders_engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def keyless_engine(request):
-    async for engine in make_orders_engine(request, models=keyless_declared_models()):
+    async for engine in make_orders_engine(request, datasets=keyless_declared_datasets()):
         yield engine
 
 
@@ -98,13 +98,13 @@ async def dev1900_engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unparse_engine(request):
-    async for engine in make_1900_engine(request, models=unparseable_derived_models()):
+    async for engine in make_1900_engine(request, datasets=unparseable_derived_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def wsum_engine(request):
-    async for engine in make_orders_engine(request, models=customers_wsum_models()):
+    async for engine in make_orders_engine(request, datasets=customers_wsum_datasets()):
         yield engine
 
 
@@ -113,8 +113,8 @@ def _assert_no_mode_warnings(resp) -> None:
     assert not associated_warnings(resp)
 
 
-async def _assert_broadcast_to_status(engine, formula: str, expected) -> None:
-    resp = await engine.execute(mode_q("broadcast", dimensions=["status"], measures=[_m(formula)]))
+async def _assert_broadcast_to_status(engine, expression: str, expected) -> None:
+    resp = await engine.execute(mode_q("broadcast", dimensions=["status"], measures=[_m(expression)]))
     got = status_vals(resp)
     assert set(got) == {"ok", "new"}
     for value in got.values():
@@ -124,8 +124,8 @@ async def _assert_broadcast_to_status(engine, formula: str, expected) -> None:
     assert not associated_warnings(resp)
 
 
-async def _assert_error_mode_refuses_status(engine, formula: str) -> None:
-    q = mode_q("error", dimensions=["status"], measures=[_m(formula)])
+async def _assert_error_mode_refuses_status(engine, expression: str) -> None:
+    q = mode_q("error", dimensions=["status"], measures=[_m(expression)])
     with pytest.raises(SlayerError) as ei:
         await engine.execute(q)
     msg = str(ei.value)
@@ -134,9 +134,9 @@ async def _assert_error_mode_refuses_status(engine, formula: str) -> None:
     assert "determine" not in msg
 
 
-async def _assert_by_tier(engine, formula: str, expected, mode) -> None:
+async def _assert_by_tier(engine, expression: str, expected, mode) -> None:
     resp = await engine.execute(
-        mode_q(mode, dimensions=["customers.tier"], measures=[_m(formula)]))
+        mode_q(mode, dimensions=["customers.tier"], measures=[_m(expression)]))
     assert_cells(tier_vals(resp), {**expected, None: None})
     _assert_no_mode_warnings(resp)
 
@@ -318,7 +318,7 @@ class TestWindowedOuter:
     def test_windowed_parameter_reads_the_row_attach(self):
         """Plan pin: the trailing-window kernel's picked parameter is the nested
         producer's row-attach placeholder, never the raw ``sum`` aggregate."""
-        models = dev1840_models()
+        models = dev1840_datasets()
         planned = plan_query(
             query=mode_q(None, time_dimensions=signup_month_td(),
                          measures=[_m(WINDOWED_PARAM)]),

@@ -27,7 +27,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1842_fixtures import dev1842_models, make_exec_engine, q
+from tests._dev1842_fixtures import dev1842_datasets, make_exec_engine, q
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -58,13 +58,13 @@ class TestTypeAndFormatInheritance:
     query-backed model whose backing stage selects it — identically to its
     hand-expanded twin."""
 
-    async def _virtual_column(self, measure_spec, col_name: str):
+    async def _virtual_column(self, metric_spec, col_name: str):
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(
                 DatasourceConfig(name="test", type="sqlite", database=":memory:")
             )
-            for m in dev1842_models():
+            for m in dev1842_datasets():
                 await storage.save_dataset(m, _validate=False)
             engine = SlayerQueryEngine(storage=storage)
             qb = SlayerDataset(
@@ -72,7 +72,7 @@ class TestTypeAndFormatInheritance:
                 source_queries=[SlayerQuery(
                     population="orders",
                     dimensions=["status"],
-                    metrics=[measure_spec],
+                    metrics=[metric_spec],
                 )],
             )
             saved = await engine.save_dataset(qb)

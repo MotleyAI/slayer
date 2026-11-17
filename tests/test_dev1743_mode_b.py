@@ -25,7 +25,7 @@ from slayer.core.query import SlayerQuery
 from tests._dev1743_fixtures import (
     DS,
     dunder_target,
-    dunder_target_models,
+    dunder_target_datasets,
 )
 from tests._engine_helpers import _engine_generate
 
@@ -40,14 +40,14 @@ class TestModeBOverDunderModels:
         ``customer__region`` model, and the parser rejects the ``customer__
         region`` identifier in ``customer__region.label``.
         """
-        host, dunder = dunder_target_models()
+        host, dunder = dunder_target_datasets()
         sql = await _engine_generate(
             query=SlayerQuery(
                 population="orders",
                 dimensions=["customer__region.label"],
             ),
-            model=host,
-            extra_models=[dunder],
+            dataset=host,
+            extra_datasets=[dunder],
             validate=False,
         )
         assert "customer_region_dim" in sql
@@ -61,14 +61,14 @@ class TestModeBOverDunderModels:
         Fails today: the ``customer__region`` model build raises and the
         parser rejects the ``customer__region`` identifier in the formula.
         """
-        host, dunder = dunder_target_models()
+        host, dunder = dunder_target_datasets()
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({
                 "population": "orders",
                 "metrics": [{"expression": "count(customer__region.*)"}],
             }),
-            model=host,
-            extra_models=[dunder],
+            dataset=host,
+            extra_datasets=[dunder],
             validate=False,
         )
         assert isinstance(sql, str)
@@ -103,8 +103,8 @@ class TestModeBOverDunderModels:
         dunder = dunder_target()  # raises today — the flip must let it through
         sql = await _engine_generate(
             query=SlayerQuery(population="orders", metrics=["crc"]),
-            model=host,
-            extra_models=[dunder],
+            dataset=host,
+            extra_datasets=[dunder],
             validate=False,
         )
         assert isinstance(sql, str)
@@ -133,7 +133,7 @@ class TestModeBOverDunderModels:
         sql = await _engine_generate(
             query=SlayerQuery(population="stores",
                               dimensions=["stores__name"]),
-            model=model,
+            dataset=model,
             validate=False,
         )
         assert "stores__name" in sql

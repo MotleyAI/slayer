@@ -52,8 +52,8 @@ _MONTH = [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)]
 _NO_AXIS = "sum(cumsum(sum(amount, partition_by=region)))"
 
 
-def _m(formula: str, name: str) -> DatasetMetric:
-    return DatasetMetric(expression=formula, name=name)
+def _m(expression: str, name: str) -> DatasetMetric:
+    return DatasetMetric(expression=expression, name=name)
 
 
 def _orders(*, extra_columns: Tuple[DatasetField, ...] = (), **kw) -> SlayerDataset:
@@ -77,18 +77,18 @@ async def _raise_of(case: Case) -> QueryTypeError:
     source = next(m for m in models if m.name == query.population)
     with pytest.raises(QueryTypeError) as ei:
         await _engine_generate(
-            query=query, model=source, extra_models=[m for m in models if m is not source],
+            query=query, dataset=source, extra_datasets=[m for m in models if m is not source],
             dialect="duckdb", validate=False,
         )
     return ei.value
 
 
 def _time_axis() -> Tuple[SlayerQuery, List[SlayerDataset]]:
-    return f1832.monthly_q(measures=[_m(_NO_AXIS, "m")], time_dimensions=f1832.month_td()), f1832.dev1832_models()
+    return f1832.monthly_q(measures=[_m(_NO_AXIS, "m")], time_dimensions=f1832.month_td()), f1832.dev1832_datasets()
 
 
 def _no_time_dimension() -> Tuple[SlayerQuery, List[SlayerDataset]]:
-    return orders_q(dimensions=["region"], measures=[_m("sum(amount, window='90d')", "w")]), f1739.dev1739_models()
+    return orders_q(dimensions=["region"], measures=[_m("sum(amount, window='90d')", "w")]), f1739.dev1739_datasets()
 
 
 def _bad_window() -> Tuple[SlayerQuery, List[SlayerDataset]]:
@@ -96,11 +96,11 @@ def _bad_window() -> Tuple[SlayerQuery, List[SlayerDataset]]:
         population="sales", time_dimensions=f1846.month_td(),
         metrics=[_m("sum(revenue, window='90x')", "w")],
     )
-    return query, f1846.dev1846_models()
+    return query, f1846.dev1846_datasets()
 
 
 def _rank_partition() -> Tuple[SlayerQuery, List[SlayerDataset]]:
-    return orders_q(dimensions=["region"], measures=[_m("rank(sum(amount), partition_by=city, direction='desc')", "r")]), f1739.dev1739_models()
+    return orders_q(dimensions=["region"], measures=[_m("rank(sum(amount), partition_by=city, direction='desc')", "r")]), f1739.dev1739_datasets()
 
 
 #: (id, case, class, location, has suggestion)
@@ -110,42 +110,42 @@ FAMILY_CASES = [
     ("window-duration", _bad_window, WindowDurationError, None, True),
     ("rank-partition-key", _rank_partition, PartitionKeyError, "transform 'rank'", True),
     ("aggregate-partition-key",
-     lambda: (orders_q(dimensions=["region"], measures=[_m("sum(amount, partition_by=city)", "p")]), f1739.dev1739_models()),
+     lambda: (orders_q(dimensions=["region"], measures=[_m("sum(amount, partition_by=city)", "p")]), f1739.dev1739_datasets()),
      PartitionKeyError, "measure 'p'", True),
     ("unsafe-join-input",
-     lambda: (f1945.orders_q(measures=[f1945.measure("last(amount, li_ts)")]), f1945.dev1945_models(orders_default="created_at")),
+     lambda: (f1945.orders_q(measures=[f1945.metric("last(amount, li_ts)")]), f1945.dev1945_datasets(orders_default="created_at")),
      UnsafeRelationshipInputError, "measure 'amount_last_li_ts'", True),
     ("unanalyzable-dependency",
-     lambda: (f1945.orders_q(measures=[f1945.measure("last(amount)")]), f1945.dev1945_models(orders_default="bad_ts")),
+     lambda: (f1945.orders_q(measures=[f1945.metric("last(amount)")]), f1945.dev1945_datasets(orders_default="bad_ts")),
      UnanalyzableDependencyError, "measure 'amount_last'", True),
     ("transform-input",
-     lambda: (f1832.orders_q(measures=[_m("sum(cumsum(weight) - 1)", "m")], time_dimensions=f1832.month_td()), f1832.dev1832_models()),
+     lambda: (f1832.orders_q(measures=[_m("sum(cumsum(weight) - 1)", "m")], time_dimensions=f1832.month_td()), f1832.dev1832_datasets()),
      TransformInputError, "transform 'cumsum'", True),
     ("computed-dimension",
      lambda: (SlayerQuery.model_validate({
          "population": "orders", "metrics": [{"expression": "sum(amount)", "name": "t"}],
          "dimensions": ["region", {"expression": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END", "name": "band"}],
-     }), f1740.dev1740_models()),
+     }), f1740.dev1740_datasets()),
      ComputedDimensionError, "dimension 'band'", False),
     ("association",
      lambda: (f1841.assoc_q(dimensions=["status"], measures=[_m("sum(customers.spend, window='90d')", "cm")],
                             time_dimensions=[TimeDimension(field="customers.signup_at", granularity=TimeGranularity.MONTH)]),
-              f1841.dev1840_models()),
+              f1841.dev1840_datasets()),
      AssociationError, "measure 'cm'", True),
     ("parameter-grain",
-     lambda: (f1847.sales_q(dimensions=["region"], measures=[_m(f"wavg({f1847.INNER_CR}, weight=id)", "w")]), f1847.dev1847_models()),
+     lambda: (f1847.sales_q(dimensions=["region"], measures=[_m(f"wavg({f1847.INNER_CR}, weight=id)", "w")]), f1847.dev1847_datasets()),
      ParameterGrainError, "measure 'w'", True),
     ("reaggregation",
      lambda: (orders_q(
          dimensions=["region"], time_dimensions=f1739.month_td(),
          measures=[_m("sum(sum(amount, partition_by=[region, city]), window='90d')", "w")],
-     ), f1739.dev1739_models()),
+     ), f1739.dev1739_datasets()),
      ReaggregationError, "measure 'w'", True),
     ("name-collision",
      lambda: (SlayerQuery.model_validate({
          "population": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}],
          "dimensions": ["region", {"expression": "lower(city)", "name": "rev"}],
-     }), f1740.dev1740_models()),
+     }), f1740.dev1740_datasets()),
      NameCollisionError, "dimension 'rev'", True),
     ("stage-flatten-collision",
      lambda: (SlayerQuery(
@@ -256,7 +256,7 @@ async def test_malformed_query_window_names_value_and_syntax() -> None:
 async def test_rest_answers_time_axis_violation_with_400(tmp_path) -> None:
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(DatasourceConfig(name="test", type="duckdb"))
-    await storage.save_dataset(f1832.monthly_model(), _validate=False)
+    await storage.save_dataset(f1832.monthly_dataset(), _validate=False)
     body = {
         "population": "monthly",
         "time_dimensions": [{"field": {"name": "ordered_at"}, "granularity": "month"}],

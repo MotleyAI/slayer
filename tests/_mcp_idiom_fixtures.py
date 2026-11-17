@@ -123,7 +123,7 @@ EXAMPLE_OWNERS: dict[str, tuple[str, str]] = {
 # --------------------------------------------------------------------------- #
 # Models + seed
 # --------------------------------------------------------------------------- #
-def idiom_models(*, data_source: str = "test") -> list[SlayerDataset]:
+def idiom_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
     return [
         SlayerDataset(
             name="orders", sql_table="orders", data_source=data_source,
@@ -220,7 +220,7 @@ def _idiom_seed(*, dialect: str, with_namesake: bool, with_last_year: bool) -> C
 
 async def make_idiom_engine(
     *, dialect: str = "duckdb", with_namesake: bool = False, with_last_year: bool = False,
-    models: list[SlayerDataset] | None = None,
+    datasets: list[SlayerDataset] | None = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """The idiom dataset on ``sqlite`` or ``duckdb``; ``models`` replaces :func:`idiom_models`."""
     if dialect == "duckdb":
@@ -228,12 +228,12 @@ async def make_idiom_engine(
     async with seeded_exec_engine(
         dialect=dialect,
         seed=_idiom_seed(dialect=dialect, with_namesake=with_namesake, with_last_year=with_last_year),
-        models=idiom_models() if models is None else models,
+        datasets=idiom_datasets() if datasets is None else datasets,
     ) as (engine, _):
         yield engine
 
 
-def _child_models(*, data_source: str = "test") -> list[SlayerDataset]:
+def _child_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
     def child(name: str) -> SlayerDataset:
         return SlayerDataset(
             name=name, sql_table=name, data_source=data_source,
@@ -302,12 +302,12 @@ def _child_seed(*, with_regionless: bool) -> Callable[[str], None]:
 async def make_child_engine(*, with_regionless: bool = True) -> AsyncIterator[SlayerQueryEngine]:
     pytest.importorskip("duckdb")
     async with seeded_exec_engine(
-        dialect="duckdb", seed=_child_seed(with_regionless=with_regionless), models=_child_models(),
+        dialect="duckdb", seed=_child_seed(with_regionless=with_regionless), datasets=_child_datasets(),
     ) as (engine, _):
         yield engine
 
 
-def _items_model(*, data_source: str = "test") -> SlayerDataset:
+def _items_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="items", sql_table="items", data_source=data_source,
         fields=[
@@ -334,7 +334,7 @@ def _items_seed(db_path: str) -> None:
 
 async def make_items_engine() -> AsyncIterator[SlayerQueryEngine]:
     pytest.importorskip("duckdb")
-    async with seeded_exec_engine(dialect="duckdb", seed=_items_seed, models=[_items_model()]) as (engine, _):
+    async with seeded_exec_engine(dialect="duckdb", seed=_items_seed, datasets=[_items_dataset()]) as (engine, _):
         yield engine
 
 

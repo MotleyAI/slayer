@@ -43,7 +43,7 @@ ALL_IDS = frozenset({1, 2, 3, 4, 5})
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
-def orders_model(*, data_source: str = "test") -> SlayerDataset:
+def orders_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="created_at",
@@ -78,7 +78,7 @@ def orders_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def customers_model(*, data_source: str = "test") -> SlayerDataset:
+def customers_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
@@ -91,7 +91,7 @@ def customers_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def balances_model(*, data_source: str = "test") -> SlayerDataset:
+def balances_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="balances", sql_table="balances", data_source=data_source,
         default_time_dimension="updated_at",
@@ -105,9 +105,9 @@ def balances_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def dev2101_models(*, data_source: str = "test") -> list[SlayerDataset]:
-    return [orders_model(data_source=data_source), customers_model(data_source=data_source),
-            balances_model(data_source=data_source)]
+def dev2101_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
+    return [orders_dataset(data_source=data_source), customers_dataset(data_source=data_source),
+            balances_dataset(data_source=data_source)]
 
 
 # --------------------------------------------------------------------------- #
@@ -201,7 +201,7 @@ async def engine_for(dialect: str) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev2101_models()) as (engine, _):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev2101_datasets()) as (engine, _):
         yield engine
 
 
@@ -296,27 +296,27 @@ def q(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
-def m(formula: str, name: str = "v") -> DatasetMetric:
-    return DatasetMetric(expression=formula, name=name)
+def m(expression: str, name: str = "v") -> DatasetMetric:
+    return DatasetMetric(expression=expression, name=name)
 
 
-def ids(resp: SlayerResponse, *, model: str = "orders") -> set[int]:
-    return {int(r[f"{model}.id"]) for r in resp.data}
+def ids(resp: SlayerResponse, *, dataset: str = "orders") -> set[int]:
+    return {int(r[f"{dataset}.id"]) for r in resp.data}
 
 
-def ordered_ids(resp: SlayerResponse, *, model: str = "orders") -> list[int]:
-    return [int(r[f"{model}.id"]) for r in resp.data]
+def ordered_ids(resp: SlayerResponse, *, dataset: str = "orders") -> list[int]:
+    return [int(r[f"{dataset}.id"]) for r in resp.data]
 
 
-def by_key(resp: SlayerResponse, key: str, value: str = "v", *, model: str = "orders") -> dict:
-    out = {r[f"{model}.{key}"]: r[f"{model}.{value}"] for r in resp.data}
+def by_key(resp: SlayerResponse, key: str, value: str = "v", *, dataset: str = "orders") -> dict:
+    out = {r[f"{dataset}.{key}"]: r[f"{dataset}.{value}"] for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for one {key}"
     return out
 
 
-def single(resp: SlayerResponse, name: str = "v", *, model: str = "orders") -> Any:
+def single(resp: SlayerResponse, name: str = "v", *, dataset: str = "orders") -> Any:
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{model}.{name}"]
+    return resp.data[0][f"{dataset}.{name}"]
 
 
 def num(value: Any) -> float | None:
@@ -328,11 +328,11 @@ def day(value: Any) -> str | None:
     return None if value is None else str(value)[:10]
 
 
-async def emit(query: SlayerQuery, *, dialect: str, models: Iterable[SlayerDataset] | None = None,
+async def emit(query: SlayerQuery, *, dialect: str, datasets: Iterable[SlayerDataset] | None = None,
                datasource_fields: dict | None = None) -> str:
     """Dry-run SQL for ``query`` over the dev2101 models on ``dialect`` (asserts it parses there)."""
-    first, *rest = list(models) if models is not None else dev2101_models()
-    return await _engine_generate(query=query, model=first, extra_models=rest, dialect=dialect,
+    first, *rest = list(datasets) if datasets is not None else dev2101_datasets()
+    return await _engine_generate(query=query, dataset=first, extra_datasets=rest, dialect=dialect,
                                   datasource_fields=datasource_fields)
 
 
@@ -430,7 +430,7 @@ async def check_filtered_aggregations(engine: SlayerQueryEngine) -> None:
         "population": "balances", "dimensions": ["customer_id"],
         "metrics": [{"expression": "last(balance, updated_at) FILTER (WHERE status = 'active')", "name": "v"}],
     }))
-    assert {int(k): num(v) for k, v in by_key(resp, "customer_id", model="balances").items()} == {1: 150.0, 2: 80.0}
+    assert {int(k): num(v) for k, v in by_key(resp, "customer_id", dataset="balances").items()} == {1: 150.0, 2: 80.0}
 
 
 #: Custom aggregations FILTERed to the paid rows: (formula, by region, ungrouped).

@@ -23,11 +23,11 @@ from tests._dev1847_fixtures import (
     DataType,
     DatasetMetric,
     SlayerQuery,
-    corders_model,
-    customers_model,
+    corders_dataset,
+    customers_dataset,
     gen,
-    regions_model,
-    sales_model,
+    regions_dataset,
+    sales_dataset,
 )
 from tests._engine_helpers import _engine_generate
 
@@ -40,11 +40,11 @@ def _join_count_to(sql: str, table: str) -> int:
                if isinstance(j.this, exp.Table) and j.this.name == table)
 
 
-def _derived_ref_models():
+def _derived_ref_datasets():
     """corders.cust_rid is a DERIVED column reading customers.rid1 — itself a
     DERIVED column — across the corders→customers join."""
     sales, regions, customers, corders = (
-        sales_model(), regions_model(), customers_model(), corders_model())
+        sales_dataset(), regions_dataset(), customers_dataset(), corders_dataset())
     customers.fields.append(
         DatasetField(name="rid1", datatype=DataType.DOUBLE, sql="region_id * 1"))
     corders.fields.append(
@@ -68,14 +68,14 @@ class TestJoinEmittedOnce:
     async def test_derived_referencing_derived_across_join_once(self):
         """The join carrying the derived-of-derived constituent is emitted once
         with the allocator's alias — never re-rendered by a second resolver."""
-        models = _derived_ref_models()
+        models = _derived_ref_datasets()
         sql = await _engine_generate(
             query=SlayerQuery(
                 population="corders",
                 metrics=[DatasetMetric(
                     expression="sum(amount * avg(cust_rid, partition_by=customer_id))",
                     name="m")]),
-            model=models[0], extra_models=models[1:],
+            dataset=models[0], extra_datasets=models[1:],
             dialect="postgres", validate=False)
         assert _join_count_to(sql, "customers") == 1, sql
         assert_scope_closed(sql)

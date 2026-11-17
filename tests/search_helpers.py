@@ -9,7 +9,7 @@ from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.storage.base import StorageBackend
 
 
-async def seed_warehouse_models(storage: StorageBackend) -> None:
+async def seed_warehouse_datasets(storage: StorageBackend) -> None:
     """Seed the standard warehouse datasource + orders + customers models.
 
     Centralised here to avoid Sonar duplication-density failures across

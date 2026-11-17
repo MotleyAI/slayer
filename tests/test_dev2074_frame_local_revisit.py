@@ -120,7 +120,7 @@ def _customers() -> SlayerDataset:
     )
 
 
-def _cycle_models() -> list[SlayerDataset]:
+def _cycle_datasets() -> list[SlayerDataset]:
     def node(name: str, nxt: str, extra: Sequence[DatasetField] = ()) -> SlayerDataset:
         return SlayerDataset(
             name=name, data_source=DS, sql_table=name,
@@ -137,7 +137,7 @@ def _cycle_models() -> list[SlayerDataset]:
     ]
 
 
-def _ab_models() -> list[SlayerDataset]:
+def _ab_datasets() -> list[SlayerDataset]:
     a = SlayerDataset(
         name="a", data_source=DS, sql_table="a",
         fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -156,11 +156,11 @@ def _ab_models() -> list[SlayerDataset]:
     return [a, b]
 
 
-def _all_models() -> list[SlayerDataset]:
-    return [_orders(), _customers(), *_cycle_models(), *_ab_models()]
+def _all_datasets() -> list[SlayerDataset]:
+    return [_orders(), _customers(), *_cycle_datasets(), *_ab_datasets()]
 
-def _stage_scope(stage: SlayerQuery, models_by_name: dict) -> QueryScope:
-    return query_scopes([stage], datasets_by_ds={"ds": models_by_name}, data_source="ds")[0][0]
+def _stage_scope(stage: SlayerQuery, datasets_by_name: dict) -> QueryScope:
+    return query_scopes([stage], datasets_by_ds={"ds": datasets_by_name}, data_source="ds")[0][0]
 
 
 
@@ -185,7 +185,7 @@ async def ctx(request) -> AsyncIterator[_Ctx]:
         pytest.importorskip("duckdb_engine")
     async with seeded_exec_engine(
         dialect=dialect, seed=lambda p: _seed(p, duck=dialect == "duckdb"),
-        models=_all_models(), datasource=DS, validate=False,
+        datasets=_all_datasets(), datasource=DS, validate=False,
     ) as (engine, db_path):
         yield _Ctx(engine, db_path, dialect)
 
@@ -298,7 +298,7 @@ class TestDerivedColumnsCompose:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite"))
         engine = SlayerQueryEngine(storage=storage)
-        models = [_orders(), _customers(), *_cycle_models(), *_ab_models()]
+        models = [_orders(), _customers(), *_cycle_datasets(), *_ab_datasets()]
         for model in models:
             await engine.save_dataset(model.model_copy(update={
                 "fields": [c for c in model.fields if c.sql is None], "metrics": []}))
@@ -481,9 +481,9 @@ class TestComposedWalk:
 
 class TestCancellationToTheNearestOccurrence:
     def _cancel(self, *, owner_path: tuple[str, ...], tokens: tuple[str, ...],
-                models: dict[str, SlayerDataset] | None = None, root: str = "orders") -> tuple[str, ...] | None:
-        models = models or _by_name()
-        return walk_cancelling(root=models[root], owner_path=owner_path, tokens=tokens, datasets_by_name=models)
+                datasets: dict[str, SlayerDataset] | None = None, root: str = "orders") -> tuple[str, ...] | None:
+        datasets = datasets or _by_name()
+        return walk_cancelling(root=datasets[root], owner_path=owner_path, tokens=tokens, datasets_by_name=datasets)
 
     def test_repeated_dataset_cancels_to_the_innermost_occurrence(self) -> None:
         assert self._cancel(owner_path=("customer", "last_order"), tokens=("orders",)) == (
@@ -503,9 +503,9 @@ class TestCancellationToTheNearestOccurrence:
                       join_pairs=[["last_order_id", "id"]], cardinality=M2O),
         ]})
         models = {**models, "customers": cust, "stage_recent": stage}
-        assert self._cancel(root="stage_recent", models=models,
+        assert self._cancel(root="stage_recent", datasets=models,
                             owner_path=("customer", "last_order"), tokens=("recent",)) == ()
-        assert self._cancel(root="stage_recent", models=models,
+        assert self._cancel(root="stage_recent", datasets=models,
                             owner_path=("customer", "last_order"), tokens=("orders",)) == (
             "customer", "last_order")
 
@@ -519,5 +519,5 @@ class TestCancellationToTheNearestOccurrence:
                 to="notes", name="orders", join_pairs=[["note_id", "id"]], cardinality=M2O)],
         })
         models = {**_by_name(), "customers": cust, "notes": notes}
-        assert self._cancel(models=models, owner_path=("customer", "last_order", "customer"),
+        assert self._cancel(datasets=models, owner_path=("customer", "last_order", "customer"),
                             tokens=("orders",)) == ("customer", "last_order", "customer", "orders")

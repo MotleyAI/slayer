@@ -12,7 +12,7 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.facade.catalog import build_catalog_grouped_by_schema
 
 
-def _model(name: str, ds: str, *, joins=None) -> SlayerDataset:
+def _dataset(name: str, ds: str, *, joins=None) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source=ds, sql_table=name,
         fields=[
@@ -34,8 +34,8 @@ def _table_names(schema) -> set[str]:
 def test_default_groups_all_into_public():
     catalog = build_catalog_grouped_by_schema(
         datasets_by_datasource={
-            "sales": [_model("orders", "sales")],
-            "hr": [_model("people", "hr")],
+            "sales": [_dataset("orders", "sales")],
+            "hr": [_dataset("people", "hr")],
         },
     )
     assert {s.name for s in catalog.schemas} == {"public"}
@@ -45,8 +45,8 @@ def test_default_groups_all_into_public():
 def test_explicit_schema_separates_datasources():
     catalog = build_catalog_grouped_by_schema(
         datasets_by_datasource={
-            "sales": [_model("orders", "sales")],
-            "hr": [_model("people", "hr")],
+            "sales": [_dataset("orders", "sales")],
+            "hr": [_dataset("people", "hr")],
         },
         schema_by_datasource={"hr": "hr_schema"},
     )
@@ -58,8 +58,8 @@ def test_explicit_schema_separates_datasources():
 def test_collision_resolved_by_priority():
     catalog = build_catalog_grouped_by_schema(
         datasets_by_datasource={
-            "primary": [_model("orders", "primary")],
-            "secondary": [_model("orders", "secondary")],
+            "primary": [_dataset("orders", "primary")],
+            "secondary": [_dataset("orders", "secondary")],
         },
         datasource_priority=["secondary", "primary"],
     )
@@ -73,14 +73,14 @@ def test_collision_resolved_by_priority():
 def test_join_scoping_does_not_cross_datasources():
     # Both datasources have a 'customers' model; 'orders' in sales joins to it.
     # The join must resolve to sales.customers, never hr.customers.
-    orders = _model(
+    orders = _dataset(
         "orders", "sales",
         joins=[DatasetRelationship(to="customers", join_pairs=[["id", "id"]])],
     )
     catalog = build_catalog_grouped_by_schema(
         datasets_by_datasource={
-            "sales": [orders, _model("customers", "sales")],
-            "hr": [_model("customers", "hr")],
+            "sales": [orders, _dataset("customers", "sales")],
+            "hr": [_dataset("customers", "hr")],
         },
         schema_by_datasource={"hr": "hr_schema"},
     )

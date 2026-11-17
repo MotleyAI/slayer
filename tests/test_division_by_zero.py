@@ -45,7 +45,7 @@ def _empty_population_ratios() -> SlayerQuery:
 @pytest.mark.parametrize("backend", ["sqlite", "duckdb"])
 async def test_a_ratio_over_an_empty_population_is_null(backend: str) -> None:
     async with seeded_exec_engine(
-        dialect=backend, seed=lambda p: seed_backend(backend, p, [ORDERS]), models=[_orders()],
+        dialect=backend, seed=lambda p: seed_backend(backend, p, [ORDERS]), datasets=[_orders()],
     ) as (engine, _db):
         resp = await engine.execute(_empty_population_ratios())
     assert [(r["orders.avg_amount"], r["orders.share"]) for r in resp.data] == [(None, None)]
@@ -53,7 +53,7 @@ async def test_a_ratio_over_an_empty_population_is_null(backend: str) -> None:
 
 @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
 async def test_every_dialect_guards_the_divisor(dialect: str) -> None:
-    sql = await _engine_generate(query=_empty_population_ratios(), model=_orders(), dialect=dialect)
+    sql = await _engine_generate(query=_empty_population_ratios(), dataset=_orders(), dialect=dialect)
     divisions = list(sqlglot.parse_one(sql, dialect=dialect).find_all(exp.Div))
     assert divisions, sql
     assert all(
@@ -66,5 +66,5 @@ async def test_every_dialect_guards_the_divisor(dialect: str) -> None:
 
 async def test_a_nonzero_literal_divisor_is_not_guarded() -> None:
     query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount) / 2", "name": "half"}]})
-    sql = await _engine_generate(query=query, model=_orders(), dialect="postgres")
+    sql = await _engine_generate(query=query, dataset=_orders(), dialect="postgres")
     assert "NULLIF" not in sql.upper(), sql

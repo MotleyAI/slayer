@@ -14,8 +14,8 @@ from slayer.engine.population.inference import spine_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._dev1866_fixtures import DS_FAN, make_inference_storage
-from tests._dev2137_fixtures import list_engine, measure
-from tests._dev2187_fixtures import BACKENDS, assert_same, canonical_rows, orders_engine, orders_model
+from tests._dev2137_fixtures import list_engine, metric
+from tests._dev2187_fixtures import BACKENDS, assert_same, canonical_rows, orders_engine, orders_dataset
 from tests._saved_query_refinement_fixtures import MONTHLY, REVENUE, by_month, refine_engine
 from tests._unrelated_datasets_fixtures import m, main_engine, query
 
@@ -191,14 +191,14 @@ async def test_a_stage_root_takes_its_own_name(engine: SlayerQueryEngine, positi
 
 async def test_a_stage_root_qualifies_a_list_columns_elements() -> None:
     stage = {"name": "s", "population": "contractors", "dimensions": ["team"],
-             "metrics": [measure("collect(skills.value)", "team_skills")]}
+             "metrics": [metric("collect(skills.value)", "team_skills")]}
     async with list_engine() as eng:
         await assert_same(
             eng,
             [stage, {"population": "s", "dimensions": ["s.team_skills.value"],
-                     "metrics": [measure("count(s.team_skills.*)", "n")]}],
+                     "metrics": [metric("count(s.team_skills.*)", "n")]}],
             [stage, {"population": "s", "dimensions": ["team_skills.value"],
-                     "metrics": [measure("count(team_skills.*)", "n")]}],
+                     "metrics": [metric("count(team_skills.*)", "n")]}],
         )
 
 
@@ -227,7 +227,7 @@ async def test_the_root_wins_over_an_edge_named_like_it(backend: str) -> None:
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_a_column_sql_root_qualifier_keeps_an_edge_named_like_the_root(backend: str) -> None:
     async with orders_engine(backend, edge_name="orders") as eng:
-        model = orders_model(edge_name="orders")
+        model = orders_dataset(edge_name="orders")
         extra = DatasetField(name="cust_name", datatype=DataType.TEXT, sql="orders.orders.name")
         await eng.storage.save_dataset(model.model_copy(update={"fields": [*model.fields, extra]}), _validate=False)
         resp = await eng.execute(_orders(dimensions=["cust_name"], measures=["count(*)"]))

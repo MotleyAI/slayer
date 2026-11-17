@@ -21,13 +21,13 @@ from tests._dev1841_fixtures import (
     DatasetField,
     DataType,
     SlayerDataset,
-    dev1840_models,
+    dev1840_datasets,
 )
 from tests._dev1847_fixtures import (
     FieldRef,
     DatasetMetric,
     SlayerQuery,
-    dev1847_models,
+    dev1847_datasets,
 )
 
 _ISSUE_RE = re.compile(r"DEV-\d+")
@@ -47,16 +47,16 @@ def assert_grain_residue(exc: SlayerError, *, param: str) -> None:
     assert_ref_free(msg)
 
 
-def _customers(models: List[SlayerDataset]) -> SlayerDataset:
-    return next(m for m in models if m.name == "customers")
+def _customers(datasets: List[SlayerDataset]) -> SlayerDataset:
+    return next(m for m in datasets if m.name == "customers")
 
 
 # --------------------------------------------------------------------------- #
 # Helper model variants.
 # --------------------------------------------------------------------------- #
-def shared_default_name_models() -> List[SlayerDataset]:
+def shared_default_name_datasets() -> List[SlayerDataset]:
     """Host and target both carry ``spend``; ``wsum`` on customers defaults ``weight`` to bare ``spend`` — must bind customers.spend (43400/34100), not the host's."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wsum", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="spend")]),
@@ -67,9 +67,9 @@ def shared_default_name_models() -> List[SlayerDataset]:
     return models
 
 
-def expr_default_name_models() -> List[SlayerDataset]:
+def expr_default_name_datasets() -> List[SlayerDataset]:
     """``wsum2`` weight default is a target-relative expression (``spend * 1``) — anchored on customers."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wsum2", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="spend * 1")]),
@@ -77,9 +77,9 @@ def expr_default_name_models() -> List[SlayerDataset]:
     return models
 
 
-def toone_filter_models() -> List[SlayerDataset]:
+def toone_filter_datasets() -> List[SlayerDataset]:
     """customers gains ``north_spend`` (spend filtered on region) plus ``wsum``/``wsum4`` (``scale`` over to-one ``regions.pop``) for home-shorter-than-source rendering."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     cust = _customers(models)
     cust.fields.append(
         DatasetField(name="north_spend", datatype=DataType.DOUBLE, sql="spend",
@@ -97,9 +97,9 @@ def toone_filter_models() -> List[SlayerDataset]:
     return models
 
 
-def toone_default_models() -> List[SlayerDataset]:
+def toone_default_datasets() -> List[SlayerDataset]:
     """``wsum3`` weight default is a to-one path (``regions.pop``) — joins customers→regions per entity."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wsum3", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="regions.pop")]),
@@ -107,9 +107,9 @@ def toone_default_models() -> List[SlayerDataset]:
     return models
 
 
-def derived_default_models() -> List[SlayerDataset]:
+def derived_default_datasets() -> List[SlayerDataset]:
     """``wsum5`` default is a to-one path to a DERIVED column (``regions.derived_pop`` = ``pop * 2``) — must expand its SQL."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     next(m for m in models if m.name == "regions").fields.append(
         DatasetField(name="derived_pop", datatype=DataType.DOUBLE, sql="pop * 2"),
     )
@@ -120,18 +120,18 @@ def derived_default_models() -> List[SlayerDataset]:
     return models
 
 
-def fanning_derived_source_models() -> List[SlayerDataset]:
+def fanning_derived_source_datasets() -> List[SlayerDataset]:
     """customers gains ``bad_spend`` = ``spend + orders.amount`` — a derived source crossing the fanning customers→orders hop, must fail closed."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     _customers(models).fields.append(
         DatasetField(name="bad_spend", datatype=DataType.DOUBLE, sql="spend + orders.amount"),
     )
     return models
 
 
-def qualified_expr_default_models() -> List[SlayerDataset]:
+def qualified_expr_default_datasets() -> List[SlayerDataset]:
     """``wsum6`` weight default is an expression over a to-one qualified ref (``regions.pop * 2``)."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wsum6", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="regions.pop * 2")]),
@@ -139,9 +139,9 @@ def qualified_expr_default_models() -> List[SlayerDataset]:
     return models
 
 
-def mixed_expr_default_models() -> List[SlayerDataset]:
+def mixed_expr_default_datasets() -> List[SlayerDataset]:
     """``wsum7`` weight default mixes an owner column with a qualified ref (``spend * regions.pop``)."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wsum7", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="spend * regions.pop")]),
@@ -149,10 +149,10 @@ def mixed_expr_default_models() -> List[SlayerDataset]:
     return models
 
 
-def root_named_expr_default_models() -> List[SlayerDataset]:
+def root_named_expr_default_datasets() -> List[SlayerDataset]:
     """``wroot`` on customers: weight default ``orders.amount + 0`` names the query
     root, so it resolves root-local and widens the home to orders (DEV-1931)."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wroot", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="orders.amount + 0")]),
@@ -160,9 +160,9 @@ def root_named_expr_default_models() -> List[SlayerDataset]:
     return models
 
 
-def self_qualified_expr_default_models() -> List[SlayerDataset]:
+def self_qualified_expr_default_datasets() -> List[SlayerDataset]:
     """``wsum8`` weight default self-qualifies the owner (``customers.spend * 1``) — a local ref, not a hop."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wsum8", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="customers.spend * 1")]),
@@ -170,9 +170,9 @@ def self_qualified_expr_default_models() -> List[SlayerDataset]:
     return models
 
 
-def derived_local_expr_default_models() -> List[SlayerDataset]:
+def derived_local_expr_default_datasets() -> List[SlayerDataset]:
     """``wsum9`` weight default mixes a DERIVED local column with a qualified ref (``double_spend * regions.pop``)."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     cust = _customers(models)
     cust.fields.append(
         DatasetField(name="double_spend", datatype=DataType.DOUBLE, sql="spend * 2"),
@@ -185,10 +185,10 @@ def derived_local_expr_default_models() -> List[SlayerDataset]:
     return models
 
 
-def literal_only_reagg_models() -> List[SlayerDataset]:
+def literal_only_reagg_datasets() -> List[SlayerDataset]:
     """``wconst`` on sales: expr default referencing NO columns, only literals —
     must ride the plain default machinery, never a false ``amount`` dependency."""
-    models = dev1847_models()
+    models = dev1847_datasets()
     sales = next(m for m in models if m.name == "sales")
     sales.aggregations.append(
         Aggregation(name="wconst", expression="SUM({value} * {weight}) / SUM({weight})",
@@ -199,9 +199,9 @@ def literal_only_reagg_models() -> List[SlayerDataset]:
     return models
 
 
-def unmodeled_physical_expr_default_models() -> List[SlayerDataset]:
+def unmodeled_physical_expr_default_datasets() -> List[SlayerDataset]:
     """``wphys`` weight default references ``tier`` after it is REMOVED from the model — a physical-only column, so the default fails closed."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     cust = _customers(models)
     cust.fields = [c for c in cust.fields if c.name != "tier"]
     cust.aggregations.append(
@@ -213,9 +213,9 @@ def unmodeled_physical_expr_default_models() -> List[SlayerDataset]:
     return models
 
 
-def unparseable_expr_default_models() -> List[SlayerDataset]:
+def unparseable_expr_default_datasets() -> List[SlayerDataset]:
     """``wugly`` weight default that no dialect parses — must fail closed, never render raw."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wugly", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql=")((( bad")]),
@@ -223,9 +223,9 @@ def unparseable_expr_default_models() -> List[SlayerDataset]:
     return models
 
 
-def opaque_expr_default_models() -> List[SlayerDataset]:
+def opaque_expr_default_datasets() -> List[SlayerDataset]:
     """``wopq`` weight default references an unresolvable qualifier (``nosuch.col``) — must fail closed."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wopq", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="nosuch.col + 1")]),
@@ -233,9 +233,9 @@ def opaque_expr_default_models() -> List[SlayerDataset]:
     return models
 
 
-def literal_collision_reagg_models() -> List[SlayerDataset]:
+def literal_collision_reagg_datasets() -> List[SlayerDataset]:
     """``wlit`` expr default whose string literal equals a non-grain column name (``'amount'``) — must not read as a dependency."""
-    models = dev1847_models()
+    models = dev1847_datasets()
     sales = next(m for m in models if m.name == "sales")
     sales.aggregations.append(
         Aggregation(name="wlit", expression="SUM({value} * {weight}) / SUM({weight})",
@@ -246,9 +246,9 @@ def literal_collision_reagg_models() -> List[SlayerDataset]:
     return models
 
 
-def qualified_reagg_default_models() -> List[SlayerDataset]:
+def qualified_reagg_default_datasets() -> List[SlayerDataset]:
     """``cwavg`` weight default is a qualified expr over the to-one chain, FK-seeded by the operand grain (``customers.region_id * 1``)."""
-    models = dev1847_models()
+    models = dev1847_datasets()
     corders = next(m for m in models if m.name == "corders")
     corders.aggregations.append(
         Aggregation(name="cwavg", expression="SUM({value} * {weight}) / SUM({weight})",
@@ -258,7 +258,7 @@ def qualified_reagg_default_models() -> List[SlayerDataset]:
     return models
 
 
-def weighted_source_queries_model() -> SlayerDataset:
+def weighted_source_queries_dataset() -> SlayerDataset:
     """Manual two-stage ``weighted_avg(sum(amount), weight=count(id))`` by region — the independent oracle the re-aggregation must match."""
     return SlayerDataset(
         name="wavg_city_by_region", data_source="test",
@@ -276,8 +276,8 @@ def weighted_source_queries_model() -> SlayerDataset:
         ])
 
 
-def weighted_sales_models() -> List[SlayerDataset]:
-    return dev1847_models() + [weighted_source_queries_model()]
+def weighted_sales_datasets() -> List[SlayerDataset]:
+    return dev1847_datasets() + [weighted_source_queries_dataset()]
 
 
 # Association oracles (per-cell = DISTINCT customers by status:
@@ -336,16 +336,16 @@ __all__ = [
     "Aggregation", "AggregationParam", "DatasetField", "DataType", "SlayerDataset",
     "FieldRef", "DatasetMetric", "SlayerQuery", "SlayerError",
     "assert_ref_free", "assert_grain_residue",
-    "shared_default_name_models", "expr_default_name_models",
-    "toone_filter_models", "toone_default_models", "derived_default_models",
-    "fanning_derived_source_models", "weighted_source_queries_model",
-    "weighted_sales_models",
-    "qualified_expr_default_models", "mixed_expr_default_models",
-    "root_named_expr_default_models", "opaque_expr_default_models",
-    "self_qualified_expr_default_models", "derived_local_expr_default_models",
-    "unmodeled_physical_expr_default_models", "unparseable_expr_default_models",
-    "literal_collision_reagg_models", "literal_only_reagg_models",
-    "qualified_reagg_default_models",
+    "shared_default_name_datasets", "expr_default_name_datasets",
+    "toone_filter_datasets", "toone_default_datasets", "derived_default_datasets",
+    "fanning_derived_source_datasets", "weighted_source_queries_dataset",
+    "weighted_sales_datasets",
+    "qualified_expr_default_datasets", "mixed_expr_default_datasets",
+    "root_named_expr_default_datasets", "opaque_expr_default_datasets",
+    "self_qualified_expr_default_datasets", "derived_local_expr_default_datasets",
+    "unmodeled_physical_expr_default_datasets", "unparseable_expr_default_datasets",
+    "literal_collision_reagg_datasets", "literal_only_reagg_datasets",
+    "qualified_reagg_default_datasets",
     "ASSOC_WAVG_SPEND_BY_STATUS", "ASSOC_WAVG_OK_FAN_DEFECT",
     "ASSOC_WSUM_BY_STATUS", "ASSOC_WAVG_POP_BY_STATUS",
     "ASSOC_WSUM6_BY_STATUS", "ASSOC_WSUM7_BY_STATUS", "ASSOC_WSUM9_BY_STATUS",

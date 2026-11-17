@@ -51,7 +51,7 @@ from slayer.core.keys import FieldSqlKey
 # ---------------------------------------------------------------------------
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         data_source="prod",
@@ -67,7 +67,7 @@ def _orders_model() -> SlayerDataset:
     )
 
 
-def _customers_model() -> SlayerDataset:
+def _customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers",
         data_source="prod",
@@ -114,7 +114,7 @@ def _customers_with_regions_join() -> SlayerDataset:
     )
 
 
-def _regions_model() -> SlayerDataset:
+def _regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions",
         data_source="prod",
@@ -155,7 +155,7 @@ def _orders_with_derived_temporal() -> SlayerDataset:
 def _bundle_local() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=_orders_model(),
+        population=_orders_dataset(),
         referenced_datasets=[],
     )
 
@@ -164,7 +164,7 @@ def _bundle_joined() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
         population=_orders_with_customers_join(),
-        referenced_datasets=[_customers_model()],
+        referenced_datasets=[_customers_dataset()],
     )
 
 
@@ -172,7 +172,7 @@ def _bundle_multi_hop() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
         population=_orders_with_customers_join(),
-        referenced_datasets=[_customers_with_regions_join(), _regions_model()],
+        referenced_datasets=[_customers_with_regions_join(), _regions_dataset()],
     )
 
 
@@ -191,7 +191,7 @@ def _bundle_derived() -> ResolvedSourceBundle:
 
 class TestBindTimeDimension:
     def test_local_td_yields_timetrunckey(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         td = TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,
@@ -228,7 +228,7 @@ class TestBindTimeDimension:
             )
 
     def test_unknown_column_raises_unknown_reference(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         td = TimeDimension(
             field="not_a_column",
             granularity=TimeGranularity.MONTH,
@@ -253,7 +253,7 @@ class TestBindTimeDimension:
 
     def test_date_column_accepted(self) -> None:
         # DATE is in the same temporal bucket as TIMESTAMP — should bind.
-        model = _orders_model()
+        model = _orders_dataset()
         td = TimeDimension(
             field="reviewed_at",
             granularity=TimeGranularity.WEEK,
@@ -426,7 +426,7 @@ class TestValueRegistryTimeTrunc:
 
 class TestProjectionPlannerTimeDimensions:
     def test_td_declared_measure_is_public_not_hidden(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         td = TimeDimension(
             field="created_at",
             granularity=TimeGranularity.MONTH,

@@ -213,7 +213,7 @@ def seed_dev1748_sqlite(db_path: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def dev1748_models() -> List[SlayerDataset]:
+def dev1748_datasets() -> List[SlayerDataset]:
     """``orders -> customers -> regions`` plus 1:N ``order_tags`` and an empty
     twin of ``orders``.
 
@@ -326,7 +326,7 @@ def dev1748_bundle() -> "ResolvedSourceBundle":
     Plan-level tests assert on the plan the planner builds; going through the
     engine would only add a render step they do not care about.
     """
-    models = dev1748_models()
+    models = dev1748_datasets()
     return ResolvedSourceBundle(
         dialect="postgres",
         population=models[0], referenced_datasets=list(models[1:]),
@@ -336,7 +336,7 @@ def dev1748_bundle() -> "ResolvedSourceBundle":
 async def make_sqlite_engine(base_dir: str, db_path: str) -> SlayerQueryEngine:
     """Storage + engine bound to the seeded SQLite file at ``db_path``."""
     return await make_seeded_sqlite_engine(
-        base_dir=base_dir, db_path=db_path, models=dev1748_models()
+        base_dir=base_dir, db_path=db_path, datasets=dev1748_datasets()
     )
 
 

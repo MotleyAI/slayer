@@ -13,7 +13,7 @@ from sqlglot import exp
 
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
-from tests._dev2120_fixtures import contractors_engine, contractors_model
+from tests._dev2120_fixtures import contractors_engine, contractors_dataset
 from tests._dev2210_fixtures import BACKENDS, by_id, filtered_engine, ids, render, seeded_file
 from tests._law_harness import raw_rows
 
@@ -174,8 +174,8 @@ class TestFilteredRoot:
 class TestListParentReadsFilteredRows:
     @pytest.fixture
     async def team_a(self) -> AsyncIterator[SlayerQueryEngine]:
-        model = contractors_model().model_copy(update={"filter": ["team = 'A'"]})
-        async with contractors_engine("duckdb", models=[model]) as eng:
+        model = contractors_dataset().model_copy(update={"filter": ["team = 'A'"]})
+        async with contractors_engine("duckdb", datasets=[model]) as eng:
             yield eng
 
     async def test_element_count(self, team_a):

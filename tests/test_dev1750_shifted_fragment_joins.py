@@ -30,16 +30,16 @@ from tests._dev1750_fixtures import (
     base_cte_body,
     gen,
     month_td,
-    dev1750_models,
+    dev1750_datasets,
     shifted_cte_body,
     shifted_relation,
 )
 from tests._engine_helpers import _extract_cte_body
 
 
-def _q(*, measures) -> SlayerQuery:
+def _q(*, metrics) -> SlayerQuery:
     return SlayerQuery(
-        population="orders", time_dimensions=month_td(), metrics=measures,
+        population="orders", time_dimensions=month_td(), metrics=metrics,
     )
 
 
@@ -49,7 +49,7 @@ class TestShiftedCteFragmentDefaultParam:
     fragment's join hops live inside the producer's own ``_cm_`` CTE."""
 
     async def test_shifted_cte_joins_the_fragment_hops(self) -> None:
-        sql = await gen(_q(measures=[
+        sql = await gen(_q(metrics=[
             DatasetMetric(expression="time_shift(wscaled_sum(amount), -1)", name="prev"),
         ]))
         # The shift reads the crossing producer; the fragment's two hops + the
@@ -64,7 +64,7 @@ class TestShiftedCteFragmentDefaultParam:
     async def test_host_base_does_not_carry_the_shifted_reaggregation(self) -> None:
         """The shifted re-aggregation belongs to the shifted CTE, not the host
         ``base`` — a leak there would double-join ``regions`` at host grain."""
-        sql = await gen(_q(measures=[
+        sql = await gen(_q(metrics=[
             DatasetMetric(expression="sum(amount)", name="s"),
             DatasetMetric(expression="time_shift(wscaled_sum(amount), -1)", name="prev"),
         ]))
@@ -81,7 +81,7 @@ class TestShiftedCteFragmentUserKwarg:
     in the shifted CTE."""
 
     async def test_user_string_kwarg_crossing_join_registers(self) -> None:
-        sql = await gen(_q(measures=[
+        sql = await gen(_q(metrics=[
             DatasetMetric(
                 expression="time_shift(wscaled_sum(amount, w='customers.regions.weight'), -1)",
                 name="prev",
@@ -99,10 +99,10 @@ class TestFragmentBindingUnit:
     key, so no path can register the default fragment's join."""
 
     @staticmethod
-    def _kwargs(formula: str) -> dict:
-        models = dev1750_models()
+    def _kwargs(expression: str) -> dict:
+        models = dev1750_datasets()
         key = bind_expr(
-            parse_expr(formula), scope=DatasetScope(population=models[0]),
+            parse_expr(expression), scope=DatasetScope(population=models[0]),
             bundle=ResolvedSourceBundle(dialect="duckdb", population=models[0],
                                         referenced_datasets=models[1:]),
         ).value_key
@@ -133,7 +133,7 @@ class TestShiftedCtePositionalArgRegistration:
 
     @pytest.mark.parametrize("agg", ["last", "first"])
     async def test_first_last_crossing_time_arg_no_silent_leak(self, agg: str) -> None:
-        q = _q(measures=[
+        q = _q(metrics=[
             DatasetMetric(expression="sum(customers.spend)", name="cm"),
             DatasetMetric(
                 expression=f"time_shift({agg}(amount, customers.signup_at), -1)",
@@ -166,7 +166,7 @@ class TestCrossModelHiddenAliasReservation:
         # ``sum(customers.spend)`` forces the cross-model transform chain; the
         # arithmetic-wrapped ``time_shift`` mints a hidden ``_time_shift_inner``
         # slot that would collide with the like-named user measure.
-        sql = await gen(_q(measures=[
+        sql = await gen(_q(metrics=[
             DatasetMetric(expression="sum(customers.spend)", name="cm"),
             DatasetMetric(expression="sum(amount)", name="_time_shift_inner"),
             DatasetMetric(

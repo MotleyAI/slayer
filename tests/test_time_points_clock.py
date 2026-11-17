@@ -12,12 +12,12 @@ from slayer.database.client import SlayerSQLClient
 
 from tests._dev1737_fixtures import seed_backend
 from tests._engine_helpers import seeded_exec_engine
-from tests._time_points_fixtures import CUSTOMERS, EV, NOW, PinnedClock, all_models, ids_in, tp_engine
+from tests._time_points_fixtures import CUSTOMERS, EV, NOW, PinnedClock, all_datasets, ids_in, tp_engine
 
 D = datetime
 
 
-def _recent_model() -> SlayerDataset:
+def _recent_dataset() -> SlayerDataset:
     """A query-backed model whose own filter uses a relative token."""
     return SlayerDataset(
         name="recent", data_source="test",
@@ -48,7 +48,7 @@ def _stages() -> list[SlayerQuery | dict]:
 async def test_clock_read_once_per_execution(backend) -> None:
     clock = PinnedClock(NOW, step=timedelta(days=40))
     async with tp_engine(backend, clock=clock) as engine:
-        await engine.save_dataset(_recent_model())
+        await engine.save_dataset(_recent_dataset())
         clock.calls = 0
         resp = await engine.execute(_stages())
     assert clock.calls == 1
@@ -59,7 +59,7 @@ async def test_clock_read_once_per_execution(backend) -> None:
 async def test_dry_run_reads_the_clock_once() -> None:
     clock = PinnedClock(NOW, step=timedelta(days=40))
     async with tp_engine("sqlite", clock=clock) as engine:
-        await engine.save_dataset(_recent_model())
+        await engine.save_dataset(_recent_dataset())
         clock.calls = 0
         await engine.execute(_stages(), dry_run=True)
     assert clock.calls == 1
@@ -118,7 +118,7 @@ async def test_same_day_relative_query_is_served_from_cache(monkeypatch: pytest.
 async def test_default_clock_is_host_local_now() -> None:
     before = date.today()
     async with seeded_exec_engine(
-        dialect="sqlite", seed=lambda p: seed_backend("sqlite", p, [EV, CUSTOMERS]), models=all_models(),
+        dialect="sqlite", seed=lambda p: seed_backend("sqlite", p, [EV, CUSTOMERS]), datasets=all_datasets(),
     ) as (engine, _db):
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "ev", "metrics": [{"expression": "count(*)", "name": "n"}],

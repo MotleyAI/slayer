@@ -485,10 +485,10 @@ def _s5_bundle(host: SlayerDataset | None = None) -> ResolvedSourceBundle:
     )
 
 
-def _s5_plans(formula: str, *, dimensions=None, **plan_kwargs):
+def _s5_plans(expression: str, *, dimensions=None, **plan_kwargs):
     q = SlayerQuery.model_validate({
         "population": "orders",
-        "metrics": [{"expression": formula, "name": "m0"}],
+        "metrics": [{"expression": expression, "name": "m0"}],
         "dimensions": dimensions,
     })
     planned = plan_query(query=q, bundle=_s5_bundle(), **plan_kwargs)

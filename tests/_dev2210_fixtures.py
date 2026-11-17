@@ -81,7 +81,7 @@ def _orders(name: str, **kw: Any) -> SlayerDataset:
     return SlayerDataset(name=name, data_source="test", sql_table="orders", fields=_order_columns(), **kw)
 
 
-def table_models() -> list[SlayerDataset]:
+def table_datasets() -> list[SlayerDataset]:
     """Every table- and SQL-backed model of the fixture."""
     to_shipments = [_to("shipments", pairs=("id", "order_ref"))]
     return [
@@ -109,7 +109,7 @@ def table_models() -> list[SlayerDataset]:
     ]
 
 
-def query_backed_model() -> SlayerDataset:
+def query_backed_dataset() -> SlayerDataset:
     """``done_orders_qb``: a query-backed model over ``orders``, filtered to done orders."""
     return SlayerDataset(
         name="done_orders_qb", data_source="test", filters=["status = 'done'"],
@@ -124,16 +124,16 @@ async def filtered_engine(backend: str, request: pytest.FixtureRequest) -> Async
         info = request.getfixturevalue("postgresql_proc")
         base_dir = str(request.getfixturevalue("tmp_path") / "store")
         with pg_database(info, statements=DDL, name="test") as ds:
-            async with pg_query_engine(ds, base_dir=base_dir, models=table_models(), validate=False) as engine:
-                await engine.save_dataset(query_backed_model())
+            async with pg_query_engine(ds, base_dir=base_dir, models=table_datasets(), validate=False) as engine:
+                await engine.save_dataset(query_backed_dataset())
                 yield engine
         return
     if backend == "duckdb":
         pytest.importorskip("duckdb")
     async with seeded_exec_engine(
-        dialect=backend, seed=lambda p: seed(backend, p), models=table_models(),
+        dialect=backend, seed=lambda p: seed(backend, p), datasets=table_datasets(),
     ) as (engine, _db):
-        await engine.save_dataset(query_backed_model())
+        await engine.save_dataset(query_backed_dataset())
         yield engine
 
 
@@ -144,8 +144,8 @@ def seeded_file(backend: str, tmp_dir: str) -> str:
     return path
 
 
-def bundle(source: str, *, dialect: str, models: Sequence[SlayerDataset] | None = None) -> ResolvedSourceBundle:
-    by_name = {m.name: m for m in (models if models is not None else table_models())}
+def bundle(source: str, *, dialect: str, datasets: Sequence[SlayerDataset] | None = None) -> ResolvedSourceBundle:
+    by_name = {m.name: m for m in (datasets if datasets is not None else table_datasets())}
     return ResolvedSourceBundle(
         dialect=dialect, population=by_name[source],
         referenced_datasets=[m for n, m in by_name.items() if n != source],

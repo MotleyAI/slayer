@@ -58,7 +58,7 @@ import sqlalchemy.exc
 from tests._dev1737_fixtures import (
     DT,
     DateCase,
-    all_models,
+    all_datasets,
     assert_case,
     check_server_scenarios,
     matrix_cases,
@@ -89,8 +89,8 @@ from slayer.sql.dialects import TsqlDialect
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
     check_all,
-    server_models,
-    server_models_ts,
+    server_datasets,
+    server_datasets_ts,
     server_statements,
     with_granularities,
 )
@@ -98,7 +98,7 @@ from tests._dev2046_fixtures import (
     FLAG_TOTALS,
     GT15_TOTALS,
     by_dim,
-    dev2046_models,
+    dev2046_datasets,
     m as bool_measure,
     orders_q,
     seed_statements as dev2046_seed_statements,
@@ -109,21 +109,21 @@ from tests._dev2101_fixtures import (
     check_null_ordering,
     check_server_forms,
     check_try_cast,
-    dev2101_models,
+    dev2101_datasets,
     seed_server as dev2101_seed_server,
 )
 from tests._dev2120_fixtures import (
     LIB,
     REGEX_NAMES,
     check_library,
-    lib_model,
+    lib_dataset,
     server_table_statements as dev2120_table_statements,
 )
 from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
     seed_statements,
-    streak_model,
+    streak_dataset,
 )
 
 pytest.importorskip("testcontainers.mssql")
@@ -334,7 +334,7 @@ def _sqlserver_env_storage(sqlserver_container, tmp_path_factory):
         )
         run_sync(storage.save_dataset(orders_model))
         run_sync(storage.save_dataset(customers_model))
-        run_sync(storage.save_dataset(streak_model("testmssql")))
+        run_sync(storage.save_dataset(streak_dataset("testmssql")))
         yield storage
     finally:
         _drop_module_db(sqlserver_container, db_name)
@@ -576,7 +576,7 @@ class TestSQLServerQueries:
 
 
 @pytest.fixture
-def sqlserver_cross_model_env(sqlserver_container):
+def sqlserver_cross_dataset_env(sqlserver_container):
     """SQL Server env with orders + customers (with score) + join."""
     db_name = _create_module_db(sqlserver_container)
     with disposable_engine(_db_url(sqlserver_container, db_name)) as engine:
@@ -644,7 +644,7 @@ def sqlserver_cross_model_env(sqlserver_container):
 
 @pytest.mark.integration
 class TestCrossModelAndMultistageSQLServer:
-    async def test_cross_model_measure(self, sqlserver_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_cross_model_measure(self, sqlserver_cross_dataset_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
@@ -653,11 +653,11 @@ class TestCrossModelAndMultistageSQLServer:
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="avg(customers.avg_score)")],
             order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
         )
-        result = await sqlserver_cross_model_env.execute(query=query)
+        result = await sqlserver_cross_dataset_env.execute(query=query)
         assert result.row_count == 3
         assert [float(r["orders.customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
 
-    async def test_query_list_named(self, sqlserver_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_query_list_named(self, sqlserver_cross_dataset_env: SlayerQueryEngine) -> None:
         inner = SlayerQuery(
             name="monthly", population="orders",
             time_dimensions=[TimeDimension(
@@ -666,10 +666,10 @@ class TestCrossModelAndMultistageSQLServer:
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
         )
         outer = SlayerQuery(population="monthly", metrics=[DatasetMetric(expression="count(*)")])
-        result = await sqlserver_cross_model_env.execute(query=[inner, outer])
+        result = await sqlserver_cross_dataset_env.execute(query=[inner, outer])
         assert result.data[0]["monthly._count"] == 3
 
-    async def test_create_model_from_query(self, sqlserver_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_create_model_from_query(self, sqlserver_cross_dataset_env: SlayerQueryEngine) -> None:
         source = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
@@ -677,20 +677,20 @@ class TestCrossModelAndMultistageSQLServer:
             )],
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
         )
-        saved = await sqlserver_cross_model_env.create_dataset_from_query(query=source, name="ss_monthly")
+        saved = await sqlserver_cross_dataset_env.create_dataset_from_query(query=source, name="ss_monthly")
         assert saved.source_queries is not None
-        result = await sqlserver_cross_model_env.execute(
+        result = await sqlserver_cross_dataset_env.execute(
             query=SlayerQuery(population="ss_monthly", metrics=[DatasetMetric(expression="count(*)")])
         )
         assert result.data[0]["ss_monthly._count"] == 3
 
-    async def test_sql_dimension(self, sqlserver_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_sql_dimension(self, sqlserver_cross_dataset_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
             dimensions=[ComputedDimension(expression="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier")],
             metrics=[DatasetMetric(expression="count(*)")],
         )
-        result = await sqlserver_cross_model_env.execute(query=query)
+        result = await sqlserver_cross_dataset_env.execute(query=query)
         by_tier = {r["orders.tier"]: r["orders._count"] for r in result.data}
         assert by_tier["high"] == 3
         assert by_tier["low"] == 3
@@ -1409,7 +1409,7 @@ def _sqlserver_dates_storage(sqlserver_container, tmp_path_factory):
                     conn.execute(sa.text(stmt))
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("sqlserver_dates")))
         run_sync(storage.save_datasource(_ds_config(sqlserver_container, db_name)))
-        for model in all_models(data_source="testmssql"):
+        for model in all_datasets(data_source="testmssql"):
             run_sync(storage.save_dataset(model))
         yield storage
     finally:
@@ -1512,7 +1512,7 @@ def _sqlserver_spine_storage(sqlserver_container, tmp_path_factory):
                     conn.execute(sa.text(stmt))
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("sqlserver_spine")))
         base = _ds_config(sqlserver_container, db_name)
-        for name, models in (("ms", server_models(data_source="ms")), ("ms_ts", server_models_ts(data_source="ms_ts"))):
+        for name, models in (("ms", server_datasets(data_source="ms")), ("ms_ts", server_datasets_ts(data_source="ms_ts"))):
             run_sync(storage.save_datasource(with_granularities(base, name=name)))
             for model in models:
                 run_sync(storage.save_dataset(model))
@@ -1541,7 +1541,7 @@ def _sqlserver_boolean_storage(sqlserver_container, tmp_path_factory):
                     conn.execute(sa.text(stmt))
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("sqlserver_boolean")))
         run_sync(storage.save_datasource(_ds_config(sqlserver_container, db_name)))
-        for model in dev2046_models(data_source="testmssql"):
+        for model in dev2046_datasets(data_source="testmssql"):
             run_sync(storage.save_dataset(model))
         yield storage
     finally:
@@ -1630,7 +1630,7 @@ def _sqlserver_dev2101_storage(sqlserver_container, tmp_path_factory):
                 raw.close()
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("sqlserver_dev2101")))
         run_sync(storage.save_datasource(_ds_config(sqlserver_container, db_name)))
-        for model in dev2101_models(data_source="testmssql"):
+        for model in dev2101_datasets(data_source="testmssql"):
             run_sync(storage.save_dataset(model))
         yield storage
     finally:
@@ -1649,7 +1649,7 @@ class TestSQLServerModeBGrammar:
         await check_try_cast(SlayerQueryEngine(storage=_sqlserver_dev2101_storage))
 
     async def test_try_cast_integer_targets(self, _sqlserver_dev2101_storage) -> None:
-        await check_try_cast_targets(SlayerQueryEngine(storage=_sqlserver_dev2101_storage), model="orders")
+        await check_try_cast_targets(SlayerQueryEngine(storage=_sqlserver_dev2101_storage), dataset="orders")
 
     async def test_filtered_aggregations(self, _sqlserver_dev2101_storage) -> None:
         await check_filtered_aggregations(SlayerQueryEngine(storage=_sqlserver_dev2101_storage))
@@ -1675,7 +1675,7 @@ def _dev2120_storage(container, tmp_path_factory, *, label: str):
                     conn.execute(sa.text(stmt))
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp(f"sqlserver_dev2120_{label}")))
         run_sync(storage.save_datasource(_ds_config(container, db_name)))
-        run_sync(storage.save_dataset(lib_model(data_source="testmssql")))
+        run_sync(storage.save_dataset(lib_dataset(data_source="testmssql")))
         yield storage
     finally:
         _drop_module_db(container, db_name)

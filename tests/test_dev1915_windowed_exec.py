@@ -33,8 +33,8 @@ def _approx(d):
     return {k: pytest.approx(v, rel=1e-4) for k, v in d.items()}
 
 
-def _m(formula, name):
-    return DatasetMetric(expression=formula, name=name)
+def _m(expression, name):
+    return DatasetMetric(expression=expression, name=name)
 
 
 # --------------------------------------------------------------------------- #
@@ -259,7 +259,7 @@ async def test_cardinality_neutrality(exec_backend: tuple[str, SlayerQueryEngine
 # --------------------------------------------------------------------------- #
 # Inner stage rows + query shared with the DEV-1471 stage-axis tests
 # (``D71.MONTHLY_ROWS`` / ``D71.MONTHLY_INNER``).
-def _monthly_model() -> SlayerDataset:
+def _monthly_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="monthly", sql_table="monthly", data_source="ds",
         default_time_dimension="month_ts",
@@ -302,13 +302,13 @@ async def test_two_stage_windowed_over_stage_axis(backend, agg, oracle):
         stage_engine = await D71.make_engine(
             backend, base_dir=os.path.join(tmp, "store"),
             db_path=os.path.join(tmp, f"t.{backend}"),
-            tables=[D71.orders_table_spec(D71.MONTHLY_ROWS)], models=[D71.orders_model()],
+            tables=[D71.orders_table_spec(D71.MONTHLY_ROWS)], datasets=[D71.orders_dataset()],
         )
         stage_resp = await stage_engine.execute(query=[D71.MONTHLY_INNER, stage_outer])
         model_engine = await D71.make_engine(
             backend, base_dir=os.path.join(tmp, "model_store"),
             db_path=os.path.join(tmp, f"m.{backend}"),
-            tables=[_MONTHLY_MODEL_TABLE], models=[_monthly_model()],
+            tables=[_MONTHLY_MODEL_TABLE], datasets=[_monthly_dataset()],
         )
         model_resp = await model_engine.execute(model_query)
     stage = {str(r["s1.created_at"])[:7]: r["s1.win"] for r in stage_resp.data}

@@ -20,13 +20,13 @@ from tests._dev1966_fixtures import (
     AMOUNT_BY_STATUS,
     AMOUNT_BY_TIER,
     CUST_TOP,
-    bcast_qb_model,
-    clients_model,
-    cust_rev_model,
-    customers_model,
+    bcast_qb_dataset,
+    clients_dataset,
+    cust_rev_dataset,
+    customers_dataset,
     dev1966_engine,
     m,
-    orders_model,
+    orders_dataset,
     query,
     rows_by,
     sorted_rows,
@@ -37,9 +37,9 @@ def _qb(name: str, *stages: Any) -> SlayerDataset:
     return SlayerDataset(name=name, data_source="test", source_queries=list(stages))
 
 
-def _joined(model: SlayerDataset, *targets: "tuple[str, List[List[str]]]") -> SlayerDataset:
-    return model.model_copy(update={"relationships": [
-        *model.relationships, *(DatasetRelationship(to=t, join_pairs=p) for t, p in targets)]})
+def _joined(dataset: SlayerDataset, *targets: "tuple[str, List[List[str]]]") -> SlayerDataset:
+    return dataset.model_copy(update={"relationships": [
+        *dataset.relationships, *(DatasetRelationship(to=t, join_pairs=p) for t, p in targets)]})
 
 
 STATUS_REV = _qb("status_rev", query(
@@ -54,7 +54,7 @@ BAD_SELF = _qb("bad_self", query(
 
 
 def _orders_joining(*names: str) -> SlayerDataset:
-    return _joined(orders_model(), *((n, [["status", "status"]]) for n in names))
+    return _joined(orders_dataset(), *((n, [["status", "status"]]) for n in names))
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -64,9 +64,9 @@ def dialect(request) -> str:
 
 class TestReachIsNotReading:
     async def test_a_model_over_a_base_that_joins_it(self, dialect) -> None:
-        models = [_orders_joining("status_rev"), customers_model(), clients_model(),
-                  cust_rev_model(), STATUS_REV]
-        async with dev1966_engine(dialect, models=models) as e:
+        models = [_orders_joining("status_rev"), customers_dataset(), clients_dataset(),
+                  cust_rev_dataset(), STATUS_REV]
+        async with dev1966_engine(dialect, datasets=models) as e:
             resp = await e.execute(query(source_model="orders",
                                          dimensions=["status", "status_rev.rev"],
                                          measures=[m("sum(amount)", "a")]))
@@ -76,9 +76,9 @@ class TestReachIsNotReading:
             for s, v in AMOUNT_BY_STATUS.items()])
 
     async def test_an_unread_broken_model_is_inert(self, dialect) -> None:
-        models = [orders_model(), _joined(customers_model(), ("broken_qb", [["id", "a"]])),
-                  clients_model(), cust_rev_model(), BROKEN]
-        async with dev1966_engine(dialect, models=models) as e:
+        models = [orders_dataset(), _joined(customers_dataset(), ("broken_qb", [["id", "a"]])),
+                  clients_dataset(), cust_rev_dataset(), BROKEN]
+        async with dev1966_engine(dialect, datasets=models) as e:
             resp = await e.execute(query(source_model="orders", measures=[m("sum(amount)", "t")]))
             dry = await e.execute(query(source_model="orders", measures=[m("sum(amount)", "t")]),
                                   dry_run=True)
@@ -88,9 +88,9 @@ class TestReachIsNotReading:
         assert "broken_qb" not in dry.sql
 
     async def test_an_unread_warning_model_stays_silent(self, dialect) -> None:
-        models = [orders_model(), _joined(customers_model(), ("bcast_qb", [["tier", "status"]])),
-                  clients_model(), cust_rev_model(), bcast_qb_model()]
-        async with dev1966_engine(dialect, models=models) as e:
+        models = [orders_dataset(), _joined(customers_dataset(), ("bcast_qb", [["tier", "status"]])),
+                  clients_dataset(), cust_rev_dataset(), bcast_qb_dataset()]
+        async with dev1966_engine(dialect, datasets=models) as e:
             with warnings.catch_warnings():
                 warnings.simplefilter("error")
                 resp = await e.execute(query(source_model="customers",
@@ -110,19 +110,19 @@ class TestStoredJoinReads:
         assert rows_by(resp.data, key="s.tier", value="s.t") == AMOUNT_BY_TIER
 
     async def test_a_derived_column_definition(self, dialect) -> None:
-        clients = clients_model()
+        clients = clients_dataset()
         clients = clients.model_copy(update={"fields": [
             *clients.fields, DatasetField(name="top2", sql="cust_rev.top * 2", datatype=DataType.DOUBLE)]})
-        models = [orders_model(), customers_model(), clients, cust_rev_model()]
-        async with dev1966_engine(dialect, models=models) as e:
+        models = [orders_dataset(), customers_dataset(), clients, cust_rev_dataset()]
+        async with dev1966_engine(dialect, datasets=models) as e:
             resp = await e.execute(query(source_model="clients", dimensions=["id", "top2"]))
         assert rows_by(resp.data, key="clients.id", value="clients.top2") == {
             c: 2 * v for c, v in CUST_TOP.items()}
 
     async def test_one_model_reads_another_consumer_reads_either(self, dialect) -> None:
-        models = [_orders_joining("status_rev", "reads_status_rev"), customers_model(),
-                  clients_model(), cust_rev_model(), STATUS_REV, READS_STATUS_REV]
-        async with dev1966_engine(dialect, models=models) as e:
+        models = [_orders_joining("status_rev", "reads_status_rev"), customers_dataset(),
+                  clients_dataset(), cust_rev_dataset(), STATUS_REV, READS_STATUS_REV]
+        async with dev1966_engine(dialect, datasets=models) as e:
             only_a = await e.execute(query(source_model="status_rev", dimensions=["status"],
                                            measures=[m("sum(rev)", "t")]))
             b = await e.execute(query(source_model="reads_status_rev", dimensions=["status"],
@@ -134,10 +134,10 @@ class TestStoredJoinReads:
 
 class TestFailedAttemptKeepsItsError:
     async def test_invalid_expression_survives_an_incident_in_flight_model(self) -> None:
-        models = [_orders_joining("bad_self"), customers_model(), clients_model(),
-                  cust_rev_model(), BAD_SELF]
+        models = [_orders_joining("bad_self"), customers_dataset(), clients_dataset(),
+                  cust_rev_dataset(), BAD_SELF]
         consumer = query(source_model="bad_self", measures=[m("sum(a)", "t")])
-        async with dev1966_engine("sqlite", models=models) as e:
+        async with dev1966_engine("sqlite", datasets=models) as e:
             with pytest.raises(ValueError) as exc:
                 await e.execute(consumer)
         assert not isinstance(exc.value, QueryBackedCycleError)
@@ -178,9 +178,9 @@ def _wrap(name: str, floor: int) -> SlayerDataset:
 
 class TestModeAVariables:
     async def test_a_spliced_stage_source_sql_takes_the_consumer_variables(self, dialect) -> None:
-        models = [orders_model(), customers_model(), _floored(), FLOORED_REV]
+        models = [orders_dataset(), customers_dataset(), _floored(), FLOORED_REV]
         consumer = query(source_model="floored_rev", measures=[m("sum(rev)", "t")])
-        async with dev1966_engine(dialect, models=models) as e:
+        async with dev1966_engine(dialect, datasets=models) as e:
             default = await e.execute(consumer)
             floored = await e.execute(consumer, variables={"floor": 20})
         assert default.data == [{"floored_rev.t": 145.0}]
@@ -189,19 +189,19 @@ class TestModeAVariables:
     async def test_a_user_stage_source_sql_takes_its_variables(self, dialect) -> None:
         s = query(name="s", source_model="floored", measures=[m("sum(amount)", "a")],
                   variables={"floor": 30})
-        async with dev1966_engine(dialect, models=[orders_model(), _floored()]) as e:
+        async with dev1966_engine(dialect, datasets=[orders_dataset(), _floored()]) as e:
             resp = await e.execute([s, query(source_model="s", measures=[m("sum(a)", "t")])])
         assert resp.data == [{"s.t": 70.0}]
 
     async def test_conflicting_mode_a_contexts_fail_closed(self) -> None:
-        models = [orders_model(), customers_model(), _floored(), FLOORED_REV,
+        models = [orders_dataset(), customers_dataset(), _floored(), FLOORED_REV,
                   _wrap("wrap_a", 20), _wrap("wrap_b", 30)]
         s1 = query(name="s1", source_model="wrap_a", dimensions=["customer_id"], measures=[m("sum(r)", "a")])
         s2 = query(name="s2", source_model="wrap_b", dimensions=["customer_id"], measures=[m("sum(r)", "b")])
         root = query(source_model="s1", extensions=[{"source_name": "s1", "relationships": [
             {"to": "s2", "join_pairs": [["customer_id", "customer_id"]]}]}],
             dimensions=["customer_id", "a", "s2.b"])
-        async with dev1966_engine("sqlite", models=models) as e:
+        async with dev1966_engine("sqlite", datasets=models) as e:
             with pytest.raises(ValueError, match="floored_rev"):
                 await e.execute([s1, s2, root])
 
@@ -212,16 +212,16 @@ CYC_B = _qb("cyc_b", query(source_model="cyc_a", measures=[m("sum(amount)", "amo
 
 class TestCyclesThroughStoredJoins:
     async def test_a_read_through_a_stored_join_raises_the_cycle(self) -> None:
-        orders = _joined(orders_model(), ("cyc_a", [["id", "amount"]]))
+        orders = _joined(orders_dataset(), ("cyc_a", [["id", "amount"]]))
         consumer = query(source_model="orders", dimensions=["status"],
                          measures=[m("sum(cyc_a.amount)", "t")])
-        async with dev1966_engine("sqlite", models=[orders, customers_model(), CYC_A, CYC_B]) as e:
+        async with dev1966_engine("sqlite", datasets=[orders, customers_dataset(), CYC_A, CYC_B]) as e:
             with pytest.raises(QueryBackedCycleError) as exc:
                 await e.execute(consumer)
         assert "cyc_a -> cyc_b -> cyc_a" in str(exc.value)
 
     async def test_an_unread_cyclic_model_is_inert(self) -> None:
-        orders = _joined(orders_model(), ("cyc_a", [["id", "amount"]]))
-        async with dev1966_engine("sqlite", models=[orders, customers_model(), CYC_A, CYC_B]) as e:
+        orders = _joined(orders_dataset(), ("cyc_a", [["id", "amount"]]))
+        async with dev1966_engine("sqlite", datasets=[orders, customers_dataset(), CYC_A, CYC_B]) as e:
             resp = await e.execute(query(source_model="orders", measures=[m("sum(amount)", "t")]))
         assert resp.data == [{"orders.t": 145.0}]

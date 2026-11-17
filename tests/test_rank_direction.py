@@ -18,14 +18,14 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1847_fixtures import (
     _SALES_ROWS_WIDE,
-    corders_model,
-    customers_model,
-    dev1847_models,
+    corders_dataset,
+    customers_dataset,
+    dev1847_datasets,
     gen,
     make_exec_engine,
-    regions_model,
+    regions_dataset,
     rows_by,
-    sales_model,
+    sales_dataset,
     sales_q,
 )
 from tests._rank_direction_fixtures import (
@@ -54,27 +54,27 @@ async def engine(request):
         yield e
 
 
-def _sales_with_measure(formula: str):
-    model = sales_model()
-    model.metrics = [DatasetMetric(name="saved_rank", expression=formula)]
-    return [model, regions_model(), customers_model(), corders_model()]
+def _sales_with_metric(expression: str):
+    model = sales_dataset()
+    model.metrics = [DatasetMetric(name="saved_rank", expression=expression)]
+    return [model, regions_dataset(), customers_dataset(), corders_dataset()]
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def saved_asc_engine(request):
     async for e in make_exec_engine(
-            request=request, models=_sales_with_measure("rank(sum(amount), direction='asc')")):
+            request=request, datasets=_sales_with_metric("rank(sum(amount), direction='asc')")):
         yield e
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def saved_bare_engine(request):
-    async for e in make_exec_engine(request=request, models=_sales_with_measure("rank(sum(amount))")):
+    async for e in make_exec_engine(request=request, datasets=_sales_with_metric("rank(sum(amount))")):
         yield e
 
 
-def _m(formula: str, name: str = "r") -> DatasetMetric:
-    return DatasetMetric(expression=formula, name=name)
+def _m(expression: str, name: str = "r") -> DatasetMetric:
+    return DatasetMetric(expression=expression, name=name)
 
 
 def _by_region(resp, name: str = "r") -> dict:
@@ -89,20 +89,20 @@ def _approx(d: dict) -> dict:
     return {k: (None if v is None else pytest.approx(v)) for k, v in d.items()}
 
 
-def _bind(formula: str):
-    models = dev1847_models()
+def _bind(expression: str):
+    models = dev1847_datasets()
     bundle = ResolvedSourceBundle(dialect="postgres", population=models[0],
                                   referenced_datasets=models[1:])
-    return bind_expr(parse_expr(formula), scope=DatasetScope(population=models[0]),
+    return bind_expr(parse_expr(expression), scope=DatasetScope(population=models[0]),
                      bundle=bundle).value_key
 
 
-def _fails_like_its_comparison_twin(*, formula: str, twin: str) -> str:
+def _fails_like_its_comparison_twin(*, expression: str, twin: str) -> str:
     """``formula`` fails like ``twin``, its non-parameter ``name = value`` parenthesised; returns the message."""
     with pytest.raises(ValueError) as twin_info:
         _bind(twin)
     with pytest.raises(ValueError) as info:
-        _bind(formula)
+        _bind(expression)
     assert type(info.value) is type(twin_info.value), str(info.value)
     assert "==" not in str(info.value)
     return str(info.value)
@@ -330,11 +330,11 @@ class TestDirectionErrors:
         ("percent_rank(sum(amount), foo=1)", "percent_rank(sum(amount), (foo=1))"),
     ])
     def test_non_parameter_name_is_a_positional_comparison(self, formula, twin):
-        msg = _fails_like_its_comparison_twin(formula=formula, twin=twin)
+        msg = _fails_like_its_comparison_twin(expression=formula, twin=twin)
         assert "keyword argument 'foo'" not in msg, msg
 
     def test_non_parameter_name_outside_rank_family_lists_no_rank_keywords(self):
-        msg = _fails_like_its_comparison_twin(formula="lag(sum(amount), foo=1)", twin="lag(sum(amount), (foo=1))")
+        msg = _fails_like_its_comparison_twin(expression="lag(sum(amount), foo=1)", twin="lag(sum(amount), (foo=1))")
         assert "partition_by" not in msg, msg
         assert "direction" not in msg, msg
 

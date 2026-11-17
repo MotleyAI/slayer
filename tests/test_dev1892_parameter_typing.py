@@ -18,7 +18,7 @@ from tests._dev1841_fixtures import (
     DatasetMetric,
     assoc_q,
     associated_warnings,
-    column_default_agg_models,
+    field_default_agg_datasets,
     make_exec_engine as make_assoc_engine,
     status_key,
 )
@@ -41,7 +41,7 @@ from tests._dev1892_fixtures import (
     DEGENERATE_WAVG_BY_REGION,
     UNWEIGHTED_CITY_BY_REGION,
     WAVG_CITY_BY_REGION,
-    weighted_sales_models,
+    weighted_sales_datasets,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -57,18 +57,18 @@ async def assoc_engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def assoc_coldef_engine(request):
-    async for engine in make_assoc_engine(request, models=column_default_agg_models()):
+    async for engine in make_assoc_engine(request, datasets=field_default_agg_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def reagg_engine(request):
-    async for engine in make_reagg_engine(request, models=weighted_sales_models()):
+    async for engine in make_reagg_engine(request, datasets=weighted_sales_datasets()):
         yield engine
 
 
-def _region_vals(resp, measure):
-    return {k[0]: v[measure] for k, v in region_key(resp).items()}
+def _region_vals(resp, metric):
+    return {k[0]: v[metric] for k, v in region_key(resp).items()}
 
 
 class TestAssociationColumnParameter:

@@ -45,7 +45,7 @@ def _engine_with_storage(tmp_path) -> tuple[SlayerQueryEngine, YAMLStorage]:
     return SlayerQueryEngine(storage=storage), storage
 
 
-async def _gen_sql(engine: SlayerQueryEngine, query: SlayerQuery, model: SlayerDataset,
+async def _gen_sql(engine: SlayerQueryEngine, query: SlayerQuery, dataset: SlayerDataset,
                   *, dialect: str = "sqlite") -> str:
     """Render a query's SQL through the typed pipeline at the given dialect.
 
@@ -58,9 +58,9 @@ async def _gen_sql(engine: SlayerQueryEngine, query: SlayerQuery, model: SlayerD
     compile-time path is the one under test.
     """
     await engine.storage.save_datasource(
-        DatasourceConfig(name=model.data_source, type=dialect)
+        DatasourceConfig(name=dataset.data_source, type=dialect)
     )
-    await engine.storage.save_dataset(model, _validate=False)
+    await engine.storage.save_dataset(dataset, _validate=False)
     response = await engine.execute(query, dry_run=True)
     sql = response.sql
     assert sql is not None, "engine.execute(dry_run=True) returned no SQL"
@@ -170,7 +170,7 @@ async def test_quoted_self_identity_column_is_qualified_across_a_join(tmp_path) 
         population="merchant",
         dimensions=[FieldRef(name="legalEntityType"), FieldRef(name="other.legalEntityType")],
     )
-    sql = await _gen_sql(engine=engine, query=query, model=merchant)
+    sql = await _gen_sql(engine=engine, query=query, dataset=merchant)
     assert 'merchant."legalEntityType"' in sql, sql
     assert 'other."legalEntityType"' in sql, sql
 
@@ -188,7 +188,7 @@ async def test_derived_over_quoted_self_identity_keeps_quoting(tmp_path) -> None
         ],
     )
     query = SlayerQuery(population="merchant", dimensions=[FieldRef(name="label")])
-    sql = await _gen_sql(engine=engine, query=query, model=model)
+    sql = await _gen_sql(engine=engine, query=query, dataset=model)
     assert '"legalEntityType"' in sql, sql
     assert _no_bare_derived_ref(sql, "merchant", "label"), sql  # label was inlined
 
@@ -1275,7 +1275,7 @@ _CLAIM_LP_JOIN_INNER = DatasetRelationship(
 )
 
 
-def _loss_payment_model(*, extra_columns, joins=None) -> SlayerDataset:
+def _loss_payment_dataset(*, extra_columns, joins=None) -> SlayerDataset:
     """The canonical ``loss_payment`` join target (PK ``id`` =
     ``Claim_Amount_Identifier``); callers add the columns / joins each test needs.
     """
@@ -1290,14 +1290,14 @@ def _loss_payment_model(*, extra_columns, joins=None) -> SlayerDataset:
 
 
 async def _claim_amount_filter_sql(
-    tmp_path, *, claim_columns, measures, claim_joins=(_CLAIM_LP_JOIN,),
-    claim_filters=None, extra_models=(),
+    tmp_path, *, claim_columns, metrics, claim_joins=(_CLAIM_LP_JOIN,),
+    claim_filters=None, extra_datasets=(),
 ) -> str:
     """Save ``claim_amount`` (PK ``id`` auto-prepended) plus any extra join-target
     models, run a query through the typed pipeline, and return the emitted SQL.
     """
     storage = YAMLStorage(base_dir=str(tmp_path))
-    for model in extra_models:
+    for model in extra_datasets:
         await storage.save_dataset(model)
     claim_amount = SlayerDataset(
         name="claim_amount", data_source="test", sql_table="Claim_Amount",
@@ -1311,7 +1311,7 @@ async def _claim_amount_filter_sql(
     await storage.save_dataset(claim_amount)
     engine = SlayerQueryEngine(storage=storage)
     return await _gen_sql(
-        engine, SlayerQuery(population="claim_amount", metrics=measures), claim_amount,
+        engine, SlayerQuery(population="claim_amount", metrics=metrics), claim_amount,
     )
 
 
@@ -1322,13 +1322,13 @@ async def test_dev1494_column_filter_dotted_base_ref_adds_join(tmp_path) -> None
     """
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_models=[_loss_payment_model(extra_columns=[
+        extra_datasets=[_loss_payment_dataset(extra_columns=[
             DatasetField(name="status", sql="status", datatype=DataType.TEXT),
         ])],
         claim_columns=[
             DatasetField(name="loss_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.DOUBLE),
         ],
-        measures=[DatasetMetric(expression="sum(loss_amt)", name="amt")],
+        metrics=[DatasetMetric(expression="sum(loss_amt)", name="amt")],
     )
     assert "loss_payment" in _join_aliases(sql), (
         f"loss_payment join not discovered from dotted-base column filter:\n{sql}"
@@ -1352,7 +1352,7 @@ async def test_dev1494_column_filter_dotted_derived_ref_crossing_further_join(
             DatasetField(name="state", sql="state", datatype=DataType.TEXT),
         ],
     )
-    loss_payment = _loss_payment_model(
+    loss_payment = _loss_payment_dataset(
         extra_columns=[
             DatasetField(name="claim_id", sql="claim_id", datatype=DataType.DOUBLE),
             # Derived column on the joined model whose sql reaches a further join.
@@ -1362,11 +1362,11 @@ async def test_dev1494_column_filter_dotted_derived_ref_crossing_further_join(
     )
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_models=[claim, loss_payment],
+        extra_datasets=[claim, loss_payment],
         claim_columns=[
             DatasetField(name="deep_amt", sql="amount", filter="loss_payment.deep_flag = 1", datatype=DataType.DOUBLE),
         ],
-        measures=[DatasetMetric(expression="sum(deep_amt)", name="amt")],
+        metrics=[DatasetMetric(expression="sum(deep_amt)", name="amt")],
     )
     aliases = _join_aliases(sql)
     assert "loss_payment" in aliases, f"intermediate loss_payment join missing: {aliases}\nSQL:\n{sql}"
@@ -1395,13 +1395,13 @@ async def test_dev1494_model_filter_dotted_derived_ref_inlined(tmp_path) -> None
     """
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_models=[_loss_payment_model(extra_columns=[
+        extra_datasets=[_loss_payment_dataset(extra_columns=[
             DatasetField(name="has_flag", sql="1", datatype=DataType.DOUBLE),
         ])],
         claim_columns=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         claim_joins=[_CLAIM_LP_JOIN_INNER],
         claim_filters=["loss_payment.has_flag = 1"],
-        measures=[DatasetMetric(expression="sum(amount)", name="amt")],
+        metrics=[DatasetMetric(expression="sum(amount)", name="amt")],
     )
     assert "loss_payment" in _join_aliases(sql), (
         f"placeholder join not kept for model-filter has_flag idiom:\n{sql}"
@@ -1426,14 +1426,14 @@ async def test_dev1494_column_filter_does_not_disturb_sibling_unfiltered_measure
     """
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_models=[_loss_payment_model(extra_columns=[
+        extra_datasets=[_loss_payment_dataset(extra_columns=[
             DatasetField(name="status", sql="status", datatype=DataType.TEXT),
         ])],
         claim_columns=[
             DatasetField(name="total_amt", sql="amount", datatype=DataType.DOUBLE),
             DatasetField(name="paid_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.DOUBLE),
         ],
-        measures=[
+        metrics=[
             DatasetMetric(expression="sum(total_amt)", name="total"),
             DatasetMetric(expression="sum(paid_amt)", name="paid"),
         ],
@@ -1457,7 +1457,7 @@ async def test_dev1494_column_filter_exists_subquery_ref_not_scanned_for_joins(
     """
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_models=[_loss_payment_model(extra_columns=[
+        extra_datasets=[_loss_payment_dataset(extra_columns=[
             DatasetField(name="status", sql="status", datatype=DataType.TEXT),
         ])],
         # Inner-scope ``loss_payment`` ref lives inside a subquery; it must not
@@ -1467,7 +1467,7 @@ async def test_dev1494_column_filter_exists_subquery_ref_not_scanned_for_joins(
             filter="EXISTS (SELECT 1 FROM Loss_Payment AS loss_payment WHERE loss_payment.status = 'paid')",
             datatype=DataType.DOUBLE,
         )],
-        measures=[DatasetMetric(expression="sum(exists_amt)", name="amt")],
+        metrics=[DatasetMetric(expression="sum(exists_amt)", name="amt")],
     )
     # No OUTER join to loss_payment is added from the inner-scope ref.
     assert "loss_payment" not in _join_aliases(sql), (
@@ -1484,14 +1484,14 @@ async def test_dev1494_column_filter_constant_placeholder_join_kept_sqlite(
     """
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_models=[_loss_payment_model(extra_columns=[
+        extra_datasets=[_loss_payment_dataset(extra_columns=[
             DatasetField(name="has_flag", sql="1", datatype=DataType.DOUBLE),
         ])],
         claim_columns=[
             DatasetField(name="loss_amt", sql="amount", filter="loss_payment.has_flag = 1", datatype=DataType.DOUBLE),
         ],
         claim_joins=[_CLAIM_LP_JOIN_INNER],
-        measures=[DatasetMetric(expression="sum(loss_amt)", name="amt")],
+        metrics=[DatasetMetric(expression="sum(loss_amt)", name="amt")],
     )
     assert "loss_payment" in _join_aliases(sql), f"placeholder join not kept:\n{sql}"
     assert _no_bare_derived_ref(sql, "loss_payment", "has_flag"), (
@@ -1518,17 +1518,17 @@ async def test_dev1494_column_filter_multihop_dotted_input_adds_all_joins(
             DatasetField(name="state", sql="state", datatype=DataType.TEXT),
         ],
     )
-    loss_payment = _loss_payment_model(
+    loss_payment = _loss_payment_dataset(
         extra_columns=[DatasetField(name="claim_id", sql="claim_id", datatype=DataType.DOUBLE)],
         joins=[DatasetRelationship(to="claim", join_pairs=[["claim_id", "id"]])],
     )
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_models=[claim, loss_payment],
+        extra_datasets=[claim, loss_payment],
         claim_columns=[
             DatasetField(name="amt", sql="amount", filter="loss_payment.claim.state = 'open'", datatype=DataType.DOUBLE),
         ],
-        measures=[DatasetMetric(expression="sum(amt)", name="a")],
+        metrics=[DatasetMetric(expression="sum(amt)", name="a")],
     )
     aliases = _join_aliases(sql)
     assert "loss_payment" in aliases, f"intermediate join missing: {aliases}\nSQL:\n{sql}"
@@ -1547,14 +1547,14 @@ async def test_dev1494_column_filter_join_discovered_in_composite_measure(
     """
     sql = await _claim_amount_filter_sql(
         tmp_path,
-        extra_models=[_loss_payment_model(extra_columns=[
+        extra_datasets=[_loss_payment_dataset(extra_columns=[
             DatasetField(name="status", sql="status", datatype=DataType.TEXT),
         ])],
         claim_columns=[
             DatasetField(name="total_amt", sql="amount", datatype=DataType.DOUBLE),
             DatasetField(name="paid_amt", sql="amount", filter="loss_payment.status = 'paid'", datatype=DataType.DOUBLE),
         ],
-        measures=[DatasetMetric(expression="sum(paid_amt) + sum(total_amt)", name="combo")],
+        metrics=[DatasetMetric(expression="sum(paid_amt) + sum(total_amt)", name="combo")],
     )
     assert "loss_payment" in _join_aliases(sql), (
         f"composite-measure filtered-aggregate join not discovered:\n{sql}"

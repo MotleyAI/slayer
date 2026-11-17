@@ -36,7 +36,7 @@ def _counts(found: QueryFeatures) -> dict[str, Counter[str]]:
             "functions": Counter(found.functions), "flags": Counter(found.flags)}
 
 
-def _measures(*formulas: str) -> QueryFeatures:
+def _metrics(*formulas: str) -> QueryFeatures:
     return query_features({"population": "m", "metrics": list(formulas)})
 
 
@@ -75,7 +75,7 @@ MEASURE_TABLE: list[tuple[str, list[str], list[str], list[str], list[str]]] = [
                          ids=[row[0] for row in MEASURE_TABLE])
 def test_measure_formula_counts(formula: str, aggregations: list[str], transforms: list[str],
                                 functions: list[str], flags: list[str]) -> None:
-    assert _counts(_measures(formula)) == {
+    assert _counts(_metrics(formula)) == {
         "aggregations": Counter(aggregations), "transforms": Counter(transforms),
         "functions": Counter(functions), "flags": Counter(flags)}
 
@@ -129,7 +129,7 @@ def test_library_functions_by_name_scenario() -> None:
 
 
 def test_grammar_forms_scenario() -> None:
-    found = _measures("sum(x)::int", "CAST(avg(y) AS DOUBLE)", "count(*) FILTER (WHERE z > 0)", "count(DISTINCT x)")
+    found = _metrics("sum(x)::int", "CAST(avg(y) AS DOUBLE)", "count(*) FILTER (WHERE z > 0)", "count(DISTINCT x)")
     assert Counter(found.aggregations) == Counter(["sum", "avg", "count", "count_distinct"])
     assert Counter(found.flags) == Counter({"cast": 2, "aggregate_filter": 1})
 

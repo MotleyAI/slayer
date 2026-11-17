@@ -46,12 +46,12 @@ def _drop_db(proc, db_name):
     admin.close()
 
 
-def _storage_for(proc, db_name, tmpdir, models) -> YAMLStorage:
+def _storage_for(proc, db_name, tmpdir, datasets) -> YAMLStorage:
     storage = YAMLStorage(base_dir=tmpdir)
     run_sync(storage.save_datasource(DatasourceConfig(
         name="testpg", type="postgres", host=proc.host, port=proc.port,
         database=db_name, username=proc.user, password="")))
-    for m in models:
+    for m in datasets:
         run_sync(storage.save_dataset(m))
     return storage
 

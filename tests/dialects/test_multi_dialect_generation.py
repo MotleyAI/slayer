@@ -41,7 +41,7 @@ class TestMultiDialectGeneration:
     """Test SQL generation across all supported dialects."""
 
     @pytest.fixture
-    def orders_model(self) -> SlayerDataset:
+    def orders_dataset(self) -> SlayerDataset:
         model = SlayerDataset(
             name="orders",
             sql_table="public.orders",
@@ -78,7 +78,7 @@ class TestMultiDialectGeneration:
     ]
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
-    async def test_basic_query(self, dialect: str, orders_model: SlayerDataset) -> None:
+    async def test_basic_query(self, dialect: str, orders_dataset: SlayerDataset) -> None:
         """Basic aggregation query should generate valid SQL for every dialect."""
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
@@ -86,12 +86,12 @@ class TestMultiDialectGeneration:
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(revenue)")],
             dimensions=[FieldRef(name="status")],
         )
-        sql = await _generate(gen, query, orders_model)
+        sql = await _generate(gen, query, orders_dataset)
         assert "COUNT(" in sql
         assert "SUM(" in sql
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
-    async def test_date_trunc(self, dialect: str, orders_model: SlayerDataset) -> None:
+    async def test_date_trunc(self, dialect: str, orders_dataset: SlayerDataset) -> None:
         """DATE_TRUNC should produce valid output for every dialect."""
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
@@ -99,7 +99,7 @@ class TestMultiDialectGeneration:
             metrics=[DatasetMetric(expression="count(*)")],
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
         )
-        sql = await _generate(gen, query, orders_model)
+        sql = await _generate(gen, query, orders_dataset)
         assert "COUNT(" in sql
         # Each dialect uses its own truncation function
         sql_upper = sql.upper()
@@ -116,7 +116,7 @@ class TestMultiDialectGeneration:
         "dialect", [d for d in ALL_DIALECTS if d != "oracle"]
     )
     async def test_date_trunc_week_sunday_differs_from_week(
-        self, dialect: str, orders_model: SlayerDataset
+        self, dialect: str, orders_dataset: SlayerDataset
     ) -> None:
         """Emission smoke test: a WEEK_SUNDAY breakout must emit
         different SQL from a plain (Monday) WEEK breakout — a dialect-agnostic
@@ -133,8 +133,8 @@ class TestMultiDialectGeneration:
             )
 
         gen = SQLGenerator(dialect=dialect)
-        sql_week = await _generate(gen, _q(TimeGranularity.WEEK), orders_model)
-        sql_sun = await _generate(gen, _q(TimeGranularity.WEEK_SUNDAY), orders_model)
+        sql_week = await _generate(gen, _q(TimeGranularity.WEEK), orders_dataset)
+        sql_sun = await _generate(gen, _q(TimeGranularity.WEEK_SUNDAY), orders_dataset)
 
         up = sql_sun.upper()
         assert any(fn in up for fn in ["DATE_TRUNC", "STRFTIME", "TRUNC", "STR_TO_DATE", "DATETRUNC", "DATE("])
@@ -227,7 +227,7 @@ class TestMultiDialectGeneration:
         assert "CAST(ORDERS.CREATED_AT" not in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
-    async def test_calendar_time_shift(self, dialect: str, orders_model: SlayerDataset) -> None:
+    async def test_calendar_time_shift(self, dialect: str, orders_dataset: SlayerDataset) -> None:
         """Calendar-based time_shift should produce dialect-appropriate date arithmetic in shifted CTE."""
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
@@ -235,7 +235,7 @@ class TestMultiDialectGeneration:
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="time_shift(sum(revenue), -1, 'year')", name="rev_prev_year")],
         )
-        sql = await _generate(gen, query, orders_model)
+        sql = await _generate(gen, query, orders_dataset)
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
         # Join should be simple equality (timestamp shift is inside the shifted CTE)
@@ -249,7 +249,7 @@ class TestMultiDialectGeneration:
 
     @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
     async def test_window_measure_multi_unit_interval_dialect_correct(
-        self, dialect: str, orders_model: SlayerDataset,
+        self, dialect: str, orders_dataset: SlayerDataset,
     ) -> None:
         """Multi-unit windows (e.g. '1y2m3d') must render as separate per-unit
         INTERVAL clauses on MySQL and ClickHouse — never as a single
@@ -270,7 +270,7 @@ class TestMultiDialectGeneration:
             metrics=[DatasetMetric(expression="sum(revenue, window='1y2m3d')",
                                    name="rev_w")],
         )
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         norm = _norm(sql).upper()
         # The broken Postgres-shape multi-unit literal must NOT appear.
         assert "INTERVAL '1 YEAR 2 MONTH 3 DAY'" not in norm, (
@@ -290,7 +290,7 @@ class TestMultiDialectGeneration:
 
     @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
     async def test_window_measure_single_unit_interval_dialect_correct(
-        self, dialect: str, orders_model: SlayerDataset,
+        self, dialect: str, orders_dataset: SlayerDataset,
     ) -> None:
         """Single-unit windows must render as a per-unit clause, never the
         combined `INTERVAL '7 day'` string that is invalid MySQL syntax. sqlglot's
@@ -307,7 +307,7 @@ class TestMultiDialectGeneration:
             metrics=[DatasetMetric(expression="sum(revenue, window='7d')",
                                    name="rev_w")],
         )
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         norm = _norm(sql).upper()
         assert "INTERVAL '7 DAY'" not in norm, (
             f"Quoted single-unit INTERVAL literal is invalid on {dialect}.\n"
@@ -320,7 +320,7 @@ class TestMultiDialectGeneration:
         )
 
     async def test_window_measure_tsql_uses_dateadd(
-        self, orders_model: SlayerDataset,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """Window boundary on T-SQL must use DATEADD instead of INTERVAL (invalid T-SQL)."""
         gen = SQLGenerator(dialect="tsql")
@@ -332,13 +332,13 @@ class TestMultiDialectGeneration:
             ],
             metrics=[DatasetMetric(expression="sum(revenue, window='7d')", name="rev_w")],
         )
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         norm = _norm(sql).upper()
         assert "DATEADD" in norm, f"Expected DATEADD in T-SQL window output:\n{sql}"
         assert "INTERVAL" not in norm, f"INTERVAL is invalid T-SQL syntax:\n{sql}"
 
     async def test_window_measure_tsql_multi_unit_uses_chained_dateadd(
-        self, orders_model: SlayerDataset,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """Multi-unit window '1y2m3d' on T-SQL must use chained DATEADD calls, not INTERVAL."""
         gen = SQLGenerator(dialect="tsql")
@@ -350,7 +350,7 @@ class TestMultiDialectGeneration:
             ],
             metrics=[DatasetMetric(expression="sum(revenue, window='1y2m3d')", name="rev_w")],
         )
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         norm = _norm(sql).upper()
         # Must use DATEADD, not INTERVAL literals
         assert "INTERVAL" not in norm, f"INTERVAL is invalid T-SQL syntax:\n{sql}"
@@ -378,14 +378,14 @@ class TestMultiDialectGeneration:
         self,
         dialect: str,
         formula: str,
-        orders_model: SlayerDataset,
+        orders_dataset: SlayerDataset,
     ) -> None:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression=formula)],
         )
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         upper = sql.upper()
         assert "SELECT" in upper
         # The aggregate must wrap the resolved value column (orders.amount,
@@ -412,14 +412,14 @@ class TestMultiDialectGeneration:
         self,
         dialect: str,
         formula: str,
-        orders_model: SlayerDataset,
+        orders_dataset: SlayerDataset,
     ) -> None:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression=formula)],
         )
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         upper = sql.upper()
         assert "SELECT" in upper
         # Both legs (LHS column AND `other=` kwarg) must be qualified and
@@ -445,7 +445,7 @@ class TestMultiDialectGeneration:
         self,
         dialect: str,
         formula: str,
-        orders_model: SlayerDataset,
+        orders_dataset: SlayerDataset,
     ) -> None:
         """MySQL and T-SQL emit variance-decomposition formula instead of direct two-arg call."""
         gen = SQLGenerator(dialect=dialect)
@@ -453,7 +453,7 @@ class TestMultiDialectGeneration:
             population="orders",
             metrics=[DatasetMetric(expression=formula)],
         )
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         assert "SELECT" in sql.upper()
         # The formula uses division (variance decomposition)
         assert "/" in sql
@@ -466,7 +466,7 @@ class TestMultiDialectGeneration:
         ],
     )
     async def test_two_arg_stat_agg_mysql_emits_formula_valid_sql(
-        self, formula: str, orders_model: SlayerDataset,
+        self, formula: str, orders_dataset: SlayerDataset,
     ) -> None:
         """MySQL uses variance-decomposition formula for corr/covar_samp/covar_pop."""
         gen = SQLGenerator(dialect="mysql")
@@ -474,7 +474,7 @@ class TestMultiDialectGeneration:
             population="orders",
             metrics=[DatasetMetric(expression=formula)],
         )
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         assert "SELECT" in sql.upper()
         # Formula uses division (variance decomposition)
         assert "/" in sql
@@ -499,7 +499,7 @@ class TestLogAliasPreservation:
     """
 
     @pytest.fixture
-    def log_model(self) -> SlayerDataset:
+    def log_dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="orders",
             sql_table="public.orders",
@@ -523,14 +523,14 @@ class TestLogAliasPreservation:
 
     @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
     async def test_log10_in_column_sql_is_preserved(
-        self, dialect: str, log_model: SlayerDataset,
+        self, dialect: str, log_dataset: SlayerDataset,
     ) -> None:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="max(log_amount)")],
         )
-        sql = await _generate(generator=gen, query=query, model=log_model)
+        sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         upper_no_ws = "".join(sql.upper().split())
         if dialect in _LOG10_NATIVE_DIALECTS:
             assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
@@ -552,14 +552,14 @@ class TestLogAliasPreservation:
 
     @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
     async def test_log2_in_column_sql_is_preserved(
-        self, dialect: str, log_model: SlayerDataset,
+        self, dialect: str, log_dataset: SlayerDataset,
     ) -> None:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="max(log2_amount)")],
         )
-        sql = await _generate(generator=gen, query=query, model=log_model)
+        sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         upper_no_ws = "".join(sql.upper().split())
         if dialect in _LOG2_NATIVE_DIALECTS:
             assert "LOG2(ORDERS.AMOUNT)" in upper_no_ws, (
@@ -610,7 +610,7 @@ class TestLogAliasPreservation:
             population="orders",
             metrics=[DatasetMetric(expression="max(log_completed_amount)")],
         )
-        sql = await _generate(generator=gen, query=query, model=model)
+        sql = await _generate(generator=gen, query=query, dataset=model)
         upper_no_ws = "".join(sql.upper().split())
         assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
             f"{dialect}: expected literal log10(amount) inside filtered "
@@ -623,7 +623,7 @@ class TestLogAliasPreservation:
 
     @pytest.mark.parametrize("dialect", sorted(_LOG10_NATIVE_DIALECTS))
     async def test_log10_in_arithmetic_measure_is_preserved(
-        self, dialect: str, log_model: SlayerDataset,
+        self, dialect: str, log_dataset: SlayerDataset,
     ) -> None:
         """Arithmetic that mixes a log10 column-derived measure with COUNT(*).
         Pins that the rewrite survives the arithmetic enrichment path.
@@ -633,7 +633,7 @@ class TestLogAliasPreservation:
             population="orders",
             metrics=[DatasetMetric(expression="max(log_amount) / count(*)", name="ratio")],
         )
-        sql = await _generate(generator=gen, query=query, model=log_model)
+        sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         upper_no_ws = "".join(sql.upper().split())
         assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
             f"{dialect}: expected log10(amount) inside arithmetic measure:\n{sql}"
@@ -642,7 +642,7 @@ class TestLogAliasPreservation:
 
     @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
     async def test_log_with_non_alias_base_unchanged(
-        self, dialect: str, log_model: SlayerDataset,
+        self, dialect: str, log_dataset: SlayerDataset,
     ) -> None:
         """Negative test: ``log(3, amount)`` (literal base ≠ 10/2) must keep
         the standard 2-arg form. The rewrite is scoped to bases 10 and 2 only.
@@ -652,7 +652,7 @@ class TestLogAliasPreservation:
             population="orders",
             metrics=[DatasetMetric(expression="max(log3_amount)")],
         )
-        sql = await _generate(generator=gen, query=query, model=log_model)
+        sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         upper_no_ws = "".join(sql.upper().split())
         # Must NOT have invented a single-arg LOG3(...) function.
         assert "LOG3(" not in upper_no_ws, (
@@ -666,7 +666,7 @@ class TestLogAliasPreservation:
 
     @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
     async def test_ln_unchanged(
-        self, dialect: str, log_model: SlayerDataset,
+        self, dialect: str, log_dataset: SlayerDataset,
     ) -> None:
         """``ln(x)`` lives under a separate sqlglot AST node (``exp.Ln``);
         the rewrite must not affect it.
@@ -676,7 +676,7 @@ class TestLogAliasPreservation:
             population="orders",
             metrics=[DatasetMetric(expression="max(ln_amount)")],
         )
-        sql = await _generate(generator=gen, query=query, model=log_model)
+        sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         # T-SQL has no LN — sqlglot transpiles to LOG(x). Every other dialect
         # keeps LN(...). We only assert the rewrite did not invent something.
         assert "LN10(" not in sql.upper()
@@ -702,7 +702,7 @@ class TestStringHygieneDialectTranslation:
             ("clickhouse", "lowerUTF8(orders.status) = 'active'"),
         ],
     )
-    async def test_lower(self, orders_model: SlayerDataset, dialect: str, expected: str) -> None:
+    async def test_lower(self, orders_dataset: SlayerDataset, dialect: str, expected: str) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
@@ -711,7 +711,7 @@ class TestStringHygieneDialectTranslation:
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
             query=query,
-            model=orders_model,
+            dataset=orders_dataset,
         )
         assert expected in sql, f"{dialect}: {expected!r} not in {sql!r}"
 
@@ -727,7 +727,7 @@ class TestStringHygieneDialectTranslation:
         ],
     )
     async def test_instr_translates_per_dialect(
-        self, orders_model: SlayerDataset, dialect: str, expected: str,
+        self, orders_dataset: SlayerDataset, dialect: str, expected: str,
     ) -> None:
         query = SlayerQuery(
             population="orders",
@@ -737,7 +737,7 @@ class TestStringHygieneDialectTranslation:
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
             query=query,
-            model=orders_model,
+            dataset=orders_dataset,
         )
         assert expected in sql, f"{dialect}: {expected!r} not in {sql!r}"
 
@@ -752,7 +752,7 @@ class TestStringHygieneDialectTranslation:
         ],
     )
     async def test_substr_translates_per_dialect(
-        self, orders_model: SlayerDataset, dialect: str, expected: str,
+        self, orders_dataset: SlayerDataset, dialect: str, expected: str,
     ) -> None:
         query = SlayerQuery(
             population="orders",
@@ -762,7 +762,7 @@ class TestStringHygieneDialectTranslation:
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
             query=query,
-            model=orders_model,
+            dataset=orders_dataset,
         )
         assert expected in sql, f"{dialect}: {expected!r} not in {sql!r}"
 
@@ -778,7 +778,7 @@ class TestStringHygieneDialectTranslation:
         ],
     )
     async def test_concat_via_pipe_pipe_translates_per_dialect(
-        self, orders_model: SlayerDataset, dialect: str, expected_substring: str,
+        self, orders_dataset: SlayerDataset, dialect: str, expected_substring: str,
     ) -> None:
         query = SlayerQuery(
             population="orders",
@@ -788,6 +788,6 @@ class TestStringHygieneDialectTranslation:
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
             query=query,
-            model=orders_model,
+            dataset=orders_dataset,
         )
         assert expected_substring in sql, f"{dialect}: {expected_substring!r} not in {sql!r}"

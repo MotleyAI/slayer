@@ -79,7 +79,7 @@ from tests._engine_helpers import _engine_generate
 # Models — orders (host) → customers → {regions, segments}; the reverse
 # customers → orders direction is the inverted forward edge (DEV-1853).
 # --------------------------------------------------------------------------- #
-def regions_model() -> SlayerDataset:
+def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
@@ -90,7 +90,7 @@ def regions_model() -> SlayerDataset:
     )
 
 
-def segments_model() -> SlayerDataset:
+def segments_dataset() -> SlayerDataset:
     # `code` is the join target but carries NO primary_key/unique claim:
     # the customers → segments hop is deliberately unproven.
     return SlayerDataset(
@@ -103,7 +103,7 @@ def segments_model() -> SlayerDataset:
     )
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
@@ -129,7 +129,7 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def orders_model() -> SlayerDataset:
+def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
@@ -147,7 +147,7 @@ def orders_model() -> SlayerDataset:
     )
 
 
-def inventory_model() -> SlayerDataset:
+def inventory_dataset() -> SlayerDataset:
     """Composite-PK target for the F6 predicate tests (never seeded)."""
     return SlayerDataset(
         name="inventory", data_source="test", sql_table="inventory",
@@ -159,9 +159,9 @@ def inventory_model() -> SlayerDataset:
     )
 
 
-def dev1836_models() -> List[SlayerDataset]:
+def dev1836_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
-    return [orders_model(), customers_model(), regions_model(), segments_model()]
+    return [orders_dataset(), customers_dataset(), regions_dataset(), segments_dataset()]
 
 
 # --------------------------------------------------------------------------- #
@@ -188,9 +188,9 @@ SPEND_BAND = (
 
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb",
               validate: bool = False) -> str:
-    models = dev1836_models()
+    models = dev1836_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=validate,
     )
 
@@ -290,7 +290,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1836_models()) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev1836_datasets()) as (engine, _db):
         yield engine
 
 
@@ -315,8 +315,8 @@ def broadcast_warnings(resp: SlayerResponse) -> list[BroadcastGrainWarningPayloa
 
 
 __all__ = [
-    "orders_model", "customers_model", "regions_model", "segments_model",
-    "inventory_model", "dev1836_models",
+    "orders_dataset", "customers_dataset", "regions_dataset", "segments_dataset",
+    "inventory_dataset", "dev1836_datasets",
     "q", "gen", "month_td", "month_key", "rows_by",
     "broadcast_warnings",
     "SPEND_BAND",

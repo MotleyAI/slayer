@@ -21,7 +21,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1832_fixtures import (
     DatasetMetric,
-    dev1832_models,
+    dev1832_datasets,
     month_td,
     monthly_q,
 )
@@ -32,7 +32,7 @@ SERIES = "time_shift(cumsum(sum(amount)), -1)"
 
 
 def _bundle(root_name: str = "monthly") -> ResolvedSourceBundle:
-    models = dev1832_models()
+    models = dev1832_datasets()
     root = next(m for m in models if m.name == root_name)
     return ResolvedSourceBundle(dialect="postgres", population=root,
                                 referenced_datasets=[m for m in models if m is not root])

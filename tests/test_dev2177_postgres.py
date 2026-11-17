@@ -14,7 +14,7 @@ from tests._dev2177_fixtures import (
     BOOLEAN_PARAMETER_CHECKS,
     check_concat_branches_rejected,
     check_custom_aggregation_receives_raw_boolean,
-    dev2177_models,
+    dev2177_datasets,
 )
 from tests._mcp_idiom_fixtures import idiom_seed_statements
 from tests._pg_helpers import client_datasource, pg_query_engine
@@ -34,7 +34,7 @@ async def pg_engine(postgresql, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
         cur.execute(stmt)
     postgresql.commit()
     async with pg_query_engine(
-        client_datasource(postgresql.info), base_dir=str(tmp_path), models=dev2177_models(data_source="pg"),
+        client_datasource(postgresql.info), base_dir=str(tmp_path), models=dev2177_datasets(data_source="pg"),
     ) as engine:
         yield engine
 

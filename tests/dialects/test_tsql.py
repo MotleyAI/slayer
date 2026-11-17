@@ -526,12 +526,12 @@ async def test_tsql_explain_does_not_decode_data_rows() -> None:
 # the ORDER BY resolver unable to match the SELECT alias.
 
 
-async def _tsql_generate(query: SlayerQuery, model: SlayerDataset) -> str:
+async def _tsql_generate(query: SlayerQuery, dataset: SlayerDataset) -> str:
     """Render ``query`` for T-SQL and return the full emitted SQL."""
-    return await _engine_generate(query=query, model=model, dialect="tsql")
+    return await _engine_generate(query=query, dataset=dataset, dialect="tsql")
 
 
-def _orders_model_tsql() -> SlayerDataset:
+def _orders_dataset_tsql() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
@@ -559,7 +559,7 @@ async def test_tsql_time_shift_inner_cte_uses_mangled_brackets() -> None:
         ],
         order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
-    sql = await _tsql_generate(q, _orders_model_tsql())
+    sql = await _tsql_generate(q, _orders_dataset_tsql())
     # No ANSI-quoted identifiers — they'd bypass Bug 2 mangling and the
     # literal-dot form would fail T-SQL's ORDER BY alias resolver.
     assert '"orders.' not in sql, (
@@ -595,7 +595,7 @@ async def test_tsql_order_by_does_not_wrap_alias_in_case_when_nulls_emulation() 
         dimensions=[FieldRef(name="id"), FieldRef(name="created_at")],
         order=[OrderItem(field=FieldRef(name="id"), direction="asc")],
     )
-    sql = await _tsql_generate(q, _orders_model_tsql())
+    sql = await _tsql_generate(q, _orders_dataset_tsql())
     assert "CASE WHEN" not in sql.upper() or "ORDER BY\n  CASE WHEN" not in sql, (
         f"T-SQL ORDER BY must not wrap the alias in a NULLS-emulation "
         f"CASE WHEN sub-expression — alias resolution fails inside it:\n{sql}"

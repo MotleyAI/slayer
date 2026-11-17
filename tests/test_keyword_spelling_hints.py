@@ -7,12 +7,12 @@ from slayer.core.scope import DatasetScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from tests._dev1737_fixtures import customers_model, orders_model
+from tests._dev1737_fixtures import customers_dataset, orders_dataset
 
 
 def _bind(text: str) -> None:
-    model = orders_model()
-    bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[customers_model()])
+    model = orders_dataset()
+    bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[customers_dataset()])
     bind_expr(parse_expr(text), scope=DatasetScope(population=model), bundle=bundle, allow_metrics=True)
 
 

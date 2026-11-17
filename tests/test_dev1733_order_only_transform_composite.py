@@ -136,7 +136,7 @@ def _hidden_order_alias(sql: str, *, dialect: str = "postgres") -> str:
 
 
 # Fixtures — orders -> customers / suppliers.
-async def _save_models(storage: YAMLStorage) -> None:
+async def _save_datasets(storage: YAMLStorage) -> None:
     await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
@@ -196,7 +196,7 @@ async def engine(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=":memory:"),
     )
-    await _save_models(storage)
+    await _save_datasets(storage)
     return SlayerQueryEngine(storage=storage)
 
 
@@ -210,7 +210,7 @@ async def exec_engine(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=str(db_path)),
     )
-    await _save_models(storage)
+    await _save_datasets(storage)
     return SlayerQueryEngine(storage=storage)
 
 
@@ -1067,7 +1067,7 @@ class TestDialectEmission:
         await storage.save_datasource(
             DatasourceConfig(name="test", type=ds_type, database="db", host="h"),
         )
-        await _save_models(storage)
+        await _save_datasets(storage)
         eng = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             population="orders",
@@ -1092,7 +1092,7 @@ class TestDialectEmission:
         await storage.save_datasource(
             DatasourceConfig(name="test", type=ds_type, database="db", host="h"),
         )
-        await _save_models(storage)
+        await _save_datasets(storage)
         eng = SlayerQueryEngine(storage=storage)
         query = SlayerQuery(
             population="orders",

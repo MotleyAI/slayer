@@ -85,7 +85,7 @@ _LEARNING_TOPICS = [
 ]
 
 
-def _make_models() -> list[SlayerDataset]:
+def _make_datasets() -> list[SlayerDataset]:
     return [
         SlayerDataset(
             name="orders",
@@ -178,7 +178,7 @@ async def _seed_invariance_corpus(storage: StorageBackend) -> None:
     await storage.save_datasource(DatasourceConfig(
         name="warehouse", type="sqlite", database=":memory:",
     ))
-    for model in _make_models():
+    for model in _make_datasets():
         await storage.save_dataset(model)
 
     # 20+ learning-only memories tagged by topic.
@@ -403,7 +403,7 @@ async def storage_with_embeddings(
 
         emb_retriever = EmbeddingRetriever(storage=storage)
         persisted_models = []
-        for m in _make_models():
+        for m in _make_datasets():
             persisted = await storage.get_dataset(
                 m.name, data_source="warehouse",
             )

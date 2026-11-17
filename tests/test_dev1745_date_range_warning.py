@@ -83,7 +83,7 @@ class TestEmission:
 
     async def _sql(self, date_range) -> str:
         return await _engine_generate(
-            query=_query(date_range), model=_orders(),
+            query=_query(date_range), dataset=_orders(),
             dialect="postgres", validate=False,
         )
 

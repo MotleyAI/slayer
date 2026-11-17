@@ -38,7 +38,7 @@ from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1902_fixtures import customers_model, orders_model, regions_model
+from tests._dev1902_fixtures import customers_dataset, orders_dataset, regions_dataset
 
 
 def _physical_pairs(*, edge: OrientedRelationship, source: SlayerDataset, target: SlayerDataset) -> list[tuple[str, str]]:
@@ -164,7 +164,7 @@ class TestExtensionOverlay:
     def test_extension_join_with_undeclared_key_rejected(self):
         ext = DatasetExtension(source_name="orders", relationships=[
             DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])])
-        base = orders_model()
+        base = orders_dataset()
         with pytest.raises(ValueError, match="join orders → regions key 'region_id'"):
             apply_extension_overlay(base, ext)
 
@@ -172,7 +172,7 @@ class TestExtensionOverlay:
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
-            for m in (orders_model(), customers_model(), regions_model()):
+            for m in (orders_dataset(), customers_dataset(), regions_dataset()):
                 await storage.save_dataset(m)
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery.model_validate({
@@ -207,10 +207,10 @@ class TestTargetSide:
         with tempfile.TemporaryDirectory() as d:
             storage = SQLiteStorage(db_path=os.path.join(d, "store.db"))
             await storage.save_datasource(DatasourceConfig(name="test", type="sqlite"))
-            await storage.save_dataset(customers_model())
-            await storage.save_dataset(regions_model())
+            await storage.save_dataset(customers_dataset())
+            await storage.save_dataset(regions_dataset())
             engine = SlayerQueryEngine(storage=storage)
-            await engine.save_dataset(orders_model())
+            await engine.save_dataset(orders_dataset())
             assert await storage.get_dataset("orders", data_source="test") is not None
 
     def test_audit_reports_undeclared_target_key(self):
@@ -225,25 +225,25 @@ class TestTargetSide:
 
     def test_audit_is_silent_on_a_valid_renamed_graph(self):
         findings = audit_relationship_safety(
-            datasets=[orders_model(), customers_model(), regions_model()])
+            datasets=[orders_dataset(), customers_dataset(), regions_dataset()])
         assert [f for f in findings if f.severity == "error"] == []
 
 
 class TestPhysicalJoinPairs:
     def test_forward_orientation(self):
-        orders, customers = orders_model(), customers_model()
+        orders, customers = orders_dataset(), customers_dataset()
         (edge,) = edges_between(source=orders, target=customers)
         assert _physical_pairs(edge=edge, source=orders, target=customers) == [
             ("cust_fk", "customer_pk")]
 
     def test_reverse_orientation(self):
-        orders, customers = orders_model(), customers_model()
+        orders, customers = orders_dataset(), customers_dataset()
         (edge,) = edges_between(source=customers, target=orders)
         assert _physical_pairs(edge=edge, source=customers, target=orders) == [
             ("customer_pk", "cust_fk")]
 
     def test_quoted_key_unquoted(self):
-        orders, customers = orders_model(), customers_model(pk_sql='"CustPK"')
+        orders, customers = orders_dataset(), customers_dataset(pk_sql='"CustPK"')
         (edge,) = edges_between(source=orders, target=customers)
         assert _physical_pairs(edge=edge, source=orders, target=customers) == [
             ("cust_fk", "CustPK")]
@@ -352,7 +352,7 @@ class TestDriftAndRefinement:
 
     def test_detection_profiles_renamed_base_keys(self):
         assert _detection_skip_reason(
-            dataset=orders_model(), target=customers_model(),
+            dataset=orders_dataset(), target=customers_dataset(),
             src_cols=["customer_id"], tgt_cols=["id"]) is None
 
     def test_detection_skips_non_base_target_key(self):

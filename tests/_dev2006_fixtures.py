@@ -60,7 +60,7 @@ from slayer.engine.query_engine import SlayerResponse
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
-def snapshots_model() -> SlayerDataset:
+def snapshots_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="account_snapshots", sql_table="account_snapshots", data_source="test",
         default_time_dimension="snapshot_date",
@@ -76,7 +76,7 @@ def snapshots_model() -> SlayerDataset:
     )
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
@@ -86,12 +86,12 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def dev2006_models() -> List[SlayerDataset]:
-    return [snapshots_model(), customers_model()]
+def dev2006_datasets() -> List[SlayerDataset]:
+    return [snapshots_dataset(), customers_dataset()]
 
 
 def dev2006_bundle(*, root: str = "account_snapshots") -> ResolvedSourceBundle:
-    models = {m.name: m for m in dev2006_models()}
+    models = {m.name: m for m in dev2006_datasets()}
     return ResolvedSourceBundle(
         dialect="duckdb", population=models[root],
         referenced_datasets=[m for n, m in models.items() if n != root],
@@ -112,8 +112,8 @@ def snap_q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def m(formula: str, name: str = "v") -> DatasetMetric:
-    return DatasetMetric(expression=formula, name=name)
+def m(expression: str, name: str = "v") -> DatasetMetric:
+    return DatasetMetric(expression=expression, name=name)
 
 
 def month_td(column: str = "snapshot_date") -> List[TimeDimension]:
@@ -207,7 +207,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev2006_models()) as (engine, _):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev2006_datasets()) as (engine, _):
         yield engine
 
 

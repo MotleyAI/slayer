@@ -27,7 +27,7 @@ from tests._deprecated_input_helpers import (
     rows,
     strict,
 )
-from tests._library_names_fixtures import agg, measure, stored_engine, t_doc
+from tests._library_names_fixtures import agg, metric, stored_engine, t_doc
 from tests._model_access_fixtures import mcp_text
 
 EXTENSION_OLD = "An extension object in `source_model`"
@@ -169,8 +169,8 @@ class TestDryRun:
         assert warnings_block.splitlines() == [f"  - {_strict_message()}"]
 
     async def test_mcp_json_carries_a_library_name_shadow(self) -> None:
-        query = {"population": "t", "metrics": [measure("reverse(a)")]}
-        async with stored_engine(models=[t_doc(aggregations=[agg("reverse")])]) as engine:
+        query = {"population": "t", "metrics": [metric("reverse(a)")]}
+        async with stored_engine(datasets=[t_doc(aggregations=[agg("reverse")])]) as engine:
             text = await _dry_run(engine.storage, query, "json")
         shadows = [w for w in json.loads(text)["warnings"] if w.get("kind") == "library_name_shadow"]
         assert [(w["model"], w["aggregation"], w["function"]) for w in shadows] == [("t", "reverse", "reverse")]

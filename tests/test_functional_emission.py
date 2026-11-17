@@ -55,8 +55,8 @@ _COLON_AGG_TEXT = re.compile(
 _COLON_ANY = re.compile(r"(?<![\w-])(?!memory:|https?:)(?:[A-Za-z_][\w.]*|\*)(?<!\.):[a-z_]\w*\b")
 
 
-def _assert_functional(models: list[SlayerDataset]) -> None:
-    formulas = [(m.name, mm.name, mm.expression) for m in models for mm in m.metrics]
+def _assert_functional(datasets: list[SlayerDataset]) -> None:
+    formulas = [(m.name, mm.name, mm.expression) for m in datasets for mm in m.metrics]
     assert formulas
     for model, measure, formula in formulas:
         assert ":" not in _LITERAL.sub("''", formula), (model, measure, formula)

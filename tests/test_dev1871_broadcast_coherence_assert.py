@@ -25,11 +25,11 @@ def _bundle() -> ResolvedSourceBundle:
     ))
 
 
-def _query(formula: str) -> SlayerQuery:
+def _query(expression: str) -> SlayerQuery:
     return SlayerQuery(
         population="orders",
         dimensions=[FieldRef(name="status"), FieldRef(name="tier")],
-        metrics=[DatasetMetric(expression=formula, name="mix")],
+        metrics=[DatasetMetric(expression=expression, name="mix")],
     )
 
 

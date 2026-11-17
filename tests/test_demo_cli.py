@@ -201,7 +201,7 @@ class TestEnsureDemoDatasourceScoping:
 
 
 class TestDemoEnrichment:
-    def _orders_model(self):
+    def _orders_dataset(self):
         return SlayerDataset(
             name="orders",
             sql_table="orders",
@@ -221,7 +221,7 @@ class TestDemoEnrichment:
         assert set(jaffle_shop.DEMO_ENRICHMENT) == set(jaffle_shop.TABLE_NAMES)
 
     def test_applies_labels_measures_and_aggregations(self):
-        model = self._orders_model()
+        model = self._orders_dataset()
         assert jaffle_shop.apply_demo_enrichment(model) is True
 
         assert model.description is not None
@@ -233,14 +233,14 @@ class TestDemoEnrichment:
         assert "weighted_avg" in {a.name for a in model.aggregations}
 
     def test_idempotent_second_run_is_noop(self):
-        model = self._orders_model()
+        model = self._orders_dataset()
         jaffle_shop.apply_demo_enrichment(model)
         snapshot = model.model_dump()
         assert jaffle_shop.apply_demo_enrichment(model) is False
         assert model.model_dump() == snapshot
 
     def test_preserves_user_edits(self):
-        model = self._orders_model()
+        model = self._orders_dataset()
         by_name = {c.name: c for c in model.fields}
         by_name["order_total"].label = "My Label"
         model.description = "My description"
@@ -251,7 +251,7 @@ class TestDemoEnrichment:
         assert by_name["subtotal"].label == "Net Sales"
 
     def test_auto_default_format_replaced_custom_format_preserved(self):
-        model = self._orders_model()
+        model = self._orders_dataset()
         by_name = {c.name: c for c in model.fields}
         # Auto-ingestion stamps a bare FLOAT format on numeric columns — the
         # curated currency format must win over it.
@@ -265,7 +265,7 @@ class TestDemoEnrichment:
         assert by_name["subtotal"].format.symbol == "€"
 
     def test_duplicate_measure_names_not_added(self):
-        model = self._orders_model()
+        model = self._orders_dataset()
         model.metrics = [DatasetMetric(name="total_revenue", expression="sum(subtotal)")]
         jaffle_shop.apply_demo_enrichment(model)
         revenue = [m for m in model.metrics if m.name == "total_revenue"]
@@ -289,8 +289,8 @@ class TestDemoEnrichment:
         assert model.description is None
 
     def test_spec_objects_are_copied_not_shared(self):
-        model_a = self._orders_model()
-        model_b = self._orders_model()
+        model_a = self._orders_dataset()
+        model_b = self._orders_dataset()
         jaffle_shop.apply_demo_enrichment(model_a)
         jaffle_shop.apply_demo_enrichment(model_b)
 

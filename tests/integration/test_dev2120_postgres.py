@@ -11,7 +11,7 @@ from tests._dev2120_fixtures import (
     LIB,
     check_library,
     check_native_json,
-    lib_model,
+    lib_dataset,
     lib_query,
     server_table_statements,
 )
@@ -41,7 +41,7 @@ async def pg(postgresql, tmp_path):
                           username=info.user, password="")
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(ds)
-    await storage.save_dataset(lib_model(data_source="pg"))
+    await storage.save_dataset(lib_dataset(data_source="pg"))
     engine = SlayerQueryEngine(storage=storage)
     try:
         for model in await engine.ingest(ds, include_tables=["docs", "docs_json"]):
@@ -64,7 +64,7 @@ async def test_library(pg) -> None:
 @pytest.mark.integration
 @pytest.mark.parametrize("model", ["docs", "docs_json"])
 async def test_native_json_columns(pg, model: str) -> None:
-    await check_native_json(pg[0], model=model)
+    await check_native_json(pg[0], dataset=model)
 
 
 @pytest.mark.integration

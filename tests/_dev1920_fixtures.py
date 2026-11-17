@@ -101,7 +101,7 @@ _ORDER_COLUMNS = [
 ]
 
 
-def orders_doc(*, version: int | None = STORED_VERSIONS["SlayerModel"], measures: Sequence[dict] = (),
+def orders_doc(*, version: int | None = STORED_VERSIONS["SlayerModel"], metrics: Sequence[dict] = (),
                **extra: Any) -> dict:
     """``version=None`` is a fresh (unversioned) payload."""
     doc: dict[str, Any] = {
@@ -111,8 +111,8 @@ def orders_doc(*, version: int | None = STORED_VERSIONS["SlayerModel"], measures
     }
     if version is not None:
         doc["version"] = version
-    if measures:
-        doc["measures"] = list(measures)
+    if metrics:
+        doc["measures"] = list(metrics)
     return doc
 
 
@@ -178,7 +178,7 @@ async def make_store(tmp_path: Any) -> AsyncIterator[StoreFactory]:
         ds = datasource_doc(db_path=db_path, dialect=dialect, granularities=granularities)
         datasources.append(DatasourceConfig.model_validate(ds))
         docs = list(models) if models is not None else [orders_doc(), customers_doc(), regions_doc()]
-        return await write_raw_store(backend=backend, base=base, datasources=[ds], models=docs, memories=memories)
+        return await write_raw_store(backend=backend, base=base, datasources=[ds], datasets=docs, memories=memories)
 
     try:
         yield _make

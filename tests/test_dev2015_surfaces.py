@@ -24,7 +24,7 @@ from slayer.search.service import SearchService
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._cli_inprocess import run_cli_in_process
-from tests._dev2015_fixtures import GRANULARITIES, GRANULARITY_NAMES, returns_model, spine_engine, spine_models
+from tests._dev2015_fixtures import GRANULARITIES, GRANULARITY_NAMES, returns_dataset, spine_engine, spine_datasets
 
 
 async def _call(server, *, name: str, arguments: dict[str, Any]) -> str:
@@ -35,7 +35,7 @@ async def _call(server, *, name: str, arguments: dict[str, Any]) -> str:
 async def _spine_storage(base_dir: str) -> YAMLStorage:
     storage = YAMLStorage(base_dir=base_dir)
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-    for model in spine_models():
+    for model in spine_datasets():
         await storage.save_dataset(model, _validate=False)
     return storage
 
@@ -117,7 +117,7 @@ class TestSpineListedWithItsWiredModels:
 # ---------------------------------------------------------------------------
 
 def _bad_default(name: str = "returns_by_amount") -> SlayerDataset:
-    return returns_model(default_time_dimension="amount").model_copy(update={"name": name})
+    return returns_dataset(default_time_dimension="amount").model_copy(update={"name": name})
 
 
 def _stored_default(storage: YAMLStorage, name: str) -> Any:
@@ -283,7 +283,7 @@ def _dbt_project(field: str, value: Any) -> DbtProject:
     )
 
 
-def _converted_measure(result: ConversionResult, name: str) -> Optional[DatasetMetric]:
+def _converted_metric(result: ConversionResult, name: str) -> Optional[DatasetMetric]:
     for model in result.datasets:
         for measure in model.metrics:
             if measure.name == name:
@@ -294,14 +294,14 @@ def _converted_measure(result: ConversionResult, name: str) -> Optional[DatasetM
 class TestDbtImporter:
     def test_fill_nulls_with_becomes_coalesce(self) -> None:
         result = DbtToSlayerConverter(project=_dbt_project("fill_nulls_with", 0), data_source="test").convert()
-        measure = _converted_measure(result, "gap_filled_rev")
+        measure = _converted_metric(result, "gap_filled_rev")
         assert measure is not None
         assert measure.expression.replace(" ", "") == "coalesce(sum(amount),0)"
         assert not any(e.metric_name == "gap_filled_rev" for e in result.unconverted_metrics)
 
     def test_join_to_timespine_is_accepted_with_a_note(self) -> None:
         result = DbtToSlayerConverter(project=_dbt_project("join_to_timespine", True), data_source="test").convert()
-        measure = _converted_measure(result, "gap_filled_rev")
+        measure = _converted_metric(result, "gap_filled_rev")
         assert measure is not None
         assert measure.expression.replace(" ", "") == "sum(amount)"
         notes = [e for e in (*result.unconverted_metrics, *result.warnings) if e.metric_name == "gap_filled_rev"]

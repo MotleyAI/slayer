@@ -28,7 +28,7 @@ from slayer.core.query import SlayerQuery
 from tests._engine_helpers import _dataset_where_text, _engine_generate
 
 
-def _make_planets_model(*, with_window_column: bool = False) -> SlayerDataset:
+def _make_planets_dataset(*, with_window_column: bool = False) -> SlayerDataset:
     columns = [
         DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
         DatasetField(name="name", sql="name", datatype=DataType.TEXT),
@@ -167,7 +167,7 @@ class TestSqlModeRuntime:
         # This once raised "Unknown filter function 'json_extract'" at enrichment
         # time; it renders — the Mode A model filter survives into the WHERE of
         # the model's filtered dataset.
-        sql = await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, dataset=model)
         assert "json_extract" in _dataset_where_text(sql).lower(), (
             f"model filter dropped from WHERE clause:\n{sql}"
         )
@@ -192,7 +192,7 @@ class TestSqlModeRuntime:
             population="m",
             metrics=[DatasetMetric(expression="sum(active_amount)")],
         )
-        sql = await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, dataset=model)
         # The Column.filter goes onto the measure as a CASE WHEN wrapper
         # inside the aggregate — the lowercase ``lower(...)`` predicate must
         # appear within the SUM expression.
@@ -238,7 +238,7 @@ class TestSqlModeRuntime:
             metrics=[DatasetMetric(expression="count(*)")],
         )
         sql = await _engine_generate(
-            query=query, model=model, extra_models=[customers, regions],
+            query=query, dataset=model, extra_datasets=[customers, regions],
         )
         assert "customers__regions.name" in sql, (
             f"__-delimited join path dropped from emitted SQL:\n{sql}"
@@ -393,7 +393,7 @@ class TestDslModeRejection:
             filter=["initcap(data) = 'X'"],
         )
         with pytest.raises(Exception, match="(?i)function|initcap|raw SQL|unknown|transform"):
-            await _engine_generate(query=query, model=model)
+            await _engine_generate(query=query, dataset=model)
 
     async def test_query_filter_rejects_unknown_double_underscore_at_enrichment(self) -> None:
         """``customers__region`` is a typo (no virtual column with that name on
@@ -413,7 +413,7 @@ class TestDslModeRejection:
             filter=["customers__region = 'EU'"],
         )
         with pytest.raises(Exception, match="(?i)customers__region|unknown|not a Column"):
-            await _engine_generate(query=query, model=model)
+            await _engine_generate(query=query, dataset=model)
 
     def test_query_filter_rejects_raw_over(self) -> None:
         with pytest.raises(ValueError, match="(?i)window function|OVER"):
@@ -440,7 +440,7 @@ class TestDslModeRejection:
             dimensions=["id"],
         )
         with pytest.raises(Exception, match="(?i)function|json_extract|raw SQL|unknown|transform"):
-            await _engine_generate(query=query, model=model)
+            await _engine_generate(query=query, dataset=model)
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +466,7 @@ class TestStrictResolution:
             filter=["unknown_col > 0"],
         )
         with pytest.raises(Exception, match="(?i)unknown_col|not.*column.*measure|undefined|unknown"):
-            await _engine_generate(query=query, model=model)
+            await _engine_generate(query=query, dataset=model)
 
     async def test_unknown_canonical_agg_shaped_typo_raises_at_enrichment(self) -> None:
         """Regression for round-2 review: a name that *looks* like a canonical
@@ -487,7 +487,7 @@ class TestStrictResolution:
                 filter=[f"{typo} > 0"],
             )
             with pytest.raises(Exception, match=f"(?i){typo}|unknown|not a Column"):
-                await _engine_generate(query=query, model=model)
+                await _engine_generate(query=query, dataset=model)
 
     async def test_filter_referencing_unjoined_model_raises(self) -> None:
         """A filter like ``transportation_assets.total_vehicles >= 3``
@@ -520,7 +520,7 @@ class TestStrictResolution:
                 r"|not a valid join path from 'households'"
             ),
         ):
-            await _engine_generate(query=query, model=households)
+            await _engine_generate(query=query, dataset=households)
 
     # The two former lenient-drop tests moved to producer filter
     # inheritance (tests/test_dev1836_filter_inheritance, test_dev1747_reroot_filter_routing).
@@ -542,7 +542,7 @@ class TestStrictResolution:
             filter=["status = 'active'"],
         )
         # Should not raise.
-        await _engine_generate(query=query, model=model)
+        await _engine_generate(query=query, dataset=model)
 
 
 # ---------------------------------------------------------------------------
@@ -557,14 +557,14 @@ class TestPredicatePromotionRemoved:
     """
 
     async def test_filter_on_windowed_column_raises_with_actionable_message(self) -> None:
-        model = _make_planets_model(with_window_column=True)
+        model = _make_planets_dataset(with_window_column=True)
         query = SlayerQuery(
             population="planets",
             dimensions=["name"],
             filter=["rn <= 3"],
         )
         with pytest.raises(Exception) as excinfo:
-            await _engine_generate(query=query, model=model)
+            await _engine_generate(query=query, dataset=model)
         msg = str(excinfo.value).lower()
         assert "window function" in msg or "rank" in msg, (
             f"Expected message to mention 'window function' and/or 'rank' "
@@ -574,13 +574,13 @@ class TestPredicatePromotionRemoved:
     async def test_select_only_on_windowed_column_still_works(self) -> None:
         """A windowed Column.sql is still legal as a *projection* — only as a
         filter target does it now error."""
-        model = _make_planets_model(with_window_column=True)
+        model = _make_planets_dataset(with_window_column=True)
         query = SlayerQuery(
             population="planets",
             dimensions=["name", "rn"],
         )
         # Should render without error; only filter use is restricted.
-        await _engine_generate(query=query, model=model)
+        await _engine_generate(query=query, dataset=model)
 
 
 # ---------------------------------------------------------------------------

@@ -71,7 +71,7 @@ async def _prepare(tmp_path):
     return SlayerQueryEngine(storage=storage), storage, gold, db_path
 
 
-async def _model(storage: StorageBackend, name) -> SlayerDataset:
+async def _dataset(storage: StorageBackend, name) -> SlayerDataset:
     model = await storage.get_dataset(name, data_source=DS)
     assert model is not None
     return model
@@ -166,7 +166,7 @@ def test_cli_import_writes_report_and_models(tmp_path):
 # --------------------------------------------------------------------------- #
 async def test_variable_contract_required_optional(tmp_path):
     _, storage, _, _ = await _prepare(tmp_path)
-    model = await _model(storage, "order_facts")
+    model = await _dataset(storage, "order_facts")
     mv = extract_dataset_variables(model)
     assert mv.required == ["category"]
     assert mv.optional == ["region"]
@@ -174,7 +174,7 @@ async def test_variable_contract_required_optional(tmp_path):
 
 async def test_both_pushdowns_are_list_valued(tmp_path):
     _, storage, _, _ = await _prepare(tmp_path)
-    model = await _model(storage, "order_facts")
+    model = await _dataset(storage, "order_facts")
     assert list_valued_variable_names(model) == {"category", "region"}
     assert model.meta is not None
     cube_vars = model.meta["cube_variables"]
@@ -189,7 +189,7 @@ async def test_both_pushdowns_are_list_valued(tmp_path):
 
 async def test_skeleton_variables_line_exact(tmp_path):
     _, storage, _, _ = await _prepare(tmp_path)
-    model = await _model(storage, "order_facts")
+    model = await _dataset(storage, "order_facts")
     lines = render_dataset_skeleton(dataset=model).splitlines()
     var_line = next(ln for ln in lines if ln.startswith("Variables:"))
     assert var_line == "Variables: category (required), region"
@@ -199,7 +199,7 @@ async def test_required_bare_optional_blocked_in_sql(tmp_path):
     """Structural proof: the required var is bare (outside any ``{? ?}`` block)
     and the optional var lives inside one; all three tables are joined."""
     _, storage, _, _ = await _prepare(tmp_path)
-    model = await _model(storage, "order_facts")
+    model = await _dataset(storage, "order_facts")
     assert model.sql is not None
     bare, blocked = extract_variable_refs(model.sql)
     assert "category" in bare
@@ -217,13 +217,13 @@ async def test_required_bare_optional_blocked_in_sql(tmp_path):
 # --------------------------------------------------------------------------- #
 async def test_orders_joins_customers(tmp_path):
     _, storage, _, _ = await _prepare(tmp_path)
-    orders = await _model(storage, "orders")
+    orders = await _dataset(storage, "orders")
     assert "customers" in {j.to for j in orders.relationships}
 
 
 async def test_view_is_clean_facade(tmp_path):
     _, storage, _, _ = await _prepare(tmp_path)
-    view = await _model(storage, "orders_overview")
+    view = await _dataset(storage, "orders_overview")
     assert "region" in {c.name for c in view.fields}
     assert not view.filters  # no default_filters -> no always-applied WHERE
 

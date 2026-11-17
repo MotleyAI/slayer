@@ -30,7 +30,7 @@ class TestSqliteJsonExtractInGenerator:
     """
 
     @pytest.fixture
-    def model_with_json_dim(self) -> SlayerDataset:
+    def dataset_with_json_dim(self) -> SlayerDataset:
         return SlayerDataset(
             name="users",
             sql_table="users",
@@ -55,7 +55,7 @@ class TestSqliteJsonExtractInGenerator:
         )
 
     async def test_sqlite_column_sql_with_json_extract_dimension(
-        self, model_with_json_dim: SlayerDataset,
+        self, dataset_with_json_dim: SlayerDataset,
     ) -> None:
         query = SlayerQuery(
             population="users",
@@ -63,21 +63,21 @@ class TestSqliteJsonExtractInGenerator:
             metrics=[DatasetMetric(expression="count(*)")],
         )
         sql = await _engine_generate(
-            query=query, model=model_with_json_dim, dialect="sqlite",
+            query=query, dataset=dataset_with_json_dim, dialect="sqlite",
         )
         assert "JSON_EXTRACT(" in sql, f"missing JSON_EXTRACT in:\n{sql}"
         # The lossy ``payload -> '$.tier'`` form must not appear.
         assert "payload -> '$.tier'" not in sql, sql
 
     async def test_sqlite_column_sql_with_json_extract_in_case_when(
-        self, model_with_json_dim: SlayerDataset,
+        self, dataset_with_json_dim: SlayerDataset,
     ) -> None:
         query = SlayerQuery(
             population="users",
             metrics=[DatasetMetric(expression="sum(is_gold)")],
         )
         sql = await _engine_generate(
-            query=query, model=model_with_json_dim, dialect="sqlite",
+            query=query, dataset=dataset_with_json_dim, dialect="sqlite",
         )
         assert "JSON_EXTRACT(" in sql, sql
         assert "payload -> '$.tier'" not in sql, sql
@@ -100,12 +100,12 @@ class TestSqliteJsonExtractInGenerator:
             dimensions=[FieldRef(name="tier")],
             metrics=[DatasetMetric(expression="count(*)")],
         )
-        sql = await _engine_generate(query=query, model=model, dialect="sqlite")
+        sql = await _engine_generate(query=query, dataset=model, dialect="sqlite")
         assert "JSON_EXTRACT(" in sql, sql
         assert "payload -> '$.tier'" not in sql, sql
 
     async def test_postgres_column_sql_with_json_extract_unchanged(
-        self, model_with_json_dim: SlayerDataset,
+        self, dataset_with_json_dim: SlayerDataset,
     ) -> None:
         """Regression guard: rewrite is SQLite-only; Postgres path is untouched.
 
@@ -120,7 +120,7 @@ class TestSqliteJsonExtractInGenerator:
             metrics=[DatasetMetric(expression="count(*)")],
         )
         sql = await _engine_generate(
-            query=query, model=model_with_json_dim, dialect="postgres",
+            query=query, dataset=dataset_with_json_dim, dialect="postgres",
         )
         assert "JSON_EXTRACT" in sql.upper(), sql
 
@@ -138,7 +138,7 @@ class TestMedianPercentilePerDialect:
     (no native function, no Python-UDF mechanism).
     """
 
-    def _measure(
+    def _metric(
         self,
         *,
         agg: str,
@@ -222,7 +222,7 @@ class TestMedianPercentilePerDialect:
 
     def test_build_percentile_missing_p_raises(self) -> None:
         gen = SQLGenerator(dialect="postgres")
-        m = self._measure(agg="percentile", agg_kwargs={})
+        m = self._metric(agg="percentile", agg_kwargs={})
         with pytest.raises(ValueError, match="requires parameter 'p'"):
             gen._build_percentile(m)
 
@@ -276,7 +276,7 @@ class TestStatAggsPerDialect:
     sum/avg/min/max path.
     """
 
-    def _measure(
+    def _metric(
         self,
         *,
         agg: str,
@@ -306,7 +306,7 @@ class TestStatAggsPerDialect:
     )
     def test_build_stddev_samp(self, dialect: str, expected: str) -> None:
         gen = SQLGenerator(dialect=dialect)
-        m = self._measure(agg="stddev_samp")
+        m = self._metric(agg="stddev_samp")
         sql = gen._build_agg(spec=m)[0].sql(dialect=dialect)
         assert sql == expected
 
@@ -325,7 +325,7 @@ class TestStatAggsPerDialect:
     )
     def test_build_stddev_pop(self, dialect: str, expected: str) -> None:
         gen = SQLGenerator(dialect=dialect)
-        m = self._measure(agg="stddev_pop")
+        m = self._metric(agg="stddev_pop")
         sql = gen._build_agg(spec=m)[0].sql(dialect=dialect)
         assert sql == expected
 
@@ -352,7 +352,7 @@ class TestStatAggsPerDialect:
     )
     def test_build_var_samp(self, dialect: str, expected: str) -> None:
         gen = SQLGenerator(dialect=dialect)
-        m = self._measure(agg="var_samp")
+        m = self._metric(agg="var_samp")
         sql = gen._build_agg(spec=m)[0].sql(dialect=dialect)
         assert sql == expected
 
@@ -375,7 +375,7 @@ class TestStatAggsPerDialect:
     )
     def test_build_var_pop(self, dialect: str, expected: str) -> None:
         gen = SQLGenerator(dialect=dialect)
-        m = self._measure(agg="var_pop")
+        m = self._metric(agg="var_pop")
         sql = gen._build_agg(spec=m)[0].sql(dialect=dialect)
         assert sql == expected
 
@@ -434,14 +434,14 @@ class TestStatAggsPerDialect:
         review #5 on PR #82: the MySQL guard ran before `other=` resolution.
         """
         gen = SQLGenerator(dialect="mysql")
-        m = self._measure(agg=agg, agg_kwargs={})
+        m = self._metric(agg=agg, agg_kwargs={})
         with pytest.raises(ValueError, match=r"requires parameter 'other'"):
             gen._build_agg(spec=m)
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     def test_build_two_arg_stat_missing_other_raises(self, agg: str) -> None:
         gen = SQLGenerator(dialect="postgres")
-        m = self._measure(agg=agg, agg_kwargs={})
+        m = self._metric(agg=agg, agg_kwargs={})
         with pytest.raises(ValueError, match=r"requires parameter 'other'|other="):
             gen._build_agg(spec=m)
 
@@ -482,7 +482,7 @@ class TestTsqlDialect:
         return SQLGenerator(dialect="tsql")
 
     @pytest.fixture
-    def orders_model(self) -> SlayerDataset:
+    def orders_dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="orders",
             sql_table="dbo.orders",
@@ -667,7 +667,7 @@ class TestTsqlDialect:
     # --- full query integration ---
 
     async def test_full_aggregation_query_valid_tsql(
-        self, orders_model: SlayerDataset,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         query = SlayerQuery(
             population="orders",
@@ -675,13 +675,13 @@ class TestTsqlDialect:
             dimensions=[FieldRef(name="status")],
         )
         sql = await _engine_generate(
-            query=query, model=orders_model, dialect="tsql",
+            query=query, dataset=orders_dataset, dialect="tsql",
         )
         assert "COUNT(" in sql
         assert "SUM(" in sql
 
     async def test_full_query_with_time_dim_valid_tsql(
-        self, orders_model: SlayerDataset,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         query = SlayerQuery(
             population="orders",
@@ -692,13 +692,13 @@ class TestTsqlDialect:
             )],
         )
         sql = await _engine_generate(
-            query=query, model=orders_model, dialect="tsql",
+            query=query, dataset=orders_dataset, dialect="tsql",
         )
         assert "DATETRUNC" in sql.upper()
         assert "SUM(" in sql
 
     async def test_calendar_time_shift_tsql_uses_dateadd(
-        self, orders_model: SlayerDataset,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         query = SlayerQuery(
             population="orders",
@@ -712,7 +712,7 @@ class TestTsqlDialect:
             ],
         )
         sql = await _engine_generate(
-            query=query, model=orders_model, dialect="tsql",
+            query=query, dataset=orders_dataset, dialect="tsql",
         )
         assert "shifted_" in sql
         assert "DATEADD" in sql.upper()

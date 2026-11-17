@@ -38,10 +38,10 @@ class InspectEnv(TypedDict):
     dataset: SlayerDataset
 
 
-async def _profile(*, model: SlayerDataset, engine: SlayerQueryEngine) -> dict[str, DatasetField]:
+async def _profile(*, dataset: SlayerDataset, engine: SlayerQueryEngine) -> dict[str, DatasetField]:
     """Profile every column of ``dataset`` through the owner; ``{name: refreshed column}``."""
     outcome = await ensure_samples_fresh(
-        dataset=model, fields=list(model.fields), engine=engine, storage=engine.storage,
+        dataset=dataset, fields=list(dataset.fields), engine=engine, storage=engine.storage,
     )
     return {c.name: c for c in outcome.columns}
 
@@ -163,7 +163,7 @@ class TestGetRowCount:
 class TestCollectDimProfile:
     async def test_categorical_enumerated(self, env: InspectEnv) -> None:
         """string/boolean dims get distinct values with counts."""
-        by_name = await _profile(model=env["dataset"], engine=env["engine"])
+        by_name = await _profile(dataset=env["dataset"], engine=env["engine"])
 
         status = by_name["status"]
         assert status.distinct_count == 3
@@ -174,7 +174,7 @@ class TestCollectDimProfile:
 
     async def test_numeric_and_temporal_min_max(self, env: InspectEnv) -> None:
         """number/date/time dims get min/max via the batched query."""
-        by_name = await _profile(model=env["dataset"], engine=env["engine"])
+        by_name = await _profile(dataset=env["dataset"], engine=env["engine"])
 
         amt = by_name["amount"]
         assert amt.sampled_values is None
@@ -209,7 +209,7 @@ class TestCollectDimProfile:
         )
         await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
-        label = (await _profile(model=model, engine=engine))["label"]
+        label = (await _profile(dataset=model, engine=engine))["label"]
         assert len(label.sampled_values or []) == 50
         assert label.distinct_count is None  # overflow signal
 
@@ -235,7 +235,7 @@ class TestCollectDimProfile:
         await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
 
-        by_name = await _profile(model=model, engine=engine)
+        by_name = await _profile(dataset=model, engine=engine)
         # Categorical dim on empty table returns 0 distinct values (not overflow).
         assert by_name["status"].distinct_count == 0
         assert by_name["status"].sampled_values == []
@@ -415,7 +415,7 @@ class TestMeasureTypeInference:
 
     async def test_measure_sampled_shows_min_max(self, env: InspectEnv) -> None:
         """Measures with data show min .. max in the sampled column."""
-        profile = await _profile(model=env["dataset"], engine=env["engine"])
+        profile = await _profile(dataset=env["dataset"], engine=env["engine"])
         amount, quantity = profile["amount"].sampled, profile["quantity"].sampled
         assert amount is not None
         assert quantity is not None
@@ -448,7 +448,7 @@ DatasetField(name="val", sql="val", datatype=DataType.DOUBLE)
         await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
 
-        profile = await _profile(model=model, engine=engine)
+        profile = await _profile(dataset=model, engine=engine)
         assert profile["val"].sampled == "all NULL"
 
 
@@ -461,10 +461,10 @@ class TestStringAggregationRejection:
     Triggering ``sum(status)`` / ``avg(status)`` etc. should produce a clear
     ValueError, not a database-level type error."""
 
-    async def _run(self, env: InspectEnv, formula: str) -> None:
+    async def _run(self, env: InspectEnv, expression: str) -> None:
         q = SlayerQuery.model_validate({
             "population": "orders",
-            "metrics": [{"expression": formula}],
+            "metrics": [{"expression": expression}],
         })
         await env["engine"].execute(query=q)
 
@@ -566,10 +566,10 @@ class TestIngestDatasourceModelsTool:
 class TestInspectModelSampledValuesAndDistinctCount:
     """End-to-end sampled_values + distinct_count contract through the model ``inspect``."""
 
-    async def _call_json(self, server, *, model_name: str) -> dict:
+    async def _call_json(self, server, *, dataset_name: str) -> dict:
         content, _ = await server.call_tool(
             name="inspect",
-            arguments={"entity_type": "dataset", "reference": model_name, "compact": False, "format": "json"},
+            arguments={"entity_type": "dataset", "reference": dataset_name, "compact": False, "format": "json"},
         )
         return _json.loads(content[0].text)
 
@@ -578,7 +578,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
     ) -> None:
         """JSON model inspect output carries both new fields per column."""
         server = create_mcp_server(storage=env["storage"])
-        payload = await self._call_json(server, model_name="orders")
+        payload = await self._call_json(server, dataset_name="orders")
         cols_by_name = {c["name"]: c for c in payload["columns"]}
         # Categorical column: both new fields populated.
         status = cols_by_name["status"]
@@ -625,7 +625,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
             distinct_count=None,
         )
         server = create_mcp_server(storage=storage)
-        await self._call_json(server, model_name="orders")
+        await self._call_json(server, dataset_name="orders")
         # After the model inspect runs, the structured field has been populated.
         reloaded = await storage.get_dataset("orders", data_source="test_sqlite")
         assert reloaded is not None
@@ -821,7 +821,7 @@ class TestInspectModelSampledValuesAndDistinctCount:
         ))
 
         server = create_mcp_server(storage=storage)
-        await self._call_json(server, model_name="wide")
+        await self._call_json(server, dataset_name="wide")
 
         reloaded = await storage.get_dataset("wide", data_source="wide_ds")
         # Every one of the 15 categorical columns has structured profile.
@@ -837,7 +837,7 @@ class TestCollectMeasureProfileTypeRestriction:
     ``sampled_values``); numeric/temporal only by the min/max query."""
 
     async def test_text_and_boolean_columns_skipped(self, env: InspectEnv) -> None:
-        result = await _profile(model=env["dataset"], engine=env["engine"])
+        result = await _profile(dataset=env["dataset"], engine=env["engine"])
         for name in ("status", "notes", "is_paid"):
             assert result[name].sampled_values is not None, name
         for name in ("amount", "quantity", "ordered_at"):

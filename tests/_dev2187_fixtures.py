@@ -46,7 +46,7 @@ def orders_columns() -> list[DatasetField]:
     ]
 
 
-def orders_model(*, edge_name: Optional[str] = None) -> SlayerDataset:
+def orders_dataset(*, edge_name: Optional[str] = None) -> SlayerDataset:
     """``orders`` → ``customers`` (the edge optionally named), saved measure ``revenue``."""
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="created_at",
@@ -56,7 +56,7 @@ def orders_model(*, edge_name: Optional[str] = None) -> SlayerDataset:
     )
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
@@ -68,7 +68,7 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def qb_model() -> SlayerDataset:
+def qb_dataset() -> SlayerDataset:
     """Query-backed: ``tot`` per ``status``."""
     return SlayerDataset(name="qb", data_source="test", source_queries=[SlayerQuery.model_validate({
         "population": "orders", "dimensions": ["status"], "metrics": [{"expression": "sum(amount)", "name": "tot"}],
@@ -79,7 +79,7 @@ def qb_model() -> SlayerDataset:
 async def orders_engine(backend: str, *, edge_name: Optional[str] = None) -> AsyncGenerator[SlayerQueryEngine]:
     async with exec_engine(
         backend, tables=[ORDERS, CUSTOMERS],
-        models=[orders_model(edge_name=edge_name), customers_model(), qb_model()],
+        datasets=[orders_dataset(edge_name=edge_name), customers_dataset(), qb_dataset()],
     ) as engine:
         yield engine
 

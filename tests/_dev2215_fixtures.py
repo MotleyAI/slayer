@@ -101,7 +101,7 @@ def share() -> Aggregation:
     return Aggregation(name="share", expression="SUM({value}) * 1.0 / COUNT(*)")
 
 
-def orders_model(*, data_source: str = "test", aggregations: Iterable[Aggregation] = ()) -> SlayerDataset:
+def orders_dataset(*, data_source: str = "test", aggregations: Iterable[Aggregation] = ()) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source, default_time_dimension="created_at",
         fields=[
@@ -122,7 +122,7 @@ def orders_model(*, data_source: str = "test", aggregations: Iterable[Aggregatio
     )
 
 
-def customers_model(*, data_source: str = "test") -> SlayerDataset:
+def customers_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
@@ -136,7 +136,7 @@ def customers_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def events_model(*, data_source: str = "test") -> SlayerDataset:
+def events_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="events", sql_table="events", data_source=data_source,
         fields=[
@@ -148,7 +148,7 @@ def events_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def ledger_model(*, data_source: str = "test") -> SlayerDataset:
+def ledger_dataset(*, data_source: str = "test") -> SlayerDataset:
     """Grandfathered case collision: ``Revenue`` and ``revenue`` (save with ``_validate=False``)."""
     return SlayerDataset(
         name="ledger", sql_table="ledger", data_source=data_source,
@@ -160,9 +160,9 @@ def ledger_model(*, data_source: str = "test") -> SlayerDataset:
     )
 
 
-def dev2215_models(*, data_source: str = "test", aggregations: Iterable[Aggregation] = ()) -> list[SlayerDataset]:
-    return [orders_model(data_source=data_source, aggregations=aggregations), customers_model(data_source=data_source),
-            events_model(data_source=data_source), ledger_model(data_source=data_source)]
+def dev2215_datasets(*, data_source: str = "test", aggregations: Iterable[Aggregation] = ()) -> list[SlayerDataset]:
+    return [orders_dataset(data_source=data_source, aggregations=aggregations), customers_dataset(data_source=data_source),
+            events_dataset(data_source=data_source), ledger_dataset(data_source=data_source)]
 
 
 # --------------------------------------------------------------------------- #
@@ -170,13 +170,13 @@ def dev2215_models(*, data_source: str = "test", aggregations: Iterable[Aggregat
 # --------------------------------------------------------------------------- #
 @contextlib.asynccontextmanager
 async def dev2215_engine(
-    backend: str, *, models: Optional[list[SlayerDataset]] = None, clock: Optional[PinnedClock] = None,
+    backend: str, *, datasets: Optional[list[SlayerDataset]] = None, clock: Optional[PinnedClock] = None,
     datasource_fields: Optional[dict[str, Any]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """Executing engine over the seed; the datasource defines ``fiscal_year``; models are saved unvalidated."""
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, TABLES),
-        models=dev2215_models() if models is None else models,
+        datasets=dev2215_datasets() if datasets is None else datasets,
         clock=clock if clock is not None else PinnedClock(NOW),
         datasource_fields=DS_FIELDS if datasource_fields is None else datasource_fields,
     ) as (engine, _db):
@@ -197,8 +197,8 @@ def q(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
-def m(formula: str, name: str = "v") -> dict[str, str]:
-    return {"formula": formula, "name": name}
+def m(expression: str, name: str = "v") -> dict[str, str]:
+    return {"formula": expression, "name": name}
 
 
 FIRST_LAST = [m("first(status, updated_at)", "f"), m("last(status, updated_at)", "l")]
@@ -216,13 +216,13 @@ async def check_events(engine: SlayerQueryEngine) -> None:
     assert got == FIRST_LAST_BY_CUSTOMER
 
 
-def single(resp: SlayerResponse, name: str = "v", *, model: str = "orders") -> Any:
+def single(resp: SlayerResponse, name: str = "v", *, dataset: str = "orders") -> Any:
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{model}.{name}"]
+    return resp.data[0][f"{dataset}.{name}"]
 
 
-def ids(resp: SlayerResponse, *, model: str = "orders") -> set[int]:
-    return {int(r[f"{model}.id"]) for r in resp.data}
+def ids(resp: SlayerResponse, *, dataset: str = "orders") -> set[int]:
+    return {int(r[f"{dataset}.id"]) for r in resp.data}
 
 
 def num(value: Any) -> Optional[float]:
@@ -234,16 +234,16 @@ def day(value: Any) -> Optional[str]:
     return None if value is None else str(value)[:10]
 
 
-def by_key(resp: SlayerResponse, key: str, value: str = "v", *, model: str = "orders") -> dict[Any, Any]:
-    out = {r[f"{model}.{key}"]: r[f"{model}.{value}"] for r in resp.data}
+def by_key(resp: SlayerResponse, key: str, value: str = "v", *, dataset: str = "orders") -> dict[Any, Any]:
+    out = {r[f"{dataset}.{key}"]: r[f"{dataset}.{value}"] for r in resp.data}
     assert len(out) == len(resp.data), f"duplicate result rows for one {key}"
     return out
 
 
-def count_by(resp: SlayerResponse, key: str, *, value: str = "n", model: str = "orders") -> dict[Any, int]:
+def count_by(resp: SlayerResponse, key: str, *, value: str = "n", dataset: str = "orders") -> dict[Any, int]:
     """``{key cell: count}`` with integer keys where the cell is numeric."""
     return {(int(k) if isinstance(k, (int, float)) else k): int(v)
-            for k, v in by_key(resp, key, value, model=model).items()}
+            for k, v in by_key(resp, key, value, dataset=dataset).items()}
 
 
 def sorted_rows(resp: SlayerResponse) -> list[str]:

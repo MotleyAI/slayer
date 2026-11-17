@@ -33,7 +33,7 @@ from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.naming import encode_alias
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1739_fixtures import _seed_duckdb, _seed_sqlite, dev1739_models, gen
+from tests._dev1739_fixtures import _seed_duckdb, _seed_sqlite, dev1739_datasets, gen
 from tests._engine_helpers import build_exec_engine
 from tests._dev1824_fixtures import BAND35, dev1824_models, q
 from tests.test_dev1824_golden_sql import GOLDEN_PATH, _cases
@@ -127,19 +127,19 @@ async def _canonical_internal_aliases() -> list[str]:
     return names
 
 
-async def _dry_run(models: list[SlayerDataset], query, *, dialect: str = "postgres"):
+async def _dry_run(datasets: list[SlayerDataset], query, *, dialect: str = "postgres"):
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig(name=DS, type=dialect))
-        for m in models:
+        for m in datasets:
             await storage.save_dataset(m, _validate=False)
         resp = await SlayerQueryEngine(storage=storage).execute(query, dry_run=True)
         assert resp.sql is not None
         return resp
 
 
-async def _dry_sql(models: list[SlayerDataset], query, *, dialect: str = "postgres") -> str:
-    resp = await _dry_run(models, query, dialect=dialect)
+async def _dry_sql(datasets: list[SlayerDataset], query, *, dialect: str = "postgres") -> str:
+    resp = await _dry_run(datasets, query, dialect=dialect)
     assert resp.sql is not None
     return resp.sql
 
@@ -268,7 +268,7 @@ class TestForcedLimitExecution:
         db_path = str(tmp_path / f"data.{exec_dialect}")
         (_seed_sqlite if exec_dialect == "sqlite" else _seed_duckdb)(db_path)
 
-        engine_free = await build_exec_engine(db_path, dialect=exec_dialect, models=dev1739_models())
+        engine_free = await build_exec_engine(db_path, dialect=exec_dialect, datasets=dev1739_datasets())
         sql_free = (await engine_free.execute(COLLIDE_QUERY, dry_run=True)).sql
         assert sql_free is not None
         quote = get_dialect(exec_dialect).quote_identifier
@@ -278,7 +278,7 @@ class TestForcedLimitExecution:
         assert len(rows_free) == 4
 
         _force_limit(monkeypatch, exec_dialect, FORCED_LIMIT)
-        engine_fit = await build_exec_engine(db_path, dialect=exec_dialect, models=dev1739_models())
+        engine_fit = await build_exec_engine(db_path, dialect=exec_dialect, datasets=dev1739_datasets())
         sql_fit = (await engine_fit.execute(COLLIDE_QUERY, dry_run=True)).sql
         assert sql_fit is not None
         for canon in (CANON_REGION, CANON_CITY):
@@ -315,11 +315,11 @@ class TestUserSurfacesExempt:
         )
 
     @staticmethod
-    def _query(measure: str) -> SlayerQuery:
+    def _query(metric: str) -> SlayerQuery:
         return SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="region")],
-            metrics=[DatasetMetric(expression=measure, name="w")],
+            metrics=[DatasetMetric(expression=metric, name="w")],
         )
 
     async def test_column_sql_survives(self) -> None:

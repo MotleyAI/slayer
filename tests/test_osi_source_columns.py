@@ -39,10 +39,10 @@ def _import(db: Path, *metrics: dict[str, Any], fields: list[dict[str, Any]] | N
     return convert(db=db, docs=documents(flat([dataset])))
 
 
-async def _value(result: ConversionResult, db: Path, measure: str, *, model: str = "orders") -> Any:
-    rows = await query(result=result, db=db, payload={"population": model, "metrics": [measure]})
+async def _value(result: ConversionResult, db: Path, metric: str, *, dataset: str = "orders") -> Any:
+    rows = await query(result=result, db=db, payload={"population": dataset, "metrics": [metric]})
     assert len(rows) == 1
-    return rows[0][f"{model}.{measure}"]
+    return rows[0][f"{dataset}.{metric}"]
 
 
 def _reason(result: ConversionResult, metric: str) -> str:
@@ -104,7 +104,7 @@ async def test_percentile_over_a_source_column(db: Path) -> None:
     result = _import(db, m("median", "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY source.quantity)"),
                      name="readings", fields=[f("reading_id")])
     assert visible(by_name(result)["readings"]) == {"reading_id"}
-    assert await _value(result, db, "median", model="readings") == pytest.approx(2)
+    assert await _value(result, db, "median", dataset="readings") == pytest.approx(2)
 
 
 @pytest.mark.parametrize(("source", "sql"), [
@@ -114,7 +114,7 @@ async def test_percentile_over_a_source_column(db: Path) -> None:
 async def test_query_source_output_column(db: Path, source: str, sql: str) -> None:
     result = _import(db, m("units", sql), name="lines", source=source, fields=[f("order_id")])
     assert visible(by_name(result)["lines"]) == {"order_id"}
-    assert await _value(result, db, "units", model="lines") == 5
+    assert await _value(result, db, "units", dataset="lines") == 5
 
 
 # ─────────────────────────── reports ───────────────────────────────────────

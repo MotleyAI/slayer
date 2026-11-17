@@ -16,20 +16,20 @@ from tests._dev1471_fixtures import (
     MONTHLY_ROWS as _MONTHLY,
     date_str,
     make_engine,
-    orders_model,
+    orders_dataset,
     orders_table_spec,
-    region_chain_models,
+    region_chain_datasets,
     region_chain_tables,
 )
 
 TG = TimeGranularity
 
 
-async def _exec_outer(backend: str, tmp: str, outer: SlayerQuery, *, tables=None, models=None, inner=None):
+async def _exec_outer(backend: str, tmp: str, outer: SlayerQuery, *, tables=None, datasets=None, inner=None):
     engine = await make_engine(
         backend, base_dir=os.path.join(tmp, "store"),
         db_path=os.path.join(tmp, f"t.{backend}"),
-        tables=tables or [orders_table_spec(_MONTHLY)], models=models or [orders_model()],
+        tables=tables or [orders_table_spec(_MONTHLY)], datasets=datasets or [orders_dataset()],
     )
     return await engine.execute(query=[inner or _INNER, outer])
 
@@ -89,7 +89,7 @@ async def test_last_over_stage_time_dimension(backend: str) -> None:
 
 # A model holding exactly the inner stage's monthly rows — the spec's reference
 # for "identical to the same shapes evaluated over a model-backed dataset".
-def _monthly_model() -> SlayerDataset:
+def _monthly_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="monthly", sql_table="monthly", data_source="ds",
         default_time_dimension="month_ts",
@@ -127,7 +127,7 @@ async def test_windowed_aggregate_over_stage_time_dimension(backend: str) -> Non
         model_engine = await make_engine(
             backend, base_dir=os.path.join(tmp, "model_store"),
             db_path=os.path.join(tmp, f"m.{backend}"),
-            tables=[_MONTHLY_MODEL_TABLE], models=[_monthly_model()],
+            tables=[_MONTHLY_MODEL_TABLE], datasets=[_monthly_dataset()],
         )
         model_resp = await model_engine.execute(model_query)
     stage = _by_month(stage_resp.data, "s1.win")
@@ -160,7 +160,7 @@ async def test_time_shift_over_multi_hop_flat_time_dimension(backend: str) -> No
         ],
     })
     with tempfile.TemporaryDirectory() as tmp:
-        resp = await _exec_outer(backend, tmp, outer, tables=tables, models=region_chain_models(), inner=inner)
+        resp = await _exec_outer(backend, tmp, outer, tables=tables, datasets=region_chain_datasets(), inner=inner)
     prev = {date_str(r[f"s1.{col}"]): r["s1.prev"] for r in resp.data}
     assert prev == {"2025-01-01": None, "2025-02-01": 2, "2025-03-01": 1}
 
@@ -186,7 +186,7 @@ async def _two_td_engine(backend: str, tmp: str):
     return await make_engine(
         backend, base_dir=os.path.join(tmp, "store"),
         db_path=os.path.join(tmp, f"t.{backend}"),
-        tables=[orders_table_spec(_TWO_TD_ROWS)], models=[orders_model()],
+        tables=[orders_table_spec(_TWO_TD_ROWS)], datasets=[orders_dataset()],
     )
 
 

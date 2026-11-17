@@ -430,7 +430,7 @@ def _orders_joining_customers() -> SlayerDataset:
     })
 
 
-def _chain_model(
+def _chain_dataset(
     name: str,
     *,
     joins: list[str] | None = None,
@@ -463,13 +463,13 @@ async def _save_4hop_chain(storage: StorageBackend) -> None:
     """Save the a->b->c->d->e chain shared by the 4-hop tests; ``e`` carries
     ``rolling_avg`` and a ``score`` column.
     """
-    await storage.save_dataset(_chain_model(
+    await storage.save_dataset(_chain_dataset(
         "e", aggs=["rolling_avg"],
         extra_cols=[DatasetField(name="score", datatype=DataType.DOUBLE)],
     ))
-    await storage.save_dataset(_chain_model("d", joins=["e"]))
-    await storage.save_dataset(_chain_model("c", joins=["d"]))
-    await storage.save_dataset(_chain_model("b", joins=["c"]))
+    await storage.save_dataset(_chain_dataset("d", joins=["e"]))
+    await storage.save_dataset(_chain_dataset("c", joins=["d"]))
+    await storage.save_dataset(_chain_dataset("b", joins=["c"]))
 
 
 async def _engine_with_prod():
@@ -590,7 +590,7 @@ class TestJoinedCustomAggFunctional:
         engine, storage, td = await _engine_with_prod()
         try:
             await _save_4hop_chain(storage)
-            await storage.save_dataset(_chain_model("a", joins=["b"]))
+            await storage.save_dataset(_chain_dataset("a", joins=["b"]))
             q = SlayerQuery.model_validate({
                 "population": "a",
                 "metrics": [{"expression": "rolling_avg(b.c.d.e.score)"}],

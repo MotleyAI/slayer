@@ -22,12 +22,12 @@ from slayer.facade.catalog import (
 )
 
 
-def _model(
+def _dataset(
     *,
     name: str,
     data_source: str = "ds1",
     columns: list[DatasetField] | None = None,
-    measures: list[DatasetMetric] | None = None,
+    metrics: list[DatasetMetric] | None = None,
     aggregations: list[Aggregation] | None = None,
     joins: list[DatasetRelationship] | None = None,
     hidden: bool = False,
@@ -40,7 +40,7 @@ def _model(
         sql_table=None if sql else name,
         sql=sql,
         fields=columns or [],
-        metrics=measures or [],
+        metrics=metrics or [],
         aggregations=aggregations or [],
         relationships=joins or [],
         hidden=hidden,
@@ -60,7 +60,7 @@ def test_empty_catalog_round_trip() -> None:
 
 
 def test_single_table_basic_metrics_and_dimensions() -> None:
-    model = _model(
+    model = _dataset(
         name="orders",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -102,15 +102,15 @@ def test_single_table_basic_metrics_and_dimensions() -> None:
 
 
 def test_hidden_model_excluded() -> None:
-    visible = _model(name="orders", columns=[DatasetField(name="x", datatype=DataType.INT)])
-    hidden = _model(name="ghost", hidden=True, columns=[DatasetField(name="x", datatype=DataType.INT)])
+    visible = _dataset(name="orders", columns=[DatasetField(name="x", datatype=DataType.INT)])
+    hidden = _dataset(name="ghost", hidden=True, columns=[DatasetField(name="x", datatype=DataType.INT)])
     cat = build_catalog(datasets_by_datasource={"ds1": [visible, hidden]})
     table_names = {t.name for t in cat.schemas[0].tables}
     assert table_names == {"orders"}
 
 
 def test_hidden_column_excluded() -> None:
-    model = _model(
+    model = _dataset(
         name="orders",
         columns=[
             DatasetField(name="public", datatype=DataType.INT),
@@ -128,7 +128,7 @@ def test_hidden_column_excluded() -> None:
 
 
 def test_row_count_collision_renames_to_underscore(caplog) -> None:
-    model = _model(
+    model = _dataset(
         name="orders",
         columns=[
             # User has a literal column named row_count — synthetic must rename.
@@ -149,7 +149,7 @@ def test_row_count_collision_renames_to_underscore(caplog) -> None:
 
 
 def test_row_count_collision_warning_has_no_colon_spelling(caplog) -> None:
-    model = _model(name="orders", columns=[DatasetField(name="row_count", datatype=DataType.INT)])
+    model = _dataset(name="orders", columns=[DatasetField(name="row_count", datatype=DataType.INT)])
     with caplog.at_level(logging.WARNING):
         build_catalog(datasets_by_datasource={"ds1": [model]})
     messages = [r.getMessage() for r in caplog.records if "renaming the synthetic" in r.getMessage()]
@@ -160,10 +160,10 @@ def test_row_count_collision_warning_has_no_colon_spelling(caplog) -> None:
 def test_saved_model_measure_emitted_with_declared_type() -> None:
     measure = DatasetMetric(name="aov", expression="sum(revenue) / count(*)", datatype=DataType.DOUBLE,
                             label="AOV", description="Avg order value")
-    model = _model(
+    model = _dataset(
         name="orders",
         columns=[DatasetField(name="revenue", datatype=DataType.DOUBLE)],
-        measures=[measure],
+        metrics=[measure],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [model]})
     table = _find_table(cat, schema="ds1", table="orders")
@@ -176,10 +176,10 @@ def test_saved_model_measure_emitted_with_declared_type() -> None:
 
 def test_saved_model_measure_without_type_carries_none() -> None:
     measure = DatasetMetric(name="aov", expression="sum(revenue) / count(*)")
-    model = _model(
+    model = _dataset(
         name="orders",
         columns=[DatasetField(name="revenue", datatype=DataType.DOUBLE)],
-        measures=[measure],
+        metrics=[measure],
     )
     cat = build_catalog(datasets_by_datasource={"ds1": [model]})
     table = _find_table(cat, schema="ds1", table="orders")
@@ -196,7 +196,7 @@ def test_custom_aggregation_with_params_skipped() -> None:
         expression="SUM({value} * {weight}) / SUM({weight})",
         params=[AggregationParam(name="weight", sql="weight_col")],
     )
-    model = _model(
+    model = _dataset(
         name="orders",
         columns=[DatasetField(name="revenue", datatype=DataType.DOUBLE)],
         aggregations=[cheap_agg, parametric],
@@ -209,7 +209,7 @@ def test_custom_aggregation_with_params_skipped() -> None:
 
 
 def test_explicit_allowed_aggregations_intersection() -> None:
-    model = _model(
+    model = _dataset(
         name="orders",
         columns=[
             DatasetField(
@@ -226,12 +226,12 @@ def test_explicit_allowed_aggregations_intersection() -> None:
 
 
 def test_single_hop_join_expansion() -> None:
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[DatasetField(name="customer_id", datatype=DataType.INT)],
         joins=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
-    customers = _model(
+    customers = _dataset(
         name="customers",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -252,7 +252,7 @@ def test_single_hop_join_expansion() -> None:
 
 
 def test_diamond_join_produces_two_distinct_paths() -> None:
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[
             DatasetField(name="customer_id", datatype=DataType.INT),
@@ -263,7 +263,7 @@ def test_diamond_join_produces_two_distinct_paths() -> None:
             DatasetRelationship(to="warehouses", join_pairs=[["warehouse_id", "id"]]),
         ],
     )
-    customers = _model(
+    customers = _dataset(
         name="customers",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -271,7 +271,7 @@ def test_diamond_join_produces_two_distinct_paths() -> None:
         ],
         joins=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
-    warehouses = _model(
+    warehouses = _dataset(
         name="warehouses",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -279,7 +279,7 @@ def test_diamond_join_produces_two_distinct_paths() -> None:
         ],
         joins=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
-    regions = _model(
+    regions = _dataset(
         name="regions",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -299,7 +299,7 @@ def test_diamond_join_produces_two_distinct_paths() -> None:
 def test_reverse_hop_dimensions_enumerated() -> None:
     # orders declares the only edge; the customers table still exposes the
     # reverse-path orders dims (DEV-1853).
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -309,7 +309,7 @@ def test_reverse_hop_dimensions_enumerated() -> None:
         joins=[DatasetRelationship(
             to="customers", join_pairs=[["customer_id", "id"]])],
     )
-    customers = _model(
+    customers = _dataset(
         name="customers",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -326,7 +326,7 @@ def test_row_preserving_flags_by_direction_and_cardinality() -> None:
     # Forward m2o/1:1/unknown hops keep the root grain; a declared 1:N, the
     # inverted side of a m2o, an inverted unknown, and any path through a
     # fan-out hop do not (DEV-1853 browse-mode star scope).
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -343,7 +343,7 @@ def test_row_preserving_flags_by_direction_and_cardinality() -> None:
         ],
     )
     others = [
-        _model(name=n, columns=[
+        _dataset(name=n, columns=[
             DatasetField(name="order_id", datatype=DataType.INT),
             DatasetField(name="tag", datatype=DataType.TEXT),
         ])
@@ -381,13 +381,13 @@ def test_row_preserving_flags_by_direction_and_cardinality() -> None:
 
 
 def test_bfs_depth_limit_truncates() -> None:
-    a = _model(name="a", columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+    a = _dataset(name="a", columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
                 joins=[DatasetRelationship(to="b", join_pairs=[["id", "id"]])])
-    b = _model(name="b", columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+    b = _dataset(name="b", columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
                 joins=[DatasetRelationship(to="c", join_pairs=[["id", "id"]])])
-    c = _model(name="c", columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+    c = _dataset(name="c", columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
                 joins=[DatasetRelationship(to="d", join_pairs=[["id", "id"]])])
-    d = _model(name="d", columns=[DatasetField(name="leaf", datatype=DataType.TEXT)])
+    d = _dataset(name="d", columns=[DatasetField(name="leaf", datatype=DataType.TEXT)])
     cat = build_catalog(
         datasets_by_datasource={"ds1": [a, b, c, d]},
         bfs_depth=2,
@@ -420,8 +420,8 @@ def test_default_bfs_depth_constant_is_three() -> None:
 
 
 def test_multiple_datasources_keep_disjoint_schemas() -> None:
-    m1 = _model(name="t", data_source="dsA", columns=[DatasetField(name="x", datatype=DataType.INT)])
-    m2 = _model(name="t", data_source="dsB", columns=[DatasetField(name="x", datatype=DataType.INT)])
+    m1 = _dataset(name="t", data_source="dsA", columns=[DatasetField(name="x", datatype=DataType.INT)])
+    m2 = _dataset(name="t", data_source="dsB", columns=[DatasetField(name="x", datatype=DataType.INT)])
     cat = build_catalog(datasets_by_datasource={"dsA": [m1], "dsB": [m2]})
     schemas = {s.name: s for s in cat.schemas}
     assert set(schemas) == {"dsA", "dsB"}
@@ -436,7 +436,7 @@ def test_no_time_dimension_drops_first_last_aggregations() -> None:
     because the engine can't resolve them — Metabase's flat fingerprint
     scan ``SELECT name_first FROM products`` would error with
     ``Aggregation 'first' requires a time column``."""
-    no_time = _model(
+    no_time = _dataset(
         name="products",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -477,7 +477,7 @@ def test_default_time_dimension_keeps_first_last_aggregations() -> None:
 
 
 def test_metric_data_type_for_aggregations_uses_coarse_inference() -> None:
-    model = _model(
+    model = _dataset(
         name="orders",
         columns=[
             DatasetField(name="revenue", datatype=DataType.DOUBLE),

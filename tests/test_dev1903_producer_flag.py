@@ -23,14 +23,14 @@ from slayer.ir.planned import PlannedQuery
 from slayer.ir.prebound import StrictQueryCarrier
 from slayer.ir.source_bundle import ResolvedSourceBundle, resolve_scope
 
-from tests._dev1836_fixtures import dev1836_models
-from tests._dev1900_fixtures import cust_q, dev1900_models
+from tests._dev1836_fixtures import dev1836_datasets
+from tests._dev1900_fixtures import cust_q, dev1900_datasets
 from tests._dev1836_fixtures import q as dev1836_q
-from tests._dev1832_fixtures import DatasetMetric, dev1832_models, month_td, monthly_q
+from tests._dev1832_fixtures import DatasetMetric, dev1832_datasets, month_td, monthly_q
 from tests._dev1847_fixtures import (
     INNER_CR,
     SPEND_BAND_EXPR,
-    dev1847_models,
+    dev1847_datasets,
     make_exec_engine,
     reagg,
     sales_q,
@@ -53,16 +53,16 @@ def _probe_a_query() -> SlayerQuery:
 
 
 def _sales_bundle() -> ResolvedSourceBundle:
-    models = dev1847_models()
+    models = dev1847_datasets()
     return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
-def _monthly_plan(formula: str) -> PlannedQuery:
-    models = dev1832_models()
+def _monthly_plan(expression: str) -> PlannedQuery:
+    models = dev1832_datasets()
     root = next(m for m in models if m.name == "monthly")
     return plan_query(
         query=monthly_q(dimensions=["region"], time_dimensions=month_td(),
-                        measures=[DatasetMetric(expression=formula, name="t")]),
+                        measures=[DatasetMetric(expression=expression, name="t")]),
         bundle=ResolvedSourceBundle(
             dialect="postgres",
             population=root, referenced_datasets=[m for m in models if m is not root]))
@@ -92,12 +92,12 @@ async def exec_engine(request):
 
 
 def _dev1836_bundle() -> ResolvedSourceBundle:
-    models = dev1836_models()
+    models = dev1836_datasets()
     return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=list(models[1:]))
 
 
 def _customers_bundle() -> ResolvedSourceBundle:
-    models = dev1900_models()
+    models = dev1900_datasets()
     src = next(m for m in models if m.name == "customers")
     return ResolvedSourceBundle(dialect="postgres", population=src,
                                 referenced_datasets=[m for m in models if m is not src])

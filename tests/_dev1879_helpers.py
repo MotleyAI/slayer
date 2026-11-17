@@ -18,10 +18,10 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def mart_model(
+def mart_dataset(
     *,
     extra_columns: Sequence[DatasetField] = (),
-    measures: Sequence[DatasetMetric] = (),
+    metrics: Sequence[DatasetMetric] = (),
 ) -> SlayerDataset:
     return SlayerDataset(
         name="mart",
@@ -42,11 +42,11 @@ def mart_model(
         relationships=[
             DatasetRelationship(to="targets", join_pairs=[["target_id", "id"]]),
         ],
-        metrics=list(measures),
+        metrics=list(metrics),
     )
 
 
-def targets_model() -> SlayerDataset:
+def targets_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="targets",
         data_source="test",
@@ -67,7 +67,7 @@ async def dry_response(
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig(name="test", type=dialect))
-        await storage.save_dataset(mart if mart is not None else mart_model())
-        await storage.save_dataset(targets_model())
+        await storage.save_dataset(mart if mart is not None else mart_dataset())
+        await storage.save_dataset(targets_dataset())
         engine = SlayerQueryEngine(storage=storage)
         return await engine.execute(query, dry_run=True)

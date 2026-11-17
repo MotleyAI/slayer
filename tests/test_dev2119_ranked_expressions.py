@@ -9,16 +9,16 @@ from slayer.core.errors import ParameterGrainError, UnsafeRelationshipInputError
 from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
-from tests._dev2119_fixtures import BACKENDS, EFF, by_bucket, by_dims, dev2119_models, engine_for, m, num, q, td
+from tests._dev2119_fixtures import BACKENDS, EFF, by_bucket, by_dims, dev2119_datasets, engine_for, m, num, q, td
 
 # Avg price per product: A (rows 1, 3, 5) 7/3, B (rows 2, 4, 6) 14/3.
 AVG_A = 7 / 3
 AVG_B = 14 / 3
 
 
-def _models() -> list[SlayerDataset]:
+def _datasets() -> list[SlayerDataset]:
     """The dev2119 models plus a ``wsum`` custom aggregation and an ``order_facts`` host reaching ``accounts``."""
-    models = dev2119_models()
+    models = dev2119_datasets()
     orders = next(x for x in models if x.name == "orders")
     orders.aggregations.append(Aggregation(
         name="wsum", expression="SUM({value} * {weight})", params=[AggregationParam(name="weight", sql="quantity")],
@@ -37,13 +37,13 @@ def _models() -> list[SlayerDataset]:
 
 @pytest.fixture(params=BACKENDS)
 async def engine(request):
-    async with engine_for(request.param, models=_models()) as e:
+    async with engine_for(request.param, datasets=_datasets()) as e:
         yield e
 
 
 @pytest.fixture
 async def sqlite_engine():
-    async with engine_for("sqlite", models=_models()) as e:
+    async with engine_for("sqlite", datasets=_datasets()) as e:
         yield e
 
 

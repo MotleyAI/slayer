@@ -96,7 +96,7 @@ _NAMES = [c for c, _ in LIB.columns]
 ROWS: dict[int, dict[str, Any]] = {r[0]: dict(zip(_NAMES, r)) for r in LIB.rows}
 
 
-def lib_model(*, data_source: str = "test") -> SlayerDataset:
+def lib_dataset(*, data_source: str = "test") -> SlayerDataset:
     types = {"INT": DataType.INT, "DOUBLE": DataType.DOUBLE, "TEXT": DataType.TEXT, "TIMESTAMP": DataType.TIMESTAMP,
              "DECIMAL": DataType.DOUBLE}
     return SlayerDataset(
@@ -680,9 +680,9 @@ def lib_query(*dims: Any, **kw: Any) -> SlayerQuery:
                                        "dimensions": dimensions, **kw})
 
 
-async def emit_lib(query: SlayerQuery, *, dialect: str, models: Optional[list[SlayerDataset]] = None) -> str:
+async def emit_lib(query: SlayerQuery, *, dialect: str, datasets: Optional[list[SlayerDataset]] = None) -> str:
     """Dry-run SQL for a ``lib`` query on ``dialect`` (asserts it parses there)."""
-    return await emit(query, dialect=dialect, models=models or [lib_model()])
+    return await emit(query, dialect=dialect, datasets=datasets or [lib_dataset()])
 
 
 def lib_values(resp: SlayerResponse, name: str = "v") -> dict[int, Any]:
@@ -719,9 +719,9 @@ async def run_case(engine: SlayerQueryEngine, case: Case) -> None:
 # Seeding
 # --------------------------------------------------------------------------- #
 @contextlib.asynccontextmanager
-async def lib_engine(backend: str, *, models: Optional[list[SlayerDataset]] = None) -> AsyncGenerator[SlayerQueryEngine]:
+async def lib_engine(backend: str, *, datasets: Optional[list[SlayerDataset]] = None) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(
-        dialect=backend, seed=lambda p: seed_backend(backend, p, [LIB]), models=models or [lib_model()],
+        dialect=backend, seed=lambda p: seed_backend(backend, p, [LIB]), datasets=datasets or [lib_dataset()],
     ) as (engine, _db):
         yield engine
 
@@ -786,7 +786,7 @@ DOCS_S = {1: "x", 2: None, 3: None, 4: None, 5: None}
 DOCS_A_INT = {1: 1, 2: 2, 3: None, 4: None, 5: None}
 
 
-async def check_native_json(engine: SlayerQueryEngine, *, model: str = "docs", column: str = "payload") -> None:
+async def check_native_json(engine: SlayerQueryEngine, *, dataset: str = "docs", column: str = "payload") -> None:
     """``json_value`` over an ingested native-JSON column: TEXT and ``RETURNING INT`` reads."""
     for expr, expected in (
         (f"json_value({column}, '$.s')", DOCS_S),
@@ -794,10 +794,10 @@ async def check_native_json(engine: SlayerQueryEngine, *, model: str = "docs", c
         (f"{column} ->> 's'", DOCS_S),
     ):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": model, "distinct_dimension_values": False,
+            "population": dataset, "distinct_dimension_values": False,
             "dimensions": ["id", {"expression": expr, "name": "v"}],
         }))
-        got = {int(r[f"{model}.id"]): r[f"{model}.v"] for r in resp.data}
+        got = {int(r[f"{dataset}.id"]): r[f"{dataset}.v"] for r in resp.data}
         assert set(got) == set(expected), (expr, resp.sql)
         for rid, value in expected.items():
             assert_cell(got[rid], value, where=f"{expr} id={rid}")
@@ -888,7 +888,7 @@ def stored_contractors(storage: ListStorage = ListStorage()) -> list[dict[str, A
     return [{k: store(v) if k in LIST_COLUMNS else v for k, v in row.items()} for row in CONTRACTORS]
 
 
-def contractors_model(*, data_source: str = "test", sql_table: str = "contractors", keyed: bool = True) -> SlayerDataset:
+def contractors_dataset(*, data_source: str = "test", sql_table: str = "contractors", keyed: bool = True) -> SlayerDataset:
     scalars = {"INT": DataType.INT, "TEXT": DataType.TEXT}
     columns = [
         DatasetField(name=c, datatype=DataType.ARRAY, element_type=scalars[k[:-2]]) if k.endswith("[]")
@@ -1026,18 +1026,18 @@ def seed_contractors(backend: str, db_path: str, *, extra: Iterable[str] = ()) -
 
 
 @contextlib.asynccontextmanager
-async def contractors_engine(backend: str = "duckdb", *, models: Optional[list[SlayerDataset]] = None,
+async def contractors_engine(backend: str = "duckdb", *, datasets: Optional[list[SlayerDataset]] = None,
                              extra: Iterable[str] = ()) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_contractors(backend, p, extra=extra),
-        models=models or [contractors_model()],
+        datasets=datasets or [contractors_dataset()],
     ) as (engine, _db):
         yield engine
 
 
-async def emit_contractors(query: SlayerQuery, *, dialect: str, models: Optional[list[SlayerDataset]] = None) -> str:
+async def emit_contractors(query: SlayerQuery, *, dialect: str, datasets: Optional[list[SlayerDataset]] = None) -> str:
     """Dry-run SQL for a ``contractors`` query on ``dialect`` (asserts it parses there)."""
-    return await emit(query, dialect=dialect, models=models or [contractors_model()])
+    return await emit(query, dialect=dialect, datasets=datasets or [contractors_dataset()])
 
 
 _SERVER_LIST_TYPES: dict[str, dict[str, str]] = {

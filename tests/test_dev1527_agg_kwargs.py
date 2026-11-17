@@ -144,7 +144,7 @@ class TestDev1527KwargExpansion:
             population="orders",
             metrics=[DatasetMetric(expression="weighted_avg(amount, weight=dbl_qty)")],
         )
-        sql = await _engine_generate(query=query, model=orders)
+        sql = await _engine_generate(query=query, dataset=orders)
         assert "quantity * 2" in sql
         assert "orders.dbl_qty" not in sql
         assert "LEFT JOIN" not in sql  # local — pulls no join
@@ -155,7 +155,7 @@ class TestDev1527KwargExpansion:
             population="orders",
             metrics=[DatasetMetric(expression="percentile(amount, p=0.95)")],
         )
-        sql = await _engine_generate(query=query, model=_orders())
+        sql = await _engine_generate(query=query, dataset=_orders())
         assert "PERCENTILE_CONT" in sql
         assert "0.95" in sql
 
@@ -164,7 +164,7 @@ class TestDev1527KwargExpansion:
             population="orders",
             metrics=[DatasetMetric(expression="weighted_avg(amount, weight=quantity)")],
         )
-        sql = await _engine_generate(query=query, model=_orders())
+        sql = await _engine_generate(query=query, dataset=_orders())
         assert "SUM(" in sql
         assert "NULLIF(" in sql
         assert "orders.quantity" in sql
@@ -176,7 +176,7 @@ class TestDev1527KwargExpansion:
             population="orders",
             metrics=[DatasetMetric(expression="corr(amount, other=quantity)")],
         )
-        sql = await _engine_generate(query=query, model=_orders())
+        sql = await _engine_generate(query=query, dataset=_orders())
         assert "CORR(" in sql.upper()
         assert "orders.amount" in sql
         assert "orders.quantity" in sql
@@ -194,7 +194,7 @@ class TestDev1527KwargExpansion:
             metrics=[DatasetMetric(expression="corr(amount, other=region_weight)")],
         )
         sql = await _engine_generate(
-            query=query, model=orders, extra_models=[_customers(), _regions()],
+            query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
         )
         assert "CORR(" in sql.upper()
         assert "customers__regions.weight" in sql          # expanded, not bare
@@ -218,7 +218,7 @@ class TestDev1527KwargExpansion:
                 expression="weighted_avg(amount, weight=region_weight) + sum(quantity)")],
         )
         sql = await _engine_generate(
-            query=query, model=orders, extra_models=[_customers(), _regions()],
+            query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
         )
         assert "customers__regions.weight" in sql          # kwarg expanded
         assert "orders.region_weight" not in sql           # not the broken bare form
@@ -245,7 +245,7 @@ class TestDev1527KwargExpansion:
             filter=["weighted_avg(amount, weight=region_weight) > 5"],
         )
         sql = await _engine_generate(
-            query=query, model=orders, extra_models=[_customers(), _regions()],
+            query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
         )
         norm = _norm(sql)
         assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
@@ -270,7 +270,7 @@ class TestDev1527KwargExpansion:
             population="orders",
             metrics=[DatasetMetric(expression="scaled_sum(amount, scale=100)")],
         )
-        sql = await _engine_generate(query=query, model=orders)
+        sql = await _engine_generate(query=query, dataset=orders)
         assert "SUM(orders.amount)" in _norm(sql)
         assert "/ 100" in _norm(sql)
 
@@ -318,7 +318,7 @@ class TestDev1527F1BasePull:
         line_items = _line_items()
         with pytest.raises(ValueError) as ei:
             await _engine_generate(
-                query=query, model=orders, extra_models=[line_items],
+                query=query, dataset=orders, extra_datasets=[line_items],
             )
         message = str(ei.value)
         assert "line_items" in message
@@ -336,7 +336,7 @@ class TestDev1527F1BasePull:
             metrics=[DatasetMetric(expression="weighted_avg(amount, weight=region_weight)")],
         )
         sql = await _engine_generate(
-            query=query, model=orders, extra_models=[_customers(), _regions()],
+            query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
         )
         assert "_cm_" in sql, f"expected host-rooted isolation CTE:\n{sql}"
         assert "customers__regions.weight" in _extract_cm_body(sql), sql

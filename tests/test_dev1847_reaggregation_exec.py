@@ -44,8 +44,8 @@ async def exec_engine(request):
         yield engine
 
 
-def _region_vals(resp, measure="sales.acr"):
-    return {k[0]: v[measure] for k, v in region_key(resp).items()}
+def _region_vals(resp, metric="sales.acr"):
+    return {k[0]: v[metric] for k, v in region_key(resp).items()}
 
 
 class TestHeadlineOracle:

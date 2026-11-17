@@ -36,7 +36,7 @@ from slayer.storage.sqlite_conn import transaction
 from tests._dev1847_fixtures import (
     DatasetMetric,
     chain_q,
-    dev1847_models,
+    dev1847_datasets,
     gen,
     make_exec_engine,
     sales_q,
@@ -82,7 +82,7 @@ async def exec_engine(request):
 
 
 def _bundle(source: str = "sales") -> ResolvedSourceBundle:
-    models = dev1847_models()
+    models = dev1847_datasets()
     [host] = [m for m in models if m.name == source]
     return ResolvedSourceBundle(dialect="duckdb", population=host,
                                 referenced_datasets=[m for m in models if m is not host])
@@ -392,7 +392,7 @@ def _flag(column: str, value: str) -> ScalarCallKey:
 
 def _grain_names(keys) -> dict:
     """``{key: declared grain name}`` of a producer grouped by ``keys``."""
-    models = dev1847_models()
+    models = dev1847_datasets()
     prebound, _ = _regroup_producer_prebound(
         pks=Grain(keys=frozenset(keys)),
         aggs=[AggregateKey(source=FieldKey(leaf="amount"), agg="sum")],
@@ -458,7 +458,7 @@ class TestSynthesizedGrainNames:
                 expression="avg(sum(amount, partition_by=[region, created_at, customers.created_at]),"
                         " partition_by=[created_at, customers.created_at])", name="m")],
         )
-        async with seeded_exec_engine(dialect="sqlite", seed=seed, models=models) as (eng, _):
+        async with seeded_exec_engine(dialect="sqlite", seed=seed, datasets=models) as (eng, _):
             resp = await eng.execute(q)
         got = {(r["orders.region"], r["orders.created_at"][:7]): r["orders.m"] for r in resp.data}
         assert got == {("N", "2024-01"): 15.0, ("S", "2024-01"): 15.0,

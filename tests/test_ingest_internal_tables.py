@@ -1166,7 +1166,7 @@ class TestRest:
 # ---------------------------------------------------------------------------
 
 
-async def _models_in(storage: YAMLStorage) -> list[SlayerDataset]:
+async def _datasets_in(storage: YAMLStorage) -> list[SlayerDataset]:
     names = await storage.list_datasets(data_source="ds")
     return [
         m
@@ -1182,7 +1182,7 @@ class TestVisibilitySurfaces:
         storage = await _storage_with(workspace, ds)
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
-        assert {m.name for m in await _models_in(storage)} == (
+        assert {m.name for m in await _datasets_in(storage)} == (
             {"orders"} | _INTERNAL_NAMES
         )
 
@@ -1209,7 +1209,7 @@ class TestVisibilitySurfaces:
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         catalog = build_catalog(
-            datasets_by_datasource={"ds": await _models_in(storage)}
+            datasets_by_datasource={"ds": await _datasets_in(storage)}
         )
         exposed = {t.name for s in catalog.schemas for t in s.tables}
         assert exposed == {"orders"}
@@ -1220,7 +1220,7 @@ class TestVisibilitySurfaces:
         await _with_client(ingest_datasource_idempotent, datasource=ds, storage=storage)
 
         corpus = build_in_memory_corpus(
-            memories=[], datasets=await _models_in(storage), datasources=["ds"],
+            memories=[], datasets=await _datasets_in(storage), datasources=["ds"],
         )
         indexed = set(corpus.canonical_to_kind)
         assert "ds.orders" in indexed

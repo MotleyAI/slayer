@@ -53,12 +53,12 @@ from slayer.facade.catalog_sql import _fingerprint as graph_fingerprint
 from slayer.facade.info_schema import _serve_columns
 
 
-def _model(
+def _dataset(
     *,
     name: str,
     columns: list[DatasetField],
     joins: list[DatasetRelationship] | None = None,
-    measures: list[DatasetMetric] | None = None,
+    metrics: list[DatasetMetric] | None = None,
     aggregations: list[Aggregation] | None = None,
 ) -> SlayerDataset:
     return SlayerDataset(
@@ -67,7 +67,7 @@ def _model(
         sql_table=name,
         fields=columns,
         relationships=joins or [],
-        metrics=measures or [],
+        metrics=metrics or [],
         aggregations=aggregations or [],
     )
 
@@ -81,7 +81,7 @@ def _find_table(catalog: FacadeCatalog, *, table: str) -> FacadeTable:
 def _orders_customers_catalog() -> FacadeCatalog:
     """Standard fixture: ``orders → customers`` single-hop join, both with
     a typed column set that produces a non-trivial cross-model fan-out."""
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -91,7 +91,7 @@ def _orders_customers_catalog() -> FacadeCatalog:
         ],
         joins=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
-    customers = _model(
+    customers = _dataset(
         name="customers",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -144,7 +144,7 @@ def test_local_metrics_excludes_same_model_column_builtin_agg_entries() -> None:
 def test_local_metrics_excludes_same_model_custom_aggregation_metrics() -> None:
     """The rule-4 ``<col>_<custom_agg>`` cartesian is also catalog
     fan-out — same rule as builtin column×agg."""
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[DatasetField(name="amount", datatype=DataType.DOUBLE)],
         aggregations=[
@@ -162,10 +162,10 @@ def test_local_metrics_keeps_saved_model_measures() -> None:
     """The rule-2 saved ``ModelMeasure`` (name == measure_formula) IS
     user-authored — the user typed the name. It belongs in the flat
     view so BI tools can project / aggregate against it by name."""
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[DatasetField(name="revenue", datatype=DataType.DOUBLE)],
-        measures=[
+        metrics=[
             DatasetMetric(
                 name="aov",
                 expression="sum(revenue) / count(*)",
@@ -196,12 +196,12 @@ def test_local_dimensions_excludes_cross_model_entries() -> None:
 def test_local_dimensions_excludes_multi_hop_entries() -> None:
     """Multi-hop dimensions like ``customers.regions.name`` also carry a
     dot and must be filtered out."""
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[DatasetField(name="customer_id", datatype=DataType.INT)],
         joins=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
-    customers = _model(
+    customers = _dataset(
         name="customers",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -209,7 +209,7 @@ def test_local_dimensions_excludes_multi_hop_entries() -> None:
         ],
         joins=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
-    regions = _model(
+    regions = _dataset(
         name="regions",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -318,7 +318,7 @@ def test_pg_description_attnum_within_local_range() -> None:
     pg_attribute attnum space — no orphan descriptions past the local
     column count."""
 
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[
             DatasetField(
@@ -330,7 +330,7 @@ def test_pg_description_attnum_within_local_range() -> None:
         ],
         joins=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
-    customers = _model(
+    customers = _dataset(
         name="customers",
         columns=[
             DatasetField(
@@ -397,7 +397,7 @@ def test_graph_fingerprint_changes_when_cross_model_metric_changes() -> None:
     underlying data shifts. The filter does NOT extend to the fingerprint
     hash — graph_fingerprint sees the raw view."""
 
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[
             DatasetField(name="customer_id", datatype=DataType.INT),
@@ -406,7 +406,7 @@ def test_graph_fingerprint_changes_when_cross_model_metric_changes() -> None:
     )
 
     def _customers_with_revenue_type(revenue_type: DataType) -> SlayerDataset:
-        return _model(
+        return _dataset(
             name="customers",
             columns=[
                 DatasetField(name="id", datatype=DataType.INT, primary_key=True),

@@ -30,20 +30,20 @@ from tests._dev1840_fixtures import (
     SlayerQuery,
     TimeDimension,
     TimeGranularity,
-    dev1840_models,
+    dev1840_datasets,
     make_exec_engine,
     q,
 )
 
 
-def _customers(models: List[SlayerDataset]) -> SlayerDataset:
-    return next(m for m in models if m.name == "customers")
+def _customers(datasets: List[SlayerDataset]) -> SlayerDataset:
+    return next(m for m in datasets if m.name == "customers")
 
 
-def dev1841_models(**kw) -> List[SlayerDataset]:
+def dev1841_datasets(**kw) -> List[SlayerDataset]:
     """The ``_dev1840_fixtures`` graph plus a measure-local filtered column on customers:
     ``gold_spend`` = ``spend`` restricted (inside the aggregate) to gold tier."""
-    models = dev1840_models(**kw)
+    models = dev1840_datasets(**kw)
     _customers(models).fields.append(
         DatasetField(name="gold_spend", datatype=DataType.DOUBLE, sql="spend",
                filter="tier = 'gold'"),
@@ -51,9 +51,9 @@ def dev1841_models(**kw) -> List[SlayerDataset]:
     return models
 
 
-def keyless_root_models() -> List[SlayerDataset]:
+def keyless_root_datasets() -> List[SlayerDataset]:
     """The graph with customers stripped of its unique key (associated by row identity)."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     cust = _customers(models)
     cust.fields = [
         (c.model_copy(update={"primary_key": False}) if c.name == "id" else c)
@@ -62,9 +62,9 @@ def keyless_root_models() -> List[SlayerDataset]:
     return models
 
 
-def crossing_input_models() -> List[SlayerDataset]:
+def crossing_input_datasets() -> List[SlayerDataset]:
     """Graph + a customers column filtering across the fanning customers→orders hop (an input not constant per customer)."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     _customers(models).fields.append(
         DatasetField(name="vip_spend", datatype=DataType.DOUBLE, sql="spend",
                filter="orders.status = 'ok'"),
@@ -72,9 +72,9 @@ def crossing_input_models() -> List[SlayerDataset]:
     return models
 
 
-def column_default_agg_models() -> List[SlayerDataset]:
+def field_default_agg_datasets() -> List[SlayerDataset]:
     """Graph + a custom aggregation whose parameter *defaults* to a column (``weight`` → ``spend``)."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     _customers(models).aggregations.append(
         Aggregation(name="wsum", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="spend")]),
@@ -144,8 +144,8 @@ def status_key(resp, root: str = "orders") -> dict:
 __all__ = [
     "DatasetField", "DataType", "DatasetMetric", "SlayerQuery", "SlayerDataset",
     "FieldRef", "TimeDimension", "TimeGranularity", "DatasetRelationship",
-    "dev1840_models", "dev1841_models", "keyless_root_models",
-    "crossing_input_models", "column_default_agg_models",
+    "dev1840_datasets", "dev1841_datasets", "keyless_root_datasets",
+    "crossing_input_datasets", "field_default_agg_datasets",
     "make_exec_engine", "q", "assoc_q", "error_q", "bcast_q", "cust_q",
     "rows_by", "status_key", "broadcast_warnings",
     "associated_warnings", "pushed_filter_infos",

@@ -37,7 +37,7 @@ from tests._dev1836_fixtures import (
     SPEND_BY_BAND,
     SPEND_TOTAL,
     broadcast_warnings,
-    dev1836_models,
+    dev1836_datasets,
     make_exec_engine,
     q,
     rows_by,
@@ -63,7 +63,7 @@ LOCAL_BARE = {"expression": "sum(amount, partition_by=channel)", "name": "ct"}
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1836_models()
+    models = dev1836_datasets()
     return ResolvedSourceBundle(
         dialect="postgres",
         population=models[0], referenced_datasets=list(models[1:]),

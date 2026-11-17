@@ -219,7 +219,7 @@ def pg_binary(value: Any) -> str:
     return raw.decode("utf-8")
 
 
-def _vals_model(column_type: DataType = DataType.TEXT) -> SlayerDataset:
+def _vals_dataset(column_type: DataType = DataType.TEXT) -> SlayerDataset:
     return SlayerDataset(name="vals", sql_table="vals", data_source=DS,
                        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
                                 DatasetField(name="v", datatype=column_type)])
@@ -228,7 +228,7 @@ def _vals_model(column_type: DataType = DataType.TEXT) -> SlayerDataset:
 def flight_cell(value: Any, *, column_type: DataType = DataType.TEXT) -> Any:
     handlers = FlightHandlers(
         engine=_FlightEngine(  # type: ignore[arg-type]
-            response=_response(value), storage=_FlightStorage({DS: [_vals_model(column_type)]}),
+            response=_response(value), storage=_FlightStorage({DS: [_vals_dataset(column_type)]}),
         ),
     )
     result = handlers._translate("SELECT v FROM vals")

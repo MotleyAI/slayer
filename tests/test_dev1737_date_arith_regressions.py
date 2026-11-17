@@ -11,7 +11,7 @@ from tests._dev1737_fixtures import BACKENDS, TableSpec, exec_engine
 from tests._engine_helpers import _engine_generate
 
 
-def _ev_model() -> SlayerDataset:
+def _ev_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="ev", sql_table="ev", data_source="test", default_time_dimension="ts",
         fields=[
@@ -28,7 +28,7 @@ def _ev(rows: list[tuple]) -> TableSpec:
 
 
 async def _run(backend: str, rows: list[tuple], query: dict, *, width: int) -> dict[str, object]:
-    async with exec_engine(backend, tables=[_ev(rows)], models=[_ev_model()]) as engine:
+    async with exec_engine(backend, tables=[_ev(rows)], datasets=[_ev_dataset()]) as engine:
         resp = await engine.execute(SlayerQuery.model_validate({"population": "ev", **query}))
     dim = next(k for k in resp.columns if k not in ("ev.v_sum", "ev.x"))
     return {str(r[dim])[:width]: r["ev.x"] for r in resp.data}
@@ -118,11 +118,11 @@ async def test_consecutive_periods_over_date_column(
 ])
 async def test_bigquery_bucket_comparisons_are_datetimes(dim: str, formula: str, comparison: str) -> None:
     # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; buckets meet as DATETIME.
-    model = _ev_model()
+    model = _ev_dataset()
     model.fields.append(DatasetField(name="d_expr", sql="DATE(ts)", datatype=DataType.DATE))
     sql = await _engine_generate(query=SlayerQuery.model_validate({
         "population": "ev",
         "time_dimensions": [{"field": dim, "granularity": "month"}],
         "metrics": [{"expression": formula, "name": "x"}],
-    }), model=model, dialect="bigquery", validate=False)
+    }), dataset=model, dialect="bigquery", validate=False)
     assert comparison.format(dim=dim) in sql

@@ -33,7 +33,7 @@ from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
 
 from tests import _dev1900_fixtures
-from tests._dev1900_fixtures import dev1900_models
+from tests._dev1900_fixtures import dev1900_datasets
 from tests._dev1840_fixtures import (
     _CUSTOMERS_ROWS,
     _ORDERS_ROWS,
@@ -58,11 +58,11 @@ _ORDER_SHIP_REGION = [
 ]
 
 
-def _by_name(models: List[SlayerDataset], name: str) -> SlayerDataset:
-    return next(m for m in models if m.name == name)
+def _by_name(datasets: List[SlayerDataset], name: str) -> SlayerDataset:
+    return next(m for m in datasets if m.name == name)
 
 
-def countries_model() -> SlayerDataset:
+def countries_dataset() -> SlayerDataset:
     """``countries`` + the aggregations whose defaults name a model on the path
     to them (``regions``, ``regions.customers``, …) — each cancels."""
     return SlayerDataset(
@@ -106,10 +106,10 @@ def countries_model() -> SlayerDataset:
     )
 
 
-def dev1908_models() -> List[SlayerDataset]:
+def dev1908_datasets() -> List[SlayerDataset]:
     """DEV-1900 graph + ``regions → countries`` and the cancellation
     aggregations. Host first (orders)."""
-    models = dev1900_models()
+    models = dev1900_datasets()
 
     regions = _by_name(models, "regions")
     regions.fields.append(DatasetField(name="country_id", datatype=DataType.INT))
@@ -149,7 +149,7 @@ def dev1908_models() -> List[SlayerDataset]:
                     params=[AggregationParam(name="weight", sql="nowhere.col")]),
     ])
 
-    models.append(countries_model())
+    models.append(countries_dataset())
     return models
 
 
@@ -188,7 +188,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerDataset]] = None,
+    request, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture (DEV-1943 door)."""
     dialect = request.param
@@ -197,7 +197,7 @@ async def make_exec_engine(
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
         dialect=dialect, seed=seed,
-        models=models if models is not None else dev1908_models(),
+        datasets=datasets if datasets is not None else dev1908_datasets(),
     ) as (engine, _db):
         yield engine
 
@@ -211,7 +211,7 @@ def orders_q(**kw) -> SlayerQuery:
 
 
 def bundle1908() -> ResolvedSourceBundle:
-    models = dev1908_models()
+    models = dev1908_datasets()
     return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
@@ -360,7 +360,7 @@ __all__ = [
     "Aggregation", "AggregationParam", "DatasetField", "DatasetExtension", "DatasetRelationship",
     "DatasetMetric", "SlayerDataset", "SlayerQuery", "RelationshipCardinality",
     "FieldRef", "TimeDimension", "TimeGranularity",
-    "dev1908_models", "countries_model", "make_exec_engine",
+    "dev1908_datasets", "countries_dataset", "make_exec_engine",
     "orders_q", "bundle1908", "signup_month_td", "ship_region_extension",
     "rows_by", "month_key",
     "derive_oracles", "ORACLE_LITERALS",

@@ -36,7 +36,7 @@ from tests._dev2189_fixtures import (
     reference_scoped_sql,
     refusal,
     row_values,
-    save_models,
+    save_datasets,
     save_query_backed,
     seed_statements,
     shape_supported,
@@ -114,7 +114,7 @@ async def pg_engine(postgresql, tmp_path) -> AsyncGenerator[tuple[SlayerQueryEng
     ds = client_datasource(postgresql.info, name="test")
     storage = YAMLStorage(base_dir=str(tmp_path))
     async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
-        await save_models(storage)
+        await save_datasets(storage)
         await save_query_backed(engine)
         yield engine, ds
 

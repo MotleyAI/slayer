@@ -124,7 +124,7 @@ CREATED_MONTH_COUNT = {"2024-12": 1, "2025-01": 2, "2025-02": 2, "2025-03": 1}
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
-def orders_model() -> SlayerDataset:
+def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="created_at",
         fields=[
@@ -150,7 +150,7 @@ def orders_model() -> SlayerDataset:
     )
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
@@ -166,7 +166,7 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def accounts_model() -> SlayerDataset:
+def accounts_dataset() -> SlayerDataset:
     """The ``customers`` table with a declared one-to-many hop to ``orders``."""
     return SlayerDataset(
         name="accounts", sql_table="customers", data_source="test",
@@ -181,7 +181,7 @@ def accounts_model() -> SlayerDataset:
     )
 
 
-def balances_model() -> SlayerDataset:
+def balances_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="balances", sql_table="balances", data_source="test",
         fields=[
@@ -194,7 +194,7 @@ def balances_model() -> SlayerDataset:
     )
 
 
-def regions_model() -> SlayerDataset:
+def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
@@ -205,7 +205,7 @@ def regions_model() -> SlayerDataset:
     )
 
 
-def monthly_model() -> SlayerDataset:
+def monthly_dataset() -> SlayerDataset:
     """Query-backed: ``created_at`` cached at ``month``, ``refunded_at`` unbucketed."""
     return SlayerDataset(
         name="monthly", data_source="test",
@@ -217,8 +217,8 @@ def monthly_model() -> SlayerDataset:
     )
 
 
-def dev2119_models() -> list[SlayerDataset]:
-    return [orders_model(), customers_model(), accounts_model(), balances_model(), regions_model(), monthly_model()]
+def dev2119_datasets() -> list[SlayerDataset]:
+    return [orders_dataset(), customers_dataset(), accounts_dataset(), balances_dataset(), regions_dataset(), monthly_dataset()]
 
 
 # --------------------------------------------------------------------------- #
@@ -226,23 +226,23 @@ def dev2119_models() -> list[SlayerDataset]:
 # --------------------------------------------------------------------------- #
 @contextlib.asynccontextmanager
 async def engine_for(
-    backend: str, *, models: Optional[list[SlayerDataset]] = None, clock: Optional[PinnedClock] = None,
+    backend: str, *, datasets: Optional[list[SlayerDataset]] = None, clock: Optional[PinnedClock] = None,
     datasource_fields: Optional[dict[str, Any]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """An executing engine over the seeded dataset on ``sqlite`` or ``duckdb``."""
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, TABLES),
-        models=dev2119_models() if models is None else models,
+        datasets=dev2119_datasets() if datasets is None else datasets,
         clock=clock if clock is not None else PinnedClock(NOW), datasource_fields=datasource_fields,
     ) as (engine, _):
         yield engine
 
 
 async def emit(query: SlayerQuery | list[SlayerQuery | dict], *, dialect: str,
-               models: Optional[Iterable[SlayerDataset]] = None) -> str:
+               datasets: Optional[Iterable[SlayerDataset]] = None) -> str:
     """Dry-run SQL over the dev2119 models on ``dialect`` (asserts it parses there)."""
-    first, *rest = list(models) if models is not None else dev2119_models()
-    return await _engine_generate(query=query, model=first, extra_models=rest, dialect=dialect)
+    first, *rest = list(datasets) if datasets is not None else dev2119_datasets()
+    return await _engine_generate(query=query, dataset=first, extra_datasets=rest, dialect=dialect)
 
 
 # --------------------------------------------------------------------------- #
@@ -252,8 +252,8 @@ def q(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
-def m(formula: str, name: str = "v") -> DatasetMetric:
-    return DatasetMetric(expression=formula, name=name)
+def m(expression: str, name: str = "v") -> DatasetMetric:
+    return DatasetMetric(expression=expression, name=name)
 
 
 def td(dimension: str, granularity: str = "month", **extra: Any) -> dict[str, Any]:

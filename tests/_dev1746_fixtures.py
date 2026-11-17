@@ -112,7 +112,7 @@ def seed_dev1746_sqlite(db_path: str) -> None:
         )
 
 
-def dev1746_models() -> List[SlayerDataset]:
+def dev1746_datasets() -> List[SlayerDataset]:
     """SQLite-shaped ``orders -> customers -> regions`` models for the corpus.
 
     Returned host-first; ``[0]`` is the host and the rest are ``extra_models``.
@@ -153,7 +153,7 @@ def dev1746_models() -> List[SlayerDataset]:
 async def make_sqlite_engine(base_dir: str, db_path: str) -> SlayerQueryEngine:
     """Storage + engine bound to the seeded SQLite file at ``db_path``."""
     return await make_seeded_sqlite_engine(
-        base_dir=base_dir, db_path=db_path, models=dev1746_models()
+        base_dir=base_dir, db_path=db_path, datasets=dev1746_datasets()
     )
 
 
@@ -397,7 +397,7 @@ __all__ = [
     "PAID_FEB",
     "PAID_FEB_WINDOW",
     "seed_dev1746_sqlite",
-    "dev1746_models",
+    "dev1746_datasets",
     "make_sqlite_engine",
     "outer_select_aliases",
     "outer_statement",

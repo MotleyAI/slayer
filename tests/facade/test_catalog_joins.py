@@ -16,7 +16,7 @@ from slayer.facade.catalog import (
 )
 
 
-def _model(
+def _dataset(
     *,
     name: str,
     data_source: str = "ds1",
@@ -40,7 +40,7 @@ def _find_table(catalog: FacadeCatalog, *, schema: str, table: str) -> FacadeTab
 
 
 def test_facade_table_joins_populated_from_model_joins() -> None:
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -48,7 +48,7 @@ def test_facade_table_joins_populated_from_model_joins() -> None:
         ],
         joins=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]])],
     )
-    stores = _model(
+    stores = _dataset(
         name="stores",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -67,7 +67,7 @@ def test_facade_table_joins_populated_from_model_joins() -> None:
 
 
 def test_facade_table_joins_preserve_join_type() -> None:
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -79,7 +79,7 @@ def test_facade_table_joins_preserve_join_type() -> None:
             join_type=JoinType.INNER,
         )],
     )
-    stores = _model(
+    stores = _dataset(
         name="stores",
         columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     )
@@ -93,7 +93,7 @@ def test_facade_table_joins_filter_to_hidden_target() -> None:
     with the BFS dim/metric expansion's hidden-target filter. Otherwise the
     translator's existence check could match a join that isn't addressable
     via the rest of the catalog."""
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -101,7 +101,7 @@ def test_facade_table_joins_filter_to_hidden_target() -> None:
         ],
         joins=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]])],
     )
-    hidden_stores = _model(
+    hidden_stores = _dataset(
         name="stores",
         columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
         hidden=True,
@@ -116,7 +116,7 @@ def test_facade_table_joins_filter_to_absent_target() -> None:
     all (typo / cross-datasource / deleted), the join is silently dropped
     from FacadeTable.relationships[] — symmetric with the hidden-target filter and
     with the BFS dim/metric expansion's own filter."""
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -133,7 +133,7 @@ def test_facade_table_model_ref_carries_underlying_slayer_model() -> None:
     """Hidden FK columns must remain visible on model_ref.columns so the
     translator's ON-column existence check (against SlayerModel.fields,
     not the filtered facade dimensions) keeps working."""
-    orders = _model(
+    orders = _dataset(
         name="orders",
         columns=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -141,7 +141,7 @@ def test_facade_table_model_ref_carries_underlying_slayer_model() -> None:
         ],
         joins=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]])],
     )
-    stores = _model(
+    stores = _dataset(
         name="stores",
         columns=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     )

@@ -18,7 +18,7 @@ from tests._dev2215_fixtures import (
     EXTRACTIONS,
     ROW3_PARTS,
     check_events,
-    dev2215_models,
+    dev2215_datasets,
     ids,
     m,
     postgres_statements,
@@ -58,7 +58,7 @@ async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, Dat
     storage = YAMLStorage(base_dir=str(tmp_path))
     ds = _datasource(postgresql)
     async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
-        for model in dev2215_models(data_source="pg"):
+        for model in dev2215_datasets(data_source="pg"):
             await storage.save_dataset(model, _validate=False)
         yield engine, ds
 
@@ -103,8 +103,8 @@ async def _ingest(engine: SlayerQueryEngine, ds: DatasourceConfig, table: str) -
     return model, json.dumps(report.model_dump(mode="json", exclude={"datasets"}), default=str)
 
 
-def _columns(model: SlayerDataset) -> list[tuple[str, str | None]]:
-    return [(c.name, c.sql) for c in model.fields]
+def _columns(dataset: SlayerDataset) -> list[tuple[str, str | None]]:
+    return [(c.name, c.sql) for c in dataset.fields]
 
 
 async def test_two_case_variants(pg: tuple[SlayerQueryEngine, Any]) -> None:

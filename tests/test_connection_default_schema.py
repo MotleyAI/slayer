@@ -112,7 +112,7 @@ def bq_connection() -> Iterator[MagicMock]:
         yield conn
 
 
-def _model(name: str, *, sql_table: str, columns: dict[str, DataType]) -> SlayerDataset:
+def _dataset(name: str, *, sql_table: str, columns: dict[str, DataType]) -> SlayerDataset:
     return SlayerDataset(
         name=name,
         data_source=_DS.name,
@@ -155,9 +155,9 @@ class TestScope:
 
 @pytest.mark.parametrize("snapshot", [False, True], ids=["validate_models", "snapshot"])
 class TestValidateModels:
-    async def _validate(self, models: list[SlayerDataset], *, client: _LayoutClient, snapshot: bool) -> list[ToDeleteEntry]:
+    async def _validate(self, datasets: list[SlayerDataset], *, client: _LayoutClient, snapshot: bool) -> list[ToDeleteEntry]:
         return await validate_datasource(
-            datasource=_DS, datasets=models, client=client,
+            datasource=_DS, datasets=datasets, client=client,
             snapshot=DriftSnapshot(created_at=0.0) if snapshot else None,
         )
 
@@ -166,8 +166,8 @@ class TestValidateModels:
     ) -> None:
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"other": _ID_NAME}}
         models = [
-            _model("contractors", sql_table="contractors", columns=_ID_NAME),
-            _model("gone", sql_table="gone", columns=_ID_NAME),
+            _dataset("contractors", sql_table="contractors", columns=_ID_NAME),
+            _dataset("gone", sql_table="gone", columns=_ID_NAME),
         ]
         entries = await self._validate(
             models, client=_live(bq_connection, layout, schemas=_TWO_DATASETS), snapshot=snapshot,
@@ -177,7 +177,7 @@ class TestValidateModels:
     async def test_column_drift_on_a_bare_model_is_an_edit(self, bq_connection: MagicMock, snapshot: bool) -> None:
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {}}
         entries = await self._validate(
-            [_model("contractors", sql_table="contractors", columns=_WITH_SKILLS)],
+            [_dataset("contractors", sql_table="contractors", columns=_WITH_SKILLS)],
             client=_live(bq_connection, layout, schemas=_TWO_DATASETS), snapshot=snapshot,
         )
         assert _verdicts(entries) == [("EditModelDelete", "contractors", ["skills"])]
@@ -187,8 +187,8 @@ class TestValidateModels:
     ) -> None:
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"orphans": _ID_NAME}}
         models = [
-            _model("contractors", sql_table="contractors", columns=_ID_NAME),
-            _model("orphans", sql_table="orphans", columns=_ID_NAME),
+            _dataset("contractors", sql_table="contractors", columns=_ID_NAME),
+            _dataset("orphans", sql_table="orphans", columns=_ID_NAME),
         ]
         entries = await self._validate(
             models, client=_live(bq_connection, layout, schemas=_TWO_DATASETS), snapshot=snapshot,
@@ -200,8 +200,8 @@ class TestValidateModels:
     ) -> None:
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"contractors": _WITH_SKILLS}}
         models = [
-            _model("contractors", sql_table="contractors", columns=_WITH_SKILLS),
-            _model("b_contractors", sql_table="ds_b.contractors", columns=_WITH_SKILLS),
+            _dataset("contractors", sql_table="contractors", columns=_WITH_SKILLS),
+            _dataset("b_contractors", sql_table="ds_b.contractors", columns=_WITH_SKILLS),
         ]
         entries = await self._validate(
             models, client=_live(bq_connection, layout, schemas=_TWO_DATASETS), snapshot=snapshot,
@@ -230,7 +230,7 @@ class TestQueryTimeAttribution:
     async def test_an_unchanged_bare_model_lets_the_original_error_propagate(
         self, bq_connection: MagicMock, query_engine: SlayerQueryEngine, schemas: list[str] | None,
     ) -> None:
-        await query_engine.storage.save_dataset(_model("contractors", sql_table="contractors", columns=_ID_NAME))
+        await query_engine.storage.save_dataset(_dataset("contractors", sql_table="contractors", columns=_ID_NAME))
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"other": _ID_NAME}}
         query_engine._sql_clients[client_cache_key(_DS)] = _live(bq_connection, layout, schemas=schemas)
         await query_engine._maybe_raise_schema_drift(
@@ -241,7 +241,7 @@ class TestQueryTimeAttribution:
     async def test_a_dropped_column_on_a_bare_model_is_attributed(
         self, bq_connection: MagicMock, query_engine: SlayerQueryEngine, schemas: list[str] | None,
     ) -> None:
-        await query_engine.storage.save_dataset(_model("contractors", sql_table="contractors", columns=_WITH_SKILLS))
+        await query_engine.storage.save_dataset(_dataset("contractors", sql_table="contractors", columns=_WITH_SKILLS))
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"other": _ID_NAME}}
         reads = StatementReads(columns={("contractors", "skills")})
         query_engine._sql_clients[client_cache_key(_DS)] = _live(bq_connection, layout, schemas=schemas)
@@ -255,8 +255,8 @@ class TestQueryTimeAttribution:
 async def test_reingest_with_the_url_dataset_heals_a_bare_model(bq_connection: MagicMock, tmp_path: Path) -> None:
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     await storage.save_datasource(_DS)
-    await storage.save_dataset(_model("contractors", sql_table="contractors", columns=_ID_NAME))
-    fresh = _model("contractors", sql_table=f"{_URL_DATASET}.contractors", columns=_ID_NAME)
+    await storage.save_dataset(_dataset("contractors", sql_table="contractors", columns=_ID_NAME))
+    fresh = _dataset("contractors", sql_table=f"{_URL_DATASET}.contractors", columns=_ID_NAME)
     layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {"other": _ID_NAME}}
     with patch.object(
         ingestion, "ingest_datasource_report_async", return_value=ingestion.IngestionScanReport(datasets=[fresh]),

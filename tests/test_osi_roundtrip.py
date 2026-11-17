@@ -16,7 +16,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
-    BASIC_MEASURES, DATASOURCE, col, customers, measure, monthly_revenue, orders, orders_columns, rich_orders, visits,
+    BASIC_MEASURES, DATASOURCE, col, customers, slayer_metric, monthly_revenue, orders, orders_columns, rich_orders, visits,
 )
 from tests._osi_export_helpers import (
     Env, convert_document, doc_text, export, fresh_store, make_env, normalized, reimport, rows, save, stored, validate,
@@ -68,15 +68,15 @@ async def _mismatches(original: Env, imported: Env, payloads: list[dict[str, Any
     return found + [f"never ran on the original: {key}" for key in sorted(wanted - ran)]
 
 
-def _dimensions(model: SlayerDataset) -> list[str]:
-    return [c.name for c in model.fields if not c.hidden]
+def _dimensions(dataset: SlayerDataset) -> list[str]:
+    return [c.name for c in dataset.fields if not c.hidden]
 
 
-def _payloads(model: SlayerDataset, *, extra_dimensions: list[str], empty_filter: str | None) -> list[dict[str, Any]]:
-    dims = _dimensions(model)
-    out: list[dict[str, Any]] = [{"population": model.name, "dimensions": [d]} for d in dims]
-    for m in model.metrics:
-        base: dict[str, Any] = {"population": model.name, "metrics": [m.name]}
+def _payloads(dataset: SlayerDataset, *, extra_dimensions: list[str], empty_filter: str | None) -> list[dict[str, Any]]:
+    dims = _dimensions(dataset)
+    out: list[dict[str, Any]] = [{"population": dataset.name, "dimensions": [d]} for d in dims]
+    for m in dataset.metrics:
+        base: dict[str, Any] = {"population": dataset.name, "metrics": [m.name]}
         out += [base, {**base, "dimensions": dims}, {**base, "time_dimensions": _MONTH},
                 {**base, "time_dimensions": _MONTH, "dimensions": ["region"]}]
         out += [{**base, "dimensions": [d]} for d in [*dims, *extra_dimensions]]
@@ -85,7 +85,7 @@ def _payloads(model: SlayerDataset, *, extra_dimensions: list[str], empty_filter
     return out
 
 
-def _models() -> list[SlayerDataset]:
+def _datasets() -> list[SlayerDataset]:
     to_active = DatasetRelationship(to="active_orders", join_pairs=[["id", "customer_id"]],
                           cardinality=RelationshipCardinality.ONE_TO_MANY)
     visitor = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]], name="visitor",
@@ -95,21 +95,21 @@ def _models() -> list[SlayerDataset]:
     profiles = SlayerDataset(name="customer_profiles", sql_table="customers", data_source=DATASOURCE,
                            fields=[col("id", DataType.INT, "c_custkey", primary_key=True),
                                     col("email", DataType.TEXT)],
-                           metrics=[measure("n_profiles", "count(*)")])
+                           metrics=[slayer_metric("n_profiles", "count(*)")])
     rich = rich_orders()
     rich.fields.append(col("LegalType", DataType.TEXT, '"LegalType"'))
-    rich.metrics += [measure("n_types", "count_distinct(LegalType)"),
-                      measure("approx", "count_distinct_approx(customer_id)")]
+    rich.metrics += [slayer_metric("n_types", "count_distinct(LegalType)"),
+                      slayer_metric("approx", "count_distinct_approx(customer_id)")]
     return [
-        customers(joins=[to_active, to_profile], measures=[
-            measure("n_customers", "count(*)"), measure("total_discount", "sum(discount)"),
-            measure("active_revenue", "sum(active_orders.amount)"),
-            measure("n_emails", "count_distinct(customer_profiles.email)")]),
+        customers(joins=[to_active, to_profile], metrics=[
+            slayer_metric("n_customers", "count(*)"), slayer_metric("total_discount", "sum(discount)"),
+            slayer_metric("active_revenue", "sum(active_orders.amount)"),
+            slayer_metric("n_emails", "count_distinct(customer_profiles.email)")]),
         profiles,
         rich,
         orders(name="active_orders", columns=[*orders_columns(), col("deleted_at", DataType.TIMESTAMP)], joins=[],
-               filters=["deleted_at IS NULL", "status <> 'test'"], measures=BASIC_MEASURES, hidden=True),
-        visits(joins=[visitor], measures=[measure("n_visits", "count(*)")], access_tags=["ops"]),
+               filters=["deleted_at IS NULL", "status <> 'test'"], metrics=BASIC_MEASURES, hidden=True),
+        visits(joins=[visitor], measures=[slayer_metric("n_visits", "count(*)")], access_tags=["ops"]),
         monthly_revenue(),
     ]
 
@@ -117,7 +117,7 @@ def _models() -> list[SlayerDataset]:
 @pytest.fixture(params=["duckdb", "sqlite"])
 async def trip(request: pytest.FixtureRequest, tmp_path: Path) -> tuple[Env, Env]:
     env = await make_env(tmp_path, dialect=request.param)
-    await save(env, *_models())
+    await save(env, *_datasets())
     imported, _ = await reimport(env, (await export(env)).document)
     return env, imported
 
@@ -126,7 +126,7 @@ async def trip(request: pytest.FixtureRequest, tmp_path: Path) -> tuple[Env, Env
 async def test_same_results_after_round_trip(trip: tuple[Env, Env]) -> None:
     env, imported = trip
     payloads: list[dict[str, Any]] = []
-    for model in _models():
+    for model in _datasets():
         if model.source_queries:
             payloads.append({"population": model.name, "dimensions": ["ordered_on", "revenue"]})
             continue
@@ -148,11 +148,11 @@ def _masked_orders() -> SlayerDataset:
                  col("m_amount", sql="amount", filter="status = 'completed'"),
                  col("m_qty", DataType.INT, sql="quantity", filter="region = 'US'"),
                  col("m_paid", DataType.BOOLEAN, sql="is_paid", filter="status <> 'test'")],
-        measures=[measure("n", "count(*)"), measure("s", "sum(m_amount)"), measure("c", "count(m_amount)"),
-                  measure("cd", "count_distinct(m_amount)"), measure("a", "avg(m_amount)"),
-                  measure("mx", "max(m_amount)"), measure("r", "corr(m_amount, other=m_qty)"),
-                  measure("cv", "covar_pop(m_amount, other=m_qty)"), measure("w", "weighted_avg(price, weight=m_qty)"),
-                  measure("p", "sum(m_paid)")],
+        metrics=[slayer_metric("n", "count(*)"), slayer_metric("s", "sum(m_amount)"), slayer_metric("c", "count(m_amount)"),
+                  slayer_metric("cd", "count_distinct(m_amount)"), slayer_metric("a", "avg(m_amount)"),
+                  slayer_metric("mx", "max(m_amount)"), slayer_metric("r", "corr(m_amount, other=m_qty)"),
+                  slayer_metric("cv", "covar_pop(m_amount, other=m_qty)"), slayer_metric("w", "weighted_avg(price, weight=m_qty)"),
+                  slayer_metric("p", "sum(m_paid)")],
     )
 
 
@@ -173,34 +173,34 @@ def _meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     return {k: v for k, v in (meta or {}).items() if not k.startswith("osi_")}
 
 
-def _column_shape(model: SlayerDataset) -> dict[str, tuple]:
+def _column_shape(dataset: SlayerDataset) -> dict[str, tuple]:
     return {c.name: (c.primary_key, c.unique, c.label, c.description, c.hidden, c.format, c.granularity,
-                     c.allowed_aggregations, c.filter, _meta(c.meta)) for c in model.fields}
+                     c.allowed_aggregations, c.filter, _meta(c.meta)) for c in dataset.fields}
 
 
-def _measure_shape(model: SlayerDataset) -> dict[str, tuple]:
-    return {m.name or m.expression: (m.expression, m.label, m.datatype, _meta(m.meta)) for m in model.metrics}
+def _metric_shape(dataset: SlayerDataset) -> dict[str, tuple]:
+    return {m.name or m.expression: (m.expression, m.label, m.datatype, _meta(m.meta)) for m in dataset.metrics}
 
 
-def _join_shape(model: SlayerDataset) -> set[tuple]:
+def _join_shape(dataset: SlayerDataset) -> set[tuple]:
     return {(j.to, tuple(map(tuple, j.join_pairs)), j.join_type, j.cardinality, j.name)
-            for j in model.relationships}
+            for j in dataset.relationships}
 
 
-def _model_shape(model: SlayerDataset) -> tuple:
-    queries = [q.model_dump(exclude_none=True) for q in model.source_queries or []]
-    return (model.sql_table, model.sql, queries, model.query_variables, model.filters, model.hidden,
-            model.access_tags, model.default_time_dimension, [a.model_dump() for a in model.aggregations],
-            _meta(model.meta))
+def _dataset_shape(dataset: SlayerDataset) -> tuple:
+    queries = [q.model_dump(exclude_none=True) for q in dataset.source_queries or []]
+    return (dataset.sql_table, dataset.sql, queries, dataset.query_variables, dataset.filters, dataset.hidden,
+            dataset.access_tags, dataset.default_time_dimension, [a.model_dump() for a in dataset.aggregations],
+            _meta(dataset.meta))
 
 
 async def test_slayer_structure_restored(trip: tuple[Env, Env]) -> None:
     _, imported = trip
-    for original in _models():
+    for original in _datasets():
         restored = await stored(imported, original.name)
-        assert _model_shape(restored) == _model_shape(original), original.name
+        assert _dataset_shape(restored) == _dataset_shape(original), original.name
         assert _join_shape(restored) == _join_shape(original), original.name
-        assert _measure_shape(restored) == _measure_shape(original), original.name
+        assert _metric_shape(restored) == _metric_shape(original), original.name
         if not original.source_queries:
             assert _column_shape(restored) == _column_shape(original), original.name
 

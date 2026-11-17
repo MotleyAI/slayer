@@ -49,7 +49,7 @@ from slayer.osi.models import (
 )
 
 # Shared fixtures (calling a ``__``-named builder raises TODAY — the fail signal).
-from tests._dev1743_fixtures import chain_models
+from tests._dev1743_fixtures import chain_datasets
 from tests._engine_helpers import disposable_engine
 from tests._osi_helpers import run_converter
 
@@ -239,7 +239,7 @@ def test_osi_walk_join_alias_does_not_split_legacy_dunder_chain(
     make strict (slayer/osi/converter.py ``_walk_join_alias``).
     """
     conv = OsiToSlayerConverter(documents=[], data_source=DS)
-    conv._models = {m.name: m for m in chain_models()}  # orders → customers → regions
+    conv._models = {m.name: m for m in chain_datasets()}  # orders → customers → regions
     orders = conv._models["orders"]
 
     resolved = conv._walk_join_alias(host=orders, alias="customers__regions")

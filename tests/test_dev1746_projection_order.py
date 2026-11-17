@@ -465,7 +465,7 @@ class TestB8InnerStagePlanOrder:
             ],
         )
 
-    def _cross_model_transform_query(self) -> SlayerQuery:
+    def _cross_dataset_transform_query(self) -> SlayerQuery:
         return SlayerQuery(
             population="orders_x",
             time_dimensions=[TimeDimension(
@@ -785,8 +785,8 @@ class TestB11JoinOrdering:
         sequences = {}
         for dialect in ("postgres", "sqlite", "duckdb"):
             sql = await _engine_generate(
-                query=query, model=_orders_x(), dialect=dialect,
-                extra_models=[_customers_v2(), _regions(), _countries()],
+                query=query, dataset=_orders_x(), dialect=dialect,
+                extra_datasets=[_customers_v2(), _regions(), _countries()],
             )
             sequences[dialect] = base_cte_join_sequence(sql, dialect=dialect)
         assert all(seq for seq in sequences.values()), (

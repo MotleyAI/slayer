@@ -15,8 +15,8 @@ def _joins(parts: Sequence[str]) -> bool:
     return tuple(parts) == ("customers", "discount")
 
 
-def _problem(formula: str) -> str | None:
-    (problem,) = metric_dependency_problems([("m", formula)], fields=COLUMNS, relationship_path=_joins)
+def _problem(expression: str) -> str | None:
+    (problem,) = metric_dependency_problems([("m", expression)], fields=COLUMNS, relationship_path=_joins)
     return problem
 
 

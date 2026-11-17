@@ -27,10 +27,10 @@ from slayer.core.syntax import parse_expr
 from slayer.facade.catalog import build_local_view
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-from tests._dev2046_fixtures import customers_model, orders_model
+from tests._dev2046_fixtures import customers_dataset, orders_dataset
 
-ORDERS = orders_model()
-CUSTOMERS = customers_model()
+ORDERS = orders_dataset()
+CUSTOMERS = customers_dataset()
 BUNDLE = ResolvedSourceBundle(dialect="postgres", population=ORDERS, referenced_datasets=[CUSTOMERS])
 INTEGER = NumberFormat(type=NumberFormatType.INTEGER)
 PERCENT = NumberFormat(type=NumberFormatType.PERCENT)
@@ -86,7 +86,7 @@ class TestColumnTyping:
     def test_avg_format_percent_unless_column_declares_one(self) -> None:
         assert _infer_aggregated_format(dataset=ORDERS, metric_name="flag", aggregation="avg") == PERCENT
         fmt = NumberFormat(type=NumberFormatType.FLOAT, precision=3)
-        model = orders_model(flag_format=fmt)
+        model = orders_dataset(flag_format=fmt)
         assert _infer_aggregated_format(dataset=model, metric_name="flag", aggregation="avg") == fmt
 
 
@@ -136,7 +136,7 @@ class TestBooleanDefaults:
         assert DEFAULT_AGGREGATIONS_BY_TYPE[DataType.BOOLEAN] == DEFAULT_AGGREGATIONS_BY_TYPE[DataType.INT]
 
 
-def _facade_model() -> SlayerDataset:
+def _facade_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="facts", sql_table="facts", data_source="test", default_time_dimension="at",
         fields=[
@@ -155,7 +155,7 @@ class TestFacadeAgreement:
     """Scenario: facade agrees with the engine (custom aggregations included)."""
 
     def test_every_metric_type_matches_engine(self) -> None:
-        model = _facade_model()
+        model = _facade_dataset()
         _, metrics = build_local_view(model)
         by_name = {mt.name: mt for mt in metrics}
         aggs = set().union(*DEFAULT_AGGREGATIONS_BY_TYPE.values()) | {"wsum"}

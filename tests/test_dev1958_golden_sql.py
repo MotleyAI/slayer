@@ -17,7 +17,7 @@ import sqlglot
 from slayer.core.query import SlayerQuery
 from slayer.sql.scope_check import assert_dependency_ordered_ctes, assert_scope_closed
 
-from tests._dev1832_fixtures import dev1832_models
+from tests._dev1832_fixtures import dev1832_datasets
 from tests._engine_helpers import _engine_generate, _extract_cte_body
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -32,15 +32,15 @@ _REGION_SHARE = "sum(amount) / sum(amount, partition_by=[region])"
 _EVENT = "customers.regions.region_events.value"
 
 
-def _monthly(formula: str, *, dr: bool = False, dims=("region",), **kw) -> dict:
+def _monthly(expression: str, *, dr: bool = False, dims=("region",), **kw) -> dict:
     return {"population": "monthly", "dimensions": list(dims),
             "time_dimensions": [_TD_DR if dr else _TD],
-            "metrics": [{"expression": formula, "name": "t"}], **kw}
+            "metrics": [{"expression": expression, "name": "t"}], **kw}
 
 
-def _orders(formula: str, *, dims, **kw) -> dict:
+def _orders(expression: str, *, dims, **kw) -> dict:
     return {"population": "orders", "dimensions": list(dims), "time_dimensions": [_TD],
-            "metrics": [{"expression": formula, "name": "t"}], **kw}
+            "metrics": [{"expression": expression, "name": "t"}], **kw}
 
 
 def _cases() -> dict:
@@ -103,13 +103,13 @@ def _query(case) -> SlayerQuery | list[SlayerQuery | dict]:
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1832_models()
+    models = dev1832_datasets()
     root_name = case[0]["source_model"] if isinstance(case, list) else case["source_model"]
     root = next(m for m in models if m.name == root_name)
     try:
         return await _engine_generate(
-            query=_query(case), model=root,
-            extra_models=[m for m in models if m is not root],
+            query=_query(case), dataset=root,
+            extra_datasets=[m for m in models if m is not root],
             dialect=dialect, validate=False)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)

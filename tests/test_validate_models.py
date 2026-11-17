@@ -64,12 +64,12 @@ POSTGRES = get_dialect("postgres")
 # ---------------------------------------------------------------------------
 
 
-def _orders_model(
+def _orders_dataset(
     *,
     data_source: str = "ds",
     columns: list[DatasetField] | None = None,
     joins: list[DatasetRelationship] | None = None,
-    measures: list[DatasetMetric] | None = None,
+    metrics: list[DatasetMetric] | None = None,
     filters: list[str] | None = None,
     sql_table: str = "orders",
 ) -> SlayerDataset:
@@ -85,7 +85,7 @@ def _orders_model(
             DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
         ],
         relationships=joins or [],
-        metrics=measures or [],
+        metrics=metrics or [],
         filters=filters or [],
     )
 
@@ -105,15 +105,15 @@ def _live_orders(
     )
 
 
-def _entry_for(model_name: str, entries: Sequence[DriftReportEntry]) -> object | None:
+def _entry_for(dataset_name: str, entries: Sequence[DriftReportEntry]) -> object | None:
     for e in entries:
-        if e.dataset_name == model_name:
+        if e.dataset_name == dataset_name:
             return e
     return None
 
 
-def _delete_for(model_name: str, entries: Sequence[DriftReportEntry]) -> object | None:
-    return next((e for e in entries if e.dataset_name == model_name
+def _delete_for(dataset_name: str, entries: Sequence[DriftReportEntry]) -> object | None:
+    return next((e for e in entries if e.dataset_name == dataset_name
                  and isinstance(e, (EditDatasetDelete, WholeDatasetDelete))), None)
 
 
@@ -157,7 +157,7 @@ class TestDataTypeBucket:
 
 class TestDiffSqlTableModel:
     def test_no_drift_when_live_matches(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         live = _live_orders()
         entry, dropped = diff_sql_table_dataset(
             dataset=model, live_table=live, available_datasets_in_ds={"orders"}
@@ -166,7 +166,7 @@ class TestDiffSqlTableModel:
         assert dropped == set()
 
     def test_persisted_column_missing_from_live(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         live = _live_orders(
             columns={
                 "id": DataType.DOUBLE,
@@ -185,7 +185,7 @@ class TestDiffSqlTableModel:
         assert any(r.target == "column:status" for r in entry.reasons)
 
     def test_live_table_missing(self) -> None:
-        model = _orders_model()
+        model = _orders_dataset()
         entry, dropped = diff_sql_table_dataset(
             dataset=model, live_table=None, available_datasets_in_ds={"orders"}
         )
@@ -197,7 +197,7 @@ class TestDiffSqlTableModel:
 
     def test_type_bucket_mismatch_keeps_column(self) -> None:
         # Persisted "amount" is NUMBER, live made it STRING.
-        model = _orders_model()
+        model = _orders_dataset()
         live = _live_orders(
             columns={
                 "id": DataType.DOUBLE,
@@ -218,7 +218,7 @@ class TestDiffSqlTableModel:
         # when a persisted DOUBLE column is reported as INT by live
         # introspection (the v5 refinement step reconciles these without
         # raising drift).
-        model = _orders_model()
+        model = _orders_dataset()
         live = _live_orders(
             columns={
                 "id": DataType.INT,
@@ -252,7 +252,7 @@ class TestDiffSqlTableModel:
         assert entry is None
 
     def test_join_local_column_missing_drops_join(self) -> None:
-        model = _orders_model(
+        model = _orders_dataset(
             joins=[
                 DatasetRelationship(
                     to="customers",
@@ -276,7 +276,7 @@ class TestDiffSqlTableModel:
         assert "customers" in entry.remove.relationships  # by target_model name
 
     def test_join_target_model_not_in_datasource_drops_join(self) -> None:
-        model = _orders_model(
+        model = _orders_dataset(
             joins=[
                 DatasetRelationship(
                     to="warehouses",
@@ -298,7 +298,7 @@ class TestDiffSqlTableModel:
         live table. CodeRabbit thread #103/r3196378686.
         """
         # Model: ``customer_id`` semantic name maps to physical ``customer_fk``.
-        model = _orders_model(
+        model = _orders_dataset(
             columns=[
                 DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
@@ -526,7 +526,7 @@ class TestCascadeRules:
         """A derived ``Column.sql`` referencing a column that was dropped is
         itself dropped. Walks transitively across chains of derived columns.
         """
-        model = _orders_model(
+        model = _orders_dataset(
             columns=[
                 DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
@@ -558,8 +558,8 @@ class TestCascadeRules:
         """A ``ModelMeasure.expression`` referencing dropped column or dropped
         measure is itself dropped.
         """
-        model = _orders_model(
-            measures=[
+        model = _orders_dataset(
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="total_amount"),
                 # transitive: refs total_amount which itself refs dropped 'amount'
                 DatasetMetric(expression="total_amount / count(*)", name="aov"),
@@ -587,11 +587,11 @@ class TestCascadeRules:
         measure away. The cascade now walks the reachable join graph for
         custom aggregation names instead of using the model's own aggs only.
         """
-        orders = _orders_model(
+        orders = _orders_dataset(
             joins=[
                 DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
             ],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="rolling_avg(customers.score)", name="ravg"),
             ],
         )
@@ -628,7 +628,7 @@ class TestCascadeRules:
         """A ``Join`` whose ``local_column`` (= join_pairs[i][0]) was dropped
         produces a ``drop_join`` on the source model.
         """
-        model = _orders_model(
+        model = _orders_dataset(
             joins=[
                 DatasetRelationship(
                     to="customers",
@@ -655,7 +655,7 @@ class TestCascadeRules:
         ``foreign_column`` (= join_pairs[i][1]) was dropped on M produces a
         ``drop_join`` on K.
         """
-        orders = _orders_model(
+        orders = _orders_dataset(
             joins=[
                 DatasetRelationship(
                     to="customers",
@@ -687,7 +687,7 @@ class TestCascadeRules:
         assert "customers" in orders_entry.remove.relationships
 
     def test_rule_4_filter_referencing_dropped_column(self) -> None:
-        model = _orders_model(
+        model = _orders_dataset(
             filters=["status = 'completed'", "amount > 0"],
         )
         edit = EditDatasetDelete(
@@ -710,7 +710,7 @@ class TestCascadeRules:
         """A derived column on model A whose SQL references ``customers.region``
         is cascade-dropped when ``customers.region`` is dropped.
         """
-        orders = _orders_model(
+        orders = _orders_dataset(
             columns=[
                 DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
@@ -757,7 +757,7 @@ class TestCascadeRules:
         references a dropped column / dropped model gets a ``WholeModelDelete``.
         Multi-stage chain (stage B refs stage A which refs dropped) is covered.
         """
-        orders = _orders_model()
+        orders = _orders_dataset()
         # Two-stage query-backed model: stage A reads from orders, stage B
         # builds on stage A.
         qb = SlayerDataset(
@@ -798,7 +798,7 @@ class TestCascadeRules:
         Stage filters were once routed through the SQL-only ref
         extractor and returned ``[]``, so drift cascades were missed.
         """
-        orders = _orders_model()
+        orders = _orders_dataset()
         qb = SlayerDataset(
             name="qb_orders_filtered",
             data_source="ds",
@@ -829,7 +829,7 @@ class TestCascadeRules:
         """If the underlying model gets a whole-drop (live table missing),
         any query-backed model that references it transitively whole-drops.
         """
-        orders = _orders_model()
+        orders = _orders_dataset()
         qb = SlayerDataset(
             name="qb_orders",
             data_source="ds",
@@ -851,7 +851,7 @@ class TestCascadeRules:
 
     def test_rule_7_pk_drop_does_not_cascade(self) -> None:
         """PK drops don't cascade into derived columns / measures / filters."""
-        model = _orders_model(
+        model = _orders_dataset(
             columns=[
                 DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
                 DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
@@ -861,7 +861,7 @@ class TestCascadeRules:
                 # don't trigger cascade, so this column survives.
                 DatasetField(name="id_doubled", sql="id * 2", datatype=DataType.DOUBLE),
             ],
-            measures=[DatasetMetric(expression="count_distinct(id)", name="unique_ids")],
+            metrics=[DatasetMetric(expression="count_distinct(id)", name="unique_ids")],
         )
         edit = EditDatasetDelete(
             dataset_name="orders",
@@ -886,7 +886,7 @@ class TestCollapseRule:
     def test_whole_drop_preempts_edit_for_same_model(self) -> None:
         """When a single model receives both an EditModelDelete and a
         WholeModelDelete, only the WholeModelDelete is emitted."""
-        model = _orders_model()
+        model = _orders_dataset()
         # Live table missing → WholeModelDelete; meanwhile a column-bucket
         # diff would also try to emit EditModelDelete via cascade. The
         # collapse rule should leave only the whole-drop.
@@ -909,7 +909,7 @@ class TestCrossDatasourceBoundary:
         """
         # Model in ds_a references customers from ds_b — this is invalid
         # cross-DS but at the cascade layer we just don't follow it.
-        orders_in_a = _orders_model(data_source="ds_a")
+        orders_in_a = _orders_dataset(data_source="ds_a")
         customers_in_b = SlayerDataset(
             name="customers",
             sql_table="customers",
@@ -1154,7 +1154,7 @@ class TestValidateModelsSqliteProbe:
         *,
         values: list,
         columns: list[DatasetField],
-        measures: list[DatasetMetric] | None = None,
+        metrics: list[DatasetMetric] | None = None,
         ds_type: str = "sqlite",
     ) -> tuple[SlayerQueryEngine, str]:
         """Persist a sensordata model whose ``tempstabidx`` column is
@@ -1175,7 +1175,7 @@ class TestValidateModelsSqliteProbe:
                 sql_table="sensordata",
                 data_source="ds",
                 fields=columns,
-                metrics=measures or [],
+                metrics=metrics or [],
             )
         )
         return SlayerQueryEngine(storage=storage), db_path
@@ -1317,7 +1317,7 @@ class TestValidateModelsSqliteProbe:
                 ),
                 DatasetField(name="tempstabidx", sql="tempstabidx", datatype=DataType.INT),
             ],
-            measures=[
+            metrics=[
                 DatasetMetric(
                     expression="sum(tempstabidx)",
                     name="stab_total",

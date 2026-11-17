@@ -178,7 +178,7 @@ def _plain(name: str, *spec: tuple[str, DataType], pk: str | None = None, joins:
 PART_PAIRS = [["pa", "ka"], ["pb", "kb"]]
 
 
-def base_models() -> list[SlayerDataset]:
+def base_datasets() -> list[SlayerDataset]:
     return [
         countries(), regions(), customers(), vip_list(), addresses(), orders(),
         _plain("vip_orders", ("order_id", _INT)),
@@ -195,25 +195,25 @@ def base_models() -> list[SlayerDataset]:
     ]
 
 
-def with_models(*replacements: SlayerDataset) -> list[SlayerDataset]:
+def with_datasets(*replacements: SlayerDataset) -> list[SlayerDataset]:
     """``base_models()`` with same-named models replaced."""
     by_name = {m.name: m for m in replacements}
-    return [by_name.pop(m.name, m) for m in base_models()] + list(by_name.values())
+    return [by_name.pop(m.name, m) for m in base_datasets()] + list(by_name.values())
 
 
-def respelled_model(models: list[SlayerDataset], *, name: str, spelling: str) -> list[SlayerDataset]:
+def respelled_dataset(datasets: list[SlayerDataset], *, name: str, spelling: str) -> list[SlayerDataset]:
     """``models`` with model ``name`` saved as ``spelling``, every stored join to it retargeted."""
     def one(m: SlayerDataset) -> SlayerDataset:
         joins = [j.model_copy(update={"to": spelling}) if j.to == name else j for j in m.relationships]
         return m.model_copy(update={"name": spelling if m.name == name else m.name, "relationships": joins})
-    return [one(m) for m in models]
+    return [one(m) for m in datasets]
 
 
 @asynccontextmanager
-async def shop(dialect: str, models: list[SlayerDataset] | None = None) -> AsyncGenerator[SlayerQueryEngine]:
+async def shop(dialect: str, datasets: list[SlayerDataset] | None = None) -> AsyncGenerator[SlayerQueryEngine]:
     async with seeded_exec_engine(
         dialect=dialect, seed=lambda path: _seed(path, dialect=dialect),
-        models=models if models is not None else base_models(),
+        datasets=datasets if datasets is not None else base_datasets(),
     ) as (engine, _db):
         yield engine
 

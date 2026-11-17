@@ -52,13 +52,13 @@ from tests._dev1900_fixtures import (
     POP_FILTER_WINDOWED_BY_MONTH,
     TO_ONE_FILTER_AMOUNT,
     cust_q,
-    dev1900_models,
+    dev1900_datasets,
     make_exec_engine,
     month_key,
     orders_q,
     pushed_filter_infos,
     rows_by,
-    unparseable_derived_models,
+    unparseable_derived_datasets,
 )
 
 MODES = ["broadcast", "associate", "error"]
@@ -98,7 +98,7 @@ async def backend(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unparse_backend(request):
-    async for e in make_exec_engine(request, models=unparseable_derived_models()):
+    async for e in make_exec_engine(request, datasets=unparseable_derived_datasets()):
         yield request.param, e
 
 
@@ -115,7 +115,7 @@ def _pop_infos(resp) -> list:
 
 
 def _bundle1900() -> ResolvedSourceBundle:
-    m = dev1900_models()
+    m = dev1900_datasets()
     src = next(x for x in m if x.name == "customers")
     return ResolvedSourceBundle(
         dialect="postgres",
@@ -177,7 +177,7 @@ class TestWindowedDerivedFanningAxisFailsClosed:
     (reads as safe); only the dependency closure reveals the fan."""
 
     def _bundle(self) -> ResolvedSourceBundle:
-        m = dev1900_models()
+        m = dev1900_datasets()
         cust = next(x for x in m if x.name == "customers")
         cust.fields.append(DatasetField(
             name="bad_date", datatype=DataType.DATE,

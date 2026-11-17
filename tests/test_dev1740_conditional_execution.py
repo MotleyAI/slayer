@@ -21,7 +21,7 @@ from tests._dev1740_fixtures import (
     make_exec_engine,
     month_key,
     month_td,
-    orders_model,
+    orders_dataset,
     rows_by,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -291,7 +291,7 @@ class TestCaseInColumnSql:
         # A CASE in Column.sql (raw SQL) grouped as a dimension — the existing
         # escape hatch, pinned against Part A regressions. Row 9 (amount 6000)
         # is the only per-row band 1; everything else bands 0.
-        base = orders_model()
+        base = orders_dataset()
         await exec_engine.storage.save_dataset(base.model_copy(update={"fields": [
             *base.fields,
             DatasetField(name="row_band", sql="CASE WHEN amount > 5000 THEN 1 ELSE 0 END",

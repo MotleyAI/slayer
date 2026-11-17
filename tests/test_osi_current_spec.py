@@ -13,7 +13,7 @@ from slayer.ingest_report import ConversionResult
 from slayer.osi.converter import OsiConversionError
 from slayer.osi.parser import parse_osi_path
 from tests._osi_helpers import (
-    by_name, cols, convert, documents, ds, entries, f, flat, legacy, m, measure_home, mentions, query, rel, scalar,
+    by_name, cols, convert, documents, ds, entries, f, flat, legacy, m, metric_home, mentions, query, rel, scalar,
     seed_db, unconverted, visible, write_yaml,
 )
 
@@ -44,16 +44,16 @@ def _shop(*, orders: dict[str, Any] | None = None, customers: dict[str, Any] | N
                 relationships=[O2C] if relationships is None else relationships, metrics=metrics)
 
 
-def _single_agg(formula: str) -> tuple[str, str]:
-    parsed = parse_expr(formula)
+def _single_agg(expression: str) -> tuple[str, str]:
+    parsed = parse_expr(expression)
     assert isinstance(parsed, AggCall)
     assert isinstance(parsed.source, Ref)
     return parsed.agg, parsed.source.name
 
 
-def _formula(result: ConversionResult, measure: str) -> str:
-    home = measure_home(result, measure)
-    return next(x.expression for x in home.metrics if x.name == measure)
+def _expression(result: ConversionResult, metric: str) -> str:
+    home = metric_home(result, metric)
+    return next(x.expression for x in home.metrics if x.name == metric)
 
 
 # ─────────────────────────── document shapes ───────────────────────────────
@@ -66,7 +66,7 @@ async def test_flat_document_imports_end_to_end(db: Path) -> None:
     assert join.to == "customers"
     assert join.cardinality == RelationshipCardinality.MANY_TO_ONE
     assert join.join_pairs == [["customer_id", "id"]]
-    assert measure_home(result, "total_amount").name == "orders"
+    assert metric_home(result, "total_amount").name == "orders"
     assert not result.unconverted_metrics
     assert not [e for e in entries(result) if e.severity == "unconverted"]
     rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["total_amount"]})
@@ -84,7 +84,7 @@ def test_flat_document_of_either_version_imports_the_same(
     models = by_name(result)
     assert set(models) == {"orders", "customers"}
     assert [(j.to, j.join_pairs) for j in models["orders"].relationships] == [("customers", [["customer_id", "id"]])]
-    assert measure_home(result, "total_amount").name == "orders"
+    assert metric_home(result, "total_amount").name == "orders"
     assert not result.unconverted_metrics
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING and "version" in r.getMessage().lower()]
 
@@ -116,13 +116,13 @@ async def test_renamed_field_hides_its_source_column(db: Path) -> None:
     model = by_name(result)["orders"]
     assert visible(model) == {"order_id", "total_amount"}
     assert not {"o_orderkey", "o_totalprice"} & set(cols(model))
-    assert float(await scalar(result=result, db=db, model="orders", formula="sum(total_amount)")) == pytest.approx(22)
+    assert float(await scalar(result=result, db=db, dataset="orders", expression="sum(total_amount)")) == pytest.approx(22)
 
 
 async def test_derived_field_over_an_undeclared_source_column(db: Path) -> None:
     result = convert(db=db, docs=documents(flat([_orders([f("total_usd", "total_cents / 100.0")])])))
     assert visible(by_name(result)["orders"]) == {"total_usd"}
-    assert await scalar(result=result, db=db, model="orders", formula="sum(total_usd)") == pytest.approx(22)
+    assert await scalar(result=result, db=db, dataset="orders", expression="sum(total_usd)") == pytest.approx(22)
 
 
 def test_dataset_without_fields_imports_with_a_warning(db: Path) -> None:
@@ -237,7 +237,7 @@ def test_unique_key_on_a_source_column_is_reported(db: Path) -> None:
 def test_qualified_reference_to_a_renamed_field(db: Path) -> None:
     orders = _orders([f("order_id", "o_orderkey"), f("total_amount", "o_totalprice")])
     result = convert(db=db, docs=documents(flat([orders], metrics=[m("revenue", "SUM(orders.total_amount)")])))
-    assert _single_agg(_formula(result, "revenue")) == ("sum", "total_amount")
+    assert _single_agg(_expression(result, "revenue")) == ("sum", "total_amount")
 
 
 @pytest.mark.parametrize("sql", [
@@ -265,8 +265,8 @@ def test_dataset_scoped_metric_reference_is_unconverted(db: Path, sql: str) -> N
 def test_unquoted_reference_matches_case_insensitively(db: Path) -> None:
     orders = _orders(metrics=[m("total", "SUM(Amount)")])
     result = convert(db=db, docs=documents(_shop(orders=orders, metrics=[m("total2", "SUM(Orders.AMOUNT)")])))
-    assert _single_agg(_formula(result, "total")) == ("sum", "amount")
-    assert _single_agg(_formula(result, "total2")) == ("sum", "amount")
+    assert _single_agg(_expression(result, "total")) == ("sum", "amount")
+    assert _single_agg(_expression(result, "total2")) == ("sum", "amount")
 
 
 def test_quoted_reference_matches_exactly(db: Path) -> None:
@@ -274,7 +274,7 @@ def test_quoted_reference_matches_exactly(db: Path) -> None:
     orders = _orders(fields, metrics=[m("wrong_case", 'SUM("amount")'), m("right_case", 'SUM("Amount")')])
     result = convert(db=db, docs=documents(flat([orders])))
     assert unconverted(result, "wrong_case")
-    assert _single_agg(_formula(result, "right_case")) == ("sum", "Amount")
+    assert _single_agg(_expression(result, "right_case")) == ("sum", "Amount")
 
 
 def test_case_only_ambiguity_is_reported(db: Path) -> None:
@@ -286,8 +286,8 @@ def test_case_only_ambiguity_is_reported(db: Path) -> None:
 
 # ─────────────────────── legacy lenient resolution ─────────────────────────
 
-def _legacy_docs(tmp_path: Path, model: dict[str, Any]) -> list:
-    return parse_osi_path(write_yaml(tmp_path / "legacy.yaml", legacy(model)))
+def _legacy_docs(tmp_path: Path, dataset: dict[str, Any]) -> list:
+    return parse_osi_path(write_yaml(tmp_path / "legacy.yaml", legacy(dataset)))
 
 
 def test_legacy_models_expose_source_columns_and_fields(db: Path, tmp_path: Path) -> None:
@@ -299,7 +299,7 @@ def test_legacy_unqualified_metric(db: Path, tmp_path: Path) -> None:
     model = {"name": "s", "datasets": [_orders([f("order_id", "o_orderkey")]), _customers()],
              "metrics": [m("total", "SUM(amount)")]}
     result = convert(db=db, docs=_legacy_docs(tmp_path, model))
-    assert measure_home(result, "total").name == "orders"
+    assert metric_home(result, "total").name == "orders"
 
 
 def test_legacy_relationship_on_a_source_column(db: Path, tmp_path: Path) -> None:
@@ -320,21 +320,21 @@ def test_legacy_unique_keys_resolve_against_source_columns_and_fields(db: Path, 
 def test_legacy_dataset_scoped_metric(db: Path, tmp_path: Path) -> None:
     model = {"name": "s", "datasets": [_orders(metrics=[m("total_amount", "SUM(amount)")])]}
     result = convert(db=db, docs=_legacy_docs(tmp_path, model))
-    assert measure_home(result, "total_amount").name == "orders"
+    assert metric_home(result, "total_amount").name == "orders"
 
 
 # ─────────────────────── dataset-scoped metrics ────────────────────────────
 
 async def test_dataset_scoped_metric_becomes_a_measure(db: Path) -> None:
     result = convert(db=db, docs=documents(_shop(orders=_orders(metrics=[m("total_amount", "SUM(amount)")]))))
-    assert measure_home(result, "total_amount").name == "orders"
+    assert metric_home(result, "total_amount").name == "orders"
     rows = await query(result=result, db=db, payload={"population": "orders", "metrics": ["total_amount"]})
     assert rows[0]["orders.total_amount"] == pytest.approx(22)
 
 
 def test_dataset_scoped_count_star_stays_on_its_dataset(db: Path) -> None:
     result = convert(db=db, docs=documents(_shop(customers=_customers(metrics=[m("customer_count", "COUNT(*)")]))))
-    assert measure_home(result, "customer_count").name == "customers"
+    assert metric_home(result, "customer_count").name == "customers"
 
 
 def test_dataset_scoped_metric_colliding_with_a_field(db: Path) -> None:

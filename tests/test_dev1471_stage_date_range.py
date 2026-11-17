@@ -13,7 +13,7 @@ from tests._dev1471_fixtures import (
     BACKENDS,
     date_str,
     make_engine,
-    orders_model,
+    orders_dataset,
     orders_table_spec,
 )
 from tests._engine_helpers import _where_text
@@ -39,7 +39,7 @@ async def _exec(backend: str, tmp: str, outer: SlayerQuery):
     engine = await make_engine(
         backend, base_dir=os.path.join(tmp, "store"),
         db_path=os.path.join(tmp, f"t.{backend}"),
-        tables=[orders_table_spec(_ROWS)], models=[orders_model()],
+        tables=[orders_table_spec(_ROWS)], datasets=[orders_dataset()],
     )
     return await engine.execute(query=[_INNER, outer])
 

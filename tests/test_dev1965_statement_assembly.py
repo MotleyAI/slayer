@@ -34,7 +34,7 @@ from tests._dev1965_fixtures import (
     from_name,
     gen,
     month_key,
-    orders_model,
+    orders_dataset,
     outer_derived,
     parse,
     q,
@@ -245,7 +245,7 @@ class TestPostFilter:
 class TestWhereHaving:
     async def test_where_and_having_are_grouped_conjunctions(self) -> None:
         sql = await gen(where_having_query(), dialect="postgres",
-                        model=orders_model(filters=[MODE_A_OR]))
+                        dataset=orders_dataset(filters=[MODE_A_OR]))
         select = next(
             s for s in parse(sql, "postgres").find_all(exp.Select) if s.args.get("having")
         )
@@ -258,7 +258,7 @@ class TestWhereHaving:
 
     @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
     async def test_mode_a_or_filter_keeps_its_grouping(self, dialect: str) -> None:
-        async with exec_engine(dialect, model=orders_model(filters=[MODE_A_OR])) as engine:
+        async with exec_engine(dialect, dataset=orders_dataset(filters=[MODE_A_OR])) as engine:
             resp = await engine.execute(where_having_query())
         assert {r["orders.region"]: float(r["orders.amount_sum"]) for r in resp.data} == {
             "US": 160.0,
@@ -274,8 +274,8 @@ LONG = "c" * 310
 _CUSTOMER_ROWS = [(i, "gold" if i % 2 else "silver") for i in range(1, 8)]
 
 
-def _qb_models(data_source: str) -> list[SlayerDataset]:
-    orders = orders_model()
+def _qb_datasets(data_source: str) -> list[SlayerDataset]:
+    orders = orders_dataset()
     orders.data_source = data_source
     orders.relationships = [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]
     customers = SlayerDataset(
@@ -305,7 +305,7 @@ class TestQueryBackedWrap:
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(DatasourceConfig(name="ds", type=ds_type, database="db"))
-            for model in _qb_models("ds"):
+            for model in _qb_datasets("ds"):
                 await storage.save_dataset(model)
             engine = SlayerQueryEngine(storage=storage)
             expanded = await engine._expand_query_backed_dataset(
@@ -334,7 +334,7 @@ class TestQueryBackedWrap:
         pytest.importorskip("duckdb")
         qb = SlayerDataset(name="qb", source_queries=[_qb_stage()], data_source="test")
         async with seeded_exec_engine(
-            dialect="duckdb", seed=seed, models=[*_qb_models("test"), qb],
+            dialect="duckdb", seed=seed, datasets=[*_qb_datasets("test"), qb],
         ) as (engine, _db):
             resp = await engine.execute(SlayerQuery.model_validate({
                 "population": "qb", "dimensions": [f"customers__{LONG}"],
@@ -353,9 +353,9 @@ class TestQueryBackedWrap:
 # --------------------------------------------------------------------------- #
 
 
-def _stat_seams(formula: str) -> dict:
+def _stat_seams(expression: str) -> dict:
     month = [{"dimension": "created_at", "granularity": "month"}]
-    measure = [{"formula": formula, "name": "w"}]
+    measure = [{"formula": expression, "name": "w"}]
     return {
         "producer_hoist": SlayerQuery.model_validate({
             "population": "orders", "time_dimensions": F15.month_td(), "metrics": measure,
@@ -377,9 +377,9 @@ def _stat_seams(formula: str) -> dict:
     "corr(amount, other=qty, window='90d')",
 ])
 async def test_mysql_windowed_sample_statistic_uses_var_samp(formula: str, seam: str) -> None:
-    models = F15.dev1915_models()
+    models = F15.dev1915_datasets()
     sql = await _engine_generate(
-        query=_stat_seams(formula)[seam], model=models[0], extra_models=models[1:],
+        query=_stat_seams(formula)[seam], dataset=models[0], extra_datasets=models[1:],
         dialect="mysql", validate=False,
     )
     assert "VAR_SAMP(" in sql, sql

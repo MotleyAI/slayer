@@ -54,7 +54,7 @@ def storage(request, tmp_path):
         yield SQLiteStorage(db_path=str(tmp_path / "slayer.db"))
 
 
-def _model(name: str, data_source: str, *, sql_table: str | None = None) -> SlayerDataset:
+def _dataset(name: str, data_source: str, *, sql_table: str | None = None) -> SlayerDataset:
     return SlayerDataset(
         name=name,
         sql_table=sql_table or name,
@@ -77,8 +77,8 @@ class TestNamespacedSaveLoad:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
 
-        users_a = _model("users", data_source="db_a")
-        users_b = _model("users", data_source="db_b")
+        users_a = _dataset("users", data_source="db_a")
+        users_b = _dataset("users", data_source="db_b")
         await storage.save_dataset(users_a)
         await storage.save_dataset(users_b)
 
@@ -92,12 +92,12 @@ class TestNamespacedSaveLoad:
     async def test_get_model_with_data_source_filters_to_exact_match(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_dataset(_model("users", data_source="db_a"))
-        await storage.save_dataset(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         # Different name in only one datasource — confirm we don't accidentally
         # match across datasources.
-        await storage.save_dataset(_model("orders", data_source="db_a"))
+        await storage.save_dataset(_dataset("orders", data_source="db_a"))
 
         assert await storage.get_dataset("orders", data_source="db_a") is not None
         assert await storage.get_dataset("orders", data_source="db_b") is None
@@ -109,7 +109,7 @@ class TestNamespacedSaveLoad:
         # and stays grouped with its peers.
         del storage
         with pytest.raises(ValueError, match="data_source"):
-            _model("orders", data_source="")
+            _dataset("orders", data_source="")
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ class TestNamespacedSaveLoad:
 class TestBareNameResolution:
     async def test_unique_match_returns_it(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
-        await storage.save_dataset(_model("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
 
         m = await storage.get_dataset("users")
         assert m is not None
@@ -133,8 +133,8 @@ class TestBareNameResolution:
     async def test_ambiguous_without_priority_raises(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_dataset(_model("users", data_source="db_a"))
-        await storage.save_dataset(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         with pytest.raises(AmbiguousDatasetError) as exc:
             await storage.get_dataset("users")
@@ -151,8 +151,8 @@ class TestBareNameResolution:
     async def test_priority_picks_first_match(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_dataset(_model("users", data_source="db_a"))
-        await storage.save_dataset(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         await storage.set_datasource_priority(["db_b", "db_a"])
 
@@ -165,8 +165,8 @@ class TestBareNameResolution:
         first list entry that actually has the model wins."""
         for n in ("db_a", "db_b", "db_c"):
             await storage.save_datasource(_ds(n))
-        await storage.save_dataset(_model("users", data_source="db_a"))
-        await storage.save_dataset(_model("users", data_source="db_c"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_c"))
 
         await storage.set_datasource_priority(["db_b", "db_a"])
 
@@ -177,8 +177,8 @@ class TestBareNameResolution:
     async def test_priority_misses_all_matches_raises(self, storage: StorageBackend) -> None:
         for n in ("db_a", "db_b", "db_x"):
             await storage.save_datasource(_ds(n))
-        await storage.save_dataset(_model("users", data_source="db_a"))
-        await storage.save_dataset(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         await storage.set_datasource_priority(["db_x"])
 
@@ -195,8 +195,8 @@ class TestNamespacedDelete:
     async def test_delete_with_data_source_targets_only_that_one(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_dataset(_model("users", data_source="db_a"))
-        await storage.save_dataset(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         assert await storage.delete_dataset("users", data_source="db_a") is True
 
@@ -205,7 +205,7 @@ class TestNamespacedDelete:
 
     async def test_delete_bare_name_unique_succeeds(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
-        await storage.save_dataset(_model("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
 
         assert await storage.delete_dataset("users") is True
         assert await storage.get_dataset("users", data_source="db_a") is None
@@ -213,8 +213,8 @@ class TestNamespacedDelete:
     async def test_delete_bare_name_ambiguous_raises(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_dataset(_model("users", data_source="db_a"))
-        await storage.save_dataset(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         with pytest.raises(AmbiguousDatasetError):
             await storage.delete_dataset("users")
@@ -233,9 +233,9 @@ class TestListModels:
     async def test_list_with_data_source_returns_that_subset(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_dataset(_model("users", data_source="db_a"))
-        await storage.save_dataset(_model("orders", data_source="db_a"))
-        await storage.save_dataset(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("orders", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         names_a = await storage.list_datasets(data_source="db_a")
         assert sorted(names_a) == ["orders", "users"]
@@ -250,8 +250,8 @@ class TestListModels:
 
     async def test_list_no_arg_single_datasource(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
-        await storage.save_dataset(_model("users", data_source="db_a"))
-        await storage.save_dataset(_model("orders", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("orders", data_source="db_a"))
 
         names = await storage.list_datasets()
         assert sorted(names) == ["orders", "users"]
@@ -259,8 +259,8 @@ class TestListModels:
     async def test_list_no_arg_multiple_datasources_raises(self, storage: StorageBackend) -> None:
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_dataset(_model("users", data_source="db_a"))
-        await storage.save_dataset(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         with pytest.raises(ValueError, match=r"db_a.*db_b|db_b.*db_a|data_source"):
             await storage.list_datasets()
@@ -278,8 +278,8 @@ class TestListModels:
         See PR #92 thread #9.
         """
         # No DatasourceConfig saved.
-        await storage.save_dataset(_model("orders", data_source="db_x"))
-        await storage.save_dataset(_model("users", data_source="db_x"))
+        await storage.save_dataset(_dataset("orders", data_source="db_x"))
+        await storage.save_dataset(_dataset("users", data_source="db_x"))
 
         names = await storage.list_datasets(data_source="db_x")
         assert sorted(names) == ["orders", "users"]
@@ -303,7 +303,7 @@ class TestListModels:
         tree. See PR #92 (Sonar S6549).
         """
         await storage.save_datasource(_ds("db_a"))
-        await storage.save_dataset(_model("orders", data_source="db_a"))
+        await storage.save_dataset(_dataset("orders", data_source="db_a"))
         with pytest.raises(ValueError, match=r"name|data_source|invalid|traversal"):
             await storage.get_dataset(bad, data_source="db_a")
         with pytest.raises(ValueError, match=r"name|data_source|invalid|traversal"):
@@ -333,8 +333,8 @@ class TestListModels:
         """
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_dataset(_model("users", data_source="db_a"))
-        await storage.save_dataset(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         with pytest.raises(AmbiguousDatasetError) as exc:
             await storage.get_dataset("users")
@@ -351,7 +351,7 @@ class TestListModels:
         a config nor any saved models — otherwise typos go unnoticed.
         """
         await storage.save_datasource(_ds("db_a"))
-        await storage.save_dataset(_model("orders", data_source="db_a"))
+        await storage.save_dataset(_dataset("orders", data_source="db_a"))
         with pytest.raises(ValueError, match=r"data_source|nope"):
             await storage.list_datasets(data_source="nope")
 
@@ -420,8 +420,8 @@ async def test_yaml_layout_groups_files_by_datasource() -> None:
         storage = YAMLStorage(base_dir=tmpdir)
         await storage.save_datasource(_ds("db_a"))
         await storage.save_datasource(_ds("db_b"))
-        await storage.save_dataset(_model("users", data_source="db_a"))
-        await storage.save_dataset(_model("users", data_source="db_b"))
+        await storage.save_dataset(_dataset("users", data_source="db_a"))
+        await storage.save_dataset(_dataset("users", data_source="db_b"))
 
         assert os.path.exists(os.path.join(tmpdir, "models", "db_a", "users.yaml"))
         assert os.path.exists(os.path.join(tmpdir, "models", "db_b", "users.yaml"))

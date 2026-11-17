@@ -14,7 +14,7 @@ from pathlib import Path
 from slayer.core.enums import TimeGranularity
 from slayer.core.query import SlayerQuery, TimeDimension
 
-from tests._dev1832_fixtures import dev1832_models
+from tests._dev1832_fixtures import dev1832_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -102,7 +102,7 @@ LIFTED = {k for k in _cases() if k.startswith("lifted/")}
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1832_models()
+    models = dev1832_datasets()
     try:
         kw = dict(case["kw"])
         if case["mode"] is not None:
@@ -110,8 +110,8 @@ async def _generate_one(case, dialect: str):
         query = SlayerQuery(population=case["source"], **kw)
         root = next(m for m in models if m.name == case["source"])
         return await _engine_generate(
-            query=query, model=root,
-            extra_models=[m for m in models if m.name != case["source"]],
+            query=query, dataset=root,
+            extra_datasets=[m for m in models if m.name != case["source"]],
             dialect=dialect, validate=False)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)

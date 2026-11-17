@@ -10,8 +10,8 @@ from slayer.core.models import DatasourceConfig
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._dev2120_fixtures import contractors_model, contractors_statements
-from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
+from tests._dev2120_fixtures import contractors_dataset, contractors_statements
+from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
 
 pytest.importorskip("pytest_postgresql")
 
@@ -32,8 +32,8 @@ async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, Dat
                           username=info.user, password="")
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(ds)
-    await storage.save_dataset(contractors_model(data_source="pg"))
-    await storage.save_dataset(assignments_model(data_source="pg"))
+    await storage.save_dataset(contractors_dataset(data_source="pg"))
+    await storage.save_dataset(assignments_dataset(data_source="pg"))
     engine = SlayerQueryEngine(storage=storage)
     try:
         yield engine, ds

@@ -238,7 +238,7 @@ def _seed_sqlite(db_path: str) -> None:
         )
 
 
-async def _engine_with_filter(base_dir: str, db_path: str, *, model_filter: str) -> SlayerQueryEngine:
+async def _engine_with_filter(base_dir: str, db_path: str, *, dataset_filter: str) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=base_dir)
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=db_path),
@@ -251,7 +251,7 @@ async def _engine_with_filter(base_dir: str, db_path: str, *, model_filter: str)
             DatasetField(name="amount", datatype=DataType.DOUBLE),
             DatasetField(name="status", datatype=DataType.TEXT),
         ],
-        filters=[model_filter],
+        filters=[dataset_filter],
     )
     await storage.save_dataset(orders)
     return SlayerQueryEngine(storage=storage)
@@ -273,7 +273,7 @@ class TestExecution:
             _seed_sqlite(db)
             engine = await _engine_with_filter(
                 os.path.join(d, "store"), db,
-                model_filter="amount IN (SELECT amount FROM other_tbl)",
+                dataset_filter="amount IN (SELECT amount FROM other_tbl)",
             )
             resp = await engine.execute(
                 SlayerQuery(population="orders", dimensions=[FieldRef(name="id")]),
@@ -294,7 +294,7 @@ class TestExecution:
             _seed_sqlite(db)
             engine = await _engine_with_filter(
                 os.path.join(d, "store"), db,
-                model_filter=(
+                dataset_filter=(
                     "EXISTS (SELECT 1 FROM line_items "
                     "WHERE line_items.order_id = orders.id)"
                 ),

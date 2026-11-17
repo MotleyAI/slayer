@@ -17,7 +17,7 @@ from slayer.core.query import SlayerQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 
-def _model(name: str, ds: str = "prod") -> SlayerDataset:
+def _dataset(name: str, ds: str = "prod") -> SlayerDataset:
     return SlayerDataset(
         name=name,
         data_source=ds,
@@ -29,7 +29,7 @@ def _model(name: str, ds: str = "prod") -> SlayerDataset:
     )
 
 
-def _model_with(
+def _dataset_with(
     name: str,
     *,
     aggs: list[str] | None = None,
@@ -61,7 +61,7 @@ def _model_with(
 
 class TestConstruction:
     def test_minimal(self):
-        m = _model("orders")
+        m = _dataset("orders")
         b = ResolvedSourceBundle(dialect="postgres", population=m, referenced_datasets=[m])
         assert b.population is m
         assert b.referenced_datasets == [m]
@@ -70,14 +70,14 @@ class TestConstruction:
         assert b.datasource_hint is None
 
     def test_with_referenced_models(self):
-        m = _model("orders")
-        c = _model("customers")
-        r = _model("regions")
+        m = _dataset("orders")
+        c = _dataset("customers")
+        r = _dataset("regions")
         b = ResolvedSourceBundle(dialect="postgres", population=m, referenced_datasets=[m, c, r])
         assert b.referenced_datasets == [m, c, r]
 
     def test_with_named_queries(self):
-        m = _model("orders")
+        m = _dataset("orders")
         q = SlayerQuery(population="orders")
         b = ResolvedSourceBundle(
             dialect="postgres",
@@ -88,7 +88,7 @@ class TestConstruction:
         assert b.named_queries["stage_a"] is q
 
     def test_with_query_variables(self):
-        m = _model("orders")
+        m = _dataset("orders")
         b = ResolvedSourceBundle(
             dialect="postgres",
             population=m,
@@ -98,7 +98,7 @@ class TestConstruction:
         assert b.query_variables == {"region": "NA", "threshold": 100}
 
     def test_with_datasource_hint(self):
-        m = _model("orders", ds="warehouse")
+        m = _dataset("orders", ds="warehouse")
         b = ResolvedSourceBundle(
             dialect="postgres",
             population=m,
@@ -115,20 +115,20 @@ class TestConstruction:
 
 class TestGetReferencedModel:
     def test_returns_match(self):
-        m = _model("orders")
-        c = _model("customers")
+        m = _dataset("orders")
+        c = _dataset("customers")
         b = ResolvedSourceBundle(dialect="postgres", population=m, referenced_datasets=[m, c])
         assert b.get_referenced_dataset("customers") is c
 
     def test_returns_none_for_missing(self):
-        m = _model("orders")
+        m = _dataset("orders")
         b = ResolvedSourceBundle(dialect="postgres", population=m, referenced_datasets=[m])
         assert b.get_referenced_dataset("absent") is None
 
     def test_source_model_is_in_referenced(self):
         # Convention: source_model is also in referenced_models so the
         # binder doesn't have to special-case the host.
-        m = _model("orders")
+        m = _dataset("orders")
         b = ResolvedSourceBundle(dialect="postgres", population=m, referenced_datasets=[m])
         assert b.get_referenced_dataset("orders") is m
 
@@ -144,7 +144,7 @@ class TestAnchorlessReadiness:
         b = ResolvedSourceBundle(
             dialect="postgres",
             population=None,
-            referenced_datasets=[_model("orders"), _model("customers")],
+            referenced_datasets=[_dataset("orders"), _dataset("customers")],
         )
         assert b.population is None
         # The bundle still holds the set of referenced models that the

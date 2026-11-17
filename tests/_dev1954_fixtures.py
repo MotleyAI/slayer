@@ -40,19 +40,19 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
 from tests import _dev1900_fixtures
-from tests._dev1900_fixtures import dev1900_models
+from tests._dev1900_fixtures import dev1900_datasets
 from tests._engine_helpers import seeded_exec_engine
 
 _REGION_EXTRA = [("North", "2020-01-15", 1), ("South", "2021-06-15", 2)]
 
 
-def _by_name(models: List[SlayerDataset], name: str) -> SlayerDataset:
-    return next(m for m in models if m.name == name)
+def _by_name(datasets: List[SlayerDataset], name: str) -> SlayerDataset:
+    return next(m for m in datasets if m.name == name)
 
 
-def dev1954_models(*, named: bool = True) -> List[SlayerDataset]:
+def dev1954_datasets(*, named: bool = True) -> List[SlayerDataset]:
     """``named=False`` leaves the ``customers → regions`` edge unnamed."""
-    models = dev1900_models()
+    models = dev1900_datasets()
     customers = _by_name(models, "customers")
     customers.relationships = [
         DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
@@ -107,7 +107,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerDataset]] = None,
+    request, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture."""
     dialect = request.param
@@ -116,7 +116,7 @@ async def make_exec_engine(
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
         dialect=dialect, seed=seed,
-        models=models if models is not None else dev1954_models(),
+        datasets=datasets if datasets is not None else dev1954_datasets(),
     ) as (engine, _db):
         yield engine
 
@@ -136,9 +136,9 @@ def table_count(sql: str, table: str, *, dialect: str = "duckdb") -> int:
                if t.name == table)
 
 
-def by_key(resp, dim: str, measure: str) -> dict:
+def by_key(resp, dim: str, metric: str) -> dict:
     """``{dim value: measure value}`` over ``resp.data``."""
-    out = {r[dim]: r[measure] for r in resp.data}
+    out = {r[dim]: r[metric] for r in resp.data}
     assert len(out) == len(resp.data), "duplicate result rows for one group key"
     return out
 

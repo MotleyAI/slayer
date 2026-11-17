@@ -20,13 +20,13 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1840_fixtures import (
     DatasetMetric,
-    dev1840_models,
-    plans_model,
+    dev1840_datasets,
+    plans_dataset,
 )
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1900_fixtures import (
     cust_q,
-    dev1900_models,
+    dev1900_datasets,
     make_exec_engine,
     orders_q,
     rows_by,
@@ -113,11 +113,11 @@ EVENTLESS_COALESCE_LT40 = 170.0
 # --------------------------------------------------------------------------- #
 # Model variants.
 # --------------------------------------------------------------------------- #
-def two_spellings_models() -> List[SlayerDataset]:
+def two_spellings_datasets() -> List[SlayerDataset]:
     """DEV-1840 graph with the single ``customers -> orders`` edge NAMED
     ``purchases`` (1:N). ``purchases.status`` (edge name) and ``orders.channel``
     (target model) then name one physical edge two ways."""
-    models = dev1840_models(declare_reverse=True)
+    models = dev1840_datasets(declare_reverse=True)
     cust = next(m for m in models if m.name == "customers")
     for join in cust.relationships:
         if join.to == "orders":
@@ -125,18 +125,18 @@ def two_spellings_models() -> List[SlayerDataset]:
     return models
 
 
-def unproven_plans_models() -> List[SlayerDataset]:
+def unproven_plans_datasets() -> List[SlayerDataset]:
     """DEV-1900 graph with the ``customers -> plans`` hop unproven (plans.code not
     a PK), so a ``customers.plans.level`` filter must restrict by semi-join."""
-    models = dev1900_models()
-    return [plans_model(strong=False) if m.name == "plans" else m for m in models]
+    models = dev1900_datasets()
+    return [plans_dataset(strong=False) if m.name == "plans" else m for m in models]
 
 
-def disconnected_model_models() -> List[SlayerDataset]:
+def disconnected_dataset_datasets() -> List[SlayerDataset]:
     """DEV-1900 graph plus a standalone ``promos`` model with no join path from any
     root — a genuinely unreachable filter reference (``promos.discount``) is
     refused at resolution with a typed error in every mode (D12)."""
-    models = dev1900_models()
+    models = dev1900_datasets()
     models.append(SlayerDataset(
         name="promos", data_source="test", sql_table="promos",
         fields=[
@@ -146,7 +146,7 @@ def disconnected_model_models() -> List[SlayerDataset]:
     return models
 
 
-def event_less_models(
+def event_less_datasets(
     *, inner_events: bool = False, derived_events: bool = False,
 ) -> List[SlayerDataset]:
     """A self-contained ``customers -> regions -> region_events`` graph. The
@@ -265,11 +265,11 @@ def _seed_eventless_duckdb(db_path: str) -> None:
 
 
 async def _engine_for(*, dialect: str, db_path: str,
-                      models: List[SlayerDataset]) -> SlayerQueryEngine:
+                      datasets: List[SlayerDataset]) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
     await storage.save_datasource(
         DatasourceConfig(name="test", type=dialect, database=db_path))
-    for model in models:
+    for model in datasets:
         await storage.save_dataset(model, _validate=False)
     return SlayerQueryEngine(storage=storage)
 
@@ -289,16 +289,16 @@ async def make_eventless_engine(
             _seed_eventless_duckdb(db_path)
         yield await _engine_for(
             dialect=dialect, db_path=db_path,
-            models=event_less_models(
+            datasets=event_less_datasets(
                 inner_events=inner_events, derived_events=derived_events))
 
 
 __all__ = [
     "SlayerQuery", "DatasetMetric", "SlayerDataset",
     "cust_q", "orders_q", "rows_by", "pushed_filter_infos",
-    "dev1900_models", "make_exec_engine",
-    "two_spellings_models", "unproven_plans_models", "event_less_models",
-    "disconnected_model_models", "make_eventless_engine",
+    "dev1900_datasets", "make_exec_engine",
+    "two_spellings_datasets", "unproven_plans_datasets", "event_less_datasets",
+    "disconnected_dataset_datasets", "make_eventless_engine",
     "OR_MIX_LOCAL", "GOLD_OR_OK", "NOT_GOLD_AND_OK", "NO_ORDERS",
     "NEW_OR_EVENT", "ATOM_TWO_BRANCH", "MATERIALISED_OR", "REDUCED_PUSH_OR",
     "TWO_SPELLINGS",

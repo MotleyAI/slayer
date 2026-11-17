@@ -15,7 +15,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.statement_reads import StatementReads
 from slayer.live_schema.schema_drift import ToDeleteEntry, WholeDatasetDelete, field_dependents
 from tests._dev2102_fixtures import (
-    DS, CUSTOMER_PAIRS, base_models, customers, ext, join, q, regions, respelled_model, shop,
+    DS, CUSTOMER_PAIRS, base_datasets, customers, ext, join, q, regions, respelled_dataset, shop,
 )
 
 _HARNESS_QB = "harness_qb"
@@ -25,14 +25,14 @@ _SPENT_BY_CUSTOMER = {"population": "orders", "dimensions": ["customer_id"],
                       "metrics": [{"expression": "sum(amount)", "name": "spent"}]}
 
 
-def _models() -> list[SlayerDataset]:
+def _datasets() -> list[SlayerDataset]:
     """The shop, with ``customers → regions → countries`` for short-form routes and a query-backed ``cust_spend``."""
     home = DatasetRelationship(to="regions", join_pairs=_REGION_PAIRS)
     country = DatasetRelationship(to="countries", join_pairs=[["country_id", "id"]])
     replaced = {"customers": customers(home), "regions": regions().model_copy(update={"joins": [country]})}
     cust_spend = SlayerDataset(name="cust_spend", data_source=DS,
                              source_queries=[SlayerQuery.model_validate(_SPENT_BY_CUSTOMER)])
-    return [replaced.get(m.name, m) for m in base_models()] + [cust_spend, _cities()]
+    return [replaced.get(m.name, m) for m in base_datasets()] + [cust_spend, _cities()]
 
 
 def _cities(*extra: dict, name: str = "cities_src") -> SlayerDataset:
@@ -156,9 +156,9 @@ def _access_reads(qb: SlayerDataset, *, universe: list[SlayerDataset]) -> set[tu
     return seen
 
 
-def _keys(models: dict[str, SlayerDataset], reads: StatementReads) -> set[tuple[str, str]]:
+def _keys(datasets: dict[str, SlayerDataset], reads: StatementReads) -> set[tuple[str, str]]:
     """Primary keys and every join key the statement crosses."""
-    pks = {(m.name, c.name) for m in models.values() for c in m.fields if c.primary_key}
+    pks = {(m.name, c.name) for m in datasets.values() for c in m.fields if c.primary_key}
     crossed = {(owner, col) for declaring, target, _, pairs in reads.relationships
                for s, t in pairs for owner, col in ((declaring, s), (target, t))}
     return pks | crossed
@@ -170,7 +170,7 @@ def _drops_qb(entries: list[ToDeleteEntry]) -> bool:
 
 @pytest.mark.parametrize("payload", _CORPUS)
 async def test_static_readers_cover_the_planned_statement(payload: Any) -> None:
-    stored = _models()
+    stored = _datasets()
     async with shop("sqlite", stored) as engine:
         touched, reads = await _planned(engine, payload)
         qb = await engine.create_dataset_from_query(query=payload, name=_HARNESS_QB, save=False)
@@ -196,7 +196,7 @@ async def test_a_stage_extension_reaches_the_stored_model_beside_a_root_of_anoth
     stage = q(name="s", source_model="orders", measures=[{"formula": "Customers.tier2", "name": "n"}],
               extensions=[ext("customers", measures=[{"name": "tier2", "formula": "max(tier)"}])])
     stages = [stage, q(source_model="cities_src", dimensions=["city"])]
-    async with shop("sqlite", respelled_model(_models(), name="customers", spelling="Customers")) as engine:
+    async with shop("sqlite", respelled_dataset(_datasets(), name="customers", spelling="Customers")) as engine:
         touched, reads = await _planned(engine, stages)
     assert "Customers" in touched
     assert ("Customers", "tier") in reads.columns
@@ -208,29 +208,29 @@ def test_a_stage_source_written_in_another_case_is_read(data_source: str) -> Non
         q(source_model="customers", dimensions=["name", "region_label"])])
     label = DatasetField(name="region_label", sql="regions.name", datatype=DataType.TEXT)
     models = [m.model_copy(update={"fields": [*m.fields, label]}) if m.name == "Customers" else m
-              for m in respelled_model(_models(), name="customers", spelling="Customers")]
+              for m in respelled_dataset(_datasets(), name="customers", spelling="Customers")]
     assert {(DS, "Customers"), (DS, "regions")} <= datasets_read_by(backed, datasets=models)
 
 
 def _root_source_and_base(
-    stages: list[SlayerQuery], models: list[SlayerDataset], *, data_source: str | None,
+    stages: list[SlayerQuery], datasets: list[SlayerDataset], *, data_source: str | None,
 ) -> tuple[Any, str | None]:
     """The root's static scope: its source as respelled and the stored model its chain ends on."""
-    (scope,) = query_scopes(stages, datasets_by_ds={DS: {m.name: m for m in models}}, data_source=data_source)[-1]
+    (scope,) = query_scopes(stages, datasets_by_ds={DS: {m.name: m for m in datasets}}, data_source=data_source)[-1]
     assert scope.query is not None
     return scope.query.population, scope.base
 
 
 def test_a_sibling_written_in_another_case_is_followed() -> None:
     stages = [q(name="Base", source_model="customers", dimensions=["name"]), q(source_model="base", dimensions=["name"])]
-    models = respelled_model(_models(), name="customers", spelling="Customers")
+    models = respelled_dataset(_datasets(), name="customers", spelling="Customers")
     assert _root_source_and_base(stages, models, data_source=None) == ("Base", "Customers")
 
 
 def test_a_sibling_shadows_a_stored_model_whatever_the_case() -> None:
     stages = [q(name="Customers", source_model="orders", dimensions=["customer_id"]),
               q(source_model="CUSTOMERS", dimensions=["customer_id"])]
-    assert _root_source_and_base(stages, _models(), data_source=DS) == ("Customers", "orders")
+    assert _root_source_and_base(stages, _datasets(), data_source=DS) == ("Customers", "orders")
 
 
 _CUSTOMER_NAMES = {"population": "orders", "dimensions": ["customers.name"],
@@ -242,7 +242,7 @@ _CUSTOMER_NAMES = {"population": "orders", "dimensions": ["customers.name"],
                  "orders.customers.name", id="other-stage"),
 ])
 async def test_a_stage_source_is_local_to_its_own_stage(stages: list[SlayerQuery | dict], column: str) -> None:
-    async with shop("sqlite", _models()) as engine:
+    async with shop("sqlite", _datasets()) as engine:
         touched, reads = await _planned(engine, stages)
         resp = await engine.execute(stages)
     assert {"orders", "customers"} <= touched
@@ -264,7 +264,7 @@ async def test_a_stored_derived_column_closes_over_its_own_definition_beside_ano
 ) -> None:
     labelled = customers(DatasetRelationship(to="regions", join_pairs=_REGION_PAIRS)).model_copy(update={"columns": [
         *customers().fields, DatasetField(name="label", sql="upper(name)", datatype=DataType.TEXT)]})
-    async with shop("sqlite", [labelled if m.name == "customers" else m for m in _models()] + [_LABELS]) as engine:
+    async with shop("sqlite", [labelled if m.name == "customers" else m for m in _datasets()] + [_LABELS]) as engine:
         _, reads = await _planned(engine, stages)
     assert {("customers", "label"), ("customers", "name")} <= reads.columns
     assert ("customers", "city") not in reads.columns

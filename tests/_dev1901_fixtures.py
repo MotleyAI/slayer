@@ -36,7 +36,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.sqlite_conn import transaction
 from tests import _dev1908_fixtures
 from tests._dev1840_fixtures import _CUSTOMERS_ROWS, _ORDERS_ROWS, _REGIONS_ROWS
-from tests._dev1908_fixtures import _COUNTRIES_ROWS, _REGION_COUNTRY, dev1908_models
+from tests._dev1908_fixtures import _COUNTRIES_ROWS, _REGION_COUNTRY, dev1908_datasets
 from tests._engine_helpers import seeded_exec_engine
 
 W = "SUM({value} * {weight})"
@@ -66,18 +66,18 @@ BAD_DEFAULTS = {
 }
 
 
-def _w(name: str, default: str, *, formula: str = W, param: str = "weight") -> Aggregation:
-    return Aggregation(name=name, expression=formula,
+def _w(name: str, default: str, *, expression: str = W, param: str = "weight") -> Aggregation:
+    return Aggregation(name=name, expression=expression,
                        params=[AggregationParam(name=param, sql=default)])
 
 
-def _by_name(models: List[SlayerDataset], name: str) -> SlayerDataset:
-    return next(m for m in models if m.name == name)
+def _by_name(datasets: List[SlayerDataset], name: str) -> SlayerDataset:
+    return next(m for m in datasets if m.name == name)
 
 
-def dev1901_models() -> List[SlayerDataset]:
+def dev1901_datasets() -> List[SlayerDataset]:
     """DEV-1908 graph + the DEV-1901 columns and aggregations. Host first (orders)."""
-    models = dev1908_models()
+    models = dev1908_datasets()
     orders = _by_name(models, "orders")
     orders.fields.extend([
         DatasetField(name="factor", datatype=DataType.DOUBLE),
@@ -89,7 +89,7 @@ def dev1901_models() -> List[SlayerDataset]:
         _w("wcs", "customers.spend"),
         _w("wcd", "cust_spend"),
         _w("wcase_pop", CASE_POP),
-        _w("wlit", "2", formula="SUM({value}) * {k}", param="k"),
+        _w("wlit", "2", expression="SUM({value}) * {k}", param="k"),
         _w("wzero", "1 + 1"),
         _w("wfmt_a", "customers.spend * 1"),
         _w("wfmt_b", "customers.spend*1"),
@@ -112,7 +112,7 @@ def dev1901_models() -> List[SlayerDataset]:
     return models
 
 
-def revisit_models() -> List[SlayerDataset]:
+def revisit_datasets() -> List[SlayerDataset]:
     """``orders → customers →(hr) regions →(back) customers``; ``wrev`` on customers
     defaults to ``hr.back.spend`` (a revisit through edge names, which never cancel)."""
     orders = SlayerDataset(
@@ -139,7 +139,7 @@ def revisit_models() -> List[SlayerDataset]:
     return [orders, customers, regions]
 
 
-def window_param_models(*, placeholder: bool) -> List[SlayerDataset]:
+def window_param_datasets(*, placeholder: bool) -> List[SlayerDataset]:
     """``orders`` with ``wwin``, whose formula reads ``{window}`` (``placeholder``)
     or which declares a ``window`` parameter."""
     agg = (Aggregation(name="wwin", expression="SUM({value}) * {window}",
@@ -154,13 +154,13 @@ def window_param_models(*, placeholder: bool) -> List[SlayerDataset]:
     return [orders]
 
 
-def bundle_of(models: List[SlayerDataset], *, dialect: str = "postgres") -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(dialect=dialect, population=models[0],
-                                referenced_datasets=models[1:])
+def bundle_of(datasets: List[SlayerDataset], *, dialect: str = "postgres") -> ResolvedSourceBundle:
+    return ResolvedSourceBundle(dialect=dialect, population=datasets[0],
+                                referenced_datasets=datasets[1:])
 
 
 def bundle1901(*, dialect: str = "postgres") -> ResolvedSourceBundle:
-    return bundle_of(dev1901_models(), dialect=dialect)
+    return bundle_of(dev1901_datasets(), dialect=dialect)
 
 
 # --------------------------------------------------------------------------- #
@@ -196,7 +196,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerDataset]] = None,
+    request, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture."""
     dialect = request.param
@@ -205,7 +205,7 @@ async def make_exec_engine(
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
         dialect=dialect, seed=seed,
-        models=models if models is not None else dev1901_models(),
+        datasets=datasets if datasets is not None else dev1901_datasets(),
     ) as (engine, _db):
         yield engine
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests._dev1900_fixtures import dev1900_models
+from tests._dev1900_fixtures import dev1900_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 from slayer.core.query import SlayerQuery
@@ -87,14 +87,14 @@ FAIL_CLOSED = {"producer/windowed_fanning_axis"}
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1900_models()
+    models = dev1900_datasets()
     try:
         kw = dict(case["kw"])
         if case["mode"] is not None:
             kw["to_many_handling"] = case["mode"]
         query = SlayerQuery(population=case["source"], **kw)
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract

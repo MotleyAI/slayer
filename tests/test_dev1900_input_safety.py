@@ -27,7 +27,7 @@ from tests._dev1900_fixtures import (
     REAGG_GOOD,
     make_exec_engine,
     orders_q,
-    unparseable_derived_models,
+    unparseable_derived_datasets,
 )
 
 UNPROVEN = "unproven join hop"
@@ -63,7 +63,7 @@ async def engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unparse_engine(request):
-    async for e in make_exec_engine(request, models=unparseable_derived_models()):
+    async for e in make_exec_engine(request, datasets=unparseable_derived_datasets()):
         yield e
 
 
@@ -74,9 +74,9 @@ def _assert_unproven(exc: ValueError) -> None:
     assert_ref_free(msg)
 
 
-async def _assert_fails_closed(engine, measure, *, mode=None):
+async def _assert_fails_closed(engine, metric, *, mode=None):
     kw = {} if mode is None else {"to_many_handling": mode}
-    q = orders_q(measures=[measure], **kw)
+    q = orders_q(measures=[metric], **kw)
     with pytest.raises(ValueError) as ei:
         await engine.execute(q)
     _assert_unproven(ei.value)

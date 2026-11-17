@@ -19,7 +19,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 SUFFIXES = (".yaml",)
 
 
-def _model(tag: str) -> SlayerDataset:
+def _dataset(tag: str) -> SlayerDataset:
     return SlayerDataset(
         name="m", sql_table="m", data_source="ds", access_tags=[tag],
         fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
@@ -28,7 +28,7 @@ def _model(tag: str) -> SlayerDataset:
 
 async def _seeded(storage: StorageBackend) -> StorageBackend:
     await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=":memory:"))
-    await storage.save_dataset(_model("aa"), _validate=False)
+    await storage.save_dataset(_dataset("aa"), _validate=False)
     return storage
 
 
@@ -39,7 +39,7 @@ class TestYaml:
         path = os.path.join(storage.models_dir, "ds", "m.yaml")
         mtime = os.stat(path).st_mtime_ns
         before = await storage.graph_fingerprint()
-        await storage.save_dataset(_model("bb"), _validate=False)
+        await storage.save_dataset(_dataset("bb"), _validate=False)
         os.utime(path, ns=(mtime, mtime))
         assert await storage.graph_fingerprint() != before
 
@@ -49,7 +49,7 @@ class TestYaml:
         future = time.time() + 3600
         os.utime(os.path.join(storage.datasources_dir, "ds.yaml"), (future, future))
         before = await storage.graph_fingerprint()
-        await storage.save_dataset(_model("bb"), _validate=False)
+        await storage.save_dataset(_dataset("bb"), _validate=False)
         assert await storage.graph_fingerprint() != before
 
 
@@ -89,6 +89,6 @@ class TestSqlite:
         st = os.stat(db)
         monkeypatch.setattr(sqlite_storage_module, "stat_key", lambda _path: (0, 0, 0, 0))
         before = await storage.graph_fingerprint()
-        await storage.save_dataset(_model("bb"), _validate=False)
+        await storage.save_dataset(_dataset("bb"), _validate=False)
         os.utime(db, ns=(st.st_atime_ns, st.st_mtime_ns))
         assert await storage.graph_fingerprint() != before

@@ -57,8 +57,8 @@ from slayer.sql.dialects.base import ServerProfile
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
     check_all,
-    server_models,
-    server_models_ts,
+    server_datasets,
+    server_datasets_ts,
     server_statements,
     with_granularities,
 )
@@ -66,12 +66,12 @@ from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
     seed_statements,
-    streak_model,
+    streak_dataset,
 )
 
 from tests._dev1737_fixtures import (
     DateCase,
-    all_models,
+    all_datasets,
     assert_case,
     check_server_scenarios,
     matrix_cases,
@@ -83,16 +83,16 @@ from tests._dev2120_fixtures import (
     LIB,
     check_library,
     check_native_json,
-    contractors_model,
+    contractors_dataset,
     contractors_statements,
-    lib_model,
+    lib_dataset,
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
 from tests._cast_fixtures import check_try_cast_targets
-from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
+from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
 from tests._engine_helpers import disposable_engine
-from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests._reserved_alias_probe import keyword_universe, sa_statement_fails, unquoted_alias_failures
 from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 
@@ -275,7 +275,7 @@ def _clickhouse_env_storage(clickhouse_container, tmp_path_factory):
                 DatasetField(name="region", sql="region", datatype=DataType.TEXT),
             ],
         )))
-        run_sync(storage.save_dataset(streak_model("testclickhouse")))
+        run_sync(storage.save_dataset(streak_dataset("testclickhouse")))
         yield storage
     finally:
         _drop_module_db(clickhouse_container, db_name)
@@ -290,7 +290,7 @@ def clickhouse_env(_clickhouse_env_storage) -> SlayerQueryEngine:
 @pytest.mark.integration
 class TestClickHouseQueries:
     async def test_try_cast_integer_targets(self, clickhouse_env: SlayerQueryEngine) -> None:
-        await check_try_cast_targets(clickhouse_env, model="orders")
+        await check_try_cast_targets(clickhouse_env, dataset="orders")
 
     async def test_count_all(self, clickhouse_env: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "count(*)"}]})
@@ -570,7 +570,7 @@ class TestClickHouseQueries:
 
 
 @pytest.fixture
-def clickhouse_cross_model_env(clickhouse_container):
+def clickhouse_cross_dataset_env(clickhouse_container):
     """ClickHouse env with orders + customers (with score) and explicit join.
     No FK metadata is exposed by ClickHouse — the join is hand-declared."""
     db_name = _create_module_db(clickhouse_container)
@@ -639,7 +639,7 @@ def clickhouse_cross_model_env(clickhouse_container):
 
 @pytest.mark.integration
 class TestCrossModelAndMultistageClickHouse:
-    async def test_cross_model_measure(self, clickhouse_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_cross_model_measure(self, clickhouse_cross_dataset_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
@@ -648,11 +648,11 @@ class TestCrossModelAndMultistageClickHouse:
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="avg(customers.avg_score)")],
             order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
         )
-        result = await clickhouse_cross_model_env.execute(query=query)
+        result = await clickhouse_cross_dataset_env.execute(query=query)
         assert result.row_count == 3
         assert [float(r["orders.customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
 
-    async def test_query_list_named(self, clickhouse_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_query_list_named(self, clickhouse_cross_dataset_env: SlayerQueryEngine) -> None:
         inner = SlayerQuery(
             name="monthly", population="orders",
             time_dimensions=[TimeDimension(
@@ -661,10 +661,10 @@ class TestCrossModelAndMultistageClickHouse:
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
         )
         outer = SlayerQuery(population="monthly", metrics=[DatasetMetric(expression="count(*)")])
-        result = await clickhouse_cross_model_env.execute(query=[inner, outer])
+        result = await clickhouse_cross_dataset_env.execute(query=[inner, outer])
         assert result.data[0]["monthly._count"] == 3
 
-    async def test_create_model_from_query(self, clickhouse_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_create_model_from_query(self, clickhouse_cross_dataset_env: SlayerQueryEngine) -> None:
         source = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
@@ -672,20 +672,20 @@ class TestCrossModelAndMultistageClickHouse:
             )],
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
         )
-        saved = await clickhouse_cross_model_env.create_dataset_from_query(query=source, name="ch_monthly")
+        saved = await clickhouse_cross_dataset_env.create_dataset_from_query(query=source, name="ch_monthly")
         assert saved.source_queries is not None
-        result = await clickhouse_cross_model_env.execute(
+        result = await clickhouse_cross_dataset_env.execute(
             query=SlayerQuery(population="ch_monthly", metrics=[DatasetMetric(expression="count(*)")])
         )
         assert result.data[0]["ch_monthly._count"] == 3
 
-    async def test_sql_dimension(self, clickhouse_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_sql_dimension(self, clickhouse_cross_dataset_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
             dimensions=[ComputedDimension(expression="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier")],
             metrics=[DatasetMetric(expression="count(*)")],
         )
-        result = await clickhouse_cross_model_env.execute(query=query)
+        result = await clickhouse_cross_dataset_env.execute(query=query)
         by_tier = {r["orders.tier"]: r["orders._count"] for r in result.data}
         assert by_tier["high"] == 3
         assert by_tier["low"] == 3
@@ -1527,7 +1527,7 @@ def _seed_rls_db(container, *, distributed: bool) -> str:
     return db_name
 
 
-def _rls_models() -> list[SlayerDataset]:
+def _rls_datasets() -> list[SlayerDataset]:
     def _ids(name: str, key: str | None = None) -> SlayerDataset:
         columns = [DatasetField(name="id", datatype=DataType.INT, primary_key=True)]
         if key:
@@ -1583,7 +1583,7 @@ def _rls_engine(
 ) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=tempfile.mkdtemp(prefix="rls_ch_"))
     run_sync(storage.save_datasource(datasource))
-    for model in _rls_models():
+    for model in _rls_datasets():
         run_sync(storage.save_dataset(model))
     return SlayerQueryEngine(storage=storage, policy=policy, client_factory=client_factory)
 
@@ -1642,9 +1642,9 @@ _SEMI_JOIN_QUERY = SlayerQuery.model_validate({
 _SEMI_JOIN_ROWS = [{"sj_orders.sj_customers.org": "A", "sj_orders.m": 5.0, "sj_orders.cm": 100.0}]
 
 
-async def _ids(engine: SlayerQueryEngine, model: str) -> list[int]:
-    resp = await engine.execute(SlayerQuery.model_validate({"population": model, "dimensions": ["id"]}))
-    return sorted(int(row[f"{model}.id"]) for row in resp.data)
+async def _ids(engine: SlayerQueryEngine, dataset: str) -> list[int]:
+    resp = await engine.execute(SlayerQuery.model_validate({"population": dataset, "dimensions": ["id"]}))
+    return sorted(int(row[f"{dataset}.id"]) for row in resp.data)
 
 
 async def _assert_semi_join_runs_with_setting(engine: SlayerQueryEngine) -> None:
@@ -1834,7 +1834,7 @@ def _clickhouse_dates_storage(clickhouse_container, tmp_path_factory):
                     conn.execute(sa.text(stmt))
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_dates")))
         run_sync(storage.save_datasource(_ds_config(clickhouse_container, db_name)))
-        for model in all_models(data_source="testclickhouse"):
+        for model in all_datasets(data_source="testclickhouse"):
             run_sync(storage.save_dataset(model))
         yield storage
     finally:
@@ -1870,7 +1870,7 @@ def _clickhouse_spine_storage(clickhouse_container, tmp_path_factory):
                     conn.execute(sa.text(stmt))
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_spine")))
         base = _ds_config(clickhouse_container, db_name)
-        for name, models in (("ch", server_models(data_source="ch")), ("ch_ts", server_models_ts(data_source="ch_ts"))):
+        for name, models in (("ch", server_datasets(data_source="ch")), ("ch_ts", server_datasets_ts(data_source="ch_ts"))):
             run_sync(storage.save_datasource(with_granularities(base, name=name)))
             for model in models:
                 run_sync(storage.save_dataset(model))
@@ -1936,7 +1936,7 @@ def _clickhouse_dev2120_storage(clickhouse_container, tmp_path_factory):
         ds = _ds_config(clickhouse_container, db_name)
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("clickhouse_dev2120")))
         run_sync(storage.save_datasource(ds))
-        run_sync(storage.save_dataset(lib_model(data_source="testclickhouse")))
+        run_sync(storage.save_dataset(lib_dataset(data_source="testclickhouse")))
         for model in run_sync(_ingest(ds, include_tables=["docs"])):
             run_sync(storage.save_dataset(model))
         yield storage
@@ -1975,9 +1975,9 @@ def _seeded_lists(container, base_dir: str):
         ds = _ds_config(container, db_name)
         storage = YAMLStorage(base_dir=base_dir)
         run_sync(storage.save_datasource(ds))
-        run_sync(storage.save_dataset(contractors_model(data_source=ds.name)))
-        run_sync(storage.save_dataset(assignments_model(data_source=ds.name)))
-        run_sync(storage.save_dataset(mixed_numbers_model(data_source=ds.name)))
+        run_sync(storage.save_dataset(contractors_dataset(data_source=ds.name)))
+        run_sync(storage.save_dataset(assignments_dataset(data_source=ds.name)))
+        run_sync(storage.save_dataset(mixed_numbers_dataset(data_source=ds.name)))
         yield storage, ds
     finally:
         _drop_module_db(container, db_name)

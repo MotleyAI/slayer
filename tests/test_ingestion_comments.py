@@ -245,12 +245,12 @@ def _commented_duckdb(path: Path) -> None:
     conn.close()
 
 
-def _model_by_name(models: list[SlayerDataset], name: str) -> SlayerDataset:
-    return next(m for m in models if m.name == name)
+def _dataset_by_name(datasets: list[SlayerDataset], name: str) -> SlayerDataset:
+    return next(m for m in datasets if m.name == name)
 
 
-def _col(model: SlayerDataset, name: str) -> DatasetField:
-    return next(c for c in model.fields if c.name == name)
+def _col(dataset: SlayerDataset, name: str) -> DatasetField:
+    return next(c for c in dataset.fields if c.name == name)
 
 
 # ---------------------------------------------------------------------------
@@ -460,25 +460,25 @@ class TestColumnCommentsFallback:
 
 class TestDuckDBEndToEnd:
     @pytest.fixture
-    async def duckdb_models(self, tmp_path: Path) -> list[SlayerDataset]:
+    async def duckdb_datasets(self, tmp_path: Path) -> list[SlayerDataset]:
         db_path = tmp_path / "commented.duckdb"
         _commented_duckdb(db_path)
         ds = DatasourceConfig(name="ds", type="duckdb", database=str(db_path))
         return await _ingest(ds)
 
-    def test_table_comment_becomes_model_description(self, duckdb_models) -> None:
-        assert _model_by_name(duckdb_models, "orders").description == "All orders"
+    def test_table_comment_becomes_model_description(self, duckdb_datasets) -> None:
+        assert _dataset_by_name(duckdb_datasets, "orders").description == "All orders"
 
-    def test_column_comments_become_descriptions(self, duckdb_models) -> None:
-        orders = _model_by_name(duckdb_models, "orders")
+    def test_column_comments_become_descriptions(self, duckdb_datasets) -> None:
+        orders = _dataset_by_name(duckdb_datasets, "orders")
         assert _col(orders, "amount").description == "Order amount in USD"
-        customers = _model_by_name(duckdb_models, "customers")
+        customers = _dataset_by_name(duckdb_datasets, "customers")
         assert _col(customers, "region").description == "Sales region"
 
-    def test_uncommented_stays_none(self, duckdb_models) -> None:
-        orders = _model_by_name(duckdb_models, "orders")
+    def test_uncommented_stays_none(self, duckdb_datasets) -> None:
+        orders = _dataset_by_name(duckdb_datasets, "orders")
         assert _col(orders, "status").description is None
-        assert _model_by_name(duckdb_models, "customers").description is None
+        assert _dataset_by_name(duckdb_datasets, "customers").description is None
 
 
 # ---------------------------------------------------------------------------

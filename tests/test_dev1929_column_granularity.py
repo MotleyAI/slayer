@@ -57,7 +57,7 @@ def _orders_columns(*, created_at_granularity=None) -> list[DatasetField]:
     ]
 
 
-def _orders_model(*, gran=None, data_source="ds") -> SlayerDataset:
+def _orders_dataset(*, gran=None, data_source="ds") -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="created_at",
@@ -69,15 +69,15 @@ async def _seeded_engine(backend: str, tmp: str, *, gran=None) -> SlayerQueryEng
     return await make_engine(
         backend, base_dir=os.path.join(tmp, "store"),
         db_path=os.path.join(tmp, f"t.{backend}"),
-        tables=[orders_table_spec(_SEED)], models=[_orders_model(gran=gran)],
+        tables=[orders_table_spec(_SEED)], datasets=[_orders_dataset(gran=gran)],
     )
 
 
-async def _dryrun_engine(models: list[SlayerDataset]) -> SlayerQueryEngine:
+async def _dryrun_engine(datasets: list[SlayerDataset]) -> SlayerQueryEngine:
     """Storage + engine with no real DB — enough for plan-time binding/checking."""
     storage = YAMLStorage(base_dir=tempfile.mkdtemp())
-    await storage.save_datasource(DatasourceConfig(name=models[0].data_source, type="sqlite"))
-    for model in models:
+    await storage.save_datasource(DatasourceConfig(name=datasets[0].data_source, type="sqlite"))
+    for model in datasets:
         await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage)
 
@@ -92,9 +92,9 @@ def _by_bucket(rows: list[dict]) -> dict:
     return out
 
 
-def _col(model: SlayerDataset | None, name: str) -> DatasetField:
-    assert model is not None
-    return next(c for c in model.fields if c.name == name)
+def _col(dataset: SlayerDataset | None, name: str) -> DatasetField:
+    assert dataset is not None
+    return next(c for c in dataset.fields if c.name == name)
 
 
 async def _call(server, *, name: str, arguments: dict) -> str:

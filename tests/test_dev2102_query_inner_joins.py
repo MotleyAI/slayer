@@ -34,7 +34,7 @@ from tests._dev2102_fixtures import (
     shop,
     values,
     vip_list,
-    with_models,
+    with_datasets,
 )
 
 VIP_PAIRS = [["id", "customer_id"]]
@@ -100,7 +100,7 @@ class TestRootAndStoredEdges:
 
     async def test_a_reused_stored_inner_edge_still_adds_its_restriction(self, dialect) -> None:
         stored_inner = customers(DatasetRelationship(to="vip_list", join_pairs=VIP_PAIRS, join_type=JoinType.INNER))
-        async with shop(dialect, with_models(stored_inner)) as engine:
+        async with shop(dialect, with_datasets(stored_inner)) as engine:
             untraversed = await engine.execute(q(source_model="customers", dimensions=["name"]))
             declared = await engine.execute(q(source_model="customers", extensions=[_vip()], dimensions=["name"]))
         assert values(untraversed, "customers.name") == ALL_CUSTOMERS
@@ -108,7 +108,7 @@ class TestRootAndStoredEdges:
 
     async def test_a_stored_inner_edge_restricts_when_traversed_under_a_left_declaration(self, dialect) -> None:
         stored_inner = customers(DatasetRelationship(to="vip_list", join_pairs=VIP_PAIRS, join_type=JoinType.INNER))
-        async with shop(dialect, with_models(stored_inner)) as engine:
+        async with shop(dialect, with_datasets(stored_inner)) as engine:
             resp = await engine.execute(q(
                 source_model="customers", extensions=[_vip("left")], dimensions=["name", "vip_list.note"]))
         assert rows(resp, "customers.name", "customers.vip_list.note") == [
@@ -166,12 +166,12 @@ class TestPaths:
             "metrics": [{"expression": "sum(amount)", "name": "spent"}], "filter": ["spent > 25"]})])
         root = q(source_model="customers", extensions=[ext("customers", joins=[
             join("big_spenders_qb", [["id", "customers__id"]], join_type="inner")])], dimensions=["name"])
-        async with shop(dialect, with_models(qb)) as engine:
+        async with shop(dialect, with_datasets(qb)) as engine:
             resp = await engine.execute(root)
         assert values(resp, "customers.name") == BIG_SPENDERS
 
     async def test_target_model_filters_count_as_unmatched(self, dialect) -> None:
-        async with shop(dialect, with_models(vip_list(filters=["active = 1"]))) as engine:
+        async with shop(dialect, with_datasets(vip_list(filters=["active = 1"]))) as engine:
             resp = await engine.execute(q(source_model="customers", extensions=[_vip()], dimensions=["name"]))
         assert values(resp, "customers.name") == ACTIVE_VIP_CUSTOMERS
 
@@ -198,7 +198,7 @@ class TestReferenceBinding:
         return got
 
     async def test_adjacent_model_with_a_second_indirect_route(self, dialect) -> None:
-        models = with_models(addresses(DatasetRelationship(to="customers", join_pairs=CUSTOMER_PAIRS)))
+        models = with_datasets(addresses(DatasetRelationship(to="customers", join_pairs=CUSTOMER_PAIRS)))
         async with shop(dialect, models) as engine:
             got = await self._assert_as_written(
                 engine, root="orders", m="customers", target="vip_list", pairs=VIP_PAIRS, key="customer_id",
@@ -220,7 +220,7 @@ class TestReferenceBinding:
         assert "regions" in message, message
 
     async def test_one_safe_and_one_fanning_parallel_edge(self, dialect) -> None:
-        models = with_models(
+        models = with_datasets(
             customers(DatasetRelationship(to="addresses", name="home_address", join_pairs=[["home_address_id", "id"]],
                                 cardinality=RelationshipCardinality.MANY_TO_ONE)),
             addresses(DatasetRelationship(to="customers", join_pairs=CUSTOMER_PAIRS,

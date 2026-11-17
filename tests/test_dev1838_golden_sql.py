@@ -15,7 +15,7 @@ from pathlib import Path
 from tests._dev1838_fixtures import (
     DatasetMetric,
     OrderItem,
-    dev1838_models,
+    dev1838_datasets,
     month_td,
     q,
 )
@@ -60,10 +60,10 @@ def _cases() -> dict:
 
 
 async def _generate_one(query, dialect: str):
-    models = dev1838_models()
+    models = dev1838_datasets()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

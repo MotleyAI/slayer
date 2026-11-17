@@ -40,7 +40,7 @@ from tests._engine_helpers import make_seeded_sqlite_engine
 # --------------------------------------------------------------------------- #
 # Chain graph builders.
 # --------------------------------------------------------------------------- #
-def regions_model() -> SlayerDataset:
+def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
@@ -51,7 +51,7 @@ def regions_model() -> SlayerDataset:
     )
 
 
-def chain_models(
+def chain_datasets(
     *,
     join_type: JoinType = JoinType.LEFT,
     cardinality: RelationshipCardinality | None = RelationshipCardinality.MANY_TO_ONE,
@@ -101,7 +101,7 @@ def chain_models(
         ],
         relationships=order_joins,
     )
-    return [orders, customers, regions_model()]
+    return [orders, customers, regions_dataset()]
 
 
 _REGIONS_ROWS = [(1, "North", 100.0), (2, "South", 200.0)]
@@ -139,7 +139,7 @@ def seed_chain(db_path: str) -> None:
 # --------------------------------------------------------------------------- #
 # Parallel-edge graph builders.
 # --------------------------------------------------------------------------- #
-def parallel_models(*, named: bool) -> list[SlayerDataset]:
+def parallel_datasets(*, named: bool) -> list[SlayerDataset]:
     """orders with billing + shipping edges onto customers (+ regions chain)."""
     order_columns = [
         DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -187,7 +187,7 @@ def parallel_models(*, named: bool) -> list[SlayerDataset]:
         relationships=[DatasetRelationship(to="regions",
                          join_pairs=[["region_id", "id"]])],
     )
-    return [orders, customers, regions_model()]
+    return [orders, customers, regions_dataset()]
 
 
 _PARALLEL_ORDERS_ROWS = [
@@ -225,7 +225,7 @@ async def chain_engine(tmpdir: str, **model_kwargs) -> SlayerQueryEngine:
     seed_chain(db_path)
     return await make_seeded_sqlite_engine(
         base_dir=os.path.join(tmpdir, "store"), db_path=db_path,
-        models=chain_models(**model_kwargs),
+        datasets=chain_datasets(**model_kwargs),
     )
 
 
@@ -234,7 +234,7 @@ async def parallel_engine(tmpdir: str, *, named: bool) -> SlayerQueryEngine:
     seed_parallel(db_path)
     return await make_seeded_sqlite_engine(
         base_dir=os.path.join(tmpdir, "store"), db_path=db_path,
-        models=parallel_models(named=named),
+        datasets=parallel_datasets(named=named),
     )
 
 
@@ -279,7 +279,7 @@ PARALLEL_PUSHDOWN_BILLING_OK_POP = 100.0  # North once; South (Cara) excluded
 
 
 __all__ = [
-    "regions_model", "chain_models", "parallel_models",
+    "regions_dataset", "chain_datasets", "parallel_datasets",
     "seed_chain", "seed_parallel", "chain_engine", "parallel_engine",
     "rows_set",
     "CHAIN_REVERSE_DIMS_LEFT", "CHAIN_REVERSE_DIMS_INNER",

@@ -36,7 +36,7 @@ from tests._engine_helpers import make_seeded_sqlite_engine
 UNPARSEABLE_SQL = ")((( bad"
 
 
-def orders_model(*, default: Optional[str] = None) -> SlayerDataset:
+def orders_dataset(*, default: Optional[str] = None) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension=default,
@@ -63,7 +63,7 @@ def orders_model(*, default: Optional[str] = None) -> SlayerDataset:
     )
 
 
-def line_items_model(*, default: Optional[str] = None) -> SlayerDataset:
+def line_items_dataset(*, default: Optional[str] = None) -> SlayerDataset:
     return SlayerDataset(
         name="line_items", sql_table="line_items", data_source="test",
         default_time_dimension=default,
@@ -80,7 +80,7 @@ def line_items_model(*, default: Optional[str] = None) -> SlayerDataset:
     )
 
 
-def shipments_model() -> SlayerDataset:
+def shipments_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="shipments", sql_table="shipments", data_source="test",
         fields=[
@@ -91,7 +91,7 @@ def shipments_model() -> SlayerDataset:
     )
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
@@ -101,20 +101,20 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def dev1945_models(
+def dev1945_datasets(
     *, orders_default: Optional[str] = None, line_items_default: Optional[str] = None,
 ) -> List[SlayerDataset]:
     """Host first; each model's ``default_time_dimension`` is set per case."""
     return [
-        orders_model(default=orders_default),
-        line_items_model(default=line_items_default),
-        shipments_model(),
-        customers_model(),
+        orders_dataset(default=orders_default),
+        line_items_dataset(default=line_items_default),
+        shipments_dataset(),
+        customers_dataset(),
     ]
 
 
-def dev1945_bundle(models: List[SlayerDataset]) -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models)
+def dev1945_bundle(datasets: List[SlayerDataset]) -> ResolvedSourceBundle:
+    return ResolvedSourceBundle(dialect="postgres", population=datasets[0], referenced_datasets=datasets)
 
 
 # --------------------------------------------------------------------------- #
@@ -158,7 +158,7 @@ async def make_engine(
     seed_dev1945_sqlite(db_path)
     return await make_seeded_sqlite_engine(
         base_dir=base_dir, db_path=db_path,
-        models=dev1945_models(
+        datasets=dev1945_datasets(
             orders_default=orders_default, line_items_default=line_items_default,
         ),
     )
@@ -178,8 +178,8 @@ def month_td(column: str = "created_at") -> List[TimeDimension]:
     )]
 
 
-def measure(formula: str, name: str = "l") -> dict:
-    return {"formula": formula, "name": name}
+def metric(expression: str, name: str = "l") -> dict:
+    return {"formula": expression, "name": name}
 
 
 #: ``last(amount)`` by ``created_at`` and by ``cust_signup`` both pick order 2.
@@ -196,8 +196,8 @@ def month_key(value) -> str:
 
 
 __all__ = [
-    "orders_model", "line_items_model", "shipments_model",
-    "customers_model", "dev1945_models", "dev1945_bundle", "seed_dev1945_sqlite",
-    "make_engine", "orders_q", "month_td", "measure", "month_key",
+    "orders_dataset", "line_items_dataset", "shipments_dataset",
+    "customers_dataset", "dev1945_datasets", "dev1945_bundle", "seed_dev1945_sqlite",
+    "make_engine", "orders_q", "month_td", "metric", "month_key",
     "LAST_AMOUNT", "FIRST_AMOUNT", "JAN",
 ]

@@ -161,12 +161,12 @@ def _cte_names(sql: str, *, dialect: str = "sqlite") -> List[str]:
 async def _isolated_then_combined(
     engine: SlayerQueryEngine,
     *,
-    measures: List[DatasetMetric],
+    metrics: List[DatasetMetric],
     dimension: str = "status",
 ) -> None:
     """Self-calibrating: each measure alone, then together must reproduce every isolated value."""
     isolated: dict = {}
-    for m in measures:
+    for m in metrics:
         resp = await engine.execute(
             SlayerQuery(
                 population="orders",
@@ -185,7 +185,7 @@ async def _isolated_then_combined(
         SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name=dimension)],
-            metrics=measures,
+            metrics=metrics,
         )
     )
     assert len(resp.data) == 1, resp.data
@@ -211,7 +211,7 @@ class TestCrossModelCteNameAllocation:
     ) -> None:
         await _isolated_then_combined(
             engine,
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(customers.Rev)", name="upper"),
                 DatasetMetric(expression="sum(customers.rev)", name="lower"),
             ],
@@ -248,7 +248,7 @@ class TestCrossModelCteNameAllocation:
         aggregate sanitise to one ``_cm_`` name; both must survive with own values."""
         await _isolated_then_combined(
             engine,
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(customers.revenue)", name="xmodel"),
                 DatasetMetric(expression="sum(customers__revenue)", name="local"),
             ],
@@ -259,7 +259,7 @@ class TestCrossModelCteNameAllocation:
     ) -> None:
         await _isolated_then_combined(
             engine,
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="unfiltered"),
                 DatasetMetric(expression="sum(customers__revenue)", name="filtered"),
             ],

@@ -27,7 +27,7 @@ from slayer.engine.cardinality.relationship_safety import RelationshipSafetyFind
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
 
-from tests._dev1836_fixtures import dev1836_models
+from tests._dev1836_fixtures import dev1836_datasets
 
 
 def _findings_by_edge(findings: list[RelationshipSafetyFinding]) -> dict:
@@ -36,7 +36,7 @@ def _findings_by_edge(findings: list[RelationshipSafetyFinding]) -> dict:
 
 class TestUnprovenJoins:
     def test_unproven_join_is_flagged_with_remedies(self) -> None:
-        findings = audit_relationship_safety(datasets=dev1836_models())
+        findings = audit_relationship_safety(datasets=dev1836_datasets())
         by_edge = _findings_by_edge(findings)
 
         flagged = by_edge[("customers", "segments")]
@@ -52,7 +52,7 @@ class TestUnprovenJoins:
     def test_proven_joins_are_not_flagged(self) -> None:
         # One finding per edge — proven edges appear as info
         # rows recording both orientations, never with broadcast wording.
-        findings = audit_relationship_safety(datasets=dev1836_models())
+        findings = audit_relationship_safety(datasets=dev1836_datasets())
         by_edge = _findings_by_edge(findings)
         for edge in (("orders", "customers"), ("customers", "regions")):
             finding = by_edge[edge]  # PK-proven
@@ -64,7 +64,7 @@ class TestUnprovenJoins:
         # Neither declared m:1/1:1 nor structurally proven — dimensions across it
         # associate (broadcast on request), and validation says so (the fixture's
         # only such declared orientation is customers → segments).
-        findings = audit_relationship_safety(datasets=dev1836_models())
+        findings = audit_relationship_safety(datasets=dev1836_datasets())
         by_edge = _findings_by_edge(findings)
         finding = by_edge[("customers", "segments")]
         assert finding.forward_provably_to_one is False
@@ -120,7 +120,7 @@ class TestContradictedDeclarations:
 
     def test_contradicted_declaration_is_flagged(self) -> None:
         """F5 — a detection report that hard-contradicts a declaration."""
-        models = dev1836_models()
+        models = dev1836_datasets()
         # Declare the orders → customers join m:1 so the contradiction bites.
         orders = models[0]
         orders.relationships[0].cardinality = RelationshipCardinality.MANY_TO_ONE
@@ -139,7 +139,7 @@ class TestContradictedDeclarations:
         assert contradiction[0].severity == "error"
 
     def test_no_detection_report_no_contradiction_flags(self) -> None:
-        models = dev1836_models()
+        models = dev1836_datasets()
         models[0].relationships[0].cardinality = RelationshipCardinality.MANY_TO_ONE
         findings = audit_relationship_safety(datasets=models)
         assert not any(

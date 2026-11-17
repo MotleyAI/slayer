@@ -161,9 +161,9 @@ def _lists_datasource(tmp_path: Path) -> DatasourceConfig:
 
 
 async def _gateway_engine(tmp_path: Path, *, datasource: DatasourceConfig,
-                          models: list[SlayerDataset]) -> tuple[SlayerQueryEngine, GatewayFactory]:
+                          datasets: list[SlayerDataset]) -> tuple[SlayerQueryEngine, GatewayFactory]:
     factory = GatewayFactory()
-    storage = await shop_storage(str(tmp_path / "store"), datasource=datasource, models=models)
+    storage = await shop_storage(str(tmp_path / "store"), datasource=datasource, datasets=datasets)
     return SlayerQueryEngine(storage=storage, client_factory=factory), factory
 
 
@@ -172,7 +172,7 @@ class TestListPathsUseTheEngineClient:
         ds = _lists_datasource(tmp_path)
         stale = SlayerDataset(name="contractors", sql_table="contractors", data_source=LIST_DS, fields=[
             DatasetField(name="id", datatype=DataType.INT), DatasetField(name="skills", datatype=DataType.TEXT, description="Skills")])
-        engine, _factory = await _gateway_engine(tmp_path, datasource=ds, models=[stale])
+        engine, _factory = await _gateway_engine(tmp_path, datasource=ds, datasets=[stale])
         try:
             with no_direct_access(backends=[backend_of(ds)]) as guard:
                 result = await ingest_datasource_idempotent(datasource=ds, storage=engine.storage,
@@ -193,7 +193,7 @@ class TestListPathsUseTheEngineClient:
         model = SlayerDataset(name="contractors", sql_table="contractors", data_source=LIST_DS, fields=[
             DatasetField(name="id", datatype=DataType.INT),
             DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.TEXT)])
-        engine, factory = await _gateway_engine(tmp_path, datasource=ds, models=[model])
+        engine, factory = await _gateway_engine(tmp_path, datasource=ds, datasets=[model])
         try:
             with no_direct_access(backends=[backend_of(ds)]) as guard:
                 skills = model.get_field("skills")
@@ -213,7 +213,7 @@ class TestListPathsUseTheEngineClient:
         model = SlayerDataset(name="picked", sql="SELECT id, skills FROM contractors", data_source=LIST_DS, fields=[
             DatasetField(name="id", datatype=DataType.INT),
             DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.TEXT)])
-        engine, factory = await _gateway_engine(tmp_path, datasource=ds, models=[model])
+        engine, factory = await _gateway_engine(tmp_path, datasource=ds, datasets=[model])
         try:
             with no_direct_access(backends=[backend_of(ds)]) as guard:
                 entries = await engine.validate_datasets(LIST_DS)

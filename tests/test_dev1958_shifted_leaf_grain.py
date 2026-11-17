@@ -11,7 +11,7 @@ import pytest
 
 from tests._dev1832_fixtures import (
     DatasetMetric,
-    dev1832_models,
+    dev1832_datasets,
     TimeDimension,
     TimeGranularity,
     gen,
@@ -51,16 +51,16 @@ async def exec_engine(request):
         yield engine
 
 
-def _filtered_models() -> list:
+def _filtered_datasets() -> list:
     """``monthly`` with the model-level filter ``amount > 5`` (drops South Jan and West Feb)."""
-    models = dev1832_models()
+    models = dev1832_datasets()
     next(m for m in models if m.name == "monthly").filters.append("amount > 5")
     return models
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def filtered_engine(request):
-    async for engine in make_exec_engine(request, models=_filtered_models()):
+    async for engine in make_exec_engine(request, datasets=_filtered_datasets()):
         yield engine
 
 
@@ -70,10 +70,10 @@ def _dr_td() -> list:
                           date_range=["2024-02-01", "2024-03-31"])]
 
 
-def _q(formula: str, *, date_range: bool = False, **kw):
+def _q(expression: str, *, date_range: bool = False, **kw):
     kw.setdefault("dimensions", ["region"])
     return monthly_q(time_dimensions=_dr_td() if date_range else month_td(),
-                     measures=[DatasetMetric(expression=formula, name="t")], **kw)
+                     measures=[DatasetMetric(expression=expression, name="t")], **kw)
 
 
 def _cells(resp, name: str = "monthly.t") -> dict:

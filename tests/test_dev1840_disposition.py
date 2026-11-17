@@ -17,9 +17,9 @@ from slayer.ir.planned import PlannedQuery, RegroupAttachPlan, SemiJoinHop
 
 from tests._dev1840_fixtures import (
     DatasetMetric,
-    ambiguity_models,
+    ambiguity_datasets,
     bundle,
-    dev1840_models,
+    dev1840_datasets,
     gen,
     q,
     tq,
@@ -31,8 +31,8 @@ SM = DatasetMetric(expression="sum(agents.score)", name="sm")
 RV = DatasetMetric(expression="sum(reviews.stars)", name="rv")
 
 
-def _plan(query, models=None):
-    return plan_query(query=query, bundle=bundle(models))
+def _plan(query, datasets=None):
+    return plan_query(query=query, bundle=bundle(datasets))
 
 
 def _attach(planned: PlannedQuery, root: str) -> RegroupAttachPlan:
@@ -85,13 +85,13 @@ class TestSemiJoinPushdown:
         query = q(dimensions=["customers.tier"], measures=[CM],
                   filters=["channel = 'app'"])
         att = _attach(_plan(
-            query, models=dev1840_models(declare_reverse=True),
+            query, datasets=dev1840_datasets(declare_reverse=True),
         ), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.to for h in sj.hops] == ["orders"]
         assert _pairs(sj.hops[0]) == [("id", "customer_id")]
         assert await gen(query) == await gen(
-            query, models=dev1840_models(declare_reverse=True),
+            query, datasets=dev1840_datasets(declare_reverse=True),
         )
 
     def test_forward_unproven_hop_pushes(self):
@@ -100,7 +100,7 @@ class TestSemiJoinPushdown:
         att = _attach(_plan(
             q(dimensions=["customers.tier"], measures=[CM],
               filters=["customers.plans.level = 'basic'"]),
-            models=dev1840_models(strong_plans=False),
+            datasets=dev1840_datasets(strong_plans=False),
         ), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.to for h in sj.hops] == ["plans"]
@@ -154,7 +154,7 @@ class TestExpandedDependencies:
         att = _attach(_plan(
             q(dimensions=["customers.tier"], measures=[CM],
               filters=["customers.last_status = 'ok'"]),
-            models=dev1840_models(declare_reverse=True),
+            datasets=dev1840_datasets(declare_reverse=True),
         ), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.to for h in sj.hops] == ["orders"]
@@ -184,7 +184,7 @@ class TestBooleanTotalPushdown:
         att = _attach(_plan(
             q(dimensions=["customers.tier"], measures=[CM],
               filters=["channel = 'app' OR customers.plans.level = 'basic'"]),
-            models=dev1840_models(strong_plans=False),
+            datasets=dev1840_datasets(strong_plans=False),
         ), "customers")
         assert att.producer_plan.semi_join_filters
 
@@ -193,7 +193,7 @@ class TestBooleanTotalPushdown:
         att = _attach(_plan(
             q(dimensions=["customers.tier"], measures=[CM],
               filters=["channel = customers.plans.level"]),
-            models=dev1840_models(strong_plans=False),
+            datasets=dev1840_datasets(strong_plans=False),
         ), "customers")
         assert att.producer_plan.semi_join_filters
 
@@ -204,9 +204,9 @@ class TestExcludedConjuncts:
         tickets→agents make the measure's hop an error, retiring the silent
         first-match. Divergence class (d)."""
         query = tq(measures=[SM], filters=["effort > 2"])
-        models = ambiguity_models()
+        models = ambiguity_datasets()
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
-            _plan(query, models=models)
+            _plan(query, datasets=models)
         msg = str(ei.value)
         assert "opened_by" in msg
         assert "closed_by" in msg
@@ -216,9 +216,9 @@ class TestExcludedConjuncts:
         path is clean (tickets→reviews) but the filter crosses the ambiguous
         pair; drop+warn is retired. Divergence class (d)."""
         query = tq(measures=[RV], filters=["agents.name = 'Ann'"])
-        models = ambiguity_models()
+        models = ambiguity_datasets()
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
-            _plan(query, models=models)
+            _plan(query, datasets=models)
         msg = str(ei.value)
         assert "opened_by" in msg
         assert "closed_by" in msg

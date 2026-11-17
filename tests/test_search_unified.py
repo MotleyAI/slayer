@@ -23,7 +23,7 @@ import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 
-from tests.search_helpers import call_mcp_tool, seed_warehouse_models
+from tests.search_helpers import call_mcp_tool, seed_warehouse_datasets
 
 import slayer.search.service as svc_mod
 from slayer.api.server import create_app
@@ -53,7 +53,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
     """1 datasource, 2 models, 5 memories (3 learning-only, 2 query-bearing)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = resolve_storage(tmpdir)
-        await seed_warehouse_models(storage)
+        await seed_warehouse_datasets(storage)
         # learning-only memories
         await storage.save_memory(
             learning="amount_paid is gross of refunds.",

@@ -17,19 +17,19 @@ from slayer.core.keys import (
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-from tests._dev1836_fixtures import DatasetMetric, dev1836_models, gen, month_td, q
-from tests._dev1846_fixtures import SlayerQuery, dev1846_models
+from tests._dev1836_fixtures import DatasetMetric, dev1836_datasets, gen, month_td, q
+from tests._dev1846_fixtures import SlayerQuery, dev1846_datasets
 from tests._dev1868_fixtures import CM_PART_TIER, LAST_TIER
 
 
 def _bundle36() -> ResolvedSourceBundle:
-    models = dev1836_models()
+    models = dev1836_datasets()
     return ResolvedSourceBundle(dialect="postgres", population=models[0],
                                 referenced_datasets=models[1:])
 
 
 def _bundle46() -> ResolvedSourceBundle:
-    models = dev1846_models()
+    models = dev1846_datasets()
     return ResolvedSourceBundle(dialect="postgres", population=models[0],
                                 referenced_datasets=models[1:])
 

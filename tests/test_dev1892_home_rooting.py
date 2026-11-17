@@ -12,7 +12,7 @@ from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
-from tests._dev1840_fixtures import dev1840_models, gen
+from tests._dev1840_fixtures import dev1840_datasets, gen
 from tests._dev1841_fixtures import (
     DatasetMetric,
     assoc_q,
@@ -22,9 +22,9 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 from tests._dev1892_fixtures import (
-    derived_default_models,
-    fanning_derived_source_models,
-    toone_filter_models,
+    derived_default_datasets,
+    fanning_derived_source_datasets,
+    toone_filter_datasets,
 )
 
 #: wsum5 default = regions.derived_pop (= pop*2): SUM(spend * pop*2) over distinct
@@ -48,7 +48,7 @@ _C_BROADCAST = "weighted_avg(customers.regions.pop, weight=customers.spend)"
 
 
 def _orders_bundle() -> ResolvedSourceBundle:
-    models = dev1840_models()
+    models = dev1840_datasets()
     return ResolvedSourceBundle(dialect="sqlite", population=models[0], referenced_datasets=models[1:])
 
 
@@ -57,8 +57,8 @@ def _association_attaches(planned) -> list:
             if getattr(a.kernel, "kind", None) == "association"]
 
 
-def _vals(resp, measure):
-    return {k[0]: v[measure] for k, v in status_key(resp).items()}
+def _vals(resp, metric):
+    return {k[0]: v[metric] for k, v in status_key(resp).items()}
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -69,13 +69,13 @@ async def orders_engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def filter_engine(request):
-    async for engine in make_exec_engine(request, models=toone_filter_models()):
+    async for engine in make_exec_engine(request, datasets=toone_filter_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def derived_default_engine(request):
-    async for engine in make_exec_engine(request, models=derived_default_models()):
+    async for engine in make_exec_engine(request, datasets=derived_default_datasets()):
         yield engine
 
 
@@ -163,9 +163,9 @@ class TestDerivedColumnEdgeCases:
         never emitted as a multiplying join."""
         query = bcast_q(dimensions=["status"], measures=[DatasetMetric(
             expression="weighted_avg(customers.bad_spend, weight=amount)", name="w")])
-        models = fanning_derived_source_models()
+        models = fanning_derived_source_datasets()
         with pytest.raises(ValueError, match="unproven join hop"):
-            await gen(query, models=models)
+            await gen(query, datasets=models)
 
 
 class TestCardinalityInvariant:

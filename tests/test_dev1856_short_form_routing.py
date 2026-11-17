@@ -65,7 +65,7 @@ def _join(target: str, pairs: list[list[str]], **kw) -> DatasetRelationship:
 
 # Topology 1: linear chain Invoice → Subscription → Customer → Consumer
 
-def _chain_models(
+def _chain_datasets(
     *, direct_customer: bool = False, drop_customer_consumer: bool = False
 ) -> list[SlayerDataset]:
     """Invoice → Subscription → Customer → Consumer (every hop onto the target PK).
@@ -105,17 +105,17 @@ def _chain_models(
     return [consumer, customer, subscription, invoice]
 
 
-async def _save(storage: StorageBackend, models: list[SlayerDataset]) -> None:
+async def _save(storage: StorageBackend, datasets: list[SlayerDataset]) -> None:
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=":memory:")
     )
-    for m in models:
+    for m in datasets:
         await storage.save_dataset(m)
 
 
 async def _chain_engine(tmp_path, **knobs) -> SlayerQueryEngine:
     storage = resolve_storage(str(tmp_path))
-    await _save(storage, _chain_models(**knobs))
+    await _save(storage, _chain_datasets(**knobs))
     return SlayerQueryEngine(storage=storage)
 
 
@@ -141,12 +141,12 @@ async def _seeded_chain_engine(tmp_path) -> SlayerQueryEngine:
                          (2, 1, 1, 20.0, "ok", None),
                          (3, 2, 2, 30.0, "ok", None)])
     return await make_seeded_sqlite_engine(
-        base_dir=str(tmp_path), db_path=db_path, models=_chain_models())
+        base_dir=str(tmp_path), db_path=db_path, datasets=_chain_datasets())
 
 
-def _q(source_model: str = "Invoice", **kw) -> SlayerQuery:
+def _q(source_dataset: str = "Invoice", **kw) -> SlayerQuery:
     base: dict = dict(
-        source_model=source_model,
+        source_model=source_dataset,
         measures=[{"formula": "sum(amount)", "name": "amt"}],
     )
     base.update(kw)
@@ -169,7 +169,7 @@ async def _assert_equiv(engine, short: SlayerQuery, full: SlayerQuery) -> None:
 
 # Topology 2: N parallel branches Root → M{i} → Tag; the first `safe` are to-one
 
-def _multi_models(*, branches: int, safe: int) -> list[SlayerDataset]:
+def _multi_datasets(*, branches: int, safe: int) -> list[SlayerDataset]:
     tag = SlayerDataset(
         name="Tag", sql_table="Tag", data_source="test",
         fields=[_pk(), _t("grp"), _t("name"), _d("amount")],
@@ -196,7 +196,7 @@ def _multi_models(*, branches: int, safe: int) -> list[SlayerDataset]:
 
 async def _multi_engine(tmp_path, *, branches: int, safe: int) -> SlayerQueryEngine:
     storage = resolve_storage(str(tmp_path))
-    await _save(storage, _multi_models(branches=branches, safe=safe))
+    await _save(storage, _multi_datasets(branches=branches, safe=safe))
     return SlayerQueryEngine(storage=storage)
 
 
@@ -339,7 +339,7 @@ class TestBidirectionalAndParallelEdges:
             _q(dimensions=["Payment.Method.kind"]),
         )
 
-    def _parallel_leaf_models(
+    def _parallel_leaf_datasets(
         self, *, second_pair: list[list[str]], names: tuple = ("by_id", "by_grp")
     ) -> list[SlayerDataset]:
         """Root → Mid, then TWO parallel Mid↔Leaf edges (optionally named)."""
@@ -367,7 +367,7 @@ class TestBidirectionalAndParallelEdges:
     async def test_named_parallel_tiebreak_uses_edge_token(self, tmp_path) -> None:
         """Two named Mid↔Leaf edges; ``Leaf.x`` routes through the safe ``by_id``, carrying its edge-name token."""
         storage = resolve_storage(str(tmp_path))
-        await _save(storage, self._parallel_leaf_models(
+        await _save(storage, self._parallel_leaf_datasets(
             second_pair=[["leaf_grp", "grp"]],
         ))
         engine = SlayerQueryEngine(storage=storage)
@@ -382,7 +382,7 @@ class TestBidirectionalAndParallelEdges:
         """Two UNNAMED Mid↔Leaf edges: every route crosses an inexecutable hop —
         rejected with no suggestion."""
         storage = resolve_storage(str(tmp_path))
-        await _save(storage, self._parallel_leaf_models(
+        await _save(storage, self._parallel_leaf_datasets(
             second_pair=[["leaf_grp", "grp"]], names=(None, None),
         ))
         engine = SlayerQueryEngine(storage=storage)
@@ -422,7 +422,7 @@ class TestAdjacentParallelParity:
     """A parallel pair DIRECTLY off the root is the fail-closed ambiguous hop, not a
     short-form route — identically across dimensions, saved measures, and schema-drift."""
 
-    def _models(self) -> list[SlayerDataset]:
+    def _datasets(self) -> list[SlayerDataset]:
         target = SlayerDataset(
             name="Target", sql_table="Target", data_source="test",
             fields=[_pk(), _t("grp"), _t("label"), _d("amount")],
@@ -440,7 +440,7 @@ class TestAdjacentParallelParity:
 
     async def _engine(self, tmp_path) -> SlayerQueryEngine:
         storage = resolve_storage(str(tmp_path))
-        await _save(storage, self._models())
+        await _save(storage, self._datasets())
         return SlayerQueryEngine(storage=storage)
 
     async def test_dimension_stays_ambiguous_hop(self, tmp_path) -> None:
@@ -707,7 +707,7 @@ class TestScoping:
         """A same-named ``Consumer`` in another datasource is never a route candidate;
         the in-datasource Consumer, unreachable, is read only through aggregates."""
         storage = resolve_storage(str(tmp_path))
-        await _save(storage, _chain_models(drop_customer_consumer=True))
+        await _save(storage, _chain_datasets(drop_customer_consumer=True))
         await storage.save_datasource(
             DatasourceConfig(name="other", type="sqlite", database=":memory:")
         )
@@ -743,7 +743,7 @@ class TestScoping:
     async def test_declared_join_absent_target_stays_unknown_ref(self, tmp_path) -> None:
         """A dotted ref whose first hop IS a declared join but whose target is absent
         from the datasource bundle stays ``UnknownReferenceError`` — never routed."""
-        models = _chain_models()
+        models = _chain_datasets()
         invoice = next(m for m in models if m.name == "Invoice")
         invoice.relationships.append(_join("Ghost", [["customerId", "id"]]))
         storage = resolve_storage(str(tmp_path))
@@ -792,18 +792,18 @@ class TestSchemaDriftRouting:
             "metrics": [{"expression": "count(*)"}],
         })])
 
-    def _drops(self, models: list[SlayerDataset]):
+    def _drops(self, datasets: list[SlayerDataset]):
         edit = EditDatasetDelete(
             dataset_name="Consumer", data_source="test",
             remove=RemoveSpec(fields=["email"]),
         )
         return compute_datasource_drops(
-            datasets=models,
+            datasets=datasets,
             sql_table_diffs={"Consumer": (edit, {"email"})},
             sql_diffs={},
         )
 
-    def _drop_intervening_join(self, models: list[SlayerDataset]):
+    def _drop_intervening_join(self, datasets: list[SlayerDataset]):
         """Drop the intervening ``Customer → Consumer`` join — the routed short
         form ``Consumer.email`` traverses it, so its removal must cascade."""
         edit = EditDatasetDelete(
@@ -811,7 +811,7 @@ class TestSchemaDriftRouting:
             remove=RemoveSpec(relationships=["Consumer"]),
         )
         return compute_datasource_drops(
-            datasets=models,
+            datasets=datasets,
             sql_table_diffs={"Customer": (edit, set())},
             sql_diffs={},
         )
@@ -821,21 +821,21 @@ class TestSchemaDriftRouting:
         return next((e for e in entries if e.dataset_name == name), None)
 
     def test_dropping_routed_column_cascades(self) -> None:
-        models = [*_chain_models(), self._qb()]
+        models = [*_chain_datasets(), self._qb()]
         entry = self._entry_for("qb", self._drops(models))
         assert isinstance(entry, WholeDatasetDelete)
 
     def test_dropping_intervening_join_cascades(self) -> None:
-        models = [*_chain_models(), self._qb()]
+        models = [*_chain_datasets(), self._qb()]
         entry = self._entry_for("qb", self._drop_intervening_join(models))
         assert isinstance(entry, WholeDatasetDelete)
 
     def test_ambiguous_short_form_attributes_to_nothing(self) -> None:
-        models = [*_chain_models(direct_customer=True), self._qb()]
+        models = [*_chain_datasets(direct_customer=True), self._qb()]
         assert self._entry_for("qb", self._drops(models)) is None
 
     def test_unreachable_short_form_attributes_to_nothing(self) -> None:
-        models = [*_chain_models(drop_customer_consumer=True), self._qb()]
+        models = [*_chain_datasets(drop_customer_consumer=True), self._qb()]
         assert self._entry_for("qb", self._drops(models)) is None
 
     def _adjacent_parallel_chain(self) -> list[SlayerDataset]:

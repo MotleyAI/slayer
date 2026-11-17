@@ -22,7 +22,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1846_fixtures import (
     _SALES_ROWS as _ROWS_1846,
-    dev1846_models,
+    dev1846_datasets,
     make_exec_engine as make_1846_engine,
     month_key,
     month_td,
@@ -86,8 +86,8 @@ async def exec_engine_1846(request):
         yield engine
 
 
-def _region_vals(resp, measure):
-    return {k[0]: v[measure] for k, v in region_key(resp).items()}
+def _region_vals(resp, metric):
+    return {k[0]: v[metric] for k, v in region_key(resp).items()}
 
 
 def _avg(vals):
@@ -451,8 +451,8 @@ class TestWindowedConstituent:
         bucket grain, row-attached — never an attach of the enclosing level."""
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            population=dev1846_models()[0],
-            referenced_datasets=dev1846_models()[1:])
+            population=dev1846_datasets()[0],
+            referenced_datasets=dev1846_datasets()[1:])
         planned = plan_query(
             query=SlayerQuery(population="sales", time_dimensions=month_td(),
                               metrics=[DatasetMetric(expression=self._FORMULA, name="m")]),

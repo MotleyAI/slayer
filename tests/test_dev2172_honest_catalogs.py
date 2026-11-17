@@ -15,7 +15,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Aggregation
 from slayer.facade.catalog import build_catalog
 from slayer.pg_facade import protocol as proto
-from tests._dev2120_fixtures import contractors_model
+from tests._dev2120_fixtures import contractors_dataset
 from tests._dev2172_fixtures import (
     DS,
     PARTS,
@@ -217,7 +217,7 @@ class TestFanningAndToOneDimensions:
 
 class TestListColumnsInTheCatalog:
     def test_no_custom_aggregation_metric_over_a_list(self) -> None:
-        model = contractors_model(data_source=DS).model_copy(
+        model = contractors_dataset(data_source=DS).model_copy(
             update={"aggregations": [Aggregation(name="my_agg", expression="SUM({value})")]})
         catalog = build_catalog(datasets_by_datasource={DS: [model]})
         (table,) = [t for s in catalog.schemas for t in s.tables if t.name == "contractors"]

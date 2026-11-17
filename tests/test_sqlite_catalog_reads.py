@@ -182,20 +182,20 @@ class TestSchemaScoping:
         assert (keys.primary_key, keys.unique_key_sets) == (["id"], [["code"]])
 
 
-def _models(models: list[SlayerDataset]) -> dict[str, SlayerDataset]:
-    return {m.name: m for m in models}
+def _datasets(datasets: list[SlayerDataset]) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in datasets}
 
 
-def _pk(model: SlayerDataset) -> list[str]:
-    return [c.name for c in model.fields if c.primary_key]
+def _pk(dataset: SlayerDataset) -> list[str]:
+    return [c.name for c in dataset.fields if c.primary_key]
 
 
-def _unique(model: SlayerDataset) -> set[str]:
-    return {c.name for c in model.fields if c.unique}
+def _unique(dataset: SlayerDataset) -> set[str]:
+    return {c.name for c in dataset.fields if c.unique}
 
 
-def _joins(model: SlayerDataset) -> dict[str, tuple[list[list[str]], RelationshipCardinality | None]]:
-    return {j.to: (j.join_pairs, j.cardinality) for j in model.relationships}
+def _joins(dataset: SlayerDataset) -> dict[str, tuple[list[list[str]], RelationshipCardinality | None]]:
+    return {j.to: (j.join_pairs, j.cardinality) for j in dataset.relationships}
 
 
 class TestIngestion:
@@ -206,7 +206,7 @@ class TestIngestion:
         with statement_errors(engine) as failed:
             report = await ingestion.ingest_datasource_report_async(corpus.datasource, client=client)
         assert failed == []
-        models = _models(report.datasets)
+        models = _datasets(report.datasets)
         assert _pk(models["comp_pk"]) == ["a", "b"]
         assert _pk(models["no_rowid"]) == ["k"]
         assert _joins(models["implicit_child"])["parents"] == ([["parent_id", "id"]], RelationshipCardinality.MANY_TO_ONE)

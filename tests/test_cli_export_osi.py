@@ -9,7 +9,7 @@ import yaml
 from slayer.async_utils import run_sync
 from slayer.cli import _build_parser
 from tests._cli_inprocess import CliResult, run_cli_in_process
-from tests._osi_export_fixtures import BASIC_MEASURES, customers, measure, orders
+from tests._osi_export_fixtures import BASIC_MEASURES, customers, slayer_metric, orders
 from tests._osi_export_helpers import Env, dataset_names, entities, make_env, save, slayer_entries, validate
 
 _DS = "jaffle_shop"
@@ -18,8 +18,8 @@ _DS = "jaffle_shop"
 @pytest.fixture
 def shop(tmp_path: Path) -> Env:
     env = run_sync(make_env(tmp_path, datasource=_DS))
-    growth = measure("revenue_growth", "change_pct(revenue)")
-    run_sync(save(env, customers(), orders(measures=[*BASIC_MEASURES, growth])))
+    growth = slayer_metric("revenue_growth", "change_pct(revenue)")
+    run_sync(save(env, customers(), orders(metrics=[*BASIC_MEASURES, growth])))
     return env
 
 

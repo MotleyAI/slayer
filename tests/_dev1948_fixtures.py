@@ -49,7 +49,7 @@ def _query(**kw) -> SlayerQuery:
     return SlayerQuery.model_validate(kw)
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
@@ -60,7 +60,7 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def orders_model() -> SlayerDataset:
+def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
@@ -75,8 +75,8 @@ def orders_model() -> SlayerDataset:
     )
 
 
-def dev1948_models() -> List[SlayerDataset]:
-    return [orders_model(), customers_model()]
+def dev1948_datasets() -> List[SlayerDataset]:
+    return [orders_dataset(), customers_dataset()]
 
 
 def _seed_sqlite(db_path: str) -> None:
@@ -111,7 +111,7 @@ async def make_dev1948_engine(request) -> AsyncIterator[SlayerQueryEngine]:
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=dev1948_models(),
+        dialect=dialect, seed=seed, datasets=dev1948_datasets(),
     ) as (engine, _db):
         yield engine
 

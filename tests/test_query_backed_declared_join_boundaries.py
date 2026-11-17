@@ -12,8 +12,8 @@ from tests._dev1902_fixtures import (
     _seed_duckdb,
     _seed_sqlite,
     cells,
-    customers_model,
-    orders_model,
+    customers_dataset,
+    orders_dataset,
     renamed_graph,
 )
 from tests._engine_helpers import seeded_exec_engine
@@ -25,14 +25,14 @@ from slayer.engine.query_engine import SlayerQueryEngine
 async def engine(request):
     seed = _seed_duckdb if request.param == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
-        dialect=request.param, seed=seed, models=renamed_graph()
+        dialect=request.param, seed=seed, datasets=renamed_graph()
     ) as (query_engine, _db):
         yield query_engine
 
 
 async def test_join_target_keeps_its_onward_relationship(engine: SlayerQueryEngine):
     await engine.save_dataset(_customer_totals())
-    consumer = orders_model().model_copy(update={
+    consumer = orders_dataset().model_copy(update={
         "name": "consumer",
         "relationships": [DatasetRelationship(to="customer_totals", join_pairs=[["customer_id", "customer_id"]])],
     })
@@ -44,12 +44,12 @@ async def test_join_target_keeps_its_onward_relationship(engine: SlayerQueryEngi
         measures=[{"formula": "sum(amount)", "name": "total"}],
     ))
 
-    assert cells(response, dim_suffix="customers.name", measure="total") == AMOUNT_BY_CUSTOMER
+    assert cells(response, dim_suffix="customers.name", metric="total") == AMOUNT_BY_CUSTOMER
 
 
 async def test_saved_relation_without_outgoing_joins_can_use_incoming_edge(engine: SlayerQueryEngine):
     await engine.save_dataset(_customer_totals().model_copy(update={"joins": []}))
-    customers = customers_model()
+    customers = customers_dataset()
     await engine.save_dataset(customers.model_copy(update={"relationships": [
         *customers.relationships,
         DatasetRelationship(to="customer_totals", join_pairs=[["id", "customer_id"]], name="totals"),
@@ -61,7 +61,7 @@ async def test_saved_relation_without_outgoing_joins_can_use_incoming_edge(engin
         measures=[{"formula": "sum(amt)", "name": "total"}],
     ))
 
-    assert cells(response, dim_suffix="name", measure="total") == AMOUNT_BY_CUSTOMER
+    assert cells(response, dim_suffix="name", metric="total") == AMOUNT_BY_CUSTOMER
 
 
 async def test_extension_join_alias_resolves_to_the_named_stored_edge(engine: SlayerQueryEngine):
@@ -101,7 +101,7 @@ async def test_ordinary_stage_does_not_inherit_backing_source_joins(engine):
 
 
 async def test_legal_stage_named_join_target_is_not_a_synthetic_self_join(engine: SlayerQueryEngine):
-    await engine.save_dataset(customers_model().model_copy(update={"name": "_stage"}))
+    await engine.save_dataset(customers_dataset().model_copy(update={"name": "_stage"}))
     totals = _customer_totals()
     await engine.save_dataset(totals.model_copy(update={
         "relationships": [totals.relationships[0].model_copy(update={"target_model": "_stage"})],
@@ -117,4 +117,4 @@ async def test_legal_stage_named_join_target_is_not_a_synthetic_self_join(engine
         source_model="customer_totals", dimensions=["_stage.name"],
         measures=[{"formula": "sum(amt)", "name": "total"}],
     ))
-    assert cells(joined, dim_suffix="_stage.name", measure="total") == AMOUNT_BY_CUSTOMER
+    assert cells(joined, dim_suffix="_stage.name", metric="total") == AMOUNT_BY_CUSTOMER

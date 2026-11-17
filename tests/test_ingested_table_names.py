@@ -50,10 +50,10 @@ async def shop(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncGenerator
         engine_factory.invalidate_engine(datasource)
 
 
-async def _qty(storage: YAMLStorage, model: str) -> list[Any]:
+async def _qty(storage: YAMLStorage, dataset: str) -> list[Any]:
     async with owned_query_engine(storage=storage) as engine:
-        rows = (await engine.execute({"population": model, "dimensions": ["qty"]})).data
-    return [r[f"{model}.qty"] for r in rows]
+        rows = (await engine.execute({"population": dataset, "dimensions": ["qty"]})).data
+    return [r[f"{dataset}.qty"] for r in rows]
 
 
 async def _drift(storage: YAMLStorage) -> list[Any]:

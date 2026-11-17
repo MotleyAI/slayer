@@ -32,7 +32,7 @@ from tests._dev1935_fixtures import (
     EVENTLESS_EVENT_ONLY,
     EVENTLESS_GOLD_OR_EVENT_INNER,
     EVENTLESS_GOLD_OR_EVENT_LEFT,
-    event_less_models,
+    event_less_datasets,
     GOLD_OR_OK,
     GOLD_OR_OK_SPEND,
     MATERIALISED_OR,
@@ -56,15 +56,15 @@ from tests._dev1935_fixtures import (
     TWO_SPELLINGS,
     TWO_SPELLINGS_BY_TIER,
     cust_q,
-    dev1900_models,
-    disconnected_model_models,
+    dev1900_datasets,
+    disconnected_dataset_datasets,
     make_eventless_engine,
     make_exec_engine,
     orders_q,
     pushed_filter_infos,
     rows_by,
-    two_spellings_models,
-    unproven_plans_models,
+    two_spellings_datasets,
+    unproven_plans_datasets,
 )
 
 MODES = ["broadcast", "associate", "error"]
@@ -86,13 +86,13 @@ async def backend(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def two_spellings_backend(request):
-    async for e in make_exec_engine(request, models=two_spellings_models()):
+    async for e in make_exec_engine(request, datasets=two_spellings_datasets()):
         yield request.param, e
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unproven_backend(request):
-    async for e in make_exec_engine(request, models=unproven_plans_models()):
+    async for e in make_exec_engine(request, datasets=unproven_plans_datasets()):
         yield request.param, e
 
 
@@ -116,7 +116,7 @@ async def eventless_derived_backend(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unreachable_backend(request):
-    async for e in make_exec_engine(request, models=disconnected_model_models()):
+    async for e in make_exec_engine(request, datasets=disconnected_dataset_datasets()):
         yield request.param, e
 
 
@@ -132,11 +132,11 @@ async def _dry(engine, query, dialect: str) -> str:
     return dry.sql
 
 
-def _bundle(*, models, root: str) -> ResolvedSourceBundle:
-    src = next(x for x in models if x.name == root)
+def _bundle(*, datasets, root: str) -> ResolvedSourceBundle:
+    src = next(x for x in datasets if x.name == root)
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=src, referenced_datasets=[x for x in models if x.name != root])
+        population=src, referenced_datasets=[x for x in datasets if x.name != root])
 
 
 def _base_hops(planned: PlannedQuery) -> list[SemiJoinHop]:
@@ -144,9 +144,9 @@ def _base_hops(planned: PlannedQuery) -> list[SemiJoinHop]:
     return [h for sf in planned.semi_join_filters for h in sf.hops]
 
 
-def _hop(planned: PlannedQuery, target_model: str) -> SemiJoinHop:
-    hs = [h for h in _base_hops(planned) if h.to == target_model]
-    assert hs, f"no {target_model} hop in the base push: {_base_hops(planned)}"
+def _hop(planned: PlannedQuery, target_dataset: str) -> SemiJoinHop:
+    hs = [h for h in _base_hops(planned) if h.to == target_dataset]
+    assert hs, f"no {target_dataset} hop in the base push: {_base_hops(planned)}"
     return hs[0]
 
 
@@ -259,7 +259,7 @@ class TestReducedPushOnPartialMaterialisation:
     def test_reduced_push_drops_the_materialised_hop(self):
         planned = plan_query(
             query=cust_q(dimensions=["orders.id"], filters=[REDUCED_PUSH_OR]),
-            bundle=_bundle(models=dev1900_models(), root="customers"))
+            bundle=_bundle(datasets=dev1900_datasets(), root="customers"))
         assert {h.to for h in _base_hops(planned)} == {
             "regions", "region_events"}
 
@@ -485,7 +485,7 @@ class TestNullExtendedFlag:
                     metrics=[SPEND if root == "customers" else
                               DatasetMetric(expression="sum(amount)", name="amt")],
                     filter=[flt]),
-                bundle=_bundle(models=dev1900_models(), root=root))
+                bundle=_bundle(datasets=dev1900_datasets(), root=root))
             hops = _base_hops(planned)
             assert hops, flt
             assert all(h.null_extended is False for h in hops), (flt, hops)
@@ -496,7 +496,7 @@ class TestNullExtendedFlag:
         planned = plan_query(
             query=SlayerQuery(population="customers", metrics=[SPEND],
                               filter=[GOLD_OR_OK]),
-            bundle=_bundle(models=dev1900_models(), root="customers"))
+            bundle=_bundle(datasets=dev1900_datasets(), root="customers"))
         assert _hop(planned, "orders").null_extended is True
 
     def test_declared_inner_descendant_stays_inner(self):
@@ -505,7 +505,7 @@ class TestNullExtendedFlag:
             query=SlayerQuery(
                 population="customers", metrics=[SPEND],
                 filter=["tier = 'gold' or regions.region_events.value >= 50"]),
-            bundle=_bundle(models=event_less_models(inner_events=True), root="customers"))
+            bundle=_bundle(datasets=event_less_datasets(inner_events=True), root="customers"))
         assert _hop(planned, "region_events").null_extended is False
 
 
@@ -516,7 +516,7 @@ class TestPopulationDroppedArmImpossible:
         disposition (the two-way disposition's dropped arm is impossible)."""
         dialect, engine = backend
         q = cust_q(measures=[SPEND], filters=[OR_MIX_LOCAL])
-        planned = plan_query(query=q, bundle=_bundle(models=dev1900_models(), root="customers"))
+        planned = plan_query(query=q, bundle=_bundle(datasets=dev1900_datasets(), root="customers"))
         assert planned.semi_join_filters, "the OR-mix population must push"
         await engine.execute(q)
         # the host base carries the EXISTS and never joins orders into the OUTER
@@ -577,7 +577,7 @@ class TestNullRejectionAnalysis:
         planned = plan_query(
             query=SlayerQuery(population="customers", metrics=[SPEND],
                               filter=[predicate]),
-            bundle=_bundle(models=event_less_models(derived_events=True), root="customers"))
+            bundle=_bundle(datasets=event_less_datasets(derived_events=True), root="customers"))
         assert _hop(planned, "region_events").null_extended is expected
 
     def test_filter_dependency_never_nulls_the_masked_value(self):
@@ -587,7 +587,7 @@ class TestNullRejectionAnalysis:
         planned = plan_query(
             query=SlayerQuery(population="customers", metrics=[SPEND],
                               filter=["regions.region_events.value_if_kind >= 50"]),
-            bundle=_bundle(models=event_less_models(derived_events=True), root="customers"))
+            bundle=_bundle(datasets=event_less_datasets(derived_events=True), root="customers"))
         assert _hop(planned, "event_kinds").null_extended is True
         assert _hop(planned, "region_events").null_extended is False
 
@@ -599,5 +599,5 @@ class TestNullRejectionAnalysis:
         planned = plan_query(
             query=SlayerQuery(population="customers", metrics=[SPEND],
                               filter=[predicate]),
-            bundle=_bundle(models=event_less_models(), root="customers"))
+            bundle=_bundle(datasets=event_less_datasets(), root="customers"))
         assert _hop(planned, "region_events").null_extended is expected

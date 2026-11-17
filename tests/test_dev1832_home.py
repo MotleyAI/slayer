@@ -20,19 +20,19 @@ from slayer.ir.terms import Aggregate
 from tests._dev1832_fixtures import (
     DatasetMetric,
     bundle,
-    dev1832_models,
+    dev1832_datasets,
     orders_q,
 )
 
 
-def _home_path(formula: str, *, dimensions: list[str] | None = None) -> tuple:
+def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple:
     """The ``home_path`` of the outer aggregate in a measure over orders (the
     measure's bound value key — robust to a nested constituent aggregate)."""
     elab = elaborate_query(
         query=orders_q(
             dimensions=dimensions or [],
-            measures=[DatasetMetric(expression=formula, name="m")]),
-        bundle=bundle(dev1832_models()))
+            measures=[DatasetMetric(expression=expression, name="m")]),
+        bundle=bundle(dev1832_datasets()))
     assert elab.prebound is not None
     root = elab.prebound.declared_metrics[-1].bound.value_key
     assert isinstance(root, AggregateKey), root
@@ -41,7 +41,7 @@ def _home_path(formula: str, *, dimensions: list[str] | None = None) -> tuple:
     return term.home_path
 
 
-def _parallel_edge_models() -> list[SlayerDataset]:
+def _parallel_edge_datasets() -> list[SlayerDataset]:
     """A model with two NAMED joins to the same target (parallel edges)."""
     tickets = SlayerDataset(
         name="tk", data_source="test", sql_table="tk",
@@ -152,7 +152,7 @@ class TestParallelNamedEdges:
     test_dev1832_cross_model_exec's target-homed execution and the golden SQL.)"""
 
     def test_home_at_root_over_parallel_edges(self):
-        models = _parallel_edge_models()
+        models = _parallel_edge_datasets()
         elab = elaborate_query(
             query=SlayerQuery(population="tk", metrics=[
                 DatasetMetric(expression="sum(opener.score - closer.score)", name="m")]),

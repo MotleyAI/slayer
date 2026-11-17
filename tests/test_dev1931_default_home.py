@@ -23,18 +23,18 @@ from tests._dev1832_fixtures import (
 from tests._dev1931_fixtures import (
     WSUM_HOST_VALUE,
     WSUM_MIXED_VALUE,
-    ambiguous_owner_models,
-    dev1931_models,
+    ambiguous_owner_datasets,
+    dev1931_datasets,
 )
 
 
-def _home_path(formula: str, *, dimensions: list[str] | None = None) -> tuple:
+def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple:
     """The ``home_path`` of a measure's outer aggregate over the DEV-1931 graph."""
     elab = elaborate_query(
         query=orders_q(
             dimensions=dimensions or [],
-            measures=[DatasetMetric(expression=formula, name="m")]),
-        bundle=bundle(dev1931_models()))
+            measures=[DatasetMetric(expression=expression, name="m")]),
+        bundle=bundle(dev1931_datasets()))
     assert elab.prebound is not None
     root = elab.prebound.declared_metrics[-1].bound.value_key
     assert isinstance(root, AggregateKey), root
@@ -85,48 +85,48 @@ class TestDefinitionDefaultExecution:
 
     @pytest.fixture(params=["sqlite", "duckdb"])
     async def engine(self, request):
-        async for e in make_exec_engine(request=request, models=dev1931_models()):
+        async for e in make_exec_engine(request=request, datasets=dev1931_datasets()):
             yield e
 
     @staticmethod
-    async def _value(engine, formula: str) -> float:
+    async def _value(engine, expression: str) -> float:
         resp = await engine.execute(
-            orders_q(measures=[DatasetMetric(expression=formula, name="w")]))
+            orders_q(measures=[DatasetMetric(expression=expression, name="w")]))
         return float(resp.data[0]["orders.w"])
 
     async def test_root_local_direct_default_matches_explicit(self, engine):
         explicit = await self._value(
-            engine=engine, formula="wsum_host(customers.spend, weight=orders.amount)")
+            engine=engine, expression="wsum_host(customers.spend, weight=orders.amount)")
         assert explicit == pytest.approx(WSUM_HOST_VALUE)
-        default = await self._value(engine=engine, formula="wsum_host(customers.spend)")
+        default = await self._value(engine=engine, expression="wsum_host(customers.spend)")
         assert default == pytest.approx(explicit)
 
     async def test_root_local_expression_default_matches_explicit(self, engine):
         explicit = await self._value(
-            engine=engine, formula="wsum_host_expr(customers.spend, weight=orders.amount)")
+            engine=engine, expression="wsum_host_expr(customers.spend, weight=orders.amount)")
         assert explicit == pytest.approx(WSUM_HOST_VALUE)
-        default = await self._value(engine=engine, formula="wsum_host_expr(customers.spend)")
+        default = await self._value(engine=engine, expression="wsum_host_expr(customers.spend)")
         assert default == pytest.approx(explicit)
 
     async def test_mixed_frame_default_resolves_per_reference(self, engine):
         # Independent oracle (a plain cross-model expression sum, works today):
         # spend broadcast onto each order + the order's own amount.
         oracle = await self._value(
-            engine=engine, formula="sum(customers.spend * (customers.spend + amount))")
+            engine=engine, expression="sum(customers.spend * (customers.spend + amount))")
         assert oracle == pytest.approx(WSUM_MIXED_VALUE)
-        default = await self._value(engine=engine, formula="wsum_mixed(customers.spend)")
+        default = await self._value(engine=engine, expression="wsum_mixed(customers.spend)")
         assert default == pytest.approx(oracle)
 
     async def test_owner_reachable_dotted_default_matches_explicit(self, engine):
         explicit = await self._value(
-            engine=engine, formula="wsum_regions_pop(customers.spend, weight=customers.regions.pop)")
-        default = await self._value(engine=engine, formula="wsum_regions_pop(customers.spend)")
+            engine=engine, expression="wsum_regions_pop(customers.spend, weight=customers.regions.pop)")
+        default = await self._value(engine=engine, expression="wsum_regions_pop(customers.spend)")
         assert default == pytest.approx(explicit)
 
     async def test_bare_default_matches_explicit(self, engine):
         explicit = await self._value(
-            engine=engine, formula="wsum_bare(customers.spend, weight=customers.spend)")
-        default = await self._value(engine=engine, formula="wsum_bare(customers.spend)")
+            engine=engine, expression="wsum_bare(customers.spend, weight=customers.spend)")
+        default = await self._value(engine=engine, expression="wsum_bare(customers.spend)")
         assert default == pytest.approx(explicit)
 
     async def test_windowed_root_local_default_matches_explicit(self, engine):
@@ -156,9 +156,9 @@ class TestFanningDefinitionDefaultFailsClosed:
     async def test_fanning_default_fails_closed(self):
         q = orders_q(measures=[DatasetMetric(
             expression="wfan_widen(customers.regions.pop)", name="m")])
-        models = dev1931_models()
+        models = dev1931_datasets()
         with pytest.raises(ValueError, match="(?i)unproven join hop|fanning") as ei:
-            await gen(query=q, models=models)
+            await gen(query=q, datasets=models)
         assert "region_events" in str(ei.value)
 
 
@@ -169,22 +169,22 @@ class TestUnresolvableDefaultFailsClosed:
     async def test_qualifier_unreachable_from_owner_and_root(self):
         q = orders_q(measures=[DatasetMetric(
             expression="wsum_nowhere(customers.spend)", name="m")])
-        models = dev1931_models()
+        models = dev1931_datasets()
         with pytest.raises(ValueError):
-            await gen(query=q, models=models)
+            await gen(query=q, datasets=models)
 
     async def test_partially_resolvable_owner_reference(self):
         # regions.plans.fee: regions resolves from the owner, plans is missing on it.
         q = orders_q(measures=[DatasetMetric(
             expression="wsum_partial(customers.spend)", name="m")])
-        models = dev1931_models()
+        models = dev1931_datasets()
         with pytest.raises(ValueError):
-            await gen(query=q, models=models)
+            await gen(query=q, datasets=models)
 
     async def test_ambiguous_owner_hop_never_reanchors_at_root(self):
         # ag is ambiguous from owner o but clean from root r — must not re-anchor at r.
         q = SlayerQuery(population="r", metrics=[DatasetMetric(
             expression="wscore(o.val)", name="m")])
-        models = ambiguous_owner_models()
+        models = ambiguous_owner_datasets()
         with pytest.raises(ValueError):
-            await gen(query=q, models=models)
+            await gen(query=q, datasets=models)

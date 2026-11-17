@@ -65,22 +65,22 @@ async def _storage(tmp_path) -> YAMLStorage:
     return storage
 
 
-async def _save(door: str, storage: YAMLStorage, model: SlayerDataset) -> None:
+async def _save(door: str, storage: YAMLStorage, dataset: SlayerDataset) -> None:
     if door == "engine":
-        await SlayerQueryEngine(storage=storage).save_dataset(model)
+        await SlayerQueryEngine(storage=storage).save_dataset(dataset)
     else:
-        await storage.save_dataset(model)
+        await storage.save_dataset(dataset)
 
 
-async def _both_doors(tmp_path, model: SlayerDataset, *peers: SlayerDataset,
+async def _both_doors(tmp_path, dataset: SlayerDataset, *peers: SlayerDataset,
                       expected: type[BaseException]) -> tuple[BaseException, BaseException]:
     storage = await _storage(tmp_path)
     for peer in peers:
         await storage.save_dataset(peer)
     with pytest.raises(expected) as storage_ei:
-        await _save("storage", storage, model)
+        await _save("storage", storage, dataset)
     with pytest.raises(expected) as engine_ei:
-        await _save("engine", storage, model)
+        await _save("engine", storage, dataset)
     assert str(storage_ei.value) == str(engine_ei.value)
     return storage_ei.value, engine_ei.value
 
@@ -214,19 +214,19 @@ async def _world(tmp_path, *dependents: SlayerDataset, orders: SlayerDataset | N
     return storage
 
 
-async def _save_warnings(door: str, storage: YAMLStorage, model: SlayerDataset) -> list[str]:
+async def _save_warnings(door: str, storage: YAMLStorage, dataset: SlayerDataset) -> list[str]:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        await _save(door, storage, model)
+        await _save(door, storage, dataset)
     return [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
 
 
-def _about(messages: list[str], model: str) -> list[str]:
-    return [m for m in messages if f"'{model}'" in m]
+def _about(messages: list[str], dataset: str) -> list[str]:
+    return [m for m in messages if f"'{dataset}'" in m]
 
 
-def _assert_dependent_warning(msg: str, *, model: str, definition: str, reference: str) -> None:
-    assert f"'{model}'" in msg
+def _assert_dependent_warning(msg: str, *, dataset: str, definition: str, reference: str) -> None:
+    assert f"'{dataset}'" in msg
     assert definition in msg
     assert reference in msg
     assert "orders" in msg
@@ -240,7 +240,7 @@ class TestEdgeSetChangeWarnings:
         msgs = await _save_warnings(door, storage, _orders(joins=_parallel()))
         about = _about(msgs, "shipments")
         assert len(about) == 1, msgs
-        _assert_dependent_warning(about[0], model="shipments", definition="city",
+        _assert_dependent_warning(about[0], dataset="shipments", definition="city",
                                   reference="orders.addresses.city")
         assert await storage.get_dataset("orders", data_source=DS) is not None
 
@@ -261,7 +261,7 @@ class TestEdgeSetChangeWarnings:
         msgs = await _save_warnings(door, storage, _orders(joins=_parallel()))
         about = _about(msgs, "parcels")
         assert len(about) == 1, msgs
-        _assert_dependent_warning(about[0], model="parcels", definition="city",
+        _assert_dependent_warning(about[0], dataset="parcels", definition="city",
                                   reference="shipments.orders.addresses.city")
 
     async def test_dependent_across_a_reverse_declared_edge(self, tmp_path, door) -> None:
@@ -273,7 +273,7 @@ class TestEdgeSetChangeWarnings:
         msgs = await _save_warnings(door, storage, _orders(joins=[*_parallel(), to_invoice]))
         about = _about(msgs, "invoices")
         assert len(about) == 1, msgs
-        _assert_dependent_warning(about[0], model="invoices", definition="city",
+        _assert_dependent_warning(about[0], dataset="invoices", definition="city",
                                   reference="orders.addresses.city")
 
     async def test_dependent_column_filter(self, tmp_path, door) -> None:
@@ -285,7 +285,7 @@ class TestEdgeSetChangeWarnings:
         msgs = await _save_warnings(door, storage, _orders(joins=_parallel()))
         about = _about(msgs, "crates")
         assert len(about) == 1, msgs
-        _assert_dependent_warning(about[0], model="crates", definition="paris_weight",
+        _assert_dependent_warning(about[0], dataset="crates", definition="paris_weight",
                                   reference="orders.addresses.city")
 
     async def test_dependent_model_filter(self, tmp_path, door) -> None:
@@ -295,7 +295,7 @@ class TestEdgeSetChangeWarnings:
         msgs = await _save_warnings(door, storage, _orders(joins=_parallel()))
         about = _about(msgs, "audits")
         assert len(about) == 1, msgs
-        _assert_dependent_warning(about[0], model="audits", definition="orders.addresses.city = 'Paris'",
+        _assert_dependent_warning(about[0], dataset="audits", definition="orders.addresses.city = 'Paris'",
                                   reference="orders.addresses.city")
 
 

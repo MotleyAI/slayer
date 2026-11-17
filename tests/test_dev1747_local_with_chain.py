@@ -32,7 +32,7 @@ from slayer.core.enums import TimeGranularity
 from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
 from tests._dev1747_fixtures import (
     cte_body_names,
-    dev1747_models,
+    dev1747_datasets,
     order_by_text,
     with_node_of,
 )
@@ -73,9 +73,9 @@ _MULTI_STEP_QUERY = SlayerQuery(
 
 
 async def _sql(query: SlayerQuery, *, dialect: str = "postgres") -> str:
-    models = dev1747_models()
+    models = dev1747_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:], dialect=dialect,
+        query=query, dataset=models[0], extra_datasets=models[1:], dialect=dialect,
     )
 
 

@@ -27,7 +27,7 @@ from tests._dev2177_fixtures import (
     m,
     q,
 )
-from tests._mcp_idiom_fixtures import idiom_models, make_idiom_engine
+from tests._mcp_idiom_fixtures import idiom_datasets, make_idiom_engine
 
 TS = "TIMESTAMP '2025-01-01 00:00:00'"
 MIXED = "coalesce(status, amount)"
@@ -53,8 +53,8 @@ COMPATIBLE: dict[str, tuple[str, str, DataType]] = {
 TEXT_AS_NUMBER = {"greatest", "least"}
 
 
-def models_with_unknown(*, data_source: str = "test") -> list[SlayerDataset]:
-    orders, *rest = idiom_models(data_source=data_source)
+def datasets_with_unknown(*, data_source: str = "test") -> list[SlayerDataset]:
+    orders, *rest = idiom_datasets(data_source=data_source)
     orders = orders.model_copy(update={"fields": [
         *orders.fields, DatasetField(name="opaque", sql="amount * 2", datatype=DataType.UNKNOWN),
     ]})
@@ -62,7 +62,7 @@ def models_with_unknown(*, data_source: str = "test") -> list[SlayerDataset]:
 
 
 def _bundle(dialect: str) -> ResolvedSourceBundle:
-    orders, *rest = models_with_unknown()
+    orders, *rest = datasets_with_unknown()
     return ResolvedSourceBundle(dialect=dialect, population=orders, referenced_datasets=rest)
 
 
@@ -97,7 +97,7 @@ def dialect(request) -> str:
 
 @pytest.fixture
 async def engine(dialect: str):
-    async for e in make_idiom_engine(dialect=dialect, models=models_with_unknown()):
+    async for e in make_idiom_engine(dialect=dialect, datasets=datasets_with_unknown()):
         yield e
 
 

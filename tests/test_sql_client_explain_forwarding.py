@@ -26,9 +26,9 @@ from tests._gateway_harness import (
     DS_NAME,
     RecordingClient,
     backend_of,
-    customers_model,
-    orders_model,
-    paid_sql_model,
+    customers_dataset,
+    orders_dataset,
+    paid_sql_dataset,
     seed_shop,
     shop_datasource,
     shop_storage,
@@ -57,7 +57,7 @@ async def shop(tmp_path: Path) -> AsyncIterator[Shop]:
     seed_shop(db)
     ds = shop_datasource(db)
     storage = await shop_storage(
-        str(tmp_path / "store"), datasource=ds, models=[orders_model(), customers_model(), paid_sql_model()],
+        str(tmp_path / "store"), datasource=ds, datasets=[orders_dataset(), customers_dataset(), paid_sql_dataset()],
     )
     try:
         yield Shop(datasource=ds, storage=storage)

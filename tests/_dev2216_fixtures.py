@@ -51,7 +51,7 @@ DUP_COUNT_BY_STATUS = {"completed": 3, "pending": 1}
 FILTERED_SPEND_BY_STATUS = {"completed": 40.0, "pending": 20.0}
 
 
-def customers_model(*, keyed: bool = False, unique: bool = False) -> SlayerDataset:
+def customers_dataset(*, keyed: bool = False, unique: bool = False) -> SlayerDataset:
     """``keyed`` declares ``id`` the primary key; ``unique`` declares it a standalone unique column."""
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
@@ -67,7 +67,7 @@ def customers_model(*, keyed: bool = False, unique: bool = False) -> SlayerDatas
     )
 
 
-def orders_model(*, cardinality: RelationshipCardinality | None = None) -> SlayerDataset:
+def orders_dataset(*, cardinality: RelationshipCardinality | None = None) -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         fields=[
@@ -81,8 +81,8 @@ def orders_model(*, cardinality: RelationshipCardinality | None = None) -> Slaye
     )
 
 
-def ossie_models(*, keyed: bool = False, unique: bool = False) -> list[SlayerDataset]:
-    return [orders_model(), customers_model(keyed=keyed, unique=unique)]
+def ossie_datasets(*, keyed: bool = False, unique: bool = False) -> list[SlayerDataset]:
+    return [orders_dataset(), customers_dataset(keyed=keyed, unique=unique)]
 
 
 def statements(*, duplicate: bool = False) -> list[str]:
@@ -115,10 +115,10 @@ def seed_with(dialect: str, stmts: Sequence[str]):
 @asynccontextmanager
 async def ossie_engine(
     dialect: str, *, request: pytest.FixtureRequest | None = None,
-    models: list[SlayerDataset] | None = None, duplicate: bool = False,
+    datasets: list[SlayerDataset] | None = None, duplicate: bool = False,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """An engine over the Ossie data on ``dialect`` (``postgres`` needs ``request`` for ``postgresql_proc``)."""
-    models = models if models is not None else ossie_models()
+    datasets = datasets if datasets is not None else ossie_datasets()
     stmts = statements(duplicate=duplicate)
     if dialect == "postgres":
         assert request is not None
@@ -126,13 +126,13 @@ async def ossie_engine(
         with pg_database(info, statements=stmts, name="test") as ds:
             storage = YAMLStorage(base_dir=str(request.getfixturevalue("tmp_path") / "store"))
             async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
-                for model in models:
+                for model in datasets:
                     await storage.save_dataset(model, _validate=False)
                 yield engine
         return
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
-    async with seeded_exec_engine(dialect=dialect, seed=seed_with(dialect, stmts), models=models) as (engine, _):
+    async with seeded_exec_engine(dialect=dialect, seed=seed_with(dialect, stmts), datasets=datasets) as (engine, _):
         yield engine
 
 
@@ -140,8 +140,8 @@ def query(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate(kw)
 
 
-def measure(formula: str, name: str) -> DatasetMetric:
-    return DatasetMetric(expression=formula, name=name)
+def metric(expression: str, name: str) -> DatasetMetric:
+    return DatasetMetric(expression=expression, name=name)
 
 
 def cells(resp: SlayerResponse, dim: str, value: str) -> dict:

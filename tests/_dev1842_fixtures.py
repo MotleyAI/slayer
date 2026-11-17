@@ -22,10 +22,10 @@ from tests._engine_helpers import seeded_exec_engine
 from tests._dev1836_fixtures import (
     _seed_duckdb,
     _seed_sqlite,
-    customers_model as _customers_1836,
-    orders_model as _orders_1836,
-    regions_model,
-    segments_model,
+    customers_dataset as _customers_1836,
+    orders_dataset as _orders_1836,
+    regions_dataset,
+    segments_dataset,
 )
 from tests._engine_helpers import _engine_generate
 
@@ -78,7 +78,7 @@ _NORTH_SPEND = DatasetField(
 )
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     base = _customers_1836()
     return base.model_copy(update={
         "fields": list(base.fields) + [_NORTH_SPEND],
@@ -86,13 +86,13 @@ def customers_model() -> SlayerDataset:
     })
 
 
-def orders_model() -> SlayerDataset:
+def orders_dataset() -> SlayerDataset:
     return _orders_1836().model_copy(update={"metrics": ORDERS_MEASURES})
 
 
-def dev1842_models() -> List[SlayerDataset]:
+def dev1842_datasets() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
-    return [orders_model(), customers_model(), regions_model(), segments_model()]
+    return [orders_dataset(), customers_dataset(), regions_dataset(), segments_dataset()]
 
 
 # Query + generation shorthands.
@@ -108,9 +108,9 @@ def month_td(column: str = "ordered_at"):
 
 
 async def gen(query, *, dialect: str = "duckdb", validate: bool = False) -> str:
-    models = dev1842_models()
+    models = dev1842_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=validate,
     )
 
@@ -122,7 +122,7 @@ async def make_exec_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=dev1842_models()) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=dev1842_datasets()) as (engine, _db):
         yield engine
 
 
@@ -176,8 +176,8 @@ PARITY_ERROR_PAIRS = {
 
 __all__ = [
     "CUSTOMER_MEASURES", "ORDERS_MEASURES",
-    "customers_model", "orders_model", "regions_model", "segments_model",
-    "dev1842_models", "q", "month_td", "gen", "make_exec_engine",
+    "customers_dataset", "orders_dataset", "regions_dataset", "segments_dataset",
+    "dev1842_datasets", "q", "month_td", "gen", "make_exec_engine",
     "rows_by", "broadcast_warnings",
     "EQUIV_PAIRS", "TRANSFORM_PAIR", "PARITY_ERROR_PAIRS",
     "DatasetMetric", "SlayerDataset", "DataType",

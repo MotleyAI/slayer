@@ -101,20 +101,20 @@ async def _report(ds: DatasourceConfig, **kwargs: Any) -> IngestionScanReport:
         return await ingestion.ingest_datasource_report_async(ds, client=client, **kwargs)
 
 
-def _models(report: IngestionScanReport) -> dict[str, SlayerDataset]:
+def _datasets(report: IngestionScanReport) -> dict[str, SlayerDataset]:
     return {m.name: m for m in report.datasets}
 
 
-def _pk(model: SlayerDataset) -> list[str]:
-    return [c.name for c in model.fields if c.primary_key]
+def _pk(dataset: SlayerDataset) -> list[str]:
+    return [c.name for c in dataset.fields if c.primary_key]
 
 
-def _unique(model: SlayerDataset) -> set[str]:
-    return {c.name for c in model.fields if c.unique}
+def _unique(dataset: SlayerDataset) -> set[str]:
+    return {c.name for c in dataset.fields if c.unique}
 
 
-def _joins(model: SlayerDataset) -> dict[str, tuple[list[list[str]], RelationshipCardinality | None]]:
-    return {j.to: (j.join_pairs, j.cardinality) for j in model.relationships}
+def _joins(dataset: SlayerDataset) -> dict[str, tuple[list[list[str]], RelationshipCardinality | None]]:
+    return {j.to: (j.join_pairs, j.cardinality) for j in dataset.relationships}
 
 
 def _raise_regclass(*_args: Any, **_kwargs: Any) -> NoReturn:
@@ -135,33 +135,33 @@ def broken_generic_reflection(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class TestDuckdbKeys:
     async def test_unique_constraints_mark_columns_unique(self, keys_db) -> None:
-        customers = _models(await _report(_ds(keys_db)))["customers"]
+        customers = _datasets(await _report(_ds(keys_db)))["customers"]
         assert _pk(customers) == ["id"]
         assert _unique(customers) == {"code", "Mixed Case"}
 
     async def test_fk_to_a_unique_column_is_to_one(self, keys_db) -> None:
-        orders = _models(await _report(_ds(keys_db)))["orders"]
+        orders = _datasets(await _report(_ds(keys_db)))["orders"]
         pairs, cardinality = _joins(orders)["customers"]
         assert pairs == [["customer_code", "code"]]
         assert cardinality in _TO_ONE
 
     async def test_composite_unique_is_a_key_for_join_cardinality(self, keys_db) -> None:
-        pairs_model = _models(await _report(_ds(keys_db)))["pairs"]
+        pairs_model = _datasets(await _report(_ds(keys_db)))["pairs"]
         pairs, cardinality = _joins(pairs_model)["customers"]
         assert pairs == [["a", "a"], ["b", "b"]]
         assert cardinality in _TO_ONE
 
     async def test_composite_pk(self, keys_db) -> None:
-        lines = _models(await _report(_ds(keys_db)))["lines"]
+        lines = _datasets(await _report(_ds(keys_db)))["lines"]
         assert _pk(lines) == ["order_id", "n"]
         assert _joins(lines)["orders"][0] == [["order_id", "id"]]
 
     async def test_expression_unique_index_is_no_key(self, keys_db) -> None:
-        customers = _models(await _report(_ds(keys_db)))["customers"]
+        customers = _datasets(await _report(_ds(keys_db)))["customers"]
         assert "name" not in _unique(customers)
 
     async def test_composite_fk_in_non_default_schema(self, schema_db) -> None:
-        models = _models(await _report(_ds(schema_db), schemas=["ofr"]))
+        models = _datasets(await _report(_ds(schema_db), schemas=["ofr"]))
         assert _pk(models["parent"]) == ["a", "b"]
         assert _pk(models["child"]) == ["id"]
         pairs, cardinality = _joins(models["child"])["parent"]
@@ -169,7 +169,7 @@ class TestDuckdbKeys:
         assert cardinality in _TO_ONE
 
     async def test_default_schema_twins_keep_their_own_keys(self, schema_db) -> None:
-        models = _models(await _report(_ds(schema_db)))
+        models = _datasets(await _report(_ds(schema_db)))
         assert _pk(models["parent"]) == ["x"]
         assert models["child"].relationships == []
 
@@ -211,7 +211,7 @@ class TestAttachedCatalog:
 class TestGenericReflectionBypassed:
     async def test_every_key_join_and_column_survives(self, keys_db, broken_generic_reflection) -> None:
         report = await _report(_ds(keys_db))
-        models = _models(report)
+        models = _datasets(report)
         assert report.skipped == []
         assert set(models) == {"customers", "orders", "pairs", "lines"}
         assert [c.name for c in models["customers"].fields] == [
@@ -227,7 +227,7 @@ class TestGenericReflectionBypassed:
         assert (amount.datatype, amount.db_type) == (DataType.DOUBLE, "DECIMAL(12,2)")
 
     async def test_non_default_schema_join_survives(self, schema_db, broken_generic_reflection) -> None:
-        models = _models(await _report(_ds(schema_db), schemas=["ofr"]))
+        models = _datasets(await _report(_ds(schema_db), schemas=["ofr"]))
         assert _joins(models["child"])["parent"][0] == [["pa", "a"], ["pb", "b"]]
 
 
@@ -290,7 +290,7 @@ class TestKeyReadFailureIsVisible:
         caplog.set_level(logging.WARNING)
         with _failing(read):
             report = await _report(_ds(keys_db))
-        models = _models(report)
+        models = _datasets(report)
         assert report.skipped == []
         assert set(models) == {"customers", "orders", "pairs", "lines"}
         orders, customers = models["orders"], models["customers"]
@@ -318,7 +318,7 @@ class TestKeyReadFailureIsVisible:
         fail_key_read(monkeypatch, table="orders", reads=("foreign keys",))
         caplog.set_level(logging.WARNING)
         report = await _report(_ds(db, kind="sqlite"))
-        models = _models(report)
+        models = _datasets(report)
         assert report.skipped == []
         assert models["orders"].relationships == []
         assert _joins(models["items"])["orders"][0] == [["order_id", "id"]]
@@ -367,7 +367,7 @@ def statement_log() -> Iterator[list[str]]:
 
 class TestSqliteBaseBehaviour:
     async def test_keys_unique_flags_and_joins(self, sqlite_db) -> None:
-        models = _models(await _report(_ds(sqlite_db, kind="sqlite")))
+        models = _datasets(await _report(_ds(sqlite_db, kind="sqlite")))
         customers, orders = models["customers"], models["orders"]
         assert _pk(customers) == ["id"]
         assert _unique(customers) == {"email", "code"}

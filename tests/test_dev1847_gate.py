@@ -15,7 +15,7 @@ from slayer.core.syntax import AggCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1847_fixtures import (
-    dev1847_models,
+    dev1847_datasets,
     INNER_CR,
     FieldRef,
     DatasetMetric,
@@ -153,11 +153,11 @@ class TestCrossModelAndFilteredOperandNowAccepted:
         assert "CASE WHEN" in (await gen(query)).upper()
 
 
-def _bound(formula: str):
-    models = dev1847_models()
+def _bound(expression: str):
+    models = dev1847_datasets()
     bundle = ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
     return bind_expr(
-        parse_expr(formula), scope=DatasetScope(population=models[0]), bundle=bundle,
+        parse_expr(expression), scope=DatasetScope(population=models[0]), bundle=bundle,
     ).value_key
 
 

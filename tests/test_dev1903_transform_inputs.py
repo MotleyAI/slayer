@@ -17,26 +17,26 @@ from slayer.engine.plan import plan_query
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-from tests._dev1846_fixtures import SlayerQuery, dev1846_models, month_td
+from tests._dev1846_fixtures import SlayerQuery, dev1846_datasets, month_td
 from tests._dev1871_raise_ledger import ROWS
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1846_models()
+    models = dev1846_datasets()
     return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
-def _key(formula: str):
+def _key(expression: str):
     bundle = _bundle()
     assert bundle.population is not None
     return bind_expr(
-        parse_expr(formula), scope=DatasetScope(population=bundle.population),
+        parse_expr(expression), scope=DatasetScope(population=bundle.population),
         bundle=bundle, allow_metrics=True,
     ).value_key
 
 
-def _check(formula: str, *, projected=frozenset()) -> None:
-    check_transform_inputs(roots=[_key(formula)], projected_grain_keys=projected)
+def _check(expression: str, *, projected=frozenset()) -> None:
+    check_transform_inputs(roots=[_key(expression)], projected_grain_keys=projected)
 
 
 def _plan(**kw) -> None:

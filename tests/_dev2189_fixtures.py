@@ -57,7 +57,7 @@ ITEMS = [(1, 1, 2.0, "a"), (2, 1, 1.0, "a"), (3, 3, 5.0, "b"), (4, 4, 1.0, "a")]
 ORDER_TOTALS_SQL = "SELECT customer_id, SUM(amount) AS total FROM orders GROUP BY customer_id"
 
 
-def rls_models(*, data_source: str = "test") -> list[SlayerDataset]:
+def rls_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
     """``regions`` ← ``customers`` ← ``orders`` ← ``items``, plus a sql-mode ``order_totals``."""
     return [
         SlayerDataset(name="regions", sql_table="regions", data_source=data_source, fields=[
@@ -159,8 +159,8 @@ def _seed_file(backend: str, db_path: str) -> None:
             con.execute(stmt)
 
 
-async def save_models(storage: YAMLStorage, *, data_source: str = "test") -> None:
-    for model in rls_models(data_source=data_source):
+async def save_datasets(storage: YAMLStorage, *, data_source: str = "test") -> None:
+    for model in rls_datasets(data_source=data_source):
         await storage.save_dataset(model)
 
 
@@ -177,7 +177,7 @@ async def file_engine(backend: str) -> AsyncGenerator[tuple[SlayerQueryEngine, D
         ds = DatasourceConfig(name="test", type=backend, database=db_path)
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
-            await save_models(storage)
+            await save_datasets(storage)
             await save_query_backed(engine)
             yield engine, ds
 
@@ -190,7 +190,7 @@ async def emission_engine(dialect: str) -> AsyncGenerator[tuple[SlayerQueryEngin
         storage = YAMLStorage(base_dir=tmp)
         await storage.save_datasource(ds)
         async with owned_query_engine(storage=storage) as engine:
-            await save_models(storage)
+            await save_datasets(storage)
             # A query-backed model's save-time dry run never connects.
             await storage.save_dataset(QUERY_BACKED, _validate=False)
             yield engine, ds

@@ -20,7 +20,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle, stage_bundle_with_sibl
 from slayer.sql.generator import SQLGenerator
 
 from tests import _dev1948_fixtures as f48
-from tests._dev1966_fixtures import customers_model, dev1966_engine, m, orders_model, query
+from tests._dev1966_fixtures import customers_dataset, dev1966_engine, m, orders_dataset, query
 from tests._law_harness import DEFERRAL_SITES
 
 _INDEX_YAML = pathlib.Path(__file__).parent.parent / "architecture" / "index.yaml"
@@ -56,28 +56,28 @@ def _schema(name: str) -> StageSchema:
 
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
-        dialect="postgres", population=orders_model(),
-        referenced_datasets=[orders_model(), customers_model()])
+        dialect="postgres", population=orders_dataset(),
+        referenced_datasets=[orders_dataset(), customers_dataset()])
 
 
 class TestStageBundleCollision:
     def test_identical_host_entry_is_deduplicated(self) -> None:
         out = stage_bundle_with_siblings(
-            bundle=_bundle(), source_dataset=orders_model(),
+            bundle=_bundle(), source_dataset=orders_dataset(),
             sibling_schemas={"c": _schema("c")}, data_source="test")
         names = [x.name for x in out.referenced_datasets]
         assert sorted(names) == ["c", "customers", "orders"]
 
     def test_an_extended_host_replaces_its_base(self) -> None:
-        extended = orders_model().model_copy(update={"columns": [
-            *orders_model().fields, DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.DOUBLE)]})
+        extended = orders_dataset().model_copy(update={"columns": [
+            *orders_dataset().fields, DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.DOUBLE)]})
         out = stage_bundle_with_siblings(
             bundle=_bundle(), source_dataset=extended, sibling_schemas={}, data_source="test")
         (host,) = [x for x in out.referenced_datasets if x.name == "orders"]
         assert host.get_field("double_amount") is not None
 
     def test_a_stage_identity_meeting_a_different_model_raises(self) -> None:
-        bundle, host, siblings = _bundle(), orders_model(), {"customers": _schema("customers")}
+        bundle, host, siblings = _bundle(), orders_dataset(), {"customers": _schema("customers")}
         with pytest.raises(ValueError, match="customers"):
             stage_bundle_with_siblings(
                 bundle=bundle, source_dataset=host, sibling_schemas=siblings, data_source="test")

@@ -28,7 +28,7 @@ from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surf
     TimeDimension,
     TimeGranularity,
     approx_sum,
-    dev1739_models,
+    dev1739_datasets,
     gen,
     make_exec_engine,
     month_key,
@@ -37,7 +37,7 @@ from tests._dev1824_fixtures import (  # noqa: F401 — re-exported fixture surf
     rows_by,
 )
 
-dev1865_models = dev1739_models
+dev1865_models = dev1739_datasets
 
 #: customers.spend:sum(partition_by=customers.regions.name) — RegN=c1+c2, RegS=c3.
 CM_REGION_SPEND = {"RegN": 300.0, "RegS": 50.0}
@@ -45,9 +45,9 @@ CM_REGION_SPEND = {"RegN": 300.0, "RegS": 50.0}
 CM_TIER_SPEND = {"gold": 150.0, "silver": 200.0}
 
 
-def bundle(models: Optional[List] = None) -> ResolvedSourceBundle:
-    models = models if models is not None else dev1865_models()
-    return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
+def bundle(datasets: Optional[List] = None) -> ResolvedSourceBundle:
+    datasets = datasets if datasets is not None else dev1865_models()
+    return ResolvedSourceBundle(dialect="postgres", population=datasets[0], referenced_datasets=datasets[1:])
 
 
 def plan(query: SlayerQuery, **kw):
@@ -59,6 +59,6 @@ __all__ = [
     "BAND35", "BAND35_OF", "CITY_TOTAL", "CM_REGION_SPEND", "CM_TIER_SPEND",
     "FieldRef", "GRAND_TOTAL", "DatasetMetric", "RC_GROUPS", "REGION_TOTAL",
     "SlayerQuery", "TRAILING_90D_REGION", "TimeDimension", "TimeGranularity",
-    "approx_sum", "bundle", "dev1739_models", "dev1865_models", "gen",
+    "approx_sum", "bundle", "dev1739_datasets", "dev1865_models", "gen",
     "make_exec_engine", "month_key", "month_td", "plan", "q", "rows_by",
 ]

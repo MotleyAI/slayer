@@ -57,7 +57,7 @@ _CANON_ORDER = "orders.id_count"
 _CANON_UNIQUE = "orders.customer_count_distinct"
 
 
-def _habit_measures() -> list[DatasetMetric]:
+def _habit_metrics() -> list[DatasetMetric]:
     """order_count / unique_customers, plus the formula that divides them."""
     return [
         DatasetMetric(name="order_count", expression="count(id)"),
@@ -67,7 +67,7 @@ def _habit_measures() -> list[DatasetMetric]:
     ]
 
 
-def _orders_model(measures: list[DatasetMetric] | None = None) -> SlayerDataset:
+def _orders_dataset(metrics: list[DatasetMetric] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -81,11 +81,11 @@ def _orders_model(measures: list[DatasetMetric] | None = None) -> SlayerDataset:
             DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
         ],
         relationships=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]])],
-        metrics=_habit_measures() if measures is None else measures,
+        metrics=_habit_metrics() if metrics is None else metrics,
     )
 
 
-def _stores_model() -> SlayerDataset:
+def _stores_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="stores",
         sql_table="stores",
@@ -98,7 +98,7 @@ def _stores_model() -> SlayerDataset:
 
 
 async def _make_engine(
-    tmp_path, *, seed: bool, measures: list[DatasetMetric] | None = None
+    tmp_path, *, seed: bool, metrics: list[DatasetMetric] | None = None
 ) -> SlayerQueryEngine:
     """Build a YAMLStorage-backed engine over the orders(+stores) model.
 
@@ -135,8 +135,8 @@ async def _make_engine(
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=str(db_file))
     )
-    await storage.save_dataset(_stores_model())
-    await storage.save_dataset(_orders_model(measures))
+    await storage.save_dataset(_stores_dataset())
+    await storage.save_dataset(_orders_dataset(metrics))
     return SlayerQueryEngine(storage=storage)
 
 
@@ -163,10 +163,10 @@ def _referenced_but_undeclared(sql: str) -> set[str]:
     return referenced - declared
 
 
-async def _dry_sql(tmp_path, measures: list[str], **query_kw: Any) -> str:
+async def _dry_sql(tmp_path, metrics: list[str], **query_kw: Any) -> str:
     """Dry-run an orders query and return the emitted SQL."""
     engine = await _make_engine(tmp_path, seed=False)
-    query = SlayerQuery(population="orders", metrics=measures, **query_kw)
+    query = SlayerQuery(population="orders", metrics=metrics, **query_kw)
     resp = await engine.execute(query=query, dry_run=True)
     assert resp.sql is not None
     return resp.sql
@@ -232,7 +232,7 @@ async def test_transform_wrapped_reference_follows_rename(tmp_path) -> None:
     engine = await _make_engine(
         tmp_path,
         seed=False,
-        measures=[
+        metrics=[
             DatasetMetric(name="order_count", expression="count(id)"),
             DatasetMetric(name="running_orders", expression="cumsum(order_count)"),
         ],
@@ -256,7 +256,7 @@ async def test_change_pct_desugar_reference_follows_rename(tmp_path) -> None:
     engine = await _make_engine(
         tmp_path,
         seed=False,
-        measures=[
+        metrics=[
             DatasetMetric(name="order_count", expression="count(id)"),
             DatasetMetric(name="mom_orders", expression="change_pct(order_count)"),
         ],
@@ -310,7 +310,7 @@ async def test_formula_referencing_nonexistent_measure_raises(tmp_path) -> None:
     engine = await _make_engine(
         tmp_path,
         seed=False,
-        measures=[
+        metrics=[
             DatasetMetric(name="order_count", expression="count(id)"),
             DatasetMetric(name="bad", expression="order_count / nonexistent_measure"),
         ],
@@ -327,7 +327,7 @@ async def test_transform_referencing_nonexistent_measure_raises(tmp_path) -> Non
     engine = await _make_engine(
         tmp_path,
         seed=False,
-        measures=[
+        metrics=[
             DatasetMetric(name="order_count", expression="count(id)"),
             DatasetMetric(name="running_bad", expression="cumsum(nonexistent_measure)"),
         ],

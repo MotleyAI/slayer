@@ -16,7 +16,7 @@ from slayer.core.errors import (
 )
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
-from tests._dev2102_fixtures import DIALECTS, DS, customers, ext, join, orders, q, rows, shop, with_models
+from tests._dev2102_fixtures import DIALECTS, DS, customers, ext, join, orders, q, rows, shop, with_datasets
 
 _N = {"formula": "count(*)", "name": "n"}
 _S = {"name": "s", "population": "orders", "dimensions": ["customers.name"], "metrics": [_N]}
@@ -31,9 +31,9 @@ def _joined(root: str, ref: str, *, stage: dict | None = None, pairs: list[list[
                                   extensions=[ext(root, joins=[join("s", pairs or _ISSUE_PAIRS)])])]
 
 
-async def _refused(payload: Any, *, models: list[SlayerDataset] | None = None,
+async def _refused(payload: Any, *, datasets: list[SlayerDataset] | None = None,
                    exc: type[Exception] = UnknownReferenceError) -> Any:
-    async with shop("sqlite", models) as engine:
+    async with shop("sqlite", datasets) as engine:
         with pytest.raises(exc) as ei:
             await engine.execute(payload)
     return ei.value
@@ -87,8 +87,8 @@ async def test_a_stored_roots_dotted_spelling_suggests_the_flat_column() -> None
 
 
 async def test_a_routable_target_does_not_override_the_flat_column() -> None:
-    models = with_models(customers(DatasetRelationship(to="regions", join_pairs=_REGION_PAIRS)))
-    err = await _refused(_joined("regions", "s.customers.name"), models=models)
+    models = with_datasets(customers(DatasetRelationship(to="regions", join_pairs=_REGION_PAIRS)))
+    err = await _refused(_joined("regions", "s.customers.name"), datasets=models)
     assert "s.customers__name" in err.suggestion
     assert "'customers.name'" not in str(err)
 
@@ -110,14 +110,14 @@ def _root_joining(target: str, ref: str) -> SlayerQuery:
 
 async def test_the_longest_flat_name_wins() -> None:
     m1 = _authored("m1", "a__b__c", DatasetRelationship(to="m2", name="a", join_pairs=[["id", "id"]]))
-    err = await _refused(_root_joining("m1", "m1.a.b.c"), models=with_models(m1, _authored("m2", "b__c")))
+    err = await _refused(_root_joining("m1", "m1.a.b.c"), datasets=with_datasets(m1, _authored("m2", "b__c")))
     assert "'m1'" in err.scope_summary
     assert "m1.a__b__c" in err.suggestion
     assert "m1.a.b__c" not in err.suggestion
 
 
 async def test_an_authored_models_literal_flat_column_is_suggested() -> None:
-    err = await _refused(_root_joining("m", "m.a.b"), models=with_models(_authored("m", "a__b")))
+    err = await _refused(_root_joining("m", "m.a.b"), datasets=with_datasets(_authored("m", "a__b")))
     assert "'m'" in err.scope_summary
     assert "m.a__b" in err.suggestion
 
@@ -125,13 +125,13 @@ async def test_an_authored_models_literal_flat_column_is_suggested() -> None:
 async def test_a_flat_column_wins_over_an_opaque_list_hop() -> None:
     m = _authored("m", "a__b__c")
     m = m.model_copy(update={"fields": [*m.fields, DatasetField(name="a", sql="name", datatype=DataType.ARRAY, element_type=DataType.UNKNOWN)]})
-    err = await _refused(_root_joining("m", "m.a.b.c"), models=with_models(m))
+    err = await _refused(_root_joining("m", "m.a.b.c"), datasets=with_datasets(m))
     assert "m.a__b__c" in err.suggestion
 
 
 def _hr(*names: str) -> list[SlayerDataset]:
     """``customers → regions`` under each named edge, so ``customers__regions__name`` respells each."""
-    return with_models(customers(*(DatasetRelationship(to="regions", name=n, join_pairs=_REGION_PAIRS)
+    return with_datasets(customers(*(DatasetRelationship(to="regions", name=n, join_pairs=_REGION_PAIRS)
                                    for n in names)))
 
 
@@ -139,14 +139,14 @@ async def test_a_stale_respelling_suggests_the_canonical_column(monkeypatch: pyt
     recorded: list[Any] = []
     monkeypatch.setattr(scope_module, "record_stale_spelling", lambda **kw: recorded.append(kw))
     stage = {**_S, "dimensions": ["customers.hr.name"]}
-    err = await _refused(_joined("addresses", "s.customers.regions.name", stage=stage), models=_hr("hr"))
+    err = await _refused(_joined("addresses", "s.customers.regions.name", stage=stage), datasets=_hr("hr"))
     assert "s.customers__hr__name" in err.suggestion
     assert recorded == []
 
 
 async def test_an_ambiguous_respelling_gives_no_hint() -> None:
     stage = {**_S, "dimensions": ["customers.hr.name", "customers.hr2.name"]}
-    err = await _refused(_joined("addresses", "s.customers.regions.name", stage=stage), models=_hr("hr", "hr2"),
+    err = await _refused(_joined("addresses", "s.customers.regions.name", stage=stage), datasets=_hr("hr", "hr2"),
                          exc=UnresolvableDimensionRelationshipError)
     assert err.reference == "s.customers.regions.name"
     assert "customers__" not in _hint(err)
@@ -176,7 +176,7 @@ async def test_a_quoted_segment_in_the_wrong_case_gives_no_hint(ref: str, refere
 async def test_a_routing_short_form_is_not_pre_empted_by_a_flat_column() -> None:
     flat = orders().model_copy(update={"columns": [
         *orders().fields, DatasetField(name="regions__name", sql="status", datatype=DataType.TEXT)]})
-    models = with_models(flat, customers(DatasetRelationship(to="regions", join_pairs=_REGION_PAIRS)))
+    models = with_datasets(flat, customers(DatasetRelationship(to="regions", join_pairs=_REGION_PAIRS)))
     async with shop("sqlite", models) as engine:
         resp = await engine.execute(q(source_model="orders", dimensions=["id", "regions.name"]))
     assert rows(resp, "orders.id", "orders.customers.regions.name") == [
@@ -194,7 +194,7 @@ async def test_a_downstream_dotted_spelling_shaped_like_a_list_element_names_the
         *customers().fields, DatasetField(name="value", sql="credit", datatype=DataType.DOUBLE)]})
     stage = {**_S, "dimensions": ["customers.value"]}
     err = await _refused([q(**stage), q(source_model="s", dimensions=["s.customers.value"])],
-                         models=with_models(valued), exc=IllegalScopeReferenceError)
+                         datasets=with_datasets(valued), exc=IllegalScopeReferenceError)
     assert "customers__value" in err.reason
 
 

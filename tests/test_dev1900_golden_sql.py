@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests._dev1900_fixtures import dev1900_models
+from tests._dev1900_fixtures import dev1900_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 from slayer.core.query import SlayerQuery
@@ -19,7 +19,7 @@ from slayer.core.query import SlayerQuery
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1900_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
-_MODEL_SETS = {"dev1900": dev1900_models}
+_MODEL_SETS = {"dev1900": dev1900_datasets}
 _REAGG_GOOD = ("weighted_avg(sum(amount, partition_by=customers.regions.id), "
                "weight=customers.regions.derived_pop)")
 _REAGG_BAD = ("weighted_avg(sum(amount, partition_by=customers.regions.id), "
@@ -84,7 +84,7 @@ async def _generate_one(case, dialect: str):
             kw["to_many_handling"] = case["mode"]
         query = SlayerQuery(population=case["source"], **kw)
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract

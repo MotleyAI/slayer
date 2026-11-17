@@ -15,7 +15,7 @@ from tests._dev2120_fixtures import (
     emit_lib,
     lib_engine,
     lib_ids,
-    lib_model,
+    lib_dataset,
     lib_query,
     lib_values,
 )
@@ -34,8 +34,8 @@ async def sqlite_engine():
         yield e
 
 
-def _mode_a_model() -> SlayerDataset:
-    base = lib_model()
+def _mode_a_dataset() -> SlayerDataset:
+    base = lib_dataset()
     return base.model_copy(update={"fields": [
         *base.fields, DatasetField(name="is_ada", sql="word LIKE 'ada%'", datatype=DataType.BOOLEAN),
     ]})
@@ -47,7 +47,7 @@ def _nocase_seed(db_path: str) -> None:
         con.executemany("INSERT INTO people VALUES (?, ?)", [(1, "ada"), (2, "Ada"), (3, "bob")])
 
 
-def _people_model() -> SlayerDataset:
+def _people_dataset() -> SlayerDataset:
     return SlayerDataset(name="people", sql_table="people", data_source="test", fields=[
         DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT),
     ])
@@ -58,7 +58,7 @@ class TestCaseSensitivity:
         assert lib_ids(await sqlite_engine.execute(lib_query(filters=["word LIKE 'ada%'"]))) == {3}
 
     async def test_sqlite_like_ignores_a_nocase_column(self) -> None:
-        async with seeded_exec_engine(dialect="sqlite", seed=_nocase_seed, models=[_people_model()]) as (engine, _):
+        async with seeded_exec_engine(dialect="sqlite", seed=_nocase_seed, datasets=[_people_dataset()]) as (engine, _):
             resp = await engine.execute(SlayerQuery.model_validate({
                 "population": "people", "dimensions": ["id"], "filter": ["name LIKE 'ada%'"]}))
             assert {int(r["people.id"]) for r in resp.data} == {1}
@@ -67,7 +67,7 @@ class TestCaseSensitivity:
         assert lib_ids(await engine.execute(lib_query(filters=["word ILIKE 'ADA%'"]))) == {3, 4}
 
     async def test_mode_a_like_on_sqlite_unchanged(self) -> None:
-        async with lib_engine("sqlite", models=[_mode_a_model()]) as engine:
+        async with lib_engine("sqlite", datasets=[_mode_a_dataset()]) as engine:
             values = lib_values(await engine.execute(lib_query({"expression": "is_ada", "name": "v"},
                                                                filters=["id IN (3, 4)"])))
             assert {k: bool(v) for k, v in values.items()} == {3: True, 4: True}
@@ -113,7 +113,7 @@ class TestEmission:
 
     async def test_sqlite_mode_a_like_not_rewritten(self) -> None:
         sql = await emit_lib(lib_query({"expression": "is_ada", "name": "v"}), dialect="sqlite",
-                             models=[_mode_a_model()])
+                             datasets=[_mode_a_dataset()])
         assert "GLOB" not in sql.upper(), sql
 
     async def test_sql_server_brackets_a_literal_bracket(self) -> None:

@@ -12,7 +12,7 @@ from slayer.core.syntax import (
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2101_fixtures import (
-    EXEC_BACKENDS, customers_model, emit, ids, m, make_exec_engine, num, orders_model, q, single,
+    EXEC_BACKENDS, customers_dataset, emit, ids, m, make_exec_engine, num, orders_dataset, q, single,
 )
 
 
@@ -137,11 +137,11 @@ class TestExecution:
         assert ids(resp) == {2, 4}, resp.sql
 
     async def test_markers_in_a_quoted_identifier_name_the_column(self) -> None:
-        orders = orders_model()
+        orders = orders_dataset()
         orders.fields.append(DatasetField(name="x--y", sql="amount", datatype=DataType.DOUBLE))
-        models = [orders, customers_model()]
-        quoted = await emit(q(measures=[m('sum("x--y")')]), dialect="postgres", models=models)
-        plain = await emit(q(measures=[m("sum(amount)")]), dialect="postgres", models=models)
+        models = [orders, customers_dataset()]
+        quoted = await emit(q(measures=[m('sum("x--y")')]), dialect="postgres", datasets=models)
+        plain = await emit(q(measures=[m("sum(amount)")]), dialect="postgres", datasets=models)
         assert quoted.replace("x--y", "amount") == plain, quoted
 
     async def test_markers_in_a_literal_are_text(self, engine: SlayerQueryEngine) -> None:

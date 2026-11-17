@@ -42,7 +42,7 @@ def client(storage: YAMLStorage) -> SlayerClient:
     return SlayerClient(storage=storage)
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders_t",
@@ -63,7 +63,7 @@ def _ds() -> DatasourceConfig:
 
 async def _save_orders(storage: YAMLStorage) -> None:
     await storage.save_datasource(_ds())
-    await storage.save_dataset(_orders_model())
+    await storage.save_dataset(_orders_dataset())
 
 
 # Minimal response payload that ``SlayerClient._parse_response`` consumes

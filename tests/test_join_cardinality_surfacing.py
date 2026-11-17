@@ -16,7 +16,7 @@ from slayer.search.render import render_field_text, render_dataset_text
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _orders_model(*, cardinality: RelationshipCardinality | None, email_unique: bool) -> SlayerDataset:
+def _orders_dataset(*, cardinality: RelationshipCardinality | None, email_unique: bool) -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -36,7 +36,7 @@ def _orders_model(*, cardinality: RelationshipCardinality | None, email_unique: 
     )
 
 
-def _customers_model() -> SlayerDataset:
+def _customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers",
         sql_table="customers",
@@ -57,7 +57,7 @@ class TestModelRender:
             await storage.save_datasource(
                 DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
-            model = _orders_model(
+            model = _orders_dataset(
                 cardinality=RelationshipCardinality.MANY_TO_ONE, email_unique=True
             )
             out = await render_dataset_inspection(
@@ -73,7 +73,7 @@ class TestModelRender:
             await storage.save_datasource(
                 DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
-            model = _orders_model(
+            model = _orders_dataset(
                 cardinality=RelationshipCardinality.MANY_TO_ONE, email_unique=True
             )
             out = await render_dataset_inspection(
@@ -89,7 +89,7 @@ class TestModelRender:
             await storage.save_datasource(
                 DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
-            model = _orders_model(
+            model = _orders_dataset(
                 cardinality=RelationshipCardinality.MANY_TO_ONE, email_unique=True
             )
             md = await render_dataset_inspection(
@@ -103,7 +103,7 @@ class TestModelRender:
             await storage.save_datasource(
                 DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
-            model = _orders_model(
+            model = _orders_dataset(
                 cardinality=RelationshipCardinality.MANY_TO_ONE, email_unique=True
             )
             md = await render_dataset_inspection(
@@ -128,9 +128,9 @@ class TestSearchGraphEdge:
             await storage.save_datasource(
                 DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
-            await storage.save_dataset(_customers_model())
+            await storage.save_dataset(_customers_dataset())
             await storage.save_dataset(
-                _orders_model(cardinality=RelationshipCardinality.MANY_TO_ONE, email_unique=False)
+                _orders_dataset(cardinality=RelationshipCardinality.MANY_TO_ONE, email_unique=False)
             )
             search_graph.clear_cache()
             ids = await search_graph.get_filtered_ids(
@@ -154,7 +154,7 @@ class TestEditModelRoundTrip:
                 DatasourceConfig(name="ds", type="sqlite", database=":memory:")
             )
             await storage.save_dataset(
-                _orders_model(cardinality=None, email_unique=False)
+                _orders_dataset(cardinality=None, email_unique=False)
             )
             server = create_mcp_server(storage=storage)
 
@@ -188,14 +188,14 @@ class TestEditModelRoundTrip:
 
 class TestNoEmbeddingChurn:
     def test_cardinality_not_in_model_embedding_text(self) -> None:
-        plain = _orders_model(cardinality=None, email_unique=False)
-        carded = _orders_model(
+        plain = _orders_dataset(cardinality=None, email_unique=False)
+        carded = _orders_dataset(
             cardinality=RelationshipCardinality.MANY_TO_ONE, email_unique=False
         )
         assert render_dataset_text(dataset=carded) == render_dataset_text(dataset=plain)
 
     def test_unique_not_in_column_embedding_text(self) -> None:
-        model = _orders_model(cardinality=None, email_unique=False)
+        model = _orders_dataset(cardinality=None, email_unique=False)
         plain_col = DatasetField(name="email", sql="email", datatype=DataType.TEXT, unique=False)
         uniq_col = DatasetField(name="email", sql="email", datatype=DataType.TEXT, unique=True)
         assert render_field_text(dataset=model, field=uniq_col) == render_field_text(

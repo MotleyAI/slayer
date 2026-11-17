@@ -27,7 +27,7 @@ from tests._dev1935_fixtures import (
     NOT_GOLD_AND_OK,
     OR_MIX_LOCAL,
     REDUCED_PUSH_OR,
-    dev1900_models,
+    dev1900_datasets,
 )
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
@@ -88,11 +88,11 @@ def _cases() -> dict:
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1900_models()
+    models = dev1900_datasets()
     try:
         query = SlayerQuery(population=case["source"], **case["kw"])
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract

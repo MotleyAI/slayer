@@ -29,9 +29,9 @@ from tests._dev2015_fixtures import (
     GRANULARITIES,
     GRANULARITY_NAMES,
     bucket_key,
-    bucketed_model,
+    bucketed_dataset,
     cg_engine,
-    cg_orders_model,
+    cg_orders_dataset,
     m,
     spine_td,
     value,
@@ -59,10 +59,10 @@ def _series(resp, *, column: str, width: int = 10) -> dict[str, float]:
     return {bucket_key(value(r, column), width=width): float(value(r, "s")) for r in resp.data}
 
 
-async def _grouped(engine, *, granularity: str, column: str = "ts", model: str = "events",
+async def _grouped(engine, *, granularity: str, column: str = "ts", dataset: str = "events",
                    series: str | None = None, width: int = 10) -> dict[str, float]:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "population": model, "metrics": [m("sum(amount)", "s")],
+        "population": dataset, "metrics": [m("sum(amount)", "s")],
         "time_dimensions": [{"field": column, "granularity": granularity}],
         "filter": [f"series = '{series}'"] if series else [],
     }))
@@ -139,7 +139,7 @@ def _weekday(origin: Any) -> int:
 
 class TestBucketing:
     async def test_fiscal_year(self, engine) -> None:
-        assert await _grouped(engine, granularity="fiscal_year", column="order_date", model="orders") == FY_ROWS
+        assert await _grouped(engine, granularity="fiscal_year", column="order_date", dataset="orders") == FY_ROWS
 
     @pytest.mark.parametrize("column", ["ts", "d"])
     async def test_mid_month_origin(self, engine, column) -> None:
@@ -251,7 +251,7 @@ class TestEveryPosition:
         cfg = await engine.storage.get_datasource("test")
         assert cfg is not None
         await engine.storage.save_datasource(DatasourceConfig(name="other", type=cfg.type, database=cfg.database))
-        other = cg_orders_model().model_copy(update={"name": "orders2", "data_source": "other"})
+        other = cg_orders_dataset().model_copy(update={"name": "orders2", "data_source": "other"})
         await engine.storage.save_dataset(other)
         query = SlayerQuery.model_validate({
             "population": "orders2", "metrics": [m("sum(amount)", "s")],
@@ -267,14 +267,14 @@ class TestEveryPosition:
 # Nesting is boundary containment
 # ---------------------------------------------------------------------------
 
-async def _save(engine: SlayerQueryEngine, model: SlayerDataset) -> None:
-    await engine.storage.save_dataset(model)
+async def _save(engine: SlayerQueryEngine, dataset: SlayerDataset) -> None:
+    await engine.storage.save_dataset(dataset)
 
 
 class TestNesting:
     async def test_month_nests_into_the_fiscal_year_week_does_not(self, engine) -> None:
-        await _save(engine, bucketed_model(name="o_month", source="orders", column="order_date", granularity="month"))
-        await _save(engine, bucketed_model(name="o_week", source="orders", column="order_date", granularity="week"))
+        await _save(engine, bucketed_dataset(name="o_month", source="orders", column="order_date", granularity="month"))
+        await _save(engine, bucketed_dataset(name="o_week", source="orders", column="order_date", granularity="week"))
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "o_month", "metrics": [m("sum(rev)", "s")],
             "time_dimensions": [{"field": "order_date", "granularity": "fiscal_year"}],
@@ -309,7 +309,7 @@ class TestNesting:
         ("hour", "quarter_hour", False),
     ])
     async def test_minute_multiples(self, engine, stored, requested, ok) -> None:
-        await _save(engine, bucketed_model(name="ev_b", source="events", column="ts", granularity=stored))
+        await _save(engine, bucketed_dataset(name="ev_b", source="events", column="ts", granularity=stored))
         query = SlayerQuery.model_validate({
             "population": "ev_b", "metrics": [m("sum(rev)", "s")],
             "time_dimensions": [{"field": "ts", "granularity": requested}],
@@ -372,7 +372,7 @@ class TestNesting:
         five_hours = {"name": "five_hours", "base": "hour", "multiple": 5}
         async with cg_engine(backend, datasource_fields={"granularities": [*GRANULARITIES, five_hours]}) as eng:
             for stored in ("five_hours", "quarter_hour"):
-                await _save(eng, bucketed_model(name=f"ev_{stored}", source="events", column="ts",
+                await _save(eng, bucketed_dataset(name=f"ev_{stored}", source="events", column="ts",
                                                 granularity=stored))
             ok = await eng.execute(SlayerQuery.model_validate({
                 "population": "ev_quarter_hour", "metrics": [m("sum(rev)", "s")],
@@ -394,7 +394,7 @@ class TestNesting:
 
 class TestColumnGranularity:
     async def test_custom_value_round_trips_and_rebuckets(self, engine: SlayerQueryEngine) -> None:
-        model = cg_orders_model(order_date_granularity="fiscal_year").model_copy(update={"name": "orders_fy"})
+        model = cg_orders_dataset(order_date_granularity="fiscal_year").model_copy(update={"name": "orders_fy"})
         await _save(engine, model)
         loaded = await engine.storage.get_dataset("orders_fy", data_source="test")
         assert loaded is not None
@@ -415,7 +415,7 @@ class TestColumnGranularity:
         cfg = await engine.storage.get_datasource("test")
         assert cfg is not None
         await engine.storage.save_datasource(DatasourceConfig(name="other", type=cfg.type, database=cfg.database))
-        model = cg_orders_model(order_date_granularity="fiscal_year").model_copy(
+        model = cg_orders_dataset(order_date_granularity="fiscal_year").model_copy(
             update={"name": "orders2", "data_source": "other"},
         )
         with pytest.raises(SlayerError) as exc:

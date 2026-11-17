@@ -24,7 +24,7 @@ from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _make_model() -> SlayerDataset:
+def _make_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -50,7 +50,7 @@ async def test_yaml_update_column_sampled_persists() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        await storage.save_dataset(_make_model())
+        await storage.save_dataset(_make_dataset())
         await storage.update_field_sampled(
             data_source="ds", dataset_name="orders",
             field_name="amount", sampled="0.0 .. 9999.99",
@@ -71,7 +71,7 @@ async def test_yaml_update_column_sampled_to_none_clears() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        m = _make_model()
+        m = _make_dataset()
         m.fields[1].sampled = "stale value"
         await storage.save_dataset(m)
         await storage.update_field_sampled(
@@ -91,7 +91,7 @@ async def test_yaml_update_column_sampled_preserves_other_fields() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        m = _make_model()
+        m = _make_dataset()
         m.fields[1].description = "preserve me"
         m.fields[1].label = "Order Amount"
         await storage.save_dataset(m)
@@ -129,7 +129,7 @@ async def test_yaml_update_column_sampled_unknown_column_errors() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        await storage.save_dataset(_make_model())
+        await storage.save_dataset(_make_dataset())
         with pytest.raises((KeyError, ValueError)):
             await storage.update_field_sampled(
                 data_source="ds", dataset_name="orders",
@@ -151,7 +151,7 @@ async def test_sqlite_update_column_sampled_persists() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        await storage.save_dataset(_make_model())
+        await storage.save_dataset(_make_dataset())
         await storage.update_field_sampled(
             data_source="ds", dataset_name="orders",
             field_name="amount", sampled="0.0 .. 9999.99",
@@ -169,7 +169,7 @@ async def test_sqlite_update_column_sampled_preserves_other_fields() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        m = _make_model()
+        m = _make_dataset()
         m.fields[1].description = "preserve me"
         await storage.save_dataset(m)
         await storage.update_field_sampled(
@@ -198,7 +198,7 @@ async def test_factory_storage_update_column_sampled() -> None:
         await wrapped.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        await wrapped.save_dataset(_make_model())
+        await wrapped.save_dataset(_make_dataset())
         await wrapped.update_field_sampled(
             data_source="ds", dataset_name="orders",
             field_name="amount", sampled="0 .. 100",
@@ -218,7 +218,7 @@ async def test_factory_storage_sqlite_update_column_sampled() -> None:
         await wrapped.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        await wrapped.save_dataset(_make_model())
+        await wrapped.save_dataset(_make_dataset())
         await wrapped.update_field_sampled(
             data_source="ds", dataset_name="orders",
             field_name="amount", sampled="0 .. 100",
@@ -241,7 +241,7 @@ async def test_two_sampled_updates_to_different_columns_dont_clobber_each_other(
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        await storage.save_dataset(_make_model())
+        await storage.save_dataset(_make_dataset())
         await storage.update_field_sampled(
             data_source="ds", dataset_name="orders",
             field_name="amount", sampled="0 .. 100",
@@ -274,7 +274,7 @@ async def test_yaml_round_trips_sampled_values_list() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        await storage.save_dataset(_make_model())
+        await storage.save_dataset(_make_dataset())
         await storage.update_field_sampled(
             data_source="ds", dataset_name="orders",
             field_name="status",
@@ -298,7 +298,7 @@ async def test_yaml_round_trips_values_with_commas() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        await storage.save_dataset(_make_model())
+        await storage.save_dataset(_make_dataset())
         comma_values = ["R$ 1,000–3,000", "R$ 3,000–5,000", "R$ 5,000–10,000"]
         await storage.update_field_sampled(
             data_source="ds", dataset_name="orders",
@@ -322,7 +322,7 @@ async def test_yaml_round_trips_empty_list_for_all_null_column() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        await storage.save_dataset(_make_model())
+        await storage.save_dataset(_make_dataset())
         await storage.update_field_sampled(
             data_source="ds", dataset_name="orders",
             field_name="status",
@@ -343,7 +343,7 @@ async def test_yaml_round_trips_overflow_with_top_50() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        await storage.save_dataset(_make_model())
+        await storage.save_dataset(_make_dataset())
         top_50 = [f"v{i:03d}" for i in range(50)]
         top_20_joined = ", ".join(top_50[:20])
         await storage.update_field_sampled(
@@ -368,7 +368,7 @@ async def test_yaml_clear_sampled_values_independently_of_sampled() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        m = _make_model()
+        m = _make_dataset()
         m.fields[2].sampled = "paid, refunded"
         m.fields[2].sampled_values = ["paid", "refunded"]
         m.fields[2].distinct_count = 2
@@ -395,7 +395,7 @@ async def test_yaml_preserves_other_columns_when_updating_one() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        m = _make_model()
+        m = _make_dataset()
         m.fields[1].sampled = "0 .. 100"      # amount
         m.fields[1].distinct_count = None
         m.fields[2].sampled = "paid"           # status
@@ -428,7 +428,7 @@ async def test_sqlite_round_trips_sampled_values_and_distinct_count() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        await storage.save_dataset(_make_model())
+        await storage.save_dataset(_make_dataset())
         await storage.update_field_sampled(
             data_source="ds", dataset_name="orders",
             field_name="status",
@@ -451,7 +451,7 @@ async def test_sqlite_clear_distinct_count_via_none() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        m = _make_model()
+        m = _make_dataset()
         m.fields[2].distinct_count = 5
         await storage.save_dataset(m)
         await storage.update_field_sampled(
@@ -474,7 +474,7 @@ async def test_factory_storage_sampled_values_and_distinct_count() -> None:
         await wrapped.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        await wrapped.save_dataset(_make_model())
+        await wrapped.save_dataset(_make_dataset())
         await wrapped.update_field_sampled(
             data_source="ds", dataset_name="orders",
             field_name="status",
@@ -496,7 +496,7 @@ async def test_update_does_not_clobber_distinct_count_for_other_columns() -> Non
         await storage.save_datasource(DatasourceConfig(
             name="ds", type="sqlite", database=":memory:",
         ))
-        await storage.save_dataset(_make_model())
+        await storage.save_dataset(_make_dataset())
         await storage.update_field_sampled(
             data_source="ds", dataset_name="orders",
             field_name="status", sampled="paid",

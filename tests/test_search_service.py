@@ -40,7 +40,7 @@ from slayer.search.service import (
 from slayer.storage.base import DatasourceConfig, StorageBackend, resolve_storage
 from slayer.storage.sqlite_conn import open_connection, transaction
 
-from tests.search_helpers import seed_warehouse_models
+from tests.search_helpers import seed_warehouse_datasets
 
 
 @pytest_asyncio.fixture
@@ -48,7 +48,7 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
     """A small fixture corpus: 1 datasource, 2 models, 4 memories."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = resolve_storage(tmpdir)
-        await seed_warehouse_models(storage)
+        await seed_warehouse_datasets(storage)
         # 4 memories: 2 tagged on orders.amount_paid, 1 on customers, 1 untagged
         await storage.save_memory(
             learning="amount_paid is gross of refunds.",

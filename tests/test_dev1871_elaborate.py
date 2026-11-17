@@ -29,7 +29,7 @@ _STATUS = FieldKey(leaf="status")
 _TIER = FieldKey(leaf="tier")
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source=_DS, sql_table="orders",
         fields=[
@@ -42,7 +42,7 @@ def _orders_model() -> SlayerDataset:
 
 
 def _bundle() -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(dialect="postgres", population=_orders_model())
+    return ResolvedSourceBundle(dialect="postgres", population=_orders_dataset())
 
 
 def _partitioned_key(partition: FieldKey) -> AggregateKey:

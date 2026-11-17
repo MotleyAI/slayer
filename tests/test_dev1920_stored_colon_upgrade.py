@@ -96,7 +96,7 @@ class TestModelMeasures:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_values_unchanged(self, make_store: StoreFactory, backend: str,  # noqa: F811
                                     dialect: str) -> None:
-        stored = orders_doc(measures=_measures([s for s, _ in MODEL_MEASURES]))
+        stored = orders_doc(metrics=_measures([s for s, _ in MODEL_MEASURES]))
         storage = await make_store(backend=backend, dialect=dialect, models=[stored, customers_doc(), regions_doc()])
         model = await storage.get_dataset("orders", data_source=DS)
         assert model is not None
@@ -263,7 +263,7 @@ async def _renamed_store(*, tmp_path: Any, backend: str) -> StorageBackend:
     datasource = {**events_datasource_doc(db_path=live_db(base)), "granularities": [granularity_definition("left")]}
     return await write_raw_store(
         backend=backend, base=base, datasources=[datasource],
-        models=[events_doc(), events_query_backed_doc(name="by_left", stage=stage)],
+        datasets=[events_doc(), events_query_backed_doc(name="by_left", stage=stage)],
         memories=[events_memory_doc(memory_id="m_left", query=stage)],
     )
 
@@ -289,8 +289,8 @@ class TestGranularityRename:
 
 
 async def test_stored_colon_call_to_a_shadowing_aggregation_answers() -> None:
-    doc = t_doc(aggregations=[agg("reverse")], measures=[{"name": "c", "formula": "a:reverse"}])
-    async with stored_engine(models=[doc]) as engine:
+    doc = t_doc(aggregations=[agg("reverse")], metrics=[{"name": "c", "formula": "a:reverse"}])
+    async with stored_engine(datasets=[doc]) as engine:
         model = await engine.storage.get_dataset("t", data_source=DS)
         assert model is not None
         assert [m.expression for m in model.metrics] == ["reverse(a)"]

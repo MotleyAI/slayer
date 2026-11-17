@@ -78,7 +78,7 @@ def _orders_customers_regions() -> tuple[SlayerDataset, list[SlayerDataset]]:
 # ----------------------------------------------------------------------------
 
 @pytest.fixture
-def orders_model() -> SlayerDataset:
+def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -93,7 +93,7 @@ def orders_model() -> SlayerDataset:
 
 
 @pytest.fixture
-def accounts_model() -> SlayerDataset:
+def accounts_dataset() -> SlayerDataset:
     """Mirrors the ``fake_account_23`` repro: a derived boolean column whose SQL
     references a mixed-case physical column ``StateFlag``."""
     return SlayerDataset(
@@ -122,7 +122,7 @@ def accounts_model() -> SlayerDataset:
 
 class TestFlavorAOrderByUnprojected:
     async def test_orderby_nonprojected_column_emits_split_not_composite(
-        self, orders_model: SlayerDataset
+        self, orders_dataset: SlayerDataset
     ) -> None:
         """A raw-row query ordering by a base column that is not projected must
         emit a split ``orders.created_at`` reference, NOT the composite
@@ -133,12 +133,12 @@ class TestFlavorAOrderByUnprojected:
             distinct_dimension_values=False,
             order=[OrderItem(field=FieldRef(name="created_at"), direction="desc")],
         )
-        sql = _norm(await _engine_generate(query=query, model=orders_model))
+        sql = _norm(await _engine_generate(query=query, dataset=orders_dataset))
         assert "ORDER BY orders.created_at DESC" in sql
         assert '"orders.created_at"' not in sql
 
     async def test_orderby_projected_alias_stays_composite_quoted(
-        self, orders_model: SlayerDataset
+        self, orders_dataset: SlayerDataset
     ) -> None:
         """Regression guard: ordering by a projected measure alias keeps the
         whole-quoted composite ``"orders.rev"`` form (that IS the real output
@@ -149,15 +149,15 @@ class TestFlavorAOrderByUnprojected:
             "metrics": [{"expression": "sum(revenue)", "name": "rev"}],
             "order": [OrderItem(field=FieldRef(name="rev"), direction="desc")],
         })
-        sql = _norm(await _engine_generate(query=query, model=orders_model))
+        sql = _norm(await _engine_generate(query=query, dataset=orders_dataset))
         assert 'ORDER BY "orders.rev" DESC' in sql
 
     async def test_orderby_nonprojected_mixed_case_column_split_and_quoted(
-        self, orders_model: SlayerDataset
+        self, orders_dataset: SlayerDataset
     ) -> None:
         """Flavor A + B together: a non-projected mixed-case sort column emits a
         split reference whose column part is quoted: ``orders."CreatedAt"``."""
-        model = orders_model.model_copy(deep=True)
+        model = orders_dataset.model_copy(deep=True)
         model.fields.append(DatasetField(name="CreatedAt", sql="CreatedAt", datatype=DataType.TIMESTAMP))
         query = SlayerQuery(
             population="orders",
@@ -165,12 +165,12 @@ class TestFlavorAOrderByUnprojected:
             distinct_dimension_values=False,
             order=[OrderItem(field=FieldRef(name="CreatedAt"), direction="desc")],
         )
-        sql = _norm(await _engine_generate(query=query, model=model))
+        sql = _norm(await _engine_generate(query=query, dataset=model))
         assert 'ORDER BY orders."CreatedAt" DESC' in sql
         assert '"orders.CreatedAt"' not in sql
 
     async def test_orderby_split_key_keeps_asc_limit_offset(
-        self, orders_model: SlayerDataset
+        self, orders_dataset: SlayerDataset
     ) -> None:
         """ASC direction plus LIMIT / OFFSET are still applied around the split
         fallback sort key."""
@@ -182,7 +182,7 @@ class TestFlavorAOrderByUnprojected:
             limit=10,
             offset=5,
         )
-        sql = _norm(await _engine_generate(query=query, model=orders_model))
+        sql = _norm(await _engine_generate(query=query, dataset=orders_dataset))
         assert "ORDER BY orders.created_at ASC" in sql
         assert "LIMIT 10" in sql
         assert "OFFSET 5" in sql
@@ -216,7 +216,7 @@ class TestFlavorAOrderByUnprojected:
             "to_many_handling": "broadcast",
         })
         sql = _norm(await _engine_generate(
-            query=query, model=accts, extra_models=[clusters],
+            query=query, dataset=accts, extra_datasets=[clusters],
         ))
         # The typed pipeline sorts on the cross-model CTE's own canonical
         # output column, QUALIFIED by the CTE that emits it. It used to be the
@@ -246,7 +246,7 @@ class TestFlavorAOrderByUnprojected:
             "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         })
         sql = _norm(await _engine_generate(
-            query=query, model=orders, extra_models=joined,
+            query=query, dataset=orders, extra_datasets=joined,
         ))
         # The sort key's join lives in the CTE, never in the host base — that
         # containment is what keeps ``SUM(orders.amount)`` unmultiplied.
@@ -269,7 +269,7 @@ class TestFlavorAOrderByUnprojected:
             "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         })
         sql = _norm(await _engine_generate(
-            query=query, model=orders, extra_models=joined,
+            query=query, dataset=orders, extra_datasets=joined,
         ))
         assert sql.count("customers__regions.name = 'US'") == 2, sql
         assert "ORDER BY _cm_" in sql, sql
@@ -289,7 +289,7 @@ class TestFlavorAOrderByUnprojected:
             "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         })
         sql = _norm(await _engine_generate(
-            query=query, model=orders, extra_models=joined,
+            query=query, dataset=orders, extra_datasets=joined,
         ))
         assert "IS NOT DISTINCT FROM" in sql, sql
         assert 'ORDER BY "orders.customers.regions.name_max_host" DESC' in sql, sql
@@ -308,7 +308,7 @@ class TestFlavorAOrderByUnprojected:
             "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         })
         sql = _norm(await _engine_generate(
-            query=query, model=orders, extra_models=joined,
+            query=query, dataset=orders, extra_datasets=joined,
         ))
         assert "_cm_" in sql, sql
         assert "MAX(customers__regions.name)" in sql, sql
@@ -338,7 +338,7 @@ class TestFlavorAJoinedOrderByResolves:
             "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         })
         sql = _norm(await _engine_generate(
-            query=query, model=orders, extra_models=joined,
+            query=query, dataset=orders, extra_datasets=joined,
         ))
         assert "MAX(customers__regions.name)" in sql, sql
 
@@ -354,7 +354,7 @@ class TestFlavorAJoinedOrderByResolves:
             "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         })
         sql = _norm(await _engine_generate(
-            query=query, model=orders, extra_models=joined,
+            query=query, dataset=orders, extra_datasets=joined,
         ))
         assert "MAX(customers__regions.name)" in sql, sql
         assert "JOIN" not in sql.split("_cm_")[0].upper(), sql
@@ -369,7 +369,7 @@ class TestFlavorAJoinedOrderByResolves:
             "order": [OrderItem(field=FieldRef(name="name", dataset="customers.regions"), direction="desc")],
         })
         sql = _norm(await _engine_generate(
-            query=query, model=orders, extra_models=joined,
+            query=query, dataset=orders, extra_datasets=joined,
         ))
         assert 'ORDER BY "orders.customers.regions.name_max_host" DESC' in sql, sql
 
@@ -379,7 +379,7 @@ class TestFlavorAJoinedOrderByResolves:
 # ============================================================================
 
 class TestFlavorBMixedCaseQuoting:
-    async def test_column_sql_mixed_case_quoted(self, accounts_model: SlayerDataset) -> None:
+    async def test_column_sql_mixed_case_quoted(self, accounts_dataset: SlayerDataset) -> None:
         """Mixed-case ident inside ``Column.sql`` (CASE WHEN) is quoted; a
         lowercase sibling column that IS projected stays unquoted.
 
@@ -395,7 +395,7 @@ class TestFlavorBMixedCaseQuoting:
             dimensions=[FieldRef(name="is_inactive"), FieldRef(name="acct_form")],
             distinct_dimension_values=False,
         )
-        sql = _norm(await _engine_generate(query=query, model=accounts_model))
+        sql = _norm(await _engine_generate(query=query, dataset=accounts_dataset))
         assert 'CASE WHEN accounts."StateFlag" = \'Dormant\'' in sql, sql
         # The bare unquoted form must never appear.
         assert "CASE WHEN accounts.StateFlag" not in sql, sql
@@ -404,7 +404,7 @@ class TestFlavorBMixedCaseQuoting:
         assert '"acct_form"' not in sql
 
     async def test_filter_predicate_path_mixed_case_quoted(
-        self, accounts_model: SlayerDataset
+        self, accounts_dataset: SlayerDataset
     ) -> None:
         """The headline ``fake_account_23`` repro: a filter referencing a
         derived column whose SQL holds a mixed-case ident flows through
@@ -414,7 +414,7 @@ class TestFlavorBMixedCaseQuoting:
             "metrics": [{"expression": "count(*)", "name": "cnt"}],
             "filter": ["is_inactive == True"],
         })
-        sql = _norm(await _engine_generate(query=query, model=accounts_model))
+        sql = _norm(await _engine_generate(query=query, dataset=accounts_dataset))
         assert "WHERE" in sql
         assert '"StateFlag"' in sql
 
@@ -428,7 +428,7 @@ class TestFlavorBMixedCaseQuoting:
             fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)],
         )
         query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"expression": "count(*)"}]})
-        sql = _norm(await _engine_generate(query=query, model=model))
+        sql = _norm(await _engine_generate(query=query, dataset=model))
         assert "WHERE" in sql
         assert '"StateFlag"' in sql
 
@@ -450,7 +450,7 @@ class TestFlavorBMixedCaseQuoting:
             ],
         )
         query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"expression": "sum(amount)"}]})
-        sql = _norm(await _engine_generate(query=query, model=model))
+        sql = _norm(await _engine_generate(query=query, dataset=model))
         assert '"StateFlag"' in sql
 
     async def test_resolved_join_key_mixed_case_quoted(self) -> None:
@@ -483,7 +483,7 @@ class TestFlavorBMixedCaseQuoting:
             distinct_dimension_values=False,
         )
         sql = await _engine_generate(
-            query=query, model=accounts, extra_models=[cluster],
+            query=query, dataset=accounts, extra_datasets=[cluster],
         )
         assert "LEFT JOIN" in sql
         assert " ON " in sql
@@ -507,7 +507,7 @@ class TestFlavorBMixedCaseQuoting:
             dimensions=[FieldRef(name="StateFlag")],
             distinct_dimension_values=False,
         )
-        sql = _norm(await _engine_generate(query=query, model=model))
+        sql = _norm(await _engine_generate(query=query, dataset=model))
         assert '"StateFlag"' in sql
 
     async def test_first_last_ranked_mixed_case_dimension_quoted(self) -> None:
@@ -531,7 +531,7 @@ class TestFlavorBMixedCaseQuoting:
             "dimensions": [FieldRef(name="RegionCode")],
             "metrics": [{"expression": "last(amount, ts)", "name": "latest"}],
         })
-        sql = _norm(await _engine_generate(query=query, model=model))
+        sql = _norm(await _engine_generate(query=query, dataset=model))
         # The OUTER group-by / projection reference must be quoted so it
         # matches the ranked subquery's ``model.*`` output column. The typed
         # pipeline emits it relation-qualified (``events."RegionCode"``);
@@ -558,7 +558,7 @@ class TestFlavorBMixedCaseQuoting:
             "population": "accounts",
             "metrics": [{"expression": "sum(MixedAmt)", "name": "s"}],
         })
-        sql = _norm(await _engine_generate(query=query, model=model))
+        sql = _norm(await _engine_generate(query=query, dataset=model))
         assert 'SUM(accounts."MixedAmt")' in sql
 
     async def test_resolved_join_target_table_mixed_case_quoted(self) -> None:
@@ -585,7 +585,7 @@ class TestFlavorBMixedCaseQuoting:
             distinct_dimension_values=False,
         )
         sql = _norm(await _engine_generate(
-            query=query, model=cust, extra_models=[regions],
+            query=query, dataset=cust, extra_datasets=[regions],
         ))
         assert 'LEFT JOIN "MyRegions"' in sql
 
@@ -598,13 +598,13 @@ class TestFlavorBMixedCaseQuoting:
             fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)],
         )
         query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"expression": "count(*)"}]})
-        sql = _norm(await _engine_generate(query=query, model=model))
+        sql = _norm(await _engine_generate(query=query, dataset=model))
         assert '"MyAccounts"' in sql
 
-    async def test_lowercase_only_expression_unchanged(self, orders_model: SlayerDataset) -> None:
+    async def test_lowercase_only_expression_unchanged(self, orders_dataset: SlayerDataset) -> None:
         """No spurious quoting: an all-lowercase expression emits unchanged."""
         query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(revenue)"}]})
-        sql = _norm(await _engine_generate(query=query, model=orders_model))
+        sql = _norm(await _engine_generate(query=query, dataset=orders_dataset))
         assert "SUM(orders.amount)" in sql
         assert '"amount"' not in sql
 
@@ -621,7 +621,7 @@ class TestFlavorBMixedCaseQuoting:
             ],
         )
         query = SlayerQuery.model_validate({"population": "accounts", "metrics": [{"expression": "sum(j)"}]})
-        sql = _norm(await _engine_generate(query=query, model=model))
+        sql = _norm(await _engine_generate(query=query, dataset=model))
         assert "COALESCE" in sql
         assert '"COALESCE"' not in sql
         assert '"RawVal"' in sql  # the mixed-case *argument* is quoted
@@ -655,7 +655,7 @@ class TestFlavorBMixedCaseQuoting:
             distinct_dimension_values=False,
         )
         sql = await _engine_generate(
-            query=query, model=customers, extra_models=[regions],
+            query=query, dataset=customers, extra_datasets=[regions],
         )
         # both mixed-case join keys quoted, and the SQL parses cleanly
         assert '"RegionRef"' in sql
@@ -730,6 +730,6 @@ class TestMixedCaseQuotingMultiDialect:
             dimensions=[FieldRef(name="is_inactive")],
             distinct_dimension_values=False,
         )
-        sql = _norm(await _engine_generate(query=query, model=model, dialect=dialect))
+        sql = _norm(await _engine_generate(query=query, dataset=model, dialect=dialect))
         lq, rq = self._QUOTE[dialect]
         assert f"{lq}StateFlag{rq}" in sql

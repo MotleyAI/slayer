@@ -25,7 +25,7 @@ from tests._dev1841_fixtures import (
     associated_warnings,
     bcast_q,
     broadcast_warnings,
-    dev1841_models,
+    dev1841_datasets,
     make_exec_engine,
     rows_by,
     status_key,
@@ -43,7 +43,7 @@ async def exec_backend(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_ext(request):
-    async for engine in make_exec_engine(request, models=dev1841_models()):
+    async for engine in make_exec_engine(request, datasets=dev1841_datasets()):
         yield request.param, engine
 
 

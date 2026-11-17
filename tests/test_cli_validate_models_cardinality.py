@@ -47,7 +47,7 @@ def _seed_db(db_path: str) -> None:
         )
 
 
-def _customers_model(*, data_source: str, drift: bool) -> SlayerDataset:
+def _customers_dataset(*, data_source: str, drift: bool) -> SlayerDataset:
     columns = [
         DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
         DatasetField(name="region", sql="region", datatype=DataType.TEXT),
@@ -61,7 +61,7 @@ def _customers_model(*, data_source: str, drift: bool) -> SlayerDataset:
     )
 
 
-def _orders_model(*, data_source: str, drift: bool) -> SlayerDataset:
+def _orders_dataset(*, data_source: str, drift: bool) -> SlayerDataset:
     columns = [
         DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
         DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
@@ -92,10 +92,10 @@ def _setup(
         DatasourceConfig(name=ds_name, type="sqlite", database=db)
     ))
     run_sync(storage.save_dataset(
-        _customers_model(data_source=ds_name, drift=drift_customers)
+        _customers_dataset(data_source=ds_name, drift=drift_customers)
     ))
     run_sync(storage.save_dataset(
-        _orders_model(data_source=ds_name, drift=drift_orders)
+        _orders_dataset(data_source=ds_name, drift=drift_orders)
     ))
     return store
 

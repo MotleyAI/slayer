@@ -78,7 +78,7 @@ FISCAL_YEAR = {"name": "fiscal_year", "base": "year", "origin": "2000-04-01"}
 DS_FIELDS = {"granularities": [FISCAL_YEAR]}
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test", default_time_dimension="signup_at",
         fields=[
@@ -90,8 +90,8 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def orders_model(
-    *, measures: Sequence[DatasetMetric] = (), aggregations: Sequence[Aggregation] = (),
+def orders_dataset(
+    *, metrics: Sequence[DatasetMetric] = (), aggregations: Sequence[Aggregation] = (),
 ) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="created_at",
@@ -104,7 +104,7 @@ def orders_model(
             DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
             DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
         ],
-        metrics=list(measures),
+        metrics=list(metrics),
         aggregations=list(aggregations),
         relationships=[
             DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
@@ -116,7 +116,7 @@ def orders_model(
     )
 
 
-def order_items_model() -> SlayerDataset:
+def order_items_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="order_items", sql_table="order_items", data_source="test", default_time_dimension="created_at",
         fields=[
@@ -131,7 +131,7 @@ def order_items_model() -> SlayerDataset:
     )
 
 
-def products_model() -> SlayerDataset:
+def products_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="products", sql_table="products", data_source="test",
         fields=[
@@ -142,18 +142,18 @@ def products_model() -> SlayerDataset:
     )
 
 
-def heal_models(*, orders: Optional[SlayerDataset] = None) -> list[SlayerDataset]:
-    return [orders or orders_model(), customers_model(), order_items_model(), products_model()]
+def heal_datasets(*, orders: Optional[SlayerDataset] = None) -> list[SlayerDataset]:
+    return [orders or orders_dataset(), customers_dataset(), order_items_dataset(), products_dataset()]
 
 
 @contextlib.asynccontextmanager
 async def heal_engine(
-    backend: str, *, models: Optional[Iterable[SlayerDataset]] = None,
+    backend: str, *, datasets: Optional[Iterable[SlayerDataset]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """Executing engine over the heal seed, with the ``fiscal_year`` custom granularity declared."""
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed_backend(backend, p, TABLES),
-        models=list(models) if models is not None else heal_models(), datasource_fields=DS_FIELDS,
+        datasets=list(datasets) if datasets is not None else heal_datasets(), datasource_fields=DS_FIELDS,
     ) as (engine, _):
         yield engine
 

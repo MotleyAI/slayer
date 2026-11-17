@@ -130,7 +130,7 @@ async def test_clickhouse_orders_by_the_projection_not_its_dotted_alias() -> Non
         time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
         metrics=[DatasetMetric(expression="count(*)")],
     )
-    sql = await _engine_generate(query=query, model=model, dialect="clickhouse")
+    sql = await _engine_generate(query=query, dataset=model, dialect="clickhouse")
     assert sql[sql.rindex("ORDER BY"):].split("\n", 1)[1].strip() == "dateTrunc('MONTH', orders.created_at) ASC"
 
 

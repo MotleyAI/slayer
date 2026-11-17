@@ -24,8 +24,8 @@ from tests._dev1840_fixtures import (
     DatasetMetric,
     SPEND_APP_BY_TIER,
     SPEND_BASIC_BY_TIER,
-    ambiguity_models,
-    dev1840_models,
+    ambiguity_datasets,
+    dev1840_datasets,
     make_exec_engine,
     q,
     rows_by,
@@ -42,14 +42,14 @@ async def exec_backend(request):
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_weak(request):
     async for engine in make_exec_engine(
-        request, models=dev1840_models(strong_plans=False),
+        request, datasets=dev1840_datasets(strong_plans=False),
     ):
         yield request.param, engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_amb(request):
-    async for engine in make_exec_engine(request, models=ambiguity_models()):
+    async for engine in make_exec_engine(request, datasets=ambiguity_datasets()):
         yield request.param, engine
 
 

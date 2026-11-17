@@ -34,7 +34,7 @@ EV = TableSpec(
 )
 
 
-def ev_model() -> SlayerDataset:
+def ev_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="ev", sql_table="ev", data_source="test", default_time_dimension="ts",
         fields=[
@@ -72,7 +72,7 @@ async def now_engine(
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """Executing SQLite engine over ``ev``; built without a clock unless ``clock`` is given."""
     async with seeded_exec_engine(
-        dialect="sqlite", seed=lambda p: seed_backend("sqlite", p, [EV]), models=[ev_model()], clock=clock,
+        dialect="sqlite", seed=lambda p: seed_backend("sqlite", p, [EV]), datasets=[ev_dataset()], clock=clock,
     ) as (engine, _db):
         yield engine
 
@@ -83,5 +83,5 @@ async def seeded_storage(base_dir: str) -> YAMLStorage:
     seed_backend("sqlite", db_path, [EV])
     storage = YAMLStorage(base_dir=os.path.join(base_dir, "store"))
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db_path))
-    await storage.save_dataset(ev_model())
+    await storage.save_dataset(ev_dataset())
     return storage

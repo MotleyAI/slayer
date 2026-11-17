@@ -9,8 +9,8 @@ from pathlib import Path
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev1836_fixtures import dev1836_models
-from tests._dev1846_fixtures import dev1846_models
+from tests._dev1836_fixtures import dev1836_datasets
+from tests._dev1846_fixtures import dev1846_datasets
 from tests._dev1868_fixtures import CM_PART_TIER, FIRST_REGION, LAST_REGION, LAST_TIER
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
@@ -131,10 +131,10 @@ def _cases() -> dict:
 
 async def _generate_one(query: SlayerQuery, dialect: str):
     """Emitted SQL, or a structured record of the raised error."""
-    models = dev1846_models() if query.population == "sales" else dev1836_models()
+    models = dev1846_datasets() if query.population == "sales" else dev1836_datasets()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

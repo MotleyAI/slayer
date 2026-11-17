@@ -27,7 +27,7 @@ import pytest
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev1747_fixtures import dev1747_models
+from tests._dev1747_fixtures import dev1747_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import (
     GoldenSuite,
@@ -232,10 +232,10 @@ async def _generate_one(query: SlayerQuery, dialect: str):
     name lets any NEW failure in the same case pass unnoticed, which is the
     blind spot this harness exists to close.
     """
-    models = dev1747_models()
+    models = dev1747_datasets()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

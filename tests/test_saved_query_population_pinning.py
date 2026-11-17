@@ -52,7 +52,7 @@ def _seed_products(db_path: str) -> None:
         con.executemany("INSERT INTO orders VALUES (?,?,?,?)", [(1, 1, 1, 5.0), (2, 1, 2, 7.0), (3, 2, 1, 3.0)])
 
 
-def _products_models() -> List[SlayerDataset]:
+def _products_datasets() -> List[SlayerDataset]:
     return [
         SlayerDataset(name="customers", data_source="test", sql_table="customers", fields=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT)]),
@@ -72,7 +72,7 @@ def _products_models() -> List[SlayerDataset]:
 
 @pytest.fixture
 async def products_engine() -> AsyncIterator[SlayerQueryEngine]:
-    async with seeded_exec_engine(dialect="sqlite", seed=_seed_products, models=_products_models()) as (eng, _):
+    async with seeded_exec_engine(dialect="sqlite", seed=_seed_products, datasets=_products_datasets()) as (eng, _):
         yield eng
 
 

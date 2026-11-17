@@ -13,7 +13,7 @@ from tests._dev1847_fixtures import (
     _CUSTOMERS_ROWS,
     _REGIONS_ROWS,
     _SALES_ROWS_WIDE,
-    dev1847_models,
+    dev1847_datasets,
 )
 
 pytestmark = pytest.mark.integration
@@ -50,7 +50,7 @@ class TestPostgresNullInputs(base.TestNullInputs):
                               database=info.dbname, username=info.user, password="")
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(ds)
-        for model in dev1847_models():
+        for model in dev1847_datasets():
             await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
         try:

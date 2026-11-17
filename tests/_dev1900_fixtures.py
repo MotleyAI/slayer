@@ -45,7 +45,7 @@ from tests._engine_helpers import seeded_exec_engine
 
 from tests._dev1840_fixtures import (
     broadcast_warnings,
-    dev1840_models,
+    dev1840_datasets,
     month_key,
     rows_by,
     _CUSTOMERS_ROWS,
@@ -62,7 +62,7 @@ from tests._dev1841_fixtures import associated_warnings, pushed_filter_infos
 _REGION_EVENTS_ROWS = [(1, 1, 50.0), (2, 1, 50.0), (3, 2, 30.0)]
 
 
-def region_events_model() -> SlayerDataset:
+def region_events_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="region_events", data_source="test", sql_table="region_events",
         fields=[
@@ -73,18 +73,18 @@ def region_events_model() -> SlayerDataset:
     )
 
 
-def _regions(models: List[SlayerDataset]) -> SlayerDataset:
-    return next(m for m in models if m.name == "regions")
+def _regions(datasets: List[SlayerDataset]) -> SlayerDataset:
+    return next(m for m in datasets if m.name == "regions")
 
 
-def _customers(models: List[SlayerDataset]) -> SlayerDataset:
-    return next(m for m in models if m.name == "customers")
+def _customers(datasets: List[SlayerDataset]) -> SlayerDataset:
+    return next(m for m in datasets if m.name == "customers")
 
 
-def dev1900_models() -> List[SlayerDataset]:
+def dev1900_datasets() -> List[SlayerDataset]:
     """DEV-1840 graph + region_events, the fanning derived columns, and the
     customer aggregations that name them. Host first (orders)."""
-    models = dev1840_models()
+    models = dev1840_datasets()
     regions = _regions(models)
     regions.relationships.append(DatasetRelationship(
         to="region_events", join_pairs=[["id", "region_id"]],
@@ -117,30 +117,30 @@ def dev1900_models() -> List[SlayerDataset]:
         name="bad_pop_spend", datatype=DataType.DOUBLE, sql="spend",
         filter="regions.bad_pop > 0"))
 
-    models.append(region_events_model())
+    models.append(region_events_dataset())
     return models
 
 
-def home_path_models() -> List[SlayerDataset]:
+def home_path_datasets() -> List[SlayerDataset]:
     """A region-owned aggregation (``wsum_cust_spend``) whose weight defaults to
     ``customers.spend``. With a source ``customers.regions.pop``, the shallower
     ``customers`` home determines both inputs (``pop`` to-one, ``spend`` local)
     — but only once definition-default paths join the home candidates (gap 4).
     An explicit ``weight=customers.spend`` already widens the home today, so it
     is the reference the default must match."""
-    models = dev1900_models()
+    models = dev1900_datasets()
     _regions(models).aggregations.append(Aggregation(
         name="wsum_cust_spend", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="customers.spend")]))
     return models
 
 
-def unparseable_derived_models() -> List[SlayerDataset]:
+def unparseable_derived_datasets() -> List[SlayerDataset]:
     """Pathological derived columns on regions: ``unparseable`` (no dialect
     parses it → closure is tri-state None, never empty) and ``cyc`` (self-
     referential → the closure's cycle guard raises). ``wunparse`` names the
     unparseable one as a weight, so an aggregate over it must fail closed."""
-    models = dev1900_models()
+    models = dev1900_datasets()
     regions = _regions(models)
     regions.fields.append(
         DatasetField(name="unparseable", datatype=DataType.DOUBLE, sql=")((( bad"))
@@ -217,7 +217,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerDataset]] = None,
+    request, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture; each test module
     wraps this in ``@pytest.fixture``."""
@@ -226,7 +226,7 @@ async def make_exec_engine(
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=models if models is not None else dev1900_models(),
+        dialect=dialect, seed=seed, datasets=datasets if datasets is not None else dev1900_datasets(),
     ) as (engine, _db):
         yield engine
 
@@ -257,9 +257,9 @@ REAGG_BAD = DatasetMetric(
             "weight=customers.regions.bad_pop)", name="ra")
 
 
-def bad_pop_vals(resp, measure: str) -> dict:
+def bad_pop_vals(resp, metric: str) -> dict:
     """``{bad_pop value: measure value}`` over ``resp.data`` (bad_pop cell key)."""
-    return {k[0]: v[measure] for k, v in rows_by(resp, "orders." + BAD_POP).items()}
+    return {k[0]: v[metric] for k, v in rows_by(resp, "orders." + BAD_POP).items()}
 
 
 # --------------------------------------------------------------------------- #
@@ -343,8 +343,8 @@ POP_FILTER_ASSOC_BY_STATUS = {"new": 100.0, "ok": 150.0}
 __all__ = [
     "Aggregation", "AggregationParam", "DatasetField", "FieldRef", "DataType",
     "DatasetRelationship", "DatasetMetric", "SlayerDataset", "SlayerQuery", "RelationshipCardinality",
-    "dev1840_models", "dev1900_models", "region_events_model",
-    "home_path_models", "unparseable_derived_models",
+    "dev1840_datasets", "dev1900_datasets", "region_events_dataset",
+    "home_path_datasets", "unparseable_derived_datasets",
     "make_exec_engine", "orders_q", "cust_q",
     "rows_by", "bad_pop_vals", "broadcast_warnings",
     "associated_warnings",

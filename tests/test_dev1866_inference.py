@@ -22,9 +22,9 @@ from slayer.engine.population.inference import (
 from tests._dev1866_fixtures import (
     DS_CHAIN,
     DS_NAMED,
-    chain_models_by_name,
+    chain_datasets_by_name,
     make_inference_storage,
-    named_models_by_name,
+    named_datasets_by_name,
 )
 
 
@@ -204,7 +204,7 @@ class TestSelection:
 class TestDeterminationItems:
     def _items(self, query: SlayerQuery, **kw) -> set[str]:
         return set(determination_items(
-            query, datasets_by_name=chain_models_by_name(), **kw
+            query, datasets_by_name=chain_datasets_by_name(), **kw
         ))
 
     def test_dimensions_and_field_filters_participate(self) -> None:
@@ -251,7 +251,7 @@ class TestDeterminationItems:
                 dimensions=["tickets.subject"],
                 filter=["tickets.reporter.handled > 0"],
             ),
-            datasets_by_name=named_models_by_name(),
+            datasets_by_name=named_datasets_by_name(),
         ))
         assert items == {"tickets.subject"}
 
@@ -262,7 +262,7 @@ class TestDeterminationItems:
                 dimensions=["tickets.subject"],
                 filter=["tickets.reporter.score > 0"],
             ),
-            datasets_by_name=named_models_by_name(),
+            datasets_by_name=named_datasets_by_name(),
         ))
         assert items == {"tickets.subject", "tickets.reporter.score"}
 
@@ -296,7 +296,7 @@ class TestDeterminationItems:
         assert items == {"customers.tier"}
 
     def test_model_level_filters_never_participate(self) -> None:
-        models = chain_models_by_name()
+        models = chain_datasets_by_name()
         models["customers"] = models["customers"].model_copy(
             update={"filter": ["regions.name <> 'Nowhere'"]}
         )
@@ -311,7 +311,7 @@ class TestDeterminationItems:
                 dimensions=["customers.region"],
                 filter=["customers.region = 'North'"],
             ),
-            datasets_by_name=chain_models_by_name(),
+            datasets_by_name=chain_datasets_by_name(),
         )
         assert sorted(items) == ["customers.region"]
 

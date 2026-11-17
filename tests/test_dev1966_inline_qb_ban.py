@@ -25,7 +25,7 @@ from tests._dev1966_fixtures import (
     dev1966_engine,
     m,
     query,
-    rev_by_status_model,
+    rev_by_status_dataset,
     rows_by,
 )
 
@@ -95,7 +95,7 @@ class TestStoredModelsReject:
     async def test_loading_a_persisted_model_containing_one(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
-            await storage.save_dataset(rev_by_status_model(), _validate=False)
+            await storage.save_dataset(rev_by_status_dataset(), _validate=False)
             path = storage._dataset_path("test", "rev_by_status")
             with open(path) as fh:
                 raw = yaml.safe_load(fh)

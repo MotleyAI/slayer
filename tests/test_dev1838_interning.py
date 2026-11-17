@@ -24,7 +24,7 @@ from tests._dev1838_fixtures import (
     DatasetMetric,
     SPEND_BAND,
     cte_aliases,
-    dev1838_models,
+    dev1838_datasets,
     make_exec_engine,
     month_key,
     month_td,
@@ -231,7 +231,7 @@ class TestProducersThatMustStaySeparate:
             "DEV-1838 D3: planned.regroup_producer_identity is not "
             "implemented yet"
         )
-        models = dev1838_models()
+        models = dev1838_datasets()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
             population=models[0], referenced_datasets=models[1:],

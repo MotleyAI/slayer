@@ -126,8 +126,8 @@ class TestJoinOrderParity:
             filter=["customers.regions.population > 100"],        # WHERE (customers→regions)
         )
         sql = await _engine_generate(
-            query=query, model=orders,
-            extra_models=[_customers(), _warehouses(), _regions()],
+            query=query, dataset=orders,
+            extra_datasets=[_customers(), _warehouses(), _regions()],
         )
         assert "_cm_" in sql, f"crossing agg source must isolate:\n{sql}"
         # Each alias appears exactly once per scope; every prefix precedes its
@@ -167,7 +167,7 @@ class TestPlaceholderLimitOne:
             filter=["amount > 100"],
         )
         sql = await _engine_generate(
-            query=query, model=orders, extra_models=[_customers(), _regions()],
+            query=query, dataset=orders, extra_datasets=[_customers(), _regions()],
         )
         assert "LIMIT 1" in sql                       # placeholder collapses host to one row
         assert "amount > 100" in sql or "amount > 100" in sql.replace('"', "")
@@ -207,8 +207,8 @@ class TestPlaceholderLimitOne:
             filter=["shippers.code = 'X'"],
         )
         sql = await _engine_generate(
-            query=query, model=orders,
-            extra_models=[_customers(), _regions(), shippers],
+            query=query, dataset=orders,
+            extra_datasets=[_customers(), _regions(), shippers],
         )
         # Scope the assertions to the placeholder SELECT itself (the one-row
         # ``_placeholder`` scan with LIMIT 1) so a regression that moves the join
@@ -261,7 +261,7 @@ class TestTypedJoinKeyMixedCaseQuoted:
             distinct_dimension_values=False,
         )
         sql = await _engine_generate(
-            query=query, model=orders, extra_models=[customers],
+            query=query, dataset=orders, extra_datasets=[customers],
         )
         norm = " ".join(sql.split())
         assert "LEFT JOIN" in norm

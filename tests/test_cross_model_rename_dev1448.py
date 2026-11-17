@@ -41,7 +41,7 @@ async def _save_test_datasource(storage: YAMLStorage) -> None:
     )
 
 
-def _customers_model() -> SlayerDataset:
+def _customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers",
         sql_table="customers",
@@ -54,7 +54,7 @@ def _customers_model() -> SlayerDataset:
     )
 
 
-def _customers_model_with_region_join() -> SlayerDataset:
+def _customers_dataset_with_region_relationship() -> SlayerDataset:
     """Customers model that joins to regions — used by the multi-hop test."""
     return SlayerDataset(
         name="customers",
@@ -69,7 +69,7 @@ def _customers_model_with_region_join() -> SlayerDataset:
     )
 
 
-def _regions_model() -> SlayerDataset:
+def _regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions",
         sql_table="regions",
@@ -81,7 +81,7 @@ def _regions_model() -> SlayerDataset:
     )
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -103,8 +103,8 @@ async def orders_customers_engine(tmp_path) -> tuple[SlayerQueryEngine, SlayerDa
     """orders → customers (single hop)."""
     storage = YAMLStorage(base_dir=str(tmp_path))
     await _save_test_datasource(storage)
-    await storage.save_dataset(_customers_model())
-    orders = _orders_model()
+    await storage.save_dataset(_customers_dataset())
+    orders = _orders_dataset()
     await storage.save_dataset(orders)
     return SlayerQueryEngine(storage=storage), orders
 
@@ -114,9 +114,9 @@ async def orders_customers_regions_engine(tmp_path) -> tuple[SlayerQueryEngine, 
     """orders → customers → regions (two hops, for multi-hop rename test)."""
     storage = YAMLStorage(base_dir=str(tmp_path))
     await _save_test_datasource(storage)
-    await storage.save_dataset(_regions_model())
-    await storage.save_dataset(_customers_model_with_region_join())
-    orders = _orders_model()
+    await storage.save_dataset(_regions_dataset())
+    await storage.save_dataset(_customers_dataset_with_region_relationship())
+    orders = _orders_dataset()
     await storage.save_dataset(orders)
     return SlayerQueryEngine(storage=storage), orders
 
@@ -497,7 +497,7 @@ class TestCrossModelRenameCollisionGuards:
         """A rename colliding with a source column on the outer model is rejected."""
         storage = YAMLStorage(base_dir=str(tmp_path))
         await _save_test_datasource(storage)
-        await storage.save_dataset(_customers_model())
+        await storage.save_dataset(_customers_dataset())
         orders = SlayerDataset(
             name="orders",
             sql_table="orders",

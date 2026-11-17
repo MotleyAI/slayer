@@ -39,7 +39,7 @@ from slayer.core.syntax import parse_expr
 from tests._engine_helpers import _engine_generate
 
 
-def _model(measures) -> SlayerDataset:
+def _dataset(metrics) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
@@ -47,16 +47,16 @@ def _model(measures) -> SlayerDataset:
             DatasetField(name="status", datatype=DataType.TEXT),
             DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
         ],
-        metrics=measures,
+        metrics=metrics,
         default_time_dimension="created_at",
     )
 
 
-async def _gen(model, formula, **kw) -> str:
+async def _gen(dataset, expression, **kw) -> str:
     return await _engine_generate(
         query=SlayerQuery.model_validate({"population": "orders",
-                                          "metrics": [{"expression": formula, "name": "x"}], **kw}),
-        model=model, dialect="duckdb", validate=False,
+                                          "metrics": [{"expression": expression, "name": "x"}], **kw}),
+        dataset=dataset, dialect="duckdb", validate=False,
     )
 
 
@@ -70,37 +70,37 @@ class TestPositiveResolutionThroughBinder:
     deleted pass's matrix covered, now through the binder."""
 
     async def test_root_measure_equals_inline(self) -> None:
-        model = _model([_REV])
-        assert await _gen(model, "rev") == await _gen(_model([]), "sum(amount)")
+        model = _dataset([_REV])
+        assert await _gen(model, "rev") == await _gen(_dataset([]), "sum(amount)")
 
     async def test_arithmetic_operand_expanded(self) -> None:
-        model = _model([_REV])
-        assert await _gen(model, "rev + 1") == await _gen(_model([]), "sum(amount) + 1")
+        model = _dataset([_REV])
+        assert await _gen(model, "rev + 1") == await _gen(_dataset([]), "sum(amount) + 1")
 
     async def test_comparison_operand_expanded(self) -> None:
-        model = _model([_REV])
+        model = _dataset([_REV])
         assert await _gen(model, "rev > 100") == await _gen(
-            _model([]), "sum(amount) > 100")
+            _dataset([]), "sum(amount) > 100")
 
     async def test_unary_operand_expanded(self) -> None:
-        model = _model([_REV])
-        assert await _gen(model, "-rev") == await _gen(_model([]), "-sum(amount)")
+        model = _dataset([_REV])
+        assert await _gen(model, "-rev") == await _gen(_dataset([]), "-sum(amount)")
 
     async def test_boolean_operands_expanded(self) -> None:
-        model = _model([_REV, _CNT])
+        model = _dataset([_REV, _CNT])
         assert await _gen(model, "rev > 100 and cnt > 0") == await _gen(
-            _model([]), "sum(amount) > 100 and count(*) > 0")
+            _dataset([]), "sum(amount) > 100 and count(*) > 0")
 
     async def test_scalar_arg_expanded(self) -> None:
-        model = _model([_REV])
+        model = _dataset([_REV])
         assert await _gen(model, "nullif(rev, 0)") == await _gen(
-            _model([]), "nullif(sum(amount), 0)")
+            _dataset([]), "nullif(sum(amount), 0)")
 
     async def test_transform_input_expanded(self) -> None:
-        model = _model([_REV])
+        model = _dataset([_REV])
         td = [{"dimension": "created_at", "granularity": "month"}]
         assert await _gen(model, "cumsum(rev)", time_dimensions=td) == await _gen(
-            _model([]), "cumsum(sum(amount))", time_dimensions=td)
+            _dataset([]), "cumsum(sum(amount))", time_dimensions=td)
 
 
 class TestAggregationScopeNotExpanded:
@@ -108,19 +108,19 @@ class TestAggregationScopeNotExpanded:
     column-level by contract and is NOT expanded — the binder rejects it."""
 
     async def test_agg_source_not_expanded(self) -> None:
-        model = _model([_REV])
+        model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
             await _gen(model, "sum(rev)")
         assert "saved measure" in str(ei.value).lower()
 
     async def test_agg_positional_arg_not_expanded(self) -> None:
-        model = _model([_REV])
+        model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
             await _gen(model, "last(amount, rev)")
         assert "saved measure" in str(ei.value).lower()
 
     async def test_agg_kwarg_not_expanded(self) -> None:
-        model = _model([_REV])
+        model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
             await _gen(model, "weighted_avg(amount, weight=rev)")
         assert "saved measure" in str(ei.value).lower()
@@ -128,13 +128,13 @@ class TestAggregationScopeNotExpanded:
 
 class TestCycleAndDepthThroughBinder:
     async def test_direct_self_cycle(self) -> None:
-        model = _model([DatasetMetric(name="aov", expression="aov + 1")])
+        model = _dataset([DatasetMetric(name="aov", expression="aov + 1")])
         with pytest.raises((MetricCycleError, ValueError)) as ei:
             await _gen(model, "aov")
         assert "aov" in str(ei.value)
 
     async def test_cycle_names_the_chain(self) -> None:
-        model = _model([
+        model = _dataset([
             DatasetMetric(name="a", expression="b"),
             DatasetMetric(name="b", expression="a"),
         ])
@@ -149,7 +149,7 @@ class TestCycleAndDepthThroughBinder:
         measures = [DatasetMetric(name="m5", expression="sum(amount)")]
         for i in range(4, 0, -1):
             measures.append(DatasetMetric(name=f"m{i}", expression=f"m{i + 1}"))
-        model = _model(measures)
+        model = _dataset(measures)
         with mock.patch.dict(os.environ, {"SLAYER_MEASURE_EXPANSION_DEPTH": "2"}):
             with pytest.raises(MetricRecursionLimitError) as ei:
                 await _gen(model, "m1")
@@ -159,8 +159,8 @@ class TestCycleAndDepthThroughBinder:
         measures = [DatasetMetric(name="m5", expression="sum(amount)")]
         for i in range(4, 0, -1):
             measures.append(DatasetMetric(name=f"m{i}", expression=f"m{i + 1}"))
-        model = _model(measures)
-        assert await _gen(model, "m1") == await _gen(_model([]), "sum(amount)")
+        model = _dataset(measures)
+        assert await _gen(model, "m1") == await _gen(_dataset([]), "sum(amount)")
 
 
 class TestTransformArgEligibilityDropped:
@@ -173,7 +173,7 @@ class TestTransformArgEligibilityDropped:
     ``status`` and the query succeeded)."""
 
     async def test_transform_partition_by_measure_not_expanded(self) -> None:
-        model = _model([_REV, _GRP])
+        model = _dataset([_REV, _GRP])
         with pytest.raises(ValueError):
             await _gen(model, "rank(sum(amount), partition_by=grp, direction='desc')",
                        dimensions=["status"],

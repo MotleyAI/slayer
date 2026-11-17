@@ -20,7 +20,7 @@ from slayer.search import graph as search_graph
 from slayer.search.service import SearchResponse, SearchService
 from slayer.storage.base import StorageBackend, resolve_storage
 from tests._deprecated_input_helpers import deprecations, payload_of, recorded
-from tests.search_helpers import seed_warehouse_models
+from tests.search_helpers import seed_warehouse_datasets
 
 QUESTION = "orders amount paid revenue customers email"
 OLD_KINDS = {"model", "column", "measure"}
@@ -33,7 +33,7 @@ CONVERTED_LABELS = [("Model", "Dataset"), ("Column", "Field"), ("Measure", "Metr
 async def storage() -> AsyncIterator[StorageBackend]:
     with tempfile.TemporaryDirectory() as tmp:
         st = resolve_storage(tmp)
-        await seed_warehouse_models(st)
+        await seed_warehouse_datasets(st)
         orders = await st.get_dataset("orders", data_source="warehouse")
         assert orders is not None
         metric = DatasetMetric.model_validate({"name": "paid_revenue", "expression": "sum(amount_paid)"})

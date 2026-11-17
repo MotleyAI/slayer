@@ -37,23 +37,23 @@ from tests._dev1892_fixtures import (
     SlayerError,
     UNWEIGHTED_CITY_BY_REGION,
     assert_grain_residue,
-    derived_local_expr_default_models,
-    root_named_expr_default_models,
-    literal_collision_reagg_models,
-    literal_only_reagg_models,
-    mixed_expr_default_models,
-    opaque_expr_default_models,
-    qualified_expr_default_models,
-    qualified_reagg_default_models,
-    self_qualified_expr_default_models,
-    toone_filter_models,
-    unmodeled_physical_expr_default_models,
-    unparseable_expr_default_models,
+    derived_local_expr_default_datasets,
+    root_named_expr_default_datasets,
+    literal_collision_reagg_datasets,
+    literal_only_reagg_datasets,
+    mixed_expr_default_datasets,
+    opaque_expr_default_datasets,
+    qualified_expr_default_datasets,
+    qualified_reagg_default_datasets,
+    self_qualified_expr_default_datasets,
+    toone_filter_datasets,
+    unmodeled_physical_expr_default_datasets,
+    unparseable_expr_default_datasets,
 )
-from tests._engine_helpers import _engine_generate, models_bundle
+from tests._engine_helpers import _engine_generate, datasets_bundle
 
 
-def _customers_model(*, key_sql: str | None) -> SlayerDataset:
+def _customers_dataset(*, key_sql: str | None) -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="prod", sql_table="customers",
         fields=[
@@ -63,7 +63,7 @@ def _customers_model(*, key_sql: str | None) -> SlayerDataset:
     )
 
 
-def _fk_hop_models(*, fk_sql: str | None) -> tuple[SlayerDataset, dict[str, SlayerDataset]]:
+def _fk_hop_datasets(*, fk_sql: str | None) -> tuple[SlayerDataset, dict[str, SlayerDataset]]:
     """``customers`` (FK ``region_id``, renamable) → ``regions`` (m:1), keyed by
     the logical ``region_id`` whatever its physical spelling."""
     regions = SlayerDataset(
@@ -90,37 +90,37 @@ def _fk_hop_models(*, fk_sql: str | None) -> tuple[SlayerDataset, dict[str, Slay
 class TestGrainDeterminesRenamedKey:
     def test_renamed_unique_key_seeds_entity(self) -> None:
         # logical grain leaf ``id`` must match the physical PK ``customer_id``.
-        model = _customers_model(key_sql="customer_id")
+        model = _customers_dataset(key_sql="customer_id")
         assert grain_determines(
             key=FieldKey(leaf="name"), grain=Grain.of([FieldKey(leaf="id")]),
             host_dataset=model, datasets_by_name={"customers": model},
-            bundle=models_bundle({"customers": model}),
+            bundle=datasets_bundle({"customers": model}),
         )
 
     def test_plain_key_unaffected(self) -> None:
-        model = _customers_model(key_sql=None)
+        model = _customers_dataset(key_sql=None)
         assert grain_determines(
             key=FieldKey(leaf="name"), grain=Grain.of([FieldKey(leaf="id")]),
             host_dataset=model, datasets_by_name={"customers": model},
-            bundle=models_bundle({"customers": model}),
+            bundle=datasets_bundle({"customers": model}),
         )
 
     def test_renamed_fk_seeds_to_one_hop(self) -> None:
         # grain leaf ``region_id`` seeds the m:1 hop keyed on the renamed FK
         # (physical ``region_fk``) — else a valid lifted parameter is rejected.
-        customers, models = _fk_hop_models(fk_sql="region_fk")
+        customers, models = _fk_hop_datasets(fk_sql="region_fk")
         assert grain_determines(
             key=FieldKey(path=("regions",), leaf="pop"),
             grain=Grain.of([FieldKey(leaf="region_id")]),
-            host_dataset=customers, datasets_by_name=models, bundle=models_bundle(models),
+            host_dataset=customers, datasets_by_name=models, bundle=datasets_bundle(models),
         )
 
     def test_plain_fk_unaffected(self) -> None:
-        customers, models = _fk_hop_models(fk_sql=None)
+        customers, models = _fk_hop_datasets(fk_sql=None)
         assert grain_determines(
             key=FieldKey(path=("regions",), leaf="pop"),
             grain=Grain.of([FieldKey(leaf="region_id")]),
-            host_dataset=customers, datasets_by_name=models, bundle=models_bundle(models),
+            host_dataset=customers, datasets_by_name=models, bundle=datasets_bundle(models),
         )
 
 
@@ -130,7 +130,7 @@ class TestPickedParamDoesNotInheritSourceFilter:
         # carries that CASE mask; the picked weight ``customers.spend`` (_p0) is NOT
         # masked by the source's filter (DEV-1832: a parameter is masked only by its
         # own column's filter, never the source's).
-        models = toone_filter_models()
+        models = toone_filter_datasets()
         orders = next(m for m in models if m.name == "orders")
         extra = [m for m in models if m.name != "orders"]
         sql = await _engine_generate(
@@ -139,7 +139,7 @@ class TestPickedParamDoesNotInheritSourceFilter:
                 measures=[DatasetMetric(
                     expression="weighted_avg(customers.north_spend, weight=customers.spend)",
                     name="w")]),
-            model=orders, extra_models=extra, dialect="sqlite", validate=False,
+            dataset=orders, extra_datasets=extra, dialect="sqlite", validate=False,
         )
         p0_line = next(line for line in sql.splitlines() if "AS _p0" in line)
         assert "CASE WHEN" not in p0_line, sql
@@ -150,76 +150,76 @@ class TestPickedParamDoesNotInheritSourceFilter:
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def qual_expr_engine(request):
-    async for engine in make_assoc_engine(request, models=qualified_expr_default_models()):
+    async for engine in make_assoc_engine(request, datasets=qualified_expr_default_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def mixed_expr_engine(request):
-    async for engine in make_assoc_engine(request, models=mixed_expr_default_models()):
+    async for engine in make_assoc_engine(request, datasets=mixed_expr_default_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def root_named_expr_engine(request):
-    async for engine in make_assoc_engine(request, models=root_named_expr_default_models()):
+    async for engine in make_assoc_engine(request, datasets=root_named_expr_default_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def opaque_expr_engine(request):
-    async for engine in make_assoc_engine(request, models=opaque_expr_default_models()):
+    async for engine in make_assoc_engine(request, datasets=opaque_expr_default_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def self_qual_engine(request):
     async for engine in make_assoc_engine(
-            request, models=self_qualified_expr_default_models()):
+            request, datasets=self_qualified_expr_default_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def derived_local_engine(request):
     async for engine in make_assoc_engine(
-            request, models=derived_local_expr_default_models()):
+            request, datasets=derived_local_expr_default_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def phys_expr_engine(request):
     async for engine in make_assoc_engine(
-            request, models=unmodeled_physical_expr_default_models()):
+            request, datasets=unmodeled_physical_expr_default_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unparseable_engine(request):
     async for engine in make_assoc_engine(
-            request, models=unparseable_expr_default_models()):
+            request, datasets=unparseable_expr_default_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def lit_reagg_engine(request):
-    async for engine in make_reagg_engine(request, models=literal_collision_reagg_models()):
+    async for engine in make_reagg_engine(request, datasets=literal_collision_reagg_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def lit_only_engine(request):
-    async for engine in make_reagg_engine(request, models=literal_only_reagg_models()):
+    async for engine in make_reagg_engine(request, datasets=literal_only_reagg_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def qual_reagg_engine(request):
-    async for engine in make_reagg_engine(request, models=qualified_reagg_default_models()):
+    async for engine in make_reagg_engine(request, datasets=qualified_reagg_default_datasets()):
         yield engine
 
 
-def _status_vals(resp, measure):
-    return {k[0]: v[measure] for k, v in status_key(resp).items()}
+def _status_vals(resp, metric):
+    return {k[0]: v[metric] for k, v in status_key(resp).items()}
 
 
 class TestExprDefaultQualifiedRefs:
@@ -352,8 +352,8 @@ class TestExprDefaultLiteralsAndResidue:
                 DatasetMetric(
                     expression="sum(customers.spend * (orders.amount + 0))", name="oracle"),
             ]))
-        default_vals = _status_vals(resp=resp, measure="orders.w")
-        oracle_vals = _status_vals(resp=resp, measure="orders.oracle")
+        default_vals = _status_vals(resp=resp, metric="orders.w")
+        oracle_vals = _status_vals(resp=resp, metric="orders.oracle")
         assert default_vals
         for status, expected in oracle_vals.items():
             assert float(default_vals[status]) == pytest.approx(float(expected))

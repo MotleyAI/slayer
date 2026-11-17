@@ -30,7 +30,7 @@ from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
 
 
-def orders_model() -> SlayerDataset:
+def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
@@ -45,7 +45,7 @@ def orders_model() -> SlayerDataset:
     )
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
@@ -59,7 +59,7 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def regions_model() -> SlayerDataset:
+def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
         fields=[
@@ -70,8 +70,8 @@ def regions_model() -> SlayerDataset:
     )
 
 
-def dev2070_models() -> List[SlayerDataset]:
-    return [orders_model(), customers_model(), regions_model()]
+def dev2070_datasets() -> List[SlayerDataset]:
+    return [orders_dataset(), customers_dataset(), regions_dataset()]
 
 
 _ORDER_ROWS = [
@@ -124,13 +124,13 @@ def seed_duckdb(db_path: str) -> None:
 
 async def make_exec_engine(
     dialect: str, *, clock: Optional[Callable[[], datetime]] = None,
-    models: Optional[List[SlayerDataset]] = None,
+    datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture (or a pinned-clock engine)."""
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=models or dev2070_models(), clock=clock,
+        dialect=dialect, seed=seed, datasets=datasets or dev2070_datasets(), clock=clock,
     ) as (engine, _):
         yield engine

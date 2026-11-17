@@ -25,7 +25,7 @@ CONTAINS_3 = frozenset({1})
 LENGTHS = {1: 2, 2: 1, 3: None}
 
 
-def tags_model(*, data_source: str = "test") -> SlayerDataset:
+def tags_dataset(*, data_source: str = "test") -> SlayerDataset:
     return SlayerDataset(
         name="tags", sql_table="tags", data_source=data_source,
         fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="codes", datatype=DataType.TEXT)],
@@ -52,7 +52,7 @@ def _seed_duckdb_tags(db_path: str) -> None:
 
 async def duckdb_tags_engine() -> AsyncIterator[SlayerQueryEngine]:
     pytest.importorskip("duckdb")
-    async with seeded_exec_engine(dialect="duckdb", seed=_seed_duckdb_tags, models=[tags_model()]) as (engine, _):
+    async with seeded_exec_engine(dialect="duckdb", seed=_seed_duckdb_tags, datasets=[tags_dataset()]) as (engine, _):
         yield engine
 
 
@@ -111,7 +111,7 @@ TRY_CAST_TARGET_CASES: list[tuple[str, str, Any]] = [
 TRY_CAST_CASE_IDS = [f"{src}->{to}" for src, to, _ in TRY_CAST_TARGET_CASES]
 
 
-def try_cast_measures() -> list[dict[str, str]]:
+def try_cast_metrics() -> list[dict[str, str]]:
     return [{"formula": f"max(TRY_CAST({src} AS {to}))", "name": f"c{i}"}
             for i, (src, to, _) in enumerate(TRY_CAST_TARGET_CASES)]
 
@@ -122,12 +122,12 @@ def _normalised(value: Any, *, target: str) -> Any:
     return float(value) if target == "DOUBLE" else int(value)
 
 
-async def check_try_cast_targets(engine: SlayerQueryEngine, *, model: str) -> None:
+async def check_try_cast_targets(engine: SlayerQueryEngine, *, dataset: str) -> None:
     """Every ``TRY_CAST_TARGET_CASES`` row in one query over any non-empty ``model``."""
-    resp = await engine.execute(SlayerQuery.model_validate({"population": model, "metrics": try_cast_measures()}))
+    resp = await engine.execute(SlayerQuery.model_validate({"population": dataset, "metrics": try_cast_metrics()}))
     assert len(resp.data) == 1, resp.data
     row = resp.data[0]
-    got = {TRY_CAST_CASE_IDS[i]: _normalised(row[f"{model}.c{i}"], target=to)
+    got = {TRY_CAST_CASE_IDS[i]: _normalised(row[f"{dataset}.c{i}"], target=to)
            for i, (_, to, _) in enumerate(TRY_CAST_TARGET_CASES)}
     want = {TRY_CAST_CASE_IDS[i]: expected for i, (_, _, expected) in enumerate(TRY_CAST_TARGET_CASES)}
     assert got == want, resp.sql

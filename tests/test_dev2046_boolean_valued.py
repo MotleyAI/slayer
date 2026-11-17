@@ -17,10 +17,10 @@ from slayer.engine.key_metadata import stage_field_type
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
-from tests._dev2046_fixtures import customers_model, orders_model
+from tests._dev2046_fixtures import customers_dataset, orders_dataset
 
-ORDERS = orders_model()
-CUSTOMERS = customers_model()
+ORDERS = orders_dataset()
+CUSTOMERS = customers_dataset()
 BUNDLE = ResolvedSourceBundle(dialect="postgres", population=ORDERS, referenced_datasets=[CUSTOMERS])
 COLUMN_TYPE = dataset_field_type(dataset=ORDERS, datasets_by_name={"orders": ORDERS, "customers": CUSTOMERS})
 

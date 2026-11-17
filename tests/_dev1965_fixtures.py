@@ -45,7 +45,7 @@ ORDERS_ROWS = [
 CUMSUM_BY_MONTH = {"2024-01": 30.0, "2024-02": 100.0, "2024-03": 210.0, "2024-04": 280.0}
 
 
-def orders_model(*, filters: Optional[list[str]] = None) -> SlayerDataset:
+def orders_dataset(*, filters: Optional[list[str]] = None) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at", filters=filters or [],
@@ -89,9 +89,9 @@ def where_having_query() -> SlayerQuery:
     ])
 
 
-async def gen(query, *, dialect: str, model: Optional[SlayerDataset] = None) -> str:
+async def gen(query, *, dialect: str, dataset: Optional[SlayerDataset] = None) -> str:
     return await _engine_generate(
-        query=query, model=model or orders_model(), dialect=dialect, validate=False,
+        query=query, dataset=dataset or orders_dataset(), dialect=dialect, validate=False,
     )
 
 
@@ -117,13 +117,13 @@ def _seed_duckdb(db_path: str) -> None:
 
 @asynccontextmanager
 async def exec_engine(
-    dialect: str, *, model: Optional[SlayerDataset] = None,
+    dialect: str, *, dataset: Optional[SlayerDataset] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=[model or orders_model()],
+        dialect=dialect, seed=seed, datasets=[dataset or orders_dataset()],
     ) as (engine, _db):
         yield engine
 
@@ -210,6 +210,6 @@ def split_chain(sql: str) -> tuple[str, str]:
 __all__ = [
     "CUMSUM_BY_MONTH", "MODE_A_OR", "ORDERS_ROWS", "OUTER_ALIAS", "TIER1",
     "assert_single_top_level_with", "cte_names", "cumsum_chain", "exec_engine",
-    "from_name", "gen", "month_key", "month_td", "orders_model", "outer_derived",
+    "from_name", "gen", "month_key", "month_td", "orders_dataset", "outer_derived",
     "outer_order", "parse", "post_filter_where", "q", "split_chain", "where_having_query", "where_of",
 ]

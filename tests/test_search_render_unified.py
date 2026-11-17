@@ -54,7 +54,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 # ---------------------------------------------------------------------------
 
 
-def _model_with_full_subtree() -> SlayerDataset:
+def _dataset_with_full_subtree() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -78,7 +78,7 @@ def _model_with_full_subtree() -> SlayerDataset:
     )
 
 
-def _hidden_model() -> SlayerDataset:
+def _hidden_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="internal_audit",
         sql_table="public.audit",
@@ -98,8 +98,8 @@ async def storage() -> AsyncIterator[YAMLStorage]:
         await s.save_datasource(
             DatasourceConfig(name="empty_ds", type="sqlite", database=":memory:"),
         )
-        await s.save_dataset(_model_with_full_subtree())
-        await s.save_dataset(_hidden_model())
+        await s.save_dataset(_dataset_with_full_subtree())
+        await s.save_dataset(_hidden_dataset())
         yield s
 
 
@@ -109,7 +109,7 @@ async def storage() -> AsyncIterator[YAMLStorage]:
 
 
 def test_collect_model_entity_pairs_visible_model_produces_full_subtree() -> None:
-    model = _model_with_full_subtree()
+    model = _dataset_with_full_subtree()
     pairs = collect_dataset_entity_pairs(dataset=model)
     canonicals = [p.canonical_id for p in pairs]
     kinds = {p.canonical_id: p.kind for p in pairs}
@@ -130,7 +130,7 @@ def test_collect_model_entity_pairs_visible_model_produces_full_subtree() -> Non
 
 
 def test_collect_model_entity_pairs_hidden_model_returns_empty() -> None:
-    pairs = collect_dataset_entity_pairs(dataset=_hidden_model())
+    pairs = collect_dataset_entity_pairs(dataset=_hidden_dataset())
     assert pairs == []
 
 
@@ -140,7 +140,7 @@ def test_collect_render_pairs_uses_unified_helper() -> None:
     the (canonical_id, kind, text) triples produced for a model in the
     corpus build are identical to what ``collect_model_entity_pairs``
     returns for that model."""
-    model = _model_with_full_subtree()
+    model = _dataset_with_full_subtree()
     corpus_pairs = _collect_render_pairs(
         memories=[], visible_datasets=[model], datasources=[],
     )
@@ -310,7 +310,7 @@ def test_index_corpus_path_actually_calls_collect_model_entity_pairs(
     monkeypatch.setattr(index_mod, "collect_dataset_entity_pairs", stub)
     pairs = index_mod._collect_render_pairs(
         memories=[],
-        visible_datasets=[_model_with_full_subtree()],
+        visible_datasets=[_dataset_with_full_subtree()],
         datasources=[],
     )
     # DEV-1549: 4-tuples (canonical, kind, text, description).

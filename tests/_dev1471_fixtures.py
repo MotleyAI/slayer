@@ -48,7 +48,7 @@ def _orders_columns(extra: Iterable[DatasetField] = ()) -> list[DatasetField]:
     return cols
 
 
-def orders_model(
+def orders_dataset(
     *,
     data_source: str = "ds",
     extra_columns: Iterable[DatasetField] = (),
@@ -92,7 +92,7 @@ MONTHLY_INNER = SlayerQuery.model_validate({
 
 # --- orders → customers → regions join chain (multi-hop flat-name tests) ---
 
-def region_chain_models(*, data_source: str = "ds") -> list[SlayerDataset]:
+def region_chain_datasets(*, data_source: str = "ds") -> list[SlayerDataset]:
     regions = SlayerDataset(
         name="regions", sql_table="regions", data_source=data_source,
         fields=[
@@ -135,7 +135,7 @@ def region_chain_tables(
 
 
 async def make_engine(
-    backend: str, *, base_dir: str, db_path: str, tables: list[dict], models: list[SlayerDataset],
+    backend: str, *, base_dir: str, db_path: str, tables: list[dict], datasets: list[SlayerDataset],
 ) -> SlayerQueryEngine:
     """Seed ``tables`` into a fresh ``backend`` DB and return an engine over ``models``.
 
@@ -163,8 +163,8 @@ async def make_engine(
             )
     storage = YAMLStorage(base_dir=base_dir)
     await storage.save_datasource(
-        DatasourceConfig(name=models[0].data_source, type=backend, database=db_path),
+        DatasourceConfig(name=datasets[0].data_source, type=backend, database=db_path),
     )
-    for model in models:
+    for model in datasets:
         await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage)

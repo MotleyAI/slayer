@@ -27,7 +27,7 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator
 from tests import _statement_render_law as law
-from tests._dev1965_fixtures import cumsum_chain, gen, month_td, orders_model, q
+from tests._dev1965_fixtures import cumsum_chain, gen, month_td, orders_dataset, q
 from tests._engine_helpers import _engine_generate
 from tests.test_query_backed_identifier_length import _expand
 
@@ -177,8 +177,8 @@ class TestLiveGenerator:
 # --------------------------------------------------------------------------- #
 # Every assembly seam compiles under the law.
 # --------------------------------------------------------------------------- #
-def _stats_models() -> list[SlayerDataset]:
-    orders = orders_model()
+def _stats_datasets() -> list[SlayerDataset]:
+    orders = orders_dataset()
     orders.relationships = [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
@@ -223,9 +223,9 @@ _SEAMS = {
 @pytest.mark.parametrize("dialect", ["postgres", "mysql", "tsql", "bigquery"])
 @pytest.mark.parametrize("seam", sorted(_SEAMS))
 async def test_every_seam_composes_without_a_statement_render(seam: str, dialect: str) -> None:
-    models = _stats_models()
+    models = _stats_datasets()
     sql = await _engine_generate(
-        query=_SEAMS[seam], model=models[0], extra_models=models[1:],
+        query=_SEAMS[seam], dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=False,
     )
     assert sql

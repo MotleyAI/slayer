@@ -75,7 +75,7 @@ async def test_seeded_exec_engine_smoke(dialect: str) -> None:
             patch.object(engine_factory, "invalidate_engine", side_effect=watching_invalidate):
         warnings.simplefilter("always")
         async with seeded_exec_engine(
-            dialect=dialect, seed=_seed_nums(dialect), models=[_MODEL],
+            dialect=dialect, seed=_seed_nums(dialect), datasets=[_MODEL],
         ) as (engine, db_path):
             holder["path"] = db_path
             assert Path(db_path).exists()

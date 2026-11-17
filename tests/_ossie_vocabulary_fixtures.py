@@ -201,7 +201,7 @@ async def vocab_engine(backend: str, *, spelling: Spelling = "new") -> AsyncGene
         pytest.importorskip("duckdb")
     datasets = [dataset_of(orders_doc(spelling)), dataset_of(customers_doc(spelling))]
     async with seeded_exec_engine(
-        dialect=backend, seed=lambda p: seed_backend(backend, p, [ORDERS, CUSTOMERS]), models=datasets,
+        dialect=backend, seed=lambda p: seed_backend(backend, p, [ORDERS, CUSTOMERS]), datasets=datasets,
     ) as (engine, _db):
         yield engine
 
@@ -213,7 +213,7 @@ async def refine_vocab_engine(backend: str, *, spelling: Spelling = "new") -> As
         pytest.importorskip("duckdb")
     seed = seed_duckdb if backend == "duckdb" else seed_sqlite
     async with seeded_exec_engine(
-        dialect=backend, seed=seed, models=[dataset_of(refine_orders_doc(spelling))],
+        dialect=backend, seed=seed, datasets=[dataset_of(refine_orders_doc(spelling))],
     ) as (engine, _db):
         await engine.create_dataset_from_query(query=fresh(MONTHLY_REVENUE[spelling]), name=SAVED_QUERY)
         yield engine

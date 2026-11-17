@@ -64,7 +64,7 @@ _LABEL = Aggregation(name="lbl", expression="MAX(CASE WHEN {value} > 0 THEN '{n}
                      params=[AggregationParam(name="n", sql="'x'")])
 
 
-def _models(*aggs: Aggregation) -> list[SlayerDataset]:
+def _datasets(*aggs: Aggregation) -> list[SlayerDataset]:
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="region_id", datatype=DataType.INT)],
@@ -87,7 +87,7 @@ def _models(*aggs: Aggregation) -> list[SlayerDataset]:
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
-    async with seeded_exec_engine(dialect=request.param, seed=_seed, models=_models(_WSUM, _USUM)) as (e, _db):
+    async with seeded_exec_engine(dialect=request.param, seed=_seed, datasets=_datasets(_WSUM, _USUM)) as (e, _db):
         yield e
 
 
@@ -105,12 +105,12 @@ def executed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return seen
 
 
-def _q(formula: str, **extra: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": formula, "name": "m"}], **extra})
+def _q(expression: str, **extra: Any) -> SlayerQuery:
+    return SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": expression, "name": "m"}], **extra})
 
 
-async def _value(engine: SlayerQueryEngine, formula: str) -> float:
-    resp = await engine.execute(_q(formula))
+async def _value(engine: SlayerQueryEngine, expression: str) -> float:
+    resp = await engine.execute(_q(expression))
     return float(resp.data[0]["orders.m"])
 
 
@@ -155,11 +155,11 @@ class TestStringArgumentIsModeB:
 
 class TestDefaultStaysModeA:
     async def test_a_dialect_default_binds(self) -> None:
-        async with seeded_exec_engine(dialect="sqlite", seed=_seed, models=_models(_USUM)) as (engine, _db):
+        async with seeded_exec_engine(dialect="sqlite", seed=_seed, datasets=_datasets(_USUM)) as (engine, _db):
             assert await _value(engine, "usum(amount)") == pytest.approx(10 * 1 + 20 * 2 + 30 * 3 + 40 * 4)
 
     async def test_the_same_text_as_an_argument_is_refused(self) -> None:
-        async with seeded_exec_engine(dialect="sqlite", seed=_seed, models=_models(_USUM)) as (engine, _db):
+        async with seeded_exec_engine(dialect="sqlite", seed=_seed, datasets=_datasets(_USUM)) as (engine, _db):
             query = _q("usum(amount, w='unicode(status) - unicode(status) + quantity')")
             with pytest.raises(UnanalyzableAggregationParameterError):
                 await engine.execute(query)
@@ -173,11 +173,11 @@ _MODE_B_LITERAL = "'" + "'a''b\\c'".replace("'", "''") + "'"
 class TestQuotedPlaceholder:
     @pytest.mark.parametrize("dialect", ["duckdb", "postgres", "mysql", "clickhouse", "bigquery"])
     async def test_a_mode_b_string_literal_cannot_escape_the_literal(self, dialect: str) -> None:
-        orders = _models(_LABEL)[1]
+        orders = _datasets(_LABEL)[1]
         sql = await _engine_generate(
             query=SlayerQuery(population="orders", metrics=[DatasetMetric(expression=f"lbl(amount, n={_MODE_B_LITERAL})",
                                                                             name="m")]),
-            model=orders, dialect=dialect, extra_models=[_models()[0]],
+            dataset=orders, dialect=dialect, extra_datasets=[_datasets()[0]],
         )
         case = sqlglot.parse_one(sql, read=dialect).find(exp.Case)
         assert case is not None, sql

@@ -592,7 +592,7 @@ class TestTimeTruncWidening:
 # ---------------------------------------------------------------------------
 # Join-path discovery descends expression sources (task 3.5)
 # ---------------------------------------------------------------------------
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
@@ -606,7 +606,7 @@ def _orders_model() -> SlayerDataset:
     )
 
 
-def _customers_model() -> SlayerDataset:
+def _customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
@@ -617,10 +617,10 @@ def _customers_model() -> SlayerDataset:
 
 
 def _paths_for(key: AggregateKey):
-    orders = _orders_model()
+    orders = _orders_dataset()
     bundle = ResolvedSourceBundle(
         dialect="postgres",
-        population=orders, referenced_datasets=[orders, _customers_model()],
+        population=orders, referenced_datasets=[orders, _customers_dataset()],
     )
     paths = aggregate_input_closure(
         key=key, anchor_dataset=orders, anchor_relation="orders", bundle=bundle,
@@ -684,7 +684,7 @@ class TestJoinDiscoveryExpressionSources:
 # ---------------------------------------------------------------------------
 # HAVING validation wiring survives the migration (task 3.5)
 # ---------------------------------------------------------------------------
-def _status_orders_model() -> SlayerDataset:
+def _status_orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         fields=[
@@ -708,7 +708,7 @@ class TestHavingValidationWiring:
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["_count > 1 and status == 'completed'"],
         )
-        sql = await _engine_generate(query=query, model=_status_orders_model())
+        sql = await _engine_generate(query=query, dataset=_status_orders_dataset())
         assert "HAVING" in sql
         assert "WHERE" in sql
 
@@ -723,9 +723,9 @@ class TestHavingValidationWiring:
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["_count > 1 or status == 'completed'"],
         )
-        model = _status_orders_model()
+        model = _status_orders_dataset()
         with pytest.raises(ValueError, match="neither a field nor a measure"):
-            await _engine_generate(query=query, model=model)
+            await _engine_generate(query=query, dataset=model)
 
     async def test_grouped_column_in_having_still_accepted(self) -> None:
         query = SlayerQuery(
@@ -734,5 +734,5 @@ class TestHavingValidationWiring:
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["_count > 1 and status == 'completed'"],
         )
-        sql = await _engine_generate(query=query, model=_status_orders_model())
+        sql = await _engine_generate(query=query, dataset=_status_orders_dataset())
         assert "HAVING" in sql

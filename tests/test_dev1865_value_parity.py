@@ -20,17 +20,17 @@ def _rowkey(row, dim_cols):
     return tuple(row[c] for c in dim_cols)
 
 
-async def _twin_query_law(engine, *, dims, value_formula, threshold, td=None):
+async def _twin_query_law(engine, *, dims, value_expression, threshold, td=None):
     """Assert Q (filter E>threshold) == Q' cells where E>threshold, values equal."""
     base = {"dimensions": dims}
     if td is not None:
         base["time_dimensions"] = td
     display = [DatasetMetric(expression="sum(amount)", name="s")]
     filtered = (await engine.execute(q(
-        **base, measures=display, filters=[f"{value_formula} > {threshold}"],
+        **base, measures=display, filters=[f"{value_expression} > {threshold}"],
     ))).data
     twin = (await engine.execute(q(
-        **base, measures=display + [DatasetMetric(expression=value_formula, name="e")],
+        **base, measures=display + [DatasetMetric(expression=value_expression, name="e")],
     ))).data
     assert filtered, "threshold kept no rows — the law would be vacuous"
     dim_cols = sorted(set(filtered[0]) - {"orders.s"})
@@ -67,7 +67,7 @@ class TestTwinQueryLaw:
         self, exec_engine, dims, value_formula, threshold, td,
     ) -> None:
         await _twin_query_law(
-            exec_engine, dims=dims, value_formula=value_formula,
+            exec_engine, dims=dims, value_expression=value_formula,
             threshold=threshold, td=td,
         )
 

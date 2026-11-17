@@ -22,10 +22,10 @@ from tests._dev1841_fixtures import (
 )
 from tests._dev1892_fixtures import (
     ASSOC_WSUM_BY_STATUS,
-    expr_default_name_models,
-    shared_default_name_models,
-    toone_default_models,
-    toone_filter_models,
+    expr_default_name_datasets,
+    shared_default_name_datasets,
+    toone_default_datasets,
+    toone_filter_datasets,
 )
 
 #: wsum3 weight default = to-one path regions.pop, picked once per entity:
@@ -49,30 +49,30 @@ async def assoc_engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def toone_filter_engine(request):
-    async for engine in make_exec_engine(request, models=toone_filter_models()):
+    async for engine in make_exec_engine(request, datasets=toone_filter_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def shared_default_engine(request):
-    async for engine in make_exec_engine(request, models=shared_default_name_models()):
+    async for engine in make_exec_engine(request, datasets=shared_default_name_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def expr_default_engine(request):
-    async for engine in make_exec_engine(request, models=expr_default_name_models()):
+    async for engine in make_exec_engine(request, datasets=expr_default_name_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def toone_default_engine(request):
-    async for engine in make_exec_engine(request, models=toone_default_models()):
+    async for engine in make_exec_engine(request, datasets=toone_default_datasets()):
         yield engine
 
 
-def _vals(resp, measure):
-    return {k[0]: v[measure] for k, v in status_key(resp).items()}
+def _vals(resp, metric):
+    return {k[0]: v[metric] for k, v in status_key(resp).items()}
 
 
 class TestBaseValueFoldRegression:

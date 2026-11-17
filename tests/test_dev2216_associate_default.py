@@ -23,7 +23,7 @@ from tests._dev1841_fixtures import (
     TimeGranularity,
     associated_warnings,
     broadcast_warnings,
-    crossing_input_models,
+    crossing_input_datasets,
     make_exec_engine,
     status_key,
 )
@@ -70,8 +70,8 @@ def _same_rows(a, b) -> bool:
     return canon(a) == canon(b)
 
 
-def _status(resp, measure: str, root: str = "orders") -> dict:
-    return {k[0]: float(v[f"{root}.{measure}"]) for k, v in status_key(resp, root=root).items()}
+def _status(resp, metric: str, root: str = "orders") -> dict:
+    return {k[0]: float(v[f"{root}.{metric}"]) for k, v in status_key(resp, root=root).items()}
 
 
 def _fallbacks(resp) -> list[BroadcastGrainWarningPayload]:
@@ -86,7 +86,7 @@ async def engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def crossing_engine(request):
-    async for engine in make_exec_engine(request, models=crossing_input_models()):
+    async for engine in make_exec_engine(request, datasets=crossing_input_datasets()):
         yield engine
 
 

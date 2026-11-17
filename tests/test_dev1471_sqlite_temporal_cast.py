@@ -14,7 +14,7 @@ from tests._dev1471_fixtures import (
     BACKENDS,
     date_str,
     make_engine,
-    orders_model,
+    orders_dataset,
     orders_table_spec,
 )
 from tests._engine_helpers import _engine_generate
@@ -41,7 +41,7 @@ async def _engine(backend: str, tmp: str, *, extra_columns=()):
         base_dir=os.path.join(tmp, "store"),
         db_path=os.path.join(tmp, f"t.{backend}"),
         tables=[orders_table_spec(_ROWS)],
-        models=[orders_model(extra_columns=extra_columns)],
+        datasets=[orders_dataset(extra_columns=extra_columns)],
     )
 
 
@@ -92,7 +92,7 @@ async def test_sqlite_sql_has_no_temporal_cast() -> None:
             "population": "orders", "dimensions": ["customer_id"],
             "metrics": [{"expression": "max(created_at)"}],
         }),
-        model=orders_model(), dialect="sqlite",
+        dataset=orders_dataset(), dialect="sqlite",
     )
     normalized = _norm(sql)
     assert "MAX(orders.created_at)" in normalized, sql
@@ -107,7 +107,7 @@ async def test_sqlite_derived_column_sql_has_no_temporal_cast() -> None:
             "population": "orders", "dimensions": ["customer_id"],
             "metrics": [{"expression": "max(last_touch)"}],
         }),
-        model=orders_model(extra_columns=[_LAST_TOUCH]), dialect="sqlite",
+        dataset=orders_dataset(extra_columns=[_LAST_TOUCH]), dialect="sqlite",
     )
     assert "AS TIMESTAMP" not in _norm(sql), sql
 
@@ -149,6 +149,6 @@ async def test_other_dialects_keep_their_casts(dialect: str) -> None:
             "population": "orders", "dimensions": ["customer_id"],
             "metrics": [{"expression": "max(created_at)"}],
         }),
-        model=orders_model(), dialect=dialect,
+        dataset=orders_dataset(), dialect=dialect,
     )
     assert _norm(sql) == _EXPECTED_SQL[dialect]

@@ -24,7 +24,7 @@ from slayer.pg_facade.connection import (
 # --- fixtures ---------------------------------------------------------------
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         data_source="jaffle",
@@ -40,7 +40,7 @@ def _orders_model() -> SlayerDataset:
     )
 
 
-def _customers_model() -> SlayerDataset:
+def _customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers",
         data_source="jaffle",
@@ -55,7 +55,7 @@ def _customers_model() -> SlayerDataset:
 @pytest.fixture
 def catalog():
     return build_catalog(
-        datasets_by_datasource={PUBLIC_SCHEMA: [_orders_model(), _customers_model()]},
+        datasets_by_datasource={PUBLIC_SCHEMA: [_orders_dataset(), _customers_dataset()]},
     )
 
 

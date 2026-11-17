@@ -21,7 +21,7 @@ from tests._dev1838_fixtures import (
     FieldRef,
     DatasetMetric,
     OrderItem,
-    dev1838_models,
+    dev1838_datasets,
     month_td,
     q,
 )
@@ -37,7 +37,7 @@ class _LegacyCrossModelPlan(Protocol):
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1838_models()
+    models = dev1838_datasets()
     return ResolvedSourceBundle(
         dialect="postgres",
         population=models[0], referenced_datasets=list(models[1:]),

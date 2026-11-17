@@ -567,7 +567,7 @@ def _seed_sqlite(db_path: str) -> None:
         )
 
 
-def _sqlite_models() -> "list[SlayerDataset]":
+def _sqlite_datasets() -> "list[SlayerDataset]":
     """SQLite-shaped models (no schema qualifier, no sql= on base columns)."""
     return [
         SlayerDataset(
@@ -619,7 +619,7 @@ async def sqlite_engine() -> AsyncIterator[SlayerQueryEngine]:
         await storage.save_datasource(
             DatasourceConfig(name="test", type="sqlite", database=db_path)
         )
-        for m in _sqlite_models():
+        for m in _sqlite_datasets():
             await storage.save_dataset(m)
         yield SlayerQueryEngine(storage=storage)
 

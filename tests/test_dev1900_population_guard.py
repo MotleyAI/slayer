@@ -25,7 +25,7 @@ from tests._dev1900_fixtures import (
     cust_q,
     make_exec_engine,
     orders_q,
-    unparseable_derived_models,
+    unparseable_derived_datasets,
 )
 
 MODES = ["broadcast", "associate", "error"]
@@ -44,7 +44,7 @@ async def engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unparse_engine(request):
-    async for e in make_exec_engine(request, models=unparseable_derived_models()):
+    async for e in make_exec_engine(request, datasets=unparseable_derived_datasets()):
         yield e
 
 

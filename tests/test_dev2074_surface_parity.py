@@ -46,12 +46,12 @@ def _names_pair(text: str, *, a: str, b: str) -> bool:
 
 
 def _m(name: str, *, cols: tuple[str, ...] = (), joins: list[DatasetRelationship] | None = None,
-       measures: list[DatasetMetric] | None = None) -> SlayerDataset:
+       metrics: list[DatasetMetric] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source=DS, sql_table=name,
         fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
                  *(DatasetField(name=c, datatype=DataType.INT if c.endswith("_id") else DataType.TEXT) for c in cols)],
-        relationships=joins or [], metrics=measures or [],
+        relationships=joins or [], metrics=metrics or [],
     )
 
 
@@ -94,7 +94,7 @@ class TestRecommendation:
         engine = await make_engine([
             _m("orders", cols=("customer_id",), joins=[_to("customers", "customer_id")]),
             _m("customers", cols=("region_id",), joins=[_to("regions", "region_id", name="hr")]),
-            _m("regions", cols=("rname",), measures=[DatasetMetric(name="n", expression="count(rname)")]),
+            _m("regions", cols=("rname",), metrics=[DatasetMetric(name="n", expression="count(rname)")]),
         ])
         rec = await engine.recommend_population(["orders.id", item])
         assert rec.population == "orders"
@@ -105,7 +105,7 @@ class TestRecommendation:
         engine = await make_engine([
             _m("a", cols=("b_id", "x"), joins=[_to("b", "b_id", name="to_b")]),
             _m("b", cols=("a_id", "y"), joins=[_to("a", "a_id", name="to_a")],
-               measures=[DatasetMetric(name="total", expression="count(y)")]),
+               metrics=[DatasetMetric(name="total", expression="count(y)")]),
         ])
         rec = await engine.recommend_population(["a.x", "b.total"])
         assert rec.population == "a"
@@ -243,7 +243,7 @@ class TestPopulationInference:
         assert _names_pair(str(ei.value), a="orders", b="addresses"), str(ei.value)
 
 
-def _cycle_models() -> list[SlayerDataset]:
+def _cycle_datasets() -> list[SlayerDataset]:
     """``x → y → z → x``, every edge declared many-to-one."""
     return [
         _m("x", cols=("y_id", "v"), joins=[_to("y", "y_id")]),
@@ -262,7 +262,7 @@ def _seed_cycle(db_path: str) -> None:
 
 @pytest.fixture
 async def cycle_engine() -> AsyncIterator[SlayerQueryEngine]:
-    async with seeded_exec_engine(dialect="sqlite", seed=_seed_cycle, models=_cycle_models(),
+    async with seeded_exec_engine(dialect="sqlite", seed=_seed_cycle, datasets=_cycle_datasets(),
                                   datasource=DS, validate=True) as (engine, _db):
         yield engine
 

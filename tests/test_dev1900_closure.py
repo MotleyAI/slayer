@@ -21,14 +21,14 @@ from slayer.sql.field_expansion import DatasetFieldCycleError
 from slayer.engine.reference_closure import fragment_closure, key_closure
 from slayer.engine.compile.stages import _PushBlocked, _ref_sql_dependency_paths
 
-from tests._dev1900_fixtures import dev1900_models, unparseable_derived_models
+from tests._dev1900_fixtures import dev1900_datasets, unparseable_derived_datasets
 
 #: The one fanning crossing, root-relative from the query host (orders).
 CROSS = ("regions", "region_events")
 
 
-def _bundle(models):
-    by = {m.name: m for m in models}
+def _bundle(datasets):
+    by = {m.name: m for m in datasets}
     referenced = [by[n] for n in ("customers", "regions", "region_events", "stores", "plans")]
     return by, ResolvedSourceBundle(dialect="postgres", population=by["orders"], referenced_datasets=referenced)
 
@@ -41,7 +41,7 @@ class TestFragmentClosure:
     """Anchored owner-locally at regions (owner_path=())."""
 
     def setup_method(self):
-        self.by, self.bundle = _bundle(dev1900_models())
+        self.by, self.bundle = _bundle(dev1900_datasets())
         self.regions = self.by["regions"]
 
     def _frag(self, sql, *, owner_path=(), anchor_relation="regions"):
@@ -80,7 +80,7 @@ class TestKeyClosure:
     """Anchored at customers — a to-one hop from the orders host."""
 
     def setup_method(self):
-        self.by, self.bundle = _bundle(dev1900_models())
+        self.by, self.bundle = _bundle(dev1900_datasets())
         self.customers = self.by["customers"]
 
     def _key(self, key):
@@ -111,7 +111,7 @@ class TestKeyClosure:
         assert all(len(p) <= 1 for p in got), f"StarKey must not descend: {got}"
 
     def test_a_string_is_never_sql(self):
-        by, bundle = _bundle(dev1900_models())
+        by, bundle = _bundle(dev1900_datasets())
         got = key_closure(key="region_events.value", anchor_dataset=by["regions"],
                           anchor_relation="regions", bundle=bundle)
         assert got == ()
@@ -125,7 +125,7 @@ class TestKeyClosure:
 
 class TestKeyClosurePathologies:
     def setup_method(self):
-        self.by, self.bundle = _bundle(unparseable_derived_models())
+        self.by, self.bundle = _bundle(unparseable_derived_datasets())
         self.customers = self.by["customers"]
 
     def _key(self, key):
@@ -147,7 +147,7 @@ class TestPushPlanHonoursUnanalyzable:
     CLOSED — dropping the hop would omit a required join / mis-scope a predicate."""
 
     def setup_method(self):
-        self.by, self.bundle = _bundle(unparseable_derived_models())
+        self.by, self.bundle = _bundle(unparseable_derived_datasets())
 
     def _deps(self, key):
         return _ref_sql_dependency_paths(
@@ -169,7 +169,7 @@ class TestPushPlanHonoursUnanalyzable:
 
 class TestModelsByName:
     def test_host_inclusive_and_source_first(self):
-        by, bundle = _bundle(dev1900_models())
+        by, bundle = _bundle(dev1900_datasets())
         mbn = bundle.datasets_by_name
         assert set(mbn) == {"orders", "customers", "regions", "region_events",
                             "stores", "plans"}
@@ -179,7 +179,7 @@ class TestModelsByName:
     def test_source_wins_dedup_over_a_referenced_namesake(self):
         """A distinct model sharing the source's name in referenced_models must
         NOT replace the source — the source is inserted first and wins."""
-        by = {m.name: m for m in dev1900_models()}
+        by = {m.name: m for m in dev1900_datasets()}
         source_orders = by["orders"]
         shadow_orders = SlayerDataset(name="orders", data_source="test", sql_table="orders")
         assert shadow_orders is not source_orders
@@ -195,7 +195,7 @@ class TestModelsByName:
         """A hand-built bundle whose source is not in referenced_models still
         exposes the host, so a source→host reverse hop resolves deterministically
         rather than incidentally (gap 5)."""
-        by = {m.name: m for m in dev1900_models()}
+        by = {m.name: m for m in dev1900_datasets()}
         bundle = ResolvedSourceBundle(
             dialect="postgres",
             population=by["regions"], referenced_datasets=[by["region_events"]])
@@ -204,7 +204,7 @@ class TestModelsByName:
     def test_rerooted_keeps_the_former_source_in_the_universe(self):
         """Re-rooting at a producer root must not shrink the map: the former
         source stays visible so a root→ex-host reverse hop remains provable."""
-        by = {m.name: m for m in dev1900_models()}
+        by = {m.name: m for m in dev1900_datasets()}
         bundle = ResolvedSourceBundle(
             dialect="postgres",
             population=by["orders"], referenced_datasets=[by["customers"]])

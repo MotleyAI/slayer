@@ -17,7 +17,7 @@ from tests._dev1900_fixtures import (
     HOME_WIDEN_VALUE,
     DatasetMetric,
     SlayerQuery,
-    home_path_models,
+    home_path_datasets,
     make_exec_engine,
     orders_q,
 )
@@ -29,7 +29,7 @@ DEFAULT = DatasetMetric(expression="wsum_cust_spend(customers.regions.pop)", nam
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def engine(request):
-    async for e in make_exec_engine(request, models=home_path_models()):
+    async for e in make_exec_engine(request, datasets=home_path_datasets()):
         yield e
 
 

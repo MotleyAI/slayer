@@ -31,7 +31,7 @@ def _norm(s: str) -> str:
 async def _generate(
     generator: SQLGenerator,
     query: SlayerQuery,
-    model: SlayerDataset,
+    dataset: SlayerDataset,
 ) -> str:
     """Helper: run ``query`` against ``model`` on the typed engine pipeline
     and return the SQL emitted for ``generator``'s dialect.
@@ -42,12 +42,12 @@ async def _generate(
     ``_engine_generate``.
     """
     return await _engine_generate(
-        query=query, model=model, dialect=generator.dialect,
+        query=query, dataset=dataset, dialect=generator.dialect,
     )
 
 
 @pytest.fixture
-def orders_model() -> SlayerDataset:
+def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",

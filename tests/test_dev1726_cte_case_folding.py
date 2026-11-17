@@ -272,7 +272,7 @@ class TestBeltCaseFolding:
 # ---------------------------------------------------------------------------
 
 
-def _vehicle_model() -> SlayerDataset:
+def _vehicle_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -288,7 +288,7 @@ def _vehicle_model() -> SlayerDataset:
     )
 
 
-def _customers_model() -> SlayerDataset:
+def _customers_dataset() -> SlayerDataset:
     """Grandfathered case-only column pair over two physical columns (saved unvalidated)."""
     return SlayerDataset(
         name="customers",
@@ -318,8 +318,8 @@ def _cm_vehicle_query() -> SlayerQuery:
 
 async def _cm_vehicle_sql(dialect: str) -> str:
     return await _engine_generate(
-        query=_cm_vehicle_query(), model=_vehicle_model(),
-        extra_models=[_customers_model()], dialect=dialect, validate=False,
+        query=_cm_vehicle_query(), dataset=_vehicle_dataset(),
+        extra_datasets=[_customers_dataset()], dialect=dialect, validate=False,
     )
 
 
@@ -411,12 +411,12 @@ class TestE2eCaseFoldingAllDialects:
     @pytest.mark.parametrize("dialect", FOLDING_DIALECTS + EXACT_DIALECTS)
     async def test_case_only_result_names_are_refused(self, dialect: str) -> None:
         query = _case_only_result_names_query()
-        model = _vehicle_model()
-        extra_models = [_customers_model()]
+        model = _vehicle_dataset()
+        extra_models = [_customers_dataset()]
         with pytest.raises(SlayerError) as err:
             await _engine_generate(
-                query=query, model=model,
-                extra_models=extra_models, dialect=dialect, validate=False,
+                query=query, dataset=model,
+                extra_datasets=extra_models, dialect=dialect, validate=False,
             )
         assert "Foo" in str(err.value)
         assert "foo" in str(err.value)
@@ -440,12 +440,12 @@ class TestE2eCaseFoldingAllDialects:
                 ),
             ],
         )
-        model = _vehicle_model()
-        extra_models = [_customers_model()]
+        model = _vehicle_dataset()
+        extra_models = [_customers_dataset()]
         with pytest.raises(SlayerError) as err:
             await _engine_generate(
-                query=query, model=model,
-                extra_models=extra_models, dialect="postgres", validate=False,
+                query=query, dataset=model,
+                extra_datasets=extra_models, dialect="postgres", validate=False,
             )
         assert "Foo" in str(err.value)
         assert "foo" in str(err.value)

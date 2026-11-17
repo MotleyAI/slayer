@@ -9,9 +9,9 @@ from pathlib import Path
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev1840_fixtures import dev1840_models, signup_month_td
-from tests._dev1847_fixtures import INNER_UP_PRODUCT, dev1847_models
-from tests._dev1859_fixtures import customers_wsum_models, sales_wsum_models
+from tests._dev1840_fixtures import dev1840_datasets, signup_month_td
+from tests._dev1847_fixtures import INNER_UP_PRODUCT, dev1847_datasets
+from tests._dev1859_fixtures import customers_wsum_datasets, sales_wsum_datasets
 from tests._dev1919_fixtures import WINDOWED_CUSTOM_PARAM, WINDOWED_PARAM
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
@@ -20,10 +20,10 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1859_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
 _MODEL_SETS = {
-    "sales": dev1847_models,
-    "sales_wsum": sales_wsum_models,
-    "orders": dev1840_models,
-    "orders_wsum": customers_wsum_models,
+    "sales": dev1847_datasets,
+    "sales_wsum": sales_wsum_datasets,
+    "orders": dev1840_datasets,
+    "orders_wsum": customers_wsum_datasets,
 }
 _REGION_SUM = "sum(amount, partition_by=region)"
 _HEADLINE = ("weighted_avg(customers.spend, "
@@ -103,7 +103,7 @@ async def _generate_one(case, dialect: str):
             kw["to_many_handling"] = case["mode"]
         query = SlayerQuery(population=case["source"], **kw)
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract

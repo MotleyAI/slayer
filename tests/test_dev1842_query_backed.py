@@ -26,7 +26,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import apply_extension_overlay
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1842_fixtures import dev1842_models
+from tests._dev1842_fixtures import dev1842_datasets
 from tests._engine_helpers import _engine_generate
 import slayer.engine.bundle_builder
 
@@ -125,7 +125,7 @@ class TestExtensionMeasuresOverQueryBacked:
             "metrics": [{"expression": "scaled", "name": "r"}],
         })
         sql = await _engine_generate(
-            query=query, model=base, dialect="duckdb", validate=False,
+            query=query, dataset=base, dialect="duckdb", validate=False,
         )
         assert "100" in sql
 
@@ -138,7 +138,7 @@ class TestExtensionMeasuresOverQueryBacked:
             await storage.save_datasource(
                 DatasourceConfig(name="test", type="sqlite", database=":memory:")
             )
-            for m in dev1842_models():
+            for m in dev1842_datasets():
                 await storage.save_dataset(m, _validate=False)
             engine = SlayerQueryEngine(storage=storage)
             query = SlayerQuery.model_validate({
@@ -173,7 +173,7 @@ class TestSameNameExtensionRejected:
         })
         with pytest.raises(ValueError, match=r"duplicate measure names"):
             await _engine_generate(
-                query=query, model=base, dialect="duckdb", validate=False,
+                query=query, dataset=base, dialect="duckdb", validate=False,
             )
 
 

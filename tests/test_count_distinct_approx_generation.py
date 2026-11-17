@@ -20,11 +20,11 @@ from slayer.core.query import SlayerQuery
 from tests._engine_helpers import _engine_generate
 
 
-async def _generate(dialect: str, query: SlayerQuery, model: SlayerDataset) -> str:
-    return await _engine_generate(query=query, model=model, dialect=dialect)
+async def _generate(dialect: str, query: SlayerQuery, dataset: SlayerDataset) -> str:
+    return await _engine_generate(query=query, dataset=dataset, dialect=dialect)
 
 
-def _model() -> SlayerDataset:
+def _dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -73,7 +73,7 @@ async def test_duckdb_emits_native_approx() -> None:
         population="orders",
         metrics=[DatasetMetric(expression="count_distinct_approx(customer_id)")],
     )
-    sql = (await _generate("duckdb", query, _model())).lower()
+    sql = (await _generate("duckdb", query, _dataset())).lower()
     assert "approx_count_distinct(" in sql
 
 
@@ -82,7 +82,7 @@ async def test_postgres_emits_exact_fallback() -> None:
         population="orders",
         metrics=[DatasetMetric(expression="count_distinct_approx(customer_id)")],
     )
-    sql = (await _generate("postgres", query, _model())).upper()
+    sql = (await _generate("postgres", query, _dataset())).upper()
     assert "COUNT(DISTINCT" in sql
     # Exact fallback — no native approximate-distinct *function* is emitted.
     # (The result-column alias still carries the requested aggregation name,
@@ -99,7 +99,7 @@ async def test_clickhouse_routes_to_native_uniq() -> None:
         population="orders",
         metrics=[DatasetMetric(expression="count_distinct_approx(customer_id)")],
     )
-    sql = (await _generate("clickhouse", query, _model())).lower()
+    sql = (await _generate("clickhouse", query, _dataset())).lower()
     assert "uniq(" in sql
 
 
@@ -109,7 +109,7 @@ async def test_approx_on_primary_key_column_generates() -> None:
         metrics=[DatasetMetric(expression="count_distinct_approx(id)")],
     )
     # Must not raise an eligibility error on the PK column.
-    sql = await _generate("duckdb", query, _model())
+    sql = await _generate("duckdb", query, _dataset())
     assert "approx_count_distinct(" in sql.lower()
 
 
@@ -125,5 +125,5 @@ async def test_alias_heals_to_count_distinct_approx_and_emits_native() -> None:
             population="orders",
             metrics=[DatasetMetric(expression=f"{alias}(customer_id)")],
         )
-        sql = (await _generate("duckdb", query, _model())).lower()
+        sql = (await _generate("duckdb", query, _dataset())).lower()
         assert "approx_count_distinct(" in sql, alias

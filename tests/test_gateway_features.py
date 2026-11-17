@@ -36,10 +36,10 @@ from tests._gateway_harness import (
     DS_NAME,
     GatewayFactory,
     backend_of,
-    customers_model,
+    customers_dataset,
     no_direct_access,
-    orders_model,
-    paid_sql_model,
+    orders_dataset,
+    paid_sql_dataset,
     seed_shop,
     shop_datasource,
     shop_storage,
@@ -104,8 +104,8 @@ async def _twin(
     return Twin(default=default, gateway=gateway, attempts=guard.attempts)
 
 
-def _dumps(models: list[SlayerDataset]) -> list[dict]:
-    return [m.model_dump(mode="json") for m in sorted(models, key=lambda m: m.name)]
+def _dumps(datasets: list[SlayerDataset]) -> list[dict]:
+    return [m.model_dump(mode="json") for m in sorted(datasets, key=lambda m: m.name)]
 
 
 async def _call(server: Any, name: str, arguments: dict[str, Any]) -> str:
@@ -133,11 +133,11 @@ class TestGatewayServesEveryFeature:
 
     async def test_model_validation(self, tmp_path: Path, shop_db: str) -> None:
         ds = shop_datasource(shop_db)
-        drifted = orders_model()
+        drifted = orders_dataset()
         drifted.fields.append(DatasetField(name="ghost", sql="ghost", datatype=DataType.TEXT))
 
         async def build(base: str) -> StorageBackend:
-            return await shop_storage(base, datasource=ds, models=[drifted, customers_model(), paid_sql_model()])
+            return await shop_storage(base, datasource=ds, datasets=[drifted, customers_dataset(), paid_sql_dataset()])
 
         async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
             return [e.model_dump(mode="json") for e in await engine.validate_datasets(DS_NAME)]
@@ -151,7 +151,7 @@ class TestGatewayServesEveryFeature:
         ds = shop_datasource(shop_db)
 
         async def build(base: str) -> StorageBackend:
-            return await shop_storage(base, datasource=ds, models=[orders_model(), customers_model()])
+            return await shop_storage(base, datasource=ds, datasets=[orders_dataset(), customers_dataset()])
 
         async def run(engine: SlayerQueryEngine, _factory: GatewayFactory | None) -> list[dict]:
             rows = (await engine.execute(REVENUE_BY_STATUS)).data

@@ -94,7 +94,7 @@ def ticks_rows() -> list:
     return [(i, *r) for i, r in enumerate(rows, start=1)]
 
 
-def calendar_models() -> list[SlayerDataset]:
+def calendar_datasets() -> list[SlayerDataset]:
     """``[orders, ticks]``."""
     return [
         SlayerDataset(
@@ -163,12 +163,12 @@ async def calendar_engine(
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     async with seeded_exec_engine(
-        dialect=dialect, seed=_seeder(dialect, orders_rows), models=calendar_models(),
+        dialect=dialect, seed=_seeder(dialect, orders_rows), datasets=calendar_datasets(),
     ) as (engine, _):
         yield engine
 
 
-def orders_query(*, formula: str, filters=None, dimensions=None, date_range=None,
+def orders_query(*, expression: str, filters=None, dimensions=None, date_range=None,
                  granularity: str = "month") -> SlayerQuery:
     """One measure ``v`` over customer 1's series unless ``filters`` is given."""
     td: dict = {"dimension": "order_date", "granularity": granularity}
@@ -179,16 +179,16 @@ def orders_query(*, formula: str, filters=None, dimensions=None, date_range=None
         "time_dimensions": [td],
         "dimensions": dimensions or [],
         "filter": ["customer_id = 1"] if filters is None else filters,
-        "metrics": [{"expression": formula, "name": "v"}],
+        "metrics": [{"expression": expression, "name": "v"}],
     })
 
 
-def ticks_query(*, series: str, granularity: str, measures: list) -> SlayerQuery:
+def ticks_query(*, series: str, granularity: str, metrics: list) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "ticks",
         "time_dimensions": [{"field": "ts", "granularity": granularity}],
         "filter": [f"series = '{series}'"],
-        "metrics": measures,
+        "metrics": metrics,
     })
 
 

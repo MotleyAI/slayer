@@ -22,13 +22,13 @@ from slayer.core.keys import AggregateKey, ArithmeticKey, FieldKey, Grain, Liter
 from slayer.core.models import SlayerDataset
 from slayer.engine.cardinality.relationship_safety import grain_determines
 
-from tests._dev1840_fixtures import dev1840_models
-from tests._dev1847_fixtures import dev1847_models
-from tests._engine_helpers import models_bundle
+from tests._dev1840_fixtures import dev1840_datasets
+from tests._dev1847_fixtures import dev1847_datasets
+from tests._engine_helpers import datasets_bundle
 
 
-def _mbn(models: List[SlayerDataset]) -> dict:
-    return {m.name: m for m in models}
+def _mbn(datasets: List[SlayerDataset]) -> dict:
+    return {m.name: m for m in datasets}
 
 
 class TestRecursiveAggregateArm:
@@ -37,7 +37,7 @@ class TestRecursiveAggregateArm:
     def test_to_one_reached_partition_key_over_entity_seed(self):
         """`sum(amount, partition_by=customers.regions.name)` against
         `{status, customers.id}` — the entity key seeds the to-one region."""
-        models = dev1840_models()
+        models = dev1840_datasets()
         mbn = _mbn(models)
         key = AggregateKey(
             source=FieldKey(leaf="amount"), agg="sum",
@@ -47,12 +47,12 @@ class TestRecursiveAggregateArm:
             [FieldKey(leaf="status"), FieldKey(path=("customers",), leaf="id")])
         assert grain_determines(
             key=key, grain=grain, host_dataset=mbn["orders"],
-            datasets_by_name=mbn, bundle=models_bundle(mbn)) is True
+            datasets_by_name=mbn, bundle=datasets_bundle(mbn)) is True
 
     def test_aggregate_valued_partition_key_within_grain(self):
         """A partition key that is itself `sum(amount, partition_by=region)` is
         determined when the grain determines region."""
-        models = dev1847_models()
+        models = dev1847_datasets()
         mbn = _mbn(models)
         inner = AggregateKey(source=FieldKey(leaf="amount"), agg="sum",
                              partition_keys=Grain.of([FieldKey(leaf="region")]))
@@ -61,7 +61,7 @@ class TestRecursiveAggregateArm:
         grain = Grain.of([FieldKey(leaf="region")])
         assert grain_determines(
             key=outer, grain=grain, host_dataset=mbn["sales"],
-            datasets_by_name=mbn, bundle=models_bundle(mbn)) is True
+            datasets_by_name=mbn, bundle=datasets_bundle(mbn)) is True
 
     def test_exact_expression_partition_key_is_a_member(self):
         """An expression-valued partition key is determined only as an exact
@@ -71,13 +71,13 @@ class TestRecursiveAggregateArm:
             operands=(AggregateKey(source=FieldKey(leaf="amount"), agg="sum",
                                    partition_keys=Grain.of([FieldKey(leaf="city")])),
                       LiteralKey(value=Decimal(100))))
-        models = dev1847_models()
+        models = dev1847_datasets()
         mbn = _mbn(models)
         key = AggregateKey(source=FieldKey(leaf="amount"), agg="sum",
                            partition_keys=Grain.of([band]))
         assert grain_determines(
             key=key, grain=Grain.of([band]), host_dataset=mbn["sales"],
-            datasets_by_name=mbn, bundle=models_bundle(mbn)) is True
+            datasets_by_name=mbn, bundle=datasets_bundle(mbn)) is True
 
 
 class TestUndeterminedStaysConservative:
@@ -86,17 +86,17 @@ class TestUndeterminedStaysConservative:
     def test_plain_partition_key_outside_grain(self):
         """`sum(x, partition_by=product)` against `[city, region]` — product is
         not determined."""
-        models = dev1847_models()
+        models = dev1847_datasets()
         mbn = _mbn(models)
         key = AggregateKey(source=FieldKey(leaf="amount"), agg="sum",
                            partition_keys=Grain.of([FieldKey(leaf="product")]))
         grain = Grain.of([FieldKey(leaf="city"), FieldKey(leaf="region")])
         assert grain_determines(
             key=key, grain=grain, host_dataset=mbn["sales"],
-            datasets_by_name=mbn, bundle=models_bundle(mbn)) is False
+            datasets_by_name=mbn, bundle=datasets_bundle(mbn)) is False
 
     def test_aggregate_valued_partition_key_outside_grain(self):
-        models = dev1847_models()
+        models = dev1847_datasets()
         mbn = _mbn(models)
         inner = AggregateKey(source=FieldKey(leaf="amount"), agg="sum",
                              partition_keys=Grain.of([FieldKey(leaf="region")]))
@@ -104,7 +104,7 @@ class TestUndeterminedStaysConservative:
                              partition_keys=Grain.of([inner]))
         assert grain_determines(
             key=outer, grain=Grain.of([FieldKey(leaf="city")]),
-            host_dataset=mbn["sales"], datasets_by_name=mbn, bundle=models_bundle(mbn)) is False
+            host_dataset=mbn["sales"], datasets_by_name=mbn, bundle=datasets_bundle(mbn)) is False
 
     def test_non_member_expression_partition_key(self):
         band = ArithmeticKey(
@@ -112,13 +112,13 @@ class TestUndeterminedStaysConservative:
             operands=(AggregateKey(source=FieldKey(leaf="amount"), agg="sum",
                                    partition_keys=Grain.of([FieldKey(leaf="city")])),
                       LiteralKey(value=Decimal(100))))
-        models = dev1847_models()
+        models = dev1847_datasets()
         mbn = _mbn(models)
         key = AggregateKey(source=FieldKey(leaf="amount"), agg="sum",
                            partition_keys=Grain.of([band]))
         assert grain_determines(
             key=key, grain=Grain.of([FieldKey(leaf="region")]),
-            host_dataset=mbn["sales"], datasets_by_name=mbn, bundle=models_bundle(mbn)) is False
+            host_dataset=mbn["sales"], datasets_by_name=mbn, bundle=datasets_bundle(mbn)) is False
 
 
 class TestColumnArmControl:
@@ -126,11 +126,11 @@ class TestColumnArmControl:
     control that must stay green (the aggregate arm builds on it)."""
 
     def test_to_one_column_over_entity_seed(self):
-        models = dev1840_models()
+        models = dev1840_datasets()
         mbn = _mbn(models)
         name = FieldKey(path=("customers", "regions"), leaf="name")
         grain = Grain.of(
             [FieldKey(leaf="status"), FieldKey(path=("customers",), leaf="id")])
         assert grain_determines(
             key=name, grain=grain, host_dataset=mbn["orders"],
-            datasets_by_name=mbn, bundle=models_bundle(mbn)) is True
+            datasets_by_name=mbn, bundle=datasets_bundle(mbn)) is True

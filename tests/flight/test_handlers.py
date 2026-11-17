@@ -53,8 +53,8 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "capture-latest.jsonl"
 class _FakeStorage:
     """Minimal async StorageBackend stand-in for tests."""
 
-    def __init__(self, models_by_ds: dict[str, list[SlayerDataset]]) -> None:
-        self._by_ds = models_by_ds
+    def __init__(self, datasets_by_ds: dict[str, list[SlayerDataset]]) -> None:
+        self._by_ds = datasets_by_ds
 
     async def list_datasources(self) -> list[str]:  # NOSONAR(S7503) — must match async interface (called via await in production)
         return list(self._by_ds.keys())
@@ -86,7 +86,7 @@ class _FakeEngine:
         return run_sync(workflow)
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         data_source="jaffle",
@@ -100,7 +100,7 @@ def _orders_model() -> SlayerDataset:
 
 
 def _make_handlers(*, response: SlayerResponse | None = None) -> FlightHandlers:
-    storage = _FakeStorage({"jaffle": [_orders_model()]})
+    storage = _FakeStorage({"jaffle": [_orders_dataset()]})
     if response is None:
         response = SlayerResponse(data=[], columns=[])
     engine = _FakeEngine(response=response, storage=storage)
@@ -372,7 +372,7 @@ class _OverlapEngine(_FakeEngine):
     """Records the peak number of engine workflows running at once."""
 
     def __init__(self, *, response: SlayerResponse) -> None:
-        super().__init__(response=response, storage=_FakeStorage({"jaffle": [_orders_model()]}))
+        super().__init__(response=response, storage=_FakeStorage({"jaffle": [_orders_dataset()]}))
         self._guard = threading.Lock()
         self.active = 0
         self.peak = 0
@@ -408,7 +408,7 @@ def test_catalog_loading_runs_as_an_engine_workflow() -> None:
 
 
 def test_catalog_reads_the_engine_storage_view() -> None:
-    engine = _FakeEngine(response=SlayerResponse(data=[], columns=[]), storage=_FakeStorage({"hr": [_orders_model()]}))
+    engine = _FakeEngine(response=SlayerResponse(data=[], columns=[]), storage=_FakeStorage({"hr": [_orders_dataset()]}))
     handlers = FlightHandlers(engine=engine)  # type: ignore[arg-type]
     assert [s.name for s in handlers._build_catalog().schemas] == ["hr"]
 

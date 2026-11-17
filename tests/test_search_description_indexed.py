@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 import pytest
 import pytest_asyncio
 
-from tests.search_helpers import seed_warehouse_models
+from tests.search_helpers import seed_warehouse_datasets
 
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
@@ -43,7 +43,7 @@ def test_render_memory_text_omits_none_description() -> None:
 async def storage() -> AsyncIterator[StorageBackend]:
     with tempfile.TemporaryDirectory() as tmpdir:
         s = resolve_storage(tmpdir)
-        await seed_warehouse_models(s)
+        await seed_warehouse_datasets(s)
         yield s
 
 

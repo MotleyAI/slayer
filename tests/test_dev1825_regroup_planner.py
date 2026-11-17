@@ -21,7 +21,7 @@ from slayer.engine.compile.regroup import (
     RegroupPlaceholderRegistry,
 )
 
-from tests._dev1740_fixtures import cm_cte_bodies, dev1740_models, gen
+from tests._dev1740_fixtures import cm_cte_bodies, dev1740_datasets, gen
 from tests._engine_helpers import _engine_generate
 
 BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
@@ -34,12 +34,12 @@ def _q(**kw) -> SlayerQuery:
 
 async def _gen_with_reserved_column(query: SlayerQuery) -> str:
     """``gen`` over an ``orders`` carrying a stored ``__regroup__x`` column."""
-    base, *rest = dev1740_models()
+    base, *rest = dev1740_datasets()
     model = base.model_copy(update={"fields": [
         *base.fields, DatasetField(name="__regroup__x", sql="amount", datatype=DataType.DOUBLE),
     ]})
     return await _engine_generate(
-        query=query, model=model, extra_models=rest, dialect="duckdb", validate=False,
+        query=query, dataset=model, extra_datasets=rest, dialect="duckdb", validate=False,
     )
 
 

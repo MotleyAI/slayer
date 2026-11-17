@@ -25,7 +25,7 @@ from slayer.live_schema.schema_drift import (
     compute_datasource_drops,
 )
 
-from tests._dev1743_fixtures import DS, chain_models, dunder_target_models
+from tests._dev1743_fixtures import DS, chain_datasets, dunder_target_datasets
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@ def test_schema_drift_resolves_dunder_direct_join_target() -> None:
     Uses the pure entry point ``compute_datasource_drops`` (no live DB), which
     exercises ``_walk_alias_to_target_model`` via the derived-column cascade.
     """
-    models = dunder_target_models()  # raises TODAY — the fail-first signal
+    models = dunder_target_datasets()  # raises TODAY — the fail-first signal
     orders = next(m for m in models if m.name == "orders")
     orders.fields.append(
         DatasetField(name="cr_label", sql="customer__region.label", datatype=DataType.TEXT)
@@ -95,7 +95,7 @@ def test_column_dependency_reports_dotted_chain_dependency() -> None:
     ``_column_dependencies`` only tracks derived→derived edges (base columns
     can't participate in a derived-column cycle).
     """
-    models = chain_models()  # orders → customers → regions (no ``__`` — builds today)
+    models = chain_datasets()  # orders → customers → regions (no ``__`` — builds today)
     by_name = {m.name: m for m in models}
 
     regions = by_name["regions"]

@@ -6,7 +6,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
-from tests._dev2137_fixtures import by, measure
+from tests._dev2137_fixtures import by, metric
 from tests._pg_helpers import client_datasource, pg_query_engine
 
 pytest.importorskip("pytest_postgresql")
@@ -30,7 +30,7 @@ TYPED = (
 )
 
 
-def typed_model() -> SlayerDataset:
+def typed_dataset() -> SlayerDataset:
     def array(name: str, element: DataType) -> DatasetField:
         return DatasetField(name=name, datatype=DataType.ARRAY, element_type=element)
 
@@ -49,7 +49,7 @@ async def pg(postgresql, tmp_path):
         cur.execute(stmt)
     postgresql.commit()
     async with pg_query_engine(client_datasource(postgresql.info), base_dir=str(tmp_path),
-                               models=[typed_model()]) as engine:
+                               models=[typed_dataset()]) as engine:
         yield engine
 
 
@@ -74,15 +74,15 @@ async def test_lists_of_differing_physical_types(pg, expr: str, kept: set[int]) 
 
 async def test_collect_over_numeric(pg) -> None:
     resp = await pg.execute(SlayerQuery.model_validate({"population": "typed", "dimensions": ["team"],
-                                                        "metrics": [measure("collect(amount)", "c")]}))
-    got = {k: None if v is None else [float(x) for x in v] for k, v in by(resp, "team", "c", model="typed").items()}
+                                                        "metrics": [metric("collect(amount)", "c")]}))
+    got = {k: None if v is None else [float(x) for x in v] for k, v in by(resp, "team", "c", dataset="typed").items()}
     assert got == {"a": [1.5, 2.25], "b": []}, resp.sql
 
 
 async def test_collect_over_uuid(pg) -> None:
     resp = await pg.execute(SlayerQuery.model_validate({"population": "typed", "dimensions": ["team"],
-                                                        "metrics": [measure("collect(uid)", "c")]}))
-    got = {k: None if v is None else [str(x) for x in v] for k, v in by(resp, "team", "c", model="typed").items()}
+                                                        "metrics": [metric("collect(uid)", "c")]}))
+    got = {k: None if v is None else [str(x) for x in v] for k, v in by(resp, "team", "c", dataset="typed").items()}
     assert got == {"a": [UUID_A, UUID_B], "b": []}, resp.sql
 
 

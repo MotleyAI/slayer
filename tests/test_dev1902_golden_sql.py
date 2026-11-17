@@ -63,7 +63,7 @@ async def _generate_one(case, dialect: str):
     try:
         query = SlayerQuery(population=case["source"], **case["kw"])
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)

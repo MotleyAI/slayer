@@ -93,9 +93,9 @@ def _orders(*, extra=None, filters=None) -> SlayerDataset:
     )
 
 
-async def _gen(query, model, *, extra_models=None, dialect="postgres") -> str:
+async def _gen(query, dataset, *, extra_datasets=None, dialect="postgres") -> str:
     return await _engine_generate(
-        query=query, model=model, extra_models=extra_models or [], dialect=dialect,
+        query=query, dataset=dataset, extra_datasets=extra_datasets or [], dialect=dialect,
     )
 
 
@@ -151,7 +151,7 @@ class TestScopeClosureInvariant:
             metrics=[DatasetMetric(expression="sum(amount)")],
             filter=["customers.region_id > 0"],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         assert "LEFT JOIN customers" in sql
         assert_scope_closed(sql)
 
@@ -169,7 +169,7 @@ class TestScopeClosureInvariant:
             metrics=[DatasetMetric(expression="sum(customers.balance)")],
             dimensions=[FieldRef(name="status")],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         assert "_cm_" in sql  # forward cross-model CTE scope
         assert_scope_closed(sql)
 
@@ -233,7 +233,7 @@ class TestScopeClosureInvariant:
             metrics=[DatasetMetric(expression="sum(customers.balance)")],
             dimensions=[FieldRef(name="status")],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()],
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()],
                          dialect=dialect)
         assert_scope_closed(sql, dialect=dialect)
 
@@ -252,7 +252,7 @@ class TestSemanticPinsSqlShape:
             metrics=[DatasetMetric(expression="sum(customers.balance)")],
             filter=["status = 'paid'"],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         cm_body = _cte_body(sql, r"_cm_\w+")
         assert "EXISTS" in cm_body.upper(), cm_body
         assert "paid" in cm_body, (
@@ -270,7 +270,7 @@ class TestSemanticPinsSqlShape:
             metrics=[DatasetMetric(expression="sum(customers.balance)")],
             dimensions=[FieldRef(name="status")],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         cm_body = _cte_body(sql, r"_cm_\w+")
         assert "SUM(" in cm_body.upper()
         assert "EXISTS" not in cm_body.upper(), cm_body
@@ -284,18 +284,18 @@ class TestSemanticPinsSqlShape:
 # the _rls_src correlated-EXISTS allowlist).
 # --------------------------------------------------------------------------- #
 class TestRlsIsolationCte:
-    async def _cross_model_sql(self) -> str:
+    async def _cross_dataset_sql(self) -> str:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="sum(customers.balance)")],
             dimensions=[FieldRef(name="status")],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         assert "_cm_" in sql
         return sql
 
     async def test_column_ruleset_over_isolation_cte_closed(self) -> None:
-        sql = await self._cross_model_sql()
+        sql = await self._cross_dataset_sql()
         assert_scope_closed(sql)  # pre-RLS
         wrapped = apply_session_policy(
             sqlglot.parse_one(sql, dialect="postgres"), sql_dialect=get_dialect("postgres"),
@@ -308,7 +308,7 @@ class TestRlsIsolationCte:
         assert_scope_closed(wrapped, allow_rls_correlation=True)
 
     async def test_join_ruleset_correlated_exists_needs_allowlist(self) -> None:
-        sql = await self._cross_model_sql()
+        sql = await self._cross_dataset_sql()
         wrapped = apply_session_policy(
             sqlglot.parse_one(sql, dialect="postgres"), sql_dialect=get_dialect("postgres"),
             policy=SessionPolicy(ruleset=RelationshipFilterRuleset(
@@ -354,7 +354,7 @@ class TestScopeDefectPins:
             population="orders",
             metrics=[DatasetMetric(expression="sum(customers.deep_pop)")],
         )
-        sql = await _gen(query, _orders(), extra_models=[customers, _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[customers, _regions()])
         cm_body = _cte_body(sql, r"_cm_\w+")
         assert "LEFT JOIN regions AS regions" in cm_body
 
@@ -372,6 +372,6 @@ class TestScopeDefectPins:
                 DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
             ],
         )
-        sql = await _gen(query, _orders(), extra_models=[_customers(), _regions()])
+        sql = await _gen(query, _orders(), extra_datasets=[_customers(), _regions()])
         assert "shifted_" in sql
         assert_scope_closed(sql)

@@ -512,28 +512,28 @@ class TestPlaceholderNames:
         assert extract_placeholder_names(self._all_surfaces()) == {"f", "m", "d", "o", "s"}
 
 
-def _model_with_measure(formula: str, **kw) -> SlayerDataset:
+def _dataset_with_metric(expression: str, **kw) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
         fields=[
             DatasetField(name="amount", datatype=DataType.DOUBLE),
             DatasetField(name="status", datatype=DataType.TEXT),
         ],
-        metrics=[DatasetMetric(name="scaled", expression=formula)],
+        metrics=[DatasetMetric(name="scaled", expression=expression)],
         **kw,
     )
 
 
 class TestSavedMeasureSubstitution:
     def test_placeholder_names_include_saved_measures(self) -> None:
-        assert dataset_placeholder_names(_model_with_measure("sum(amount) * {k}")) == {"k"}
+        assert dataset_placeholder_names(_dataset_with_metric("sum(amount) * {k}")) == {"k"}
 
     def test_saved_measure_block_needs_pass(self) -> None:
-        assert dataset_needs_substitution_pass(_model_with_measure("sum(amount) * {? {k} ?}"))
+        assert dataset_needs_substitution_pass(_dataset_with_metric("sum(amount) * {? {k} ?}"))
 
     def test_saved_measure_formula_substituted(self) -> None:
         out = substitute_dataset_sql_surfaces(
-            dataset=_model_with_measure("sum(amount) * {k}"), variables={"k": 10}, bind_mode_a=_SQLITE_BIND,
+            dataset=_dataset_with_metric("sum(amount) * {k}"), variables={"k": 10}, bind_mode_a=_SQLITE_BIND,
         )
         assert out.metrics[0].expression == "sum(amount) * 10"
         assert out.metrics[0].name == "scaled"
@@ -541,19 +541,19 @@ class TestSavedMeasureSubstitution:
     @pytest.mark.parametrize("backslash_escapes", [False, True])
     def test_saved_measure_uses_sql_quoting(self, backslash_escapes: bool) -> None:
         out = substitute_dataset_sql_surfaces(
-            dataset=_model_with_measure("sum(CASE WHEN status == '{n}' THEN 1 ELSE 0 END)"),
+            dataset=_dataset_with_metric("sum(CASE WHEN status == '{n}' THEN 1 ELSE 0 END)"),
             variables={"n": "O'Brien"},
             bind_mode_a=partial(bind_mode_a, dialect=MysqlDialect() if backslash_escapes else SqliteDialect()),
         )
         assert out.metrics[0].expression == "sum(CASE WHEN status == 'O''Brien' THEN 1 ELSE 0 END)"
 
     def test_saved_measure_optional_block_rejected(self) -> None:
-        model = _model_with_measure("sum(amount) * {? {k} ?}")
+        model = _dataset_with_metric("sum(amount) * {? {k} ?}")
         with pytest.raises(ValueError, match="Optional blocks"):
             substitute_dataset_sql_surfaces(dataset=model, variables={"k": 1}, bind_mode_a=_SQLITE_BIND)
 
     def test_saved_measure_undefined_variable_raises(self) -> None:
-        model = _model_with_measure("sum(amount) * {k}")
+        model = _dataset_with_metric("sum(amount) * {k}")
         with pytest.raises(ValueError, match="Undefined variable 'k'"):
             substitute_dataset_sql_surfaces(dataset=model, variables={"j": 1}, bind_mode_a=_SQLITE_BIND)
 

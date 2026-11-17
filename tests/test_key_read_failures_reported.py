@@ -85,12 +85,12 @@ def _assert_one_lost_primary_key(entries: list[Any], *, table: str = "customers"
     assert LOST in entry.error
 
 
-def _pk(model: SlayerDataset) -> list[str]:
-    return [c.name for c in model.fields if c.primary_key]
+def _pk(dataset: SlayerDataset) -> list[str]:
+    return [c.name for c in dataset.fields if c.primary_key]
 
 
-def _cardinality(model: SlayerDataset, target: str) -> RelationshipCardinality | None:
-    return next(j.cardinality for j in model.relationships if j.to == target)
+def _cardinality(dataset: SlayerDataset, target: str) -> RelationshipCardinality | None:
+    return next(j.cardinality for j in dataset.relationships if j.to == target)
 
 
 def _naming_the_loss(text: str) -> list[str]:

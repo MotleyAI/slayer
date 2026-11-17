@@ -16,7 +16,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 from slayer.sql.generator import SQLGenerator
 
-from tests._dev1739_fixtures import dev1739_models
+from tests._dev1739_fixtures import dev1739_datasets
 from tests._law_harness import (
     DatasetMetric,
     make_law_engine,
@@ -87,7 +87,7 @@ class TestAssocInline:
 class TestFusionParity:
     @staticmethod
     def _planned():
-        models = dev1739_models()
+        models = dev1739_datasets()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
             population=models[0], referenced_datasets=list(models[1:]),

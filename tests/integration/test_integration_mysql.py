@@ -29,7 +29,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.engine.url import make_url
 from tests._dev1737_fixtures import (
     DateCase,
-    all_models,
+    all_datasets,
     assert_case,
     check_server_scenarios,
     matrix_cases,
@@ -58,8 +58,8 @@ from slayer.sql.dialects.reflection import TableLocation
 from slayer.storage.yaml_storage import YAMLStorage
 from tests.integration._dev2015_server import (
     check_all,
-    server_models,
-    server_models_ts,
+    server_datasets,
+    server_datasets_ts,
     server_statements,
     with_granularities,
 )
@@ -69,7 +69,7 @@ from tests._dev2101_fixtures import (
     check_null_ordering,
     check_server_forms,
     check_try_cast,
-    dev2101_models,
+    dev2101_datasets,
     seed_server as dev2101_seed_server,
 )
 from tests._dev2120_fixtures import (
@@ -77,7 +77,7 @@ from tests._dev2120_fixtures import (
     LIB,
     check_library,
     check_native_json,
-    lib_model,
+    lib_dataset,
     lib_query,
     server_table_statements as dev2120_table_statements,
 )
@@ -85,7 +85,7 @@ from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
     seed_statements,
-    streak_model,
+    streak_dataset,
 )
 from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 
@@ -286,7 +286,7 @@ def _mysql_env_storage(mysql_container, tmp_path_factory):
         )
         run_sync(storage.save_dataset(orders_model))
         run_sync(storage.save_dataset(customers_model))
-        run_sync(storage.save_dataset(streak_model("testmysql")))
+        run_sync(storage.save_dataset(streak_dataset("testmysql")))
 
         yield storage
     finally:
@@ -556,7 +556,7 @@ class TestMySQLQueries:
 
 
 @pytest.fixture
-def mysql_cross_model_env(mysql_container):
+def mysql_cross_dataset_env(mysql_container):
     """MySQL env with orders + customers (with score) and explicit join."""
     db_name = _create_module_db(mysql_container)
     conn = _admin_connect(mysql_container, dbname=db_name)
@@ -628,7 +628,7 @@ def mysql_cross_model_env(mysql_container):
 
 @pytest.mark.integration
 class TestCrossModelAndMultistageMySQL:
-    async def test_cross_model_measure(self, mysql_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_cross_model_measure(self, mysql_cross_dataset_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
@@ -637,11 +637,11 @@ class TestCrossModelAndMultistageMySQL:
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="avg(customers.avg_score)")],
             order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
         )
-        result = await mysql_cross_model_env.execute(query=query)
+        result = await mysql_cross_dataset_env.execute(query=query)
         assert result.row_count == 3
         assert [float(r["orders.customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
 
-    async def test_query_list_named(self, mysql_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_query_list_named(self, mysql_cross_dataset_env: SlayerQueryEngine) -> None:
         inner = SlayerQuery(
             name="monthly", population="orders",
             time_dimensions=[TimeDimension(
@@ -650,10 +650,10 @@ class TestCrossModelAndMultistageMySQL:
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
         )
         outer = SlayerQuery(population="monthly", metrics=[DatasetMetric(expression="count(*)")])
-        result = await mysql_cross_model_env.execute(query=[inner, outer])
+        result = await mysql_cross_dataset_env.execute(query=[inner, outer])
         assert result.data[0]["monthly._count"] == 3
 
-    async def test_create_model_from_query(self, mysql_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_create_model_from_query(self, mysql_cross_dataset_env: SlayerQueryEngine) -> None:
         source = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
@@ -661,20 +661,20 @@ class TestCrossModelAndMultistageMySQL:
             )],
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
         )
-        saved = await mysql_cross_model_env.create_dataset_from_query(query=source, name="mysql_monthly")
+        saved = await mysql_cross_dataset_env.create_dataset_from_query(query=source, name="mysql_monthly")
         assert saved.source_queries is not None
-        result = await mysql_cross_model_env.execute(
+        result = await mysql_cross_dataset_env.execute(
             query=SlayerQuery(population="mysql_monthly", metrics=[DatasetMetric(expression="count(*)")])
         )
         assert result.data[0]["mysql_monthly._count"] == 3
 
-    async def test_sql_dimension(self, mysql_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_sql_dimension(self, mysql_cross_dataset_env: SlayerQueryEngine) -> None:
         query = SlayerQuery(
             population="orders",
             dimensions=[ComputedDimension(expression="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier")],
             metrics=[DatasetMetric(expression="count(*)")],
         )
-        result = await mysql_cross_model_env.execute(query=query)
+        result = await mysql_cross_dataset_env.execute(query=query)
         by_tier = {r["orders.tier"]: r["orders._count"] for r in result.data}
         assert by_tier["high"] == 3
         assert by_tier["low"] == 3
@@ -1504,7 +1504,7 @@ def _mysql_dates_storage(mysql_container, tmp_path_factory):
             conn.close()
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_dates")))
         run_sync(storage.save_datasource(_ds_config(mysql_container, db_name)))
-        for model in all_models(data_source="testmysql"):
+        for model in all_datasets(data_source="testmysql"):
             run_sync(storage.save_dataset(model))
         yield storage
     finally:
@@ -1552,7 +1552,7 @@ def _mysql_spine_storage(mysql_container, tmp_path_factory):
             conn.close()
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_spine")))
         base = _ds_config(mysql_container, db_name)
-        for name, models in (("my", server_models(data_source="my")), ("my_ts", server_models_ts(data_source="my_ts"))):
+        for name, models in (("my", server_datasets(data_source="my")), ("my_ts", server_datasets_ts(data_source="my_ts"))):
             run_sync(storage.save_datasource(with_granularities(base, name=name)))
             for model in models:
                 run_sync(storage.save_dataset(model))
@@ -1609,7 +1609,7 @@ def _mysql_dev2101_storage(mysql_container, tmp_path_factory):
             conn.close()
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_dev2101")))
         run_sync(storage.save_datasource(_ds_config(mysql_container, db_name)))
-        for model in dev2101_models(data_source="testmysql"):
+        for model in dev2101_datasets(data_source="testmysql"):
             run_sync(storage.save_dataset(model))
         yield storage
     finally:
@@ -1628,7 +1628,7 @@ class TestMySQLModeBGrammar:
         await check_try_cast(SlayerQueryEngine(storage=_mysql_dev2101_storage))
 
     async def test_try_cast_integer_targets(self, _mysql_dev2101_storage) -> None:
-        await check_try_cast_targets(SlayerQueryEngine(storage=_mysql_dev2101_storage), model="orders")
+        await check_try_cast_targets(SlayerQueryEngine(storage=_mysql_dev2101_storage), dataset="orders")
 
     async def test_filtered_aggregations(self, _mysql_dev2101_storage) -> None:
         await check_filtered_aggregations(SlayerQueryEngine(storage=_mysql_dev2101_storage))
@@ -1654,7 +1654,7 @@ def _mysql_dev2120_storage(mysql_container, tmp_path_factory):
         ds = _ds_config(mysql_container, db_name)
         storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("mysql_dev2120")))
         run_sync(storage.save_datasource(ds))
-        run_sync(storage.save_dataset(lib_model(data_source="testmysql")))
+        run_sync(storage.save_dataset(lib_dataset(data_source="testmysql")))
         for model in run_sync(_ingest(ds, include_tables=["docs"])):
             run_sync(storage.save_dataset(model))
         yield storage

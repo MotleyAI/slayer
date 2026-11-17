@@ -16,7 +16,7 @@ from tests._dev2120_fixtures import (
     TIER1,
     emit_lib,
     lib_engine,
-    lib_model,
+    lib_dataset,
     lib_ids,
     lib_query,
     lib_values,
@@ -309,10 +309,10 @@ class TestSQLServerCodePoints:
         assert any(isinstance(n, exp.Neg) and isinstance(n.this, exp.Column) for n in lengths), sql
 
     async def test_author_sql_is_not_rewritten(self) -> None:
-        base = lib_model()
+        base = lib_dataset()
         model = base.model_copy(update={"fields": [*base.fields, DatasetField(
             name="head", sql="SUBSTRING(s, 1, 2) + CAST(ROUND(POWER(a, 2), 0) AS NVARCHAR(9))", datatype=DataType.TEXT)]})
-        sql = " ".join((await emit_lib(lib_query("head"), dialect="tsql", models=[model])).split())
+        sql = " ".join((await emit_lib(lib_query("head"), dialect="tsql", datasets=[model])).split())
         assert "SUBSTRING(lib.s, 1, 2)" in sql, sql
         assert "POWER(lib.a, 2)" in sql, sql
         assert "COLLATE" not in sql, sql

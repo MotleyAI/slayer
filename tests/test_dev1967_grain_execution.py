@@ -12,7 +12,7 @@ from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER,
     AMOUNT_TOTAL,
     broadcast_warnings,
-    customers_model,
+    customers_dataset,
     make_exec_engine,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -34,8 +34,8 @@ def _by(resp, key: str, value: str) -> dict:
     return out
 
 
-def _flags(model: SlayerDataset) -> dict:
-    return {c.name: (c.primary_key, c.unique) for c in model.fields}
+def _flags(dataset: SlayerDataset) -> dict:
+    return {c.name: (c.primary_key, c.unique) for c in dataset.fields}
 
 
 C_BY_ID = {
@@ -147,7 +147,7 @@ class TestQueryBacked:
             "population": "customers", "dimensions": ["tier"],
             "metrics": [{"expression": "count(*)", "name": "n"}],
         }), "vm_tier_n")
-        host = customers_model()
+        host = customers_dataset()
         host.name = "customers_t"
         host.relationships.append(DatasetRelationship(to="vm_tier_n", join_pairs=[["tier", "tier"]]))
         await engine.storage.save_dataset(host, _validate=False)
@@ -171,20 +171,20 @@ class TestQueryBacked:
 class TestAggregateValuedGrainMember:
     """Grain ``(status, ct)``: a join on ``status`` alone is unproven, never multiplied."""
 
-    async def _model(self, engine: SlayerQueryEngine) -> SlayerDataset:
+    async def _dataset(self, engine: SlayerQueryEngine) -> SlayerDataset:
         return await engine.create_dataset_from_query(SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": ["status", {"expression": "sum(amount, partition_by=channel)", "name": "ct"}],
         }), "vm_ctot")
 
     async def test_computed_dimension_is_stamped_into_the_grain(self, engine) -> None:
-        model = await self._model(engine)
+        model = await self._dataset(engine)
         assert _flags(model) == {"status": (True, False), "ct": (True, False)}
         join = DatasetRelationship(to="vm_ctot", join_pairs=[["status", "status"]])
         assert not provably_to_one(edge=join, target_dataset=model)
 
     async def test_join_on_status_alone_broadcasts_not_multiplies(self, engine: SlayerQueryEngine) -> None:
-        await self._model(engine)
+        await self._dataset(engine)
         host = SlayerDataset(
             name="two_ok", data_source="test",
             sql="SELECT 1 AS id, 'ok' AS status UNION ALL SELECT 2 AS id, 'ok' AS status",

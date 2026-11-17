@@ -37,7 +37,7 @@ from tests._dev1908_fixtures import (
     _seed_sqlite,
     bundle1908,
     derive_oracles,
-    dev1908_models,
+    dev1908_datasets,
     make_exec_engine,
     month_key,
     orders_q,
@@ -52,11 +52,11 @@ def _cells(resp) -> dict:
             for r in resp.data}
 
 
-def _home_path(formula: str, *, dimensions: list[str] | None = None) -> tuple:
+def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple:
     """`home_path` of a measure's outer aggregate over the DEV-1908 graph."""
     elab = elaborate_query(
         query=orders_q(dimensions=dimensions or [],
-                       measures=[DatasetMetric(expression=formula, name="m")]),
+                       measures=[DatasetMetric(expression=expression, name="m")]),
         bundle=bundle1908())
     assert elab.prebound is not None
     root = elab.prebound.declared_metrics[-1].bound.value_key
@@ -66,12 +66,12 @@ def _home_path(formula: str, *, dimensions: list[str] | None = None) -> tuple:
     return term.home_path
 
 
-async def _gen(formula: str, *, source_model="orders", **kw) -> str:
-    models = dev1908_models()
+async def _gen(expression: str, *, source_dataset="orders", **kw) -> str:
+    models = dev1908_datasets()
     return await _engine_generate(
-        query=SlayerQuery(population=source_model,
-                          metrics=[DatasetMetric(expression=formula, name="w")], **kw),
-        model=models[0], extra_models=models[1:], dialect="sqlite", validate=False)
+        query=SlayerQuery(population=source_dataset,
+                          metrics=[DatasetMetric(expression=expression, name="w")], **kw),
+        dataset=models[0], extra_datasets=models[1:], dialect="sqlite", validate=False)
 
 
 def test_oracles_re_derive_from_the_raw_rows():
@@ -117,9 +117,9 @@ async def engine(request):
         yield e
 
 
-async def _value(engine, formula: str) -> float:
+async def _value(engine, expression: str) -> float:
     resp = await engine.execute(
-        orders_q(measures=[DatasetMetric(expression=formula, name="w")]))
+        orders_q(measures=[DatasetMetric(expression=expression, name="w")]))
     return float(resp.data[0]["orders.w"])
 
 
@@ -198,7 +198,7 @@ async def test_ship_region_extension_edge_name_spelling_survives(dialect):
 
     async def run(formula: str) -> tuple[float, str]:
         async with seeded_exec_engine(
-            dialect=dialect, seed=seed, models=dev1908_models()) as (e, _db):
+            dialect=dialect, seed=seed, datasets=dev1908_datasets()) as (e, _db):
             query = SlayerQuery(population="orders", extensions=[ship_region_extension()],
                                 metrics=[DatasetMetric(expression=formula, name="w")])
             resp = await e.execute(query)
@@ -316,5 +316,5 @@ class TestFailClosed:
         # BOTH the default and its explicit twin fail with the same input-safety
         # error naming customers.
         with pytest.raises(ValueError, match="(?i)unproven join hop") as ei:
-            await _gen(formula, source_model="regions")
+            await _gen(formula, source_dataset="regions")
         assert "customers" in str(ei.value)

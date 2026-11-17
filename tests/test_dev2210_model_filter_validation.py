@@ -11,7 +11,7 @@ from slayer.core.errors import DatasetFilterError
 from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from tests._dev2210_fixtures import seed, table_models
+from tests._dev2210_fixtures import seed, table_datasets
 from tests._engine_helpers import seeded_exec_engine
 
 RANKED = DatasetField(name="ranked", datatype=DataType.INT, sql="rank() over (order by amount)")
@@ -41,16 +41,16 @@ def _with_total(name: str) -> SlayerDataset:
 @pytest.fixture
 async def engine() -> AsyncIterator[SlayerQueryEngine]:
     async with seeded_exec_engine(
-        dialect="sqlite", seed=lambda p: seed("sqlite", p), models=table_models(),
+        dialect="sqlite", seed=lambda p: seed("sqlite", p), datasets=table_datasets(),
     ) as (eng, _db):
         yield eng
 
 
-async def _save(engine: SlayerQueryEngine, model: SlayerDataset, *, door: str) -> None:
+async def _save(engine: SlayerQueryEngine, dataset: SlayerDataset, *, door: str) -> None:
     if door == "engine":
-        await engine.save_dataset(model)
+        await engine.save_dataset(dataset)
     else:
-        await engine.storage.save_dataset(model)
+        await engine.storage.save_dataset(dataset)
 
 
 @pytest.mark.parametrize("door", ["engine", "storage"])

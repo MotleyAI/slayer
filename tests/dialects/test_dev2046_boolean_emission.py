@@ -17,7 +17,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import Aggregation, DatasetField
 from slayer.sql.dialects import SQLGLOT_NAMES
 
-from tests._dev2046_fixtures import customers_model, m, orders_model, orders_q
+from tests._dev2046_fixtures import customers_dataset, m, orders_dataset, orders_q
 from tests._engine_helpers import _engine_generate
 
 INT_TYPES = frozenset(exp.DataType.INTEGER_TYPES) - {exp.DataType.Type.BIT}
@@ -36,9 +36,9 @@ def _bool_type(dialect: str):
 
 
 async def _statement(dialect: str, *formulas: str, **kw) -> Expr:
-    model = kw.pop("model", None) or orders_model()
+    model = kw.pop("model", None) or orders_dataset()
     query = orders_q(measures=[m(f, f"v{i}") for i, f in enumerate(formulas)], **kw)
-    sql = await _engine_generate(query=query, model=model, extra_models=[customers_model()], dialect=dialect)
+    sql = await _engine_generate(query=query, dataset=model, extra_datasets=[customers_dataset()], dialect=dialect)
     return sqlglot.parse_one(sql, read=dialect)
 
 
@@ -100,7 +100,7 @@ class TestAvgIsFractional:
     @pytest.mark.parametrize("db_type", ["DECIMAL(10, 2)", "FLOAT"])
     async def test_double_input_unchanged(self, db_type: str) -> None:
         """An exact decimal keeps its precision; a float needs no conversion."""
-        model = orders_model()
+        model = orders_dataset()
         model.fields.append(DatasetField(name="price", datatype=DataType.DOUBLE, db_type=db_type))
         tree = await _statement("tsql", "avg(price)", model=model)
         (agg,) = _nodes(tree, exp.Avg)
@@ -175,7 +175,7 @@ class TestUnchangedAggregations:
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "tsql", "bigquery"])
     async def test_no_integer_cast_around_the_boolean(self, dialect: str) -> None:
-        model = orders_model()
+        model = orders_dataset()
         model.aggregations.append(Aggregation(name="trues", expression="COUNT(CASE WHEN {value} THEN 1 END)"))
         tree = await _statement(
             dialect, "count(flag)", "count_distinct(flag)", "count_distinct_approx(flag)",

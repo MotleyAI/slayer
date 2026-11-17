@@ -95,7 +95,7 @@ def _sum(resp, alias: str) -> float:
 # ---------------------------------------------------------------------------
 
 class TestModelFiltersSubstitution:
-    def _model(self, **kw) -> SlayerDataset:
+    def _dataset(self, **kw) -> SlayerDataset:
         return SlayerDataset(
             name="orders",
             sql_table="orders",
@@ -111,7 +111,7 @@ class TestModelFiltersSubstitution:
         )
 
     async def test_model_filter_var_filters_rows(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -124,7 +124,7 @@ class TestModelFiltersSubstitution:
             tmp.cleanup()
 
     async def test_model_filter_var_us(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -142,7 +142,7 @@ class TestModelFiltersSubstitution:
 # ---------------------------------------------------------------------------
 
 class TestColumnSqlSubstitution:
-    def _model(self) -> SlayerDataset:
+    def _dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="orders",
             sql_table="orders",
@@ -155,7 +155,7 @@ class TestColumnSqlSubstitution:
         )
 
     async def test_column_sql_var_scales(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -168,7 +168,7 @@ class TestColumnSqlSubstitution:
             tmp.cleanup()
 
     async def test_column_sql_var_identity(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -186,7 +186,7 @@ class TestColumnSqlSubstitution:
 # ---------------------------------------------------------------------------
 
 class TestColumnFilterSubstitution:
-    def _model(self) -> SlayerDataset:
+    def _dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="orders",
             sql_table="orders",
@@ -204,7 +204,7 @@ class TestColumnFilterSubstitution:
         )
 
     async def test_column_filter_var_windowed_sum(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -223,7 +223,7 @@ class TestColumnFilterSubstitution:
 # ---------------------------------------------------------------------------
 
 class TestModelSqlSubstitution:
-    def _model(self) -> SlayerDataset:
+    def _dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="floored",
             data_source="ds",
@@ -240,7 +240,7 @@ class TestModelSqlSubstitution:
         )
 
     async def test_model_sql_var_where(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "floored",
@@ -254,7 +254,7 @@ class TestModelSqlSubstitution:
             tmp.cleanup()
 
     async def test_model_sql_var_projected_scalar(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery(
                 population="floored",
@@ -273,7 +273,7 @@ class TestModelSqlSubstitution:
 # ---------------------------------------------------------------------------
 
 class TestPrecedence:
-    def _model(self) -> SlayerDataset:
+    def _dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="orders",
             sql_table="orders",
@@ -288,7 +288,7 @@ class TestPrecedence:
         )
 
     async def test_model_default_used_when_nothing_supplied(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
             resp = await engine.execute(q)
@@ -297,7 +297,7 @@ class TestPrecedence:
             tmp.cleanup()
 
     async def test_query_variables_override_model_default(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -310,7 +310,7 @@ class TestPrecedence:
             tmp.cleanup()
 
     async def test_runtime_kwarg_overrides_all(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -328,7 +328,7 @@ class TestPrecedence:
 # ---------------------------------------------------------------------------
 
 class TestMissingVariable:
-    def _model(self) -> SlayerDataset:
+    def _dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="orders",
             sql_table="orders",
@@ -342,7 +342,7 @@ class TestMissingVariable:
         )
 
     async def test_undefined_var_raises_on_execute(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             # Non-empty var set (so the guard runs) but lacking 'region'.
             q = SlayerQuery.model_validate({
@@ -356,7 +356,7 @@ class TestMissingVariable:
             tmp.cleanup()
 
     async def test_undefined_var_raises_on_dry_run(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -382,7 +382,7 @@ _TRICKY_ROWS = [
 ]
 
 
-async def _engine_with_tricky_status(model: SlayerDataset) -> tuple:
+async def _engine_with_tricky_status(dataset: SlayerDataset) -> tuple:
     tmp = tempfile.TemporaryDirectory()
     db_path = f"{tmp.name}/tricky.db"
     with transaction(db_path) as conn:
@@ -398,7 +398,7 @@ async def _engine_with_tricky_status(model: SlayerDataset) -> tuple:
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_path)
     )
-    await storage.save_dataset(model)
+    await storage.save_dataset(dataset)
     return SlayerQueryEngine(storage=storage), tmp
 
 
@@ -609,7 +609,7 @@ class TestBraceLiterals:
 # ---------------------------------------------------------------------------
 
 class TestCrossModelConsistency:
-    def _models(self) -> list[SlayerDataset]:
+    def _datasets(self) -> list[SlayerDataset]:
         # No declared reverse join: the orders → customers edge traverses both ways.
         customers = SlayerDataset(
             name="customers",
@@ -655,7 +655,7 @@ class TestCrossModelConsistency:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=db_path)
         )
-        for m in self._models():
+        for m in self._datasets():
             await storage.save_dataset(m)
         return SlayerQueryEngine(storage=storage), tmp
 
@@ -816,8 +816,8 @@ def _bind(*, template: str, variables: dict, dialect=None) -> str:
     return out.filters[0]
 
 
-def _col(model: SlayerDataset, name: str) -> DatasetField:
-    col = model.get_field(name)
+def _col(dataset: SlayerDataset, name: str) -> DatasetField:
+    col = dataset.get_field(name)
     assert col is not None, name
     return col
 
@@ -1004,7 +1004,7 @@ class TestSubstituteHelperScope:
 # ---------------------------------------------------------------------------
 
 class TestQueryFilterRegression:
-    def _model(self) -> SlayerDataset:
+    def _dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="orders",
             sql_table="orders",
@@ -1018,7 +1018,7 @@ class TestQueryFilterRegression:
         )
 
     async def test_query_filter_var_unchanged_for_quote_free(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -1032,7 +1032,7 @@ class TestQueryFilterRegression:
             tmp.cleanup()
 
     async def test_query_filter_var_now_escaped_for_quote_value(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -1351,7 +1351,7 @@ class TestListValueRenderingErrors:
 
 
 class TestListModeAEndToEnd:
-    def _model(self, **kw) -> SlayerDataset:
+    def _dataset(self, **kw) -> SlayerDataset:
         return SlayerDataset(
             name="orders",
             sql_table="orders",
@@ -1366,7 +1366,7 @@ class TestListModeAEndToEnd:
         )
 
     async def test_runtime_list_filters_rows(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -1380,7 +1380,7 @@ class TestListModeAEndToEnd:
             tmp.cleanup()
 
     async def test_single_element_list(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -1394,7 +1394,7 @@ class TestListModeAEndToEnd:
 
     async def test_list_default_used_when_kwarg_absent(self) -> None:
         engine, tmp = await _engine_with(
-            self._model(query_variables={"regions": ["EU", "CA"]})
+            self._dataset(query_variables={"regions": ["EU", "CA"]})
         )
         try:
             q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
@@ -1407,7 +1407,7 @@ class TestListModeAEndToEnd:
     async def test_query_variables_list_overrides_model_default_list(self) -> None:
         # Middle precedence layer: model_defaults < query.variables (no runtime).
         engine, tmp = await _engine_with(
-            self._model(query_variables={"regions": ["EU", "CA"]})
+            self._dataset(query_variables={"regions": ["EU", "CA"]})
         )
         try:
             q = SlayerQuery.model_validate({
@@ -1423,7 +1423,7 @@ class TestListModeAEndToEnd:
 
     async def test_runtime_list_overrides_default_list(self) -> None:
         engine, tmp = await _engine_with(
-            self._model(query_variables={"regions": ["EU", "CA"]})
+            self._dataset(query_variables={"regions": ["EU", "CA"]})
         )
         try:
             q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
@@ -1434,7 +1434,7 @@ class TestListModeAEndToEnd:
             tmp.cleanup()
 
     async def test_injection_element_matches_no_rows(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -1456,7 +1456,7 @@ class TestListModeAEndToEnd:
 
 
 class TestListModeBEndToEnd:
-    def _model(self) -> SlayerDataset:
+    def _dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="orders",
             sql_table="orders",
@@ -1470,7 +1470,7 @@ class TestListModeBEndToEnd:
         )
 
     async def test_query_filter_list_in(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -1484,7 +1484,7 @@ class TestListModeBEndToEnd:
             tmp.cleanup()
 
     async def test_query_filter_single_element_list(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             # The trailing-comma render (('EU',)) is what keeps a 1-element list
             # a tuple through the Python-AST parser rather than a bare string.
@@ -1500,7 +1500,7 @@ class TestListModeBEndToEnd:
             tmp.cleanup()
 
     async def test_query_filter_not_in_list(self) -> None:
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -1517,7 +1517,7 @@ class TestListModeBEndToEnd:
     async def test_runtime_list_overrides_query_level_list(self) -> None:
         # Mode-B filters read query.variables, which merges runtime kwarg over
         # the query-level dict (runtime wins) — verify that merge with lists.
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -1533,7 +1533,7 @@ class TestListModeBEndToEnd:
     async def test_query_filter_list_escaping_matches_only_its_row(self) -> None:
         # Mode-B escaping through the real parse+compile+SQLite pipeline: a
         # quote-bearing element must round-trip so it matches only its own row.
-        engine, tmp = await _engine_with(self._model())
+        engine, tmp = await _engine_with(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "orders",
@@ -1671,7 +1671,7 @@ class TestEscapingRegimeDialectMatrix:
 class TestSubstituteModelSqlSurfacesDialect:
     """``_substitute_model_sql_surfaces`` requires a dialect and binds for it."""
 
-    def _model(self) -> SlayerDataset:
+    def _dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="m",
             data_source="ds",
@@ -1683,14 +1683,14 @@ class TestSubstituteModelSqlSurfacesDialect:
 
         d = MysqlDialect()
         out = _substitute_dataset_sql_surfaces(
-            dataset=self._model(), variables={"region": "a\\'b"}, dialect=d,
+            dataset=self._dataset(), variables={"region": "a\\'b"}, dialect=d,
         )
         assert _literals(out.sql, dialect=d) == ["a\\'b"]
 
     def test_standard_dialect_value_roundtrips(self) -> None:
 
         out = _substitute_dataset_sql_surfaces(
-            dataset=self._model(), variables={"region": "a\\'b"},
+            dataset=self._dataset(), variables={"region": "a\\'b"},
             dialect=SqliteDialect(),
         )
         assert _literals(out.sql) == ["a\\'b"]
@@ -1699,7 +1699,7 @@ class TestSubstituteModelSqlSurfacesDialect:
 
         # Build the model outside the raises-block so only the call under test
         # (missing the required `dialect`) can raise (Sonar S5778).
-        model = self._model()
+        model = self._dataset()
         with pytest.raises(TypeError):
             _substitute_dataset_sql_surfaces(dataset=model, variables={"region": "x"})
 
@@ -1779,7 +1779,7 @@ class TestProbeModelDialectThreading:
     """``_render_probe_model`` threads the dialect into the Mode-A surfaces it
     renders from the model's own defaults."""
 
-    def _template_model(self) -> SlayerDataset:
+    def _template_dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="m",
             data_source="ds",
@@ -1791,19 +1791,19 @@ class TestProbeModelDialectThreading:
     def test_probe_uses_backslash_dialect(self) -> None:
 
         d = MysqlDialect()
-        out = _render_probe_dataset(self._template_model(), dialect=d)
+        out = _render_probe_dataset(self._template_dataset(), dialect=d)
         assert _literals(out.sql, dialect=d) == ["a\\'b"]
 
     def test_probe_uses_standard_dialect(self) -> None:
 
-        out = _render_probe_dataset(self._template_model(), dialect=SqliteDialect())
+        out = _render_probe_dataset(self._template_dataset(), dialect=SqliteDialect())
         assert _literals(out.sql) == ["a\\'b"]
 
     def test_probe_dialect_required(self) -> None:
 
         # Build the model outside the raises-block so only the call under test
         # (missing the required `dialect`) can raise (Sonar S5778).
-        model = self._template_model()
+        model = self._template_dataset()
         with pytest.raises(TypeError):
             _render_probe_dataset(model)
 
@@ -1812,7 +1812,7 @@ class TestProbeModelDialectThreading:
 # 24. Mode-B end-to-end: control-char values round-trip through the parser
 # ---------------------------------------------------------------------------
 
-async def _engine_with_ctrl_status(model: SlayerDataset) -> tuple:
+async def _engine_with_ctrl_status(dataset: SlayerDataset) -> tuple:
     """Seed a table whose status column carries control-char values, so a
     Mode-B (python-escaped) query filter can be shown to match end-to-end."""
     tmp = tempfile.TemporaryDirectory()
@@ -1830,7 +1830,7 @@ async def _engine_with_ctrl_status(model: SlayerDataset) -> tuple:
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_path)
     )
-    await storage.save_dataset(model)
+    await storage.save_dataset(dataset)
     return SlayerQueryEngine(storage=storage), tmp
 
 
@@ -1839,7 +1839,7 @@ class TestModeBControlCharsEndToEnd:
     a Mode-B query filter must parse (no ast.parse SyntaxError) and match ONLY
     its row through the real SQLite pipeline."""
 
-    def _model(self) -> SlayerDataset:
+    def _dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="t",
             sql_table="t",
@@ -1858,7 +1858,7 @@ class TestModeBControlCharsEndToEnd:
     async def test_control_char_value_matches_only_its_row(
         self, value: str, expected: float
     ) -> None:
-        engine, tmp = await _engine_with_ctrl_status(self._model())
+        engine, tmp = await _engine_with_ctrl_status(self._dataset())
         try:
             q = SlayerQuery.model_validate({
                 "population": "t",

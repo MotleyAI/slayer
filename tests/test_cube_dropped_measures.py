@@ -46,7 +46,7 @@ def converted() -> tuple[dict[str, SlayerDataset], CubeConversionReport]:
     return {m.name: m for m in result.datasets}, result.report
 
 
-def _measure_issues(report: CubeConversionReport, *members: str) -> list:
+def _metric_issues(report: CubeConversionReport, *members: str) -> list:
     return [i for i in report.issues
             if i.category == CubeIssueCategory.COMPLEX_MEASURE and i.member in members]
 
@@ -54,7 +54,7 @@ def _measure_issues(report: CubeConversionReport, *members: str) -> list:
 def test_agg_measure_over_dropped_column_is_dropped_and_reported(converted: tuple[dict[str, SlayerDataset], CubeConversionReport]) -> None:
     models, report = converted
     assert models["orders"].get_metric("bad_total") is None
-    issues = _measure_issues(report, "bad_total")
+    issues = _metric_issues(report, "bad_total")
     assert issues, report.issues
     assert any("sum(bad_total_col)" in i.message for i in issues), issues
     assert all(":sum" not in i.message for i in issues), issues
@@ -65,14 +65,14 @@ def test_dependent_calc_measures_are_dropped_and_reported(converted: tuple[dict[
     orders = models["orders"]
     assert orders.get_metric("bad_ratio") is None
     assert orders.get_metric("bad_ratio2") is None
-    assert _measure_issues(report, "bad_ratio")
-    assert _measure_issues(report, "bad_ratio2")
+    assert _metric_issues(report, "bad_ratio")
+    assert _metric_issues(report, "bad_ratio2")
 
 
 def test_collision_renamed_measure_over_dropped_column_is_dropped(converted: tuple[dict[str, SlayerDataset], CubeConversionReport]) -> None:
     models, report = converted
     assert models["orders"].get_metric("status_measure") is None
-    assert _measure_issues(report, "status", "status_measure")
+    assert _metric_issues(report, "status", "status_measure")
 
 
 def test_unaffected_measures_survive(converted: tuple[dict[str, SlayerDataset], CubeConversionReport]) -> None:
@@ -94,7 +94,7 @@ def test_calc_measure_over_bare_column_is_dropped_and_reported() -> None:
     result = CubeToSlayerConverter(project=CubeProject(cubes=[cube]), data_source="ds").convert()
     orders = next(m for m in result.datasets if m.name == "orders")
     assert orders.get_metric("doubled") is None
-    assert _measure_issues(result.report, "doubled")
+    assert _metric_issues(result.report, "doubled")
 
 
 def test_view_does_not_reexport_dropped_measures(converted: tuple[dict[str, SlayerDataset], CubeConversionReport]) -> None:

@@ -26,9 +26,9 @@ from tests._dev1471_fixtures import (
     BACKENDS,
     date_str,
     make_engine,
-    orders_model,
+    orders_dataset,
     orders_table_spec,
-    region_chain_models,
+    region_chain_datasets,
     region_chain_tables,
 )
 
@@ -59,18 +59,18 @@ _GRAIN = [
 
 
 def _bundle() -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(dialect="postgres", population=orders_model(), referenced_datasets=[])
+    return ResolvedSourceBundle(dialect="postgres", population=orders_dataset(), referenced_datasets=[])
 
 
 def _stage(*columns: StageField) -> StageSchema:
     return StageSchema(relation_name="s1", fields=list(columns))
 
 
-async def _dryrun_engine(models: list[SlayerDataset]) -> SlayerQueryEngine:
+async def _dryrun_engine(datasets: list[SlayerDataset]) -> SlayerQueryEngine:
     """Storage + engine with no real DB — enough for plan-time binding/checking."""
     storage = YAMLStorage(base_dir=tempfile.mkdtemp())
-    await storage.save_datasource(DatasourceConfig(name=models[0].data_source, type="sqlite"))
-    for model in models:
+    await storage.save_datasource(DatasourceConfig(name=datasets[0].data_source, type="sqlite"))
+    for model in datasets:
         await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage)
 
@@ -181,7 +181,7 @@ class TestReBucketingChecker:
 # ---------------------------------------------------------------------------
 class TestStageBindingErrorsEndToEnd:
     async def test_finer_granularity_end_to_end(self) -> None:
-        engine = await _dryrun_engine([orders_model()])
+        engine = await _dryrun_engine([orders_dataset()])
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
@@ -199,7 +199,7 @@ class TestStageBindingErrorsEndToEnd:
         # s1 buckets month, s2 re-projects the bucket as a plain dimension (which
         # drops its type from the stage schema), s3 re-buckets finer: the untyped
         # fail-closed rule rejects it, so a silent wrong re-bucket never lands.
-        engine = await _dryrun_engine([orders_model()])
+        engine = await _dryrun_engine([orders_dataset()])
         s1 = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
@@ -218,7 +218,7 @@ class TestStageBindingErrorsEndToEnd:
             await engine.execute(query=[s1, s2, s3], dry_run=True)
 
     async def test_non_temporal_column_end_to_end(self) -> None:
-        engine = await _dryrun_engine([orders_model()])
+        engine = await _dryrun_engine([orders_dataset()])
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders", "dimensions": ["region"],
             "metrics": [{"expression": "sum(amount)", "name": "rev"}],
@@ -232,7 +232,7 @@ class TestStageBindingErrorsEndToEnd:
             await engine.execute(query=[inner, outer], dry_run=True)
 
     async def test_unknown_flat_name_end_to_end(self) -> None:
-        engine = await _dryrun_engine([orders_model()])
+        engine = await _dryrun_engine([orders_dataset()])
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
@@ -247,7 +247,7 @@ class TestStageBindingErrorsEndToEnd:
             await engine.execute(query=[inner, outer], dry_run=True)
 
     async def test_dotted_name_end_to_end(self) -> None:
-        engine = await _dryrun_engine([orders_model()])
+        engine = await _dryrun_engine([orders_dataset()])
         inner = SlayerQuery.model_validate({
             "name": "s1", "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
@@ -265,10 +265,10 @@ class TestStageBindingErrorsEndToEnd:
 # ---------------------------------------------------------------------------
 # Executed values on SQLite + DuckDB.
 # ---------------------------------------------------------------------------
-async def _exec_stages(backend: str, tmp: str, *, tables, models, stages) -> list[dict]:
+async def _exec_stages(backend: str, tmp: str, *, tables, datasets, stages) -> list[dict]:
     engine = await make_engine(
         backend, base_dir=os.path.join(tmp, "store"),
-        db_path=os.path.join(tmp, f"t.{backend}"), tables=tables, models=models,
+        db_path=os.path.join(tmp, f"t.{backend}"), tables=tables, datasets=datasets,
     )
     resp = await engine.execute(query=stages)
     return resp.data
@@ -297,7 +297,7 @@ class TestStageReBucketExecuted:
             "metrics": [{"expression": "sum(n)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
-            data = await _exec_stages(backend, tmp, tables=tables, models=region_chain_models(), stages=[inner, outer])
+            data = await _exec_stages(backend, tmp, tables=tables, datasets=region_chain_datasets(), stages=[inner, outer])
         key = "s1.customers__regions__last_activity_at"
         got = {date_str(r[key]): r["s1.n_sum"] for r in data}
         assert got == {"2025-01-01": 4, "2025-02-01": 1}
@@ -314,7 +314,7 @@ class TestStageReBucketExecuted:
             "metrics": [{"expression": "sum(rev)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
-            data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], models=[orders_model()], stages=[inner, outer])
+            data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], datasets=[orders_dataset()], stages=[inner, outer])
         got = {date_str(r["s1.created_at"]): r["s1.rev_sum"] for r in data}
         assert got == {"2024-01-01": 300.0, "2025-01-01": 850.0}
 
@@ -329,7 +329,7 @@ class TestStageReBucketExecuted:
             "metrics": [{"expression": "sum(rev)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
-            data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], models=[orders_model()], stages=[inner, outer])
+            data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], datasets=[orders_dataset()], stages=[inner, outer])
         got = {date_str(r["s1.created_at"]): r["s1.rev_sum"] for r in data}
         assert got == {"2024-11-01": 100.0, "2024-12-01": 200.0, "2025-01-01": 350.0, "2025-02-01": 500.0}
 
@@ -349,7 +349,7 @@ class TestStageReBucketExecuted:
             engine = await make_engine(
                 backend, base_dir=os.path.join(tmp, "store"),
                 db_path=os.path.join(tmp, f"t.{backend}"),
-                tables=[orders_table_spec(_COHORT)], models=[orders_model()],
+                tables=[orders_table_spec(_COHORT)], datasets=[orders_dataset()],
             )
             resp = await engine.execute(query=[inner, outer])
             got = {date_str(r[f"s1.{col}"]): r["s1.cohort_size"] for r in resp.data}
@@ -377,7 +377,7 @@ class TestStageReBucketExecuted:
             "metrics": [{"expression": "sum(rev_sum)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
-            data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], models=[orders_model()], stages=[s1, s2, s3])
+            data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_MONTHLY)], datasets=[orders_dataset()], stages=[s1, s2, s3])
         got = {date_str(r["s2.created_at"]): r["s2.rev_sum_sum"] for r in data}
         assert got == {"2024-01-01": 300.0, "2025-01-01": 850.0}
 
@@ -392,7 +392,7 @@ class TestStageReBucketExecuted:
             "metrics": [{"expression": "sum(rev)"}],
         })
         with tempfile.TemporaryDirectory() as tmp:
-            data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_GRAIN)], models=[orders_model()], stages=[inner, outer])
+            data = await _exec_stages(backend, tmp, tables=[orders_table_spec(_GRAIN)], datasets=[orders_dataset()], stages=[inner, outer])
         got = {(r["s1.region"], date_str(r["s1.created_at"])): r["s1.rev_sum"] for r in data}
         assert got == {
             ("W", "2025-01-01"): 150.0,

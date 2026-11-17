@@ -26,10 +26,10 @@ from tests._dev1966_fixtures import (
     CUST_REV,
     CUST_TOP,
     SPEND_BY_TIER,
-    customers_model,
+    customers_dataset,
     dev1966_engine,
     m,
-    orders_model,
+    orders_dataset,
     query,
     rows_by,
     sorted_rows,
@@ -207,7 +207,7 @@ class TestIdentifierLimit:
         with tempfile.TemporaryDirectory() as d:
             storage = YAMLStorage(base_dir=os.path.join(d, "store"))
             await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
-            for model in (orders_model(), customers_model()):
+            for model in (orders_dataset(), customers_dataset()):
                 await storage.save_dataset(model, _validate=False)
             engine = SlayerQueryEngine(storage=storage)
             resp = await engine.execute([

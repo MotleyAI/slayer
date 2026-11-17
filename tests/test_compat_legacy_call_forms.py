@@ -30,7 +30,7 @@ from tests._gateway_harness import (
     GatewayFactory,
     backend_of,
     no_direct_access,
-    orders_model,
+    orders_dataset,
     seed_shop,
     shop_datasource,
     shop_storage,
@@ -104,7 +104,7 @@ _NO_CLIENT: dict[str, Callable[[DatasourceConfig, YAMLStorage], Any]] = {
     "ingest": lambda ds, _store: ingestion.ingest_datasource(ds),  # pyright: ignore[reportCallIssue]
     "report": lambda ds, _store: ingestion.ingest_datasource_report(ds),  # pyright: ignore[reportCallIssue]
     "idempotent": lambda ds, store: run_sync(ingestion.ingest_datasource_idempotent(datasource=ds, storage=store)),  # pyright: ignore[reportCallIssue]
-    "validate": lambda ds, _store: run_sync(schema_drift.validate_datasource(datasource=ds, datasets=[orders_model()])),  # pyright: ignore[reportCallIssue]
+    "validate": lambda ds, _store: run_sync(schema_drift.validate_datasource(datasource=ds, datasets=[orders_dataset()])),  # pyright: ignore[reportCallIssue]
 }
 
 
@@ -121,7 +121,7 @@ def test_a_call_without_a_client_is_refused(form: str, tmp_path: Path) -> None:
 async def test_validate_datasource_takes_no_sql_clients(sqlite_shop: DatasourceConfig, tmp_path: Path) -> None:
     engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=str(tmp_path / "store")))
     try:
-        models, client = [orders_model()], engine.client_for(sqlite_shop)
+        models, client = [orders_dataset()], engine.client_for(sqlite_shop)
         with recorded(), pytest.raises(TypeError):
             await schema_drift.validate_datasource(
                 datasource=sqlite_shop, datasets=models, client=client, sql_clients={},  # pyright: ignore[reportCallIssue]
@@ -201,7 +201,7 @@ def test_client_supplied_forms_are_silent(shop: DatasourceConfig, tmp_path: Path
             engine.run_sync(ingestion.ingest_datasource_async(shop, client=client))
             engine.run_sync(ingestion.ingest_datasource_report_async(shop, client=client))
             engine.run_sync(ingestion.ingest_datasource_idempotent(datasource=shop, storage=engine.storage, client=client))
-            engine.run_sync(schema_drift.validate_datasource(datasource=shop, datasets=[orders_model()], client=client))
+            engine.run_sync(schema_drift.validate_datasource(datasource=shop, datasets=[orders_dataset()], client=client))
             for kind in ("dbt", "osi"):
                 converter = _client_converter(kind, dialect=shop.type)
                 engine.run_sync(converter.collect_metadata(client=client))

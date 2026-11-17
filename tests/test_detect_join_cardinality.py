@@ -73,7 +73,7 @@ def _col(name: str, *, pk: bool = False, dtype: DataType = DataType.INT) -> Data
     return DatasetField(name=name, sql=name, datatype=dtype, primary_key=pk)
 
 
-def _models() -> list[SlayerDataset]:
+def _datasets() -> list[SlayerDataset]:
     def m(name, table, cols, joins=None):
         return SlayerDataset(
             name=name, sql_table=table, data_source="ds", fields=cols, relationships=joins or []
@@ -147,14 +147,14 @@ async def _build_engine(workspace: Path) -> tuple[SlayerQueryEngine, YAMLStorage
     storage = YAMLStorage(base_dir=str(workspace / "storage"))
     ds = DatasourceConfig(name="ds", type="sqlite", database=db)
     await storage.save_datasource(ds)
-    for model in _models():
+    for model in _datasets():
         await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage), storage, ds
 
 
-def _find(report: RelationshipCardinalityReport, model: str, target: str):
+def _find(report: RelationshipCardinalityReport, dataset: str, target: str):
     return next(
-        f for f in report.findings if f.dataset == model and f.to == target
+        f for f in report.findings if f.dataset == dataset and f.to == target
     )
 
 

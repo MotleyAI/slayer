@@ -157,18 +157,18 @@ class Store:
         )
 
     async def seed(
-        self, *, models: list[dict] | None = None, memories: list[dict] | None = None,
+        self, *, datasets: list[dict] | None = None, memories: list[dict] | None = None,
         register_datasource: bool = True,
     ) -> StorageBackend:
         if register_datasource:
             await self.storage.save_datasource(self.datasource)
-        for m in models or []:
-            self.write_model(name=m["name"], text=yaml.dump(m, sort_keys=False) if self.kind == "yaml" else json.dumps(m))
+        for m in datasets or []:
+            self.write_dataset(name=m["name"], text=yaml.dump(m, sort_keys=False) if self.kind == "yaml" else json.dumps(m))
         for mem in memories or []:
             self._write_memory(mem)
         return self.storage
 
-    def write_model(self, *, name: str, text: str) -> None:
+    def write_dataset(self, *, name: str, text: str) -> None:
         if self.kind == "yaml":
             path = os.path.join(self.tmp, "store", "models", DS, f"{name}.yaml")
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -205,7 +205,7 @@ async def store(request) -> AsyncIterator[Store]:
 
 @pytest.fixture
 async def bad_store(store: Store) -> StorageBackend:
-    return await store.seed(models=[_bad_orders(), _customers(), _products(drifted=True)])
+    return await store.seed(datasets=[_bad_orders(), _customers(), _products(drifted=True)])
 
 
 @pytest.fixture
@@ -239,8 +239,8 @@ class TestTypedLoadError:
         assert CAUSE in str(ei.value.__cause__)
 
     async def test_corrupt_document_names_the_model(self, store: Store) -> None:
-        storage = await store.seed(models=[_customers()])
-        store.write_model(name=BAD, text=store.corrupt_text())
+        storage = await store.seed(datasets=[_customers()])
+        store.write_dataset(name=BAD, text=store.corrupt_text())
         with pytest.raises(StoredDocumentLoadError) as ei:
             await storage.get_dataset(BAD, data_source=DS)
         assert isinstance(ei.value, ValueError)
@@ -253,7 +253,7 @@ class TestTypedLoadError:
         make_doc, datasource, cause_ok = _LOAD_FAILURES[case]
         if datasource not in (None, "live"):
             store.datasource = datasource
-        storage = await store.seed(models=[make_doc()], register_datasource=datasource is not None)
+        storage = await store.seed(datasets=[make_doc()], register_datasource=datasource is not None)
         engine = SlayerQueryEngine(storage=storage)
         try:
             with pytest.raises(StoredDocumentLoadError) as ei:

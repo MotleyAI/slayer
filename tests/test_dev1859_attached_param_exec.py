@@ -21,7 +21,7 @@ from tests._dev1841_fixtures import (
     assoc_q,
     bcast_q,
     broadcast_warnings,
-    dev1840_models,
+    dev1840_datasets,
     error_q,
     make_exec_engine as make_orders_engine,
     q as orders_q,
@@ -37,14 +37,14 @@ from tests._dev1859_fixtures import (
     assoc_wavg_region_weight,
     broadcast_wavg_global,
     broadcast_wavg_target_side,
-    cross_model_param_by_status,
-    customers_wsum_models,
+    cross_dataset_param_by_status,
+    customers_wsum_datasets,
     literal_source_wsum_by_region,
     mixed_plus_param_by_region,
     ordinary_avg_amount_global,
     ordinary_wavg_by_region,
     ordinary_wavg_global,
-    sales_wsum_models,
+    sales_wsum_datasets,
     ungrained_wsum_assoc_by_status,
     ungrained_wsum_reagg_by_region,
     ungrained_wsum_row_by_region,
@@ -69,25 +69,25 @@ async def orders_engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def orders_wsum_engine(request):
-    async for engine in make_orders_engine(request, models=customers_wsum_models()):
+    async for engine in make_orders_engine(request, datasets=customers_wsum_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def sales_engine(request):
-    async for engine in make_sales_engine(request, models=sales_wsum_models()):
+    async for engine in make_sales_engine(request, datasets=sales_wsum_datasets()):
         yield engine
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def weak_plans_engine(request):
     async for engine in make_orders_engine(
-            request, models=dev1840_models(strong_plans=False)):
+            request, datasets=dev1840_datasets(strong_plans=False)):
         yield engine
 
 
-def _region_vals(resp, measure):
-    return {k[0]: v[measure] for k, v in region_key(resp).items()}
+def _region_vals(resp, metric):
+    return {k[0]: v[metric] for k, v in region_key(resp).items()}
 
 
 def _assert_region(vals, oracle):
@@ -250,7 +250,7 @@ class TestCrossModelParameterOnLocalRoot:
             dimensions=["status"],
             measures=[DatasetMetric(expression=_CROSS, name="w")]))
         by = status_key(resp)
-        for status, expected in cross_model_param_by_status().items():
+        for status, expected in cross_dataset_param_by_status().items():
             assert float(by[(status,)]["orders.w"]) == pytest.approx(expected)
 
     async def test_unattributable_parameter_stays_rejected(self, weak_plans_engine):

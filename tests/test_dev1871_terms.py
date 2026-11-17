@@ -26,7 +26,7 @@ _STATUS = FieldKey(leaf="status")
 _TIER = FieldKey(leaf="tier")
 
 
-def _model_ds() -> "StoredDataset":
+def _dataset_ds() -> "StoredDataset":
     return StoredDataset(data_source="ds", dataset_name="orders")
 
 
@@ -36,7 +36,7 @@ def _recipe() -> AggregateKey:
 
 def _aggregate(*, grain: Grain | None = None) -> "Aggregate":
     return Aggregate(
-        home=_model_ds(), recipe=_recipe(),
+        home=_dataset_ds(), recipe=_recipe(),
         grain=Grain.of({_STATUS}) if grain is None else grain,
     )
 
@@ -58,7 +58,7 @@ class TestDatasetIdentity:
 
     def test_aggregate_is_a_dataset(self) -> None:
         """The aggregate-is-a-dataset axiom as subtyping."""
-        assert isinstance(_model_ds(), Dataset)
+        assert isinstance(_dataset_ds(), Dataset)
         assert isinstance(StageDataset(stage_name="s1"), Dataset)
         assert isinstance(_aggregate(), Dataset)
         # The protocol must be non-vacuous: arbitrary objects don't satisfy it.
@@ -91,11 +91,11 @@ class TestDatasetIdentity:
 class TestConstructionInvariants:
     def test_aggregate_recipe_is_a_reference(self) -> None:
         recipe = _recipe()
-        term = Aggregate(home=_model_ds(), recipe=recipe, grain=Grain.EMPTY)
+        term = Aggregate(home=_dataset_ds(), recipe=recipe, grain=Grain.EMPTY)
         assert term.recipe is recipe
 
     def test_aggregate_grain_totality(self) -> None:
-        home = _model_ds()
+        home = _dataset_ds()
         recipe = _recipe()
         raw_set = frozenset()
         with pytest.raises(ValueError):
@@ -129,8 +129,8 @@ class TestConstructionInvariants:
             Broadcast(source=tier_agg, into=fine)
 
     def test_field_carries_home_and_key(self) -> None:
-        field = Field(home=_model_ds(), key=_STATUS)
-        assert field.home == _model_ds()
+        field = Field(home=_dataset_ds(), key=_STATUS)
+        assert field.home == _dataset_ds()
         assert field.key == _STATUS
 
     def test_terms_are_frozen_and_hashable(self) -> None:
@@ -138,6 +138,6 @@ class TestConstructionInvariants:
         hash(term)
         with pytest.raises(ValueError):
             term.grain = Grain.EMPTY  # pyright: ignore[reportAttributeAccessIssue] — the frozen violation under test
-        dataset = _model_ds()
+        dataset = _dataset_ds()
         with pytest.raises(ValueError):
             dataset.dataset_name = "other"  # pyright: ignore[reportAttributeAccessIssue] — the frozen violation under test

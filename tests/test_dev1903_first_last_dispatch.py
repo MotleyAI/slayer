@@ -25,8 +25,8 @@ from tests._dev1846_fixtures import (
     _seed_duckdb,
     _seed_sqlite,
     month_td,
-    regions_model,
-    sales_model,
+    regions_dataset,
+    sales_dataset,
 )
 from tests._engine_helpers import seeded_exec_engine
 from slayer.core import syntax
@@ -40,16 +40,16 @@ SAVED = [
 ]
 
 
-def _models():
-    sales = sales_model()
+def _datasets():
+    sales = sales_dataset()
     sales.metrics = list(SAVED)
-    regions = regions_model()
+    regions = regions_dataset()
     regions.metrics = [DatasetMetric(expression="sum(factor)", name="tf")]
     return [sales, regions]
 
 
 def _bundle() -> ResolvedSourceBundle:
-    sales, regions = _models()
+    sales, regions = _datasets()
     return ResolvedSourceBundle(dialect="postgres", population=sales, referenced_datasets=[regions])
 
 
@@ -59,9 +59,9 @@ def _q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def _measure_key(formula: str, **kw):
+def _metric_key(expression: str, **kw):
     env = elaborate_query(
-        query=_q(measures=[DatasetMetric(expression=formula, name="m")], **kw),
+        query=_q(measures=[DatasetMetric(expression=expression, name="m")], **kw),
         bundle=_bundle(),
     )
     assert env.prebound is not None
@@ -137,7 +137,7 @@ class TestBindDispatch:
         "first(sum(revenue) > 100)",
     ])
     def test_aggregated_operand_binds_to_transform(self, formula):
-        key = _measure_key(formula)
+        key = _metric_key(formula)
         assert isinstance(key, TransformKey), key
         assert key.op == formula.split("(")[0]
 
@@ -145,10 +145,10 @@ class TestBindDispatch:
         ("last(revenue)", None), ("last(revenue, ordered_at)", "ordered_at"),
     ])
     def test_row_operand_binds_to_ranked_aggregate(self, formula, ranking):
-        key = _measure_key(formula)
+        key = _metric_key(formula)
         assert isinstance(key, AggregateKey), key
         assert key.agg == "last"
-        assert key == _measure_key(
+        assert key == _metric_key(
             "last(revenue)" if ranking is None else f"last(revenue, {ranking})",
         )
 
@@ -157,7 +157,7 @@ class TestBindDispatch:
         ("first(1)", {}),
     ])
     def test_row_grain_expression_binds_to_ranked_aggregate(self, formula, kw):
-        key = _measure_key(formula, **kw)
+        key = _metric_key(formula, **kw)
         assert isinstance(key, AggregateKey), key
         assert key.agg == "first"
 
@@ -166,12 +166,12 @@ class TestBindDispatch:
             ValueError,
             match="Transform 'first' does not accept keyword argument 'partition_by'",
         ):
-            _measure_key("first(sum(revenue), partition_by=store)")
+            _metric_key("first(sum(revenue), partition_by=store)")
 
     def test_transform_operand_reaches_the_checker(self):
         """Dispatch does not pre-empt transform-input validation."""
         with pytest.raises(ValueError) as ei:
-            _measure_key("first(cumsum(weight))")
+            _metric_key("first(cumsum(weight))")
         msg = str(ei.value)
         assert "The transform cannot consume the row-level" in msg, msg
         assert "\n  at transform 'cumsum'\n" in msg, msg
@@ -185,9 +185,9 @@ class TestSavedMeasureOperand:
         ("last(rev)", "last(sum(revenue))"),
     ])
     def test_binds_to_the_inline_transform(self, saved, inline):
-        key = _measure_key(saved)
+        key = _metric_key(saved)
         assert isinstance(key, TransformKey), key
-        assert key == _measure_key(inline)
+        assert key == _metric_key(inline)
 
     @pytest.mark.parametrize("saved, inline", [
         ("first(rev)", "first(sum(revenue))"),
@@ -207,7 +207,7 @@ async def exec_engine(request):
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if request.param == "duckdb" else _seed_sqlite
     async with seeded_exec_engine(
-        dialect=request.param, seed=seed, models=_models(),
+        dialect=request.param, seed=seed, datasets=_datasets(),
     ) as (engine, _):
         yield engine
 

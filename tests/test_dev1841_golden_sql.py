@@ -18,8 +18,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests._dev1840_fixtures import dev1840_models
-from tests._dev1841_fixtures import DatasetMetric, SlayerQuery, dev1841_models
+from tests._dev1840_fixtures import dev1840_datasets
+from tests._dev1841_fixtures import DatasetMetric, SlayerQuery, dev1841_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -28,8 +28,8 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery",
             "snowflake"]
 
 _MODEL_SETS = {
-    "default": dev1840_models,
-    "ext": dev1841_models,
+    "default": dev1840_datasets,
+    "ext": dev1841_datasets,
 }
 
 CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
@@ -72,7 +72,7 @@ async def _generate_one(case, dialect: str):
             kw["to_many_handling"] = case["mode"]
         query = SlayerQuery(population="orders", **kw)
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract

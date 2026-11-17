@@ -34,7 +34,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 # ---------------------------------------------------------------------------
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders_t",
@@ -57,7 +57,7 @@ def _orders_model() -> SlayerDataset:
     )
 
 
-def _customers_model() -> SlayerDataset:
+def _customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers",
         sql_table="customers_t",
@@ -84,7 +84,7 @@ async def _engine(*extra_models: SlayerDataset) -> Tuple[SlayerQueryEngine, temp
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
     await storage.save_datasource(_ds())
-    await storage.save_dataset(_orders_model())
+    await storage.save_dataset(_orders_dataset())
     for m in extra_models:
         await storage.save_dataset(m)
     engine = SlayerQueryEngine(storage=storage)
@@ -384,7 +384,7 @@ class TestVirtualModelColumns:
         """A ``ModelMeasure`` with explicit ``type=DOUBLE`` carries through
         to the virtual column.
         """
-        orders_with_measure = _orders_model().model_copy(update={
+        orders_with_measure = _orders_dataset().model_copy(update={
             "metrics": [
                 DatasetMetric(
                     expression="sum(amount) * 1.0",
@@ -424,7 +424,7 @@ class TestVirtualModelColumns:
         ``amount`` would normally pick DOUBLE, but the explicit
         ``type=INT`` must win.
         """
-        orders_with_int_measure = _orders_model().model_copy(update={
+        orders_with_int_measure = _orders_dataset().model_copy(update={
             "metrics": [
                 DatasetMetric(
                     expression="sum(amount)",
@@ -741,7 +741,7 @@ class TestNestedQueryBackedSavePath:
                 "metrics": [{"expression": "sum(qb_b_customers_kpi._count)"}],
             })],
         )
-        engine, tmp = await _engine(_customers_model(), qb_b)
+        engine, tmp = await _engine(_customers_dataset(), qb_b)
         try:
             saved = await engine.save_dataset(qb_a)
             # Both inner tables must appear in the rendered SQL.
@@ -830,10 +830,10 @@ class TestSavePath:
         # Same orders schema, different names in each datasource so the
         # bare-name lookup in the inner stage is unambiguous.
         await storage.save_dataset(
-            _orders_model().model_copy(update={"name": "orders_a"})
+            _orders_dataset().model_copy(update={"name": "orders_a"})
         )
         await storage.save_dataset(
-            _orders_model().model_copy(update={"name": "orders_b", "data_source": "ds2"})
+            _orders_dataset().model_copy(update={"name": "orders_b", "data_source": "ds2"})
         )
         engine = SlayerQueryEngine(storage=storage)
         try:
@@ -905,7 +905,7 @@ class TestNestedQueryBackedExpansion:
                 "dimensions": ["region"],
             })],
         )
-        engine, tmp = await _engine(_customers_model(), kpi_model)
+        engine, tmp = await _engine(_customers_dataset(), kpi_model)
         try:
             # Save another query-backed model that references the first
             # as a join target AND references a column on it so the
@@ -1005,9 +1005,9 @@ class TestCrossDatasourceJoin:
         storage = YAMLStorage(base_dir=tmp.name)
         await storage.save_datasource(_ds())
         await storage.save_datasource(_ds2())
-        await storage.save_dataset(_orders_model())
+        await storage.save_dataset(_orders_dataset())
         await storage.save_dataset(
-            _customers_model().model_copy(update={"data_source": "ds2"})
+            _customers_dataset().model_copy(update={"data_source": "ds2"})
         )
 
         # Build a query-backed model in ds=A that joins to ds=B AND
@@ -1078,14 +1078,14 @@ class TestWrapperAliasShapes:
         """
         # Add a join + a numeric customers.revenue column so the cross-
         # model agg has something to aggregate.
-        orders_with_join = _orders_model().model_copy(update={
+        orders_with_join = _orders_dataset().model_copy(update={
             "joins": [DatasetRelationship(
                 to="customers",
                 join_pairs=[["customer_id", "id"]],
             )],
         })
-        customers_with_rev = _customers_model().model_copy(update={
-            "columns": list(_customers_model().fields) + [
+        customers_with_rev = _customers_dataset().model_copy(update={
+            "columns": list(_customers_dataset().fields) + [
                 DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
             ],
         })
@@ -1117,14 +1117,14 @@ class TestWrapperAliasShapes:
         """``percentile(customers.revenue, p=0.5)`` (cross-model parametric)
         flattens to ``customers__revenue_percentile_p_0_5`` (the wrapper keeps the kwarg suffix).
         """
-        orders_with_join = _orders_model().model_copy(update={
+        orders_with_join = _orders_dataset().model_copy(update={
             "joins": [DatasetRelationship(
                 to="customers",
                 join_pairs=[["customer_id", "id"]],
             )],
         })
-        customers_with_rev = _customers_model().model_copy(update={
-            "columns": list(_customers_model().fields) + [
+        customers_with_rev = _customers_dataset().model_copy(update={
+            "columns": list(_customers_dataset().fields) + [
                 DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
             ],
         })
@@ -1151,7 +1151,7 @@ class TestWrapperAliasShapes:
             tmp.cleanup()
 
     async def test_joined_dim_alias_flattens(self) -> None:
-        orders_with_join = _orders_model().model_copy(update={
+        orders_with_join = _orders_dataset().model_copy(update={
             "joins": [DatasetRelationship(
                 to="customers",
                 join_pairs=[["customer_id", "id"]],
@@ -1169,7 +1169,7 @@ class TestWrapperAliasShapes:
         tmp = tempfile.TemporaryDirectory()
         storage = YAMLStorage(base_dir=tmp.name)
         await storage.save_datasource(_ds())
-        await storage.save_dataset(_customers_model())
+        await storage.save_dataset(_customers_dataset())
         await storage.save_dataset(orders_with_join)
         engine = SlayerQueryEngine(storage=storage)
         try:
@@ -1208,14 +1208,14 @@ class TestP4ClosureBehavior:
         lineage walk (the P4 closure): ``customers``, which no join path
         reaches from the virtual model, is aggregated over its own rows.
         """
-        orders_with_join = _orders_model().model_copy(update={
+        orders_with_join = _orders_dataset().model_copy(update={
             "joins": [DatasetRelationship(
                 to="customers",
                 join_pairs=[["customer_id", "id"]],
             )],
         })
-        customers_with_rev = _customers_model().model_copy(update={
-            "columns": list(_customers_model().fields) + [
+        customers_with_rev = _customers_dataset().model_copy(update={
+            "columns": list(_customers_dataset().fields) + [
                 DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
             ],
         })

@@ -12,7 +12,7 @@ import pytest
 
 from slayer.core.errors import AmbiguousRelationshipPathError, SlayerError
 
-from tests._dev1840_fixtures import ambiguity_models
+from tests._dev1840_fixtures import ambiguity_datasets
 from tests._dev1841_fixtures import (
     BCAST_SPEND_CROSS,
     DatasetMetric,
@@ -38,7 +38,7 @@ async def exec_backend(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_amb(request):
-    async for engine in make_exec_engine(request, models=ambiguity_models()):
+    async for engine in make_exec_engine(request, datasets=ambiguity_datasets()):
         yield request.param, engine
 
 

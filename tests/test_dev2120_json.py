@@ -35,7 +35,7 @@ from tests._dev2120_fixtures import (
     check_native_json,
     emit_lib,
     lib_engine,
-    lib_model,
+    lib_dataset,
     lib_query,
     lib_values,
     patch_profile,
@@ -111,7 +111,7 @@ class TestSpellings:
 
 class TestReturningIsTryCast:
     def test_returning_binds_to_a_try_cast_key(self) -> None:
-        model = lib_model()
+        model = lib_dataset()
         bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])
         key = bind_expr(parse_expr("json_value(payload, '$.qty' RETURNING INT)"), scope=DatasetScope(population=model),
                         bundle=bundle, allow_metrics=True).value_key
@@ -159,18 +159,18 @@ class TestPathSubset:
         await _rejected(engine, "json_value(payload, {p})", any_of=("wildcard", "*"), variables={"p": "$.a[*]"})
 
 
-def _measure_query(formula: str, **kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "lib", "metrics": [{"expression": formula, "name": "v"}], **kw})
+def _metric_query(expression: str, **kw: Any) -> SlayerQuery:
+    return SlayerQuery.model_validate({"population": "lib", "metrics": [{"expression": expression, "name": "v"}], **kw})
 
 
 class TestTyping:
     async def test_typed_sum(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(_measure_query("sum(json_value(payload, '$.qty' RETURNING INT))",
+        resp = await engine.execute(_metric_query("sum(json_value(payload, '$.qty' RETURNING INT))",
                                                    filters=["id IN (1, 2, 3, 8)"]))
         assert float(resp.data[0]["lib.v"]) == 5
 
     async def test_text_result_keeps_the_numeric_aggregation_error(self, engine: SlayerQueryEngine) -> None:
-        query = _measure_query("sum(json_value(payload, '$.qty'))")
+        query = _metric_query("sum(json_value(payload, '$.qty'))")
         with pytest.raises(SlayerError, match="TRY_CAST"):
             await engine.execute(query)
 
@@ -179,8 +179,8 @@ class TestTyping:
         await _rejected(engine, expr, any_of=("json",))
 
 
-def _json_model(*, db_type: Optional[str], type_: DataType = DataType.TEXT) -> SlayerDataset:
-    base = lib_model()
+def _json_dataset(*, db_type: Optional[str], type_: DataType = DataType.TEXT) -> SlayerDataset:
+    base = lib_dataset()
     columns = [c for c in base.fields if c.name != "payload"]
     columns.append(DatasetField(name="payload", datatype=type_, db_type=db_type))
     return base.model_copy(update={"fields": columns})
@@ -192,23 +192,23 @@ JSON_VALUE_Q = lib_query("json_value(payload, '$.a')")
 class TestInputForms:
     async def test_postgres_reads_every_input_as_jsonb(self) -> None:
         for db_type in ("jsonb", "json", None):
-            sql = await emit_lib(JSON_VALUE_Q, dialect="postgres", models=[_json_model(db_type=db_type)])
+            sql = await emit_lib(JSON_VALUE_Q, dialect="postgres", datasets=[_json_dataset(db_type=db_type)])
             assert "JSONB" in sql.upper(), (db_type, sql)
 
     async def test_snowflake_variant_read_directly(self) -> None:
-        native = await emit_lib(JSON_VALUE_Q, dialect="snowflake", models=[_json_model(db_type="VARIANT")])
-        text = await emit_lib(JSON_VALUE_Q, dialect="snowflake", models=[_json_model(db_type=None)])
+        native = await emit_lib(JSON_VALUE_Q, dialect="snowflake", datasets=[_json_dataset(db_type="VARIANT")])
+        text = await emit_lib(JSON_VALUE_Q, dialect="snowflake", datasets=[_json_dataset(db_type=None)])
         assert "TRY_PARSE_JSON" not in native.upper(), native
         assert "TRY_PARSE_JSON" in text.upper(), text
 
     async def test_clickhouse_json_column_differs_from_string(self) -> None:
-        native = await emit_lib(JSON_VALUE_Q, dialect="clickhouse", models=[_json_model(db_type="JSON")])
-        text = await emit_lib(JSON_VALUE_Q, dialect="clickhouse", models=[_json_model(db_type=None)])
+        native = await emit_lib(JSON_VALUE_Q, dialect="clickhouse", datasets=[_json_dataset(db_type="JSON")])
+        text = await emit_lib(JSON_VALUE_Q, dialect="clickhouse", datasets=[_json_dataset(db_type=None)])
         assert native != text
 
     async def test_clickhouse_json_column_read_without_a_json_cast(self) -> None:
         # CAST(… AS JSON) needs an experimental setting before ClickHouse 25.3.
-        sql = await emit_lib(JSON_VALUE_Q, dialect="clickhouse", models=[_json_model(db_type="JSON")])
+        sql = await emit_lib(JSON_VALUE_Q, dialect="clickhouse", datasets=[_json_dataset(db_type="JSON")])
         assert "toString(lib.payload)" in sql, sql
         assert "AS JSON" not in sql.upper(), sql
 
@@ -219,12 +219,12 @@ class TestInputForms:
     async def test_native_json_column_emits(self, dialect: str, db_type: str) -> None:
         for type_ in (DataType.TEXT, DataType.UNKNOWN):
             await emit_lib(lib_query("json_value(payload, '$.a' RETURNING INT)"), dialect=dialect,
-                           models=[_json_model(db_type=db_type, type_=type_)])
+                           datasets=[_json_dataset(db_type=db_type, type_=type_)])
 
     async def test_opaque_non_json_column_rejected(self) -> None:
-        models = [_json_model(db_type="bytea", type_=DataType.UNKNOWN)]
+        models = [_json_dataset(db_type="bytea", type_=DataType.UNKNOWN)]
         with pytest.raises(SlayerError):
-            await emit_lib(JSON_VALUE_Q, dialect="postgres", models=models)
+            await emit_lib(JSON_VALUE_Q, dialect="postgres", datasets=models)
 
     @pytest.mark.parametrize("dialect", TIER1)
     async def test_returning_types_emit(self, dialect: str) -> None:
@@ -317,7 +317,7 @@ class TestIngestionKeepsJsonDbType:
                     ingester.close()
                 payload = next(c for c in models[0].fields if c.name == "payload")
                 assert (payload.db_type or "").upper() == "JSON"
-                engine = await build_exec_engine(db_path, dialect="duckdb", models=models)
+                engine = await build_exec_engine(db_path, dialect="duckdb", datasets=models)
                 try:
                     await check_native_json(engine)
                 finally:

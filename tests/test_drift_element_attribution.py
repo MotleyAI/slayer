@@ -39,7 +39,7 @@ _DB_FAILURE = {"population": "t", "metrics": [{"expression": "sum(bad)"}]}
 
 
 def _t(*, ts: DataType = DataType.TEXT, filters: list[str] | None = None,
-       measures: list[DatasetMetric] | None = None) -> SlayerDataset:
+       metrics: list[DatasetMetric] | None = None) -> SlayerDataset:
     return SlayerDataset(
         name="t", sql_table="t", data_source="ds",
         fields=[
@@ -51,7 +51,7 @@ def _t(*, ts: DataType = DataType.TEXT, filters: list[str] | None = None,
             DatasetField(name="bad", sql="no_such_fn(x)", datatype=DataType.DOUBLE),
         ],
         filters=filters or [],
-        metrics=measures or [],
+        metrics=metrics or [],
     )
 
 
@@ -108,8 +108,8 @@ async def _wrapped(engine: SlayerQueryEngine, query: Any) -> SchemaDriftError:
     return exc.value
 
 
-def _removes(err: SchemaDriftError, *, model: str, column: str) -> bool:
-    return any(isinstance(e, EditDatasetDelete) and e.dataset_name == model and column in e.remove.fields
+def _removes(err: SchemaDriftError, *, dataset: str, column: str) -> bool:
+    return any(isinstance(e, EditDatasetDelete) and e.dataset_name == dataset and column in e.remove.fields
                for e in err.to_delete)
 
 
@@ -120,7 +120,7 @@ class TestUnreadDriftLeavesTheError:
         assert "no_such_fn" in str(err).lower(), err
 
     async def test_unread_dropped_column_and_its_measure(self, tmp_path: Path) -> None:
-        model = _t(measures=[DatasetMetric(name="n_s", expression="count_distinct(s)")])
+        model = _t(metrics=[DatasetMetric(name="n_s", expression="count_distinct(s)")])
         async with _env(tmp_path, model) as env:
             env.live("ALTER TABLE t DROP COLUMN s")
             await _unwrapped(env.engine, _DB_FAILURE)
@@ -145,13 +145,13 @@ class TestReadDriftWraps:
         async with _env(tmp_path, _t()) as env:
             env.live("ALTER TABLE t DROP COLUMN x")
             err = await _wrapped(env.engine, {"population": "t", "metrics": [{"expression": "sum(x)"}]})
-        assert _removes(err, model="t", column="x"), err.to_delete
+        assert _removes(err, dataset="t", column="x"), err.to_delete
 
     async def test_a_read_dropped_column_beside_unrelated_drift(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _t(ts=DataType.INT)) as env:
             env.live("ALTER TABLE t DROP COLUMN x")
             err = await _wrapped(env.engine, {"population": "t", "metrics": [{"expression": "sum(x)"}]})
-        assert _removes(err, model="t", column="x"), err.to_delete
+        assert _removes(err, dataset="t", column="x"), err.to_delete
 
     async def test_a_column_read_through_a_derived_column(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _t()) as env:
@@ -170,10 +170,10 @@ class TestReadDriftWraps:
             env.live("ALTER TABLE orders DROP COLUMN amount")
             err = await _wrapped(env.engine, {"population": "customers", "dimensions": ["region"],
                                               "metrics": [{"expression": formula, "name": "total"}]})
-        assert _removes(err, model="orders", column="amount"), err.to_delete
+        assert _removes(err, dataset="orders", column="amount"), err.to_delete
 
     async def test_a_used_model_measure(self, tmp_path: Path) -> None:
-        model = _t(measures=[DatasetMetric(name="total", expression="sum(x)")])
+        model = _t(metrics=[DatasetMetric(name="total", expression="sum(x)")])
         async with _env(tmp_path, model) as env:
             env.live("ALTER TABLE t DROP COLUMN x")
             await _wrapped(env.engine, {"population": "t", "metrics": ["total"]})

@@ -45,7 +45,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 # ---------------------------------------------------------------------------
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -71,7 +71,7 @@ def _orders_model() -> SlayerDataset:
     )
 
 
-def _customers_model() -> SlayerDataset:
+def _customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers",
         sql_table="customers",
@@ -134,16 +134,16 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    await storage.save_dataset(_customers_model())
-    await storage.save_dataset(_orders_model())
+    await storage.save_dataset(_customers_dataset())
+    await storage.save_dataset(_orders_dataset())
     yield SlayerQueryEngine(storage=storage), db_path
 
 
 def _bundle_local() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=_orders_model(),
-        referenced_datasets=[_customers_model()],
+        population=_orders_dataset(),
+        referenced_datasets=[_customers_dataset()],
     )
 
 
@@ -160,7 +160,7 @@ class TestBindDerivedTimeDimension:
         )
         bound = bind_time_dimension(
             td,
-            scope=DatasetScope(population=_orders_model()),
+            scope=DatasetScope(population=_orders_dataset()),
             bundle=_bundle_local(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)
@@ -177,7 +177,7 @@ class TestBindDerivedTimeDimension:
         )
         bound = bind_time_dimension(
             td,
-            scope=DatasetScope(population=_orders_model()),
+            scope=DatasetScope(population=_orders_dataset()),
             bundle=_bundle_local(),
         )
         assert isinstance(bound.bound.value_key, TimeTruncKey)

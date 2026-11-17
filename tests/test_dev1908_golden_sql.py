@@ -15,7 +15,7 @@ from slayer.core.query import SlayerQuery
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 from tests._dev1908_fixtures import (
-    dev1908_models,
+    dev1908_datasets,
     ship_region_extension,
     signup_month_td,
 )
@@ -24,8 +24,8 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1908_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
 
-def _m(formula: str) -> list[DatasetMetric]:
-    return [DatasetMetric(expression=formula, name="w")]
+def _m(expression: str) -> list[DatasetMetric]:
+    return [DatasetMetric(expression=expression, name="w")]
 
 
 def _cases() -> dict:
@@ -59,12 +59,12 @@ def _cases() -> dict:
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1908_models()
+    models = dev1908_datasets()
     try:
         extension = {"extensions": [ship_region_extension()]} if case.get("ext") else {}
         query = SlayerQuery(population="orders", **extension, **case["kw"])
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)

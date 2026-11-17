@@ -41,8 +41,8 @@ def col(name: str, type_: DataType = DataType.DOUBLE, sql: str | None = None, **
     return DatasetField(name=name, sql=sql, datatype=type_, **extra)
 
 
-def measure(name: str, formula: str, **extra: Any) -> DatasetMetric:
-    return DatasetMetric(name=name, expression=formula, **extra)
+def slayer_metric(name: str, expression: str, **extra: Any) -> DatasetMetric:
+    return DatasetMetric(name=name, expression=expression, **extra)
 
 
 def to_customers(**extra: Any) -> DatasetRelationship:
@@ -70,20 +70,20 @@ def orders_columns() -> list[DatasetField]:
     ]
 
 
-def orders(*, columns: list[DatasetField] | None = None, measures: list[DatasetMetric] | None = None,
+def orders(*, columns: list[DatasetField] | None = None, metrics: list[DatasetMetric] | None = None,
            joins: list[DatasetRelationship] | None = None, **extra: Any) -> SlayerDataset:
     """The ``orders`` table model; by default joined many-to-one to ``customers``."""
     return SlayerDataset(
         name=extra.pop("name", "orders"), sql_table=extra.pop("sql_table", "orders"), data_source=DATASOURCE,
         fields=orders_columns() if columns is None else columns,
-        metrics=measures or [],
+        metrics=metrics or [],
         relationships=[to_customers()] if joins is None else joins,
         default_time_dimension=extra.pop("default_time_dimension", "ordered_on"),
         **extra,
     )
 
 
-def customers(*, measures: list[DatasetMetric] | None = None, joins: list[DatasetRelationship] | None = None,
+def customers(*, metrics: list[DatasetMetric] | None = None, joins: list[DatasetRelationship] | None = None,
               **extra: Any) -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=DATASOURCE,
@@ -94,7 +94,7 @@ def customers(*, measures: list[DatasetMetric] | None = None, joins: list[Datase
             col("rate"),
             col("email", DataType.TEXT, unique=True),
         ],
-        metrics=measures or [],
+        metrics=metrics or [],
         relationships=joins or [],
         **extra,
     )
@@ -128,9 +128,9 @@ def monthly_revenue() -> SlayerDataset:
 
 
 BASIC_MEASURES = [
-    measure("revenue", "sum(amount)"),
-    measure("n", "count(*)"),
-    measure("aov", "revenue / n"),
+    slayer_metric("revenue", "sum(amount)"),
+    slayer_metric("n", "count(*)"),
+    slayer_metric("aov", "revenue / n"),
 ]
 
 
@@ -159,40 +159,40 @@ def rich_orders() -> SlayerDataset:
     return orders(
         columns=columns,
         aggregations=[Aggregation(name="trimmed_sum", expression="SUM(CASE WHEN {value} < 15 THEN {value} END)")],
-        measures=[
+        metrics=[
             *BASIC_MEASURES,
-            measure("avg_amount", "avg(amount)", label="Average amount", type=DataType.DOUBLE,
+            slayer_metric("avg_amount", "avg(amount)", label="Average amount", type=DataType.DOUBLE,
                     meta={"owner": "finance"}),
-            measure("min_amount", "min(amount)"),
-            measure("max_amount", "max(amount)"),
-            measure("n_amount", "count(amount)"),
-            measure("n_customers", "count_distinct(customer_id)"),
-            measure("p90", "percentile(amount, 0.9)"),
-            measure("med", "median(amount)"),
-            measure("sd", "stddev_samp(amount)"),
-            measure("sdp", "stddev_pop(amount)"),
-            measure("vs", "var_samp(amount)"),
-            measure("vp", "var_pop(amount)"),
-            measure("r", "corr(amount, other=quantity)"),
-            measure("cvs", "covar_samp(amount, other=quantity)"),
-            measure("cvp", "covar_pop(amount, other=quantity)"),
-            measure("wavg", "weighted_avg(price, weight=quantity)"),
-            measure("paid_count", "sum(is_paid)"),
-            measure("paid_masked", "sum(paid_flag)"),
-            measure("done_amount", "sum(completed_amount)"),
-            measure("done_count", "count(completed_amount)"),
-            measure("net_total", "sum(net)"),
-            measure("notes", "count(note)"),
-            measure("max_note", "max(note)"),
-            measure("trimmed", "trimmed_sum(amount)"),
-            measure("customer_discount", "sum(customers.discount)"),
-            measure("aov_per_customer", "sum(amount) / count_distinct(customers.id)"),
-            measure("discounted", "sum(amount * customers.rate)"),
-            measure("revenue_growth", "change_pct(revenue)"),
-            measure("running", "cumsum(revenue)"),
-            measure("latest_amount", "last(amount)"),
-            measure("rev_30d", "sum(amount, window='30d')"),
-            measure("region_total", "sum(amount, partition_by=region)"),
+            slayer_metric("min_amount", "min(amount)"),
+            slayer_metric("max_amount", "max(amount)"),
+            slayer_metric("n_amount", "count(amount)"),
+            slayer_metric("n_customers", "count_distinct(customer_id)"),
+            slayer_metric("p90", "percentile(amount, 0.9)"),
+            slayer_metric("med", "median(amount)"),
+            slayer_metric("sd", "stddev_samp(amount)"),
+            slayer_metric("sdp", "stddev_pop(amount)"),
+            slayer_metric("vs", "var_samp(amount)"),
+            slayer_metric("vp", "var_pop(amount)"),
+            slayer_metric("r", "corr(amount, other=quantity)"),
+            slayer_metric("cvs", "covar_samp(amount, other=quantity)"),
+            slayer_metric("cvp", "covar_pop(amount, other=quantity)"),
+            slayer_metric("wavg", "weighted_avg(price, weight=quantity)"),
+            slayer_metric("paid_count", "sum(is_paid)"),
+            slayer_metric("paid_masked", "sum(paid_flag)"),
+            slayer_metric("done_amount", "sum(completed_amount)"),
+            slayer_metric("done_count", "count(completed_amount)"),
+            slayer_metric("net_total", "sum(net)"),
+            slayer_metric("notes", "count(note)"),
+            slayer_metric("max_note", "max(note)"),
+            slayer_metric("trimmed", "trimmed_sum(amount)"),
+            slayer_metric("customer_discount", "sum(customers.discount)"),
+            slayer_metric("aov_per_customer", "sum(amount) / count_distinct(customers.id)"),
+            slayer_metric("discounted", "sum(amount * customers.rate)"),
+            slayer_metric("revenue_growth", "change_pct(revenue)"),
+            slayer_metric("running", "cumsum(revenue)"),
+            slayer_metric("latest_amount", "last(amount)"),
+            slayer_metric("rev_30d", "sum(amount, window='30d')"),
+            slayer_metric("region_total", "sum(amount, partition_by=region)"),
         ],
     )
 

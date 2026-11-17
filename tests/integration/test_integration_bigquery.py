@@ -40,20 +40,20 @@ from tests._dev2120_fixtures import (
     LIB,
     check_library,
     check_native_json,
-    contractors_model,
+    contractors_dataset,
     contractors_statements,
-    lib_model,
+    lib_dataset,
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
-from tests._dev2137_fixtures import as_list, assignments_model, assignments_statements, check_lists, num
-from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
+from tests._dev2137_fixtures import as_list, assignments_dataset, assignments_statements, check_lists, num
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests._sql_mode_retype_fixtures import (
     check_query_carries_finding,
     check_reingest_retypes,
     check_validation_finding,
     sql_shapes,
-    stale_sql_model,
+    stale_sql_dataset,
 )
 from tests.integration._one_request import PATHS, assert_one_request_each, run_three
 from tests._reserved_alias_probe import (
@@ -164,34 +164,34 @@ async def client_for(tmp_path: Path) -> AsyncIterator[Callable[[DatasourceConfig
 
 
 @pytest.fixture(scope="module")
-def bq_models(bq_dataset) -> tuple[dict[str, SlayerDataset], str]:
+def bq_datasets(bq_dataset) -> tuple[dict[str, SlayerDataset], str]:
     _, dataset_id = bq_dataset
     models = run_sync(_ingest(_ds_config(dataset_id), schema=dataset_id))
     return {m.name: m for m in models}, dataset_id
 
 
 class TestBigQueryCommentIngestion:
-    def test_column_descriptions_imported(self, bq_models: tuple[dict[str, SlayerDataset], str]) -> None:
-        models, _ = bq_models
+    def test_column_descriptions_imported(self, bq_datasets: tuple[dict[str, SlayerDataset], str]) -> None:
+        models, _ = bq_datasets
         cols = {c.name: c for c in models["orders"].fields}
         assert cols["id"].description == "Order id"
         assert cols["amount"].description == "Order amount in USD"
         assert cols["status"].description is None
 
-    def test_table_description_imported(self, bq_models: tuple[dict[str, SlayerDataset], str]) -> None:
-        models, _ = bq_models
+    def test_table_description_imported(self, bq_datasets: tuple[dict[str, SlayerDataset], str]) -> None:
+        models, _ = bq_datasets
         assert models["orders"].description == "All orders"
         assert models["plain"].description is None
 
-    def test_record_column_description(self, bq_models: tuple[dict[str, SlayerDataset], str]) -> None:
-        models, _ = bq_models
+    def test_record_column_description(self, bq_datasets: tuple[dict[str, SlayerDataset], str]) -> None:
+        models, _ = bq_datasets
         cols = {c.name: c for c in models["orders"].fields}
         assert cols["payload"].description == "Structured payload"
         # Flattened RECORD subfields (dotted names) never become columns.
         assert not any("." in name for name in cols)
 
-    def test_types_sanity(self, bq_models: tuple[dict[str, SlayerDataset], str]) -> None:
-        models, _ = bq_models
+    def test_types_sanity(self, bq_datasets: tuple[dict[str, SlayerDataset], str]) -> None:
+        models, _ = bq_datasets
         cols = {c.name: c for c in models["orders"].fields}
         assert cols["id"].datatype is DataType.INT
         assert cols["amount"].datatype is DataType.DOUBLE
@@ -383,7 +383,7 @@ def bq_dev2120_storage(bq_dataset, tmp_path_factory):
     ds = _ds_config(dataset_id)
     storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_dev2120")))
     run_sync(storage.save_datasource(ds))
-    run_sync(storage.save_dataset(lib_model(data_source=ds.name)))
+    run_sync(storage.save_dataset(lib_dataset(data_source=ds.name)))
     for model in run_sync(_ingest(ds, include_tables=["docs", "events"])):
         run_sync(storage.save_dataset(model))
     return storage
@@ -394,7 +394,7 @@ async def test_dev2120_library(bq_dev2120_storage) -> None:
 
 
 async def test_try_cast_integer_targets(bq_dev2120_storage) -> None:
-    await check_try_cast_targets(SlayerQueryEngine(storage=bq_dev2120_storage), model=LIB.name)
+    await check_try_cast_targets(SlayerQueryEngine(storage=bq_dev2120_storage), dataset=LIB.name)
 
 
 async def test_dev2120_native_json_column(bq_dev2120_storage) -> None:
@@ -450,8 +450,8 @@ def bq_lists(bq_dataset, tmp_path_factory):
     ds = _ds_config(dataset_id)
     storage = YAMLStorage(base_dir=str(tmp_path_factory.mktemp("bq_lists")))
     run_sync(storage.save_datasource(ds))
-    for model in (contractors_model(data_source=ds.name), assignments_model(data_source=ds.name),
-                  mixed_numbers_model(data_source=ds.name), _stale_contractors(ds.name)):
+    for model in (contractors_dataset(data_source=ds.name), assignments_dataset(data_source=ds.name),
+                  mixed_numbers_dataset(data_source=ds.name), _stale_contractors(ds.name)):
         run_sync(storage.save_dataset(model))
     return storage, ds
 
@@ -519,7 +519,7 @@ async def test_collect_over_exact_numerics(bq_amounts) -> None:
 async def test_sql_mode_list_retype(bq_lists: tuple[StorageBackend, Any], sql: str, column: str, element: DataType) -> None:
     storage, ds = bq_lists
     engine = SlayerQueryEngine(storage=storage)
-    await storage.save_dataset(stale_sql_model(sql=sql, column=column, data_source=ds.name))
+    await storage.save_dataset(stale_sql_dataset(sql=sql, column=column, data_source=ds.name))
     await check_validation_finding(engine, data_source=ds.name, column=column)
     await check_query_carries_finding(engine, column=column)
     await check_reingest_retypes(engine, datasource=ds, table="contractors", column=column, element=element)

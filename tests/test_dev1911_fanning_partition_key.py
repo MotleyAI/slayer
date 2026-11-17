@@ -28,21 +28,21 @@ from slayer.core.models import (
 from slayer.core.query import SlayerQuery
 from tests._dev1900_fixtures import (
     BAD_POP,
-    dev1900_models,
+    dev1900_datasets,
     make_exec_engine,
     orders_q,
-    unparseable_derived_models,
+    unparseable_derived_datasets,
 )
 
 HOP = "region_events"
 MODES = ["broadcast", "error", "associate"]
 
 
-def _orders_fan_models():
+def _orders_fan_datasets():
     """dev1900 graph + an orders-local derived column whose definition crosses the
     fanning ``regions → region_events`` hop — a path-less key on an orders host that
     also carries a time axis (``ordered_at``) for the windowed position."""
-    models = dev1900_models()
+    models = dev1900_datasets()
     orders = next(m for m in models if m.name == "orders")
     orders.fields.append(DatasetField(
         name="bad_amt", datatype=DataType.DOUBLE,
@@ -50,11 +50,11 @@ def _orders_fan_models():
     return models
 
 
-def _island_models():
+def _island_datasets():
     """dev1900 graph + an isolated model with no join to anything — a partition key
     naming it has no route, so it fails closed upstream at dimension resolution,
     never reaching the fanning guard (nor falsely naming its hop)."""
-    models = dev1900_models()
+    models = dev1900_datasets()
     models.append(SlayerDataset(
         name="island", data_source="test", sql_table="region_events",
         fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -62,11 +62,11 @@ def _island_models():
     return models
 
 
-def _ambiguous_models():
+def _ambiguous_datasets():
     """dev1900 graph + a second ``regions → region_events`` edge — the bare hop is
     now ambiguous, so a partition key crossing it fails closed deterministically
     instead of silently picking one edge."""
-    models = dev1900_models()
+    models = dev1900_datasets()
     regions = next(m for m in models if m.name == "regions")
     regions.relationships.append(DatasetRelationship(
         to="region_events", join_pairs=[["id", "id"]],
@@ -82,25 +82,25 @@ async def engine(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def fan_engine(request):
-    async for e in make_exec_engine(request, models=_orders_fan_models()):
+    async for e in make_exec_engine(request, datasets=_orders_fan_datasets()):
         yield e
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unparse_engine(request):
-    async for e in make_exec_engine(request, models=unparseable_derived_models()):
+    async for e in make_exec_engine(request, datasets=unparseable_derived_datasets()):
         yield e
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def island_engine(request):
-    async for e in make_exec_engine(request, models=_island_models()):
+    async for e in make_exec_engine(request, datasets=_island_datasets()):
         yield e
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def ambig_engine(request):
-    async for e in make_exec_engine(request, models=_ambiguous_models()):
+    async for e in make_exec_engine(request, datasets=_ambiguous_datasets()):
         yield e
 
 

@@ -13,9 +13,9 @@ from tests._dev2073_fixtures import (
     BILLING_PAIRS,
     DS,
     SHIPPING_PAIRS,
-    addresses_model,
+    addresses_dataset,
     join_to,
-    model_store,
+    dataset_store,
     named_pair,
     orders_with,
     stored_joins,
@@ -90,7 +90,7 @@ class TestRelationshipSignature:
 
 class TestEngineRemovalByExactReference:
     async def test_removes_exactly_the_referenced_join(self) -> None:
-        async with model_store(addresses_model(), orders_with(*unnamed_pair())) as storage:
+        async with dataset_store(addresses_dataset(), orders_with(*unnamed_pair())) as storage:
             engine = SlayerQueryEngine(storage=storage)
             try:
                 ref = RelationshipEdgeRef(to="addresses", join_pairs=SHIPPING_PAIRS)

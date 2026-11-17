@@ -29,11 +29,11 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1901_fixtures import (
     BAD_DEFAULTS,
     bundle_of,
-    dev1901_models,
+    dev1901_datasets,
     make_exec_engine,
     orders_q,
-    revisit_models,
-    window_param_models,
+    revisit_datasets,
+    window_param_datasets,
 )
 from tests._dev1954_fixtures import execution_spy
 
@@ -42,20 +42,20 @@ SPEND = FieldKey(path=("customers",), leaf="spend")
 POP = FieldKey(path=("customers", "regions"), leaf="pop")
 
 
-def _key(formula: str, *, models: Optional[List[SlayerDataset]] = None,
+def _key(expression: str, *, datasets: Optional[List[SlayerDataset]] = None,
          source: str = "orders") -> AggregateKey:
-    models = models if models is not None else dev1901_models()
-    ordered = sorted(models, key=lambda m: m.name != source)
+    datasets = datasets if datasets is not None else dev1901_datasets()
+    ordered = sorted(datasets, key=lambda m: m.name != source)
     key = bind_expr(
-        parse_expr(formula), scope=DatasetScope(population=ordered[0]),
+        parse_expr(expression), scope=DatasetScope(population=ordered[0]),
         bundle=bundle_of(ordered), allow_metrics=True,
     ).value_key
     assert isinstance(key, AggregateKey), key
     return key
 
 
-def _kw(formula: str, **kw) -> dict:
-    return dict(_key(formula, **kw).kwargs)
+def _kw(expression: str, **kw) -> dict:
+    return dict(_key(expression, **kw).kwargs)
 
 
 def _fragment(value) -> SqlFragmentKey:
@@ -178,11 +178,11 @@ class TestOwners:
             _stage_key("wsum(rev)")
 
 
-def _stage_key(formula: str) -> AggregateKey:
-    models = dev1901_models()
+def _stage_key(expression: str) -> AggregateKey:
+    models = dev1901_datasets()
     scope = StageSchema(relation_name="stage1", fields=[StageField(
         name="rev", sql_alias="rev", public_alias="rev", datatype=DataType.DOUBLE)])
-    key = bind_expr(parse_expr(formula), scope=scope, bundle=ResolvedSourceBundle(
+    key = bind_expr(parse_expr(expression), scope=scope, bundle=ResolvedSourceBundle(
         dialect="postgres", population=None, referenced_datasets=models)).value_key
     assert isinstance(key, AggregateKey), key
     return key
@@ -253,7 +253,7 @@ class TestUnanalysableText:
         assert _kw("wsum(amount, weight='NULL')") == _kw("wsum(amount, weight=NULL)")
 
     def test_dialect_row_expression_binds(self) -> None:
-        models = dev1901_models()
+        models = dev1901_datasets()
 
         def weight(formula: str):
             key = bind_expr(
@@ -296,18 +296,18 @@ class TestOtherBindErrors:
 
     @pytest.mark.parametrize("formula", ["wrev(customers.spend)", "wrev_expr(customers.spend)"])
     def test_edge_name_revisit_is_circular(self, formula: str) -> None:
-        models = revisit_models()
+        models = revisit_datasets()
         with pytest.raises(CircularRelationshipPathError):
-            _key(formula, models=models)
+            _key(formula, datasets=models)
 
     @pytest.mark.parametrize("placeholder", [True, False])
     def test_window_reserved_for_a_stored_model(self, placeholder: bool) -> None:
-        models = window_param_models(placeholder=placeholder)
+        models = window_param_datasets(placeholder=placeholder)
         with pytest.raises(SlayerError, match="(?s)wwin.*trailing|trailing.*wwin"):
-            _key("wwin(amount)", models=models)
+            _key("wwin(amount)", datasets=models)
 
 
-def _first_token_revisit_models() -> List[SlayerDataset]:
+def _first_token_revisit_datasets() -> List[SlayerDataset]:
     """``orders →(primary) customers``; ``customers →(back) orders`` is an edge name,
     so ``wback``'s default ``back.amount`` revisits ``orders`` on its first token."""
     orders = SlayerDataset(
@@ -338,9 +338,9 @@ class TestFragmentTextSurvives:
 
 class TestFirstTokenRevisit:
     def test_is_circular_not_a_root_fallback(self) -> None:
-        models = _first_token_revisit_models()
+        models = _first_token_revisit_datasets()
         with pytest.raises(CircularRelationshipPathError, match="back"):
-            _key("wback(primary.spend)", models=models)
+            _key("wback(primary.spend)", datasets=models)
 
 
 class TestUnattributableParameterName:
@@ -349,7 +349,7 @@ class TestUnattributableParameterName:
     @pytest.mark.parametrize("template", [
         "{r0} * 1", "CASE WHEN {r0} > 0 THEN 1 ELSE 0 END"])
     def test_names_the_parameter(self, template: str) -> None:
-        models = dev1901_models()
+        models = dev1901_datasets()
         regions = next(m for m in models if m.name == "regions")
         key = AggregateKey(
             source=FieldKey(path=(), leaf="pop"), agg="wsum_cust_spend",

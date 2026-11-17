@@ -62,9 +62,9 @@ def _norm(s: str) -> str:
 
 async def _gen(
     query: SlayerQuery,
-    model: SlayerDataset,
+    dataset: SlayerDataset,
     *,
-    extra_models: list[SlayerDataset] | None = None,
+    extra_datasets: list[SlayerDataset] | None = None,
     dialect: str = "postgres",
 ) -> str:
     """Generate SQL for ``query``/``model`` through the typed engine pipeline.
@@ -73,7 +73,7 @@ async def _gen(
     resolution has the same storage-backed context the legacy
     ``storage=``-flavoured helper used to provide."""
     return await _engine_generate(
-        query=query, model=model, dialect=dialect, extra_models=extra_models,
+        query=query, dataset=dataset, dialect=dialect, extra_datasets=extra_datasets,
     )
 
 
@@ -95,7 +95,7 @@ def _q(name: str, dialect: str) -> str:
     return sqlglot.exp.Identifier(this=name, quoted=True).sql(dialect=dialect)
 
 
-def _grant_model(*, with_join: bool = False, extra_cols=()) -> SlayerDataset:
+def _grant_dataset(*, with_join: bool = False, extra_cols=()) -> SlayerDataset:
     cols = [
         DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
         DatasetField(name="namespace", sql="namespace", datatype=DataType.TEXT),
@@ -111,7 +111,7 @@ def _grant_model(*, with_join: bool = False, extra_cols=()) -> SlayerDataset:
     )
 
 
-def _merchant_model() -> SlayerDataset:
+def _merchant_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="merchant", sql_table='"Merchant"', data_source="api",
         fields=[
@@ -222,7 +222,7 @@ class TestReservedAliasQuoting:
     async def test_grant_alias_and_qualifier_quoted(self, dialect: str) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
         q = SlayerQuery.model_validate({"population": "grant", "dimensions": ["namespace"], "metrics": ["count(*)"]})
-        sql = _norm(await _gen(q, _grant_model(), dialect=dialect))
+        sql = _norm(await _gen(q, _grant_dataset(), dialect=dialect))
         qg = _q("grant", dialect)
         # FROM "Grant" AS "grant"  (table name already quoted; alias now quoted)
         assert f"AS {qg}" in sql, sql
@@ -305,7 +305,7 @@ class TestReservedStringReparsePaths:
             "metrics": ["count(*)"],
         })
         sql = _norm(await _gen(
-            q, _grant_model(with_join=True), extra_models=[_merchant_model()],
+            q, _grant_dataset(with_join=True), extra_datasets=[_merchant_dataset()],
         ))
         assert 'ON "grant"."merchantId" = merchant.id' in sql, sql
         _assert_parses(sql)
@@ -324,7 +324,7 @@ class TestReservedStringReparsePaths:
             "dimensions": ["namespace"],
             "metrics": [{"expression": "last(amount)"}],
         })
-        sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
+        sql = _norm(await _gen(q, _grant_dataset(), extra_datasets=[_merchant_dataset()]))
         assert 'FROM "Grant" AS "grant"' in sql, sql
         assert '"grant".amount' in sql, sql
         assert 'ORDER BY CASE WHEN "grant".created_at IS NULL THEN 1 ELSE 0 END, "grant".created_at' in sql, sql
@@ -338,7 +338,7 @@ class TestReservedStringReparsePaths:
             "metrics": ["count(*)"],
             "filter": ["amount > 0"],
         })
-        sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
+        sql = _norm(await _gen(q, _grant_dataset(), extra_datasets=[_merchant_dataset()]))
         assert '"grant".amount' in sql, sql
         _assert_parses(sql)
 
@@ -350,7 +350,7 @@ class TestReservedStringReparsePaths:
             "metrics": ["count(*)"],
             "order": [OrderItem.model_validate({"field": "namespace"})],
         })
-        sql = await _gen(q, _grant_model(), extra_models=[_merchant_model()])
+        sql = await _gen(q, _grant_dataset(), extra_datasets=[_merchant_dataset()])
         _assert_parses(sql)
 
     async def test_time_shift_with_filter_on_reserved_model(self) -> None:
@@ -361,7 +361,7 @@ class TestReservedStringReparsePaths:
             "metrics": [{"expression": "change(sum(amount))"}],
             "filter": ["amount > 0"],
         })
-        sql = await _gen(q, _grant_model(), extra_models=[_merchant_model()])
+        sql = await _gen(q, _grant_dataset(), extra_datasets=[_merchant_dataset()])
         _assert_parses(sql)
 
     async def test_where_filter_byte_level(self) -> None:
@@ -372,7 +372,7 @@ class TestReservedStringReparsePaths:
             "metrics": ["count(*)"],
             "filter": ["amount > 0"],
         })
-        sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
+        sql = _norm(await _gen(q, _grant_dataset(), extra_datasets=[_merchant_dataset()]))
         assert '"grant".amount > 0' in sql, sql
 
     async def test_column_level_filter_case_when(self) -> None:
@@ -380,7 +380,7 @@ class TestReservedStringReparsePaths:
         predicate is parsed via the ``measure.filter_sql`` sites — the reserved
         qualifier inside the CASE WHEN must be quoted."""
         install_reserved_keywords(SQLGLOT_NAMES)
-        model = _grant_model(
+        model = _grant_dataset(
             extra_cols=(DatasetField(name="big", sql="amount", datatype=DataType.DOUBLE, filter="amount > 100"),),
         )
         q = SlayerQuery.model_validate({
@@ -400,7 +400,7 @@ class TestReservedStringReparsePaths:
             "metrics": [{"expression": "sum(amount)"}],
             "filter": ["sum(amount) > 100"],
         })
-        sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
+        sql = _norm(await _gen(q, _grant_dataset(), extra_datasets=[_merchant_dataset()]))
         assert 'HAVING SUM("grant".amount) > 100' in sql, sql
         _assert_parses(sql)
 
@@ -410,7 +410,7 @@ class TestReservedStringReparsePaths:
             population="grant", dimensions=["namespace"],
             distinct_dimension_values=False,
         )
-        sql = _norm(await _gen(q, _grant_model(), extra_models=[_merchant_model()]))
+        sql = _norm(await _gen(q, _grant_dataset(), extra_datasets=[_merchant_dataset()]))
         assert 'FROM "Grant" AS "grant"' in sql, sql
         assert '"grant".namespace' in sql, sql
         _assert_parses(sql)
@@ -456,7 +456,7 @@ class TestReservedJoinedFromNonReservedRoot:
             "dimensions": ["grant.status"],
             "metrics": ["count(*)"],
         })
-        sql = _norm(await _gen(q, orders, extra_models=[grant]))
+        sql = _norm(await _gen(q, orders, extra_datasets=[grant]))
         assert '"grant".status' in sql, sql
         _assert_parses(sql)
 
@@ -469,7 +469,7 @@ class TestReservedJoinedFromNonReservedRoot:
             "metrics": ["count(*)"],
             "filter": ["grant.status == 'active'"],
         })
-        sql = _norm(await _gen(q, orders, extra_models=[grant]))
+        sql = _norm(await _gen(q, orders, extra_datasets=[grant]))
         # joined reserved qualifier quoted in BOTH the ON clause and the WHERE
         assert '"grant".status' in sql, sql
         assert "'active'" in sql, sql  # literal survived
@@ -483,7 +483,7 @@ class TestReservedJoinedFromNonReservedRoot:
             "dimensions": ["grant.status"],
             "metrics": [{"expression": "last(amount)"}],
         })
-        sql = _norm(await _gen(q, orders, extra_models=[grant]))
+        sql = _norm(await _gen(q, orders, extra_datasets=[grant]))
         # the reserved join alias appears quoted in the ranked subquery's join
         assert 'AS "grant"' in sql, sql
         _assert_parses(sql)
@@ -554,7 +554,7 @@ class TestPrequoteHelper:
 # 15/16. Query-backed reserved short + derived Column.sql referencing reserved join
 # ---------------------------------------------------------------------------
 
-def _orders_derived_grant_models() -> tuple[SlayerDataset, SlayerDataset]:
+def _orders_derived_grant_datasets() -> tuple[SlayerDataset, SlayerDataset]:
     """`orders` (non-reserved root) with a derived column ``bumped = grant.amount
     + 1`` joined to the reserved `grant` model. Returns ``(orders, grant)``."""
     grant = SlayerDataset(
@@ -583,9 +583,9 @@ def _bumped_query() -> SlayerQuery:
 class TestReservedInComputedPaths:
     async def test_derived_column_referencing_reserved_joined_model(self) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
-        orders, grant = _orders_derived_grant_models()
+        orders, grant = _orders_derived_grant_datasets()
         q = _bumped_query()
-        sql = _norm(await _gen(q, orders, extra_models=[grant]))
+        sql = _norm(await _gen(q, orders, extra_datasets=[grant]))
         # The reserved joined model must be JOINED (not just referenced): a
         # quoted qualifier in the expanded derived-column SQL must still be
         # discovered by join-path resolution (Codex review).
@@ -602,16 +602,16 @@ class TestReservedInComputedPaths:
         (`` `grant` `` on MySQL/BigQuery, ``[grant]`` on T-SQL); join-path
         discovery must still find it on every dialect (Codex review)."""
         install_reserved_keywords(SQLGLOT_NAMES)
-        orders, grant = _orders_derived_grant_models()
+        orders, grant = _orders_derived_grant_datasets()
         q = _bumped_query()
-        sql = _norm(await _gen(q, orders, extra_models=[grant], dialect=dialect))
+        sql = _norm(await _gen(q, orders, extra_datasets=[grant], dialect=dialect))
         assert "JOIN" in sql, f"[{dialect}] join dropped:\n{sql}"
         _assert_parses(sql, dialect)
 
     @pytest.mark.parametrize(("dialect", "word"), [("duckdb", "pivot"), ("sqlite", "index"), ("bigquery", "current_datetime")])
     async def test_derived_column_dialect_reserved_join_discovered(self, dialect: str, word: str) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
-        orders, grant = _orders_derived_grant_models()
+        orders, grant = _orders_derived_grant_datasets()
         target = grant.model_copy(update={"name": word})
         orders = orders.model_copy(update={
             "fields": [c.model_copy(update={"sql": f"{word}.amount + 1"}) if c.name == "bumped" else c
@@ -619,7 +619,7 @@ class TestReservedInComputedPaths:
             "relationships": [DatasetRelationship(to=word, join_pairs=[["grant_id", "id"]])],
         })
         q = _bumped_query()
-        sql = _norm(await _gen(q, orders, extra_models=[target], dialect=dialect))
+        sql = _norm(await _gen(q, orders, extra_datasets=[target], dialect=dialect))
         assert f"{_q(word, dialect)}.amount + 1" in sql, sql
         _assert_parses(sql, dialect)
 
@@ -633,5 +633,5 @@ class TestGeneratedSqlAlwaysParses:
     async def test_standalone_reserved_parses_all_dialects(self, dialect: str) -> None:
         install_reserved_keywords(SQLGLOT_NAMES)
         q = SlayerQuery.model_validate({"population": "grant", "dimensions": ["namespace"], "metrics": ["count(*)"]})
-        sql = await _gen(q, _grant_model(), dialect=dialect)
+        sql = await _gen(q, _grant_dataset(), dialect=dialect)
         _assert_parses(sql, dialect)

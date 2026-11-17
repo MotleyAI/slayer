@@ -46,7 +46,7 @@ from tests._dev1746_fixtures import cte_names_in_order
 DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 
 
-def _cross_model_query() -> SlayerQuery:
+def _cross_dataset_query() -> SlayerQuery:
     return SlayerQuery(
         population="orders_x",
         dimensions=[FieldRef(name="customers_v2.status")],
@@ -54,7 +54,7 @@ def _cross_model_query() -> SlayerQuery:
     )
 
 
-def _two_cross_model_measures_query() -> SlayerQuery:
+def _two_cross_dataset_metrics_query() -> SlayerQuery:
     """Two independent ``_cm_`` CTEs — neither depends on the other, so their
     relative order is decided purely by the declaration-order tiebreak."""
     return SlayerQuery(
@@ -241,7 +241,7 @@ class TestWithChainAssembler:
 class TestAssembledChainForRealQueries:
 
     async def test_base_precedes_the_cross_model_cte(self) -> None:
-        sql = await _gen(_cross_model_query(), dialect="postgres")
+        sql = await _gen(_cross_dataset_query(), dialect="postgres")
         names = cte_names_in_order(sql)
         assert "_base" in names, names
         cm = [n for n in names if n.startswith("_cm_")]
@@ -277,7 +277,7 @@ class TestAssembledChainForRealQueries:
     ) -> None:
         """The tiebreak, end to end: two ``_cm_`` CTEs that do not depend on
         each other appear in measure-declaration order."""
-        sql = await _gen(_two_cross_model_measures_query(), dialect="postgres")
+        sql = await _gen(_two_cross_dataset_metrics_query(), dialect="postgres")
         names = [n for n in cte_names_in_order(sql) if n.startswith("_cm_")]
         assert len(names) == 2, f"expected two _cm_ CTEs, got {names}"
         assert "sum" in names[0], (
@@ -306,7 +306,7 @@ class TestAssembledChainForRealQueries:
         ``WITH``: an indented or inline nested WITH would slip past the textual
         check entirely.
         """
-        sql = await _gen(_cross_model_query(), dialect=dialect)
+        sql = await _gen(_cross_dataset_query(), dialect=dialect)
         tree = sqlglot.parse_one(sql, dialect=dialect)
         with_nodes = list(tree.find_all(exp.With))
         assert len(with_nodes) <= 1, (

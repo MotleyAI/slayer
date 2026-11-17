@@ -254,8 +254,8 @@ async def _generate_one(query: SlayerQuery, dialect: str):
     """
     try:
         return await _engine_generate(
-            query=query, model=_orders(), dialect=dialect, validate=False,
-            extra_models=[_customers(), _regions()],
+            query=query, dataset=_orders(), dialect=dialect, validate=False,
+            extra_datasets=[_customers(), _regions()],
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract
         return record_raise(exc)

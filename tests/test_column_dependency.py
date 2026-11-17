@@ -37,7 +37,7 @@ def _sqlite_storage(tmp_path) -> SQLiteStorage:
 # of two model graphs (A↔B and A→B→C), so the boilerplate is hoisted out.
 
 
-def _model_a_to_b(*, foo_sql: str) -> SlayerDataset:
+def _dataset_a_to_b(*, foo_sql: str) -> SlayerDataset:
     """A model with a single derived column ``foo`` joined to a target B."""
     return SlayerDataset(
         name="A",
@@ -296,7 +296,7 @@ async def test_save_model_rejects_cross_model_cycle_when_second_model_completes_
         ],
     )
     await storage.save_dataset(model_b)
-    cyclic = _model_a_to_b(foo_sql="B.bar + 1")
+    cyclic = _dataset_a_to_b(foo_sql="B.bar + 1")
     with pytest.raises(DatasetFieldCycleError):
         await storage.save_dataset(cyclic)
 
@@ -308,7 +308,7 @@ async def test_save_model_rejects_cycle_when_joinless_model_saves_last(
     datasource-wide prefetch and the cycle crosses A's edge in reverse
     (DEV-1853)."""
     storage = _yaml_storage(tmp_path)
-    await storage.save_dataset(_model_a_to_b(foo_sql="B.bar + 1"))
+    await storage.save_dataset(_dataset_a_to_b(foo_sql="B.bar + 1"))
     model_b = SlayerDataset(
         name="B",
         data_source="ds",
@@ -328,7 +328,7 @@ async def test_save_model_tolerates_unresolved_joined_ref(tmp_path) -> None:
     refs. (The compile-time guard catches the broken ref at query time.)"""
     storage = _yaml_storage(tmp_path)
     # No exception expected.
-    await storage.save_dataset(_model_a_to_b(foo_sql="B.bar + 1"))
+    await storage.save_dataset(_dataset_a_to_b(foo_sql="B.bar + 1"))
 
 
 async def test_save_model_ignores_indirect_join_target_in_cycle_detection(

@@ -45,7 +45,7 @@ _ORDERS = [
     (4, 400.0, "2024-03-15 00:00:00", None),
 ]
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -94,7 +94,7 @@ _COMPOSITE_ORDERS = [
 ]
 
 
-def _composite_orders_model() -> SlayerDataset:
+def _composite_orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders_c",
         sql_table="orders_c",
@@ -129,8 +129,8 @@ def _duckdb_windowed_storage(tmp_path_factory):
     run_sync(storage.save_datasource(
         DatasourceConfig(name="wm", type="duckdb", database=str(db_path)),
     ))
-    run_sync(storage.save_dataset(_orders_model()))
-    run_sync(storage.save_dataset(_composite_orders_model()))
+    run_sync(storage.save_dataset(_orders_dataset()))
+    run_sync(storage.save_dataset(_composite_orders_dataset()))
     return storage
 
 
@@ -147,8 +147,8 @@ def _sqlite_windowed_storage(tmp_path_factory):
     run_sync(storage.save_datasource(
         DatasourceConfig(name="wm", type="sqlite", database=str(db_path)),
     ))
-    run_sync(storage.save_dataset(_orders_model()))
-    run_sync(storage.save_dataset(_composite_orders_model()))
+    run_sync(storage.save_dataset(_orders_dataset()))
+    run_sync(storage.save_dataset(_composite_orders_dataset()))
     return storage
 
 
@@ -477,7 +477,7 @@ _MID_BUCKET_END = ["2024-01-01", "2024-03-15"]
 _MID_BUCKET_END_FILTER = "created_at >= '2024-01-01' and created_at <= '2024-03-15'"
 
 
-def _fb_orders_model() -> SlayerDataset:
+def _fb_orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -507,7 +507,7 @@ def _duckdb_fb_storage(tmp_path_factory):
     run_sync(storage.save_datasource(
         DatasourceConfig(name="fb", type="duckdb", database=str(db_path)),
     ))
-    run_sync(storage.save_dataset(_fb_orders_model()))
+    run_sync(storage.save_dataset(_fb_orders_dataset()))
     return storage
 
 
@@ -524,7 +524,7 @@ def _sqlite_fb_storage(tmp_path_factory):
     run_sync(storage.save_datasource(
         DatasourceConfig(name="fb", type="sqlite", database=str(db_path)),
     ))
-    run_sync(storage.save_dataset(_fb_orders_model()))
+    run_sync(storage.save_dataset(_fb_orders_dataset()))
     return storage
 
 

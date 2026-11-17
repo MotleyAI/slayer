@@ -655,7 +655,7 @@ DatasetField(name="val", sql="val", filter="val > 0", datatype=DataType.DOUBLE)
 
 class TestInspectModelSectionGating:
     """``sections`` parameter on the model inspect — markdown rendering."""
-    async def _save_rich_model(self, storage: YAMLStorage) -> None:
+    async def _save_rich_dataset(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
         await storage.save_dataset(SlayerDataset(
             name="rich", sql_table="t", data_source="test",
@@ -686,7 +686,7 @@ class TestInspectModelSectionGating:
 
     async def test_default_renders_all_sections_no_footer(self, mcp_server, storage: YAMLStorage) -> None:
         """Default call (no `sections=`) emits all sections and no footer."""
-        await self._save_rich_model(storage)
+        await self._save_rich_dataset(storage)
         result = await _call(mcp_server, name="inspect", arguments={"entity_type": "dataset", "reference": "rich", "compact": False})
         assert "## Columns (3)" in result
         assert "## Measures (2)" in result
@@ -700,7 +700,7 @@ class TestInspectModelSectionGating:
 
     async def test_columns_only_collapses_others(self, mcp_server, storage: YAMLStorage) -> None:
         """sections=['columns'] keeps columns full; other parts collapse to names-only or vanish."""
-        await self._save_rich_model(storage)
+        await self._save_rich_dataset(storage)
         result = await _call(
             mcp_server, name="inspect",
             arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["columns"]},
@@ -742,7 +742,7 @@ class TestInspectModelSectionGating:
 
     async def test_unknown_section_emits_warning(self, mcp_server, storage: YAMLStorage) -> None:
         """An unknown section name produces a warning line in the footer."""
-        await self._save_rich_model(storage)
+        await self._save_rich_dataset(storage)
         result = await _call(
             mcp_server, name="inspect",
             arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["columns", "fish"]},
@@ -754,7 +754,7 @@ class TestInspectModelSectionGating:
 
     async def test_all_unknown_resolves_to_no_sections(self, mcp_server, storage: YAMLStorage) -> None:
         """All-unknown sections ⇒ none selected (None/[] alone means "all six")."""
-        await self._save_rich_model(storage)
+        await self._save_rich_dataset(storage)
         result = await _call(
             mcp_server, name="inspect",
             arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["fish", "bird"]},
@@ -782,7 +782,7 @@ class TestInspectModelSectionGating:
 
     async def test_canonical_order_regardless_of_input(self, mcp_server, storage: YAMLStorage) -> None:
         """Sections render in canonical order regardless of caller order."""
-        await self._save_rich_model(storage)
+        await self._save_rich_dataset(storage)
         result = await _call(
             mcp_server, name="inspect",
             arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["measures", "columns"]},
@@ -794,7 +794,7 @@ class TestInspectModelSectionGating:
     async def test_old_reachable_fields_token_is_unknown(self, mcp_server, storage: YAMLStorage) -> None:
         """Removed ``reachable_fields`` token flows through the unknown-section
         branch: names-only collapse, no ## Reachable heading, no JSON reachable_* keys."""
-        await self._save_rich_model(storage)
+        await self._save_rich_dataset(storage)
         result_md = await _call(
             mcp_server, name="inspect",
             arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["reachable_fields"]},
@@ -830,7 +830,7 @@ class TestInspectModelSectionGating:
     async def test_old_reachable_fields_token_with_other_sections(self, mcp_server, storage: YAMLStorage) -> None:
         """A mix of ``reachable_fields`` + ``columns`` renders columns fully and
         still warns about the unknown token, with no reachable-via-joins output."""
-        await self._save_rich_model(storage)
+        await self._save_rich_dataset(storage)
         result_md = await _call(
             mcp_server, name="inspect",
             arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["reachable_fields", "columns"]},
@@ -858,7 +858,7 @@ class TestInspectModelSectionGating:
     async def test_reachable_fields_depth_kwarg_has_no_effect(self, mcp_server, storage: YAMLStorage) -> None:
         """The removed ``reachable_fields_depth`` kwarg is silently dropped and has
         no effect: output is byte-identical to the call without it, no ## Reachable."""
-        await self._save_rich_model(storage)
+        await self._save_rich_dataset(storage)
         result_with = await _call(
             mcp_server, name="inspect",
             arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "reachable_fields_depth": 5},
@@ -874,7 +874,7 @@ class TestInspectModelSectionGating:
     async def test_no_reachable_via_joins_heading_anywhere(self, mcp_server, storage: YAMLStorage) -> None:
         """Invariant: ## Reachable via joins and reachable_* JSON keys never appear,
         for both the default and explicit full-section-list paths."""
-        await self._save_rich_model(storage)
+        await self._save_rich_dataset(storage)
         for sections_arg in (
             None,
             ["columns", "measures", "aggregations", "joins", "samples", "learnings"],
@@ -2297,8 +2297,8 @@ class TestEditModelDatasourceMoveSafety:
 class TestEditModelMultiStageRename:
     """Editing an inner stage's measure (rename or shape change) must refresh the
     cached SQL/columns so outer-stage references resolve."""
-    async def _setup_orders_with_two_stage_model(
-        self, storage: YAMLStorage, *, inner_measures: list, outer_measures: list,
+    async def _setup_orders_with_two_stage_dataset(
+        self, storage: YAMLStorage, *, inner_metrics: list, outer_metrics: list,
     ) -> None:
         """Save a datasource, an ``orders`` table-model, and a 2-stage qb model
         (inner stage ``raw``)."""
@@ -2323,11 +2323,11 @@ class TestEditModelMultiStageRename:
                     name="raw",
                     population="orders",
                     dimensions=["region"],
-                    metrics=inner_measures,
+                    metrics=inner_metrics,
                 ),
                 SlayerQuery(
                     population="raw",
-                    metrics=outer_measures,
+                    metrics=outer_metrics,
                 ),
             ],
         ))
@@ -2336,10 +2336,10 @@ class TestEditModelMultiStageRename:
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
         """Renaming an inner-stage measure old→new refreshes the cached SQL/columns."""
-        await self._setup_orders_with_two_stage_model(
+        await self._setup_orders_with_two_stage_dataset(
             storage,
-            inner_measures=[{"formula": "sum(amount)", "name": "old"}],
-            outer_measures=[{"formula": "sum(old)"}],
+            inner_metrics=[{"formula": "sum(amount)", "name": "old"}],
+            outer_metrics=[{"formula": "sum(old)"}],
         )
         # Sanity: initial cache reflects 'old'.
         before = await storage.get_dataset("qb")
@@ -2389,13 +2389,13 @@ class TestEditModelMultiStageRename:
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
         """Dropping inner ``n`` and adding ``avg_amount`` refreshes the cached SQL."""
-        await self._setup_orders_with_two_stage_model(
+        await self._setup_orders_with_two_stage_dataset(
             storage,
-            inner_measures=[
+            inner_metrics=[
                 {"formula": "sum(amount)", "name": "rev"},
                 {"formula": "count(*)", "name": "n"},
             ],
-            outer_measures=[{"formula": "sum(rev)"}],
+            outer_metrics=[{"formula": "sum(rev)"}],
         )
         before = await storage.get_dataset("qb")
         assert before is not None
@@ -2923,7 +2923,7 @@ class TestDataProfileRetryScope:
     """The count-only retry fires only for a grouping/dedup failure; other failures
     keep their own cause. Fakes key off ``query.dimensions`` to target the full profile."""
     @staticmethod
-    def _model() -> SlayerDataset:
+    def _dataset() -> SlayerDataset:
         return SlayerDataset(
             name="profile_scope",
             sql_table="t",
@@ -2944,7 +2944,7 @@ class TestDataProfileRetryScope:
 
     async def _render(self, storage, engine) -> dict:
         out = await render_dataset_inspection(
-            dataset=self._model(), storage=storage, engine=engine,
+            dataset=self._dataset(), storage=storage, engine=engine,
             format="json", sections=["samples"],
         )
         return json.loads(out)

@@ -25,7 +25,7 @@ from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import make_seeded_sqlite_engine
 
 
-def _models() -> list[SlayerDataset]:
+def _datasets() -> list[SlayerDataset]:
     policy = SlayerDataset(
         name="policy", sql_table="policy", data_source="test",
         fields=[
@@ -94,7 +94,7 @@ async def engine() -> AsyncIterator[SlayerQueryEngine]:
         db = os.path.join(d, "revhop.db")
         _seed(db)
         yield await make_seeded_sqlite_engine(
-            base_dir=os.path.join(d, "store"), db_path=db, models=_models(),
+            base_dir=os.path.join(d, "store"), db_path=db, datasets=_datasets(),
         )
 
 

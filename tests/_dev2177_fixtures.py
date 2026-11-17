@@ -22,7 +22,7 @@ from slayer.core.models import Aggregation, AggregationParam, DatasetField, Data
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
-from tests._mcp_idiom_fixtures import idiom_models
+from tests._mcp_idiom_fixtures import idiom_datasets
 
 PAID = "status = 'paid'"
 #: Orders 1–11: amount and the integer of ``status = 'paid'``.
@@ -40,8 +40,8 @@ PAID_TOTAL = 345
 MONTH = [{"dimension": "order_date", "granularity": "month"}]
 
 
-def dev2177_models(*, data_source: str = "test") -> list[SlayerDataset]:
-    orders, customers, regions = idiom_models(data_source=data_source)
+def dev2177_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
+    orders, customers, regions = idiom_datasets(data_source=data_source)
     orders = orders.model_copy(update={"aggregations": [
         Aggregation(name="true_amount", expression="SUM(CASE WHEN {flag} THEN {value} END)",
                     params=[AggregationParam(name="flag", sql="TRUE")]),
@@ -59,17 +59,17 @@ def q(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
-def m(formula: str, name: str = "v") -> DatasetMetric:
-    return DatasetMetric(expression=formula, name=name)
+def m(expression: str, name: str = "v") -> DatasetMetric:
+    return DatasetMetric(expression=expression, name=name)
 
 
 def num(value: Any) -> float | None:
     return None if value is None else float(value)
 
 
-def single(resp: SlayerResponse, name: str = "v", *, model: str = "orders") -> Any:
+def single(resp: SlayerResponse, name: str = "v", *, dataset: str = "orders") -> Any:
     assert len(resp.data) == 1, resp.data
-    return resp.data[0][f"{model}.{name}"]
+    return resp.data[0][f"{dataset}.{name}"]
 
 
 # --------------------------------------------------------------------------- #
@@ -117,7 +117,7 @@ async def check_boolean_weight_partitioned(engine: SlayerQueryEngine) -> None:
         assert num(row["orders.v"]) == pytest.approx(PAID_AVG_BY_CUSTOMER[int(row["orders.customer_id"])]), resp.sql
 
 
-async def check_boolean_weight_cross_model(engine: SlayerQueryEngine) -> None:
+async def check_boolean_weight_cross_dataset(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "customers", "dimensions": ["name"],
         "metrics": [m("weighted_avg(orders.amount, weight=orders.status = 'paid')")],
@@ -147,12 +147,12 @@ async def check_builtin_named_override_lowers(engine: SlayerQueryEngine) -> None
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "regions", "metrics": [m("weighted_avg(rank, weight=name <> 'North')")],
     }))
-    assert num(single(resp, model="regions")) == pytest.approx(3.0), resp.sql
+    assert num(single(resp, dataset="regions")) == pytest.approx(3.0), resp.sql
 
 
 BOOLEAN_PARAMETER_CHECKS = [
     check_boolean_weight, check_boolean_other, check_boolean_weight_under_filter, check_boolean_weight_windowed,
-    check_boolean_weight_partitioned, check_boolean_weight_cross_model, check_boolean_weight_associated,
+    check_boolean_weight_partitioned, check_boolean_weight_cross_dataset, check_boolean_weight_associated,
     check_builtin_named_override_lowers,
 ]
 

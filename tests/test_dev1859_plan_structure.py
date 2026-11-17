@@ -24,7 +24,7 @@ from tests._dev1847_fixtures import (
     MIXED_BAND_EXPR,
     MIXED_SUM,
     DatasetMetric,
-    dev1847_models,
+    dev1847_datasets,
     gen,
     sales_q,
 )
@@ -40,15 +40,15 @@ DEDUP_SHARED = f"weighted_avg(quantity * {_REGION_SUM}, weight={_REGION_SUM})"
 
 
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1847_models()
+    models = dev1847_datasets()
     return ResolvedSourceBundle(dialect="postgres", population=models[0],
                                 referenced_datasets=models[1:])
 
 
-def _plan(formula: str):
+def _plan(expression: str):
     return plan_query(
         query=sales_q(dimensions=["region"],
-                      measures=[DatasetMetric(expression=formula, name="m")]),
+                      measures=[DatasetMetric(expression=expression, name="m")]),
         bundle=_bundle())
 
 

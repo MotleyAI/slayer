@@ -83,8 +83,8 @@ def _conversion_warnings(caught: list[warnings.WarningMessage], *, document: str
     return [str(w.message) for w in caught if document in str(w.message) and column in str(w.message)]
 
 
-def _stage_of(model: SlayerDataset) -> SlayerQuery:
-    (stage,) = model.source_queries or []
+def _stage_of(dataset: SlayerDataset) -> SlayerQuery:
+    (stage,) = dataset.source_queries or []
     return stage
 
 

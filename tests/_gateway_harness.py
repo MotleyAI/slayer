@@ -66,7 +66,7 @@ def backend_of(datasource: DatasourceConfig) -> DatasourceConfig:
     return datasource.model_copy(update={"name": f"{datasource.name}{BACKEND_SUFFIX}"})
 
 
-def orders_model(*, data_source: str = DS_NAME) -> SlayerDataset:
+def orders_dataset(*, data_source: str = DS_NAME) -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         fields=[
@@ -80,7 +80,7 @@ def orders_model(*, data_source: str = DS_NAME) -> SlayerDataset:
     )
 
 
-def customers_model(*, data_source: str = DS_NAME) -> SlayerDataset:
+def customers_dataset(*, data_source: str = DS_NAME) -> SlayerDataset:
     return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
         fields=[
@@ -91,7 +91,7 @@ def customers_model(*, data_source: str = DS_NAME) -> SlayerDataset:
     )
 
 
-def paid_sql_model(*, data_source: str = DS_NAME) -> SlayerDataset:
+def paid_sql_dataset(*, data_source: str = DS_NAME) -> SlayerDataset:
     return SlayerDataset(
         name="paid", sql="SELECT id, amount FROM orders WHERE status = 'paid'", data_source=data_source,
         fields=[
@@ -104,7 +104,7 @@ def paid_sql_model(*, data_source: str = DS_NAME) -> SlayerDataset:
 COUNT_ORDERS_MEM = {"population": "t", "metrics": [{"expression": "count(*)", "name": "n"}]}
 
 
-def mem_count_model() -> SlayerDataset:
+def mem_count_dataset() -> SlayerDataset:
     """Model ``t`` over table ``t`` of the in-memory datasource ``mem``."""
     return SlayerDataset(
         name="t", sql_table="t", data_source="mem",
@@ -113,11 +113,11 @@ def mem_count_model() -> SlayerDataset:
 
 
 async def shop_storage(
-    base: str, *, datasource: DatasourceConfig, models: Sequence[SlayerDataset] = (),
+    base: str, *, datasource: DatasourceConfig, datasets: Sequence[SlayerDataset] = (),
 ) -> YAMLStorage:
     storage = YAMLStorage(base_dir=base)
     await storage.save_datasource(datasource)
-    for model in models:
+    for model in datasets:
         await storage.save_dataset(model, _validate=False)
     return storage
 

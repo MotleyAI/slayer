@@ -378,7 +378,7 @@ class TestRowCombinedCoexistence:
 
 
 class TestCoexistenceAcrossFamilies:
-    async def _assert_solo_equality(self, exec_engine, *, dims, tds, measures) -> None:
+    async def _assert_solo_equality(self, exec_engine, *, dims, tds, metrics) -> None:
         """Each measure's combined-query values equal its solo-query values."""
         def _mk(pairs):
             return [DatasetMetric(expression=f, name=n) for f, n in pairs]
@@ -390,9 +390,9 @@ class TestCoexistenceAcrossFamilies:
             return {tuple(r[k] for k in keys): r for r in resp.data}
 
         combined = _index(await exec_engine.execute(q(
-            dimensions=dims, time_dimensions=tds, measures=_mk(measures),
+            dimensions=dims, time_dimensions=tds, measures=_mk(metrics),
         )))
-        for formula, name in measures:
+        for formula, name in metrics:
             solo = _index(await exec_engine.execute(q(
                 dimensions=dims, time_dimensions=tds, measures=_mk([(formula, name)]),
             )))
@@ -407,7 +407,7 @@ class TestCoexistenceAcrossFamilies:
     async def test_partitioned_plus_windowed(self, exec_engine) -> None:
         await self._assert_solo_equality(
             exec_engine, dims=["region", "city"], tds=month_td(),
-            measures=[
+            metrics=[
                 ("sum(amount, partition_by=region)", "rt"),
                 ("sum(amount, window='1y')", "w"),
             ],
@@ -416,7 +416,7 @@ class TestCoexistenceAcrossFamilies:
     async def test_partitioned_plus_last(self, exec_engine) -> None:
         await self._assert_solo_equality(
             exec_engine, dims=["region", "city"], tds=None,
-            measures=[
+            metrics=[
                 ("sum(amount, partition_by=region)", "rt"),
                 ("last(amount)", "l"),
             ],
@@ -425,7 +425,7 @@ class TestCoexistenceAcrossFamilies:
     async def test_partitioned_plus_cross_model(self, exec_engine) -> None:
         await self._assert_solo_equality(
             exec_engine, dims=["region", "city"], tds=None,
-            measures=[
+            metrics=[
                 ("sum(amount, partition_by=region)", "rt"),
                 ("sum(customers.spend)", "cm"),
             ],
@@ -434,7 +434,7 @@ class TestCoexistenceAcrossFamilies:
     async def test_partitioned_plus_transform(self, exec_engine) -> None:
         await self._assert_solo_equality(
             exec_engine, dims=["region", "city"], tds=month_td(),
-            measures=[
+            metrics=[
                 ("sum(amount, partition_by=region)", "rt"),
                 ("cumsum(sum(amount))", "c"),
             ],

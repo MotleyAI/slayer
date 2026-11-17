@@ -30,12 +30,12 @@ def _build(grain: Optional[List[str]], **kw) -> SlayerDataset:
     return dataset_from_stage_schema(name="s1", schema=_schema(grain), data_source="ds", **kw)
 
 
-def _col(model: SlayerDataset, name: str) -> DatasetField:
-    return next(c for c in model.fields if c.name == name)
+def _col(dataset: SlayerDataset, name: str) -> DatasetField:
+    return next(c for c in dataset.fields if c.name == name)
 
 
-def _flags(model: SlayerDataset) -> dict:
-    return {c.name: (c.primary_key, c.unique) for c in model.fields}
+def _flags(dataset: SlayerDataset) -> dict:
+    return {c.name: (c.primary_key, c.unique) for c in dataset.fields}
 
 
 class TestGrainStamping:

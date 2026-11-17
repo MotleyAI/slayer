@@ -106,7 +106,7 @@ def _per_customer_backed() -> SlayerDataset:
     )
 
 
-def _models() -> list[SlayerDataset]:
+def _datasets() -> list[SlayerDataset]:
     return [_orders(), _stores(), _customers()]
 
 
@@ -144,14 +144,14 @@ _SEEDS = {"sqlite": _seed_sqlite, "duckdb": _seed_duckdb}
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
     async with seeded_exec_engine(
-        dialect=request.param, seed=_SEEDS[request.param], models=[*_models(), _per_customer_backed()],
+        dialect=request.param, seed=_SEEDS[request.param], datasets=[*_datasets(), _per_customer_backed()],
     ) as (eng, _db):
         yield eng
 
 
 async def _sql(query: Any, *, dialect: str) -> str:
-    models = [*_models(), _per_customer_backed()]
-    return await _engine_generate(query=query, model=models[0], extra_models=models[1:], dialect=dialect)
+    models = [*_datasets(), _per_customer_backed()]
+    return await _engine_generate(query=query, dataset=models[0], extra_datasets=models[1:], dialect=dialect)
 
 
 def _outer_order(sql: str, *, dialect: str) -> exp.Order | None:
@@ -397,7 +397,7 @@ class TestCombinations:
 
 class TestFacades:
     async def test_pg_facade_query_is_ordered(self, engine) -> None:
-        catalog = build_catalog(datasets_by_datasource={"test": _models()})
+        catalog = build_catalog(datasets_by_datasource={"test": _datasets()})
         result = translate(sql="SELECT status, order_total_sum FROM orders", catalog=catalog, dialect="postgres")
         assert isinstance(result, QueryResult), result
         resp = await engine.execute(query=result.query, data_source=result.data_source)

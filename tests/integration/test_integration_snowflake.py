@@ -51,14 +51,14 @@ from tests._dev2120_fixtures import (
     LIB,
     check_library,
     check_native_json,
-    contractors_model,
+    contractors_dataset,
     contractors_statements,
-    lib_model,
+    lib_dataset,
     server_literal,
     server_table_statements as dev2120_table_statements,
 )
-from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
-from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
+from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests.integration._one_request import MARKERS, PATHS, assert_one_request_each, run_three
 from tests._reserved_alias_probe import (
     SNOWFLAKE_KEYWORDS,
@@ -286,7 +286,7 @@ def sf_engine(sf_datasource: DatasourceConfig, sf_transient_schema):
 
 
 @pytest.fixture
-def sf_storage_with_models(sf_datasource: DatasourceConfig, tmp_path):
+def sf_storage_with_datasets(sf_datasource: DatasourceConfig, tmp_path):
     """YAMLStorage with the four standard models pre-saved.
     Caller adds joins where needed."""
     storage = YAMLStorage(base_dir=str(tmp_path))
@@ -354,9 +354,9 @@ def sf_storage_with_models(sf_datasource: DatasourceConfig, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_basic_query(sf_storage_with_models) -> None:
+def test_basic_query(sf_storage_with_datasets) -> None:
     """SELECT sum(quantity) FROM orders — minimum smoke for the engine path."""
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[DatasetMetric(expression="sum(quantity)")],
@@ -368,12 +368,12 @@ def test_basic_query(sf_storage_with_models) -> None:
     assert int(val) == 16
 
 
-def test_try_cast_integer_targets(sf_storage_with_models) -> None:
-    run_sync(check_try_cast_targets(SlayerQueryEngine(storage=sf_storage_with_models), model="orders"))
+def test_try_cast_integer_targets(sf_storage_with_datasets) -> None:
+    run_sync(check_try_cast_targets(SlayerQueryEngine(storage=sf_storage_with_datasets), dataset="orders"))
 
 
-def test_functional_aggregation(sf_storage_with_models) -> None:
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+def test_functional_aggregation(sf_storage_with_datasets) -> None:
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     func = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[DatasetMetric(expression="sum(quantity)")],
@@ -381,9 +381,9 @@ def test_functional_aggregation(sf_storage_with_models) -> None:
     assert int(next(iter(func.data[0].values()))) == 16
 
 
-def test_query_with_dimension(sf_storage_with_models) -> None:
+def test_query_with_dimension(sf_storage_with_datasets) -> None:
     """Group-by status; assert 3 status groups."""
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         dimensions=[FieldRef(name="status")],
@@ -394,13 +394,13 @@ def test_query_with_dimension(sf_storage_with_models) -> None:
     assert statuses == {"completed", "pending", "cancelled"}
 
 
-def test_dev1933_regex_literal_model_column(sf_storage_with_models: StorageBackend) -> None:
+def test_dev1933_regex_literal_model_column(sf_storage_with_datasets: StorageBackend) -> None:
     """A model column holding a ``(?:...)`` regex literal and a ``%``
     LIKE pattern executes verbatim; text() misread ``:too`` as a bind parameter."""
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
-    orders = run_sync(sf_storage_with_models.get_dataset("orders"))
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
+    orders = run_sync(sf_storage_with_datasets.get_dataset("orders"))
     assert orders is not None
-    run_sync(sf_storage_with_models.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
+    run_sync(sf_storage_with_datasets.save_dataset(orders.model_copy(update={"name": "orders_rx", "fields": [
         *orders.fields,
         DatasetField(name="rx", sql="CASE WHEN status LIKE '%pend%' "
                               "OR status = '(?i)(?:too complicated|too complex)' THEN 1 ELSE 0 END",
@@ -415,14 +415,14 @@ def test_dev1933_regex_literal_model_column(sf_storage_with_models: StorageBacke
     assert by_rx == {1: 2, 0: 4}
 
 
-def test_rollup_join_via_explicit_joins(sf_storage_with_models) -> None:
+def test_rollup_join_via_explicit_joins(sf_storage_with_datasets) -> None:
     """Cross-model measure: orders.customers.regions.name (multi-hop join).
 
     Seed data: customers 1+3 live in US, customer 2 lives in EU, region 3
     (APAC) has no customers — and the LEFT JOIN chain starts at orders, so
     APAC never surfaces. Exercising orders → customers → regions correctly
     yields exactly {US, EU}."""
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         dimensions=[FieldRef(name="customers.regions.name")],
@@ -438,9 +438,9 @@ def test_rollup_join_via_explicit_joins(sf_storage_with_models) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_median_percentile_native(sf_storage_with_models) -> None:
+def test_median_percentile_native(sf_storage_with_datasets) -> None:
     """Snowflake has native MEDIAN and PERCENTILE_CONT WITHIN GROUP."""
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[
@@ -457,9 +457,9 @@ def test_median_percentile_native(sf_storage_with_models) -> None:
         assert float(v) == pytest.approx(2.5, abs=0.01)
 
 
-def test_stddev_var_native(sf_storage_with_models) -> None:
+def test_stddev_var_native(sf_storage_with_datasets) -> None:
     """Snowflake has native STDDEV_SAMP / VAR_SAMP."""
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[
@@ -474,9 +474,9 @@ def test_stddev_var_native(sf_storage_with_models) -> None:
         assert float(v) > 0
 
 
-def test_corr_covar_native(sf_storage_with_models) -> None:
+def test_corr_covar_native(sf_storage_with_datasets) -> None:
     """Snowflake has native CORR / COVAR_SAMP / COVAR_POP."""
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         metrics=[
@@ -491,9 +491,9 @@ def test_corr_covar_native(sf_storage_with_models) -> None:
         assert v is not None
 
 
-def test_date_trunc_quarter(sf_storage_with_models) -> None:
+def test_date_trunc_quarter(sf_storage_with_datasets) -> None:
     """Snowflake native DATE_TRUNC('QUARTER', ts) via sqlglot."""
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(
@@ -507,9 +507,9 @@ def test_date_trunc_quarter(sf_storage_with_models) -> None:
     assert len(rows) == 1
 
 
-def test_time_shift_dateadd(sf_storage_with_models) -> None:
+def test_time_shift_dateadd(sf_storage_with_datasets) -> None:
     """time_shift uses INTERVAL → sqlglot transpiles to DATEADD on Snowflake."""
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         time_dimensions=[TimeDimension(
@@ -525,10 +525,10 @@ def test_time_shift_dateadd(sf_storage_with_models) -> None:
     assert len(rows) >= 1  # Three months in the dataset
 
 
-def test_rank_transforms(sf_storage_with_models) -> None:
+def test_rank_transforms(sf_storage_with_datasets) -> None:
     """RANK / DENSE_RANK / PERCENT_RANK / NTILE — standard SQL, no Snowflake
     branch needed."""
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         dimensions=[FieldRef(name="status")],
@@ -771,11 +771,11 @@ def test_auto_ingest_imports_comments(sf_datasource, sf_transient_schema) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_explain_query_uses_explain_using_json(sf_storage_with_models) -> None:
+def test_explain_query_uses_explain_using_json(sf_storage_with_datasets) -> None:
     """``engine.execute(..., explain=True)`` should call ``EXPLAIN USING JSON``
     on Snowflake (the prefix from _explain_prefix_map). Asserts the call
     succeeds and returns a non-empty plan."""
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(
         query=SlayerQuery(
             population="orders",
@@ -860,12 +860,12 @@ def test_inspector_returns_lowercase_fk_metadata(sf_engine, sf_transient_schema)
     assert by_referred["customers"]["referred_columns"] == ["id"]
 
 
-def test_query_result_keys_use_lowercase(sf_storage_with_models) -> None:
+def test_query_result_keys_use_lowercase(sf_storage_with_datasets) -> None:
     """Result-column keys returned by SlayerQueryEngine use the model's
     lowercase column names (not Snowflake's uppercase storage form).
     Pins the user-facing API: `result.rows[0]["orders.status"]` works,
     `result.rows[0]["ORDERS.STATUS"]` would silently miss."""
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     result = run_sync(engine.execute(SlayerQuery(
         population="orders",
         dimensions=[FieldRef(name="status")],
@@ -966,7 +966,7 @@ def sf_dev2120_storage(sf_transient_schema: str, sf_datasource: DatasourceConfig
         conn.commit()
         storage = YAMLStorage(base_dir=str(tmp_path))
         run_sync(storage.save_datasource(sf_datasource))
-        base = lib_model(data_source="sf_test")
+        base = lib_dataset(data_source="sf_test")
         run_sync(storage.save_dataset(base.model_copy(update={
             "fields": [c.model_copy(update={"sql": c.name}) for c in base.fields]})))
         for model in run_sync(_ingest(sf_datasource, include_tables=["docs"])):
@@ -1030,10 +1030,10 @@ def _sf_list_tables(sf_transient_schema: str):
 def sf_lists(_sf_list_tables, sf_datasource: DatasourceConfig, tmp_path):
     storage = YAMLStorage(base_dir=str(tmp_path))
     run_sync(storage.save_datasource(sf_datasource))
-    for base in (contractors_model(data_source="sf_test"), assignments_model(data_source="sf_test")):
+    for base in (contractors_dataset(data_source="sf_test"), assignments_dataset(data_source="sf_test")):
         run_sync(storage.save_dataset(base.model_copy(update={
             "fields": [c.model_copy(update={"sql": c.name}) for c in base.fields]})))
-    run_sync(storage.save_dataset(mixed_numbers_model(data_source="sf_test", explicit_sql=True)))
+    run_sync(storage.save_dataset(mixed_numbers_dataset(data_source="sf_test", explicit_sql=True)))
     return storage, _sf_list_tables
 
 
@@ -1233,9 +1233,9 @@ def test_quoted_lowercase_table_ingests_types_and_queries(sf_datasource, sf_engi
             conn.commit()
 
 
-def test_join_cardinality_profiles_snowflake_keys(sf_storage_with_models) -> None:
+def test_join_cardinality_profiles_snowflake_keys(sf_storage_with_datasets) -> None:
     '''Profiling reads ``orders``/``customer_id`` as Snowflake folds them (``ORDERS``/``CUSTOMER_ID``).'''
-    engine = SlayerQueryEngine(storage=sf_storage_with_models)
+    engine = SlayerQueryEngine(storage=sf_storage_with_datasets)
     try:
         report = run_sync(engine.detect_relationship_cardinality(data_source="sf_test", dataset="orders"))
     finally:

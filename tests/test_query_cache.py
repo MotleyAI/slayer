@@ -111,7 +111,7 @@ def _seed_orders_single(db_path, *, amount: float) -> None:
         )
 
 
-def _orders_model(ds: str = "ds") -> SlayerDataset:
+def _orders_dataset(ds: str = "ds") -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -135,7 +135,7 @@ async def _build_engine(tmp_path, *, cache_config=None, ds_name="ds", storage_su
     await storage.save_datasource(
         DatasourceConfig(name=ds_name, type="sqlite", database=str(db))
     )
-    await storage.save_dataset(_orders_model(ds_name))
+    await storage.save_dataset(_orders_dataset(ds_name))
     return SlayerQueryEngine(storage=storage, cache_config=cache_config, policy=policy)
 
 
@@ -588,7 +588,7 @@ class TestRefresh:
         assert old_key in engine._cache._entries
 
         # Edit the stored model: an always-applied filter changes the SQL.
-        edited = _orders_model("ds").model_copy(update={"filter": ["amount > 60"]})
+        edited = _orders_dataset("ds").model_copy(update={"filter": ["amount > 60"]})
         await engine.storage.save_dataset(edited)
         new_sql = (await engine.execute(q, dry_run=True)).sql
         new_key = QueryCache.make_key(new_sql, fp)
@@ -940,8 +940,8 @@ class TestDatasourceResolution:
         await storage.save_datasource(
             DatasourceConfig(name="db_b", type="sqlite", database=str(db_b))
         )
-        await storage.save_dataset(_orders_model("db_a"))
-        await storage.save_dataset(_orders_model("db_b"))
+        await storage.save_dataset(_orders_dataset("db_a"))
+        await storage.save_dataset(_orders_dataset("db_b"))
         await storage.set_datasource_priority(["db_a", "db_b"])
 
         clk = FakeClock()
@@ -977,7 +977,7 @@ async def _engine_with_repointed_datasource(tmp_path, *, a_stem, b_stem):
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=str(db_a))
     )
-    await storage.save_dataset(_orders_model("ds"))
+    await storage.save_dataset(_orders_dataset("ds"))
     engine = SlayerQueryEngine(
         storage=storage,
         cache_config=CacheConfig(refresh_keys=[("orders", "MAX(updated_at)")]),

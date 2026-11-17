@@ -59,7 +59,7 @@ def _seed(db_path: str, dialect: str) -> None:
             cur.executemany(f"INSERT INTO {table} VALUES ({', '.join('?' * len(rows[0]))})", rows)
 
 
-def _models() -> list[SlayerDataset]:
+def _datasets() -> list[SlayerDataset]:
     customers = SlayerDataset(
         name="customers", sql_table="customers", data_source=DS,
         fields=[
@@ -96,7 +96,7 @@ async def shop(request) -> AsyncIterator[_Shop]:
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         ds = DatasourceConfig(name=DS, type=request.param, database=db_path)
         async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
-            for model in _models():
+            for model in _datasets():
                 await storage.save_dataset(model)
             yield _Shop(storage=storage, engine=engine)
 

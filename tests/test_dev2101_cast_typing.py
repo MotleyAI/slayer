@@ -11,10 +11,10 @@ from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
 from slayer.engine.key_metadata import dimension_key_metadata, metric_key_type
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from tests._dev2101_fixtures import customers_model, orders_model
+from tests._dev2101_fixtures import customers_dataset, orders_dataset
 
-ORDERS = orders_model()
-BUNDLE = ResolvedSourceBundle(dialect="postgres", population=ORDERS, referenced_datasets=[customers_model()])
+ORDERS = orders_dataset()
+BUNDLE = ResolvedSourceBundle(dialect="postgres", population=ORDERS, referenced_datasets=[customers_dataset()])
 
 TYPE_CASES = [
     ("INT", DataType.INT), ("INTEGER", DataType.INT), ("BIGINT", DataType.INT), ("SMALLINT", DataType.INT),

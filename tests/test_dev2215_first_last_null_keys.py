@@ -11,7 +11,7 @@ from sqlglot import exp
 
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests import _dev1915_fixtures as W
-from tests._dev2215_fixtures import BACKENDS, TIER1, check_events, dev2215_engine, events_model, events_query, m, q
+from tests._dev2215_fixtures import BACKENDS, TIER1, check_events, dev2215_engine, events_dataset, events_query, m, q
 from tests._engine_helpers import _engine_generate
 
 
@@ -89,7 +89,7 @@ async def test_windowed_interval_of_only_null_keys(windowed: SlayerQueryEngine) 
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_plain_first_last_order_by_a_null_flag(dialect: str) -> None:
-    sql = await _engine_generate(query=events_query(), model=events_model(), dialect=dialect)
+    sql = await _engine_generate(query=events_query(), dataset=events_dataset(), dialect=dialect)
     orders = ranking_orders(sql, dialect=dialect)
     assert len(orders) >= 2, sql
     assert all(has_null_flag(o) for o in orders), sql

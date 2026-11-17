@@ -23,7 +23,7 @@ from pathlib import Path
 
 from slayer.core.query import SlayerQuery
 
-from tests._dev1748_fixtures import BIG_AMOUNT_THRESHOLD, dev1748_models
+from tests._dev1748_fixtures import BIG_AMOUNT_THRESHOLD, dev1748_datasets
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -229,10 +229,10 @@ def _cases() -> dict:
 
 async def _generate_one(query: SlayerQuery, dialect: str):
     """Emitted SQL, or a structured record of the raised error."""
-    models = dev1748_models()
+    models = dev1748_datasets()
     try:
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

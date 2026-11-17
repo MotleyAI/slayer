@@ -30,8 +30,8 @@ from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from tests._engine_helpers import _engine_generate
 
 
-async def _gen(dialect: str, query: SlayerQuery, model: SlayerDataset) -> str:
-    return await _engine_generate(query=query, model=model, dialect=dialect)
+async def _gen(dialect: str, query: SlayerQuery, dataset: SlayerDataset) -> str:
+    return await _engine_generate(query=query, dataset=dataset, dialect=dialect)
 
 
 # ---------------------------------------------------------------------------
@@ -134,9 +134,9 @@ _BASIC_QUERY = SlayerQuery(
     ],
 )
 async def test_byte_equivalence_basic_query(
-    dialect: str, expected: str, orders_model: SlayerDataset
+    dialect: str, expected: str, orders_dataset: SlayerDataset
 ) -> None:
-    sql = await _gen(dialect, _BASIC_QUERY, orders_model)
+    sql = await _gen(dialect, _BASIC_QUERY, orders_dataset)
     assert sql == expected
 
 
@@ -228,9 +228,9 @@ _TRUNC_QUERY = SlayerQuery(
     ],
 )
 async def test_byte_equivalence_date_trunc_month(
-    dialect: str, expected: str, orders_model: SlayerDataset
+    dialect: str, expected: str, orders_dataset: SlayerDataset
 ) -> None:
-    sql = await _gen(dialect, _TRUNC_QUERY, orders_model)
+    sql = await _gen(dialect, _TRUNC_QUERY, orders_dataset)
     assert sql == expected
 
 
@@ -300,20 +300,20 @@ _MEDIAN_QUERY = SlayerQuery(
     ],
 )
 async def test_byte_equivalence_median(
-    dialect: str, expected: str, orders_model: SlayerDataset
+    dialect: str, expected: str, orders_dataset: SlayerDataset
 ) -> None:
-    sql = await _gen(dialect, _MEDIAN_QUERY, orders_model)
+    sql = await _gen(dialect, _MEDIAN_QUERY, orders_dataset)
     assert sql == expected
 
 
-def test_byte_equivalence_median_mysql_raises(orders_model: SlayerDataset) -> None:
-    render = _gen("mysql", _MEDIAN_QUERY, orders_model)
+def test_byte_equivalence_median_mysql_raises(orders_dataset: SlayerDataset) -> None:
+    render = _gen("mysql", _MEDIAN_QUERY, orders_dataset)
     with pytest.raises(NotImplementedError, match="median.*MySQL"):
         asyncio.run(render)
 
 
-def test_byte_equivalence_median_tsql_raises(orders_model: SlayerDataset) -> None:
-    render = _gen("tsql", _MEDIAN_QUERY, orders_model)
+def test_byte_equivalence_median_tsql_raises(orders_dataset: SlayerDataset) -> None:
+    render = _gen("tsql", _MEDIAN_QUERY, orders_dataset)
     with pytest.raises(NotImplementedError, match="median.*T-SQL"):
         asyncio.run(render)
 
@@ -383,9 +383,9 @@ _PCT_QUERY = SlayerQuery(
     ],
 )
 async def test_byte_equivalence_percentile(
-    dialect: str, expected: str, orders_model: SlayerDataset
+    dialect: str, expected: str, orders_dataset: SlayerDataset
 ) -> None:
-    sql = await _gen(dialect, _PCT_QUERY, orders_model)
+    sql = await _gen(dialect, _PCT_QUERY, orders_dataset)
     assert sql == expected
 
 
@@ -404,20 +404,20 @@ _CORR_QUERY = SlayerQuery(
 
 @pytest.mark.parametrize("dialect", ["postgres", "sqlite", "duckdb", "clickhouse"])
 async def test_byte_equivalence_corr_native(
-    dialect: str, orders_model: SlayerDataset
+    dialect: str, orders_dataset: SlayerDataset
 ) -> None:
     """All 4 dialects emit native ``CORR(amount, quantity)`` directly —
     no variance-decomposition fallback."""
-    sql = await _gen(dialect, _CORR_QUERY, orders_model)
+    sql = await _gen(dialect, _CORR_QUERY, orders_dataset)
     assert "CORR(orders.amount, orders.quantity)" in sql
 
 
 async def test_byte_equivalence_corr_mysql_decomposition(
-    orders_model: SlayerDataset,
+    orders_dataset: SlayerDataset,
 ) -> None:
     """MySQL emits the full variance-decomposition formula. Pin the
     structural shape: VAR_SAMP triplet, STDDEV_SAMP product, NULLIF guard."""
-    sql = await _gen("mysql", _CORR_QUERY, orders_model)
+    sql = await _gen("mysql", _CORR_QUERY, orders_dataset)
     # Triplet of VAR_SAMP calls for the (x+y), x, y legs
     assert sql.count("VAR_SAMP(") == 3
     # Pair of STDDEV_SAMP calls in the denominator
@@ -431,11 +431,11 @@ async def test_byte_equivalence_corr_mysql_decomposition(
 
 
 async def test_byte_equivalence_corr_tsql_decomposition(
-    orders_model: SlayerDataset,
+    orders_dataset: SlayerDataset,
 ) -> None:
     """T-SQL emits the same decomposition formula but with VAR / STDEV
     (T-SQL canonical names) instead of MySQL's VAR_SAMP / STDDEV_SAMP."""
-    sql = await _gen("tsql", _CORR_QUERY, orders_model)
+    sql = await _gen("tsql", _CORR_QUERY, orders_dataset)
     # T-SQL VAR (sample) — 3 calls for (x+y), x, y
     assert sql.count("VAR(") == 3
     # T-SQL STDEV (sample) — 2 calls in the denominator
@@ -463,8 +463,8 @@ _TIME_SHIFT_QUERY = SlayerQuery(
 )
 
 
-async def test_byte_equivalence_time_shift_postgres(orders_model: SlayerDataset) -> None:
-    sql = await _gen("postgres", _TIME_SHIFT_QUERY, orders_model)
+async def test_byte_equivalence_time_shift_postgres(orders_dataset: SlayerDataset) -> None:
+    sql = await _gen("postgres", _TIME_SHIFT_QUERY, orders_dataset)
     # Postgres uses INTERVAL '1 MONTH' arithmetic
     assert "INTERVAL '1 MONTH'" in sql
     assert "DATE_TRUNC('MONTH'" in sql
@@ -474,8 +474,8 @@ async def test_byte_equivalence_time_shift_postgres(orders_model: SlayerDataset)
     assert "LEFT JOIN shifted_rev_prev" in sql
 
 
-async def test_byte_equivalence_time_shift_sqlite(orders_model: SlayerDataset) -> None:
-    sql = await _gen("sqlite", _TIME_SHIFT_QUERY, orders_model)
+async def test_byte_equivalence_time_shift_sqlite(orders_dataset: SlayerDataset) -> None:
+    sql = await _gen("sqlite", _TIME_SHIFT_QUERY, orders_dataset)
     # SQLite offsets through the month-end-clamping slayer_date_add UDF — no INTERVAL keyword.
     # The join-back offsets the base's (already truncated) bucket start.
     assert """SLAYER_DATE_ADD(base."orders.created_at", -1, 'month')""" in sql
@@ -483,8 +483,8 @@ async def test_byte_equivalence_time_shift_sqlite(orders_model: SlayerDataset) -
     assert "STRFTIME('%Y-%m-01'" in sql
 
 
-async def test_byte_equivalence_time_shift_tsql(orders_model: SlayerDataset) -> None:
-    sql = await _gen("tsql", _TIME_SHIFT_QUERY, orders_model)
+async def test_byte_equivalence_time_shift_tsql(orders_dataset: SlayerDataset) -> None:
+    sql = await _gen("tsql", _TIME_SHIFT_QUERY, orders_dataset)
     # T-SQL uses DATEADD(unit, val, col) — no INTERVAL. The join-back offsets
     # the base's (already truncated) bucket start.
     assert "DATEADD(MONTH, -1, base.[orders___created_at])" in sql
@@ -526,12 +526,12 @@ _CUMSUM_QUERY = SlayerQuery(
     ],
 )
 async def test_byte_equivalence_cumsum_window_emission(
-    dialect: str, expected_window: str, orders_model: SlayerDataset
+    dialect: str, expected_window: str, orders_dataset: SlayerDataset
 ) -> None:
     """Cumsum emits the same OVER (ORDER BY ...) window shape on every
     dialect; only the identifier quoting (and DEV-1571 mangling on T-SQL)
     differs."""
-    sql = await _gen(dialect, _CUMSUM_QUERY, orders_model)
+    sql = await _gen(dialect, _CUMSUM_QUERY, orders_dataset)
     assert expected_window in sql
 
 
@@ -542,7 +542,7 @@ async def test_byte_equivalence_cumsum_window_emission(
 
 
 @pytest.fixture
-def orders_model_with_json() -> SlayerDataset:
+def orders_dataset_with_json() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -568,7 +568,7 @@ _JSON_QUERY = SlayerQuery(
 
 
 async def test_byte_equivalence_json_extract_sqlite_uses_function_form(
-    orders_model_with_json: SlayerDataset,
+    orders_dataset_with_json: SlayerDataset,
 ) -> None:
     """SQLite's JSON-extract rewrite produces the
     JSON_EXTRACT(orders.blob, '$.k') function form (not the ``->``
@@ -580,24 +580,24 @@ async def test_byte_equivalence_json_extract_sqlite_uses_function_form(
     ``orders.blob`` rather than the legacy generator's unqualified
     ``blob``. Same column, same table — ``FROM public.orders AS orders``
     is the only relation in scope."""
-    sql = await _gen("sqlite", _JSON_QUERY, orders_model_with_json)
+    sql = await _gen("sqlite", _JSON_QUERY, orders_dataset_with_json)
     assert "JSON_EXTRACT(orders.blob, '$.k')" in sql
     # SQLite ``->`` operator must NOT appear (would silently return quoted form)
     assert " -> " not in sql
 
 
 async def test_byte_equivalence_json_extract_postgres_uses_path_form(
-    orders_model_with_json: SlayerDataset,
+    orders_dataset_with_json: SlayerDataset,
 ) -> None:
     """Postgres emits JSON_EXTRACT_PATH(orders.blob, 'k') — sqlglot's
     translation, with the typed pipeline's model-alias qualification on
     the bare ``blob`` reference."""
-    sql = await _gen("postgres", _JSON_QUERY, orders_model_with_json)
+    sql = await _gen("postgres", _JSON_QUERY, orders_dataset_with_json)
     assert "JSON_EXTRACT_PATH(orders.blob, 'k')" in sql
 
 
 async def test_byte_equivalence_json_extract_tsql_uses_isnull_pair(
-    orders_model_with_json: SlayerDataset,
+    orders_dataset_with_json: SlayerDataset,
 ) -> None:
     """T-SQL emits ISNULL(JSON_QUERY(...), JSON_VALUE(...)) — handles both
     object and scalar paths. As on the other dialects, the typed pipeline
@@ -611,7 +611,7 @@ async def test_byte_equivalence_json_extract_tsql_uses_isnull_pair(
     NOT intended emission — it is deliberately *not* asserted here so a
     fix does not have to touch this test. See the DEV-1703 migration
     report."""
-    sql = await _gen("tsql", _JSON_QUERY, orders_model_with_json)
+    sql = await _gen("tsql", _JSON_QUERY, orders_dataset_with_json)
     assert (
         "ISNULL(JSON_QUERY(orders.blob, '$.k'), JSON_VALUE(orders.blob, '$.k'))"
         in sql

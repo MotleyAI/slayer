@@ -10,7 +10,7 @@ from slayer.core.models import DatasetRelationship, SlayerDataset
 from slayer.engine.dataset_reads import datasets_read_by
 from slayer.inspect.dataset_render import render_dataset_inspection
 
-from tests._dev1966_fixtures import customers_model, dev1966_engine, m, orders_model, query
+from tests._dev1966_fixtures import customers_dataset, dev1966_engine, m, orders_dataset, query
 from tests._dev2102_fixtures import DS, countries, customers, ext, join, orders, q, regions
 
 _OVER = {"source_name": "orders", "metrics": [
@@ -29,20 +29,20 @@ def _wrap(name: str, floor: int) -> SlayerDataset:
 
 
 async def test_conflicting_contexts_of_an_extension_variable_fail_closed() -> None:
-    models = [orders_model(), customers_model(), _over_rev(query_variables={"floor": 0}),
+    models = [orders_dataset(), customers_dataset(), _over_rev(query_variables={"floor": 0}),
               _wrap("wrap_a", 20), _wrap("wrap_b", 30)]
     s1 = query(name="s1", source_model="wrap_a", dimensions=["customer_id"], measures=[m("sum(r)", "a")])
     s2 = query(name="s2", source_model="wrap_b", dimensions=["customer_id"], measures=[m("sum(r)", "b")])
     root = query(source_model="s1", extensions=[{"source_name": "s1", "relationships": [
         {"to": "s2", "join_pairs": [["customer_id", "customer_id"]]}]}],
         dimensions=["customer_id", "a", "s2.b"])
-    async with dev1966_engine("sqlite", models=models) as e:
+    async with dev1966_engine("sqlite", datasets=models) as e:
         with pytest.raises(ValueError, match="over_rev"):
             await e.execute([s1, s2, root])
 
 
 async def test_inspection_reports_an_extension_variable_as_required() -> None:
-    async with dev1966_engine("sqlite", models=[orders_model(), customers_model()]) as e:
+    async with dev1966_engine("sqlite", datasets=[orders_dataset(), customers_dataset()]) as e:
         rendered = await render_dataset_inspection(dataset=_over_rev(), storage=e.storage, engine=None, format="json")
     assert json.loads(rendered)["backing_query"]["required_variables"] == ["floor"]
 

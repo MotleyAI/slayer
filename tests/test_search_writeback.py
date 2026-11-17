@@ -31,8 +31,8 @@ from slayer.storage.base import StorageBackend
 from typing import Any
 
 
-def _stored_col(model: SlayerDataset, name: str) -> DatasetField:
-    col = model.get_field(name)
+def _stored_col(dataset: SlayerDataset, name: str) -> DatasetField:
+    col = dataset.get_field(name)
     assert col is not None
     return col
 

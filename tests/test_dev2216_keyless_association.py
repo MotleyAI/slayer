@@ -14,7 +14,7 @@ from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import SlayerError
 from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.sql.naming import ROW_IDENTITY_FIELD
-from tests._dev1841_fixtures import keyless_root_models
+from tests._dev1841_fixtures import keyless_root_datasets
 from tests._dev1841_fixtures import make_exec_engine as dev1841_engine
 from tests._dev2216_fixtures import (
     AMOUNT_BY_REGION,
@@ -27,9 +27,9 @@ from tests._dev2216_fixtures import (
     WSUM_BY_STATUS,
     cells,
     kinds,
-    measure,
+    metric,
     ossie_engine,
-    ossie_models,
+    ossie_datasets,
     query,
     seed_with,
 )
@@ -38,12 +38,12 @@ from tests._engine_helpers import _engine_generate, seeded_exec_engine
 postgresql_proc = factories.postgresql_proc(port=None)
 
 MODES = [pytest.param({}, id="default"), pytest.param({"to_many_handling": "associate"}, id="associate")]
-REV_ROOTLESS = [measure("sum(orders.amount)", "rev")]
-REV_ROOTED = [measure("sum(amount)", "rev")]
+REV_ROOTLESS = [metric("sum(orders.amount)", "rev")]
+REV_ROOTED = [metric("sum(amount)", "rev")]
 CUSTOMER_MEASURES = [
-    measure("sum(customers.spend)", "sp"),
-    measure("wsum(customers.spend)", "ws"),
-    measure("weighted_avg(customers.spend, weight=customers.spend)", "wa"),
+    metric("sum(customers.spend)", "sp"),
+    metric("wsum(customers.spend)", "ws"),
+    metric("weighted_avg(customers.spend, weight=customers.spend)", "wa"),
 ]
 #: Dialects whose ``ROW_NUMBER()`` rejects an empty window.
 ORDERED_ROW_NUMBER = {"tsql", "snowflake", "databricks", "spark", "oracle"}
@@ -81,9 +81,9 @@ def sales_query(*, source: str, mode: dict):
     return query(
         source_model=source, dimensions=[dimension],
         measures=[
-            measure(f"sum({prefix}amount)", "total"),
-            measure("count(sales.*)", "n"),
-            measure(f"weighted_avg({prefix}amount, weight={prefix}weight)", "weighted"),
+            metric(f"sum({prefix}amount)", "total"),
+            metric("count(sales.*)", "n"),
+            metric(f"weighted_avg({prefix}amount, weight={prefix}weight)", "weighted"),
         ],
         **mode,
     )
@@ -97,7 +97,7 @@ def assert_sales_cells(resp) -> None:
     assert not [k for row in resp.data for k in row if "__slayer_" in k]
 
 
-def keyed_sales_models() -> list[SlayerDataset]:
+def keyed_sales_datasets() -> list[SlayerDataset]:
     """``sales`` with a primary key and a nullable standalone unique ``source_ref``."""
     sales = SlayerDataset(
         name="sales", data_source="test", sql_table="sales",
@@ -118,10 +118,10 @@ def keyed_sales_models() -> list[SlayerDataset]:
 
 
 async def count_sql(*, dialect: str, keyed: bool = False, unique: bool = False) -> str:
-    models = ossie_models(keyed=keyed, unique=unique)
+    models = ossie_datasets(keyed=keyed, unique=unique)
     return await _engine_generate(
-        query=query(source_model="orders", dimensions=["status"], measures=[measure("count(customers.*)", "n")]),
-        model=models[0], extra_models=models[1:], dialect=dialect, validate=False,
+        query=query(source_model="orders", dimensions=["status"], measures=[metric("count(customers.*)", "n")]),
+        dataset=models[0], extra_datasets=models[1:], dialect=dialect, validate=False,
     )
 
 
@@ -154,7 +154,7 @@ class TestKeylessHome:
     @pytest.mark.parametrize("mode", MODES)
     async def test_matches_the_keyed_model(self, dialect, mode) -> None:
         q = query(source_model="orders", dimensions=["status"], measures=CUSTOMER_MEASURES, **mode)
-        async with ossie_engine(dialect, models=ossie_models(keyed=True)) as engine:
+        async with ossie_engine(dialect, datasets=ossie_datasets(keyed=True)) as engine:
             keyed = await engine.execute(q.model_copy(update={"to_many_handling": "associate"}))
         async with ossie_engine(dialect) as engine:
             keyless = await engine.execute(q)
@@ -168,12 +168,12 @@ class TestKeylessHome:
     async def test_explicit_broadcast_still_broadcasts(self, dialect) -> None:
         async with ossie_engine(dialect) as engine:
             resp = await engine.execute(query(
-                source_model="orders", dimensions=["status"], measures=[measure("sum(customers.spend)", "sp")],
+                source_model="orders", dimensions=["status"], measures=[metric("sum(customers.spend)", "sp")],
                 to_many_handling="broadcast"))
         assert cells(resp, "status", "sp") == {"completed": 100.0, "pending": 100.0}
 
     async def test_error_mode_refuses(self, dialect) -> None:
-        q = query(source_model="orders", dimensions=["status"], measures=[measure("sum(customers.spend)", "sp")],
+        q = query(source_model="orders", dimensions=["status"], measures=[metric("sum(customers.spend)", "sp")],
                   to_many_handling="error")
         async with ossie_engine(dialect) as engine:
             with pytest.raises(SlayerError):
@@ -186,7 +186,7 @@ class TestRowIdentity:
     @pytest.mark.parametrize("source", ["sales", "tags"], ids=["local", "cross-model"])
     async def test_nullable_unique_keeps_each_sale(self, dialect, mode, nullable, source) -> None:
         stmts = sales_statements(nullable=nullable)
-        async with seeded_exec_engine(dialect=dialect, seed=seed_with(dialect, stmts), models=[]) as (engine, _):
+        async with seeded_exec_engine(dialect=dialect, seed=seed_with(dialect, stmts), datasets=[]) as (engine, _):
             ds = await engine.storage.get_datasource("test")
             assert ds is not None
             models = await engine.ingest(ds)
@@ -202,7 +202,7 @@ class TestRowIdentity:
     async def test_duplicate_rows_count_separately_fan_out_copies_once(self, dialect, mode) -> None:
         async with ossie_engine(dialect, duplicate=True) as engine:
             resp = await engine.execute(query(
-                source_model="orders", dimensions=["status"], measures=[measure("count(customers.*)", "n")],
+                source_model="orders", dimensions=["status"], measures=[metric("count(customers.*)", "n")],
                 **mode))
         assert cells(resp, "status", "n") == DUP_COUNT_BY_STATUS
 
@@ -210,26 +210,26 @@ class TestRowIdentity:
     async def test_fan_out_under_a_joined_filter_counts_each_row_once(self, dialect, mode) -> None:
         async with ossie_engine(dialect) as engine:
             resp = await engine.execute(query(
-                source_model="customers", dimensions=["orders.status"], measures=[measure("sum(spend)", "sp")],
+                source_model="customers", dimensions=["orders.status"], measures=[metric("sum(spend)", "sp")],
                 filters=["orders.amount >= 50"], **mode))
         assert cells(resp, "status", "sp") == FILTERED_SPEND_BY_STATUS
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_filtered_keyless_home_numbers_its_filtered_rows(self, dialect, mode) -> None:
-        models = ossie_models()
+        models = ossie_datasets()
         models[1].filters = ["spend >= 20"]
-        async with ossie_engine(dialect, models=models) as engine:
+        async with ossie_engine(dialect, datasets=models) as engine:
             resp = await engine.execute(query(
-                source_model="orders", dimensions=["status"], measures=[measure("sum(customers.spend)", "sp")],
+                source_model="orders", dimensions=["status"], measures=[metric("sum(customers.spend)", "sp")],
                 **mode))
         assert cells(resp, "status", "sp") == {"completed": 30.0, "pending": 20.0}
 
     async def test_a_regroup_prefixed_home_column_does_not_shadow_the_row_identity(self, dialect) -> None:
-        models = ossie_models()
+        models = ossie_datasets()
         models[1].fields = [*models[1].fields, DatasetField(name="__regroup__row_id", sql="id", datatype=DataType.INT)]
-        async with ossie_engine(dialect, models=models) as engine:
+        async with ossie_engine(dialect, datasets=models) as engine:
             resp = await engine.execute(query(
-                source_model="orders", dimensions=["status"], measures=[measure("sum(customers.spend)", "sp")]))
+                source_model="orders", dimensions=["status"], measures=[metric("sum(customers.spend)", "sp")]))
         assert cells(resp, "status", "sp") == SPEND_BY_STATUS
 
     def test_no_model_column_can_take_the_row_identity_name(self) -> None:
@@ -239,7 +239,7 @@ class TestRowIdentity:
     async def test_postgres_executes(self, request) -> None:
         async with ossie_engine("postgres", request=request, duplicate=True) as engine:
             resp = await engine.execute(query(
-                source_model="orders", dimensions=["status"], measures=[measure("count(customers.*)", "n")]))
+                source_model="orders", dimensions=["status"], measures=[metric("count(customers.*)", "n")]))
         assert cells(resp, "status", "n") == DUP_COUNT_BY_STATUS
 
     @pytest.mark.parametrize("target", ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake",
@@ -264,10 +264,10 @@ class TestPrimaryKeyWithNullableUnique:
     """A primary key, not a nullable unique column, deduplicates the home."""
 
     async def test_sql_is_not_numbered(self) -> None:
-        sales, tags = keyed_sales_models()
+        sales, tags = keyed_sales_datasets()
         sql = await _engine_generate(
             query=sales_query(source="sales", mode={}),
-            model=sales, extra_models=[tags], dialect="duckdb", validate=False,
+            dataset=sales, extra_datasets=[tags], dialect="duckdb", validate=False,
         )
         assert not ROW_NUMBER.search(sql), sql
 
@@ -276,7 +276,7 @@ class TestPrimaryKeyWithNullableUnique:
     async def test_null_unique_rows_contribute(self, dialect, mode, source) -> None:
         stmts = sales_statements(nullable=True, keyed=True)
         async with seeded_exec_engine(
-            dialect=dialect, seed=seed_with(dialect, stmts), models=keyed_sales_models(),
+            dialect=dialect, seed=seed_with(dialect, stmts), datasets=keyed_sales_datasets(),
         ) as (engine, _):
             resp = await engine.execute(sales_query(source=source, mode=mode))
         assert_sales_cells(resp)
@@ -287,14 +287,14 @@ class TestAttributableKeylessHome:
 
     @pytest.fixture(params=["sqlite", "duckdb"])
     async def engine(self, request):
-        models = keyless_root_models()
+        models = keyless_root_datasets()
         models[0].relationships = [j.model_copy(update={"cardinality": RelationshipCardinality.MANY_TO_ONE})
                            if j.to == "customers" else j for j in models[0].relationships]
-        async for engine in dev1841_engine(request, models=models):
+        async for engine in dev1841_engine(request, datasets=models):
             yield engine
 
     async def test_same_values_as_broadcast_without_association(self, engine) -> None:
-        wavg = [measure("weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))",
+        wavg = [metric("weighted_avg(customers.spend, weight=sum(amount, partition_by=customers.regions.name))",
                         "wv")]
         kw = {"population": "orders", "dimensions": ["customers.tier"], "metrics": wavg}
         assoc = await engine.execute(query(**kw, to_many_handling="associate"))

@@ -18,21 +18,21 @@ from sqlglot import exp
 from slayer.core.errors import DuplicateMetricNameError
 from slayer.core.query import SlayerQuery
 
-from tests._dev1747_fixtures import dev1747_models
+from tests._dev1747_fixtures import dev1747_datasets
 from tests._engine_helpers import _engine_generate
 
 _MONTH = [{"dimension": "created_at", "granularity": "month"}]
 
 
-def _generate(measures: list[dict], dialect: str = "postgres") -> str:
-    models = dev1747_models()
+def _generate(metrics: list[dict], dialect: str = "postgres") -> str:
+    models = dev1747_datasets()
     query = SlayerQuery(
         population="orders",
         time_dimensions=_MONTH,
-        metrics=measures,
+        metrics=metrics,
     )
     return asyncio.run(_engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=models[0], extra_datasets=models[1:],
         dialect=dialect, validate=False,
     ))
 

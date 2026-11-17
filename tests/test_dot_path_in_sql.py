@@ -73,7 +73,7 @@ def _regions() -> SlayerDataset:
     )
 
 
-async def _save_and_reload(model: SlayerDataset) -> SlayerDataset:
+async def _save_and_reload(dataset: SlayerDataset) -> SlayerDataset:
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(
@@ -82,7 +82,7 @@ async def _save_and_reload(model: SlayerDataset) -> SlayerDataset:
         await storage.save_dataset(_regions())
         await storage.save_dataset(_customers())
         engine = SlayerQueryEngine(storage=storage)
-        await engine.save_dataset(model)
+        await engine.save_dataset(dataset)
         stored = await storage.get_dataset("orders", data_source="prod")
     assert stored is not None
     return stored

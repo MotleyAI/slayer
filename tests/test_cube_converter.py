@@ -20,18 +20,18 @@ from slayer.cube.models import (
 )
 from slayer.cube.report import CubeIssueCategory
 from slayer.core.syntax import AggCall, DottedRef, Ref, parse_expr
-from tests._cube_helpers import DS, column, convert, measure, meta
+from tests._cube_helpers import DS, column, convert, metric, meta
 
 
-def _measure_column(model: SlayerDataset, measure_name: str) -> DatasetField:
+def _metric_field(dataset: SlayerDataset, metric_name: str) -> DatasetField:
     """Return the Column an `<agg>(<col>)` measure formula aggregates."""
-    m = measure(model, measure_name)
+    m = metric(dataset, metric_name)
     parsed = parse_expr(m.expression)
     assert isinstance(parsed, AggCall), m.expression
     source = parsed.source
     assert isinstance(source, (Ref, DottedRef)), m.expression
     col_ref = ".".join(source.parts) if isinstance(source, DottedRef) else source.name
-    return column(model, col_ref)
+    return column(dataset, col_ref)
 
 
 # ── 4.1 cube → model ───────────────────────────────────────────────────────
@@ -94,7 +94,7 @@ def test_count_measure_no_sql_becomes_star_count():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, _ = convert(project)
-    assert measure(models["orders"], "count").expression == "count(*)"
+    assert metric(models["orders"], "count").expression == "count(*)"
 
 
 def test_sum_measure_splits_column_and_modelmeasure_with_currency_format():
@@ -107,10 +107,10 @@ def test_sum_measure_splits_column_and_modelmeasure_with_currency_format():
     )])
     models, _ = convert(project)
     orders = models["orders"]
-    m = measure(orders, "total_revenue")
+    m = metric(orders, "total_revenue")
     assert m.expression.startswith("sum(")
     assert m.label == "Total Revenue"
-    col = _measure_column(orders, "total_revenue")
+    col = _metric_field(orders, "total_revenue")
     assert col.datatype == DataType.DOUBLE
     assert col.format is not None
     assert col.format.type == NumberFormatType.CURRENCY
@@ -130,8 +130,8 @@ def test_filtered_measures_same_sql_get_distinct_columns():
     )])
     models, _ = convert(project)
     orders = models["orders"]
-    unfiltered = _measure_column(orders, "total_revenue")
-    filtered = _measure_column(orders, "completed_revenue")
+    unfiltered = _metric_field(orders, "total_revenue")
+    filtered = _metric_field(orders, "completed_revenue")
     assert unfiltered.name != filtered.name
     assert unfiltered.filter is None
     assert filtered.filter == "status = 'completed'"
@@ -145,7 +145,7 @@ def test_count_distinct_approx_maps_to_count_distinct_approx():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, report = convert(project)
-    assert measure(models["orders"], "uniq_users").expression.startswith("count_distinct_approx(")
+    assert metric(models["orders"], "uniq_users").expression.startswith("count_distinct_approx(")
     assert not any(i.category == CubeIssueCategory.LOSSY_MAPPING for i in report.issues)
 
 
@@ -160,7 +160,7 @@ def test_calculated_number_measure_becomes_dsl_formula():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, _ = convert(project)
-    assert measure(models["orders"], "aov").expression == "total_revenue / count"
+    assert metric(models["orders"], "aov").expression == "total_revenue / count"
 
 
 def test_calculated_measure_with_case_when_is_emitted():
@@ -174,7 +174,7 @@ def test_calculated_measure_with_case_when_is_emitted():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, report = convert(project)
-    assert measure(models["orders"], "tier").expression == "CASE WHEN count > 100 THEN 'high' ELSE 'low' END"
+    assert metric(models["orders"], "tier").expression == "CASE WHEN count > 100 THEN 'high' ELSE 'low' END"
     assert [i.category for i in report.issues] == [CubeIssueCategory.TYPING]
 
 
@@ -186,7 +186,7 @@ def test_finite_rolling_window_becomes_windowed_aggregation():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, _ = convert(project)
-    assert measure(models["orders"], "revenue_30d").expression == "sum(amount, window='30d')"
+    assert metric(models["orders"], "revenue_30d").expression == "sum(amount, window='30d')"
 
 
 def test_unbounded_rolling_window_falls_back_and_reports():
@@ -197,7 +197,7 @@ def test_unbounded_rolling_window_falls_back_and_reports():
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, report = convert(project)
-    assert measure(models["orders"], "revenue_total").expression == "sum(amount)"
+    assert metric(models["orders"], "revenue_total").expression == "sum(amount)"
     assert any(i.category == CubeIssueCategory.UNSUPPORTED_ROLLING_WINDOW
                for i in report.issues)
 
@@ -380,9 +380,9 @@ def test_cube_with_no_source_is_dropped_and_reported():
 
 # ── 4.2 measures — more aggregation kinds ──────────────────────────────────
 
-def _orders_with(measures):
+def _orders_with(metrics):
     return CubeProject(cubes=[CubeCube(
-        name="orders", sql_table="public.orders", measures=measures,
+        name="orders", sql_table="public.orders", measures=metrics,
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
 
@@ -390,14 +390,14 @@ def _orders_with(measures):
 def test_count_with_sql_counts_column():
     models, _ = convert(_orders_with(
         [CubeMeasure(name="paid_count", type="count", sql="{CUBE}.paid_id")]))
-    assert measure(models["orders"], "paid_count").expression.startswith("count(")
-    assert measure(models["orders"], "paid_count").expression != "count(*)"
+    assert metric(models["orders"], "paid_count").expression.startswith("count(")
+    assert metric(models["orders"], "paid_count").expression != "count(*)"
 
 
 def test_count_distinct_exact():
     models, report = convert(_orders_with(
         [CubeMeasure(name="uniq", type="count_distinct", sql="{CUBE}.user_id")]))
-    assert measure(models["orders"], "uniq").expression.startswith("count_distinct(")
+    assert metric(models["orders"], "uniq").expression.startswith("count_distinct(")
     assert not any(i.category == CubeIssueCategory.LOSSY_MAPPING for i in report.issues)
 
 
@@ -406,7 +406,7 @@ def test_simple_aggregation_passthrough(agg):
     project = _orders_with([CubeMeasure(name=f"m_{agg}", type=agg, sql="{CUBE}.amount")])
     project.cubes[0].dimensions.append(CubeDimension(name="amount", sql="{CUBE}.amount", type="number"))
     models, _ = convert(project)
-    assert measure(models["orders"], f"m_{agg}").expression.startswith(f"{agg}(")
+    assert metric(models["orders"], f"m_{agg}").expression.startswith(f"{agg}(")
 
 
 @pytest.mark.parametrize("cube_type,expected", [
@@ -419,7 +419,7 @@ def test_calculated_measure_result_type_is_set(cube_type, expected):
         CubeMeasure(name="count", type="count"),
         CubeMeasure(name="derived", type=cube_type, sql="{count} + 1"),
     ]))
-    m = measure(models["orders"], "derived")
+    m = metric(models["orders"], "derived")
     assert m.expression == "count + 1"
     assert m.datatype == expected
 
@@ -431,7 +431,7 @@ def test_calculated_measure_result_type_is_set(cube_type, expected):
 def test_rolling_window_leading_or_offset_unsupported(rolling):
     models, report = convert(_orders_with(
         [CubeMeasure(name="r", type="sum", sql="{CUBE}.amount", rolling_window=rolling)]))
-    assert measure(models["orders"], "r").expression == "sum(amount)"
+    assert metric(models["orders"], "r").expression == "sum(amount)"
     assert any(i.category == CubeIssueCategory.UNSUPPORTED_ROLLING_WINDOW
                for i in report.issues)
 
@@ -445,8 +445,8 @@ def test_window_is_part_of_dedup_key():
                     rolling_window={"trailing": "30 day"}),
     ]))
     orders = models["orders"]
-    assert measure(orders, "rev").expression == "sum(amount)"
-    assert measure(orders, "rev_30d").expression == "sum(amount, window='30d')"
+    assert metric(orders, "rev").expression == "sum(amount)"
+    assert metric(orders, "rev_30d").expression == "sum(amount, window='30d')"
 
 
 # ── 4.4 joins — physical-column resolution (Codex #2) ──────────────────────
@@ -490,7 +490,7 @@ def test_join_with_nontrivial_member_sql_is_unsupported():
 def test_percent_format_maps_to_percent():
     models, _ = convert(_orders_with(
         [CubeMeasure(name="rate", type="avg", sql="{CUBE}.rate", format="percent")]))
-    col = _measure_column(models["orders"], "rate")
+    col = _metric_field(models["orders"], "rate")
     assert col.format is not None
     assert col.format.type == NumberFormatType.PERCENT
 
@@ -510,7 +510,7 @@ def test_non_currency_format_never_carries_symbol():
     models, _ = convert(_orders_with([CubeMeasure(
         name="rate", type="avg", sql="{CUBE}.rate",
         format={"type": "percent", "currency_symbol": "$"})]))
-    col = _measure_column(models["orders"], "rate")
+    col = _metric_field(models["orders"], "rate")
     assert col.format is not None
     assert col.format.type == NumberFormatType.PERCENT
     assert col.format.symbol is None

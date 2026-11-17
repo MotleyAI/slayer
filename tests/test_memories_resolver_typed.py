@@ -18,8 +18,8 @@ from slayer.core.syntax import parse_expr
 from slayer.memories.resolver import _expression_entity_tokens
 
 
-def _tokens(formula: str) -> list[Any]:
-    return list(_expression_entity_tokens(parse_expr(formula)))
+def _tokens(expression: str) -> list[Any]:
+    return list(_expression_entity_tokens(parse_expr(expression)))
 
 
 class TestFormulaEntityTokens:

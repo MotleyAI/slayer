@@ -19,14 +19,14 @@ from slayer.core.syntax import (
 )
 from slayer.core.scope import DatasetScope
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from tests._dev1737_fixtures import PARTS, UNITS, customers_model, orders_model
+from tests._dev1737_fixtures import PARTS, UNITS, customers_dataset, orders_dataset
 
 DATE_NAMES = ("date_part", "date_diff", "date_add", "current_date", "now", "interval")
 
 
 def _bind(text: str):
-    model = orders_model()
-    bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[customers_model()])
+    model = orders_dataset()
+    bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[customers_dataset()])
     return bind_expr(parse_expr(text), scope=DatasetScope(population=model), bundle=bundle, allow_metrics=True).value_key
 
 
@@ -203,8 +203,8 @@ class TestIntervalRewrite:
             parse_expr(f"{nested} = '1' AND interval(1, 'day') > 0")
 
     def test_bound_filter_interns(self) -> None:
-        model = orders_model()
-        bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[customers_model()])
+        model = orders_dataset()
+        bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[customers_dataset()])
         scope = DatasetScope(population=model)
 
         def bound(text: str):

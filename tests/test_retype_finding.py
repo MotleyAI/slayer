@@ -140,11 +140,11 @@ async def pg(postgresql, tmp_path: Path) -> AsyncGenerator[SlayerQueryEngine]:
     postgresql.commit()
     storage = YAMLStorage(base_dir=str(tmp_path))
     async with owned_query_engine(storage=storage, datasources=[client_datasource(postgresql.info)]) as engine:
-        await _save_pg_models(storage)
+        await _save_pg_datasets(storage)
         yield engine
 
 
-async def _save_pg_models(storage: YAMLStorage) -> None:
+async def _save_pg_datasets(storage: YAMLStorage) -> None:
     # As 1.6.0 reflection typed the table (interval TEXT, json UNKNOWN, oid TEXT, money DOUBLE, xml TEXT),
     # plus ``duration`` stored as TIMESTAMP over the interval.
     await storage.save_dataset(SlayerDataset(name="pg_table", sql_table="pgtypes", data_source="pg", fields=[
@@ -175,18 +175,18 @@ def _assert_remedy_agrees(finding: dict[str, Any]) -> None:
     assert finding["summary"].endswith(f"; {expected}."), finding
 
 
-def _retypes(entries: list[dict[str, Any]], model: str) -> dict[str, dict[str, Any]]:
+def _retypes(entries: list[dict[str, Any]], dataset: str) -> dict[str, dict[str, Any]]:
     found = [e for e in entries if e.get("finding") == "retype"]
     for e in found:
         _assert_remedy_agrees(e)
-    return {e["column"]: e for e in found if e.get("model_name") == model}
+    return {e["column"]: e for e in found if e.get("model_name") == dataset}
 
 
-def _removed(entries: list[dict[str, Any]], model: str) -> set[str]:
+def _removed(entries: list[dict[str, Any]], dataset: str) -> set[str]:
     """Every column and measure ``dataset`` loses to the deletes in ``entries``."""
     out: set[str] = set()
     for e in entries:
-        if e.get("model_name") != model:
+        if e.get("model_name") != dataset:
             continue
         if e.get("tool") == "delete_model":
             out.add("<model>")
@@ -329,8 +329,8 @@ class TestForceClean:
             assert sum(f"{model}.{column}" in line for line in lines) == 1, (model, column, result.stdout)
 
 
-def _carried(err: SchemaDriftError, *, model: str, column: str) -> bool:
-    wanted = {"finding": "retype", "model_name": model, "column": column}
+def _carried(err: SchemaDriftError, *, dataset: str, column: str) -> bool:
+    wanted = {"finding": "retype", "model_name": dataset, "column": column}
     carried = [f.model_dump(mode="json") for f in getattr(err, "findings", [])]
     for f in carried:
         _assert_remedy_agrees(f)
@@ -350,7 +350,7 @@ class TestQueryTime:
         assert "flags" not in _removed(_dump(err.to_delete), "legacy"), err.to_delete
         assert "legacy.flags" in str(err), str(err)
         assert "BIT" in str(err), str(err)
-        assert _carried(err, model="legacy", column="flags"), err.findings
+        assert _carried(err, dataset="legacy", column="flags"), err.findings
 
     async def test_postgres_json_grouped(self, pg: SlayerQueryEngine) -> None:
         with pytest.raises(SchemaDriftError) as info:
@@ -359,7 +359,7 @@ class TestQueryTime:
         assert "payload" not in _removed(_dump(err.to_delete), "pg_sql"), err.to_delete
         assert "pg_sql.payload" in str(err), str(err)
         assert "json" in str(err), str(err)
-        assert _carried(err, model="pg_sql", column="payload"), err.findings
+        assert _carried(err, dataset="pg_sql", column="payload"), err.findings
 
 
 class TestOneShape:

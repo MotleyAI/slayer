@@ -24,7 +24,7 @@ from tests.integration._consecutive_periods_calendar import (
     CALENDAR_CASES,
     assert_calendar_streak,
     seed_statements,
-    streak_model,
+    streak_dataset,
 )
 
 pytest.importorskip("pytest_postgresql")
@@ -170,7 +170,7 @@ def _pg_env_storage(postgresql_proc, tmp_path_factory):
         )
         run_sync(storage.save_dataset(orders_model))
         run_sync(storage.save_dataset(customers_model))
-        run_sync(storage.save_dataset(streak_model("testpg")))
+        run_sync(storage.save_dataset(streak_dataset("testpg")))
 
         yield storage
     finally:
@@ -415,7 +415,7 @@ class TestPostgresQueries:
 
 
 @pytest.fixture
-async def pg_cross_model_env(postgresql):
+async def pg_cross_dataset_env(postgresql):
     """Postgres env with orders + customers (with score) and explicit join."""
     cur = postgresql.cursor()
     cur.execute("""
@@ -489,7 +489,7 @@ async def pg_cross_model_env(postgresql):
 
 @pytest.mark.integration
 class TestCrossModelAndMultistage:
-    async def test_cross_model_measure(self, pg_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_cross_model_measure(self, pg_cross_dataset_env: SlayerQueryEngine) -> None:
         """Cross-model measure: monthly order count + avg customer score."""
         query = SlayerQuery(
             population="orders",
@@ -499,12 +499,12 @@ class TestCrossModelAndMultistage:
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="avg(customers.avg_score)")],
             order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
         )
-        result = await pg_cross_model_env.execute(query=query)
+        result = await pg_cross_dataset_env.execute(query=query)
         assert result.row_count == 3
         # Associated: each month averages the distinct customers its orders reach.
         assert [float(r["orders.customers.avg_score_avg"]) for r in result.data] == pytest.approx([90.0, 60.0, 85.0])
 
-    async def test_query_list_named(self, pg_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_query_list_named(self, pg_cross_dataset_env: SlayerQueryEngine) -> None:
         """Query list: named sub-query referenced by main query."""
         inner = SlayerQuery(
             name="monthly", population="orders",
@@ -514,10 +514,10 @@ class TestCrossModelAndMultistage:
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
         )
         outer = SlayerQuery(population="monthly", metrics=[DatasetMetric(expression="count(*)")])
-        result = await pg_cross_model_env.execute(query=[inner, outer])
+        result = await pg_cross_dataset_env.execute(query=[inner, outer])
         assert result.data[0]["monthly._count"] == 3
 
-    async def test_create_model_from_query(self, pg_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_create_model_from_query(self, pg_cross_dataset_env: SlayerQueryEngine) -> None:
         """Save a query as a permanent model, then query it."""
         source = SlayerQuery(
             population="orders",
@@ -526,21 +526,21 @@ class TestCrossModelAndMultistage:
             )],
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(total)")],
         )
-        saved = await pg_cross_model_env.create_dataset_from_query(query=source, name="pg_monthly")
+        saved = await pg_cross_dataset_env.create_dataset_from_query(query=source, name="pg_monthly")
         assert saved.source_queries is not None
-        result = await pg_cross_model_env.execute(
+        result = await pg_cross_dataset_env.execute(
             query=SlayerQuery(population="pg_monthly", metrics=[DatasetMetric(expression="count(*)")])
         )
         assert result.data[0]["pg_monthly._count"] == 3
 
-    async def test_sql_dimension(self, pg_cross_model_env: SlayerQueryEngine) -> None:
+    async def test_sql_dimension(self, pg_cross_dataset_env: SlayerQueryEngine) -> None:
         """SQL expression dimension via ModelExtension with Postgres."""
         query = SlayerQuery(
             population="orders",
             dimensions=[ComputedDimension(expression="CASE WHEN amount > 100 THEN 'high' ELSE 'low' END", name="tier")],
             metrics=[DatasetMetric(expression="count(*)")],
         )
-        result = await pg_cross_model_env.execute(query=query)
+        result = await pg_cross_dataset_env.execute(query=query)
         by_tier = {r["orders.tier"]: r["orders._count"] for r in result.data}
         # high: 200, 150, 300 = 3; low: 100, 50, 25 = 3
         assert by_tier["high"] == 3

@@ -21,7 +21,7 @@ from tests._dev1847_fixtures import (
     SPEND_BAND_EXPR,
     DatasetMetric,
     _SALES_ROWS_WIDE,
-    dev1847_models,
+    dev1847_datasets,
     make_exec_engine,
     rows_by,
     sales_q,
@@ -121,14 +121,14 @@ async def engine(request):
 
 
 def _scope_bundle():
-    models = dev1847_models()
+    models = dev1847_datasets()
     return (DatasetScope(population=models[0]),
             ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:]))
 
 
-def _bind(formula: str, alias_map: Optional[Dict] = None):
+def _bind(expression: str, alias_map: Optional[Dict] = None):
     scope, bundle = _scope_bundle()
-    return bind_expr(parsed=parse_expr(formula), scope=scope, bundle=bundle,
+    return bind_expr(parsed=parse_expr(expression), scope=scope, bundle=bundle,
                      dimension_alias_map=alias_map).value_key
 
 
@@ -151,16 +151,16 @@ class TestOracleSelfCheck:
 class TestBindingSymmetry:
     def test_alias_resolves_identically(self):
         amap = _alias(name="ureg", expr="upper(region)")
-        agg = _bind(formula="sum(amount, partition_by=ureg)", alias_map=amap)
-        rank = _bind(formula=RANK_UREG, alias_map=amap)
+        agg = _bind(expression="sum(amount, partition_by=ureg)", alias_map=amap)
+        rank = _bind(expression=RANK_UREG, alias_map=amap)
         assert isinstance(rank, TransformKey)
         assert isinstance(agg, AggregateKey)
         assert rank.partition_keys == agg.partition_keys == Grain.of([amap["ureg"]])
 
     def test_mixed_list(self):
         amap = _alias(name="ureg", expr="upper(region)")
-        agg = _bind(formula="sum(amount, partition_by=[ureg, product])", alias_map=amap)
-        rank = _bind(formula="rank(sum(amount), partition_by=[ureg, product], direction='desc')", alias_map=amap)
+        agg = _bind(expression="sum(amount, partition_by=[ureg, product])", alias_map=amap)
+        rank = _bind(expression="rank(sum(amount), partition_by=[ureg, product], direction='desc')", alias_map=amap)
         want = Grain.of([amap["ureg"], FieldKey(path=(), leaf="product")])
         assert isinstance(rank, TransformKey)
         assert isinstance(agg, AggregateKey)
@@ -168,7 +168,7 @@ class TestBindingSymmetry:
 
     def test_attach_carrying_alias_binds_to_dimension_value(self):
         amap = _alias(name="spend_band", expr=SPEND_BAND_EXPR)
-        rank = _bind(formula=RANK_BAND, alias_map=amap)
+        rank = _bind(expression=RANK_BAND, alias_map=amap)
         assert isinstance(rank, TransformKey)
         assert rank.partition_keys == Grain.of([amap["spend_band"]])
 
@@ -179,7 +179,7 @@ class TestBindingSymmetry:
     def test_aggregate_element_names_the_computed_dimension_remedy(self, formula):
         amap = _alias(name="ureg", expr="upper(region)")
         with pytest.raises(PartitionKeyError, match=r"(?s)'sum\(amount\)'.*computed dimension"):
-            _bind(formula=formula, alias_map=amap)
+            _bind(expression=formula, alias_map=amap)
 
     @pytest.mark.parametrize(argnames="formula", argvalues=[
         "sum(amount, partition_by=upper(region))",
@@ -187,8 +187,8 @@ class TestBindingSymmetry:
     ])
     def test_expression_element_equal_to_an_alias_binds_to_it(self, formula):
         amap = _alias(name="ureg", expr="upper(region)")
-        expression = _bind(formula=formula, alias_map=amap)
-        named = _bind(formula=formula.replace("upper(region)", "ureg"), alias_map=amap)
+        expression = _bind(expression=formula, alias_map=amap)
+        named = _bind(expression=formula.replace("upper(region)", "ureg"), alias_map=amap)
         assert isinstance(expression, (AggregateKey, TransformKey))
         assert isinstance(named, (AggregateKey, TransformKey))
         assert expression.partition_keys == named.partition_keys

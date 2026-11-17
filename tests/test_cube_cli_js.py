@@ -31,7 +31,7 @@ def _run(*argv: str) -> int:
     return 0
 
 
-def _get_model(storage_dir, name):
+def _get_dataset(storage_dir, name):
     storage = YAMLStorage(base_dir=str(storage_dir))
     return run_sync(storage.get_dataset(name, data_source="cube_ds"))
 
@@ -44,7 +44,7 @@ def test_import_cube_discovers_js_files(tmp_path):
         "--storage", str(storage_dir),
     )
     assert code == 0
-    model = _get_model(storage_dir, "RrDrivers")
+    model = _get_dataset(storage_dir, "RrDrivers")
     assert model is not None
     # default honors meta.required -> the date vars are required (bare in SQL).
     v = extract_dataset_variables(model)
@@ -61,6 +61,6 @@ def test_ignore_required_meta_flag_makes_all_optional(tmp_path):
         "--ignore-required-meta",
     )
     assert code == 0
-    model = _get_model(storage_dir, "RrDrivers")
+    model = _get_dataset(storage_dir, "RrDrivers")
     # With the flag, the scalar-position arrow becomes an optional block.
     assert "{? '{fulfillment_date_from}' ?}::TIMESTAMP" in model.sql

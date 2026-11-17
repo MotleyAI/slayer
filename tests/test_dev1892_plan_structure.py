@@ -19,30 +19,30 @@ from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_scope_closed
 
-from tests._dev1841_fixtures import assoc_q, dev1840_models
+from tests._dev1841_fixtures import assoc_q, dev1840_datasets
 from tests._dev1847_fixtures import (
     INNER_CR,
     INNER_CRP,
     DatasetMetric,
-    dev1847_models,
+    dev1847_datasets,
     gen,
     make_exec_engine,
     region_key,
     sales_q,
 )
-from tests._dev1892_fixtures import weighted_sales_models
+from tests._dev1892_fixtures import weighted_sales_datasets
 
 _WEIGHT_COUNT = "weight=count(id, partition_by=[city, region])"
 _WAVG_REAGG = f"weighted_avg({INNER_CR}, {_WEIGHT_COUNT})"
 
 
 def _sales_bundle() -> ResolvedSourceBundle:
-    models = dev1847_models()
+    models = dev1847_datasets()
     return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
 def _orders_bundle() -> ResolvedSourceBundle:
-    models = dev1840_models()
+    models = dev1840_datasets()
     return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
@@ -53,7 +53,7 @@ def _association_attaches(planned) -> list:
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def reagg_engine(request):
-    async for engine in make_exec_engine(request, models=weighted_sales_models()):
+    async for engine in make_exec_engine(request, datasets=weighted_sales_datasets()):
         yield engine
 
 

@@ -113,14 +113,14 @@ def query(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate(kw)
 
 
-def m(formula: str, name: str = "v") -> Dict[str, str]:
-    return {"formula": formula, "name": name}
+def m(expression: str, name: str = "v") -> Dict[str, str]:
+    return {"formula": expression, "name": name}
 
 
 MONTH_TD = {"dimension": "account_snapshots.snapshot_date", "granularity": "month"}
 
 
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
@@ -130,7 +130,7 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def snapshots_model() -> SlayerDataset:
+def snapshots_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="account_snapshots", data_source="test", sql_table="account_snapshots",
         default_time_dimension="snapshot_date",
@@ -146,12 +146,12 @@ def snapshots_model() -> SlayerDataset:
     )
 
 
-def outer_grain_models() -> List[SlayerDataset]:
-    return [customers_model(), snapshots_model()]
+def outer_grain_datasets() -> List[SlayerDataset]:
+    return [customers_dataset(), snapshots_dataset()]
 
 
 def bundle(*, source: str = "customers") -> ResolvedSourceBundle:
-    models = outer_grain_models()
+    models = outer_grain_datasets()
     root = next(x for x in models if x.name == source)
     return ResolvedSourceBundle(
         dialect="postgres", population=root,
@@ -189,7 +189,7 @@ async def outer_grain_engine(dialect: str) -> AsyncGenerator[SlayerQueryEngine]:
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=outer_grain_models(),
+        dialect=dialect, seed=seed, datasets=outer_grain_datasets(),
     ) as (engine, _):
         yield engine
 

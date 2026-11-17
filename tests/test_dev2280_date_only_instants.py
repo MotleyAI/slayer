@@ -12,7 +12,7 @@ from slayer.core import deprecation
 from slayer.core.models import DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._dev2215_fixtures import (
-    BACKENDS, customers_model, dev2215_engine, dev2215_models, events_model, future_warnings, ids, m, orders_model,
+    BACKENDS, customers_dataset, dev2215_engine, dev2215_datasets, events_dataset, future_warnings, ids, m, orders_dataset,
     payload_text, q, recorded_warnings, single, warnings_mentioning,
 )
 from tests._time_points_fixtures import ids as tp_ids
@@ -77,7 +77,7 @@ class TestInstantReading:
             variables={"cutoff": "2024-04-10"},
         )
         resp = await engine.execute({"population": "early", "dimensions": ["id"]})
-        assert ids(resp, model="early") == {1}
+        assert ids(resp, dataset="early") == {1}
 
 
 class TestInsideMeasures:
@@ -92,14 +92,14 @@ class TestInsideMeasures:
     @pytest.mark.parametrize("formula", [FILTERED, CASED])
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_saved_measure(self, backend: str, formula: str) -> None:
-        model = orders_model().model_copy(update={"metrics": [DatasetMetric(name="v", expression=formula)]})
-        async with dev2215_engine(backend, models=[model, *_others()]) as eng:
+        model = orders_dataset().model_copy(update={"metrics": [DatasetMetric(name="v", expression=formula)]})
+        async with dev2215_engine(backend, datasets=[model, *_others()]) as eng:
             resp = await eng.execute(q(measures=["v"], filters=[FIRST_TWO]))
         assert int(single(resp)) == 1
 
 
 def _others() -> list[SlayerDataset]:
-    return [mod for mod in dev2215_models() if mod.name != "orders"]
+    return [mod for mod in dev2215_datasets() if mod.name != "orders"]
 
 
 class TestFrameBounds:
@@ -109,16 +109,16 @@ class TestFrameBounds:
         ("ts <= '2024-12-31'", "ts <= '2024-12-31 00:00:00'"),
     ])
     async def test_date_only_range_bound_is_an_instant_frame_bound(self, tp, date_only: str, instant: str) -> None:
-        got = await monthly(tp, measures=[WINDOW, PLAIN], filters=[date_only])
-        assert got == await monthly(tp, measures=[WINDOW, PLAIN], filters=[instant])
+        got = await monthly(tp, metrics=[WINDOW, PLAIN], filters=[date_only])
+        assert got == await monthly(tp, metrics=[WINDOW, PLAIN], filters=[instant])
 
     async def test_january_window_reaches_before_january(self, tp) -> None:
-        got = await monthly(tp, measures=[WINDOW, PLAIN], filters=["ts >= '2025-01-01'"])
+        got = await monthly(tp, metrics=[WINDOW, PLAIN], filters=["ts >= '2025-01-01'"])
         assert got["2025-01"]["w"] > got["2025-01"]["s"]
 
     async def test_date_only_equality_restricts_the_window_input(self, tp) -> None:
-        got = await monthly(tp, measures=[WINDOW, PLAIN], filters=["ts = '2024-06-01'"])
-        instant = await monthly(tp, measures=[WINDOW, PLAIN], filters=["ts = '2024-06-01 00:00:00'"])
+        got = await monthly(tp, metrics=[WINDOW, PLAIN], filters=["ts = '2024-06-01'"])
+        instant = await monthly(tp, metrics=[WINDOW, PLAIN], filters=["ts = '2024-06-01 00:00:00'"])
         assert got == instant == {"2024-06": {"w": pytest.approx(3.0), "s": pytest.approx(3.0)}}
 
 
@@ -205,9 +205,9 @@ class TestNotice:
     @pytest.mark.parametrize("bound", ["updated_at", "customers.updated_at", "CUSTOMERS.Updated_At"])
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_same_named_column_elsewhere_names_no_variable(self, backend: str, bound: str) -> None:
-        events = events_model().model_copy(update={"joins": [
+        events = events_dataset().model_copy(update={"joins": [
             DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])]})
-        async with dev2215_engine(backend, models=[orders_model(), customers_model(), events]) as eng:
+        async with dev2215_engine(backend, datasets=[orders_dataset(), customers_dataset(), events]) as eng:
             resp = await eng.execute(q(
                 source_model="customers", dimensions=["id"],
                 filters=[f"{bound} <= '{{cutoff}}'", "events.updated_at <= '2024-12-31'"],
@@ -252,7 +252,7 @@ class TestNotice:
         assert [w.variables for w in notices(resp)] == [["cutoff", "other"]], resp.warnings
 
     async def test_a_saved_measure_is_announced_at_save(self, engine: SlayerQueryEngine) -> None:
-        model = orders_model().model_copy(update={"metrics": [
+        model = orders_dataset().model_copy(update={"metrics": [
             DatasetMetric(name="on_day", expression="count(*) FILTER (WHERE created_at = '2024-04-10')")]})
         notes: list[Any] = []
         with recorded_warnings() as caught:
@@ -268,7 +268,7 @@ class TestNotice:
     async def test_a_saved_measure_on_a_case_variant_or_joined_column_is_announced(
         self, engine: SlayerQueryEngine, formula: str,
     ) -> None:
-        model = orders_model().model_copy(update={"metrics": [DatasetMetric(name="on_day", expression=formula)]})
+        model = orders_dataset().model_copy(update={"metrics": [DatasetMetric(name="on_day", expression=formula)]})
         notes: list[Any] = []
         await engine.save_dataset(model, warnings_out=notes)
         assert len([n for n in notes if NOTICE in payload_text(n)]) == 1, notes

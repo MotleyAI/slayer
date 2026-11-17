@@ -35,8 +35,8 @@ from slayer.sql.render.library import LIBRARY_FUNCTIONS
 from slayer.sql.render.row_expr import DATE_FUNCTIONS, render_cast, render_scalar_call
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2101_fixtures import emit
-from tests._dev2120_fixtures import TIER1, emit_lib, lib_model, lib_query, patch_profile
-from tests._dev2137_fixtures import all_models
+from tests._dev2120_fixtures import TIER1, emit_lib, lib_dataset, lib_query, patch_profile
+from tests._dev2137_fixtures import all_datasets
 
 LIBRARY = LIBRARY_FUNCTIONS | {"try_cast"}
 REGEX = frozenset({"regexp_like", "regexp_extract", "regexp_replace"})
@@ -131,7 +131,7 @@ class LibCase(BaseModel):
     name: str
     build: Callable[[], Any]
     mentions: str
-    datasets: Callable[[], list[SlayerDataset]] = lambda: [lib_model()]
+    datasets: Callable[[], list[SlayerDataset]] = lambda: [lib_dataset()]
 
 
 def _dim(case_id: str, name: str, expr: str, *, mentions: str | None = None) -> LibCase:
@@ -146,8 +146,8 @@ def _lib(**body: Any) -> SlayerQuery:
     return SlayerQuery.model_validate({"population": "lib", **body})
 
 
-def _with_saved_measure() -> list[SlayerDataset]:
-    base = lib_model()
+def _with_saved_metric() -> list[SlayerDataset]:
+    base = lib_dataset()
     return [base.model_copy(update={"metrics": [DatasetMetric(name="txt_total", expression="sum(num_txt * 2)")]})]
 
 
@@ -216,7 +216,7 @@ COERCION_CASES = [
     LibCase(case_id="coerce|measure", name="try_cast", mentions="number",
             build=lambda: _lib(measures=[{"formula": "sum(num_txt * 2)", "name": "t"}])),
     LibCase(case_id="coerce|saved-measure", name="try_cast", mentions="number",
-            build=lambda: _lib(measures=["txt_total"]), datasets=_with_saved_measure),
+            build=lambda: _lib(measures=["txt_total"]), datasets=_with_saved_metric),
     LibCase(case_id="coerce|order-by", name="try_cast", mentions="number",
             build=lambda: _lib(dimensions=["id"], order=[{"column": "num_txt * 2"}])),
     LibCase(case_id="coerce|stage", name="try_cast", mentions="number", build=_stages),
@@ -229,7 +229,7 @@ def test_every_library_function_has_a_case() -> None:
 
 
 async def _emit(case: LibCase, ds_type: str) -> str:
-    return await emit(case.build(), dialect=ds_type, models=case.datasets())
+    return await emit(case.build(), dialect=ds_type, datasets=case.datasets())
 
 
 @pytest.mark.parametrize("ds_type", DS_TYPES)
@@ -250,7 +250,7 @@ async def test_refused_on_execution_too(ds_type: str) -> None:
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig(name="test", type=ds_type, host="localhost", database="db"))
-        await storage.save_dataset(lib_model())
+        await storage.save_dataset(lib_dataset())
         engine, query, name = SlayerQueryEngine(storage=storage), lib_query("json_value(payload, '$.a')"), database(ds_type)
         with pytest.raises(UnsupportedServerFunctionError, match=name):
             await engine.execute(query)
@@ -486,9 +486,9 @@ LIST_CASES = [
 @pytest.mark.parametrize("ds_type", NO_LIST)
 @pytest.mark.parametrize("case", LIST_CASES, ids=lambda c: c.case_id)
 async def test_list_construct_refused(case: ListCase, ds_type: str) -> None:
-    query, models = case.build(), all_models()
+    query, models = case.build(), all_datasets()
     with pytest.raises(ListTypeError) as info:
-        await emit(query, dialect=ds_type, models=models)
+        await emit(query, dialect=ds_type, datasets=models)
     msg = str(info.value)
     assert database(ds_type) in msg, msg
     assert case.mentions in msg, msg
@@ -502,16 +502,16 @@ _NEEDS_SERVER = {("nested-hop", "clickhouse")}
     (c, d) for c in LIST_CASES for d in NATIVE_LIST if (c.case_id, d) not in _NEEDS_SERVER
 ], ids=lambda v: v if isinstance(v, str) else v.case_id)
 async def test_list_construct_emits(case: ListCase, ds_type: str) -> None:
-    sql = await emit(case.build(), dialect=ds_type, models=all_models())
+    sql = await emit(case.build(), dialect=ds_type, datasets=all_datasets())
     if ds_type != "postgres":
         assert_own_sql(sql, ds_type=ds_type)
 
 
 @pytest.mark.parametrize("ds_type", TIER2)
 async def test_list_refusal_suggests_presto(ds_type: str) -> None:
-    query, models = LIST_CASES[0].build(), all_models()
+    query, models = LIST_CASES[0].build(), all_datasets()
     with pytest.raises(ListTypeError, match="Presto"):
-        await emit(query, dialect=ds_type, models=models)
+        await emit(query, dialect=ds_type, datasets=models)
 
 
 # --------------------------------------------------------------------------- #

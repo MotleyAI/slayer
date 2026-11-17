@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from slayer.engine.query_engine import SlayerQueryEngine
-from tests._dev2101_fixtures import check_filtered_custom_aggregations, dev2101_models, seed_server
+from tests._dev2101_fixtures import check_filtered_custom_aggregations, dev2101_datasets, seed_server
 from tests._pg_helpers import client_datasource, pg_query_engine
 
 pytest.importorskip("pytest_postgresql")
@@ -26,7 +26,7 @@ async def pg_engine(postgresql, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
     seed_server(postgresql.cursor(), dialect="postgres")
     postgresql.commit()
     async with pg_query_engine(
-        client_datasource(postgresql.info), base_dir=str(tmp_path), models=dev2101_models(data_source="pg"),
+        client_datasource(postgresql.info), base_dir=str(tmp_path), models=dev2101_datasets(data_source="pg"),
     ) as engine:
         yield engine
 

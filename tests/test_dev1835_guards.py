@@ -21,7 +21,7 @@ from slayer.core.enums import DataType
 from slayer.core.models import DatasetField
 
 from tests._dev1835_fixtures import DatasetMetric, month_td, q
-from tests._dev1739_fixtures import dev1739_models
+from tests._dev1739_fixtures import dev1739_datasets
 from tests._engine_helpers import _engine_generate
 from tests.test_dev1837_guards import ARM_WINDOWED_RANKED, _sources_containing
 
@@ -73,10 +73,10 @@ NO_RANKING_COLUMN = (
 )
 
 
-async def _gen(query, *, models=None) -> str:
-    models = models or dev1739_models()
+async def _gen(query, *, datasets=None) -> str:
+    datasets = datasets or dev1739_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:],
+        query=query, dataset=datasets[0], extra_datasets=datasets[1:],
         dialect="duckdb", validate=False,
     )
 
@@ -110,7 +110,7 @@ class TestPreservedGuardsVerbatim:
         assert str(ei.value) == G2_MESSAGE
 
     async def test_ranked_no_ranking_column(self) -> None:
-        models = dev1739_models()
+        models = dev1739_datasets()
         # A second temporal column leaves no sole-column default either.
         models[0] = models[0].model_copy(update={
             "default_time_dimension": None,
@@ -121,7 +121,7 @@ class TestPreservedGuardsVerbatim:
             measures=[DatasetMetric(expression="last(amount)", name="l")],
         )
         with pytest.raises(ValueError) as ei:
-            await _gen(query, models=models)
+            await _gen(query, datasets=models)
         assert str(ei.value) == NO_RANKING_COLUMN
 
 

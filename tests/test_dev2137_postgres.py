@@ -6,9 +6,9 @@ from pytest_postgresql import factories
 
 from slayer.core.enums import DataType
 from slayer.live_schema.ingestion import ingest_datasource_async
-from tests._dev2120_fixtures import contractors_model, contractors_statements
-from tests._dev2137_fixtures import assignments_model, assignments_statements, check_lists
-from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_model, mixed_numbers_statements
+from tests._dev2120_fixtures import contractors_dataset, contractors_statements
+from tests._dev2137_fixtures import assignments_dataset, assignments_statements, check_lists
+from tests._list_mixed_numbers import check_mixed_numbers, mixed_numbers_dataset, mixed_numbers_statements
 from tests._pg_helpers import client_datasource, pg_query_engine
 
 postgresql_proc = factories.postgresql_proc(port=None)
@@ -23,8 +23,8 @@ async def pg(postgresql, tmp_path):
         cur.execute(stmt)
     postgresql.commit()
     ds = client_datasource(postgresql.info)
-    models = [contractors_model(data_source="pg"), assignments_model(data_source="pg"),
-              mixed_numbers_model(data_source="pg")]
+    models = [contractors_dataset(data_source="pg"), assignments_dataset(data_source="pg"),
+              mixed_numbers_dataset(data_source="pg")]
     async with pg_query_engine(ds, base_dir=str(tmp_path), models=models) as engine:
         yield engine, ds
 

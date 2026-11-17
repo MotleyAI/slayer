@@ -18,7 +18,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.naming import AggAliasProfile, canonical_aggregate_alias
 from tests._dev2177_fixtures import m, num, q
-from tests._mcp_idiom_fixtures import idiom_models, make_idiom_engine
+from tests._mcp_idiom_fixtures import idiom_datasets, make_idiom_engine
 
 PAID_COUNT = "count(*) FILTER (WHERE status = 'paid')"
 OPEN_FIRST = "first(amount) FILTER (WHERE status = 'open')"
@@ -93,10 +93,10 @@ class TestCanonicalAggregateAlias:
     """The internal alias carries the filter in every profile."""
 
     @staticmethod
-    def _bound(formula: str) -> AggregateKey:
-        orders, *rest = idiom_models()
+    def _bound(expression: str) -> AggregateKey:
+        orders, *rest = idiom_datasets()
         bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=rest)
-        key = bind_expr(parse_expr(formula), scope=DatasetScope(population=orders), bundle=bundle,
+        key = bind_expr(parse_expr(expression), scope=DatasetScope(population=orders), bundle=bundle,
                         allow_metrics=True).value_key
         assert isinstance(key, AggregateKey), key
         assert key.filter is not None, key

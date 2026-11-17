@@ -58,14 +58,14 @@ def query(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate(kw)
 
 
-def m(formula: str, name: str) -> Dict[str, str]:
-    return {"formula": formula, "name": name}
+def m(expression: str, name: str) -> Dict[str, str]:
+    return {"formula": expression, "name": name}
 
 
 # --------------------------------------------------------------------------- #
 # Storage models.
 # --------------------------------------------------------------------------- #
-def customers_model() -> SlayerDataset:
+def customers_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         fields=[
@@ -76,7 +76,7 @@ def customers_model() -> SlayerDataset:
     )
 
 
-def clients_model() -> SlayerDataset:
+def clients_dataset() -> SlayerDataset:
     """Named unlike its physical table ``acct``; joins the query-backed ``cust_rev``."""
     return SlayerDataset(
         name="clients", data_source="test", sql_table="acct",
@@ -89,7 +89,7 @@ def clients_model() -> SlayerDataset:
     )
 
 
-def orders_model() -> SlayerDataset:
+def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
@@ -108,7 +108,7 @@ def orders_model() -> SlayerDataset:
     )
 
 
-def orders_v_model(*, default: Optional[str]) -> SlayerDataset:
+def orders_v_dataset(*, default: Optional[str]) -> SlayerDataset:
     """``orders`` carrying a ``th`` default (the source-model variable layer)."""
     return SlayerDataset(
         name="orders_v", data_source="test", sql_table="orders",
@@ -125,18 +125,18 @@ def _qb(name: str, *stages: SlayerQuery, **kw: Any) -> SlayerDataset:
     return SlayerDataset(name=name, data_source="test", source_queries=list(stages), **kw)
 
 
-def rev_by_status_model() -> SlayerDataset:
+def rev_by_status_dataset() -> SlayerDataset:
     return _qb("rev_by_status", query(
         source_model="orders", dimensions=["status"], measures=[m("sum(amount)", "rev")]))
 
 
-def status_share_model() -> SlayerDataset:
+def status_share_dataset() -> SlayerDataset:
     """Query-backed over the query-backed ``rev_by_status``."""
     return _qb("status_share", query(
         source_model="rev_by_status", dimensions=["status"], measures=[m("sum(rev)", "rr")]))
 
 
-def cust_rev_model() -> SlayerDataset:
+def cust_rev_dataset() -> SlayerDataset:
     """Multi-stage with a private stage ``x``; grain ``{customer_id}``."""
     return _qb(
         "cust_rev",
@@ -147,7 +147,7 @@ def cust_rev_model() -> SlayerDataset:
     )
 
 
-def ok_rev_model() -> SlayerDataset:
+def ok_rev_dataset() -> SlayerDataset:
     """Multi-stage, also with a private stage ``x``."""
     return _qb(
         "ok_rev",
@@ -157,7 +157,7 @@ def ok_rev_model() -> SlayerDataset:
     )
 
 
-def qb_shadow_model() -> SlayerDataset:
+def qb_shadow_dataset() -> SlayerDataset:
     """Private stage named ``customers``; the final stage reaches model ``customers`` via a stored join."""
     return _qb(
         "qb_shadow",
@@ -168,14 +168,14 @@ def qb_shadow_model() -> SlayerDataset:
     )
 
 
-def monthly_model() -> SlayerDataset:
+def monthly_dataset() -> SlayerDataset:
     return _qb("monthly", query(
         source_model="orders", dimensions=["status"],
         time_dimensions=[{"dimension": "ordered_at", "granularity": "month"}],
         measures=[m("sum(amount)", "rev")]))
 
 
-def bcast_qb_model() -> SlayerDataset:
+def bcast_qb_dataset() -> SlayerDataset:
     """Private stage ``bstage`` broadcasts ``sum(customers.spend)`` across ``status``."""
     return _qb(
         "bcast_qb",
@@ -185,7 +185,7 @@ def bcast_qb_model() -> SlayerDataset:
     )
 
 
-def jt_qb_model() -> SlayerDataset:
+def jt_qb_dataset() -> SlayerDataset:
     """``a`` depends on ``b`` only through a join target and is supplied first."""
     return _qb(
         "jt_qb",
@@ -200,7 +200,7 @@ def jt_qb_model() -> SlayerDataset:
     )
 
 
-def _sql_model(name: str, sql: str) -> SlayerDataset:
+def _sql_dataset(name: str, sql: str) -> SlayerDataset:
     return SlayerDataset(
         name=name, data_source="test", sql=sql,
         fields=[
@@ -245,21 +245,21 @@ EMBEDDED_WITH: Dict[str, "tuple[str, Dict[int, float]]"] = {
 }
 
 
-def embedded_with_models() -> List[SlayerDataset]:
-    return [_sql_model(name, sql) for name, (sql, _) in EMBEDDED_WITH.items()]
+def embedded_with_datasets() -> List[SlayerDataset]:
+    return [_sql_dataset(name, sql) for name, (sql, _) in EMBEDDED_WITH.items()]
 
 
-def query_backed_models() -> List[SlayerDataset]:
+def query_backed_datasets() -> List[SlayerDataset]:
     return [
-        rev_by_status_model(), status_share_model(), cust_rev_model(), ok_rev_model(),
-        qb_shadow_model(), monthly_model(), bcast_qb_model(), jt_qb_model(),
+        rev_by_status_dataset(), status_share_dataset(), cust_rev_dataset(), ok_rev_dataset(),
+        qb_shadow_dataset(), monthly_dataset(), bcast_qb_dataset(), jt_qb_dataset(),
     ]
 
 
-def dev1966_models() -> List[SlayerDataset]:
+def dev1966_datasets() -> List[SlayerDataset]:
     return [
-        orders_model(), customers_model(), clients_model(),
-        *query_backed_models(), *embedded_with_models(),
+        orders_dataset(), customers_dataset(), clients_dataset(),
+        *query_backed_datasets(), *embedded_with_datasets(),
     ]
 
 
@@ -295,13 +295,13 @@ def seed_duckdb(db_path: str) -> None:
 
 @asynccontextmanager
 async def dev1966_engine(
-    dialect: str, *, models: Optional[List[SlayerDataset]] = None,
+    dialect: str, *, datasets: Optional[List[SlayerDataset]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if dialect == "duckdb" else seed_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=dev1966_models() if models is None else models,
+        dialect=dialect, seed=seed, datasets=dev1966_datasets() if datasets is None else datasets,
     ) as (engine, _):
         yield engine
 
@@ -310,12 +310,12 @@ async def dev1966_engine(
 # Helpers.
 # --------------------------------------------------------------------------- #
 def explicit_splice(
-    model: SlayerDataset, *, rename: Optional[Dict[str, str]] = None,
+    dataset: SlayerDataset, *, rename: Optional[Dict[str, str]] = None,
 ) -> List[SlayerQuery]:
     """``model``'s stages as named user stages: private stages renamed per ``rename``, the final one
     named after the model."""
     rename = rename or {}
-    stages: List[SlayerQuery] = list(model.source_queries or [])
+    stages: List[SlayerQuery] = list(dataset.source_queries or [])
 
     def respell(spec: Union[str, DatasetExtension, SlayerDataset, None]) -> Union[str, DatasetExtension, SlayerDataset, None]:
         if isinstance(spec, str):
@@ -329,7 +329,7 @@ def explicit_splice(
 
     out = []
     for i, stage in enumerate(stages):
-        name = model.name if i == len(stages) - 1 else respell(stage.name)
+        name = dataset.name if i == len(stages) - 1 else respell(stage.name)
         extensions = [respell(e) for e in stage.extensions] if stage.extensions else stage.extensions
         out.append(stage.model_copy(update={"name": name, "population": respell(stage.population),
                                             "extensions": extensions}))

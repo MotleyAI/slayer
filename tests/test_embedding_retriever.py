@@ -72,7 +72,7 @@ def recording_embed(monkeypatch: pytest.MonkeyPatch) -> _RecordingEmbedBatch:
     return rec
 
 
-def _make_model() -> SlayerDataset:
+def _make_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -174,7 +174,7 @@ async def test_refresh_model_subtree_batches_all_children(
     recording_embed: _RecordingEmbedBatch,
 ) -> None:
     retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
-    model = _make_model()
+    model = _make_dataset()
     warnings = await retriever.refresh_dataset_subtree(model)
     assert warnings == []
     assert len(recording_embed.calls) == 1
@@ -198,7 +198,7 @@ async def test_refresh_model_subtree_hash_skips_unchanged(
     recording_embed: _RecordingEmbedBatch,
 ) -> None:
     retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
-    model = _make_model()
+    model = _make_dataset()
     await retriever.refresh_dataset_subtree(model)
     await retriever.refresh_dataset_subtree(model)
     assert len(recording_embed.calls) == 1
@@ -221,7 +221,7 @@ async def test_refresh_model_subtree_per_entry_failure_warns(
         "slayer.search.retrievers.embeddings.embed_batch", partial_failure,
     )
     retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
-    model = _make_model()
+    model = _make_dataset()
     warnings = await retriever.refresh_dataset_subtree(model)
     assert len(warnings) == 1
     assert "embedding refresh failed" in warnings[0]
@@ -235,7 +235,7 @@ async def test_refresh_model_subtree_hidden_model_short_circuits(
     recording_embed: _RecordingEmbedBatch,
 ) -> None:
     retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
-    model = _make_model()
+    model = _make_dataset()
     model.hidden = True
     warnings = await retriever.refresh_dataset_subtree(model)
     assert warnings == []
@@ -317,7 +317,7 @@ async def test_apply_pending_uses_batched_storage_calls(
     retriever = EmbeddingRetriever(
         storage=cast(StorageBackend, counting), model_name="openai/x",
     )
-    model = _make_model()
+    model = _make_dataset()
     await retriever.refresh_dataset_subtree(model)
 
     assert counting.get_many_calls == 1
@@ -343,7 +343,7 @@ async def test_apply_pending_persists_partial_batch_on_some_embed_failures(
     retriever = EmbeddingRetriever(
         storage=cast(StorageBackend, counting), model_name="openai/x",
     )
-    model = _make_model()
+    model = _make_dataset()
     warnings = await retriever.refresh_dataset_subtree(model)
 
     assert len(warnings) == 1
@@ -394,7 +394,7 @@ async def test_retrieve_does_one_fetch_corpus_and_one_embed_question(
     )
     memory = Memory(id="1", learning="hello cents",
                     entities=["dsx.orders.amount"])
-    model = _make_model()
+    model = _make_dataset()
     await retriever_for_setup.upsert_memory(memory)
     await retriever_for_setup.refresh_dataset_subtree(model)
 
@@ -524,7 +524,7 @@ async def test_delete_model_hook_is_no_op_today(
     """Codex Finding 6 (sister case): delete_model hook leaves
     embedding rows intact — storage owns the cascade."""
     retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
-    model = _make_model()
+    model = _make_dataset()
     await retriever.refresh_dataset_subtree(model)
     pre = await storage.list_embeddings(embedding_model_name="openai/x")
     assert len(pre) > 0
@@ -540,7 +540,7 @@ async def test_delete_datasource_hook_is_no_op_today(
     recording_embed: _RecordingEmbedBatch,
 ) -> None:
     retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
-    model = _make_model()
+    model = _make_dataset()
     await retriever.refresh_datasource(name="dsx", datasets=[model])
     pre = await storage.list_embeddings(embedding_model_name="openai/x")
     assert len(pre) > 0

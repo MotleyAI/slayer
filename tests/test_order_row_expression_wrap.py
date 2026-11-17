@@ -7,7 +7,7 @@ from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
-from tests.test_dev1733_order_only_transform_composite import _SEED, _save_models
+from tests.test_dev1733_order_only_transform_composite import _SEED, _save_datasets
 
 
 @pytest.fixture
@@ -17,7 +17,7 @@ async def engine(tmp_path):
         conn.executescript(_SEED)
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=str(db)))
-    await _save_models(storage)
+    await _save_datasets(storage)
     return SlayerQueryEngine(storage=storage)
 
 

@@ -27,7 +27,7 @@ from slayer.search.index import (
 from slayer.search.retrievers.tantivy import TantivyRetriever
 
 
-def _model(name: str = "orders") -> SlayerDataset:
+def _dataset(name: str = "orders") -> SlayerDataset:
     return SlayerDataset(
         name=name,
         sql_table=name,
@@ -53,7 +53,7 @@ def _memories() -> list[Memory]:
 def _build_corpus() -> Corpus:
     return build_in_memory_corpus(
         memories=_memories(),
-        datasets=[_model()],
+        datasets=[_dataset()],
         datasources=["mydb"],
     )
 
@@ -240,7 +240,7 @@ async def test_memory_hits_with_no_memory_id_are_skipped() -> None:
 async def test_default_no_op_write_hooks() -> None:
     retriever = TantivyRetriever()
     memory = Memory(id="1", learning="x", entities=[])
-    model = _model()
+    model = _dataset()
     assert await retriever.upsert_memory(memory) == []
     assert await retriever.refresh_dataset_subtree(model) == []
     assert await retriever.refresh_datasource(

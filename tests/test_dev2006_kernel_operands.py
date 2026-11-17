@@ -59,7 +59,7 @@ from tests._dev2006_fixtures import (
     by_customer,
     by_customer_month,
     dev2006_bundle,
-    dev2006_models,
+    dev2006_datasets,
     m,
     make_exec_engine,
     month_td,
@@ -98,8 +98,8 @@ def _approx(actual: dict, expected: dict) -> None:
 
 
 async def _sql(query) -> str:
-    models = dev2006_models()
-    return await _engine_generate(query=query, model=models[0], extra_models=models[1:], dialect="duckdb")
+    models = dev2006_datasets()
+    return await _engine_generate(query=query, dataset=models[0], extra_datasets=models[1:], dialect="duckdb")
 
 
 def _plan(query, *, root: str = "account_snapshots") -> PlannedQuery:

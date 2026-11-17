@@ -19,11 +19,11 @@ from tests._engine_helpers import _engine_generate
 from tests._query_heal_fixtures import (
     BACKENDS,
     assert_equivalent,
-    customers_model,
+    customers_dataset,
     heal_engine,
-    order_items_model,
-    orders_model,
-    products_model,
+    order_items_dataset,
+    orders_dataset,
+    products_dataset,
     table,
 )
 
@@ -123,11 +123,11 @@ class TestCountDistinctExecuted:
         )
 
     async def test_mode_a_distinct_unchanged(self) -> None:
-        orders = orders_model()
+        orders = orders_dataset()
         orders.fields.append(DatasetField(name="n_customers", sql="COUNT(DISTINCT customer_id)", datatype=DataType.INT))
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(n_customers)"]}),
-            model=orders, extra_models=[customers_model(), order_items_model(), products_model()],
+            dataset=orders, extra_datasets=[customers_dataset(), order_items_dataset(), products_dataset()],
         )
         assert "COUNT(DISTINCT" in sql.upper()
 

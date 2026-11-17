@@ -33,7 +33,7 @@ from slayer.sql.dialects import SqliteDialect, get_dialect
 from slayer.sql.dialects.reflection import column_from_sa_type
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2171_fixtures import (
-    collect_over_engine, column, cube_issues, cube_report_messages, models_of, run_cli, source_column, stored_model,
+    collect_over_engine, column, cube_issues, cube_report_messages, datasets_of, run_cli, source_column, stored_dataset,
     typing_notes, write_yaml,
 )
 from tests._engine_helpers import _engine_generate, disposable_engine
@@ -54,7 +54,7 @@ def _cube(*cubes: dict[str, Any], dialect: str | None = "postgres", engine: sa.E
     return converter.convert()
 
 
-def _models(result: CubeConversionResult) -> dict[str, SlayerDataset]:
+def _datasets(result: CubeConversionResult) -> dict[str, SlayerDataset]:
     return {m.name: m for m in result.datasets}
 
 
@@ -65,14 +65,14 @@ def _columns_read(sql: str, *, dialect: str = "postgres") -> set[str]:
 # ── stored text per dialect ───────────────────────────────────────────────
 
 def test_postgres_stores_the_folded_table_and_columns() -> None:
-    items = _models(_cube(ITEMS))["items"]
+    items = _datasets(_cube(ITEMS))["items"]
     assert items.sql_table == "sales.orderitems"
     assert column(items, "amount").physical_name == "orderamount"
     assert source_column(items, "total").physical_name == "orderamount"
 
 
 def test_a_dialect_that_does_not_fold_stores_as_written() -> None:
-    items = _models(_cube(ITEMS, dialect="duckdb"))["items"]
+    items = _datasets(_cube(ITEMS, dialect="duckdb"))["items"]
     assert items.sql_table == "Sales.OrderItems"
     assert column(items, "amount").physical_name == "OrderAmount"
 
@@ -80,14 +80,14 @@ def test_a_dialect_that_does_not_fold_stores_as_written() -> None:
 def test_quoted_names_literals_comments_and_logical_references_kept() -> None:
     result = _cube({"name": "orders", "sql_table": "orders", "dimensions": [
         {"name": "label", "sql": "CONCAT({CUBE}.\"Status\", 'Paid', {CUBE}.Region) -- Note", "type": "string"}]})
-    assert column(_models(result)["orders"], "label").sql == "CONCAT(\"Status\", 'Paid', region) -- Note"
+    assert column(_datasets(result)["orders"], "label").sql == "CONCAT(\"Status\", 'Paid', region) -- Note"
 
 
 def test_names_local_to_a_source_query() -> None:
     result = _cube({"name": "recent", "dimensions": [{"name": "total", "sql": "{CUBE}.total", "type": "number"}],
                     "sql": "WITH Recent AS (SELECT Qty AS Total FROM Sales.OrderItems) "
                            "SELECT Total FROM Recent ORDER BY Total"})
-    recent = _models(result)["recent"]
+    recent = _datasets(result)["recent"]
     assert recent.sql == ("WITH recent AS (SELECT qty AS total FROM sales.orderitems) "
                           "SELECT total FROM recent ORDER BY total")
     assert recent.get_field("total") is not None
@@ -96,7 +96,7 @@ def test_names_local_to_a_source_query() -> None:
 def test_calculated_measure_with_a_mixed_case_operand() -> None:
     result = _cube({"name": "orders", "sql_table": "orders", "metrics": [
         {"name": "paid_amount", "datatype": "number", "sql": "SUM(CASE WHEN {CUBE}.Status = 'paid' THEN {CUBE}.Amount END)"}]})
-    operand = source_column(_models(result)["orders"], "paid_amount").sql
+    operand = source_column(_datasets(result)["orders"], "paid_amount").sql
     assert operand is not None
     assert _columns_read(operand) == {"status", "amount"}
     assert "'paid'" in operand
@@ -110,7 +110,7 @@ def test_mixed_case_foreign_physical_join_keys() -> None:
         {"name": "customers", "sql_table": "customers",
          "dimensions": [{"name": "id", "sql": "{CUBE}.id", "type": "number", "primary_key": True}]},
     )
-    models = _models(result)
+    models = _datasets(result)
     (join,) = models["orders"].relationships
     ((src, tgt),) = join.join_pairs
     assert column(models["orders"], src).physical_name == "custid"
@@ -128,7 +128,7 @@ def test_filter_params_string_bodies_fold_and_keep_their_variables() -> None:
     ], "segments": [{"name": "recent", "sql": (
         "{CUBE}.CreatedAt > '2020-01-01' AND {FILTER_PARAMS.orders.CreatedOn.filter('CreatedAt')} "
         "AND {FILTER_PARAMS.orders.brand.filter('\"Brand\"')} AND {FILTER_PARAMS.orders.region.filter('Region')}")}]})
-    orders = _models(result)["orders"]
+    orders = _datasets(result)["orders"]
     assert column(orders, "recent").sql == (
         "createdat > '2020-01-01' AND {? createdat IN ({CreatedOn}) ?} "
         "AND {? \"Brand\" IN ({brand}) ?} AND region IN ({region})")
@@ -142,7 +142,7 @@ def test_filter_params_arrow_body_folds() -> None:
         "'Fol.CreatedAt >= ' + from + ' AND Fol.\"FD\" <= ' + to)}`,\n"
         "  dimensions: { created: { sql: `${CUBE}.CreatedAt`, type: `time` } }\n"
         "});\n")
-    orders = _models(_cube(project=CubeProject(cubes=parsed.cubes, views=parsed.views)))["orders"]
+    orders = _datasets(_cube(project=CubeProject(cubes=parsed.cubes, views=parsed.views)))["orders"]
     assert orders.sql == ("SELECT * FROM fol WHERE {? fol.createdat >= '{created_from}' "
                           "AND fol.\"FD\" <= '{created_to}' ?}")
     assert column(orders, "created").physical_name == "createdat"
@@ -154,7 +154,7 @@ def test_unparseable_mixed_case_dimension_is_dropped() -> None:
     result = _cube({"name": "orders", "sql_table": "orders", "dimensions": [
         {"name": "id", "sql": "{CUBE}.id", "type": "number", "primary_key": True},
         {"name": "doubled", "sql": "{CUBE}.Amount +* 2", "type": "number"}]})
-    orders = _models(result)["orders"]
+    orders = _datasets(result)["orders"]
     assert orders.get_field("doubled") is None
     assert orders.get_field("id") is not None
     issues = cube_issues(result, "doubled")
@@ -166,20 +166,20 @@ def test_unparseable_mixed_case_source_query_drops_its_model() -> None:
                     "dimensions": [{"name": "qty", "sql": "{CUBE}.qty", "type": "number"}]},
                    {"name": "orders", "sql_table": "orders",
                     "dimensions": [{"name": "id", "sql": "{CUBE}.id", "type": "number", "primary_key": True}]})
-    assert set(_models(result)) == {"orders"}
+    assert set(_datasets(result)) == {"orders"}
     assert [i for i in cube_issues(result, "broken") if "identifier" in i.message.lower()]
 
 
 def test_unread_cube_sql_beside_its_table_is_not_folded() -> None:
     result = _cube({"name": "orders", "sql_table": "Orders", "sql": "SELECT Qty +* 2",
                     "dimensions": [{"name": "id", "sql": "{CUBE}.id", "type": "number"}]})
-    assert _models(result)["orders"].sql_table == "orders"
+    assert _datasets(result)["orders"].sql_table == "orders"
 
 
 def test_unparseable_mixed_case_table_name_drops_its_model() -> None:
     result = _cube({"name": "broken", "sql_table": "Sales.Order Items",
                     "dimensions": [{"name": "qty", "sql": "{CUBE}.qty", "type": "number"}]})
-    assert "broken" not in _models(result)
+    assert "broken" not in _datasets(result)
     assert [i for i in cube_issues(result, "broken") if "identifier" in i.message.lower()]
 
 
@@ -187,9 +187,9 @@ def test_unparseable_mixed_case_table_name_drops_its_model() -> None:
 
 @pytest.mark.parametrize("dialect", ["snowflake", "oracle"])
 async def test_folding_dialect_generates_unquoted_folded_names(dialect: str) -> None:
-    items = _models(_cube(ITEMS, dialect=dialect))["items"]
+    items = _datasets(_cube(ITEMS, dialect=dialect))["items"]
     sql = await _engine_generate(query=SlayerQuery.model_validate({"population": "items", "dimensions": ["amount"]}),
-                                 model=items, dialect=dialect)
+                                 dataset=items, dialect=dialect)
     tree = sqlglot.parse_one(sql, read=dialect)
     (table,) = tree.find_all(exp.Table)
     assert [(p.name, p.quoted) for p in cast(list[exp.Identifier], table.parts)] == [
@@ -221,7 +221,7 @@ def snowflake_reflection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Ite
 def test_folded_and_exact_live_spellings_on_snowflake(snowflake_reflection: sa.Engine) -> None:
     result = _cube({"name": "t", "sql_table": "t", "dimensions": [{"name": "f", "sql": "{CUBE}.foo", "type": "number"}]},
                    dialect="snowflake", engine=snowflake_reflection)
-    assert _models(result)["t"].get_field("f") is None
+    assert _datasets(result)["t"].get_field("f") is None
     assert [i for i in cube_issues(result, "f") if "ambiguous" in i.message and "foo" in i.message]
 
 
@@ -237,7 +237,7 @@ def test_offline_mixed_case_cube_is_refused() -> None:
 def test_offline_lowercase_cube_imports() -> None:
     result = _cube({"name": "items", "sql_table": "sales.orderitems",
                     "dimensions": [{"name": "amount", "sql": "{CUBE}.order_amount", "type": "number"}]}, dialect=None)
-    assert _models(result)["items"].sql_table == "sales.orderitems"
+    assert _datasets(result)["items"].sql_table == "sales.orderitems"
 
 
 @pytest.mark.parametrize("semantic_model, raw_code, named", [
@@ -264,14 +264,14 @@ def _dbt(*semantic_models: dict[str, Any], regular: list[dict[str, Any]], dialec
 def test_offline_mixed_case_sql_no_semantic_model_reads_is_ignored() -> None:
     result = _dbt({"name": "items", "model": "orders", "dimensions": [{"name": "qty", "type": "categorical"}]},
                   regular=[{"name": "unused", "raw_code": "SELECT Qty FROM orders"}], dialect=None).convert()
-    assert models_of(result)["items"].sql_table == "orders"
+    assert datasets_of(result)["items"].sql_table == "orders"
 
 
 def test_regular_model_config_block_is_stripped_before_folding() -> None:
     result = _dbt({"name": "items", "model": "src", "dimensions": [{"name": "qty", "type": "categorical"}]},
                   regular=[{"name": "src", "raw_code": "{{ config(materialized='table') }}\nSELECT Qty FROM orders"}],
                   dialect="postgres").convert()
-    sql = models_of(result)["items"].sql
+    sql = datasets_of(result)["items"].sql
     assert sql is not None
     assert _columns_read(sql) == {"qty"}
 
@@ -280,7 +280,7 @@ def test_declared_type_matches_the_folded_column() -> None:
     result = _dbt({"name": "items", "model": "orders", "dimensions": [{"name": "Qty", "type": "categorical"}]},
                   regular=[{"name": "orders", "fields": [{"name": "Qty", "data_type": "integer"}]}],
                   dialect="postgres").convert()
-    assert column(models_of(result)["items"], "Qty").datatype is DataType.INT
+    assert column(datasets_of(result)["items"], "Qty").datatype is DataType.INT
 
 
 def test_source_resolution_report_survives_metadata_collection(tmp_path: Path) -> None:
@@ -331,7 +331,7 @@ def test_offline_lowercase_cli_import_succeeds(tmp_path: Path, command: str) -> 
     store = tmp_path / "store"
     assert run_cli(command, str(project), "--datasource", "missing_ds", "--storage", str(store)) == 0
     expected = "sales.orderitems" if command == "import-cube" else "orderitems"
-    assert stored_model(store, "items").sql_table == expected
+    assert stored_dataset(store, "items").sql_table == expected
 
 
 def test_configured_but_unreachable_datasource_folds(tmp_path: Path) -> None:
@@ -345,7 +345,7 @@ def test_configured_but_unreachable_datasource_folds(tmp_path: Path) -> None:
     finally:
         engine_factory.invalidate_engine(datasource)
     assert code == 0
-    assert stored_model(store, "items").sql_table == "sales.orderitems"
+    assert stored_dataset(store, "items").sql_table == "sales.orderitems"
     assert typing_notes(i["message"] for i in cube_report_messages(store) if i["severity"] == "info")
 
 

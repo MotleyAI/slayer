@@ -14,7 +14,7 @@ from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
 
-def _model_with_join() -> SlayerDataset:
+def _dataset_with_relationship() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -70,7 +70,7 @@ def test_old_v7_join_without_new_fields_validates() -> None:
 async def test_yaml_roundtrip_preserves_join_fields() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         storage = YAMLStorage(base_dir=tmp)
-        await storage.save_dataset(_model_with_join())
+        await storage.save_dataset(_dataset_with_relationship())
         loaded = await storage.get_dataset("orders", data_source="testds")
         assert loaded is not None
         assert loaded.relationships[0].description == "Each order has one customer."
@@ -82,7 +82,7 @@ async def test_yaml_roundtrip_preserves_join_fields() -> None:
 async def test_sqlite_roundtrip_preserves_join_fields() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         storage = SQLiteStorage(db_path=f"{tmp}/s.db")
-        await storage.save_dataset(_model_with_join())
+        await storage.save_dataset(_dataset_with_relationship())
         loaded = await storage.get_dataset("orders", data_source="testds")
         assert loaded is not None
         assert loaded.relationships[0].description == "Each order has one customer."

@@ -24,7 +24,7 @@ _BIG = "id * 3000000000"
 _QUERY = SlayerQuery.model_validate({"population": "t", "dimensions": ["big"], "order": [{"field": "big"}]})
 
 
-def _model(sql: str, *, data_source: str = "ds") -> SlayerDataset:
+def _dataset(sql: str, *, data_source: str = "ds") -> SlayerDataset:
     return SlayerDataset(name="t", sql_table="t", data_source=data_source, fields=[
         DatasetField(name="id", datatype=DataType.INT, primary_key=True),
         DatasetField(name="big", sql=sql, datatype=DataType.INT),
@@ -43,12 +43,12 @@ def _model(sql: str, *, data_source: str = "ds") -> SlayerDataset:
     ("trino", "BIGINT"),
 ])
 async def test_derived_int_column_casts_to_the_64_bit_type(dialect: str, target: str) -> None:
-    sql = await _engine_generate(query=_QUERY, model=_model(_BIG), dialect=dialect)
+    sql = await _engine_generate(query=_QUERY, dataset=_dataset(_BIG), dialect=dialect)
     assert f"3000000000 AS {target})" in sql, sql
 
 
 async def test_no_double_cast() -> None:
-    sql = await _engine_generate(query=_QUERY, model=_model(f"CAST({_BIG} AS BIGINT)"), dialect="postgres")
+    sql = await _engine_generate(query=_QUERY, dataset=_dataset(f"CAST({_BIG} AS BIGINT)"), dialect="postgres")
     projection = next(line for line in sql.splitlines() if '"t.big"' in line and "CAST(" in line)
     assert projection.count("CAST(") == 1, sql
 
@@ -56,7 +56,7 @@ async def test_no_double_cast() -> None:
 async def _values(tmp_path: Path, ds: DatasourceConfig) -> list[Any]:
     storage = YAMLStorage(base_dir=str(tmp_path / "models"))
     async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
-        await storage.save_dataset(_model(_BIG, data_source=ds.name))
+        await storage.save_dataset(_dataset(_BIG, data_source=ds.name))
         return [row["t.big"] for row in (await engine.execute(_QUERY)).data]
 
 

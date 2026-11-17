@@ -24,35 +24,35 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1853_fixtures import chain_models, parallel_engine, parallel_models
+from tests._dev1853_fixtures import chain_datasets, parallel_engine, parallel_datasets
 from tests._edge_graph_fixtures import edge_graph
 import slayer.engine.bundle_builder
 
 
 
-def _by(models: list[SlayerDataset]) -> dict[str, SlayerDataset]:
-    return {m.name: m for m in models}
+def _by(datasets: list[SlayerDataset]) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in datasets}
 
 
 class TestBidirectionalReachability:
     def test_reverse_neighbors_are_reachable(self) -> None:
-        models = _by(chain_models())
+        models = _by(chain_datasets())
         assert "orders" in reachable(root=models["customers"], datasets_by_name=models)
         assert "orders" in reachable(root=models["regions"], datasets_by_name=models)
 
     def test_reverse_route_is_unique_on_a_single_edge(self) -> None:
-        models = _by(chain_models())
+        models = _by(chain_datasets())
         assert count_routes(root=models["customers"], target="orders", datasets_by_name=models) == 1
 
 
 class TestParallelEdgesAreDistinctRoutes:
     def test_route_counting_reports_ambiguous(self) -> None:
-        models = _by(parallel_models(named=False))
+        models = _by(parallel_datasets(named=False))
         assert count_routes(root=models["orders"], target="customers", datasets_by_name=models, cap=5) == 2
         assert count_routes(root=models["customers"], target="orders", datasets_by_name=models, cap=5) == 2
 
     def test_named_parallel_edges_also_count_as_two_routes(self) -> None:
-        models = _by(parallel_models(named=True))
+        models = _by(parallel_datasets(named=True))
         assert count_routes(root=models["orders"], target="customers", datasets_by_name=models, cap=5) == 2
 
 
@@ -68,11 +68,11 @@ class TestEdgeNameShadowsModelToken:
         assert list(route.tokens) == ["c"]
 
 
-async def _engine_for(models, tmpdir: str) -> SlayerQueryEngine:
+async def _engine_for(datasets, tmpdir: str) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=tmpdir)
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-    for model in models:
+    for model in datasets:
         await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage)
 

@@ -26,7 +26,7 @@ async def _engine(tmp_path: Path) -> tuple[SlayerQueryEngine, str]:
     return SlayerQueryEngine(storage=storage), db
 
 
-def _model(sql: str) -> SlayerDataset:
+def _dataset(sql: str) -> SlayerDataset:
     return SlayerDataset(name="m", sql=sql, data_source="ds", fields=[
         DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
         DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
@@ -42,7 +42,7 @@ async def _verdict(engine: SlayerQueryEngine) -> list[WholeDatasetDelete]:
 async def test_broken_sql_over_a_quoted_table_is_invalid_sql(tmp_path: Path, table: str) -> None:
     engine, _ = await _engine(tmp_path)
     try:
-        await engine.storage.save_dataset(_model(f"SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM {table}"))
+        await engine.storage.save_dataset(_dataset(f"SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM {table}"))
         (entry,) = await _verdict(engine)
         assert entry.cause == "invalid_sql"
     finally:
@@ -53,7 +53,7 @@ async def test_broken_sql_over_a_quoted_table_is_invalid_sql(tmp_path: Path, tab
 async def test_dropped_column_of_a_quoted_table_is_drift(tmp_path: Path, table: str) -> None:
     engine, db = await _engine(tmp_path)
     try:
-        await engine.storage.save_dataset(_model(f"SELECT id, amount FROM {table}"))
+        await engine.storage.save_dataset(_dataset(f"SELECT id, amount FROM {table}"))
         with transaction(db) as conn:
             conn.execute(f"ALTER TABLE {table} DROP COLUMN amount")
         (entry,) = await _verdict(engine)

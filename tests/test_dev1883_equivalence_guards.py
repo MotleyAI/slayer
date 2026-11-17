@@ -35,7 +35,7 @@ def _mtd(*grans_and_cols: tuple) -> SlayerQuery:
     )
 
 
-async def _orders_model(engine: SlayerQueryEngine, **overrides):
+async def _orders_dataset(engine: SlayerQueryEngine, **overrides):
     """The orders model (asserted present), with optional field overrides applied."""
     model = await engine.storage.get_dataset("orders")
     assert model is not None
@@ -57,20 +57,20 @@ class TestMainTimeDimensionAmbiguity:
         assert "date_trunc('year', created_at)" in msg
 
     async def test_unit_resolve_raises_on_same_column_buckets(self, engine) -> None:
-        model = await _orders_model(engine)
+        model = await _orders_dataset(engine)
         q = _mtd(("month", "created_at"), ("year", "created_at"))
         with pytest.raises(AmbiguousReferenceError):
             _resolve_main_time_dimension(query=q, dataset=model)
 
     async def test_single_bucket_still_resolves(self, engine) -> None:
-        model = await _orders_model(engine)
+        model = await _orders_dataset(engine)
         td = TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)
         q = SlayerQuery(population="orders", time_dimensions=[td], main_time_dimension="created_at")
         # A lone TD ignores main_time_dimension and resolves regardless.
         assert _resolve_main_time_dimension(query=q, dataset=model) is td
 
     async def test_distinct_columns_still_resolve(self, engine) -> None:
-        model = await _orders_model(engine)
+        model = await _orders_dataset(engine)
         q = _mtd(("month", "created_at"), ("year", "customers.created_at"))
         resolved = _resolve_main_time_dimension(query=q, dataset=model)
         assert resolved is not None
@@ -79,7 +79,7 @@ class TestMainTimeDimensionAmbiguity:
     async def test_ambiguous_default_resolves_to_none(self, engine) -> None:
         # A passive model default can't pick a bucket: resolve to None (lenient) so
         # no-transform queries still run; a transform then fails at point of use.
-        model = await _orders_model(engine, default_time_dimension="created_at")
+        model = await _orders_dataset(engine, default_time_dimension="created_at")
         q = fx.q(
             source_model="orders",
             time_dimensions=[
@@ -91,7 +91,7 @@ class TestMainTimeDimensionAmbiguity:
         assert _resolve_main_time_dimension(query=q, dataset=model) is None
 
     async def test_default_time_dimension_single_host_match_resolves(self, engine) -> None:
-        model = await _orders_model(engine, default_time_dimension="created_at")
+        model = await _orders_dataset(engine, default_time_dimension="created_at")
         q = fx.q(
             source_model="orders",
             time_dimensions=[
@@ -107,7 +107,7 @@ class TestMainTimeDimensionAmbiguity:
     async def _orders_with_default_axis(self, tmp_path):
         engine = await fx.build_engine(tmp_path)
         await engine.storage.save_dataset(
-            await _orders_model(engine, default_time_dimension="created_at")
+            await _orders_dataset(engine, default_time_dimension="created_at")
         )
         return engine
 

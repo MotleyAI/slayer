@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from slayer.engine.plan import plan_query
 
-from tests._dev1840_fixtures import bundle, dev1840_models
+from tests._dev1840_fixtures import bundle, dev1840_datasets
 from tests._dev1841_fixtures import DatasetMetric, assoc_q
 
 CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
@@ -43,7 +43,7 @@ class TestAssociationKernel:
         planned = plan_query(
             query=assoc_q(dimensions=["status"], measures=[CM],
                           filters=["customers.plans.level = 'basic'"]),
-            bundle=bundle(dev1840_models(strong_plans=False)))
+            bundle=bundle(dev1840_datasets(strong_plans=False)))
         (att,) = _association_attaches(planned)
         assert list(att.producer_plan.semi_join_filters) == []
         assert any("basic" in t for t in att.association_restricted_filter_texts)

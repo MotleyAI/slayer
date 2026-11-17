@@ -152,9 +152,9 @@ async def _gen(
     """Render ``query`` against the orders_x chain and return the SQL."""
     return await _engine_generate(
         query=query,
-        model=_orders_x(extra_columns=orders_extra),
+        dataset=_orders_x(extra_columns=orders_extra),
         dialect=dialect,
-        extra_models=[
+        extra_datasets=[
             _customers_v2(extra_columns=customers_extra),
             _regions(extra_columns=regions_extra),
             _countries(),

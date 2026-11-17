@@ -18,7 +18,7 @@ from tests._dev2073_fixtures import (
     DS,
     SHIPPING_PAIRS,
     Live,
-    addresses_model,
+    addresses_dataset,
     join_to,
     live,
     named_pair,
@@ -41,7 +41,7 @@ async def drifted() -> AsyncIterator[Live]:
         # Shipping first, so a first-match-by-target removal picks the wrong edge.
         orders = orders_with(*reversed(named_pair()))
         orders = orders.model_copy(update={"fields": [c for c in orders.fields if c.name != "customer_id"]})
-        for model in (addresses_model(), orders):
+        for model in (addresses_dataset(), orders):
             await lv.storage.save_dataset(model)
         yield lv
 
@@ -113,7 +113,7 @@ _ROUTE_FKS = {"subscription_id": "subscription", "customer_id": "customer", "con
               "promo_id": "promo"}
 
 
-def _route_models() -> list[SlayerDataset]:
+def _route_datasets() -> list[SlayerDataset]:
     return [
         SlayerDataset(
             name=table, data_source=DS, sql_table=table,
@@ -143,7 +143,7 @@ class TestEveryHopOfTheRouteCounts:
     ])
     async def test_stage_cascades_on_any_hop_it_walks(self, dropped_fk: str, removed: set[str]) -> None:
         async with live(_live_without(dropped_fk)) as lv:
-            for model in _route_models():
+            for model in _route_datasets():
                 await lv.storage.save_dataset(model)
             for name, dim in (("full", "subscription.customer.consumer.email"), ("short", "consumer.email")):
                 stage = SlayerQuery.model_validate(

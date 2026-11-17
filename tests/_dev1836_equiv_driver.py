@@ -54,11 +54,11 @@ _SQLITE_TYPE = {
 }
 
 
-def _physical_columns(model: SlayerDataset) -> list[DatasetField]:
+def _physical_columns(dataset: SlayerDataset) -> list[DatasetField]:
     """Only bare/identity columns are real table columns; a ``sql`` expression
     (derived/filtered) or a filter-bearing column is computed by the query."""
     out: list[DatasetField] = []
-    for c in model.fields:
+    for c in dataset.fields:
         sql = getattr(c, "sql", None)
         if getattr(c, "filter", None) is not None:
             # a filtered column's PHYSICAL backing (its sql) is a separate col;
@@ -83,8 +83,8 @@ def _rand_value(dtype, rng: random.Random):
     return rng.choice(["a", "b", "c", "web", "app", "ok", "hold", None])
 
 
-def _topo(models: list[SlayerDataset]) -> list[SlayerDataset]:
-    by = {m.name: m for m in models}
+def _topo(datasets: list[SlayerDataset]) -> list[SlayerDataset]:
+    by = {m.name: m for m in datasets}
     seen: set[str] = set()
     out: list[SlayerDataset] = []
 
@@ -97,16 +97,16 @@ def _topo(models: list[SlayerDataset]) -> list[SlayerDataset]:
                 visit(by[j.to])
         out.append(m)
 
-    for m in models:
+    for m in datasets:
         visit(m)
     return out
 
 
-def seed_sqlite(models: list[SlayerDataset], db_path: str, *, seed: int = 20240501, n_rows: int = 9) -> None:
+def seed_sqlite(datasets: list[SlayerDataset], db_path: str, *, seed: int = 20240501, n_rows: int = 9) -> None:
     rng = random.Random(seed)
     with transaction(db_path) as con:
         pk_values: dict[str, dict[str, list]] = {}
-        for m in _topo(models):
+        for m in _topo(datasets):
             if not m.sql_table:
                 continue
             cols = _physical_columns(m)
@@ -154,28 +154,28 @@ def _canon_rows(rows):
     return sorted([str(x) for x in out])
 
 
-def _build_engine(models, db_path, store_dir):
+def _build_engine(datasets, db_path, store_dir):
     storage = YAMLStorage(base_dir=store_dir)
     run_sync(storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db_path)))
     # some fixtures use data_source "test"; force it consistently
-    for m in models:
+    for m in datasets:
         m = m.model_copy(update={"data_source": "test"})
         run_sync(storage.save_dataset(m, _validate=False))
     return SlayerQueryEngine(storage=storage)
 
 
-def _get_models(fixtures_mod, models_fn):
+def _get_datasets(fixtures_mod, datasets_fn):
     if fixtures_mod is None:
         gm = importlib.import_module("tests.test_dev1745_golden_sql")
         return [gm._orders(), gm._customers(), gm._regions()]
     fm = importlib.import_module(fixtures_mod)
-    return list(getattr(fm, models_fn)())
+    return list(getattr(fm, datasets_fn)())
 
 
-def run_module(module_name, fixtures_mod, models_fn, tmp):
+def run_module(module_name, fixtures_mod, datasets_fn, tmp):
     mod = importlib.import_module(module_name)
     cases = mod._cases()
-    models = _get_models(fixtures_mod, models_fn)
+    models = _get_datasets(fixtures_mod, datasets_fn)
     db_path = os.path.join(tmp, module_name.split(".")[-1] + ".sqlite")
     if not os.path.exists(db_path):
         seed_sqlite(models, db_path)

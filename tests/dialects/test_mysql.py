@@ -188,12 +188,12 @@ async def test_mysql_outer_wrap_hoists_the_chain_with() -> None:
 # fast unit-level pins.
 
 
-async def _mysql_generate(query: SlayerQuery, model: SlayerDataset) -> str:
+async def _mysql_generate(query: SlayerQuery, dataset: SlayerDataset) -> str:
     """Render ``query`` for MySQL and return the full emitted SQL."""
-    return await _engine_generate(query=query, model=model, dialect="mysql")
+    return await _engine_generate(query=query, dataset=dataset, dialect="mysql")
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
@@ -221,7 +221,7 @@ async def test_mysql_time_shift_inner_cte_uses_backticks_not_ansi_quotes() -> No
         ],
         order=[OrderItem(field=FieldRef(name="created_at"), direction="asc")],
     )
-    sql = await _mysql_generate(q, _orders_model())
+    sql = await _mysql_generate(q, _orders_dataset())
     # No ANSI-quoted identifiers ANYWHERE — those would be MySQL string
     # literals and either fail SQL parsing or silently corrupt results.
     assert '"orders.' not in sql, (
@@ -277,7 +277,7 @@ async def test_mysql_nulls_last_emulation_orders_by_the_alias() -> None:
         fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
                  DatasetField(name="created_at", datatype=DataType.TIMESTAMP)],
     )
-    sql = await _engine_generate(query=_monthly_orders_query(), model=model, dialect="mysql")
+    sql = await _engine_generate(query=_monthly_orders_query(), dataset=model, dialect="mysql")
     order_clause = sql[sql.rindex("ORDER BY"):]
     assert "CASE WHEN `orders.created_at` IS NULL THEN 1 ELSE 0 END ASC" in order_clause
     assert "STR_TO_DATE" not in order_clause

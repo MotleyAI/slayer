@@ -44,9 +44,9 @@ def _entity(doc: dict[str, Any], level: str) -> dict[str, Any]:
     }[level]
 
 
-def _stored(models: dict[str, SlayerDataset], level: str) -> list[Any]:
+def _stored(datasets: dict[str, SlayerDataset], level: str) -> list[Any]:
     """The foreign entries recorded for ``level``'s entity of ``_shop``."""
-    orders = models["orders"]
+    orders = datasets["orders"]
     if level == "document":
         return (orders.meta or {})["osi_semantic_model"]["nonportable_extensions"]
     owner: Any = {

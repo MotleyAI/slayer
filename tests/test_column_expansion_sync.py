@@ -19,7 +19,7 @@ def _norm(sql: str) -> str:
     return " ".join(sql.split())
 
 
-def _model_a() -> SlayerDataset:
+def _dataset_a() -> SlayerDataset:
     return SlayerDataset(
         name="A",
         data_source="ds",
@@ -39,7 +39,7 @@ def _model_a() -> SlayerDataset:
     )
 
 
-def _model_b() -> SlayerDataset:
+def _dataset_b() -> SlayerDataset:
     return SlayerDataset(
         name="B",
         data_source="ds",
@@ -55,7 +55,7 @@ def _model_b() -> SlayerDataset:
 
 
 def test_bare_base_column_returns_name() -> None:
-    a = _model_a()
+    a = _dataset_a()
     out = expand_derived_refs_sync(
         sql=None, dataset=a, alias_path="A",
         datasets_by_name={"A": a}, dialect="sqlite",
@@ -66,7 +66,7 @@ def test_bare_base_column_returns_name() -> None:
 def test_local_derived_chain_inlines_sibling() -> None:
     """``c2 = A.c1 * 2`` with ``c1 = raw_a + 1`` inlines c1 parenthesised and
     qualifies the bare ``raw_a`` to the host alias."""
-    a = _model_a()
+    a = _dataset_a()
     out = expand_derived_refs_sync(
         sql="A.c1 * 2", dataset=a, alias_path="A",
         datasets_by_name={"A": a}, dialect="sqlite",
@@ -77,7 +77,7 @@ def test_local_derived_chain_inlines_sibling() -> None:
 def test_cross_table_derived_ref_inlines_joined_derived() -> None:
     """``A.bar / B.foo_normalized`` inlines B's derived ``foo_normalized``
     (qualified to the single-hop alias ``B``)."""
-    a, b = _model_a(), _model_b()
+    a, b = _dataset_a(), _dataset_b()
     out = expand_derived_refs_sync(
         sql="A.bar / B.foo_normalized", dataset=a, alias_path="A",
         datasets_by_name={"A": a, "B": b}, dialect="sqlite",
@@ -86,7 +86,7 @@ def test_cross_table_derived_ref_inlines_joined_derived() -> None:
 
 
 def test_bare_local_ref_qualifies_to_alias() -> None:
-    a = _model_a()
+    a = _dataset_a()
     out = expand_derived_refs_sync(
         sql="raw_a + 1", dataset=a, alias_path="A",
         datasets_by_name={"A": a}, dialect="sqlite",
@@ -115,7 +115,7 @@ def test_cycle_raises_column_cycle_error() -> None:
 def test_unknown_alias_left_untouched() -> None:
     """A ``<alias>.<col>`` whose alias is not a join target is left alone
     (likely a CTE / subquery alias the user wired up)."""
-    a = _model_a()
+    a = _dataset_a()
     out = expand_derived_refs_sync(
         sql="cte_x.value + A.bar", dataset=a, alias_path="A",
         datasets_by_name={"A": a}, dialect="sqlite",
@@ -129,7 +129,7 @@ def test_dev1752_subquery_inner_ref_not_qualified() -> None:
     """DEV-1752: qualification is gated on root scope. The OUTER ``bar``
     qualifies to the host alias; the inner ``bar`` (a column of the subquery's
     own FROM) is left bare even though ``bar`` is also a model column."""
-    a = _model_a()
+    a = _dataset_a()
     out = expand_derived_refs_sync(
         sql="bar IN (SELECT bar FROM other_tbl)", dataset=a, alias_path="A",
         datasets_by_name={"A": a}, dialect="sqlite",
@@ -143,7 +143,7 @@ def test_dev1752_root_inlines_while_subquery_local_untouched() -> None:
     because the buggy qualification branch never fired for a DERIVED inner
     column — only for trivial-base / non-model columns — so this guards against
     the fix over-gating root inlining, not the bug itself."""
-    a = _model_a()
+    a = _dataset_a()
     out = expand_derived_refs_sync(
         sql="c1 IN (SELECT c1 FROM other_tbl)", dataset=a, alias_path="A",
         datasets_by_name={"A": a}, dialect="sqlite",
@@ -156,7 +156,7 @@ def test_dev1752_nonroot_explicit_ref_not_requalified() -> None:
     qualified with the model name is left byte-for-byte untouched — it is NOT
     rewritten to the host alias. Proves non-root columns are untouched, not just
     coincidentally unchanged when alias == model name."""
-    a = _model_a()
+    a = _dataset_a()
     out = expand_derived_refs_sync(
         sql="bar IN (SELECT A.bar FROM other_tbl)", dataset=a, alias_path="A_host",
         datasets_by_name={"A": a}, dialect="sqlite",
@@ -168,7 +168,7 @@ def test_dev1752_nonroot_explicit_ref_not_requalified() -> None:
 def test_dev1752_set_operation_branches_leave_inner_bare() -> None:
     """DEV-1752: both legs of a UNION are non-root scopes; their inner columns
     stay bare even though ``bar`` is a model column."""
-    a = _model_a()
+    a = _dataset_a()
     out = expand_derived_refs_sync(
         sql="bar IN (SELECT bar FROM t1 UNION SELECT bar FROM t2)",
         dataset=a, alias_path="A",
@@ -180,7 +180,7 @@ def test_dev1752_set_operation_branches_leave_inner_bare() -> None:
 def test_dev1752_cte_body_leaves_inner_bare() -> None:
     """DEV-1752: a CTE (WITH) inside Mode-A is a non-root scope; refs in its
     body and its select stay bare."""
-    a = _model_a()
+    a = _dataset_a()
     out = expand_derived_refs_sync(
         sql="bar IN (WITH c AS (SELECT bar FROM t) SELECT bar FROM c)",
         dataset=a, alias_path="A",

@@ -55,7 +55,7 @@ def canonical(names) -> set[str]:
     return {f"{DS}.{n}" for n in names}
 
 
-async def graph_models(storage: StorageBackend) -> set[str]:
+async def graph_datasets(storage: StorageBackend) -> set[str]:
     return set(await search_graph.get_filtered_ids(MODELS, storage))
 
 
@@ -69,7 +69,7 @@ class _NoFingerprintYAML(YAMLStorage):
         return await StorageBackend.cache_identity(self)
 
 
-def _table_model(name: str) -> SlayerDataset:
+def _table_dataset(name: str) -> SlayerDataset:
     return SlayerDataset(name=name, sql_table="t", data_source=DS, fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)])
 
 
@@ -78,18 +78,18 @@ class TestGraphCache:
         fin = AccessFilteredStorage(store.storage, tags={"fin"}, bypass=False)
         hr = AccessFilteredStorage(store.storage, tags={"hr"}, bypass=False)
         for _ in range(3):
-            assert await graph_models(fin) == canonical(VISIBLE_TO_FIN)
-            assert await graph_models(hr) == canonical(VISIBLE_TO_HR)
+            assert await graph_datasets(fin) == canonical(VISIBLE_TO_FIN)
+            assert await graph_datasets(hr) == canonical(VISIBLE_TO_HR)
         assert len(search_graph._cache) <= 2
 
     async def test_short_lived_wrappers_never_share_a_graph(self, store: AccessStore) -> None:
         for _ in range(3):
             fin = AccessFilteredStorage(store.storage, tags={"fin"}, bypass=False)
-            assert await graph_models(fin) == canonical(VISIBLE_TO_FIN)
+            assert await graph_datasets(fin) == canonical(VISIBLE_TO_FIN)
             del fin
             gc.collect()
             hr = AccessFilteredStorage(store.storage, tags={"hr"}, bypass=False)
-            assert await graph_models(hr) == canonical(VISIBLE_TO_HR)
+            assert await graph_datasets(hr) == canonical(VISIBLE_TO_HR)
             del hr
             gc.collect()
         assert len(search_graph._cache) <= 2
@@ -99,24 +99,24 @@ class TestGraphCache:
             yaml_store = cast(YAMLStorage, s.storage)
             future = time.time() + 3600
             os.utime(os.path.join(yaml_store.datasources_dir, f"{DS}.yaml"), (future, future))
-            assert f"{DS}.pub" in await graph_models(AccessFilteredStorage(s.storage, tags={"fin"}, bypass=False))
+            assert f"{DS}.pub" in await graph_datasets(AccessFilteredStorage(s.storage, tags={"fin"}, bypass=False))
             pub = await must_get(s.storage, "pub")
             await s.storage.save_dataset(pub.model_copy(update={"access_tags": ["hr"]}), _validate=False)
-            assert f"{DS}.pub" not in await graph_models(AccessFilteredStorage(s.storage, tags={"fin"}, bypass=False))
+            assert f"{DS}.pub" not in await graph_datasets(AccessFilteredStorage(s.storage, tags={"fin"}, bypass=False))
 
     async def test_bypass_shares_the_inner_entry(self, store: AccessStore) -> None:
-        await graph_models(store.storage)
-        assert await graph_models(AccessFilteredStorage(store.storage, tags=set(), bypass=True)) == canonical(ALL_LOADABLE)
+        await graph_datasets(store.storage)
+        assert await graph_datasets(AccessFilteredStorage(store.storage, tags=set(), bypass=True)) == canonical(ALL_LOADABLE)
         assert len(search_graph._cache) == 1
 
     async def test_no_fingerprint_backend_rebuilds_after_a_change(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             storage = _NoFingerprintYAML(base_dir=tmp)
             await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite", database=os.path.join(tmp, "x.db")))
-            await storage.save_dataset(_table_model("first"), _validate=False)
-            assert await graph_models(storage) == canonical({"first"})
-            await storage.save_dataset(_table_model("second"), _validate=False)
-            assert await graph_models(storage) == canonical({"first", "second"})
+            await storage.save_dataset(_table_dataset("first"), _validate=False)
+            assert await graph_datasets(storage) == canonical({"first"})
+            await storage.save_dataset(_table_dataset("second"), _validate=False)
+            assert await graph_datasets(storage) == canonical({"first", "second"})
 
 
 class TestCacheIdentity:
@@ -155,7 +155,7 @@ class TestCacheIdentity:
         before = await fin.graph_fingerprint()
         assert before is not None
         assert before != await hr.graph_fingerprint()
-        await store.storage.save_dataset(_table_model("extra"), _validate=False)
+        await store.storage.save_dataset(_table_dataset("extra"), _validate=False)
         assert await fin.graph_fingerprint() != before
 
     async def test_wrapper_over_unknown_fingerprint_is_unknown(self) -> None:
@@ -168,7 +168,7 @@ class TestViewFreshness:
     async def test_view_follows_inner_writes(self, store: AccessStore) -> None:
         fin = AccessFilteredStorage(store.storage, tags={"fin"}, bypass=False)
         assert set(await fin.list_datasets(DS)) == VISIBLE_TO_FIN
-        await store.storage.save_dataset(_table_model("extra"), _validate=False)
+        await store.storage.save_dataset(_table_dataset("extra"), _validate=False)
         assert set(await fin.list_datasets(DS)) == VISIBLE_TO_FIN | {"extra"}
         pub = await must_get(store.storage, "pub")
         await store.storage.save_dataset(pub.model_copy(update={"access_tags": ["hr"]}), _validate=False)
@@ -179,11 +179,11 @@ class TestViewFreshness:
         with tempfile.TemporaryDirectory() as tmp:
             storage = _NoFingerprintYAML(base_dir=tmp)
             await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite", database=os.path.join(tmp, "x.db")))
-            await storage.save_dataset(_table_model("first"), _validate=False)
+            await storage.save_dataset(_table_dataset("first"), _validate=False)
             conn = PgConnection(asyncio.StreamReader(), cast(asyncio.StreamWriter, None), engine=None, storage=storage, catalog_ttl_seconds=0.0)
             conn._catalog = await conn._build_catalog()
             conn._catalog_fingerprint = await conn._read_fingerprint()
-            await storage.save_dataset(_table_model("second"), _validate=False)
+            await storage.save_dataset(_table_dataset("second"), _validate=False)
             await conn._maybe_refresh_catalog()
             assert conn._catalog is not None
             assert "second" in {t.name for s in conn._catalog.schemas for t in s.tables}

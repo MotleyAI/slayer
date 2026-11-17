@@ -35,17 +35,17 @@ def _inner(target: str) -> DatasetRelationship:
     return DatasetRelationship(to=target, join_pairs=[["x_id", "id"]], join_type=JoinType.INNER)
 
 
-def _by(models: list[SlayerDataset]) -> dict[str, SlayerDataset]:
-    return {m.name: m for m in models}
+def _by(datasets: list[SlayerDataset]) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in datasets}
 
 
-def _reach(models: list[SlayerDataset], root: str) -> set[str]:
-    by = _by(models)
+def _reach(datasets: list[SlayerDataset], root: str) -> set[str]:
+    by = _by(datasets)
     return set(reachable(root=by[root], datasets_by_name=by))
 
 
-def _path(models: list[SlayerDataset], root: str, target: str) -> list[str] | None:
-    by = _by(models)
+def _path(datasets: list[SlayerDataset], root: str, target: str) -> list[str] | None:
+    by = _by(datasets)
     route = shortest_route(root=by[root], target=target, datasets_by_name=by)
     return None if route is None else list(route.tokens)
 

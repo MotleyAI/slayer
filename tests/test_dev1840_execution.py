@@ -37,7 +37,7 @@ from tests._dev1840_fixtures import (
     SPEND_OK_APP_SPLIT_DEFECT,
     SPEND_WEB_AND_BASIC,
     SPEND_WEB_BY_TIER,
-    dev1840_models,
+    dev1840_datasets,
     make_exec_engine,
     month_key,
     q,
@@ -55,7 +55,7 @@ async def exec_backend(request):
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_weak(request):
     async for engine in make_exec_engine(
-        request, models=dev1840_models(strong_plans=False),
+        request, datasets=dev1840_datasets(strong_plans=False),
     ):
         yield request.param, engine
 
@@ -63,7 +63,7 @@ async def exec_backend_weak(request):
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_rev(request):
     async for engine in make_exec_engine(
-        request, models=dev1840_models(declare_reverse=True),
+        request, datasets=dev1840_datasets(declare_reverse=True),
     ):
         yield request.param, engine
 

@@ -67,7 +67,7 @@ DS_NAMED = "ds_named"
 # --------------------------------------------------------------------------- #
 # Model builders.
 # --------------------------------------------------------------------------- #
-def chain_models() -> list[SlayerDataset]:
+def chain_datasets() -> list[SlayerDataset]:
     """orders → customers → regions; region is a column on customers."""
     regions = SlayerDataset(
         name="regions", data_source=DS_CHAIN, sql_table="regions",
@@ -115,11 +115,11 @@ def chain_models() -> list[SlayerDataset]:
     return [orders, customers, regions]
 
 
-def chain_models_by_name() -> dict[str, SlayerDataset]:
-    return {m.name: m for m in chain_models()}
+def chain_datasets_by_name() -> dict[str, SlayerDataset]:
+    return {m.name: m for m in chain_datasets()}
 
 
-def pair_models() -> list[SlayerDataset]:
+def pair_datasets() -> list[SlayerDataset]:
     """prof ↔ acct one-to-one — both sides to-one, so two viable candidates tie."""
     acct = SlayerDataset(
         name="acct", data_source=DS_PAIR, sql_table="acct",
@@ -145,7 +145,7 @@ def pair_models() -> list[SlayerDataset]:
     return [acct, prof]
 
 
-def fan_models() -> list[SlayerDataset]:
+def fan_datasets() -> list[SlayerDataset]:
     """basket with two children — sibling dims have no to-one determiner."""
     basket = SlayerDataset(
         name="basket", data_source=DS_FAN, sql_table="basket",
@@ -182,7 +182,7 @@ def fan_models() -> list[SlayerDataset]:
     return [basket, items, pays]
 
 
-def ambig_models() -> list[SlayerDataset]:
+def ambig_datasets() -> list[SlayerDataset]:
     """shipment with two unnamed edges to depot — any depot hop is ambiguous."""
     depot = SlayerDataset(
         name="depot", data_source=DS_AMBIG, sql_table="depot",
@@ -213,7 +213,7 @@ def ambig_models() -> list[SlayerDataset]:
     return [depot, shipment]
 
 
-def unknown_models() -> list[SlayerDataset]:
+def unknown_datasets() -> list[SlayerDataset]:
     """hits → sess over an undeclared-cardinality hop into a keyless target.
 
     ``sess`` has no primary key or unique column, so the hop is neither declared
@@ -244,7 +244,7 @@ def unknown_models() -> list[SlayerDataset]:
     return [sess, hits]
 
 
-def keycov_models() -> list[SlayerDataset]:
+def keycov_datasets() -> list[SlayerDataset]:
     """events → days over an UNDECLARED-cardinality hop into a unique key.
 
     ``events.day_id → days.id`` declares no cardinality, but ``days.id`` is the
@@ -275,7 +275,7 @@ def keycov_models() -> list[SlayerDataset]:
     return [days, events]
 
 
-def named_models() -> list[SlayerDataset]:
+def named_datasets() -> list[SlayerDataset]:
     """tickets → agents over a *named* join ("reporter"); agents owns a saved measure,
     and column ``score`` deliberately shares a name with a custom aggregation."""
     agents = SlayerDataset(
@@ -306,11 +306,11 @@ def named_models() -> list[SlayerDataset]:
     return [agents, tickets]
 
 
-def named_models_by_name() -> dict[str, SlayerDataset]:
-    return {m.name: m for m in named_models()}
+def named_datasets_by_name() -> dict[str, SlayerDataset]:
+    return {m.name: m for m in named_datasets()}
 
 
-def widgets_model(data_source: str) -> SlayerDataset:
+def widgets_dataset(data_source: str) -> SlayerDataset:
     return SlayerDataset(
         name="widgets", data_source=data_source, sql_table="widgets",
         fields=[
@@ -324,15 +324,15 @@ def widgets_model(data_source: str) -> SlayerDataset:
 # Storage for metadata-only inference tests (no rows executed).
 # --------------------------------------------------------------------------- #
 _ALL_TOPOLOGIES: list[tuple[str, list[SlayerDataset]]] = [
-    (DS_CHAIN, chain_models()),
-    (DS_PAIR, pair_models()),
-    (DS_FAN, fan_models()),
-    (DS_AMBIG, ambig_models()),
-    (DS_UNKNOWN, unknown_models()),
-    (DS_KEYCOV, keycov_models()),
-    (DS_WIDGETS_A, [widgets_model(DS_WIDGETS_A)]),
-    (DS_WIDGETS_B, [widgets_model(DS_WIDGETS_B)]),
-    (DS_NAMED, named_models()),
+    (DS_CHAIN, chain_datasets()),
+    (DS_PAIR, pair_datasets()),
+    (DS_FAN, fan_datasets()),
+    (DS_AMBIG, ambig_datasets()),
+    (DS_UNKNOWN, unknown_datasets()),
+    (DS_KEYCOV, keycov_datasets()),
+    (DS_WIDGETS_A, [widgets_dataset(DS_WIDGETS_A)]),
+    (DS_WIDGETS_B, [widgets_dataset(DS_WIDGETS_B)]),
+    (DS_NAMED, named_datasets()),
 ]
 
 
@@ -424,7 +424,7 @@ async def seed_chain_storage(base_dir: str) -> tuple[YAMLStorage, str]:
     await storage.save_datasource(
         DatasourceConfig(name=DS_CHAIN, type="sqlite", database=db_path),
     )
-    for model in chain_models():
+    for model in chain_datasets():
         await storage.save_dataset(model)
     return storage, db_path
 
@@ -445,7 +445,7 @@ async def make_chain_exec_engine(dialect: str) -> AsyncIterator[SlayerQueryEngin
         pytest.importorskip("duckdb")
     seed = _seed_chain_duckdb if dialect == "duckdb" else _seed_chain_sqlite
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=chain_models(),
+        dialect=dialect, seed=seed, datasets=chain_datasets(),
         datasource=DS_CHAIN, validate=True,
     ) as (engine, _db):
         yield engine

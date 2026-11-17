@@ -50,7 +50,7 @@ def _sum(resp, alias: str) -> float:
     return resp.data[0][alias]
 
 
-def _block_model() -> SlayerDataset:
+def _block_dataset() -> SlayerDataset:
     # sql-mode model whose WHERE carries an optional IN-list block.
     return SlayerDataset(
         name="orders",
@@ -68,7 +68,7 @@ def _block_model() -> SlayerDataset:
 
 
 async def test_optional_block_collapses_to_unfiltered_when_missing():
-    engine, tmp = await _engine_with(_block_model())
+    engine, tmp = await _engine_with(_block_dataset())
     try:
         q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"expression": "sum(amount)"}]})
         resp = await engine.execute(q)
@@ -78,7 +78,7 @@ async def test_optional_block_collapses_to_unfiltered_when_missing():
 
 
 async def test_optional_block_filters_with_in_list_when_present():
-    engine, tmp = await _engine_with(_block_model())
+    engine, tmp = await _engine_with(_block_dataset())
     try:
         q = SlayerQuery.model_validate({
             "population": "orders",
@@ -92,7 +92,7 @@ async def test_optional_block_filters_with_in_list_when_present():
 
 
 async def test_optional_block_single_value_list():
-    engine, tmp = await _engine_with(_block_model())
+    engine, tmp = await _engine_with(_block_dataset())
     try:
         q = SlayerQuery.model_validate({
             "population": "orders",
@@ -132,7 +132,7 @@ async def test_required_var_alongside_block_raises_and_names_it():
 
 async def test_dimension_query_over_block_model_resolves_types():
     # Exercises get_result_column_types: blocks must collapse under the defaults probe.
-    engine, tmp = await _engine_with(_block_model())
+    engine, tmp = await _engine_with(_block_dataset())
     try:
         q = SlayerQuery(population="orders", dimensions=["region"])
         resp = await engine.execute(q)

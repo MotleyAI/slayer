@@ -48,7 +48,7 @@ ASSOC_CREDIT_BY_STATUS = {"ok": 600.0, "new": 400.0}
 CREDIT_WITH_NEW_ORDER = 400.0
 
 
-def regions_model() -> SlayerDataset:
+def regions_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
         fields=[
@@ -58,7 +58,7 @@ def regions_model() -> SlayerDataset:
     )
 
 
-def customers_model(*, rename_pk: bool = True, pk_sql: str = "customer_pk") -> SlayerDataset:
+def customers_dataset(*, rename_pk: bool = True, pk_sql: str = "customer_pk") -> SlayerDataset:
     """``rename_pk=False`` spells the PK by its physical name (``customer_pk``)."""
     pk = (DatasetField(name="id", sql=pk_sql, datatype=DataType.INT, primary_key=True)
           if rename_pk else
@@ -76,7 +76,7 @@ def customers_model(*, rename_pk: bool = True, pk_sql: str = "customer_pk") -> S
     )
 
 
-def orders_model(*, rename_fk: bool = True, target_key: str = "id") -> SlayerDataset:
+def orders_dataset(*, rename_fk: bool = True, target_key: str = "id") -> SlayerDataset:
     """``rename_fk=False`` spells the FK by its physical name (``cust_fk``)."""
     fk = (DatasetField(name="customer_id", sql="cust_fk", datatype=DataType.INT)
           if rename_fk else DatasetField(name="cust_fk", datatype=DataType.INT))
@@ -98,10 +98,10 @@ def renamed_graph(
 ) -> List[SlayerDataset]:
     """``orders`` first (the default query root)."""
     return [
-        orders_model(rename_fk=rename_fk,
+        orders_dataset(rename_fk=rename_fk,
                      target_key="id" if rename_pk else "customer_pk"),
-        customers_model(rename_pk=rename_pk, pk_sql=pk_sql),
-        regions_model(),
+        customers_dataset(rename_pk=rename_pk, pk_sql=pk_sql),
+        regions_dataset(),
     ]
 
 
@@ -138,22 +138,22 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: List[SlayerDataset],
+    request, *, datasets: List[SlayerDataset],
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture."""
     dialect = request.param
     if dialect == "duckdb":
         pytest.importorskip("duckdb")
     seed = _seed_duckdb if dialect == "duckdb" else _seed_sqlite
-    async with seeded_exec_engine(dialect=dialect, seed=seed, models=models) as (engine, _db):
+    async with seeded_exec_engine(dialect=dialect, seed=seed, datasets=datasets) as (engine, _db):
         yield engine
 
 
-def cells(resp, *, dim_suffix: str, measure: str) -> dict:
+def cells(resp, *, dim_suffix: str, metric: str) -> dict:
     """``{dimension value: float(measure)}``; both columns found by suffix."""
     row = resp.data[0]
     dim = next(k for k in row if k.endswith(dim_suffix))
-    val = next(k for k in row if k == measure or k.endswith(f".{measure}"))
+    val = next(k for k in row if k == metric or k.endswith(f".{metric}"))
     return {r[dim]: float(r[val]) for r in resp.data}
 
 

@@ -59,10 +59,10 @@ def _assert_map(got: dict, expected: dict) -> None:
             assert float(got[key]) == pytest.approx(value), f"{key}"
 
 
-async def _run_x(engine, dialect, *, measures, filters=None, dims=("region",)):
+async def _run_x(engine, dialect, *, metrics, filters=None, dims=("region",)):
     query = q(
         dimensions=list(dims), time_dimensions=month_td(),
-        measures=measures, **({"filter": filters} if filters else {}),
+        measures=metrics, **({"filter": filters} if filters else {}),
     )
     resp = await engine.execute(query)
     dry = await engine.execute(query, dry_run=True)
@@ -76,14 +76,14 @@ class TestWindowedTransforms:
 
     async def test_cumsum_over_bare_windowed(self, exec_backend) -> None:
         dialect, engine = exec_backend
-        resp = await _run_x(engine, dialect, measures=[
+        resp = await _run_x(engine, dialect, metrics=[
             DatasetMetric(expression="cumsum(sum(amount, window='90d'))", name="x"),
         ])
         _assert_map(_by_region_month(resp, "x"), CUMSUM_OVER_W90)
 
     async def test_time_shift_over_bare_windowed(self, exec_backend) -> None:
         dialect, engine = exec_backend
-        resp = await _run_x(engine, dialect, measures=[
+        resp = await _run_x(engine, dialect, metrics=[
             DatasetMetric(expression="time_shift(sum(amount, window='90d'), -1)", name="x"),
         ])
         expected = with_nulls(CUMSUM_OVER_W90.keys(), TS_OVER_W90)
@@ -95,7 +95,7 @@ class TestWindowedComposites:
 
     async def test_windowed_over_plain_ratio(self, exec_backend) -> None:
         dialect, engine = exec_backend
-        resp = await _run_x(engine, dialect, measures=[
+        resp = await _run_x(engine, dialect, metrics=[
             DatasetMetric(expression="sum(amount)", name="m"),
             DatasetMetric(expression="sum(amount, window='90d') / sum(amount)", name="x"),
         ])
@@ -103,7 +103,7 @@ class TestWindowedComposites:
 
     async def test_windowed_halved(self, exec_backend) -> None:
         dialect, engine = exec_backend
-        resp = await _run_x(engine, dialect, measures=[
+        resp = await _run_x(engine, dialect, metrics=[
             DatasetMetric(expression="sum(amount, window='1y') / 2", name="x"),
         ])
         _assert_map(
@@ -121,7 +121,7 @@ class TestWindowedFilters:
         dialect, engine = exec_backend
         resp = await _run_x(
             engine, dialect,
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
             filters=["sum(amount, window='90d') > 40"],
         )
         _assert_map(_by_region_month(resp, "m"), {
@@ -135,7 +135,7 @@ class TestWindowedFilters:
         dialect, engine = exec_backend
         resp = await _run_x(
             engine, dialect,
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
             filters=["sum(amount, window='90d') > sum(amount)"],
         )
         _assert_map(_by_region_month(resp, "m"), {
@@ -148,7 +148,7 @@ class TestWindowedFilters:
         dialect, engine = exec_backend
         resp = await _run_x(
             engine, dialect,
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
             filters=["sum(amount, window='90d') > 40 and status = 'ok'"],
         )
         # OK rows only: South loses its March bucket; the windowed values are
@@ -161,7 +161,7 @@ class TestWindowedFilters:
         dialect, engine = exec_backend
         resp = await _run_x(
             engine, dialect,
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
             filters=["sum(amount, window='90d') > 40", "status = 'ok'"],
         )
         _assert_map(_by_region_month(resp, "m"), {
@@ -188,7 +188,7 @@ class TestTemporalOverRanked:
 
     async def test_time_shift_over_bare_last(self, exec_backend) -> None:
         dialect, engine = exec_backend
-        resp = await _run_x(engine, dialect, measures=[
+        resp = await _run_x(engine, dialect, metrics=[
             DatasetMetric(expression="time_shift(last(amount), -1)", name="x"),
         ])
         keys = {
@@ -199,7 +199,7 @@ class TestTemporalOverRanked:
 
     async def test_change_over_bare_last(self, exec_backend) -> None:
         dialect, engine = exec_backend
-        resp = await _run_x(engine, dialect, measures=[
+        resp = await _run_x(engine, dialect, metrics=[
             DatasetMetric(expression="change(last(amount))", name="x"),
         ])
         keys = {
@@ -210,7 +210,7 @@ class TestTemporalOverRanked:
 
     async def test_change_pct_over_bare_last(self, exec_backend) -> None:
         dialect, engine = exec_backend
-        resp = await _run_x(engine, dialect, measures=[
+        resp = await _run_x(engine, dialect, metrics=[
             DatasetMetric(expression="change_pct(last(amount))", name="x"),
         ])
         keys = {
@@ -234,7 +234,7 @@ class TestChangeOverAttached:
     ])
     async def test_change_over_partitioned(self, exec_backend, op, expected) -> None:
         dialect, engine = exec_backend
-        resp = await _run_x(engine, dialect, measures=[
+        resp = await _run_x(engine, dialect, metrics=[
             DatasetMetric(expression=f"{op}(sum(amount, partition_by=region))", name="x"),
         ])
         keys = {

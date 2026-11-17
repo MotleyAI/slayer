@@ -86,7 +86,7 @@ class TestDepthLimit:
     """A dotted reference into a same-model chain (``sub.d1`` → ``d2`` → ``d3``)
     respects the configurable depth cap; exceeding it raises naming the chain."""
 
-    def _models(self):
+    def _datasets(self):
         sub = SlayerDataset(
             name="sub", data_source="test", sql_table="sub",
             fields=[
@@ -109,12 +109,12 @@ class TestDepthLimit:
         )
         return main, sub
 
-    async def _generate(self, formula: str) -> str:
-        main, sub = self._models()
+    async def _generate(self, expression: str) -> str:
+        main, sub = self._datasets()
         return await _engine_generate(
             query=q(source_model="main",
-                    measures=[{"formula": formula, "name": "x"}]),
-            model=main, extra_models=[sub], dialect="duckdb", validate=False,
+                    measures=[{"formula": expression, "name": "x"}]),
+            dataset=main, extra_datasets=[sub], dialect="duckdb", validate=False,
         )
 
     async def test_depth_limit_exceeded_raises(self):

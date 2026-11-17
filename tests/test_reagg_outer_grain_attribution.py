@@ -79,8 +79,8 @@ async def sales_engine(request):
         yield e
 
 
-def _by_month(formula: str, **kw):
-    return query(dimensions=["name"], time_dimensions=[MONTH_TD], measures=[m(formula)], **kw)
+def _by_month(expression: str, **kw):
+    return query(dimensions=["name"], time_dimensions=[MONTH_TD], measures=[m(expression)], **kw)
 
 
 def _by_account(*measures, **kw):
@@ -317,8 +317,8 @@ class TestExpressionAndKeylessGrain:
 
 
 class TestPlanStructure:
-    def _outer_slot(self, formula: str, **kw):
-        return self._outer_slot_of(_by_month(formula, **kw))
+    def _outer_slot(self, expression: str, **kw):
+        return self._outer_slot_of(_by_month(expression, **kw))
 
     @staticmethod
     def _outer_slot_of(q):

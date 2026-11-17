@@ -89,13 +89,13 @@ def _create_schema(db_path: str) -> None:
         )
 
 
-async def _setup(workspace: Path, *, persist_models: bool = True) -> tuple[YAMLStorage, DatasourceConfig, str]:
+async def _setup(workspace: Path, *, persist_datasets: bool = True) -> tuple[YAMLStorage, DatasourceConfig, str]:
     db_path = str(workspace / "live.db")
     _create_schema(db_path)
     storage = YAMLStorage(base_dir=str(workspace / "storage"))
     ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
     await storage.save_datasource(ds)
-    if persist_models:
+    if persist_datasets:
         # Run ingest once so that subsequent calls test idempotency.
         await _ingest(datasource=ds, storage=storage)
     return storage, ds, db_path
@@ -274,7 +274,7 @@ class TestPreservation:
 
 class TestSkipNonSqlTableModes:
     async def test_sql_mode_model_skipped(self, workspace: Path) -> None:
-        storage, ds, _ = await _setup(workspace, persist_models=False)
+        storage, ds, _ = await _setup(workspace, persist_datasets=False)
         await storage.save_dataset(
             SlayerDataset(
                 name="custom_orders",
@@ -684,7 +684,7 @@ def _create_probe_workspace_db(
             )
 
 
-async def _persist_int_model(
+async def _persist_int_dataset(
     storage: StorageBackend, ds_name: str, table: str, column: str,
     *,
     column_format: NumberFormat | None = None,
@@ -733,7 +733,7 @@ class TestSqliteProbeWideningOnReingest:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
-        await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
+        await _persist_int_dataset(storage, "ds", "sensordata", "tempstabidx")
 
         await _ingest(datasource=ds, storage=storage)
 
@@ -751,7 +751,7 @@ class TestSqliteProbeWideningOnReingest:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
-        await _persist_int_model(storage, "ds", "sensordata", "status")
+        await _persist_int_dataset(storage, "ds", "sensordata", "status")
 
         await _ingest(datasource=ds, storage=storage)
 
@@ -824,7 +824,7 @@ class TestSqliteProbeWideningOnReingest:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
         await storage.save_datasource(ds)
-        await _persist_int_model(storage, "ds", "t", "qty")
+        await _persist_int_dataset(storage, "ds", "t", "qty")
 
         with patch(
             "slayer.database.sqlite_introspect.probe_sqlite_integer_column",
@@ -857,7 +857,7 @@ class TestSqliteProbeWideningOnReingest:
         ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
         await storage.save_datasource(ds)
         # Persist with stale INT type (e.g. left over from a prior schema).
-        await _persist_int_model(storage, "ds", "t", "qty")
+        await _persist_int_dataset(storage, "ds", "t", "qty")
 
         await _ingest(datasource=ds, storage=storage)
 
@@ -879,7 +879,7 @@ class TestSqliteProbeWideningOnReingest:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
-        await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
+        await _persist_int_dataset(storage, "ds", "sensordata", "tempstabidx")
 
         result = await _ingest(datasource=ds, storage=storage)
         addition = _addition_for("sensordata", result.additions)
@@ -902,7 +902,7 @@ class TestSqliteProbeWideningOnReingest:
         storage = YAMLStorage(base_dir=str(workspace / "storage"))
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
         await storage.save_datasource(ds)
-        await _persist_int_model(storage, "ds", "sensordata", "tempstabidx")
+        await _persist_int_dataset(storage, "ds", "sensordata", "tempstabidx")
 
         result = await _ingest(datasource=ds, storage=storage)
         addition = _addition_for("sensordata", result.additions)
@@ -971,7 +971,7 @@ class TestSqliteProbeWideningOnReingest:
             symbol="€",
             precision=3,
         )
-        await _persist_int_model(
+        await _persist_int_dataset(
             storage, "ds", "sensordata", "amount",
             column_format=custom_format,
         )

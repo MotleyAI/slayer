@@ -28,7 +28,7 @@ from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
 
-from tests._dev1847_fixtures import _seed_sqlite, rows_by, sales_model
+from tests._dev1847_fixtures import _seed_sqlite, rows_by, sales_dataset
 from tests._rank_direction_fixtures import RANK_DESC
 
 DESC = ", direction='desc'"
@@ -37,7 +37,7 @@ FILLED = "rank(sum(amount), direction='desc')"
 
 
 def _model_dict(*, measures: list[dict], version: Any = 12, **extra) -> dict:
-    data = sales_model().model_dump(mode="json", exclude_none=True)
+    data = sales_dataset().model_dump(mode="json", exclude_none=True)
     data.pop("version", None)
     if version is not None:
         data["version"] = version
@@ -411,7 +411,7 @@ def served_storage():
         ds = DatasourceConfig(name="test", type="sqlite", database=db)
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         run_sync(storage.save_datasource(ds))
-        run_sync(storage.save_dataset(sales_model()))
+        run_sync(storage.save_dataset(sales_dataset()))
         try:
             yield storage
         finally:

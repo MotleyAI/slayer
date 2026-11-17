@@ -23,13 +23,13 @@ from tests._dev2101_fixtures import (
     TIER1,
     by_key,
     check_filtered_custom_aggregations,
-    customers_model,
-    dev2101_models,
+    customers_dataset,
+    dev2101_datasets,
     emit,
     m,
     make_exec_engine,
     num,
-    orders_model,
+    orders_dataset,
     q,
     seed_duckdb,
     seed_sqlite,
@@ -236,7 +236,7 @@ class TestProducerIsolation:
         assert _by_region(resp, "all") == {"EU": 2, "US": 2, None: 1}
 
     def test_different_conditions_never_share_a_producer(self) -> None:
-        orders, *rest = dev2101_models()
+        orders, *rest = dev2101_datasets()
         bundle = ResolvedSourceBundle(dialect="sqlite", population=orders, referenced_datasets=rest)
         planned = plan.plan_query(query=q(dimensions=["region"], measures=[
             m(ROWS_PAID, "paid"), m("rows(amount) FILTER (WHERE status = 'Pending')", "pending"),
@@ -251,7 +251,7 @@ class TestCrossModelAndStage:
             "population": "customers", "dimensions": ["name"],
             "metrics": [{"expression": "rows(orders.amount) FILTER (WHERE orders.status = 'paid')", "name": "v"}],
         }))
-        assert {k: num(v) for k, v in by_key(resp, "name", model="customers").items()} == {"A": 2, "B": 1, "C": None}
+        assert {k: num(v) for k, v in by_key(resp, "name", dataset="customers").items()} == {"A": 2, "B": 1, "C": None}
         assert not resp.warnings
 
     @pytest.mark.parametrize(("mode", "expected"), [
@@ -267,12 +267,12 @@ class TestCrossModelAndStage:
         stage = q(name="s", dimensions=["region"], measures=[m(ROWS_PAID, "pr")])
         final = SlayerQuery.model_validate({"population": "s", "metrics": [{"expression": "sum(pr)", "name": "v"}]})
         resp = await engine.execute([stage, final])
-        assert num(single(resp, model="s")) == 3
+        assert num(single(resp, dataset="s")) == 3
 
 
-def _override_models() -> list[SlayerDataset]:
+def _override_datasets() -> list[SlayerDataset]:
     """``count`` redeclared with a formula (non-built-in); ``sum`` redeclared without one (built-in)."""
-    orders, *rest = dev2101_models()
+    orders, *rest = dev2101_datasets()
     extra = [Aggregation(name="count", expression="COUNT(*)"), Aggregation(name="sum")]
     return [orders.model_copy(update={"aggregations": [*orders.aggregations, *extra]}), *rest]
 
@@ -282,7 +282,7 @@ async def override_engine(request):
     if request.param == "duckdb":
         pytest.importorskip("duckdb")
     seed = seed_duckdb if request.param == "duckdb" else seed_sqlite
-    async with seeded_exec_engine(dialect=request.param, seed=seed, models=_override_models()) as (e, _):
+    async with seeded_exec_engine(dialect=request.param, seed=seed, datasets=_override_datasets()) as (e, _):
         yield e
 
 
@@ -295,7 +295,7 @@ class TestBuiltinNamedOverride:
         assert _by_region(resp, "s") == {"EU": 30, "US": 40, None: None}
 
     def test_only_the_formula_override_takes_a_producer(self) -> None:
-        orders, *rest = _override_models()
+        orders, *rest = _override_datasets()
         bundle = ResolvedSourceBundle(dialect="sqlite", population=orders, referenced_datasets=rest)
         planned = plan.plan_query(query=q(dimensions=["region"], measures=[
             m(f"count(amount) FILTER (WHERE {PAID})", "c"), m(f"sum(amount) FILTER (WHERE {PAID})", "s"),
@@ -339,8 +339,8 @@ class TestRendererFailsClosed:
     def test_filtered_custom_key_never_renders_inline(self) -> None:
         key = AggregateKey(source=FieldKey(leaf="amount"), agg="rows", filter=_paid_condition(), builtin=False)
         gen = SQLGenerator(dialect="postgres")
-        orders = orders_model()
-        bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[customers_model()])
+        orders = orders_dataset()
+        bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[customers_dataset()])
         with pytest.raises(RuntimeError, match="(?i)filter"):
             gen._build_agg_render_spec_from_planned(
                 slot=None, key=key, source_dataset=orders, source_relation="orders", full_alias="orders.v",

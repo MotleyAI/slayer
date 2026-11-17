@@ -21,7 +21,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1954_fixtures import (
-    dev1954_models,
+    dev1954_datasets,
     make_exec_engine,
     orders_q,
     slayer_query,
@@ -33,23 +33,23 @@ CANON = "customers__hr__rname"
 AMOUNT_BY_NAME = {"North": 100.0, "South": 20.0, None: 47.0}
 
 
-def _with_query_backed(models: List[SlayerDataset]) -> List[SlayerDataset]:
+def _with_query_backed(datasets: List[SlayerDataset]) -> List[SlayerDataset]:
     """+ ``region_amounts`` (query-backed on orders) and ``regions.qb_label``
     reading its column by the stale spelling over a ``regions`` join."""
-    regions = next(m for m in models if m.name == "regions")
+    regions = next(m for m in datasets if m.name == "regions")
     regions.relationships.append(DatasetRelationship(
         to="region_amounts", join_pairs=[["id", "customers__region_id"]]))
     regions.fields.append(DatasetField(
         name="qb_label", sql=f"region_amounts.{STALE}"))
-    return [*models, SlayerDataset(
+    return [*datasets, SlayerDataset(
         name="region_amounts", data_source="test",
         source_queries=[orders_q(
             dimensions=["customers.region_id", "customers.regions.rname"],
             measures=[{"formula": "sum(amount)", "name": "amt"}])])]
 
 
-def _parallel_models() -> List[SlayerDataset]:
-    models = dev1954_models()
+def _parallel_datasets() -> List[SlayerDataset]:
+    models = dev1954_datasets()
     customers = next(m for m in models if m.name == "customers")
     customers.relationships.append(DatasetRelationship(
         to="regions", join_pairs=[["region_id", "id"]], name="hr2"))
@@ -58,22 +58,22 @@ def _parallel_models() -> List[SlayerDataset]:
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
-    async for e in make_exec_engine(request, models=_with_query_backed(dev1954_models())):
+    async for e in make_exec_engine(request, datasets=_with_query_backed(dev1954_datasets())):
         yield e
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def unnamed_engine(request) -> AsyncIterator[SlayerQueryEngine]:
     async for e in make_exec_engine(
-        request, models=_with_query_backed(dev1954_models(named=False)),
+        request, datasets=_with_query_backed(dev1954_datasets(named=False)),
     ):
         yield e
 
 
-def _ambiguous_qb_models() -> List[SlayerDataset]:
+def _ambiguous_qb_datasets() -> List[SlayerDataset]:
     """+ ``pq`` projecting both parallel edges and ``regions.amb`` reading it by the
     stale spelling (a respelling of two ``pq`` columns)."""
-    models = _parallel_models()
+    models = _parallel_datasets()
     regions = next(m for m in models if m.name == "regions")
     regions.relationships.append(DatasetRelationship(
         to="pq", join_pairs=[["id", "customers__region_id"]]))
@@ -86,13 +86,13 @@ def _ambiguous_qb_models() -> List[SlayerDataset]:
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def ambiguous_qb_engine(request) -> AsyncIterator[SlayerQueryEngine]:
-    async for e in make_exec_engine(request, models=_ambiguous_qb_models()):
+    async for e in make_exec_engine(request, datasets=_ambiguous_qb_datasets()):
         yield e
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def parallel_engine(request) -> AsyncIterator[SlayerQueryEngine]:
-    async for e in make_exec_engine(request, models=_parallel_models()):
+    async for e in make_exec_engine(request, datasets=_parallel_datasets()):
         yield e
 
 
@@ -121,9 +121,9 @@ def _assert_one_stale(resp) -> None:
 # --------------------------------------------------------------------------- #
 class TestStageColumnRespellings:
     @staticmethod
-    def _schema(*, models, stage: SlayerQuery):
-        bundle = ResolvedSourceBundle(dialect="postgres", population=models[0],
-                                      referenced_datasets=models[1:])
+    def _schema(*, datasets, stage: SlayerQuery):
+        bundle = ResolvedSourceBundle(dialect="postgres", population=datasets[0],
+                                      referenced_datasets=datasets[1:])
         planned = plan_stages(
             queries=[stage, slayer_query(source_model=stage.name, measures=["count(*)"])],
             bundle=bundle)
@@ -132,7 +132,7 @@ class TestStageColumnRespellings:
         return {c.name: c for c in schema.fields}
 
     def test_one_named_hop(self) -> None:
-        cols = self._schema(models=dev1954_models(), stage=_stage1(
+        cols = self._schema(datasets=dev1954_datasets(), stage=_stage1(
             measures=["max(customers.regions.pop)",
                       {"formula": "min(customers.hr.pop)", "name": "explicit"}]))
         assert set(cols) == {CANON, "customers__hr__pop_max", "explicit"}
@@ -149,7 +149,7 @@ class TestStageColumnRespellings:
             {"dimension": "customers.regions.founded_at", "granularity": "year"}]),
     ], ids=["functional", "star", "saved", "time"])
     def test_every_path_derived_form(self, stage) -> None:
-        cols = self._schema(models=dev1954_models(), stage=stage)
+        cols = self._schema(datasets=dev1954_datasets(), stage=stage)
         derived = [c for c in cols.values() if c.name.startswith("customers__hr__")]
         assert derived
         for col in derived:
@@ -157,13 +157,13 @@ class TestStageColumnRespellings:
                 col.name.replace("customers__hr__", "customers__regions__", 1)}
 
     def test_two_named_hops(self) -> None:
-        models = dev1954_models()
+        models = dev1954_datasets()
         orders = models[0]
         orders.relationships = [
             DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
                       name="buyer") if j.to == "customers" else j
             for j in orders.relationships]
-        cols = self._schema(models=models, stage=_stage1(measures=["max(customers.regions.pop)"]))
+        cols = self._schema(datasets=models, stage=_stage1(measures=["max(customers.regions.pop)"]))
         assert set(cols["buyer__hr__rname"].respellings) == {
             "customers__hr__rname", "buyer__regions__rname", STALE}
         assert set(cols["buyer__hr__pop_max"].respellings) == {
@@ -171,7 +171,7 @@ class TestStageColumnRespellings:
             "customers__regions__pop_max"}
 
     def test_explicit_name_with_a_path_prefix_has_none(self) -> None:
-        cols = self._schema(models=dev1954_models(), stage=_stage1(measures=[
+        cols = self._schema(datasets=dev1954_datasets(), stage=_stage1(measures=[
             {"formula": "min(customers.hr.pop)", "name": "customers__hr__custom"}]))
         assert cols["customers__hr__custom"].respellings == ()
 
@@ -181,8 +181,8 @@ class TestStageColumnRespellings:
                               measures=["max(customers__hr__pop_max)",
                                         {"formula": "min(customers__hr__pop_max)",
                                          "name": "customers__hr__lo"}])
-        bundle = ResolvedSourceBundle(dialect="postgres", population=dev1954_models()[0],
-                                      referenced_datasets=dev1954_models()[1:])
+        bundle = ResolvedSourceBundle(dialect="postgres", population=dev1954_datasets()[0],
+                                      referenced_datasets=dev1954_datasets()[1:])
         planned = plan_stages(queries=[stage1, stage2, slayer_query(
             source_model="s2", measures=["count(*)"])], bundle=bundle)
         schema = planned[1].stage_schema
@@ -194,7 +194,7 @@ class TestStageColumnRespellings:
         assert cols["customers__hr__lo"].respellings == ()
 
     def test_unnamed_path_has_none(self) -> None:
-        cols = self._schema(models=dev1954_models(named=False), stage=_stage1())
+        cols = self._schema(datasets=dev1954_datasets(named=False), stage=_stage1())
         assert cols[STALE].respellings == ()
 
     def test_default_is_empty(self) -> None:

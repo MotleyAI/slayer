@@ -180,19 +180,19 @@ def _outer_projection_names(sql: str, dialect: str = "postgres") -> set[str]:
 async def _generate(
     generator: SQLGenerator,
     query: SlayerQuery,
-    model: SlayerDataset,
+    dataset: SlayerDataset,
     *,
-    extra_models: "list | None" = None,
+    extra_datasets: "list | None" = None,
 ) -> str:
     """Run ``query`` against ``model`` through the typed engine pipeline and return the emitted SQL."""
     return await _engine_generate(
-        query=query, model=model, dialect=generator.dialect, validate=False,
-        extra_models=extra_models,
+        query=query, dataset=dataset, dialect=generator.dialect, validate=False,
+        extra_datasets=extra_datasets,
     )
 
 
 @pytest.fixture
-def orders_model() -> SlayerDataset:
+def orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -236,32 +236,32 @@ class TestBasicQueries:
         assert "SUM(CAST(1 AS" in sql or "SUM(1)" in sql
         assert '"1"' not in sql
 
-    async def test_simple_count(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_simple_count(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")])
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "COUNT(*)" in sql
         assert "public.orders" in sql
 
     async def test_star_rejects_non_count_aggregation(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(*)")])
-        with pytest.raises(ValueError, match=r"not allowed with measure '\*'"):
-            await _generate(generator, query, orders_model)
+        with pytest.raises(ValueError, match=r"not allowed with metric '\*'"):
+            await _generate(generator, query, orders_dataset)
 
     async def test_dim_only_query_deduplicates(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """A dim-only query (no measures) auto-deduplicates via GROUP BY."""
         query = SlayerQuery(population="orders", dimensions=[FieldRef(name="status")], limit=100)
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         upper = sql.upper()
         assert "orders.status" in sql
         assert "GROUP BY" in upper
         assert upper.index("GROUP BY") < upper.index("LIMIT 100")
 
     async def test_time_dim_only_query_deduplicates(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """Time-dimension-only queries also auto-deduplicate."""
         query = SlayerQuery(
@@ -270,11 +270,11 @@ class TestBasicQueries:
                 TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "GROUP BY" in sql
 
     async def test_dim_with_measure_emits_single_group_by(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """The dim-only path must not double-emit GROUP BY when measures aggregate."""
         query = SlayerQuery(
@@ -282,46 +282,46 @@ class TestBasicQueries:
             metrics=[DatasetMetric(expression="sum(revenue)")],
             dimensions=[FieldRef(name="status")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "SUM(" in sql
         assert sql.upper().count("GROUP BY") == 1
 
-    async def test_dimension_with_measure(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_dimension_with_measure(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(revenue)")],
             dimensions=[FieldRef(name="status")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "COUNT(*)" in sql
         assert "SUM(" in sql
         assert "GROUP BY" in sql
         assert "orders.status" in sql
 
-    async def test_limit_and_offset(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_limit_and_offset(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             limit=10,
             offset=20,
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "LIMIT 10" in sql
         assert "OFFSET 20" in sql
 
-    async def test_order_by(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_order_by(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             dimensions=[FieldRef(name="status")],
             order=[OrderItem(field=FieldRef(name="count", dataset="orders"), direction="desc")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "ORDER BY" in sql
         assert "DESC" in sql
 
     async def test_order_by_shorthand_descending_reaches_sql(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         # Shorthand {col: "descending"} heals + normalizes and emits DESC.
         query = SlayerQuery(
@@ -330,12 +330,12 @@ class TestBasicQueries:
             dimensions=[FieldRef(name="status")],
             order=[{"status": "descending"}],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "ORDER BY" in sql
         assert "DESC" in sql.upper()
 
     async def test_order_by_ascending_synonym_not_descending(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         # Regression: a canonical "ASCENDING" must normalize to asc so the generator's strict ``direction == "asc"`` check does NOT fall through to DESC.
         query = SlayerQuery.model_validate({
@@ -344,13 +344,13 @@ class TestBasicQueries:
             "dimensions": [FieldRef(name="status")],
             "order": [{"field": "status", "direction": "ASCENDING"}],
         })
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "ORDER BY" in sql
         assert "DESC" not in sql.upper()
 
 
 class TestTimeDimensions:
-    async def test_time_dimension_with_granularity(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_time_dimension_with_granularity(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
@@ -358,11 +358,11 @@ class TestTimeDimensions:
                 TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "DATE_TRUNC" in sql
         assert "MONTH" in sql.upper()
 
-    async def test_time_dimension_with_date_range(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_time_dimension_with_date_range(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
@@ -374,56 +374,56 @@ class TestTimeDimensions:
                 ),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "BETWEEN" not in sql
         assert "2024-01-01" in sql
         assert "2025-01-01" in sql
 
 
 class TestFilters:
-    async def test_equals_filter(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_equals_filter(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["status == 'active'"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "WHERE" in sql
         assert "'active'" in sql
 
-    async def test_in_filter(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_in_filter(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["status in ('active', 'pending')"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "IN" in sql
         assert "'active'" in sql
         assert "'pending'" in sql
 
-    async def test_gt_filter(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_gt_filter(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["customer_id > 100"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert ">" in sql
         assert "100" in sql
 
-    async def test_contains_filter(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_contains_filter(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         # Mode-B query filters use the ``like(value, pattern)`` scalar form; it emits the SQL ``LIKE`` operator. (Native ``x LIKE y`` operator syntax remains available in Mode-A model-level filters.)
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["like(status, '%act%')"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "LIKE" in sql
         assert "%act%" in sql
 
-    async def test_like_wrong_arity_raises(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_like_wrong_arity_raises(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         # ``like`` requires exactly (value, pattern); a single arg is rejected at bind time rather than emitting broken SQL.
         query = SlayerQuery(
             population="orders",
@@ -431,60 +431,60 @@ class TestFilters:
             filter=["like(status)"],
         )
         with pytest.raises(ValueError, match="'like' takes exactly 2"):
-            await _generate(generator, query, orders_model)
+            await _generate(generator, query, orders_dataset)
 
-    async def test_is_null_filter(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_is_null_filter(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["status IS NULL"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "IS NULL" in sql
 
-    async def test_is_not_null_filter(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_is_not_null_filter(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["status IS NOT NULL"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         # Python AST may produce "NOT x IS NULL" instead of "x IS NOT NULL" — both valid
         assert "IS NOT NULL" in sql or "NOT" in sql
 
-    async def test_is_null_python_compat(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_is_null_python_compat(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Python-style 'is None' still works for backward compatibility."""
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["status is None"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "IS NULL" in sql
 
-    async def test_sql_equals_filter(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_sql_equals_filter(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """SQL single = works as equality."""
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["status = 'active'"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "= 'active'" in sql
 
-    async def test_sql_not_equals_filter(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_sql_not_equals_filter(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """SQL <> works as not-equals."""
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["status <> 'cancelled'"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         # sqlglot may output either != or <> depending on dialect — both valid
         assert "<> 'cancelled'" in sql or "!= 'cancelled'" in sql
 
     async def test_equals_inside_string_literal_not_converted(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """= inside a string literal is not converted to ==."""
         query = SlayerQuery(
@@ -492,11 +492,11 @@ class TestFilters:
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["status = 'x=y'"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "'x=y'" in sql
 
     async def test_not_equals_inside_string_literal_not_converted(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """<> inside a string literal is not converted to !=."""
         query = SlayerQuery(
@@ -504,26 +504,26 @@ class TestFilters:
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["status = 'foo<>bar'"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "'foo<>bar'" in sql
 
-    async def test_composite_filter(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_composite_filter(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["status == 'active' or customer_id > 10"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "OR" in sql
 
-    async def test_measure_filter_goes_to_having(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_measure_filter_goes_to_having(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="sum(revenue)")],
             dimensions=[FieldRef(name="status")],
             filter=["revenue_sum > 1000"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "HAVING" in sql
 
     async def test_filter_resolves_dimension_sql(self, generator: SQLGenerator) -> None:
@@ -545,32 +545,32 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
         assert "status_col" in sql
         assert "order_status" not in sql.split("WHERE")[1]  # dimension name not in WHERE
 
-    async def test_date_range_filter(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_date_range_filter(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["created_at >= '2024-01-01' and created_at <= '2024-06-30'"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert ">=" in sql
         assert "2024-06-30 00:00:00" in sql
         assert "2024-07-01" not in sql
 
 
 class TestMeasureTypes:
-    async def test_count_distinct(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_count_distinct(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count_distinct(distinct_customers)")])
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "COUNT(DISTINCT" in sql
 
-    async def test_average(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_average(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="avg(avg_revenue)")])
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "AVG(" in sql
 
-    async def test_sum(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_sum(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(revenue)")])
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "SUM(" in sql
 
 
@@ -638,58 +638,58 @@ class TestBareColumnNames:
 
 
 class TestFields:
-    async def test_arithmetic_field(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_arithmetic_field(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Arithmetic over aggregates is emitted inline in the SELECT (the typed pipeline folds ``sum(revenue) / count(*)`` into a single grouped SELECT — no CTE needed for simple aggregate arithmetic)."""
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="sum(revenue) / count(*)", name="aov")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "aov" in sql.lower()
         assert "COUNT(*)" in sql
         assert "SUM(" in sql
         assert "/ NULLIF(COUNT(*), 0)" in sql
 
-    async def test_no_fields_no_cte(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_no_fields_no_cte(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Without fields, no CTE is generated."""
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "WITH" not in sql
 
-    async def test_field_with_limit(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_field_with_limit(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """LIMIT applies to the final SELECT. The typed pipeline folds the aggregate arithmetic into one grouped SELECT, so LIMIT trails the single FROM clause."""
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="sum(revenue) / count(*)", name="aov")],
             limit=5,
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "LIMIT 5" in sql
         # LIMIT trails the FROM (applies to the result, not an inner scope).
         assert sql.upper().index("LIMIT 5") > sql.upper().index("FROM")
 
-    async def test_cumsum(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
-        orders_model.default_time_dimension = "created_at"
+    async def test_cumsum(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="cumsum(sum(revenue))", name="rev_running")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "SUM(" in sql
         assert "OVER" in sql
         assert "ORDER BY" in sql
         assert "rev_running" in sql.lower()
 
     async def test_cumsum_over_week_sunday_time_dim(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """Full enum wiring: a transform over a WEEK_SUNDAY time dimension must generate valid SQL — the granularity must be wired into the interval helpers, not crash with a KeyError on the 9th enum value."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
@@ -701,17 +701,17 @@ class TestFields:
                 DatasetMetric(expression="cumsum(sum(revenue))", name="rev_running"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "OVER" in sql
         assert "rev_running" in sql.lower()
         # The WEEK_SUNDAY time dim must compile to the Sunday-week truncation (the +1-day column-side shift is unique to WEEK_SUNDAY; plain Monday WEEK has no such shift), proving the granularity wasn't downgraded.
         assert "+ INTERVAL '1 DAY'" in sql.upper()
 
     async def test_time_shift_over_week_sunday_uses_one_week_interval(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """A time_shift over a WEEK_SUNDAY time dim (granularity derived from the time dim, not passed explicitly) shifts by one week — exercising ``build_date_add``'s ``week_sunday`` path. Must emit valid date arithmetic, not blow up on the unknown granularity string."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(
@@ -723,33 +723,33 @@ class TestFields:
                 DatasetMetric(expression="time_shift(sum(revenue), -1)", name="rev_prev_week"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "shifted_" in sql
         # The shift must use a one-WEEK interval; target INTERVAL '1 WEEK' so the DATE_TRUNC('WEEK', INTERVAL '1 DAY') can't satisfy it.
         assert "INTERVAL '1 WEEK'" in sql.upper()
 
-    async def test_cumsum_partitions_by_dimensions(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_cumsum_partitions_by_dimensions(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"expression": "cumsum(sum(revenue))", "name": "running_revenue"}],
         })
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         norm = _norm(sql)
         assert 'SUM("orders.revenue_sum")' in norm
         assert "OVER (" in norm
         assert 'PARTITION BY "orders.status"' in norm
         assert 'ORDER BY "orders.created_at"' in norm
 
-    async def test_consecutive_periods_uses_reset_group_ctes(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_consecutive_periods_uses_reset_group_ctes(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"expression": "consecutive_periods(sum(revenue) > 0)", "name": "positive_streak"}],
         })
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         norm = _norm(sql)
         assert "cp_reset_" in norm
         assert "cp_value_" in norm
@@ -762,7 +762,7 @@ class TestFields:
         assert '"orders.positive_streak"' in norm
 
     async def test_consecutive_periods_no_implicit_nulls_last_sqlite(
-        self, orders_model: SlayerDataset,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """Regression: sqlglot's `exp.Ordered` injects `NULLS LAST` on SQLite even when not requested, which would change consecutive_periods streak/reset semantics for any NULL time values vs. the pre-AST string-built `ORDER BY <t>` output. The fix is to put a bare column inside `exp.Order` rather than wrapping it in `exp.Ordered`."""
         gen = SQLGenerator(dialect="sqlite")
@@ -776,7 +776,7 @@ class TestFields:
             "metrics": [{"expression": "consecutive_periods(sum(revenue) > 0)",
                        "name": "positive_streak"}],
         })
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         body, outer = sql.rsplit("ORDER BY", 1)
         assert _norm(outer) == '"orders.status" ASC NULLS LAST, "orders.created_at" ASC NULLS LAST'
         assert "NULLS LAST" not in body.upper(), (
@@ -785,27 +785,27 @@ class TestFields:
             f"values).\nsql:\n{sql}"
         )
 
-    async def test_consecutive_periods_comparison_generates_expression(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_consecutive_periods_comparison_generates_expression(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"expression": "consecutive_periods(sum(revenue) > 0) >= 2", "name": "long_enough"}],
         })
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         norm = _norm(sql)
         assert "cp_reset_" in norm
         assert "cp_value_" in norm
         assert '>= 2' in norm
         assert '"orders.long_enough"' in norm
 
-    async def test_windowed_sum_uses_range_join_primitive(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_windowed_sum_uses_range_join_primitive(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"expression": "sum(revenue, window='90d')", "name": "revenue_90d"}],
         })
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         norm = _norm(sql)
         # Windowed measures now emit the unified ``_cm_`` producer CTE named after the canonical aggregate alias (``revenue_sum_window_90d``), while the surfaced output column keeps the user ``name`` (revenue_90d).
         assert "_cm_orders__revenue_sum_window_90d" in norm
@@ -820,15 +820,15 @@ class TestFields:
         ), norm
 
     async def test_windowed_sum_preserves_other_time_dim_grain(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """With 2+ time dimensions, the windowed CTE must equality-join on every non-window time dim — otherwise rows from other dim values fan in."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [
                 TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
                 TimeDimension(field="delivery_at", granularity=TimeGranularity.MONTH),
             ], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "revenue_90d"}]})
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         assert "_w_td_" in sql
         assert '_base."orders.delivery_at"' in sql
 
@@ -955,7 +955,7 @@ class TestFields:
         )
 
     async def test_filter_on_windowed_measure_is_post_filter(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """A filter on a windowed measure must apply post-aggregation, not as HAVING on the base CTE. The base CTE doesn't compute the windowed value — applying a HAVING there would use the wrong (non-windowed) aggregate."""
         query = SlayerQuery.model_validate({
@@ -964,7 +964,7 @@ class TestFields:
             "metrics": [{"expression": "sum(revenue, window='90d')", "name": "revenue_90d"}],
             "filter": ["sum(revenue, window='90d') > 100"],
         })
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         norm = _norm(sql)
         # The colon-syntax filter resolves to the renamed user alias. CodeRabbit nitpick: target the post-filter WHERE clause specifically — the alias surfaces in the projection too, so a generic ``in norm`` check could pass even on regression.
         where_clause = norm.split(" WHERE ", 1)[1] if " WHERE " in norm else ""
@@ -980,13 +980,13 @@ class TestFields:
             f"Windowed-measure filter must not be applied as HAVING on the base aggregate.\nsql:\n{sql}"
         )
 
-    async def test_window_duration_full_compact_syntax(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_window_duration_full_compact_syntax(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.DAY)],
             "metrics": [{"expression": "avg(revenue, window='1y2m3w5d6h7min8s')", "name": "avg_window"}],
         })
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         norm = _norm(sql)
         assert "AVG(_src._w_value)" in norm
         # One INTERVAL per (amount, unit) pair, chained as subtractions; sqlglot transpiles each per dialect (correct on MySQL/ClickHouse/BigQuery).
@@ -1001,7 +1001,7 @@ class TestFields:
         ):
             assert piece in norm, f"missing per-unit interval clause '{piece}'\nsql:\n{sql}"
 
-    async def test_windowed_sum_sqlite_duration_modifiers(self, orders_model: SlayerDataset) -> None:
+    async def test_windowed_sum_sqlite_duration_modifiers(self, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.DAY)],
@@ -1010,7 +1010,7 @@ class TestFields:
         sql = await _generate(
             generator=SQLGenerator(dialect="sqlite"),
             query=query,
-            model=orders_model,
+            dataset=orders_dataset,
         )
         # One slayer_date_add call per duration part, applied in written order.
         norm = _norm(sql).upper()
@@ -1020,7 +1020,7 @@ class TestFields:
 
 
     async def test_two_windowed_measures_emit_distinct_ctes(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """Two windowed measures in one query must each get their own collision-safe ``_cm_`` CTE and both join back to the base grain."""
         query = SlayerQuery(
@@ -1032,7 +1032,7 @@ class TestFields:
                 {"expression": "avg(revenue, window='30d')", "name": "rev_30d"},
             ],
         )
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         norm = _norm(sql)
         assert "_cm_orders__revenue_sum_window_90d" in norm, sql
         assert "_cm_orders__revenue_avg_window_30d" in norm, sql
@@ -1065,7 +1065,7 @@ class TestFields:
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"expression": "sum(paid_revenue, window='90d')", "name": "pr_90d"}],
         })
-        sql = await _generate(generator=generator, query=query, model=model)
+        sql = await _generate(generator=generator, query=query, dataset=model)
         assert "_cm_orders__paid_revenue_sum_window_90d" in sql, sql
         src_body = _extract_src_body(sql)
         assert "CASE" in src_body.upper(), f"_w_value must CASE-wrap the Column.filter.\nsrc:\n{src_body}"
@@ -1097,7 +1097,7 @@ class TestFields:
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"expression": "sum(flagged_revenue, window='90d')", "name": "fr_90d"}],
         })
-        sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
+        sql = await _generate(generator=generator, query=query, dataset=orders, extra_datasets=[customers])
         assert "_cm_" in sql, sql
         src_body = _extract_src_body(sql)
         # Assert a real JOIN was registered — not merely that the alias appears inside the CASE predicate text (which would pass even if discovery were broken).
@@ -1132,7 +1132,7 @@ class TestFields:
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}],
         })
-        sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
+        sql = await _generate(generator=generator, query=query, dataset=orders, extra_datasets=[customers])
         assert "_cm_" in sql, sql
         src_body = _extract_src_body(sql)
         # Assert a real JOIN was registered (walk the JOIN nodes), not just an alias appearing in the filter predicate text.
@@ -1141,7 +1141,7 @@ class TestFields:
         )
 
     async def test_order_by_windowed_alias_resolves(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """ORDER BY the windowed measure's public alias must resolve against the combined SELECT (the ``_cm_`` join-back column), not the base."""
         query = SlayerQuery.model_validate({
@@ -1150,7 +1150,7 @@ class TestFields:
             "metrics": [{"expression": "sum(revenue, window='90d')", "name": "revenue_90d"}],
             "order": [{"field": {"name": "revenue_90d"}, "direction": "desc"}],
         })
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         norm = _norm(sql)
         assert "_cm_" in norm, sql
         order_portion = norm.split("ORDER BY", 1)[1] if "ORDER BY" in norm else ""
@@ -1168,7 +1168,7 @@ class TestFields:
 
 
     async def test_windowed_row_filter_applied_inside_src(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """F4: a query WHERE-phase row filter constrains the ``_src`` scope (host-rooted scope inherits host row filters)."""
         query = SlayerQuery.model_validate({
@@ -1177,7 +1177,7 @@ class TestFields:
             "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}],
             "filter": ["status = 'completed'"],
         })
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         assert "_cm_" in sql, sql
         src_body = _extract_src_body(sql)
         assert "'completed'" in src_body, (
@@ -1185,7 +1185,7 @@ class TestFields:
         )
 
     async def test_windowed_date_range_not_applied_inside_src(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """The typed ``date_range`` on the window time dim must be STRIPPED from ``_src`` — the trailing window has to reach rows before the range start — while still bounding the outer/base grain."""
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
@@ -1193,7 +1193,7 @@ class TestFields:
                 granularity=TimeGranularity.MONTH,
                 date_range=["2024-06-01", "2024-12-31"],
             )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}]})
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         assert "_cm_" in sql, sql
         src_body = _extract_src_body(sql)
         # The range join itself is present in _src.
@@ -1206,7 +1206,7 @@ class TestFields:
         assert "2024-06-01" in sql, sql
 
     async def test_windowed_explicit_time_filter_does_not_truncate_src(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """An EXPLICIT relational bound on the raw window time column is a FRAME bound, not a population filter — so it bounds ``_base`` and is stripped from ``_src``, exactly like the ``date_range`` spelling of the same intent."""
         query = SlayerQuery.model_validate({
@@ -1215,7 +1215,7 @@ class TestFields:
             "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}],
             "filter": ["created_at >= '2024-06-01'"],
         })
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         assert "_cm_" in sql, sql
         src_body = _extract_src_body(sql)
         assert "2024-06-01" not in src_body, (
@@ -1226,7 +1226,7 @@ class TestFields:
         assert "2024-06-01" in _extract_cte_body(sql, r"_base"), sql
 
     async def test_windowed_output_is_scope_closed(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """Acceptance: the emitted ``_cm_`` statement is scope-closed — every alias referenced in a scope is bound in that scope's own FROM/JOINs. Makes the ``assert_scope_closed`` guarantee an explicit contract rather than only the autouse harness side effect."""
         query = SlayerQuery.model_validate({
@@ -1235,13 +1235,13 @@ class TestFields:
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_90d"}],
         })
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         assert "_cm_" in sql, sql
         # Explicit validator pass (raises ScopeLeakError on any unbound ref).
         assert_scope_closed(sql, dialect="postgres")
 
     async def test_same_windowed_measure_two_aliases_both_surface(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """Codex#2: the same windowed formula selected under two names interns to ONE slot / ONE ``_cm_`` CTE, but BOTH public aliases must surface in the combined projection (the CTE's single aggregate column is remapped ``AS`` each alias) — the later alias must not be dropped."""
         query = SlayerQuery(
@@ -1252,7 +1252,7 @@ class TestFields:
                 {"expression": "sum(revenue, window='90d')", "name": "rev_b"},
             ],
         )
-        sql = await _generate(generator=generator, query=query, model=orders_model)
+        sql = await _generate(generator=generator, query=query, dataset=orders_dataset)
         norm = _norm(sql)
         assert '"orders.rev_a"' in norm, sql
         assert '"orders.rev_b"' in norm, sql
@@ -1282,7 +1282,7 @@ class TestFields:
         query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
                 field="customers.signup_at", granularity=TimeGranularity.MONTH,
             )], "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_w"}]})
-        sql = await _generate(generator=generator, query=query, model=orders, extra_models=[customers])
+        sql = await _generate(generator=generator, query=query, dataset=orders, extra_datasets=[customers])
         assert "_cm_" in sql, sql
         src_body = _extract_src_body(sql)
         assert "customers" in _join_aliases(src_body), (
@@ -1290,50 +1290,50 @@ class TestFields:
             f"dimension.\nsrc:\n{src_body}"
         )
 
-    async def test_time_shift_row_based(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_time_shift_row_based(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """time_shift without explicit granularity uses the time dim's granularity (calendar-based)."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="time_shift(sum(revenue), -1)", name="rev_prev")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
         # Calendar-based join with INTERVAL (no more ROW_NUMBER)
         assert "INTERVAL" in sql
 
-    async def test_lag(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
-        orders_model.default_time_dimension = "created_at"
+    async def test_lag(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="lag(sum(revenue), 1)", name="rev_prev")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "LAG(" in sql
         assert "OVER" in sql
 
-    async def test_lead(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
-        orders_model.default_time_dimension = "created_at"
+    async def test_lead(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="lead(sum(revenue), 1)", name="rev_next")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "LEAD(" in sql
         assert "OVER" in sql
 
-    async def test_change(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
-        orders_model.default_time_dimension = "created_at"
+    async def test_change(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="change(sum(revenue))", name="rev_change")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         # change is desugared into time_shift + expression
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
@@ -1341,50 +1341,50 @@ class TestFields:
         assert "rev_change" in sql.lower()
         assert " - " in sql
 
-    async def test_change_pct(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
-        orders_model.default_time_dimension = "created_at"
+    async def test_change_pct(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="change_pct(sum(revenue))", name="rev_pct")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
         # change_pct = (curr - prev) / NULLIF(prev, 0) — the divisor is guarded against a zero prior-period value (returns NULL, not a div-by-zero).
         assert 'NULLIF("orders._time_shift_inner", 0)' in sql
 
-    async def test_rank(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_rank(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="rank(sum(revenue), direction='desc')", name="rev_rank")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "RANK()" in sql
         assert "OVER" in sql
 
-    async def test_last(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
-        orders_model.default_time_dimension = "created_at"
+    async def test_last(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="last(sum(revenue))", name="latest_rev")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "FIRST_VALUE(" in sql
         assert "DESC" in sql
 
-    async def test_last_measure_type(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_last_measure_type(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """A measure with last aggregation should use ROW_NUMBER + conditional aggregate."""
-        orders_model.default_time_dimension = "created_at"
-        orders_model.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE))
+        orders_dataset.default_time_dimension = "created_at"
+        orders_dataset.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="last(balance)")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         # ROW_NUMBER ranking inside the measure's own ``_cm_`` CTE.
         assert "ROW_NUMBER()" in sql
         assert "_ranked_rn" in sql
@@ -1393,41 +1393,41 @@ class TestFields:
         assert "MAX(" in sql
         assert "CASE" in sql
 
-    async def test_last_with_explicit_time_column(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_last_with_explicit_time_column(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """last(ordered_at) should ORDER BY the explicit time column, not the default."""
-        orders_model.default_time_dimension = "created_at"
-        orders_model.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE))
-        orders_model.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP))
+        orders_dataset.default_time_dimension = "created_at"
+        orders_dataset.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE))
+        orders_dataset.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="last(balance, ordered_at)")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "ROW_NUMBER()" in sql
         assert "orders.ordered_at" in sql
         assert "DESC" in sql
 
-    async def test_first_with_explicit_time_column(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_first_with_explicit_time_column(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """first(ordered_at) should ORDER BY the explicit time column ascending."""
-        orders_model.default_time_dimension = "created_at"
-        orders_model.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE))
-        orders_model.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP))
+        orders_dataset.default_time_dimension = "created_at"
+        orders_dataset.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE))
+        orders_dataset.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="first(balance, ordered_at)")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "ROW_NUMBER()" in sql
         _assert_ranks_by(sql, key="orders.ordered_at", descending=False)
 
-    async def test_multiple_last_different_time_columns(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_multiple_last_different_time_columns(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Two last measures with different explicit time cols get separate ROW_NUMBER columns."""
-        orders_model.default_time_dimension = "created_at"
-        orders_model.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE))
-        orders_model.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP))
-        orders_model.fields.append(DatasetField(name="updated_at", sql="updated_at", datatype=DataType.TIMESTAMP))
+        orders_dataset.default_time_dimension = "created_at"
+        orders_dataset.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE))
+        orders_dataset.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP))
+        orders_dataset.fields.append(DatasetField(name="updated_at", sql="updated_at", datatype=DataType.TIMESTAMP))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
@@ -1436,7 +1436,7 @@ class TestFields:
                 DatasetMetric(expression="last(balance, updated_at)"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         norm = _norm(sql)
         # Two rankings, one per measure, each in its own CTE by its own time column; the old _last_rn_2 suffix only mattered under one shared scope.
         assert sql.count("ROW_NUMBER()") == 2
@@ -1445,11 +1445,11 @@ class TestFields:
         assert "_last_rn_2" not in sql, sql
         assert norm.count("CASE WHEN _ranked_rn = 1") == 2, sql
 
-    async def test_mixed_explicit_and_default_time_columns(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_mixed_explicit_and_default_time_columns(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """One last with explicit time, one last with default — separate ROW_NUMBER columns."""
-        orders_model.default_time_dimension = "created_at"
-        orders_model.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE))
-        orders_model.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP))
+        orders_dataset.default_time_dimension = "created_at"
+        orders_dataset.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE))
+        orders_dataset.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
@@ -1458,16 +1458,16 @@ class TestFields:
                 DatasetMetric(expression="last(balance, ordered_at)"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert sql.count("ROW_NUMBER()") == 2
         assert "orders.created_at" in sql
         assert "orders.ordered_at" in sql
 
-    async def test_same_explicit_time_column_shared(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_same_explicit_time_column_shared(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Two first/last measures with the same explicit time col share one ROW_NUMBER."""
-        orders_model.default_time_dimension = "created_at"
-        orders_model.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE))
-        orders_model.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP))
+        orders_dataset.default_time_dimension = "created_at"
+        orders_dataset.fields.append(DatasetField(name="balance", sql="balance", datatype=DataType.DOUBLE))
+        orders_dataset.fields.append(DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
@@ -1476,7 +1476,7 @@ class TestFields:
                 DatasetMetric(expression="first(balance, ordered_at)"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         # Two aggregates over the same time column are still two CTEs; they share the ORDER BY column but differ in direction.
         assert sql.count("ROW_NUMBER()") == 2
         _assert_ranks_by(sql, key="orders.ordered_at", descending=True)
@@ -1484,21 +1484,21 @@ class TestFields:
         assert "_last_rn" not in sql, sql
         assert "_first_rn" not in sql, sql
 
-    async def test_time_shift(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
-        orders_model.default_time_dimension = "created_at"
+    async def test_time_shift(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="time_shift(sum(revenue), -1, 'year')", name="rev_prev_year")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
         assert "INTERVAL" in sql
 
-    async def test_time_shift_shifted_date_range(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_time_shift_shifted_date_range(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Calendar time_shift with date_range: shifted CTE uses INTERVAL, not shifted dates."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -1510,15 +1510,15 @@ class TestFields:
             ],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="time_shift(sum(revenue), -1, 'month')", name="rev_prev")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "2024-03-01" in sql
         assert "2024-04-01" in sql
         # Shifted CTE uses INTERVAL to shift the time column (not shifted date strings)
         assert "INTERVAL" in sql
 
-    async def test_time_shift_yoy_shifted_date_range(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_time_shift_yoy_shifted_date_range(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Year-over-year time_shift uses INTERVAL '1' YEAR in the shifted CTE."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -1530,13 +1530,13 @@ class TestFields:
             ],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="time_shift(sum(revenue), -1, 'year')", name="rev_yoy")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "INTERVAL" in sql
         assert "YEAR" in sql
 
-    async def test_change_shifted_date_range(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_change_shifted_date_range(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """change() with date_range uses a hidden time_shift with INTERVAL."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -1548,26 +1548,26 @@ class TestFields:
             ],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="change(sum(revenue))", name="rev_change")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         # change desugars to time_shift + expression; shifted CTE uses INTERVAL
         assert "INTERVAL" in sql
         assert " - " in sql
 
-    async def test_no_date_range_no_shift(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_no_date_range_no_shift(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Without a date_range, shifted CTE should still have INTERVAL but no BETWEEN."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="time_shift(sum(revenue), -1, 'month')", name="rev_prev")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "shifted_" in sql
         assert "BETWEEN" not in sql
 
-    async def test_forward_time_shift_with_date_range(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_forward_time_shift_with_date_range(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Forward time_shift(x, 1, 'month') with date_range should use negative INTERVAL."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -1579,13 +1579,13 @@ class TestFields:
             ],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="time_shift(sum(revenue), 1, 'month')", name="rev_next")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "INTERVAL" in sql
         assert "shifted_" in sql
 
-    async def test_quarter_date_shift(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_quarter_date_shift(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """time_shift with quarter granularity uses INTERVAL with 3 months."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -1597,18 +1597,18 @@ class TestFields:
             ],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="time_shift(sum(revenue), -1, 'quarter')", name="prev_q")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         # Quarter = 3 months; shifted CTE uses INTERVAL
         assert "INTERVAL" in sql
         assert "MONTH" in sql
         assert "shifted_" in sql
 
     async def test_multiple_time_shifts_in_arithmetic_unique_ctes(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """Two arithmetic-wrapped time_shifts must not share a CTE name;
         their shared input's shifted relation is computed once."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -1619,7 +1619,7 @@ class TestFields:
                 DatasetMetric(expression="sum(revenue) - time_shift(sum(revenue), -2, 'month')", name="growth_2m"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
 
         ctes = _re.findall(r'(?:WITH|,)\s*"?(\w+)"?\s+AS\s*\(', sql)
         assert len(ctes) == len(set(ctes)), f"duplicate CTE names: {ctes}"
@@ -1627,10 +1627,10 @@ class TestFields:
         assert len([c for c in ctes if c.startswith("sjoin_")]) == 2
 
     async def test_multiple_time_shifts_resolve_to_distinct_aliases(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """Each shift keeps its own offset — no silent alias sharing."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -1641,7 +1641,7 @@ class TestFields:
                 DatasetMetric(expression="sum(revenue) - time_shift(sum(revenue), -2, 'month')", name="growth_2m"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
 
         # Both shifts are hoisted, each under its OWN alias (legacy: ``len({t.alias for t in shifts}) == len(shifts)`` over the two ``time_shift`` transforms).
         shift_aliases = _hoisted_shift_aliases(sql)
@@ -1676,10 +1676,10 @@ class TestFields:
         )
 
     async def test_hidden_transform_name_avoids_user_measure_collision(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """A hoisted transform must not land on a user measure's name."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -1690,7 +1690,7 @@ class TestFields:
                 DatasetMetric(expression="sum(revenue) * 2", name="_t0_growth"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
 
         # The hoisted shift's alias must not collide with a user-declared result key (the outer projection is a superset of the expression aliases).
         transform_aliases = _hoisted_shift_aliases(sql)
@@ -1710,11 +1710,11 @@ class TestFields:
         assert "orders._t0_growth" not in growth_sql.replace("orders._t0_growth_2", "")
 
     async def test_hidden_transform_name_avoids_dimension_collision(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """Dimensions alias as `<model>.<name>` too, so they're reserved."""
-        orders_model.default_time_dimension = "created_at"
-        orders_model.fields.append(
+        orders_dataset.default_time_dimension = "created_at"
+        orders_dataset.fields.append(
             DatasetField(name="_t0_growth", sql="customer_id", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(
@@ -1727,7 +1727,7 @@ class TestFields:
                 DatasetMetric(expression="sum(revenue) - time_shift(sum(revenue), -1, 'month')", name="growth"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
 
         # Disjointness: the outer projection carries the declared dimensions and time dimension, none colliding with the hoisted transform alias.
         dim_aliases = _outer_projection_names(sql)
@@ -1744,10 +1744,10 @@ class TestFields:
         assert "orders._t0_growth" not in growth_sql
 
     async def test_dev_1692_repro_shape(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """The reported four-measure period-over-period shape."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -1767,116 +1767,116 @@ class TestFields:
                 ),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
 
         ctes = _re.findall(r'(?:WITH|,)\s*"?(\w+)"?\s+AS\s*\(', sql)
         assert len(ctes) == len(set(ctes)), f"duplicate CTE names: {ctes}"
 
-    async def test_nested_self_join_generates(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_nested_self_join_generates(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """change(time_shift(x)) nests: the outer shift reads the inner's series."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="change(time_shift(sum(revenue), -1, 'year'))", name="x")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert len(set(_re.findall(r"shifted_\w+", sql))) == 2, sql
 
-    async def test_post_filter_on_computed_column(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_post_filter_on_computed_column(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Filters on computed columns should be applied as post-filter wrapper."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="change(sum(revenue))", name="rev_change")],
             filter=["rev_change < 0"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         # The post-phase filter is the final select's WHERE; it reads the selected change measure by its alias.
         assert "< 0" in post_filter_where(sql)
         assert '"orders.rev_change" < 0' in post_filter_where(sql)
 
-    async def test_inline_transform_filter(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_inline_transform_filter(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Transform expressions in filters should be auto-extracted as hidden fields."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)")],
             filter=["last(change(sum(revenue))) < 0"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "FIRST_VALUE" in sql  # last()
         assert "shifted_" in sql  # change() via self-join
         assert "< 0" in post_filter_where(sql)
 
-    async def test_mixed_base_and_post_filters(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_mixed_base_and_post_filters(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Base filters and post-filters should coexist correctly."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="change(sum(revenue))", name="rev_change")],
             filter=["status == 'completed'", "rev_change > 0"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "'completed'" in sql
         # Post-filter should be in the outer wrapper and reads the selected change measure by its alias.
         assert '"orders.rev_change" > 0' in post_filter_where(sql)
         assert "> 0" in post_filter_where(sql)
         assert "'completed'" not in post_filter_where(sql)
 
-    async def test_transform_without_time_raises(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_transform_without_time_raises(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Transforms requiring time should fail if no time dimension available."""
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="cumsum(sum(revenue))", name="x")],
         )
         with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
-            await _generate(generator, query, orders_model)
+            await _generate(generator, query, orders_dataset)
 
     async def test_default_time_dimension_without_explicit_time_dims_raises(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """default_time_dimension alone (no query time_dimensions) must error."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="cumsum(sum(revenue))", name="x")],
         )
         with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
-            await _generate(generator, query, orders_model)
+            await _generate(generator, query, orders_dataset)
 
-    async def test_field_plain_measure(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_field_plain_measure(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "COUNT(*)" in sql
 
-    async def test_field_auto_adds_measures(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_field_auto_adds_measures(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Fields referencing measures auto-add them to the base query."""
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="sum(revenue) / count(*)", name="aov")],
             dimensions=[FieldRef(name="status")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "aov" in sql.lower()
         # The referenced aggregates are materialised in the (inlined) SELECT.
         assert "COUNT(*)" in sql
         assert "SUM(" in sql
 
-    async def test_field_mixed_with_measures(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_field_mixed_with_measures(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Fields can be used alongside explicit measures."""
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="sum(revenue) / count(*)", name="aov")],
             dimensions=[FieldRef(name="status")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "COUNT(*)" in sql
         assert "SUM(" in sql
         assert "aov" in sql.lower()
@@ -1894,17 +1894,17 @@ def _assert_rank_window(sql: str, *, fn: str, partition: list[str], descending: 
 class TestRankFamilyTransforms:
     """rank, percent_rank, dense_rank, ntile — first-class window-function transforms."""
 
-    async def test_rank_no_partition_unchanged(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_rank_no_partition_unchanged(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Today's behavior: rank without partition_by emits no PARTITION BY clause."""
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="rank(sum(revenue), direction='desc')", name="rev_rank")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         _assert_rank_window(sql, fn='RANK', partition=[], descending=True)
 
-    async def test_rank_with_partition_by_single(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_rank_with_partition_by_single(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status"), FieldRef(name="customer_id")],
@@ -1913,10 +1913,10 @@ class TestRankFamilyTransforms:
                 DatasetMetric(expression="rank(sum(revenue), partition_by=status, direction='desc')", name="rev_rank"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         _assert_rank_window(sql, fn='RANK', partition=['"orders.status"'], descending=True)
 
-    async def test_rank_with_partition_by_list(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_rank_with_partition_by_list(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status"), FieldRef(name="customer_id")],
@@ -1928,11 +1928,11 @@ class TestRankFamilyTransforms:
                 ),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         # PARTITION BY key order is irrelevant (planner sorts keys).
         _assert_rank_window(sql, fn='RANK', partition=['"orders.customer_id"', '"orders.status"'], descending=True)
 
-    async def test_percent_rank_default(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_percent_rank_default(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -1941,10 +1941,10 @@ class TestRankFamilyTransforms:
                 DatasetMetric(expression="percent_rank(sum(revenue))", name="rev_pr"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         _assert_rank_window(sql, fn='PERCENTRANK', partition=[], descending=False)
 
-    async def test_percent_rank_with_partition(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_percent_rank_with_partition(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status"), FieldRef(name="customer_id")],
@@ -1955,10 +1955,10 @@ class TestRankFamilyTransforms:
                 ),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         _assert_rank_window(sql, fn='PERCENTRANK', partition=['"orders.status"'], descending=False)
 
-    async def test_dense_rank_default(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_dense_rank_default(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -1967,10 +1967,10 @@ class TestRankFamilyTransforms:
                 DatasetMetric(expression="dense_rank(sum(revenue), direction='desc')", name="rev_dr"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         _assert_rank_window(sql, fn='DENSERANK', partition=[], descending=True)
 
-    async def test_dense_rank_with_partition(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_dense_rank_with_partition(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status"), FieldRef(name="customer_id")],
@@ -1981,10 +1981,10 @@ class TestRankFamilyTransforms:
                 ),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         _assert_rank_window(sql, fn='DENSERANK', partition=['"orders.status"'], descending=True)
 
-    async def test_ntile_n_4(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_ntile_n_4(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -1993,10 +1993,10 @@ class TestRankFamilyTransforms:
                 DatasetMetric(expression="ntile(sum(revenue), n=4)", name="rev_quartile"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         _assert_rank_window(sql, fn='NTILE', partition=[], descending=False)
 
-    async def test_ntile_with_partition(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_ntile_with_partition(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status"), FieldRef(name="customer_id")],
@@ -2008,11 +2008,11 @@ class TestRankFamilyTransforms:
                 ),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         _assert_rank_window(sql, fn='NTILE', partition=['"orders.status"'], descending=False)
 
     async def test_dense_rank_in_filter_top_5_distinct(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """``dense_rank(..., direction='desc') <= 5`` is auto-extracted as a hidden field and post-filtered."""
         query = SlayerQuery(
@@ -2021,7 +2021,7 @@ class TestRankFamilyTransforms:
             metrics=[DatasetMetric(expression="sum(revenue)")],
             filter=["dense_rank(sum(revenue), direction='desc') <= 5"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "<= 5" in post_filter_where(sql)
         # Pin DENSE_RANK to the chain CTEs and the predicate to the outermost statement, not just "somewhere in the SQL".
         inner_sql, outer_sql = split_chain(sql)
@@ -2036,7 +2036,7 @@ class TestRankFamilyTransforms:
         )
 
     async def test_ntile_with_n_kwarg_in_filter(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """``ntile(<measure>, n=4) <= 1`` end-to-end."""
         query = SlayerQuery(
@@ -2045,7 +2045,7 @@ class TestRankFamilyTransforms:
             metrics=[DatasetMetric(expression="sum(revenue)")],
             filter=["ntile(sum(revenue), n=4) <= 1"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         post_filter_where(sql)
         inner_sql, outer_sql = split_chain(sql)
         assert "NTILE(4)" in inner_sql, (
@@ -2059,7 +2059,7 @@ class TestRankFamilyTransforms:
         )
 
     async def test_rank_with_partition_by_kwarg_in_filter(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """``rank(<measure>, partition_by=<col>, direction='desc') <= 1`` end-to-end."""
         query = SlayerQuery(
@@ -2068,7 +2068,7 @@ class TestRankFamilyTransforms:
             metrics=[DatasetMetric(expression="sum(revenue)")],
             filter=["rank(sum(revenue), partition_by=status, direction='desc') <= 1"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         post_filter_where(sql)
         inner_sql, outer_sql = split_chain(sql)
         assert "RANK()" in inner_sql, f"RANK should be materialised in the inner SELECT, got:\n{sql}"
@@ -2081,7 +2081,7 @@ class TestRankFamilyTransforms:
         )
 
     async def test_rank_partition_by_time_dimension(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """partition_by= can reference a query time_dimension, not just a regular dimension."""
         query = SlayerQuery(
@@ -2098,11 +2098,11 @@ class TestRankFamilyTransforms:
                 ),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         _assert_rank_window(sql, fn='RANK', partition=['"orders.created_at"'], descending=True)
 
     async def test_partition_by_must_be_a_query_dimension(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """partition_by referencing a column NOT in dimensions errors clearly."""
         query = SlayerQuery(
@@ -2116,7 +2116,7 @@ class TestRankFamilyTransforms:
             ],
         )
         with pytest.raises(ValueError) as excinfo:
-            await _generate(generator, query, orders_model)
+            await _generate(generator, query, orders_dataset)
         msg = str(excinfo.value)
         assert "partition_by" in msg
         assert "customer_id" in msg
@@ -2190,7 +2190,7 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
             dimensions=[FieldRef(name="status")],
         )
         with pytest.raises(ValueError, match="requires an unambiguous time dimension"):
-            await _generate(generator=generator, query=query, model=model)
+            await _generate(generator=generator, query=query, dataset=model)
 
     async def test_cumsum_with_time_dimension_works(self, generator: SQLGenerator) -> None:
         """cumsum with explicit time_dimensions should work fine."""
@@ -2216,9 +2216,9 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
 
 
 class TestNestedFields:
-    async def test_nested_cumsum_of_change_generates_stacked_ctes(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_nested_cumsum_of_change_generates_stacked_ctes(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """cumsum(change(revenue:sum)) should produce stacked CTEs."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
@@ -2227,15 +2227,15 @@ class TestNestedFields:
                 DatasetMetric(expression="cumsum(change(sum(revenue)))", name="delta"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "base" in sql.lower()
         assert "shifted_" in sql  # change desugars to time_shift
         assert "SUM(" in sql  # cumsum window
         assert "delta" in sql.lower()
 
-    async def test_change_of_cumsum_generates(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_change_of_cumsum_generates(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """change(cumsum(x)) shifts the cumsum series; the window renders once."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
@@ -2244,13 +2244,13 @@ class TestNestedFields:
                 DatasetMetric(expression="change(cumsum(sum(revenue)))", name="delta"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "shifted_" in sql
         assert len(_re.findall(r"OVER\s*\(", sql)) == 1, sql
 
-    async def test_mixed_arithmetic_with_transform(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_mixed_arithmetic_with_transform(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """cumsum(revenue) / count should work."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
@@ -2260,12 +2260,12 @@ class TestNestedFields:
                 DatasetMetric(expression="cumsum(sum(revenue)) / count(*)", name="avg_cumsum"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "SUM(" in sql  # cumsum window
         assert "avg_cumsum" in sql.lower()
 
     async def test_emitted_sql_has_no_agg_placeholder(
-        self, generator: SQLGenerator, orders_model: SlayerDataset
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset
     ) -> None:
         """Aggregated refs nested inside non-transform calls (``nullif``) must be fully resolved — no ``__aggN__`` placeholder may leak through."""
         query = SlayerQuery(
@@ -2277,7 +2277,7 @@ class TestNestedFields:
                 ),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "__agg" not in sql, f"__aggN__ placeholder leaked into SQL:\n{sql}"
 
 
@@ -2318,7 +2318,7 @@ class TestMultiDialectGeneration:
     """Test SQL generation across all supported dialects."""
 
     @pytest.fixture
-    def orders_model(self) -> SlayerDataset:
+    def orders_dataset(self) -> SlayerDataset:
         model = SlayerDataset(
             name="orders",
             sql_table="public.orders",
@@ -2354,7 +2354,7 @@ class TestMultiDialectGeneration:
     ]
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
-    async def test_basic_query(self, dialect: str, orders_model: SlayerDataset) -> None:
+    async def test_basic_query(self, dialect: str, orders_dataset: SlayerDataset) -> None:
         """Basic aggregation query should generate valid SQL for every dialect."""
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
@@ -2362,12 +2362,12 @@ class TestMultiDialectGeneration:
             metrics=[DatasetMetric(expression="count(*)"), DatasetMetric(expression="sum(revenue)")],
             dimensions=[FieldRef(name="status")],
         )
-        sql = await _generate(gen, query, orders_model)
+        sql = await _generate(gen, query, orders_dataset)
         assert "COUNT(" in sql
         assert "SUM(" in sql
 
     @pytest.mark.parametrize("dialect", ALL_DIALECTS)
-    async def test_date_trunc(self, dialect: str, orders_model: SlayerDataset) -> None:
+    async def test_date_trunc(self, dialect: str, orders_dataset: SlayerDataset) -> None:
         """DATE_TRUNC should produce valid output for every dialect."""
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
@@ -2375,7 +2375,7 @@ class TestMultiDialectGeneration:
             metrics=[DatasetMetric(expression="count(*)")],
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
         )
-        sql = await _generate(gen, query, orders_model)
+        sql = await _generate(gen, query, orders_dataset)
         assert "COUNT(" in sql
         # Each dialect uses its own truncation function
         sql_upper = sql.upper()
@@ -2422,7 +2422,7 @@ class TestMultiDialectGeneration:
         assert "CAST(CREATED_AT" not in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", [d for d in ALL_DIALECTS if d != "tsql"])
-    async def test_calendar_time_shift(self, dialect: str, orders_model: SlayerDataset) -> None:
+    async def test_calendar_time_shift(self, dialect: str, orders_dataset: SlayerDataset) -> None:
         """Calendar-based time_shift should produce dialect-appropriate date arithmetic in shifted CTE."""
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
@@ -2430,7 +2430,7 @@ class TestMultiDialectGeneration:
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="time_shift(sum(revenue), -1, 'year')", name="rev_prev_year")],
         )
-        sql = await _generate(gen, query, orders_model)
+        sql = await _generate(gen, query, orders_dataset)
         assert "shifted_" in sql
         assert "LEFT JOIN" in sql
         # Join should be simple equality (timestamp shift is inside the shifted CTE) Dialect-specific date arithmetic should appear in the shifted CTE's SELECT/GROUP BY
@@ -2439,7 +2439,7 @@ class TestMultiDialectGeneration:
 
     @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
     async def test_window_measure_multi_unit_interval_dialect_correct(
-        self, dialect: str, orders_model: SlayerDataset,
+        self, dialect: str, orders_dataset: SlayerDataset,
     ) -> None:
         """Multi-unit windows (e.g. '1y2m3d') must render as separate per-unit INTERVAL clauses on MySQL and ClickHouse — never as a single Postgres-shaped quoted multi-unit literal which neither dialect parses."""
         gen = SQLGenerator(dialect=dialect)
@@ -2452,7 +2452,7 @@ class TestMultiDialectGeneration:
             metrics=[DatasetMetric(expression="sum(revenue, window='1y2m3d')",
                                    name="rev_w")],
         )
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         norm = _norm(sql).upper()
         # The broken Postgres-shape multi-unit literal must NOT appear.
         assert "INTERVAL '1 YEAR 2 MONTH 3 DAY'" not in norm, (
@@ -2472,7 +2472,7 @@ class TestMultiDialectGeneration:
 
     @pytest.mark.parametrize("dialect", ["mysql", "clickhouse"])
     async def test_window_measure_single_unit_interval_dialect_correct(
-        self, dialect: str, orders_model: SlayerDataset,
+        self, dialect: str, orders_dataset: SlayerDataset,
     ) -> None:
         """Even single-unit windows must render unquoted on MySQL/ClickHouse."""
         gen = SQLGenerator(dialect=dialect)
@@ -2485,7 +2485,7 @@ class TestMultiDialectGeneration:
             metrics=[DatasetMetric(expression="sum(revenue, window='7d')",
                                    name="rev_w")],
         )
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         norm = _norm(sql).upper()
         assert "INTERVAL '7 DAY'" not in norm, (
             f"Quoted single-unit INTERVAL literal is invalid on {dialect}.\n"
@@ -2513,14 +2513,14 @@ class TestMultiDialectGeneration:
         self,
         dialect: str,
         formula: str,
-        orders_model: SlayerDataset,
+        orders_dataset: SlayerDataset,
     ) -> None:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression=formula)],
         )
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         upper = sql.upper()
         assert "SELECT" in upper
         # The aggregate must wrap the resolved value column (orders.amount, since the `revenue` Column has sql="amount") in its single-arg slot.
@@ -2543,14 +2543,14 @@ class TestMultiDialectGeneration:
         self,
         dialect: str,
         formula: str,
-        orders_model: SlayerDataset,
+        orders_dataset: SlayerDataset,
     ) -> None:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression=formula)],
         )
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         upper = sql.upper()
         assert "SELECT" in upper
         # Both legs (LHS column and other= kwarg) qualified, in the 2-arg slot in order; distinguishes this from the 1-arg test (Sonar S4144) and pins the 2-arg qualification path.
@@ -2588,7 +2588,7 @@ class TestMultiDialectGeneration:
                 OrderItem.model_validate({"field": "last(revenue, updated_at)", "direction": "asc"}),
             ],
         })
-        sql = await _generate(generator=gen, query=query, model=m)
+        sql = await _generate(generator=gen, query=query, dataset=m)
         _assert_valid_sql(sql, dialect=dialect)
         # Two rankings, one per ordered aggregate, each in its own CTE — so neither the rn-suffix scheme nor any dialect-specific alias rewrite is in play (no dialect rewrites the ROW_NUMBER alias).
         assert sql.count("ROW_NUMBER()") == 2, sql
@@ -2628,7 +2628,7 @@ class TestStatAggsViaQueryEnrichment:
     """End-to-end aggregator-level checks (parser → enricher → generator). Confirms the new aggregations are reachable from query syntax, not just the internal _build_agg builder."""
 
     @pytest.fixture
-    def sales_model(self) -> SlayerDataset:
+    def sales_dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="sales",
             sql_table="public.sales",
@@ -2654,26 +2654,26 @@ class TestStatAggsViaQueryEnrichment:
         self,
         formula: str,
         expected_fragment: str,
-        sales_model: SlayerDataset,
+        sales_dataset: SlayerDataset,
     ) -> None:
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(
             population="sales",
             metrics=[DatasetMetric(expression=formula)],
         )
-        sql = await _generate(generator=gen, query=query, model=sales_model)
+        sql = await _generate(generator=gen, query=query, dataset=sales_dataset)
         # Pin the call shape: family name then the qualified column in its single-arg slot; sales.latency inside the call proves generation reached the value column.
         assert f"{expected_fragment}(sales.latency)" in sql
 
     async def test_corr_with_other_kwarg(
-        self, sales_model: SlayerDataset,
+        self, sales_dataset: SlayerDataset,
     ) -> None:
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(
             population="sales",
             metrics=[DatasetMetric(expression="corr(price, other=quantity)")],
         )
-        sql = await _generate(generator=gen, query=query, model=sales_model)
+        sql = await _generate(generator=gen, query=query, dataset=sales_dataset)
         # Both legs flow through _resolve_sql and qualify under the LHS measure's model_name.
         assert "CORR(sales.price, sales.quantity)" in sql
 
@@ -2704,7 +2704,7 @@ class TestPathAliasJoinInference:
         return s
 
     @pytest.fixture
-    def chained_model(self) -> SlayerDataset:
+    def chained_dataset(self) -> SlayerDataset:
         """Model with orders → customers (direct) and customers → regions (on customers)."""
         return SlayerDataset(
             name="orders",
@@ -2731,7 +2731,7 @@ class TestPathAliasJoinInference:
         return SlayerQueryEngine(storage=storage)
 
     async def test_dimension_sql_with_path_alias_infers_joins(
-        self, engine: SlayerQueryEngine, chained_model: SlayerDataset
+        self, engine: SlayerQueryEngine, chained_dataset: SlayerDataset
     ) -> None:
         """Inline dimension SQL like 'customers__regions.name' should infer joins for both tables."""
         query = SlayerQuery(
@@ -2739,7 +2739,7 @@ class TestPathAliasJoinInference:
             metrics=[DatasetMetric(expression="count(*)")],
             dimensions=[FieldRef(name="is_us")],
         )
-        await engine.storage.save_dataset(chained_model)
+        await engine.storage.save_dataset(chained_dataset)
         sql = (await engine.execute(query, dry_run=True)).sql
         join_aliases = _join_aliases(sql)
         assert "customers" in join_aliases
@@ -2798,17 +2798,17 @@ class TestPathAliasJoinInference:
         assert "users__orgs" in join_aliases
 
     async def test_measure_sql_with_path_alias_infers_joins(
-        self, engine: SlayerQueryEngine, chained_model: SlayerDataset
+        self, engine: SlayerQueryEngine, chained_dataset: SlayerDataset
     ) -> None:
         """Measure SQL like ``customers__regions.population`` infers joins for both intermediate hops (symmetric to the dimension and time-dimension cases above)."""
-        chained_model.fields.append(
+        chained_dataset.fields.append(
             DatasetField(name="region_pop_sum", sql="customers.regions.population", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="sum(region_pop_sum)")],
         )
-        await engine.storage.save_dataset(chained_model)
+        await engine.storage.save_dataset(chained_dataset)
         sql = (await engine.execute(query, dry_run=True)).sql
         join_aliases = _join_aliases(sql)
         assert "customers" in join_aliases
@@ -2846,7 +2846,7 @@ class TestMeasureSourceSqlJoinInference:
         ))
         return s
 
-    def _orders_model(self, *, extra_columns=None) -> SlayerDataset:
+    def _orders_dataset(self, *, extra_columns=None) -> SlayerDataset:
         """Build the orders model with the standard customer/regions chain and any extra derived columns the per-test wants."""
         cols = [
             DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
@@ -2895,7 +2895,7 @@ class TestMeasureSourceSqlJoinInference:
     async def test_local_last_with_path_aliased_derived_source(
         self, engine: SlayerQueryEngine
     ) -> None:
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(name="region_payment", sql="customers.regions.payment_amount",
                    datatype=DataType.DOUBLE),
         ])
@@ -2927,7 +2927,7 @@ class TestMeasureSourceSqlJoinInference:
             ],
             relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
         ))
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(name="cust_balance", sql="customers.balance", datatype=DataType.DOUBLE),
         ])
         await engine.storage.save_dataset(model)
@@ -2944,7 +2944,7 @@ class TestMeasureSourceSqlJoinInference:
     async def test_filtered_last_cross_join_value_materialized(
         self, engine: SlayerQueryEngine
     ) -> None:
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(name="region_payment", sql="customers.regions.payment_amount",
                    datatype=DataType.DOUBLE, filter="orders.amount > 100"),
         ])
@@ -2974,7 +2974,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """Two measures over the SAME crossing sql but DISTINCT derived columns intern to distinct ``AggregateKey``s (identity carries the column name), so each isolates into its OWN host-rooted CTE with its own ``_val`` materialisation — per-slot isolation, no CTE merging (merging is ``may_inline`` territory). Dedupe is therefore per-CTE."""
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(name="region_payment_a", sql="customers.regions.payment_amount",
                    datatype=DataType.DOUBLE),
             DatasetField(name="region_payment_b", sql="customers.regions.payment_amount",
@@ -3009,7 +3009,7 @@ class TestMeasureSourceSqlJoinInference:
     async def test_same_sql_different_type_no_bad_dedupe(
         self, engine: SlayerQueryEngine
     ) -> None:
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(name="region_pay_d", sql="customers.regions.payment_amount * 2",
                    datatype=DataType.DOUBLE),
             DatasetField(name="region_pay_i", sql="customers.regions.payment_amount * 2",
@@ -3037,7 +3037,7 @@ class TestMeasureSourceSqlJoinInference:
     async def test_composite_last_cross_join_source(
         self, engine: SlayerQueryEngine
     ) -> None:
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(name="region_payment", sql="customers.regions.payment_amount",
                    datatype=DataType.DOUBLE),
         ])
@@ -3059,7 +3059,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """An aggregate-phase query filter referencing the isolated first/last routes to the OUTER WHERE on the combined SELECT (HAVING-into-the-CTE would surface host rows as NULL instead of dropping them)."""
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(name="region_payment", sql="customers.regions.payment_amount",
                    datatype=DataType.DOUBLE),
         ])
@@ -3085,7 +3085,7 @@ class TestMeasureSourceSqlJoinInference:
     async def test_val_alias_avoids_source_column_collision(
         self, engine: SlayerQueryEngine
     ) -> None:
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(name="_val_0", sql="amount", datatype=DataType.DOUBLE),
             DatasetField(name="region_payment", sql="customers.regions.payment_amount",
                    datatype=DataType.DOUBLE),
@@ -3110,7 +3110,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """The negative control: a LOCAL-only derived source (``amount * 2``) crosses no join, so the ranked CTE pulls none."""
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.DOUBLE),
         ])
         await engine.storage.save_dataset(model)
@@ -3126,7 +3126,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """The same control for a bare same-table source."""
-        model = self._orders_model()
+        model = self._orders_dataset()
         await engine.storage.save_dataset(model)
         query = SlayerQuery(
             population="orders",
@@ -3143,7 +3143,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """A single-hop ``customers.region_id`` alias in the measure source SQL isolates host-rooted; the ``customers`` join lives inside the ``_cm_*`` CTE only."""
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="customer_region_count",
                 sql="customers.region_id",
@@ -3168,7 +3168,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """``sum(region_pop_sum) + sum(amount)`` is rendered as a composite AGGREGATE slot (``ArithmeticKey`` wrapping two ``AggregateKey``s). The _visit recursion must descend through the operands so the path-aliased operand's joins surface."""
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_pop_sum",
                 sql="customers.regions.population",
@@ -3198,7 +3198,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """``coalesce(sum(region_pop_sum), 0)`` is a ``ScalarCallKey`` wrapping an ``AggregateKey``. The _visit recursion descends through ``key.args``."""
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_pop_sum",
                 sql="customers.regions.population",
@@ -3224,7 +3224,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """A Mode-A SQL function call wrapping a ``__`` ref in the column sql (``json_extract(customers__regions.props, '$.x')``) still triggers join discovery — ``_joined_paths_in_sql`` walks the parsed AST regardless of wrapper functions."""
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_prop_x",
                 sql="json_extract(customers.regions.props, '$.x')",
@@ -3247,7 +3247,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """``doubled_pop`` references sibling ``pop_helper``, whose own sql crosses the customers→regions join. ``_expand_derived_column_sql`` recursively inlines siblings; the new collector scans the recursively-expanded SQL."""
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="pop_helper",
                 sql="customers.regions.population",
@@ -3276,7 +3276,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """A POST-phase transform like ``cumsum(sum(region_pop_sum))`` aux- materialises its inner ``AggregateKey`` into ``base_render_order``. The new collector visits aux slots the same way it visits public AGGREGATE slots, so the join discovery still fires."""
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_pop_sum",
                 sql="customers.regions.population",
@@ -3307,7 +3307,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """Two DISTINCT crossing aggregates isolate into two separate host-rooted CTEs (per-AggregateKey-slot isolation), each pulling its own scope-local join set — so each hop's LEFT JOIN appears exactly once PER CTE and never in the host scope. Cross-CTE join sharing is optimizer territory (``may_inline``)."""
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_pop_sum",
                 sql="customers.regions.population",
@@ -3344,7 +3344,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """A joined DIMENSION base-pulls its join into the host scope (Law 1); the crossing MEASURE isolates with its own scope-local join set (Law 3). Each scope emits its joins exactly once: the ``customers`` hop appears once in the host and once inside the CTE; the deeper ``customers__regions`` hop only inside the CTE."""
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_pop_sum",
                 sql="customers.regions.population",
@@ -3371,7 +3371,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """Filter crosses the shallow join (customers) and source crosses the deeper join (customers__regions): both are crossing INPUTS of the same aggregate, so ONE host-rooted CTE owns both joins; the shared customers hop is emitted exactly once inside it, and the host scope stays join-free."""
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_pop_sum",
                 sql="customers.regions.population",
@@ -3402,7 +3402,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """Sanity: an aggregate over a local column with no path alias in its sql emits zero joins (no spurious LEFT JOINs)."""
-        model = self._orders_model()
+        model = self._orders_dataset()
         await engine.storage.save_dataset(model)
         query = SlayerQuery(
             population="orders",
@@ -3482,7 +3482,7 @@ class TestMeasureSourceSqlJoinInference:
         self, engine: SlayerQueryEngine
     ) -> None:
         """``weighted_avg(weight=region_weight)`` where ``region_weight`` is a derived column with a path alias in its sql."""
-        model = self._orders_model(extra_columns=[
+        model = self._orders_dataset(extra_columns=[
             DatasetField(
                 name="region_weight",
                 sql="customers.regions.weight",
@@ -3508,7 +3508,7 @@ class TestDev1709WidenedIsolationShapes:
     """Generator shapes for the widened Law-3 trigger: co-occurrence with a local first/last, crossing explicit time args (D2 shape update), F4 host-filter inheritance into host-rooted CTEs, and the deferred implicit-time pin."""
 
     @staticmethod
-    def _regions_model() -> SlayerDataset:
+    def _regions_dataset() -> SlayerDataset:
         return SlayerDataset(
             name="regions", sql_table="regions", data_source="test",
             fields=[
@@ -3519,7 +3519,7 @@ class TestDev1709WidenedIsolationShapes:
         )
 
     @staticmethod
-    def _customers_model() -> SlayerDataset:
+    def _customers_dataset() -> SlayerDataset:
         return SlayerDataset(
             name="customers", sql_table="customers", data_source="test",
             fields=[
@@ -3531,7 +3531,7 @@ class TestDev1709WidenedIsolationShapes:
         )
 
     @staticmethod
-    def _orders_model(
+    def _orders_dataset(
         *, extra_columns=None, default_time_dimension=None, aggregations=None,
     ) -> SlayerDataset:
         cols = [
@@ -3553,13 +3553,13 @@ class TestDev1709WidenedIsolationShapes:
 
     async def _sql(self, query: SlayerQuery, orders: SlayerDataset) -> str:
         return await _engine_generate(
-            query=query, model=orders,
-            extra_models=[self._customers_model(), self._regions_model()],
+            query=query, dataset=orders,
+            extra_datasets=[self._customers_dataset(), self._regions_dataset()],
         )
 
     async def test_crossing_sum_coexists_with_local_last(self) -> None:
         """A regular crossing aggregate next to a local first/last isolates — it never renders in the ranked outer scope."""
-        orders = self._orders_model(extra_columns=[
+        orders = self._orders_dataset(extra_columns=[
             DatasetField(name="region_pop_sum", sql="customers.regions.population",
                    datatype=DataType.DOUBLE),
         ])
@@ -3586,7 +3586,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_crossing_kwarg_coexists_with_local_last(self) -> None:
         """A crossing KWARG next to a local first/last isolates the parametric aggregate the same way (Codex plan-review F4 fold-in: kwarg expressions must never leak into the ranked outer scope)."""
-        orders = self._orders_model(extra_columns=[
+        orders = self._orders_dataset(extra_columns=[
             DatasetField(name="region_weight", sql="customers.regions.weight",
                    datatype=DataType.DOUBLE),
         ])
@@ -3609,7 +3609,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_local_source_crossing_time_arg_isolates(self) -> None:
         """D2: ``last(amount, customers.signup_at)`` — a local source with a crossing explicit time arg isolates; the arg's join and ORDER BY ref live inside the CTE's ranked subquery."""
-        orders = self._orders_model()
+        orders = self._orders_dataset()
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="last(amount, customers.signup_at)")],
@@ -3624,7 +3624,7 @@ class TestDev1709WidenedIsolationShapes:
         assert "LEFT JOIN" not in host_part, sql
 
     async def test_derived_crossing_time_arg_isolates(self) -> None:
-        orders = self._orders_model(extra_columns=[
+        orders = self._orders_dataset(extra_columns=[
             DatasetField(name="cross_time", sql="customers.signup_at",
                    datatype=DataType.TIMESTAMP),
         ])
@@ -3640,7 +3640,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_user_template_fragment_kwarg_renders_join_in_cte(self) -> None:
         """A crossing USER template-fragment kwarg (``scale='customers__regions.weight'``) isolates AND the CTE sub-render registers the fragment's joins — the fragment renders qualified, so the LEFT JOINs must live inside the CTE body (PR #271 Codex review: fragments triggered isolation but their joins were never registered in the sub-render)."""
-        orders = self._orders_model(aggregations=[
+        orders = self._orders_dataset(aggregations=[
             Aggregation(
                 name="scaled_sum", expression="SUM({value}) / {scale}",
                 params=[AggregationParam(name="scale", sql="1")],
@@ -3663,7 +3663,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_model_default_fragment_kwarg_renders_join_in_cte(self) -> None:
         """Same for a crossing MODEL-DEFAULT ``AggregationParam.sql`` fragment — no user kwarg at all."""
-        orders = self._orders_model(aggregations=[
+        orders = self._orders_dataset(aggregations=[
             Aggregation(
                 name="wscaled_sum", expression="SUM({value} * {w})",
                 params=[AggregationParam(
@@ -3686,7 +3686,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_pathed_host_row_filter_inherited_into_cte(self) -> None:
         """F4 (Codex plan-review F5): a host ROW filter whose expression crosses a join constrains the host-rooted scope — it renders in BOTH the host base WHERE and the isolation CTE's scope, each with its own join registration."""
-        orders = self._orders_model(extra_columns=[
+        orders = self._orders_dataset(extra_columns=[
             DatasetField(name="region_pop_sum", sql="customers.regions.population",
                    datatype=DataType.DOUBLE),
         ])
@@ -3711,7 +3711,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_order_only_crossing_aggregate_isolates(self) -> None:
         """F3, hidden ORDER-only consumer: a crossing aggregate referenced ONLY by ORDER BY (colon-form ``OrderItem``) still isolates as a hidden slot; the ORDER BY reads the joined-back CTE column and the crossing ref never leaves the CTE."""
-        orders = self._orders_model(extra_columns=[
+        orders = self._orders_dataset(extra_columns=[
             DatasetField(name="region_pop_sum", sql="customers.regions.population",
                    datatype=DataType.DOUBLE),
         ])
@@ -3731,7 +3731,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_filter_only_composite_with_crossing_leaf(self) -> None:
         """F3, filter-only consumer: a composite referenced only by an aggregate-phase filter lowers the same way — crossing leaf isolates, the comparison lands in the combined outer WHERE (never HAVING), local operand promoted into ``_base``."""
-        orders = self._orders_model(extra_columns=[
+        orders = self._orders_dataset(extra_columns=[
             DatasetField(name="region_pop_sum", sql="customers.regions.population",
                    datatype=DataType.DOUBLE),
         ])
@@ -3755,7 +3755,7 @@ class TestDev1709WidenedIsolationShapes:
 
     async def test_ranked_isolation_survives_the_recursion_guard(self) -> None:
         """Two same-sql, different-CAST-type crossing first/lasts get a ranked producer scope EACH, and each materialises its own type-distinct value (the kernel form of the type-distinctness pin)."""
-        orders = self._orders_model(extra_columns=[
+        orders = self._orders_dataset(extra_columns=[
             DatasetField(name="region_pay_d", sql="customers.regions.population * 2",
                    datatype=DataType.DOUBLE),
             DatasetField(name="region_pay_i", sql="customers.regions.population * 2",
@@ -3764,7 +3764,7 @@ class TestDev1709WidenedIsolationShapes:
         bundle = ResolvedSourceBundle(
             dialect="postgres",
             population=orders,
-            referenced_datasets=[self._customers_model(), self._regions_model()],
+            referenced_datasets=[self._customers_dataset(), self._regions_dataset()],
         )
         query = SlayerQuery(
             population="orders",
@@ -3791,14 +3791,14 @@ class TestDev1709WidenedIsolationShapes:
         self,
     ) -> None:
         """A crossing KWARG next to a first/last: the ranking has its own producer scope, so the crossing kwarg lives in ITS OWN producer and the ranked producer neither sees it nor is affected."""
-        orders = self._orders_model(extra_columns=[
+        orders = self._orders_dataset(extra_columns=[
             DatasetField(name="region_weight", sql="customers.regions.weight",
                    datatype=DataType.DOUBLE),
         ])
         bundle = ResolvedSourceBundle(
             dialect="postgres",
             population=orders,
-            referenced_datasets=[self._customers_model(), self._regions_model()],
+            referenced_datasets=[self._customers_dataset(), self._regions_dataset()],
         )
         query = SlayerQuery(
             population="orders",
@@ -3822,7 +3822,7 @@ class TestDev1709WidenedIsolationShapes:
 
     # Local first/last desugar to the unified _cm_ producer and isolate universally; the crossing default-time first/last (formerly strict-xfail) now isolates.
     async def test_implicit_crossing_default_time_isolates_xfail(self) -> None:
-        orders = self._orders_model(
+        orders = self._orders_dataset(
             extra_columns=[
                 DatasetField(name="cross_time", sql="customers.signup_at",
                        datatype=DataType.TIMESTAMP),
@@ -3841,7 +3841,7 @@ class TestAggParamSanitization:
     """Tests for SQL injection prevention in aggregation parameter values."""
 
     @pytest.fixture
-    def agg_model(self) -> SlayerDataset:
+    def agg_dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="sales",
             sql_table="public.sales",
@@ -3860,30 +3860,30 @@ class TestAggParamSanitization:
     def gen(self) -> SQLGenerator:
         return SQLGenerator(dialect="postgres")
 
-    async def test_weighted_avg_valid_column_param(self, gen: SQLGenerator, agg_model: SlayerDataset) -> None:
+    async def test_weighted_avg_valid_column_param(self, gen: SQLGenerator, agg_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="sales",
             metrics=[DatasetMetric(expression="weighted_avg(price, weight=quantity)")],
         )
-        sql = await _generate(gen, query, agg_model)
+        sql = await _generate(gen, query, agg_dataset)
         assert "SUM(" in sql
         assert "NULLIF(" in sql
 
-    async def test_percentile_valid_numeric_param(self, gen: SQLGenerator, agg_model: SlayerDataset) -> None:
+    async def test_percentile_valid_numeric_param(self, gen: SQLGenerator, agg_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="sales",
             metrics=[DatasetMetric(expression="percentile(revenue, p=0.95)")],
         )
-        sql = await _generate(gen, query, agg_model)
+        sql = await _generate(gen, query, agg_dataset)
         assert "PERCENTILE_CONT" in sql
         assert "0.95" in sql
 
-    async def test_qualified_column_param(self, gen: SQLGenerator, agg_model: SlayerDataset) -> None:
+    async def test_qualified_column_param(self, gen: SQLGenerator, agg_dataset: SlayerDataset) -> None:
         query = SlayerQuery(
             population="sales",
             metrics=[DatasetMetric(expression="weighted_avg(price, weight=sales.quantity)")],
         )
-        sql = await _generate(gen, query, agg_model)
+        sql = await _generate(gen, query, agg_dataset)
         assert "SUM(" in sql
 
     @pytest.mark.parametrize("text", [
@@ -3899,9 +3899,9 @@ class TestAggParamSanitization:
         with pytest.raises(ValueError, match="weighted_avg"):
             await orders_agg_sql("weighted_avg(amount, weight='')")
 
-    async def test_model_level_defaults_not_validated(self, gen: SQLGenerator, agg_model: SlayerDataset) -> None:
+    async def test_model_level_defaults_not_validated(self, gen: SQLGenerator, agg_dataset: SlayerDataset) -> None:
         """Model-level aggregation param defaults (trusted) bypass query-time validation."""
-        agg_model.aggregations = [
+        agg_dataset.aggregations = [
             Aggregation(
                 name="custom_weighted",
                 expression="SUM({value} * {weight}) / NULLIF(SUM({weight}), 0)",
@@ -3915,22 +3915,22 @@ class TestAggParamSanitization:
             metrics=[DatasetMetric(expression="custom_weighted(price)")],
         )
         # Should succeed — model-level defaults are trusted
-        sql = await _generate(gen, query, agg_model)
+        sql = await _generate(gen, query, agg_dataset)
         assert "CASE WHEN" in sql
         assert "SUM(" in sql
 
     async def test_filtered_custom_agg_does_not_case_wrap_literal_param(
-        self, gen: SQLGenerator, agg_model: SlayerDataset,
+        self, gen: SQLGenerator, agg_dataset: SlayerDataset,
     ) -> None:
         """A1 (CodeRabbit major on PR #82): when `_build_formula_agg` substitutes params into a filtered measure's template, literal defaults (e.g., `scale=100`) must stay literal. Wrapping them in `(CASE WHEN ... THEN 100 END)` turns a constant into a row expression — invalid GROUP-BY shape and semantically wrong. Row-level params (column refs) keep getting wrapped."""
-        agg_model.aggregations = [
+        agg_dataset.aggregations = [
             Aggregation(
                 name="scaled_sum",
                 expression="SUM({value}) / {scale}",
                 params=[AggregationParam(name="scale", sql="100")],
             ),
         ]
-        agg_model.fields.append(
+        agg_dataset.fields.append(
             DatasetField(
                 name="active_revenue",
                 sql="amount",
@@ -3942,19 +3942,19 @@ class TestAggParamSanitization:
             population="sales",
             metrics=[DatasetMetric(expression="scaled_sum(active_revenue)")],
         )
-        sql = await _generate(generator=gen, query=query, model=agg_model)
+        sql = await _generate(generator=gen, query=query, dataset=agg_dataset)
         # Literal 100 must not be inside CASE WHEN; the value column must be. status is undeclared, so the Mode-A door qualifies it to the scope root.
         assert "CASE WHEN sales.status = 'active' THEN 100" not in sql
         assert "/ 100" in sql
         assert "CASE WHEN sales.status = 'active' THEN" in sql
 
     async def test_filtered_weighted_avg_does_not_mask_the_weight(
-        self, gen: SQLGenerator, agg_model: SlayerDataset,
+        self, gen: SQLGenerator, agg_dataset: SlayerDataset,
     ) -> None:
         """A Column.filter masks only its own column's value. The
         ``active_price`` value is masked, but ``weight=quantity`` is NOT — a param
         is masked solely by its own column's filter, never the source's."""
-        agg_model.fields.append(
+        agg_dataset.fields.append(
             DatasetField(
                 name="active_price",
                 sql="price",
@@ -3968,7 +3968,7 @@ class TestAggParamSanitization:
                 DatasetMetric(expression="weighted_avg(active_price, weight=quantity)")
             ],
         )
-        sql = await _generate(generator=gen, query=query, model=agg_model)
+        sql = await _generate(generator=gen, query=query, dataset=agg_dataset)
         # The mask wraps only the value — read twice (numerator, non-NULL test);
         # the weight rides bare. (``status`` is undeclared, so the door qualifies it
         # to the root.)
@@ -3979,88 +3979,88 @@ class TestAggParamSanitization:
 class TestFilteredMeasures:
     """Tests for measure-level filter (CASE WHEN wrapping)."""
 
-    async def test_filtered_sum(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
-        orders_model.fields.append(
+    async def test_filtered_sum(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
+        orders_dataset.fields.append(
             DatasetField(name="active_revenue", sql="amount", filter="status = 'active'", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(active_revenue)")])
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "CASE WHEN" in sql
         assert "THEN" in sql
         assert "SUM(" in sql
 
-    async def test_filtered_count_star(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_filtered_count_star(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """COUNT on a filtered column becomes COUNT(CASE WHEN filter THEN col END)."""
-        orders_model.fields.append(
+        orders_dataset.fields.append(
             DatasetField(name="active_count", sql="amount", filter="status = 'active'", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(active_count)")])
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "CASE WHEN" in sql
         assert "COUNT(" in sql
         assert "COUNT(*)" not in sql
 
-    async def test_filtered_avg(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
-        orders_model.fields.append(
+    async def test_filtered_avg(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
+        orders_dataset.fields.append(
             DatasetField(name="active_avg", sql="amount", filter="status = 'active'", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="avg(active_avg)")])
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "CASE WHEN" in sql
         assert "AVG(" in sql
 
-    async def test_unfiltered_measure_no_case(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_unfiltered_measure_no_case(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Measures without filter should not have CASE WHEN."""
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(revenue)")])
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert "CASE WHEN" not in sql
         assert "SUM(" in sql
 
     async def test_filtered_weighted_avg_masks_only_the_value(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """A Column.filter masks only its own
         value, never a parameter. So ``weighted_avg(active_revenue, weight=quantity)``
         masks the numerator's value but the denominator is the bare ``SUM(quantity)``
         — the weight is masked only if ITS column carries a filter."""
-        orders_model.fields.append(
+        orders_dataset.fields.append(
             DatasetField(name="quantity", sql="quantity", datatype=DataType.DOUBLE)
         )
-        orders_model.fields.append(
+        orders_dataset.fields.append(
             DatasetField(name="active_revenue", sql="amount", filter="status = 'active'", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="weighted_avg(active_revenue, weight=quantity)")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         # The mask wraps only the value (read twice: numerator, non-NULL test); the
         # weight rides unmasked.
         assert sql.count("CASE WHEN orders.status = 'active' THEN orders.amount END") == 2, sql
         assert "'active' THEN orders.quantity" not in sql, sql
 
-    async def test_mixed_filtered_and_unfiltered(self, generator: SQLGenerator, orders_model: SlayerDataset) -> None:
+    async def test_mixed_filtered_and_unfiltered(self, generator: SQLGenerator, orders_dataset: SlayerDataset) -> None:
         """Query with both filtered and unfiltered measures."""
-        orders_model.fields.append(
+        orders_dataset.fields.append(
             DatasetField(name="active_revenue", sql="amount", filter="status = 'active'", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="sum(revenue)"), DatasetMetric(expression="sum(active_revenue)")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         assert sql.count("CASE WHEN") == 1
         assert sql.count("SUM(") == 2
 
     async def test_filtered_last_masks_the_value_over_full_ranking(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """A filtered ``last`` MASKS the picked value; it does NOT
         restrict the ranked rows. The ranking spans every row (no filter WHERE)
         and the value column is CASE-masked, so a non-matching newest row picks
         NULL. A row restriction belongs in a query filter, not the column."""
-        orders_model.default_time_dimension = "created_at"
-        orders_model.fields.append(
+        orders_dataset.default_time_dimension = "created_at"
+        orders_dataset.fields.append(
             DatasetField(name="completed_balance", sql="amount", filter="status = 'completed'", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(
@@ -4070,7 +4070,7 @@ class TestFilteredMeasures:
             ],
             metrics=[DatasetMetric(expression="last(completed_balance)")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         norm = _norm(sql)
         assert "WHERE orders.status = 'completed'" not in norm, sql
         assert "CASE WHEN orders.status = 'completed' THEN orders.amount END" in norm, sql
@@ -4082,12 +4082,12 @@ class TestFilteredMeasures:
         assert _re.search(r"_(?:first|last)_rn", sql) is None, sql
 
     async def test_filtered_first_masks_the_value_over_full_ranking(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """The same for ``first``: no WHERE; the value is masked and the ranking
         runs ascending over every row."""
-        orders_model.default_time_dimension = "created_at"
-        orders_model.fields.append(
+        orders_dataset.default_time_dimension = "created_at"
+        orders_dataset.fields.append(
             DatasetField(name="completed_balance", sql="amount", filter="status = 'completed'", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(
@@ -4097,7 +4097,7 @@ class TestFilteredMeasures:
             ],
             metrics=[DatasetMetric(expression="first(completed_balance)")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         norm = _norm(sql)
         assert "WHERE orders.status = 'completed'" not in norm, sql
         assert "CASE WHEN orders.status = 'completed' THEN orders.amount END" in norm, sql
@@ -4107,11 +4107,11 @@ class TestFilteredMeasures:
         assert _re.search(r"_(?:first|last)_rn", sql) is None, sql
 
     async def test_unfiltered_last_unchanged(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """An unfiltered ``last`` ranks over every row — no WHERE of its own."""
-        orders_model.default_time_dimension = "created_at"
-        orders_model.fields.append(DatasetField(name="balance", sql="amount", datatype=DataType.DOUBLE))
+        orders_dataset.default_time_dimension = "created_at"
+        orders_dataset.fields.append(DatasetField(name="balance", sql="amount", datatype=DataType.DOUBLE))
         query = SlayerQuery(
             population="orders",
             time_dimensions=[
@@ -4119,20 +4119,20 @@ class TestFilteredMeasures:
             ],
             metrics=[DatasetMetric(expression="last(balance)")],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         rk_body = _extract_cte_body(sql, r"_cm_\w+")
         assert "ROW_NUMBER" in rk_body, sql
         assert "WHERE" not in rk_body, sql
 
     async def test_mixed_filtered_and_unfiltered_last(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """A filtered and an unfiltered ``last`` are two aggregates, so two CTEs —
         both ranking over the full row set (a Column.filter masks the
         value, it is not a WHERE), the filtered one carrying its CASE mask."""
-        orders_model.default_time_dimension = "created_at"
-        orders_model.fields.append(DatasetField(name="balance", sql="amount", datatype=DataType.DOUBLE))
-        orders_model.fields.append(
+        orders_dataset.default_time_dimension = "created_at"
+        orders_dataset.fields.append(DatasetField(name="balance", sql="amount", datatype=DataType.DOUBLE))
+        orders_dataset.fields.append(
             DatasetField(name="completed_balance", sql="amount", filter="status = 'completed'", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(
@@ -4145,7 +4145,7 @@ class TestFilteredMeasures:
                 DatasetMetric(expression="last(completed_balance)"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
         assert len(names) == 2, sql
         bodies = [_extract_cte_body(sql, _re.escape(n)) for n in names]
@@ -4154,7 +4154,7 @@ class TestFilteredMeasures:
         assert "CASE WHEN orders.status = 'completed' THEN orders.amount END" in _norm(sql), sql
 
     @staticmethod
-    async def _filtered_last_cross_model_sql(generator: SQLGenerator) -> str:
+    async def _filtered_last_cross_dataset_sql(generator: SQLGenerator) -> str:
         """Shared setup for the two ``last(active_balance)`` cross-model filter tests below. Builds the customers+orders models, runs enrichment with a stub join resolver, and returns the generated SQL — each caller asserts on a different facet of the output."""
         customers = SlayerDataset(
             name="customers",
@@ -4191,8 +4191,8 @@ class TestFilteredMeasures:
             metrics=[DatasetMetric(expression="last(active_balance)")],
         )
         return await _engine_generate(
-            query=query, model=orders, dialect=generator.dialect,
-            extra_models=[customers], validate=False,
+            query=query, dataset=orders, dialect=generator.dialect,
+            extra_datasets=[customers], validate=False,
         )
 
     async def test_filtered_last_with_cross_model_filter_carries_join(
@@ -4200,7 +4200,7 @@ class TestFilteredMeasures:
     ) -> None:
         """Regression for CodeRabbit #8 — when a filtered last measure's filter references a column on a JOINED model, the LEFT JOIN must be applied INSIDE the ranked subquery so the filter columns resolve. Previously _build_last_ranked_from() built the subquery from base_from only and the outer string-level join injection never matched the subquery wrapper."""
 
-        sql = await self._filtered_last_cross_model_sql(generator)
+        sql = await self._filtered_last_cross_dataset_sql(generator)
         # The customers LEFT JOIN must be inside the ranked subquery so the filter customers.status = 'active' resolves. Extract the subquery by matching balanced parens after `FROM (`.
         sub_start = sql.find("FROM (") + len("FROM (")
         depth = 1
@@ -4223,7 +4223,7 @@ class TestFilteredMeasures:
     ) -> None:
         """Regression for CodeRabbit B6-4 — when a filtered first/last measure's filter references a JOINED table (e.g. customers.status), the measure is isolated into a CTE of its own. The join lives inside the ranked subquery so the filter resolves, and the final SELECT does not reference the joined table directly."""
 
-        sql = await self._filtered_last_cross_model_sql(generator)
+        sql = await self._filtered_last_cross_dataset_sql(generator)
 
         # The outermost SELECT (after all CTEs) should not reference 'customers.' directly — it pulls pre-computed values from CTEs.
         final_select_idx = sql.rfind("\nSELECT ")
@@ -4276,17 +4276,17 @@ class TestFilteredMeasures:
         assert "LEFT JOIN" not in sql
 
     async def test_two_filtered_lasts_same_source_different_filters_dont_collide(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """Two filtered ``last`` measures over the same base column but DIFFERENT
         filtered columns each get their own ranked CTE — distinct source
         ColumnSqlKeys never collide. Each carries its own CASE mask;
         neither restricts the ranking with a WHERE."""
-        orders_model.default_time_dimension = "created_at"
-        orders_model.fields.append(
+        orders_dataset.default_time_dimension = "created_at"
+        orders_dataset.fields.append(
             DatasetField(name="active_balance", sql="amount", filter="status = 'active'", datatype=DataType.DOUBLE)
         )
-        orders_model.fields.append(
+        orders_dataset.fields.append(
             DatasetField(name="completed_balance", sql="amount", filter="status = 'completed'", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(
@@ -4299,7 +4299,7 @@ class TestFilteredMeasures:
                 DatasetMetric(expression="last(completed_balance)"),
             ],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         norm = _norm(sql)
         names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
         assert len(names) == 2, sql
@@ -4316,9 +4316,9 @@ class TestMeasureFilterInjection:
 
     # Rejected at sqlglot generation time
 
-    async def test_drop_table_rejected(self, orders_model: SlayerDataset) -> None:
+    async def test_drop_table_rejected(self, orders_dataset: SlayerDataset) -> None:
         """Classic ``'; DROP TABLE ...`` payload is rejected by sqlglot when the WHERE clause is parsed under the target dialect."""
-        orders_model.fields.append(
+        orders_dataset.fields.append(
             DatasetField(
                 name="evil",
                 sql="amount",
@@ -4329,11 +4329,11 @@ class TestMeasureFilterInjection:
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(evil)")])
         generator = SQLGenerator(dialect="postgres")
         with pytest.raises((sqlglot.errors.ParseError, sqlglot.errors.TokenError, ValueError)):
-            await _generate(generator=generator, query=query, model=orders_model)
+            await _generate(generator=generator, query=query, dataset=orders_dataset)
 
-    async def test_union_select_rejected(self, orders_model: SlayerDataset) -> None:
+    async def test_union_select_rejected(self, orders_dataset: SlayerDataset) -> None:
         """UNION SELECT payload is rejected by sqlglot at generation time."""
-        orders_model.fields.append(
+        orders_dataset.fields.append(
             DatasetField(
                 name="evil",
                 sql="amount",
@@ -4344,9 +4344,9 @@ class TestMeasureFilterInjection:
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(evil)")])
         generator = SQLGenerator(dialect="postgres")
         with pytest.raises((sqlglot.errors.ParseError, sqlglot.errors.TokenError, ValueError)):
-            await _generate(generator=generator, query=query, model=orders_model)
+            await _generate(generator=generator, query=query, dataset=orders_dataset)
 
-    def test_block_comment_passes_through_safely(self, orders_model: SlayerDataset) -> None:
+    def test_block_comment_passes_through_safely(self, orders_dataset: SlayerDataset) -> None:
         """``/* ... */`` block comments survive ``Column`` construction — the SQL-mode validator does not parse them, only checks for DSL constructs (aggregation colon syntax, transform calls, ``OVER``)."""
         col = DatasetField(
             name="benign",
@@ -4361,10 +4361,10 @@ class TestMeasureFilterInjection:
 
     @pytest.mark.parametrize("dialect", ["postgres", "mysql", "sqlite", "duckdb"])
     async def test_embedded_single_quote_round_trips(
-        self, orders_model: SlayerDataset, dialect: str,
+        self, orders_dataset: SlayerDataset, dialect: str,
     ) -> None:
         """A SQL-escaped apostrophe (`O''Brien`) round-trips through the generator unchanged."""
-        orders_model.fields.append(
+        orders_dataset.fields.append(
             DatasetField(
                 name="irish_names",
                 sql="amount",
@@ -4377,7 +4377,7 @@ class TestMeasureFilterInjection:
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
             query=query,
-            model=orders_model,
+            dataset=orders_dataset,
         )
         # sqlglot preserves the SQL-doubled apostrophe per dialect.
         assert "'O''Brien'" in sql
@@ -4391,10 +4391,10 @@ class TestMeasureFilterInjection:
 
     @pytest.mark.parametrize("dialect", ["postgres", "mysql", "sqlite", "duckdb"])
     async def test_trailing_backslash_cannot_escape_closing_quote(
-        self, orders_model: SlayerDataset, dialect: str,
+        self, orders_dataset: SlayerDataset, dialect: str,
     ) -> None:
         """A trailing backslash in a string literal must not break out of the literal on escape-aware dialects (mysql, clickhouse, etc.)."""
-        orders_model.fields.append(
+        orders_dataset.fields.append(
             DatasetField(
                 name="evil",
                 sql="amount",
@@ -4402,7 +4402,7 @@ class TestMeasureFilterInjection:
                 filter="status = 'a\\\\'", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(evil)")])
-        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_dataset)
         self._assert_round_trips_cleanly(sql, dialect)
         # Defence-in-depth: the a\ payload must stay one well-terminated literal; a single re-parse is idempotent after the dialect's unescaping.
         reparsed = sqlglot.parse_one(sql, dialect=dialect)
@@ -4415,10 +4415,10 @@ class TestMeasureFilterInjection:
 
     @pytest.mark.parametrize("dialect", ["postgres", "mysql"])
     async def test_backslash_mid_string_is_neutralised(
-        self, orders_model: SlayerDataset, dialect: str,
+        self, orders_dataset: SlayerDataset, dialect: str,
     ) -> None:
         """Backslashes mid-string also must not enable escape sequences."""
-        orders_model.fields.append(
+        orders_dataset.fields.append(
             DatasetField(
                 name="evil",
                 sql="amount",
@@ -4426,15 +4426,15 @@ class TestMeasureFilterInjection:
                 filter="status = 'a\\\\b'", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(evil)")])
-        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_dataset)
         self._assert_round_trips_cleanly(sql, dialect)
 
     @pytest.mark.parametrize("dialect", ["postgres", "mysql"])
     async def test_like_pattern_backslash_is_neutralised(
-        self, orders_model: SlayerDataset, dialect: str,
+        self, orders_dataset: SlayerDataset, dialect: str,
     ) -> None:
         """The LIKE-pattern literal path must apply the same backslash protection as plain string literals."""
-        orders_model.fields.append(
+        orders_dataset.fields.append(
             DatasetField(
                 name="evil",
                 sql="amount",
@@ -4442,36 +4442,36 @@ class TestMeasureFilterInjection:
                 filter="status like 'a\\\\'", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(evil)")])
-        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
+        sql = await _generate(SQLGenerator(dialect=dialect), query, orders_dataset)
         self._assert_round_trips_cleanly(sql, dialect)
 
     @pytest.mark.parametrize("dialect", ["postgres", "mysql"])
     async def test_adversarial_quote_break_cannot_inject(
-        self, orders_model: SlayerDataset, dialect: str,
+        self, orders_dataset: SlayerDataset, dialect: str,
     ) -> None:
         """A backslash-quote injection payload must either be rejected at sqlglot generation time or be confined to a properly-terminated string literal that round-trips cleanly."""
         evil = "status = 'a\\\\' OR 1=1 --"  # Runtime: status = 'a\\' OR 1=1 --
         try:
-            orders_model.fields.append(DatasetField(name="evil", sql="amount", filter=evil, datatype=DataType.DOUBLE))
+            orders_dataset.fields.append(DatasetField(name="evil", sql="amount", filter=evil, datatype=DataType.DOUBLE))
             query = SlayerQuery(
                 population="orders", metrics=[DatasetMetric(expression="sum(evil)")]
             )
-            sql = await _generate(SQLGenerator(dialect=dialect), query, orders_model)
+            sql = await _generate(SQLGenerator(dialect=dialect), query, orders_dataset)
         except (ValueError, sqlglot.errors.ParseError, sqlglot.errors.TokenError):
             return  # sqlglot rejected — acceptable
         self._assert_round_trips_cleanly(sql, dialect)
 
     async def test_existing_filter_still_works_after_escaping(
-        self, orders_model: SlayerDataset,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """Sanity: ordinary filters (no backslashes, no apostrophes) keep producing the same SQL shape after the escape-hardening change."""
-        orders_model.fields.append(
+        orders_dataset.fields.append(
             DatasetField(name="active_revenue", sql="amount", filter="status = 'active'", datatype=DataType.DOUBLE)
         )
         query = SlayerQuery(
             population="orders", metrics=[DatasetMetric(expression="sum(active_revenue)")]
         )
-        sql = await _generate(SQLGenerator(dialect="postgres"), query, orders_model)
+        sql = await _generate(SQLGenerator(dialect="postgres"), query, orders_dataset)
         assert "'active'" in sql
         assert "CASE WHEN" in sql
         assert "SUM(" in sql
@@ -4527,7 +4527,7 @@ DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
             "metrics": ["sum(amount)"],
             "dimensions": ["customers.name"],
         })
-        sql = await _generate(generator, query, table_orders, extra_models=[customers])
+        sql = await _generate(generator, query, table_orders, extra_datasets=[customers])
         assert "LEFT JOIN" in sql
         assert "customers" in sql
 
@@ -4538,7 +4538,7 @@ DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
             "metrics": ["sum(amount)"],
             "dimensions": ["customers.name"],
         })
-        sql = await _generate(generator, query, inline_orders, extra_models=[customers])
+        sql = await _generate(generator, query, inline_orders, extra_datasets=[customers])
         assert "LEFT JOIN" in sql, f"LEFT JOIN missing from inline-SQL model query:\n{sql}"
         assert "customers" in sql
 
@@ -4549,7 +4549,7 @@ DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
             "metrics": ["avg(amount)"],
             "dimensions": ["customers.name"],
         })
-        sql = await _generate(generator, query, inline_orders, extra_models=[customers])
+        sql = await _generate(generator, query, inline_orders, extra_datasets=[customers])
         assert "LEFT JOIN" in sql, f"LEFT JOIN missing:\n{sql}"
         assert "AVG(" in sql.upper()
 
@@ -4574,7 +4574,7 @@ class TestSelfReferencingPaths:
         return YAMLStorage(base_dir=str(tmp_path))
 
     @pytest.fixture
-    async def engine_and_models(self, storage: StorageBackend):
+    async def engine_and_datasets(self, storage: StorageBackend):
         orders = SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
             fields=[
@@ -4595,39 +4595,39 @@ DatasetField(name="score", sql="score", datatype=DataType.DOUBLE)],
         engine = SlayerQueryEngine(storage=storage)
         return engine, orders
 
-    async def test_self_ref_dimension_resolves_as_the_joined_dimension(self, engine_and_models) -> None:
+    async def test_self_ref_dimension_resolves_as_the_joined_dimension(self, engine_and_datasets) -> None:
         """'orders.customers.name' reads as 'customers.name'."""
-        _engine, model = engine_and_models
+        _engine, model = engine_and_datasets
         query = SlayerQuery(population="orders", dimensions=["orders.customers.name"])
         sql = await _engine_generate(
-            query=query, model=model, extra_models=[_CUSTOMERS_SELF_REF],
+            query=query, dataset=model, extra_datasets=[_CUSTOMERS_SELF_REF],
         )
         assert "LEFT JOIN" in sql, sql
         assert "customers" in sql, sql
         # Resolved as a JOINED dimension under the dotted result key, not as a bare local column that silently referenced the wrong table.
         assert "orders.customers.name" in sql, sql
         bare = SlayerQuery.model_validate({"population": "orders", "dimensions": ["customers.name"]})
-        assert sql == await _engine_generate(query=bare, model=model, extra_models=[_CUSTOMERS_SELF_REF])
+        assert sql == await _engine_generate(query=bare, dataset=model, extra_datasets=[_CUSTOMERS_SELF_REF])
 
-    async def test_self_ref_measure_resolves_as_the_joined_measure(self, engine_and_models) -> None:
+    async def test_self_ref_measure_resolves_as_the_joined_measure(self, engine_and_datasets) -> None:
         """'orders.customers.score:sum' reads as 'customers.score:sum'."""
-        _engine, model = engine_and_models
+        _engine, model = engine_and_datasets
         query = SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(orders.customers.score)"]})
         sql = await _engine_generate(
-            query=query, model=model, extra_models=[_CUSTOMERS_SELF_REF],
+            query=query, dataset=model, extra_datasets=[_CUSTOMERS_SELF_REF],
         )
         assert "SUM(" in sql.upper(), sql
         assert "customers" in sql, sql
         bare = SlayerQuery.model_validate({"population": "orders", "metrics": ["sum(customers.score)"]})
-        assert sql == await _engine_generate(query=bare, model=model, extra_models=[_CUSTOMERS_SELF_REF])
+        assert sql == await _engine_generate(query=bare, dataset=model, extra_datasets=[_CUSTOMERS_SELF_REF])
 
-    async def test_simple_self_ref_dimension_is_local(self, engine_and_models) -> None:
+    async def test_simple_self_ref_dimension_is_local(self, engine_and_datasets) -> None:
         """'orders.amount' on source_model=orders reads the local 'amount'."""
-        _engine, model = engine_and_models
+        _engine, model = engine_and_datasets
         qualified = SlayerQuery.model_validate({"population": "orders", "dimensions": ["orders.amount"]})
         bare = SlayerQuery.model_validate({"population": "orders", "dimensions": ["amount"]})
-        assert await _engine_generate(query=qualified, model=model, extra_models=[_CUSTOMERS_SELF_REF]) == (
-            await _engine_generate(query=bare, model=model, extra_models=[_CUSTOMERS_SELF_REF])
+        assert await _engine_generate(query=qualified, dataset=model, extra_datasets=[_CUSTOMERS_SELF_REF]) == (
+            await _engine_generate(query=bare, dataset=model, extra_datasets=[_CUSTOMERS_SELF_REF])
         )
 
 
@@ -4689,7 +4689,7 @@ DatasetField(name="total", sql="amount", datatype=DataType.DOUBLE)],
             metrics=[DatasetMetric(expression="sum(total)")],
             filter=["premium.has_premium = '1'"],
         )
-        sql = await _generate(generator, query, policy_amount, extra_models=[premium_model])
+        sql = await _generate(generator, query, policy_amount, extra_datasets=[premium_model])
         assert "premium.1" not in sql, f"Constant SQL '1' was table-qualified: {sql}"
         # The constant appears unqualified in WHERE: a non-bare ``Column.sql`` (literal ``1``) is CAST to its ``type``,
         # and the TEXT literal beside that number converts to one.
@@ -4748,7 +4748,7 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
             metrics=[DatasetMetric(expression="sum(revenue)")],
             filter=["customers.status = 'active'"],
         )
-        sql = await _generate(generator, query, orders, extra_models=[customers])
+        sql = await _generate(generator, query, orders, extra_datasets=[customers])
         assert "customers.status" in sql
 
 
@@ -4829,7 +4829,7 @@ class TestDimensionAggregation:
             population="orders",
             metrics=[DatasetMetric(expression="sum(status)")],
         )
-        with pytest.raises(ValueError, match="not applicable to TEXT column"):
+        with pytest.raises(ValueError, match="not applicable to TEXT field"):
             await _generate(generator, query, model)
 
     async def test_sum_on_number_dimension_allowed(self, generator: SQLGenerator) -> None:
@@ -5067,7 +5067,7 @@ class TestTransformAmbiguousTimeDimension:
     """Time-dependent transforms must reject ambiguous time_dimension setups."""
 
     async def test_two_time_dims_no_disambiguation_raises(self, generator: SQLGenerator) -> None:
-        m = _orders_two_ts_model()
+        m = _orders_two_ts_dataset()
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
                 "population": "orders",
@@ -5082,7 +5082,7 @@ class TestTransformAmbiguousTimeDimension:
 
     async def test_two_time_dims_with_main_succeeds(self, generator: SQLGenerator) -> None:
         """Disambiguation via main_time_dimension keeps the transform working."""
-        m = _orders_two_ts_model()
+        m = _orders_two_ts_dataset()
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
                 "population": "orders",
@@ -5238,7 +5238,7 @@ async def _persist_and_engine(
         yield SlayerQueryEngine(storage=storage)
 
 
-def _orders_with_paid_amount_model() -> SlayerDataset:
+def _orders_with_paid_amount_dataset() -> SlayerDataset:
     """Fixture-style helper — an ``orders`` model with a FILTERED ``paid_amount`` column (only ``status='paid'`` rows participate). Used by the filtered-first/last test suite (3+ tests share this exact model)."""
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
@@ -5255,7 +5255,7 @@ def _orders_with_paid_amount_model() -> SlayerDataset:
     )
 
 
-def _orders_two_ts_model(*, default_td: "str | None" = None) -> SlayerDataset:
+def _orders_two_ts_dataset(*, default_td: "str | None" = None) -> SlayerDataset:
     """Fixture-style helper — an ``orders`` model with TWO timestamp columns so first/last with different explicit time args can be exercised. ``default_td`` optionally sets ``default_time_dimension`` to test the "no explicit arg, fall back to default" path."""
     return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
@@ -5282,7 +5282,7 @@ class TestDev1501HiddenFirstLastRender:
         self, generator: SQLGenerator
     ) -> None:
         """ASC ``first(created_at)`` + DESC ``last(updated_at)`` produce distinct rank columns and distinct outer ORDER BY terms."""
-        m = _orders_two_ts_model()
+        m = _orders_two_ts_dataset()
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
                 "population": "orders",
@@ -5318,7 +5318,7 @@ class TestDev1501HiddenFirstLastRender:
         self, generator: SQLGenerator
     ) -> None:
         """``first(created_at)`` ASC + ``last(created_at)`` DESC rank over the same column in opposite directions, so they are two aggregates and get two CTEs. The suffix bucketing this test was named for was the old scheme for keeping them apart inside one shared scope."""
-        m = _orders_two_ts_model()
+        m = _orders_two_ts_dataset()
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
                 "population": "orders",
@@ -5348,7 +5348,7 @@ class TestDev1501HiddenFirstLastRender:
         self, generator: SQLGenerator
     ) -> None:
         """Model has no ``default_time_dimension`` and the query has no temporal dimension; one ``ORDER BY revenue:last(created_at) DESC`` must still build the ranked subquery ordered by ``created_at``. Regression for the order-by-only + no-default case."""
-        m = _orders_two_ts_model()  # no default_td
+        m = _orders_two_ts_dataset()  # no default_td
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
                 "population": "orders",
@@ -5367,7 +5367,7 @@ class TestDev1501HiddenFirstLastRender:
         self, generator: SQLGenerator
     ) -> None:
         """``ORDER BY revenue:last DESC`` (no explicit time arg) inherits ``default_time_dimension`` for the rank ordering."""
-        m = _orders_two_ts_model(default_td="created_at")
+        m = _orders_two_ts_dataset(default_td="created_at")
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
                 "population": "orders",
@@ -5384,7 +5384,7 @@ class TestDev1501HiddenFirstLastRender:
         self, generator: SQLGenerator
     ) -> None:
         """A PROJECTED ``last(created_at)`` (alias ``latest_cr``) and an ORDER-BY-only ``last(updated_at)`` coexist — both rank columns exist, the projected alias surfaces in result keys, the order-only materialised alias is trimmed from result keys."""
-        m = _orders_two_ts_model()
+        m = _orders_two_ts_dataset()
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 population="orders",
@@ -5416,7 +5416,7 @@ class TestDev1501HiddenFirstLastRender:
         self, generator: SQLGenerator
     ) -> None:
         """A filter referencing a non-projected ``last(created_at)`` must materialise that aggregate and apply the predicate where its value is readable — the outer combined SELECT."""
-        m = _orders_two_ts_model(default_td="created_at")
+        m = _orders_two_ts_dataset(default_td="created_at")
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
                 "population": "orders",
@@ -5444,7 +5444,7 @@ class TestDev1501HiddenFirstLastRender:
         self, generator: SQLGenerator
     ) -> None:
         """A filter references TWO last() aggregates over different time columns — each is materialised in its own CTE and the outer predicate names both, so distinct time columns cannot collapse."""
-        m = _orders_two_ts_model()
+        m = _orders_two_ts_dataset()
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
                 "population": "orders",
@@ -5470,7 +5470,7 @@ class TestDev1501HiddenFirstLastRender:
         self, generator: SQLGenerator
     ) -> None:
         """A filter uses ``last(created_at)`` while ORDER BY uses ``last(updated_at)`` — each must resolve to its OWN materialised value. Combined-surface regression (Codex MED 8)."""
-        m = _orders_two_ts_model()
+        m = _orders_two_ts_dataset()
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
                 "population": "orders",
@@ -5500,7 +5500,7 @@ class TestDev1501HiddenFirstLastRender:
         self, generator: SQLGenerator
     ) -> None:
         """Two PROJECTED ``last(created_at)`` / ``last(updated_at)`` on a model with NO ``default_time_dimension`` must stay DISTINCT."""
-        m = _orders_two_ts_model()  # no default_td
+        m = _orders_two_ts_dataset()  # no default_td
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 population="orders",
@@ -5532,7 +5532,7 @@ class TestDev1501HiddenFirstLastRender:
         """A FILTERED ``last(time_col)`` (``Column.filter`` set) referenced from a
         filter MASKS its value over the full ranking — no WHERE
         restricts the ranked rows; the value column is CASE-masked."""
-        async with _persist_and_engine(_orders_with_paid_amount_model()) as engine:
+        async with _persist_and_engine(_orders_with_paid_amount_dataset()) as engine:
             query = SlayerQuery.model_validate({
                 "population": "orders",
                 "metrics": ["count(*)"],
@@ -5558,7 +5558,7 @@ class TestDev1501HiddenFirstLastRender:
         self, generator: SQLGenerator
     ) -> None:
         """A FILTERED ``last(time_col)`` nested inside a scalar-function call (``coalesce(agg, 0)``) must still resolve to the aggregate's own materialised value through the recursion."""
-        async with _persist_and_engine(_orders_with_paid_amount_model()) as engine:
+        async with _persist_and_engine(_orders_with_paid_amount_dataset()) as engine:
             # ``coalesce(agg, 0)`` wraps the AggregateKey in a ScalarCallKey — exercises the recursion branch that previously dropped ``aliases_by_slot_id``.
             query = SlayerQuery.model_validate({
                 "population": "orders",
@@ -5583,7 +5583,7 @@ class TestDev1501HiddenFirstLastRender:
         self, generator: SQLGenerator
     ) -> None:
         """A query whose ONLY first/last reference is INSIDE a composite aggregate (no direct first/last sibling) must still materialise each operand. Codex review of PR #159 round 4."""
-        async with _persist_and_engine(_orders_two_ts_model()) as engine:
+        async with _persist_and_engine(_orders_two_ts_dataset()) as engine:
             query = SlayerQuery(
                 population="orders",
                 # ONLY composite — no direct first/last sibling.
@@ -5616,7 +5616,7 @@ class TestDev1501HiddenFirstLastRender:
     ) -> None:
         """A composite measure containing a first/last operand without explicit time arg AND no model ``default_time_dimension`` must raise the "first/last requires a ranking time column" error. Without composite-aware validation in ``_build_first_last_base_select``, the query bypasses the check and ``_build_unfiltered_rn_columns`` emits ``ORDER BY None``. Codex review of PR #159 round 5."""
         # ``_orders_two_ts_model()`` has no ``default_time_dimension``.
-        async with _persist_and_engine(_orders_two_ts_model()) as engine:
+        async with _persist_and_engine(_orders_two_ts_dataset()) as engine:
             query = SlayerQuery(
                 population="orders",
                 # Composite with bare ``last(revenue)`` — no explicit time arg, no default time dim, no temporal dim.
@@ -5676,7 +5676,7 @@ class TestDev1501HiddenFirstLastRender:
         """A FILTERED first/last operand inside a composite projection
         (``last(paid_amount, created_at) + 1``) MASKS its value over the full
         ranking — no WHERE restricts the ranked rows."""
-        async with _persist_and_engine(_orders_with_paid_amount_model()) as engine:
+        async with _persist_and_engine(_orders_with_paid_amount_dataset()) as engine:
             query = SlayerQuery(
                 population="orders",
                 metrics=[DatasetMetric(
@@ -5706,7 +5706,7 @@ class TestDev1501HiddenFirstLastRender:
         self, generator: SQLGenerator
     ) -> None:
         """A COMPOSITE aggregate measure containing first/last operands with different explicit time columns (``last(revenue, created_at) + last(revenue, updated_at)``) must render each operand against its OWN ranking, alongside a directly projected first/last that shares one of those time columns."""
-        async with _persist_and_engine(_orders_two_ts_model(default_td="created_at")) as engine:
+        async with _persist_and_engine(_orders_two_ts_dataset(default_td="created_at")) as engine:
             query = SlayerQuery(
                 population="orders",
                 # Direct first/last triggers _build_first_last_base_select; the composite operand is the bug under test.
@@ -5910,7 +5910,7 @@ class TestDev1501BroadTriggerAndGuards:
         self, generator: SQLGenerator
     ) -> None:
         """When no hidden materialised aggregates exist, the no-transform path stays flat — no outer trim wrapper. ORDER BY references the projected alias inline at the same SELECT level."""
-        m = _orders_two_ts_model(default_td="created_at")
+        m = _orders_two_ts_dataset(default_td="created_at")
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 population="orders",
@@ -5929,7 +5929,7 @@ class TestDev1501BroadTriggerAndGuards:
         self, generator: SQLGenerator
     ) -> None:
         """Broad-trigger regression: a NON-first/last hidden order aggregate (``ORDER BY revenue:sum DESC`` with no projected ``sum(revenue)``) also goes through materialise+trim — outer wrap projects only the public columns, outer ORDER BY references the materialised ``"orders.revenue_sum"`` alias, and the hidden alias is absent from result keys and response metadata."""
-        m = _orders_two_ts_model(default_td="created_at")
+        m = _orders_two_ts_dataset(default_td="created_at")
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
                 "population": "orders",
@@ -5974,7 +5974,7 @@ class TestDev1501BroadTriggerAndGuards:
         self, generator: SQLGenerator
     ) -> None:
         """Dim-only query (no measures, dim auto-dedup) with a hidden first/last in ORDER BY. The dim-only-dedup GROUP BY must contain ONLY the dimension(s) — the aggregate-only narrowing of Change 2 prevents the hidden first/last from leaking extra GROUP BY entries."""
-        m = _orders_two_ts_model(default_td="created_at")
+        m = _orders_two_ts_dataset(default_td="created_at")
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 population="orders",
@@ -6036,7 +6036,7 @@ class TestDev1501BroadTriggerAndGuards:
         self, generator: SQLGenerator
     ) -> None:
         """``filters=["sum(revenue) > 100"]`` with no projected ``sum(revenue)`` (plain non-first/last). Broad materialise+trim applies to filter-side too: hidden ``sum(revenue)`` materialised in base, HAVING references it (inline or by alias), absent from result keys and response metadata."""
-        m = _orders_two_ts_model(default_td="created_at")
+        m = _orders_two_ts_dataset(default_td="created_at")
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
                 "population": "orders",
@@ -6066,7 +6066,7 @@ class TestDev1501BroadTriggerAndGuards:
         self, generator: SQLGenerator
     ) -> None:
         """ORDER BY / LIMIT / OFFSET must be applied where the ordered value is visible — never below it, which would slice rows before the aggregate being sorted on exists."""
-        m = _orders_two_ts_model(default_td="created_at")
+        m = _orders_two_ts_dataset(default_td="created_at")
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery.model_validate({
                 "population": "orders",
@@ -6104,7 +6104,7 @@ class TestDev1501BroadTriggerAndGuards:
         self, generator: SQLGenerator
     ) -> None:
         """Two declared measures with the same structural key but different ``name``s intern to ONE slot carrying TWO ``public_aliases``. Under the new outer trim wrap, BOTH aliases must appear in the outer projection (mirroring the transform path's ``outer_alias_index``)."""
-        m = _orders_two_ts_model(default_td="created_at")
+        m = _orders_two_ts_dataset(default_td="created_at")
         async with _persist_and_engine(m) as engine:
             query = SlayerQuery(
                 population="orders",
@@ -6342,7 +6342,7 @@ class TestCrossModelRerootedSubquery:
     """Tests for the re-rooted subquery approach to cross-model measure CTEs."""
 
     @pytest.fixture
-    def _models(self) -> tuple[SlayerDataset, SlayerDataset, SlayerDataset, SlayerDataset]:
+    def _datasets(self) -> tuple[SlayerDataset, SlayerDataset, SlayerDataset, SlayerDataset]:
         """Shared model definitions for re-rooting tests."""
         policy = SlayerDataset(
             name="policy", sql_table="policy", data_source="test",
@@ -6397,9 +6397,9 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
                 await storage.save_dataset(m)
             yield SlayerQueryEngine(storage=storage)
 
-    async def test_rerooted_cte_includes_reachable_and_sibling_filters(self, generator: SQLGenerator, _models: tuple[SlayerDataset, SlayerDataset, SlayerDataset, SlayerDataset]):
+    async def test_rerooted_cte_includes_reachable_and_sibling_filters(self, generator: SQLGenerator, _datasets: tuple[SlayerDataset, SlayerDataset, SlayerDataset, SlayerDataset]):
         """The re-rooted producer includes filters REACHABLE from the target root — the target-path filter (``policy_amount.premium.has_premium``) AND the host-sibling filter (``agreement_party_role``): the root's own provably to-one join reaches the sibling, so it inherits instead of dropping (the Q9 shape). Nothing warns."""
-        policy, policy_amount, premium, agreement_party_role = _models
+        policy, policy_amount, premium, agreement_party_role = _datasets
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             query = SlayerQuery(
                 population="policy",
@@ -6425,9 +6425,9 @@ DatasetField(name="total_policy_amount", sql="policy_amount", datatype=DataType.
             assert "agreement_party_role" in cte_body
             assert "party_role_code" in cte_body
 
-    async def test_rerooted_cte_without_filters(self, generator: SQLGenerator, _models: tuple[SlayerDataset, SlayerDataset, SlayerDataset, SlayerDataset]):
+    async def test_rerooted_cte_without_filters(self, generator: SQLGenerator, _datasets: tuple[SlayerDataset, SlayerDataset, SlayerDataset, SlayerDataset]):
         """Cross-model measure with no filters still uses re-rooted CTE."""
-        policy, policy_amount, premium, agreement_party_role = _models
+        policy, policy_amount, premium, agreement_party_role = _datasets
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             query = SlayerQuery(
                 population="policy",
@@ -6497,9 +6497,9 @@ DatasetField(name="score", sql="score", datatype=DataType.DOUBLE)],
             # Combined: CROSS JOIN (no shared dims)
             assert "CROSS JOIN" in sql
 
-    async def test_rerooted_with_time_dimension(self, generator: SQLGenerator, _models: tuple[SlayerDataset, SlayerDataset, SlayerDataset, SlayerDataset]):
+    async def test_rerooted_with_time_dimension(self, generator: SQLGenerator, _datasets: tuple[SlayerDataset, SlayerDataset, SlayerDataset, SlayerDataset]):
         """Re-rooted CTE includes time dimension when reachable from target."""
-        policy, policy_amount, premium, agreement_party_role = _models
+        policy, policy_amount, premium, agreement_party_role = _datasets
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             query = SlayerQuery(
                 population="policy",
@@ -6519,9 +6519,9 @@ DatasetField(name="score", sql="score", datatype=DataType.DOUBLE)],
             assert "effective_date" in cte_section.lower()
             assert "GROUP BY" in cte_section
 
-    async def test_rerooted_cross_model_in_formula(self, generator: SQLGenerator, _models: tuple[SlayerDataset, SlayerDataset, SlayerDataset, SlayerDataset]):
+    async def test_rerooted_cross_model_in_formula(self, generator: SQLGenerator, _datasets: tuple[SlayerDataset, SlayerDataset, SlayerDataset, SlayerDataset]):
         """Formula mixing local + cross-model measure uses re-rooted CTE."""
-        policy, policy_amount, premium, agreement_party_role = _models
+        policy, policy_amount, premium, agreement_party_role = _datasets
         # Add a local column on policy that the formula will aggregate
         policy_with_measure = policy.model_copy(update={
             "fields": list(policy.fields) + [
@@ -6545,9 +6545,9 @@ DatasetField(name="score", sql="score", datatype=DataType.DOUBLE)],
             assert "_cm_" in sql
             assert "/" in sql  # Division expression
 
-    async def test_rerooted_local_filter_remapped_to_source(self, generator: SQLGenerator, _models: tuple[SlayerDataset, SlayerDataset, SlayerDataset, SlayerDataset]):
+    async def test_rerooted_local_filter_remapped_to_source(self, generator: SQLGenerator, _datasets: tuple[SlayerDataset, SlayerDataset, SlayerDataset, SlayerDataset]):
         """Unqualified filter on source model is remapped to source.col in CTE (the producer reaches the host over its provably to-one reverse join)."""
-        policy, policy_amount, premium, agreement_party_role = _models
+        policy, policy_amount, premium, agreement_party_role = _datasets
         async with self._setup_engine(policy, policy_amount, premium, agreement_party_role) as engine:
             # policy_amount has a join to policy, so status_code is reachable
             query = SlayerQuery(
@@ -6916,7 +6916,7 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
             metrics=[DatasetMetric(expression="sum(revenue)")],
             dimensions=[FieldRef(name="customers.name")],
         )
-        sql = await _generate(generator, query, orders, extra_models=[customers])
+        sql = await _generate(generator, query, orders, extra_datasets=[customers])
         assert "INNER JOIN" in sql
         assert "LEFT JOIN" not in sql
 
@@ -6952,7 +6952,7 @@ class TestMeasureFilterCrossModelJoin:
             population="claim_amount",
             metrics=[DatasetMetric(expression="sum(loss_amt)")],
         )
-        sql = await _generate(generator, query, claim_amount, extra_models=[loss_payment])
+        sql = await _generate(generator, query, claim_amount, extra_datasets=[loss_payment])
         # The JOIN to loss_payment must be present (it is the filter mechanism). Parsed-alias assertion so a stray table mention / JOIN keyword in unrelated SQL can't satisfy it.
         assert "loss_payment" in _join_aliases(sql), f"Missing JOIN to loss_payment: {sql}"
         # The derived ref must be inlined — no dangling ``loss_payment.has_flag`` (a derived column, absent from the physical table).
@@ -6993,7 +6993,7 @@ DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
             metrics=[DatasetMetric(expression="sum(revenue)")],
             dimensions=[FieldRef(name="customers.name")],
         )
-        sql = await _generate(generator, query, orders, extra_models=[customers])
+        sql = await _generate(generator, query, orders, extra_datasets=[customers])
         assert "LEFT JOIN" in sql
         assert "INNER JOIN" not in sql
 
@@ -7002,7 +7002,7 @@ class TestIsolatedFilteredMeasureCTEs:
     """Cross-model-filtered measures get isolated CTEs, not CASE WHEN in the base."""
 
     @pytest.fixture
-    def claim_amount_model(self):
+    def claim_amount_dataset(self):
         return SlayerDataset(
             name="claim_amount",
             sql_table="Claim_Amount",
@@ -7023,7 +7023,7 @@ class TestIsolatedFilteredMeasureCTEs:
         )
 
     @pytest.fixture
-    def related_models(self):
+    def related_datasets(self):
         return {
             "loss_payment": SlayerDataset(
                 name="loss_payment", sql_table="Loss_Payment", data_source="test",
@@ -7048,17 +7048,17 @@ class TestIsolatedFilteredMeasureCTEs:
             ),
         }
 
-    async def _sql(self, claim_amount_model, related_models, query):
+    async def _sql(self, claim_amount_dataset, related_datasets, query):
         """Run ``query`` against ``claim_amount_model`` (with the related join targets registered) through the typed engine and return emitted SQL."""
         return await _engine_generate(
             query=query,
-            model=claim_amount_model,
-            extra_models=list(related_models.values()),
+            dataset=claim_amount_dataset,
+            extra_datasets=list(related_datasets.values()),
             validate=False,
         )
 
     async def test_two_filtered_measures_get_separate_ctes(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """Two measures with different cross-model filters → separate _cm_ CTEs, not intersecting JOINs."""
         query = SlayerQuery(
@@ -7066,7 +7066,7 @@ class TestIsolatedFilteredMeasureCTEs:
             metrics=[DatasetMetric(expression="sum(loss_payment_amt)"), DatasetMetric(expression="sum(loss_reserve_amt)")],
             dimensions=[FieldRef(name="claim.claim_number")],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
 
         assert "loss_payment_amt" in sql
         assert "loss_reserve_amt" in sql
@@ -7084,7 +7084,7 @@ class TestIsolatedFilteredMeasureCTEs:
         )
 
     async def test_formula_over_isolated_measures(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """Formula referencing isolated measures evaluates against the joined-back ``_cm_*`` columns at the combined SELECT — NOT inline in ``_base`` (which would pull both filter-target INNER joins back into the host CTE and intersect to rows present in BOTH targets, silently corrupting both aggregates)."""
         query = SlayerQuery(
@@ -7096,7 +7096,7 @@ class TestIsolatedFilteredMeasureCTEs:
             ],
             dimensions=[FieldRef(name="claim.claim_number")],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
 
         assert "+" in sql
         assert "loss_payment_amt" in sql
@@ -7130,7 +7130,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_mixed_isolated_and_local_measures(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """Unfiltered measure stays in host base, filtered goes to its own _cm_ CTE."""
         query = SlayerQuery(
@@ -7138,7 +7138,7 @@ class TestIsolatedFilteredMeasureCTEs:
             metrics=[DatasetMetric(expression="sum(total_amount)"), DatasetMetric(expression="sum(loss_payment_amt)")],
             dimensions=[FieldRef(name="claim.claim_number")],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
 
         assert "_base" in sql
         assert "total_amount_sum" in sql
@@ -7153,7 +7153,7 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "loss_payment_amt" in sql
 
     async def test_all_measures_isolated_produces_dimension_spine(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """When all measures are isolated, the host _base CTE is just a dimension spine."""
         query = SlayerQuery(
@@ -7161,7 +7161,7 @@ class TestIsolatedFilteredMeasureCTEs:
             metrics=[DatasetMetric(expression="sum(loss_payment_amt)")],
             dimensions=[FieldRef(name="claim.claim_number")],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
 
         # Host _base CTE exists; the filtered measure goes to its own _cm_ CTE.
         assert "_base" in sql
@@ -7181,14 +7181,14 @@ class TestIsolatedFilteredMeasureCTEs:
         )
 
     async def test_combined_uses_cross_join_when_no_dimensions(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """When no dimensions exist, isolated _cm_ CTEs are CROSS JOINed to base (Bug Q6)."""
         query = SlayerQuery(
             population="claim_amount",
             metrics=[DatasetMetric(expression="sum(loss_payment_amt)"), DatasetMetric(expression="sum(loss_reserve_amt)")],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
         assert len(cm_cte_names) >= 2, (
             f"Expected ≥ 2 _cm_ CTEs (one per filtered measure), got {len(cm_cte_names)}: {cm_cte_names}\n{sql}"
@@ -7199,7 +7199,7 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "CROSS JOIN" in sql
 
     async def test_filter_join_preserved_when_skip_isolated(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """Cross-model filter joins survive measure isolation (Bug Q9)."""
         query = SlayerQuery(
@@ -7208,7 +7208,7 @@ class TestIsolatedFilteredMeasureCTEs:
             # No dimensions on claim — only the filter references the claim join.
             filter=["claim.claim_number = '12345'"],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         assert "claim_number" in sql
         assert "12345" in sql
         # The claim join must land somewhere (legacy: in _base; new: in _cm_). Either is correct as long as the filter can resolve.
@@ -7221,7 +7221,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_isolated_cte_qualifies_cross_model_dim_correctly(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """Isolated CTEs qualify cross-model dimensions with dim.model_name (Bug Q11)."""
         query = SlayerQuery(
@@ -7229,7 +7229,7 @@ class TestIsolatedFilteredMeasureCTEs:
             metrics=[DatasetMetric(expression="sum(loss_payment_amt)")],
             dimensions=[FieldRef(name="claim.claim_number")],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         # Extract the _cm CTE body for the filtered measure.
         cm_match = _re.search(r"_cm_\w*loss_payment_amt\w*", sql)
         assert cm_match, f"No _cm_ CTE for loss_payment_amt in:\n{sql}"
@@ -7276,7 +7276,7 @@ class TestIsolatedFilteredMeasureCTEs:
             filter=["warehouse.status = 'ACTIVE'"],
             to_many_handling="broadcast",
         )
-        sql = await _generate(generator, query, orders, extra_models=[customers, warehouse])
+        sql = await _generate(generator, query, orders, extra_datasets=[customers, warehouse])
 
         # The _cm_ CTE reaches "warehouse" only inside the correlated EXISTS
         # — never as a cardinality-changing join of the CTE body.
@@ -7291,7 +7291,7 @@ class TestIsolatedFilteredMeasureCTEs:
         assert "warehouse" in base_section.lower()
 
     async def test_base_not_empty_when_no_dims_all_measures_skipped(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """Base SELECT must not be empty when all measures are isolated and there are no dims (Bug Q10)."""
         query = SlayerQuery(
@@ -7299,7 +7299,7 @@ class TestIsolatedFilteredMeasureCTEs:
             metrics=[DatasetMetric(expression="sum(loss_payment_amt)")],
             # No dimensions — base has nothing to select
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         assert "SELECT\nFROM" not in sql, f"Empty SELECT detected:\n{sql}"
         assert "SELECT FROM" not in sql, f"Empty SELECT detected:\n{sql}"
         assert "_cm_" in sql
@@ -7318,7 +7318,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_aggregate_filter_on_isolated_measure_applied_on_outer(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """Aggregate-phase filter referencing an isolated measure is applied on the outer combined SELECT (as WHERE), not inside the _cm_ CTE."""
         query = SlayerQuery(
@@ -7327,7 +7327,7 @@ class TestIsolatedFilteredMeasureCTEs:
             dimensions=[FieldRef(name="claim.claim_number")],
             filter=["sum(loss_payment_amt) > 1000"],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         assert "1000" in sql, f"filter literal '1000' dropped:\n{sql}"
         assert "> 1000" in sql, f"Expected '> 1000' comparison in SQL:\n{sql}"
         # The comparison applies on the OUTER combined SELECT (after all CTEs) — locate the position of the last CTE-close ``\n)`` and assert the filter literal appears after it.
@@ -7350,10 +7350,10 @@ class TestIsolatedFilteredMeasureCTEs:
         )
 
     async def test_same_filtered_measure_different_aggs_separate_ctes(
-        self, generator: SQLGenerator, claim_amount_model: SlayerDataset, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset: SlayerDataset, related_datasets,
     ) -> None:
         """Same filtered measure with sum + avg must produce distinct _cm_ CTEs, not collide."""
-        loss_m = claim_amount_model.get_field("loss_payment_amt")
+        loss_m = claim_amount_dataset.get_field("loss_payment_amt")
         assert loss_m is not None
         loss_m.allowed_aggregations = ["sum", "avg"]
 
@@ -7365,7 +7365,7 @@ class TestIsolatedFilteredMeasureCTEs:
             ],
             dimensions=[FieldRef(name="claim.claim_number")],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
 
         assert "loss_payment_amt_sum" in sql, f"Missing loss_payment_amt_sum in:\n{sql}"
         assert "loss_payment_amt_avg" in sql, f"Missing loss_payment_amt_avg in:\n{sql}"
@@ -7378,19 +7378,19 @@ class TestIsolatedFilteredMeasureCTEs:
 
 
     @pytest.fixture
-    def claim_amount_model_with_time(self, claim_amount_model: SlayerDataset):
+    def claim_amount_dataset_with_time(self, claim_amount_dataset: SlayerDataset):
         """Extend claim_amount_model with a timestamp dimension and first/last measures."""
-        claim_amount_model.default_time_dimension = "created_at"
-        claim_amount_model.fields.append(
+        claim_amount_dataset.default_time_dimension = "created_at"
+        claim_amount_dataset.fields.append(
             DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
         )
-        claim_amount_model.fields.append(
+        claim_amount_dataset.fields.append(
             DatasetField(name="latest_payment", sql="amount", filter="loss_payment.has_flag = 1", datatype=DataType.DOUBLE),
         )
-        return claim_amount_model
+        return claim_amount_dataset
 
     async def test_isolated_last_no_ranked_subquery_in_base(
-        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset_with_time, related_datasets,
     ) -> None:
         """When ALL first/last measures are isolated, the host _base CTE must NOT build a ranked subquery — it should be a plain dimension spine. The ranked subquery lives inside each filtered measure's own _cm_ CTE."""
         query = SlayerQuery(
@@ -7401,7 +7401,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
-        sql = await self._sql(claim_amount_model_with_time, related_models, query)
+        sql = await self._sql(claim_amount_dataset_with_time, related_datasets, query)
 
         # Extract the _base CTE body (balanced-paren walker — guards against nested ranked subqueries in mixed-isolation cases).
         base_body = _extract_cte_body(sql, r"_base")
@@ -7416,7 +7416,7 @@ class TestIsolatedFilteredMeasureCTEs:
         )
 
     async def test_isolated_last_cte_has_valid_ranked_subquery(
-        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset_with_time, related_datasets,
     ) -> None:
         """The isolated CTE for a last measure must contain a ROW_NUMBER ranked subquery and produce valid SQL — no reference to a rank column its FROM never projects."""
         query = SlayerQuery(
@@ -7427,7 +7427,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
-        sql = await self._sql(claim_amount_model_with_time, related_models, query)
+        sql = await self._sql(claim_amount_dataset_with_time, related_datasets, query)
 
         # The _cm_ CTE for the isolated measure must exist and contain ROW_NUMBER. Balanced-paren walker — the body carries a nested ranked subquery whose ``\n)`` closes the inner subquery, not the CTE.
         cm_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
@@ -7444,7 +7444,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_mixed_isolated_and_local_first_last(
-        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset_with_time, related_datasets,
     ) -> None:
         """Mixed case: an unfiltered ``last`` and a cross-model-filtered one."""
         # total_amount has no cross-model filter → stays in base
@@ -7459,7 +7459,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
-        sql = await self._sql(claim_amount_model_with_time, related_models, query)
+        sql = await self._sql(claim_amount_dataset_with_time, related_datasets, query)
 
         base_body = _extract_cte_body(sql, r"_base")
         assert "ROW_NUMBER" not in base_body, (
@@ -7483,14 +7483,14 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_isolated_first_with_explicit_time_column(
-        self, generator: SQLGenerator, claim_amount_model_with_time: SlayerDataset, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset_with_time: SlayerDataset, related_datasets,
     ) -> None:
         """Isolated first measure with explicit time_column uses correct ordering."""
         # Add a timestamp dimension and measure for the explicit time column.
-        claim_amount_model_with_time.fields.append(
+        claim_amount_dataset_with_time.fields.append(
             DatasetField(name="updated_at", sql="updated_at", datatype=DataType.TIMESTAMP),
         )
-        claim_amount_model_with_time.fields.append(
+        claim_amount_dataset_with_time.fields.append(
             DatasetField(name="earliest_reserve", sql="amount", filter="loss_reserve.has_flag = 1", datatype=DataType.DOUBLE),
         )
         # Explicit time column specified at query time: first(updated_at)
@@ -7502,7 +7502,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
-        sql = await self._sql(claim_amount_model_with_time, related_models, query)
+        sql = await self._sql(claim_amount_dataset_with_time, related_datasets, query)
 
         # The ranked CTE orders ASCENDING for ``first`` — the bare column, since ascending is the absence of DESC.
         cm_body = _norm(_extract_cte_body(sql, r"_cm_\w*earliest_reserve\w*"))
@@ -7515,11 +7515,11 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_multiple_isolated_first_last_separate_ctes(
-        self, generator: SQLGenerator, claim_amount_model_with_time: SlayerDataset, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset_with_time: SlayerDataset, related_datasets,
     ) -> None:
         """Two isolated first/last measures produce separate CTEs, no ROW_NUMBER in base."""
         # latest_payment already has cross-model filter; add another.
-        claim_amount_model_with_time.fields.append(
+        claim_amount_dataset_with_time.fields.append(
             DatasetField(name="latest_reserve", sql="amount", filter="loss_reserve.has_flag = 1", datatype=DataType.DOUBLE),
         )
         query = SlayerQuery(
@@ -7533,7 +7533,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 TimeDimension(field="created_at", granularity=TimeGranularity.MONTH),
             ],
         )
-        sql = await self._sql(claim_amount_model_with_time, related_models, query)
+        sql = await self._sql(claim_amount_dataset_with_time, related_datasets, query)
 
         # No ROW_NUMBER in host _base when all first/last are isolated.
         base_body = _extract_cte_body(sql, r"_base")
@@ -7584,7 +7584,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 DatasetMetric(expression="avg(customers.revenue)"),
             ],
         )
-        sql = await _generate(generator, query, orders, extra_models=[customers])
+        sql = await _generate(generator, query, orders, extra_datasets=[customers])
 
         assert "revenue_sum" in sql, f"Missing revenue_sum in:\n{sql}"
         assert "revenue_avg" in sql, f"Missing revenue_avg in:\n{sql}"
@@ -7633,7 +7633,7 @@ class TestIsolatedFilteredMeasureCTEs:
             metrics=[DatasetMetric(expression="sum(eu_amount)")],
             dimensions=[FieldRef(name="id")],
         )
-        sql = await _generate(generator, query, orders, extra_models=[customers, regions])
+        sql = await _generate(generator, query, orders, extra_datasets=[customers, regions])
 
         # The _cm_ CTE must exist for the filtered measure — balanced-paren walker so a nested subquery doesn't truncate the body.
         cm_body = _extract_cte_body(sql, r"_cm_\w*eu_amount\w*")
@@ -7655,7 +7655,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_aggregate_filter_outer_where_with_no_dimensions(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """Aggregate filter on an isolated measure, with NO dimensions: the host _base CROSS JOINs the _cm_ CTE, and the outer wrapper applies the filter as WHERE on the joined-back aggregate column."""
         query = SlayerQuery(
@@ -7663,7 +7663,7 @@ class TestIsolatedFilteredMeasureCTEs:
             metrics=[DatasetMetric(expression="sum(loss_payment_amt)")],
             filter=["sum(loss_payment_amt) > 1000"],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         # CROSS JOIN must appear (no-dim case).
         assert "CROSS JOIN" in sql, f"Expected CROSS JOIN in no-dim case:\n{sql}"
         # Filter must apply via outer WHERE > 1000 — after all CTEs.
@@ -7679,7 +7679,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_mixed_operand_aggregate_filter_promotes_hidden_operand(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """A filter that references BOTH an isolated filtered-local aggregate AND a non-isolated local aggregate must promote the non-isolated operand to a hidden column in the host _base so the outer WHERE can evaluate it. The non-isolated operand is NOT a public measure here — it must stay hidden from the final projection."""
         # total_amount is a non-isolated unfiltered local measure — referenced only by the filter, NOT projected as a public measure.
@@ -7689,7 +7689,7 @@ class TestIsolatedFilteredMeasureCTEs:
             dimensions=[FieldRef(name="claim.claim_number")],
             filter=["sum(loss_payment_amt) > 1000 and sum(total_amount) > 10"],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         assert "1000" in sql
         assert "10" in sql
         # Each conjunct routes to its own scope — the local operand stays a HAVING on _base (value-identical to the old outer-WHERE), the isolated aggregate's goes to the outer combined WHERE.
@@ -7719,12 +7719,12 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_post_phase_filter_not_routed_to_outer_combined_where(
-        self, generator: SQLGenerator, claim_amount_model: SlayerDataset, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset: SlayerDataset, related_datasets,
     ) -> None:
         """A POST-phase filter (transform-wrapped, ``cumsum(...) > 0``) on an isolated filtered-local measure stays in the existing post-transform wrapper — it must NOT be re-routed to the outer combined WHERE."""
         # Need a time dimension for cumsum (which needs ordering).
-        claim_amount_model.default_time_dimension = "created_at"
-        claim_amount_model.fields.append(
+        claim_amount_dataset.default_time_dimension = "created_at"
+        claim_amount_dataset.fields.append(
             DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
         )
         query = SlayerQuery(
@@ -7738,7 +7738,7 @@ class TestIsolatedFilteredMeasureCTEs:
             ],
             filter=["cumsum(sum(loss_payment_amt)) > 0"],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         assert "> 0" in sql, f"POST filter '> 0' missing:\n{sql}"
         assert "SUM" in sql.upper(), (
             f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
@@ -7759,11 +7759,11 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_aggregate_and_post_filters_route_independently(
-        self, generator: SQLGenerator, claim_amount_model: SlayerDataset, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset: SlayerDataset, related_datasets,
     ) -> None:
         """A plain measure filter (``sum(loss_payment_amt) > 1000``) beside a transform filter (``cumsum(sum(loss_payment_amt)) > 0``): both mask at the chain's final select, so the plain one never shrinks the series cumsum reads (Axiom 14)."""
-        claim_amount_model.default_time_dimension = "created_at"
-        claim_amount_model.fields.append(
+        claim_amount_dataset.default_time_dimension = "created_at"
+        claim_amount_dataset.fields.append(
             DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
         )
         query = SlayerQuery(
@@ -7780,7 +7780,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 "cumsum(sum(loss_payment_amt)) > 0",
             ],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         assert "> 1000" in sql, f"AGGREGATE filter '> 1000' missing:\n{sql}"
         assert "> 0" in sql, f"POST filter '> 0' missing:\n{sql}"
         assert "OVER" in sql.upper(), f"Expected windowed SUM ... OVER (...) for cumsum:\n{sql}"
@@ -7799,7 +7799,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_filter_referencing_two_isolated_aggregates(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """An aggregate-phase filter referencing TWO isolated filtered-local aggregates (``sum(loss_payment_amt) + sum(loss_reserve_amt) > 100``) must produce two _cm_ CTEs (one per measure) and an outer WHERE that references BOTH joined-back aliases."""
         query = SlayerQuery(
@@ -7811,7 +7811,7 @@ class TestIsolatedFilteredMeasureCTEs:
             dimensions=[FieldRef(name="claim.claim_number")],
             filter=["sum(loss_payment_amt) + sum(loss_reserve_amt) > 100"],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
         assert len(cm_cte_names) >= 2, (
             f"Expected ≥ 2 _cm_ CTEs (one per filtered measure); got {cm_cte_names}\n{sql}"
@@ -7832,10 +7832,10 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_filtered_local_parametric_last_in_order_by(
-        self, generator: SQLGenerator, claim_amount_model_with_time: SlayerDataset, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset_with_time: SlayerDataset, related_datasets,
     ) -> None:
         """A filtered-local PARAMETRIC ``last(updated_at)`` referenced from ORDER BY keeps its ranking INSIDE its own CTE, and the outer ORDER BY resolves through that CTE's joined-back column."""
-        claim_amount_model_with_time.fields.append(
+        claim_amount_dataset_with_time.fields.append(
             DatasetField(name="updated_at", sql="updated_at", datatype=DataType.TIMESTAMP),
         )
         query = SlayerQuery(
@@ -7852,7 +7852,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 OrderItem(field="latest_pmt", direction="desc"),
             ],
         )
-        sql = await self._sql(claim_amount_model_with_time, related_models, query)
+        sql = await self._sql(claim_amount_dataset_with_time, related_datasets, query)
 
         cm_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
         assert "_ranked_rn" in cm_body, (
@@ -7869,10 +7869,10 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_filtered_local_parametric_last_in_having(
-        self, generator: SQLGenerator, claim_amount_model_with_time: SlayerDataset, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset_with_time: SlayerDataset, related_datasets,
     ) -> None:
         """A filtered-local PARAMETRIC ``last(updated_at)`` referenced from a host filter routes as an AGGREGATE-phase filter to the outer combined WHERE. The ranking stays inside the CTE; the outer SELECT applies the comparison against the joined-back column."""
-        claim_amount_model_with_time.fields.append(
+        claim_amount_dataset_with_time.fields.append(
             DatasetField(name="updated_at", sql="updated_at", datatype=DataType.TIMESTAMP),
         )
         query = SlayerQuery(
@@ -7884,7 +7884,7 @@ class TestIsolatedFilteredMeasureCTEs:
             ],
             filter=["latest_pmt > 500"],
         )
-        sql = await self._sql(claim_amount_model_with_time, related_models, query)
+        sql = await self._sql(claim_amount_dataset_with_time, related_datasets, query)
 
         cm_body = _extract_cte_body(sql, r"_cm_\w*latest_payment\w*")
         assert "_ranked_rn" in cm_body, (
@@ -7901,7 +7901,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_outer_wrapper_resolves_forward_cross_model_agg_operand(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """A mixed AGGREGATE-phase filter referencing BOTH an isolated filtered-local aggregate AND a forward cross-model aggregate must resolve BOTH operands at the outer combined SELECT — the filtered-local through the host-rooted ``_cm_`` CTE, the forward cross-model through ITS own ``_cm_`` CTE."""
         # ``sum(loss_payment.has_flag)`` is a forward cross-model aggregate on the joined ``loss_payment`` target — no Column.filter, so it routes as a plain forward-path ``_cm_`` plan, not filtered-local.
@@ -7916,7 +7916,7 @@ class TestIsolatedFilteredMeasureCTEs:
                 "sum(loss_payment_amt) + sum(loss_payment.has_flag) > 100",
             ],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         # Two _cm_ CTEs: one filtered-local (host-rooted), one forward cross-model.
         cm_cte_names = _re.findall(r"(_cm_\w+)\s+AS\s*\(", sql)
         assert len(cm_cte_names) >= 2, (
@@ -7940,7 +7940,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_aggregate_filter_with_date_range_routes_correctly(
-        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset_with_time, related_datasets,
     ) -> None:
         """A query carrying BOTH a date_range time dimension AND an AGGREGATE-phase filter on the isolated aggregate must route each independently: the date_range as ROW-phase WHERE (propagated into the sub-plan / _cm_ CTE), the aggregate filter as outer WHERE on the joined-back column."""
         query = SlayerQuery(
@@ -7956,7 +7956,7 @@ class TestIsolatedFilteredMeasureCTEs:
             ],
             filter=["sum(loss_payment_amt) > 1000"],
         )
-        sql = await self._sql(claim_amount_model_with_time, related_models, query)
+        sql = await self._sql(claim_amount_dataset_with_time, related_datasets, query)
         # The date_range literal is a ROW-phase filter — must apply where the row-set forms (inside the _cm_ CTE for the isolated agg).
         cm_body = _extract_cte_body(sql, r"_cm_\w+")
         assert "2020-01-01" in cm_body, (
@@ -7979,7 +7979,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_order_by_projected_composite_over_isolated_resolves_at_combined(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """A query whose ORDER BY references a PROJECTED composite over isolated filtered-local aggregates must resolve the order alias at the combined SELECT level — NOT ``_base."<alias>"`` (the alias is no longer materialised in ``_base`` after isolation routing)."""
         query = SlayerQuery(
@@ -7995,7 +7995,7 @@ class TestIsolatedFilteredMeasureCTEs:
             dimensions=[FieldRef(name="claim.claim_number")],
             order=[OrderItem(field="total_loss", direction="desc")],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         # The composite must NOT render in _base (G1.1 invariant).
         base_body = _extract_cte_body(sql, r"_base")
         assert "Loss_Payment" not in base_body
@@ -8014,7 +8014,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_outer_composite_with_multiple_user_aliases(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """The same composite formula declared under TWO user-aliases must surface BOTH aliases in the combined SELECT. The C13 multi-alias same-key consolidation collapses the two measures into ONE slot with ``public_aliases=[a, b]``; the renderer must cycle through them rather than emit ``public_aliases[0]`` twice."""
         query = SlayerQuery(
@@ -8033,7 +8033,7 @@ class TestIsolatedFilteredMeasureCTEs:
             ],
             dimensions=[FieldRef(name="claim.claim_number")],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         # The isolation invariant still holds (neither join in _base).
         base_body = _extract_cte_body(sql, r"_base")
         assert "Loss_Payment" not in base_body
@@ -8050,7 +8050,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_local_first_last_with_routed_cross_model_filter(
-        self, generator: SQLGenerator, claim_amount_model_with_time, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset_with_time, related_datasets,
     ) -> None:
         """A query mixing a LOCAL first/last measure with a cross-model aggregate carrying a routed filter must NOT apply the routed filter inside the host ``_base`` ranked subquery — it belongs in the ``_cm_*`` CTE only."""
         # total_amount (local, first()) forces _base into the ranked-subquery branch; loss_payment.has_flag is forward cross-model, and its > 0 filter classifies as PROPAGATE_HAVING there.
@@ -8070,7 +8070,7 @@ class TestIsolatedFilteredMeasureCTEs:
             filter=["sum(loss_payment.has_flag) > 0"],
         )
         sql = await self._sql(
-            claim_amount_model_with_time, related_models, query,
+            claim_amount_dataset_with_time, related_datasets, query,
         )
         # The routed cross-model aggregate-phase filter lands as an OUTER WHERE on the producer's attached value — once, and never inside the host ``_base`` ranked subquery (double-application bug).
         norm = _norm(sql)
@@ -8087,11 +8087,11 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_no_dim_query_with_host_row_filter_applies_in_base(
-        self, generator: SQLGenerator, claim_amount_model: SlayerDataset, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset: SlayerDataset, related_datasets,
     ) -> None:
         """A no-dimension query with cross-model aggregates AND a host-local ROW filter must apply the filter at the placeholder ``_base`` (via ``WHERE`` + ``LIMIT 1``). The round-2 fix that dropped the host ``FROM`` to avoid N-row CROSS JOIN duplication also bypassed ``_build_where_having_from_planned``, silently ignoring host-local ROW filters (Codex round 4 / CodeRabbit)."""
         # Add a host column the filter references.
-        claim_amount_model.fields.append(
+        claim_amount_dataset.fields.append(
             DatasetField(name="status", sql="status", datatype=DataType.TEXT),
         )
         query = SlayerQuery(
@@ -8100,7 +8100,7 @@ class TestIsolatedFilteredMeasureCTEs:
             filter=["status = 'active'"],
             # No dimensions — triggers the empty_base placeholder path.
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         assert "'active'" in sql, (
             f"Host ROW filter literal silently dropped:\n{sql}"
         )
@@ -8115,7 +8115,7 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_no_dim_host_filter_referencing_joined_column_pulls_join(
-        self, generator: SQLGenerator, claim_amount_model, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset, related_datasets,
     ) -> None:
         """A no-dimension query with a host ROW filter that references a JOINED column (``claim.claim_number = '...'``) must pull the join into the placeholder ``_base`` FROM clause — the WHERE otherwise references an undefined alias."""
         query = SlayerQuery(
@@ -8123,7 +8123,7 @@ class TestIsolatedFilteredMeasureCTEs:
             metrics=[DatasetMetric(expression="sum(loss_payment_amt)")],
             filter=["claim.claim_number = '12345'"],
         )
-        sql = await self._sql(claim_amount_model, related_models, query)
+        sql = await self._sql(claim_amount_dataset, related_datasets, query)
         base_body = _extract_cte_body(sql, r"_base")
         # The Claim join MUST appear in _base alongside the filter.
         assert "Claim" in base_body, (
@@ -8138,10 +8138,10 @@ class TestIsolatedFilteredMeasureCTEs:
         _assert_valid_sql(sql)
 
     async def test_first_last_with_host_filter_not_reapplied_outside_ranked_subquery(
-        self, generator: SQLGenerator, claim_amount_model_with_time: SlayerDataset, related_models,
+        self, generator: SQLGenerator, claim_amount_dataset_with_time: SlayerDataset, related_datasets,
     ) -> None:
         """A query mixing a LOCAL first/last measure and a host ROW filter must apply the filter only INSIDE the ranked subquery (pre-ranking), not again on the outer ``_base`` SELECT. The first/last branch returns ``where_consumed=True``; the cross- model orchestrator must honour that and skip the outer WHERE application, otherwise the filter double-applies and changes first/last semantics by filtering AFTER ranking."""
-        claim_amount_model_with_time.fields.append(
+        claim_amount_dataset_with_time.fields.append(
             DatasetField(name="status", sql="status", datatype=DataType.TEXT),
         )
         query = SlayerQuery(
@@ -8160,7 +8160,7 @@ class TestIsolatedFilteredMeasureCTEs:
             filter=["status = 'active'"],
         )
         sql = await self._sql(
-            claim_amount_model_with_time, related_models, query,
+            claim_amount_dataset_with_time, related_datasets, query,
         )
         # The filter literal must appear exactly once in _base — inside the ranked subquery's WHERE; a second occurrence means base_where was wrongly re-applied.
         base_body = _extract_cte_body(sql, r"_base")
@@ -8213,8 +8213,8 @@ class TestIsolatedFilteredMeasureCTEs:
             dimensions=[FieldRef(name="id")],
         )
         sql = await _engine_generate(
-            query=query, model=host_via_subquery,
-            extra_models=[loss_payment, backing_raw],
+            query=query, dataset=host_via_subquery,
+            extra_datasets=[loss_payment, backing_raw],
             validate=False,
         )
         # Filtered measure isolated into its own _cm_ CTE; the subquery FROM for the host renders inside it.
@@ -8373,7 +8373,7 @@ class TestLogAliasPreservation:
     """User-written ``log10(x)`` / ``log2(x)`` must round-trip verbatim in emitted SQL on dialects that natively support those single-arg aliases. sqlglot's default behaviour normalises both into a generic ``Log(this=Literal(base), expression=arg)`` AST node and re-emits as ``LOG(base, x)`` for almost every dialect, which makes generated SQL diverge from the recipe formula text and (on dialects that lack 2-arg ``LOG``) can break a previously working call."""
 
     @pytest.fixture
-    def log_model(self) -> SlayerDataset:
+    def log_dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="orders",
             sql_table="public.orders",
@@ -8394,14 +8394,14 @@ class TestLogAliasPreservation:
 
     @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
     async def test_log10_in_column_sql_is_preserved(
-        self, dialect: str, log_model: SlayerDataset,
+        self, dialect: str, log_dataset: SlayerDataset,
     ) -> None:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="max(log_amount)")],
         )
-        sql = await _generate(generator=gen, query=query, model=log_model)
+        sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         upper_no_ws = "".join(sql.upper().split())
         if dialect in _LOG10_NATIVE_DIALECTS:
             assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
@@ -8422,14 +8422,14 @@ class TestLogAliasPreservation:
 
     @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
     async def test_log2_in_column_sql_is_preserved(
-        self, dialect: str, log_model: SlayerDataset,
+        self, dialect: str, log_dataset: SlayerDataset,
     ) -> None:
         gen = SQLGenerator(dialect=dialect)
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="max(log2_amount)")],
         )
-        sql = await _generate(generator=gen, query=query, model=log_model)
+        sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         upper_no_ws = "".join(sql.upper().split())
         if dialect in _LOG2_NATIVE_DIALECTS:
             assert "LOG2(ORDERS.AMOUNT)" in upper_no_ws, (
@@ -8475,7 +8475,7 @@ class TestLogAliasPreservation:
             population="orders",
             metrics=[DatasetMetric(expression="max(log_completed_amount)")],
         )
-        sql = await _generate(generator=gen, query=query, model=model)
+        sql = await _generate(generator=gen, query=query, dataset=model)
         upper_no_ws = "".join(sql.upper().split())
         assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
             f"{dialect}: expected literal log10(amount) inside filtered "
@@ -8488,7 +8488,7 @@ class TestLogAliasPreservation:
 
     @pytest.mark.parametrize("dialect", sorted(_LOG10_NATIVE_DIALECTS))
     async def test_log10_in_arithmetic_measure_is_preserved(
-        self, dialect: str, log_model: SlayerDataset,
+        self, dialect: str, log_dataset: SlayerDataset,
     ) -> None:
         """Arithmetic that mixes a log10 column-derived measure with COUNT(*). Pins that the rewrite survives the arithmetic enrichment path."""
         gen = SQLGenerator(dialect=dialect)
@@ -8496,7 +8496,7 @@ class TestLogAliasPreservation:
             population="orders",
             metrics=[DatasetMetric(expression="max(log_amount) / count(*)", name="ratio")],
         )
-        sql = await _generate(generator=gen, query=query, model=log_model)
+        sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         upper_no_ws = "".join(sql.upper().split())
         assert "LOG10(ORDERS.AMOUNT)" in upper_no_ws, (
             f"{dialect}: expected log10(amount) inside arithmetic measure:\n{sql}"
@@ -8505,7 +8505,7 @@ class TestLogAliasPreservation:
 
     @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
     async def test_log_with_non_alias_base_unchanged(
-        self, dialect: str, log_model: SlayerDataset,
+        self, dialect: str, log_dataset: SlayerDataset,
     ) -> None:
         """Negative test: ``log(3, amount)`` (literal base ≠ 10/2) must keep the standard 2-arg form. The rewrite is scoped to bases 10 and 2 only."""
         gen = SQLGenerator(dialect=dialect)
@@ -8513,7 +8513,7 @@ class TestLogAliasPreservation:
             population="orders",
             metrics=[DatasetMetric(expression="max(log3_amount)")],
         )
-        sql = await _generate(generator=gen, query=query, model=log_model)
+        sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         upper_no_ws = "".join(sql.upper().split())
         # Must NOT have invented a single-arg LOG3(...) function.
         assert "LOG3(" not in upper_no_ws, (
@@ -8527,7 +8527,7 @@ class TestLogAliasPreservation:
 
     @pytest.mark.parametrize("dialect", TestMultiDialectGeneration.ALL_DIALECTS)
     async def test_ln_unchanged(
-        self, dialect: str, log_model: SlayerDataset,
+        self, dialect: str, log_dataset: SlayerDataset,
     ) -> None:
         """``ln(x)`` lives under a separate sqlglot AST node (``exp.Ln``); the rewrite must not affect it."""
         gen = SQLGenerator(dialect=dialect)
@@ -8535,7 +8535,7 @@ class TestLogAliasPreservation:
             population="orders",
             metrics=[DatasetMetric(expression="max(ln_amount)")],
         )
-        sql = await _generate(generator=gen, query=query, model=log_model)
+        sql = await _generate(generator=gen, query=query, dataset=log_dataset)
         # T-SQL has no LN — sqlglot transpiles to LOG(x). Every other dialect keeps LN(...). We only assert the rewrite did not invent something.
         assert "LN10(" not in sql.upper()
         assert "LN2(" not in sql.upper()
@@ -8545,7 +8545,7 @@ class TestLogAliasPreservation:
 
 
 @pytest.fixture
-def planets_model() -> SlayerDataset:
+def planets_dataset() -> SlayerDataset:
     """Model with a Column.sql containing a window function (top-N rank pattern)."""
     return SlayerDataset(
         name="planets",
@@ -8568,7 +8568,7 @@ class TestWindowFunctionInFilter:
     """A query filter that references a ``Column`` whose ``sql`` contains a window function (``OVER (...)``) no longer auto-promotes to a post-aggregation outer WHERE. The rank-family transforms (``rank`` / ``percent_rank`` / ``dense_rank`` / ``ntile``) cover top-N filtering in pure DSL, so the escape hatch is redundant. The engine raises a clear error directing the user to those transforms or to a multi-stage source_queries model."""
 
     async def test_filter_on_windowed_column_raises(
-        self, generator: SQLGenerator, planets_model: SlayerDataset,
+        self, generator: SQLGenerator, planets_dataset: SlayerDataset,
     ) -> None:
         """Filtering on a Column whose sql contains a window function raises with an actionable message at enrichment time."""
         query = SlayerQuery(
@@ -8577,7 +8577,7 @@ class TestWindowFunctionInFilter:
             filter=["rn <= 3"],
         )
         with pytest.raises(ValueError) as excinfo:
-            await _generate(generator=generator, query=query, model=planets_model)
+            await _generate(generator=generator, query=query, dataset=planets_dataset)
         msg = str(excinfo.value).lower()
         assert "window function" in msg or "rank" in msg, (
             f"Expected the message to mention 'window function' and/or "
@@ -8585,14 +8585,14 @@ class TestWindowFunctionInFilter:
         )
 
     async def test_select_only_on_windowed_column_unchanged(
-        self, generator: SQLGenerator, planets_model: SlayerDataset,
+        self, generator: SQLGenerator, planets_dataset: SlayerDataset,
     ) -> None:
         """A windowed Column.sql is still legal as a *projection* — only as a filter target does it now error."""
         query = SlayerQuery(
             population="planets",
             dimensions=["name", "rn"],
         )
-        sql = await _generate(generator=generator, query=query, model=planets_model)
+        sql = await _generate(generator=generator, query=query, dataset=planets_dataset)
         assert "AS _filtered" not in sql, (
             f"No post-filter wrap should be introduced when there is no "
             f"window filter.\nsql:\n{sql}"
@@ -8606,7 +8606,7 @@ class TestCastEmissionColumn:
     """``Column.datatype`` declares the result type of the column expression; the generator wraps non-bare ``Column.sql`` in ``CAST(... AS <type>)``. Bare identifiers and ``sql=None`` paths are NOT wrapped (trust DB schema + sqlglot). ``DataType.TEXT`` is a no-op wrapper (cosmetic)."""
 
     @pytest.fixture
-    def items_model_factory(self):
+    def items_dataset_factory(self):
         def make(*, blob_type: DataType) -> SlayerDataset:
             return SlayerDataset(
                 name="items",
@@ -8624,16 +8624,16 @@ class TestCastEmissionColumn:
 
         return make
 
-    async def test_double_wraps_json_extract_postgres(self, items_model_factory) -> None:
-        model = items_model_factory(blob_type=DataType.DOUBLE)
+    async def test_double_wraps_json_extract_postgres(self, items_dataset_factory) -> None:
+        model = items_dataset_factory(blob_type=DataType.DOUBLE)
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(population="items", dimensions=[FieldRef(name="x")])
         sql = await _generate(gen, query, model)
         assert "CAST(JSON_EXTRACT(" in _norm(sql).upper() or "CAST(JSON" in _norm(sql).upper()
         assert "DOUBLE" in sql.upper()
 
-    async def test_double_wraps_json_extract_sqlite(self, items_model_factory) -> None:
-        model = items_model_factory(blob_type=DataType.DOUBLE)
+    async def test_double_wraps_json_extract_sqlite(self, items_dataset_factory) -> None:
+        model = items_dataset_factory(blob_type=DataType.DOUBLE)
         gen = SQLGenerator(dialect="sqlite")
         query = SlayerQuery(population="items", dimensions=[FieldRef(name="x")])
         sql = await _generate(gen, query, model)
@@ -8657,33 +8657,33 @@ class TestCastEmissionColumn:
         assert "CAST(" in sql.upper()
         assert "INTEGER" in sql.upper()
 
-    async def test_boolean_wraps_non_bare(self, items_model_factory) -> None:
-        model = items_model_factory(blob_type=DataType.BOOLEAN)
+    async def test_boolean_wraps_non_bare(self, items_dataset_factory) -> None:
+        model = items_dataset_factory(blob_type=DataType.BOOLEAN)
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(population="items", dimensions=[FieldRef(name="x")])
         sql = await _generate(gen, query, model)
         assert "CAST(" in sql.upper()
         assert "BOOLEAN" in sql.upper()
 
-    async def test_timestamp_wraps_non_bare(self, items_model_factory) -> None:
-        model = items_model_factory(blob_type=DataType.TIMESTAMP)
+    async def test_timestamp_wraps_non_bare(self, items_dataset_factory) -> None:
+        model = items_dataset_factory(blob_type=DataType.TIMESTAMP)
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(population="items", dimensions=[FieldRef(name="x")])
         sql = await _generate(gen, query, model)
         assert "CAST(" in sql.upper()
         assert "TIMESTAMP" in sql.upper()
 
-    async def test_date_wraps_non_bare(self, items_model_factory) -> None:
-        model = items_model_factory(blob_type=DataType.DATE)
+    async def test_date_wraps_non_bare(self, items_dataset_factory) -> None:
+        model = items_dataset_factory(blob_type=DataType.DATE)
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(population="items", dimensions=[FieldRef(name="x")])
         sql = await _generate(gen, query, model)
         assert "CAST(" in sql.upper()
         assert " DATE" in sql.upper()
 
-    async def test_text_skips_cast(self, items_model_factory) -> None:
+    async def test_text_skips_cast(self, items_dataset_factory) -> None:
         """TEXT is the no-cast type — emission is unchanged from today."""
-        model = items_model_factory(blob_type=DataType.TEXT)
+        model = items_dataset_factory(blob_type=DataType.TEXT)
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(population="items", dimensions=[FieldRef(name="x")])
         sql = await _generate(gen, query, model)
@@ -8821,7 +8821,7 @@ class TestCastEmissionMeasure:
     """``ModelMeasure.datatype`` (when set) wraps the aggregation expression in a final CAST. ``None`` (default) → no cast."""
 
     @pytest.fixture
-    def orders_model(self) -> SlayerDataset:
+    def orders_dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="orders",
             sql_table="public.orders",
@@ -8832,18 +8832,18 @@ class TestCastEmissionMeasure:
             ],
         )
 
-    async def test_measure_type_none_count_preserves_native_range(self, orders_model) -> None:
+    async def test_measure_type_none_count_preserves_native_range(self, orders_dataset) -> None:
         gen = SQLGenerator(dialect="sqlite")
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)", name="cnt")],  # type=None default
         )
-        sql = await _generate(generator=gen, query=query, model=orders_model)
+        sql = await _generate(generator=gen, query=query, dataset=orders_dataset)
         # INT remains the inferred metadata type, but must not narrow the backend's native count result unless the measure explicitly asks.
         assert 'COUNT(*) AS "ORDERS.CNT"' in sql.upper()
         assert "CAST(" not in sql.upper()
 
-    async def test_measure_type_double_wraps_outer_count(self, orders_model) -> None:
+    async def test_measure_type_double_wraps_outer_count(self, orders_dataset) -> None:
         gen = SQLGenerator(dialect="sqlite")
         query = SlayerQuery(
             population="orders",
@@ -8851,12 +8851,12 @@ class TestCastEmissionMeasure:
                 DatasetMetric(expression="count(*)", name="cnt", datatype=DataType.DOUBLE),
             ],
         )
-        sql = await _generate(gen, query, orders_model)
+        sql = await _generate(gen, query, orders_dataset)
         # SQLite: DOUBLE → REAL.
         assert "CAST(" in sql.upper()
         assert "REAL" in sql.upper()
 
-    async def test_measure_type_double_on_ratio(self, orders_model) -> None:
+    async def test_measure_type_double_on_ratio(self, orders_dataset) -> None:
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(
             population="orders",
@@ -8868,7 +8868,7 @@ class TestCastEmissionMeasure:
                 ),
             ],
         )
-        sql = await _generate(gen, query, orders_model)
+        sql = await _generate(gen, query, orders_dataset)
         # Outer CAST around the divided expression.
         assert "CAST(" in sql.upper()
         assert "DOUBLE" in sql.upper()
@@ -8878,7 +8878,7 @@ class TestCastEmissionNonBasePaths:
     """``ModelMeasure.datatype`` and ``Column.datatype`` must wrap aggregation expressions in CAST across every emission path — not just the base ``_generate_base()`` path. Covers windowed CTEs, isolated filtered measure CTEs, percentile/median/stat-agg/weighted-avg builders."""
 
     @pytest.fixture
-    def orders_model_for_window(self) -> SlayerDataset:
+    def orders_dataset_for_window(self) -> SlayerDataset:
         return SlayerDataset(
             name="orders",
             sql_table="public.orders",
@@ -8892,7 +8892,7 @@ class TestCastEmissionNonBasePaths:
         )
 
     async def test_windowed_sum_with_measure_type_wraps_in_cast(
-        self, orders_model_for_window: SlayerDataset,
+        self, orders_dataset_for_window: SlayerDataset,
     ) -> None:
         """Windowed sum CTE was previously emitting ``SUM(_src._w_value) AS alias`` with no CAST when the inline measure declared ``type=DataType.DOUBLE``."""
         gen = SQLGenerator(dialect="postgres")
@@ -8912,8 +8912,8 @@ class TestCastEmissionNonBasePaths:
                 ),
             ],
         )
-        orders_model_for_window.name = "orders_for_window"
-        sql = await _generate(gen, query, orders_model_for_window)
+        orders_dataset_for_window.name = "orders_for_window"
+        sql = await _generate(gen, query, orders_dataset_for_window)
         # The windowed CTE itself must contain the CAST around SUM(_src._w_value). Unified ``_cm_`` prefix, named after the canonical aggregate.
         assert "_cm_orders_for_window__revenue_sum_window_90d" in sql
         # CAST(SUM(...) AS DOUBLE) shape inside the windowed CTE.
@@ -8922,7 +8922,7 @@ class TestCastEmissionNonBasePaths:
         assert "DOUBLE" in norm
 
     async def test_windowed_sum_no_measure_type_casts_inferred_type(
-        self, orders_model_for_window: SlayerDataset,
+        self, orders_dataset_for_window: SlayerDataset,
     ) -> None:
         """With no EXPLICIT measure type, the windowed aggregation still CASTs on the type inferred from the source column (``revenue`` is ``DOUBLE``) — exactly as a plain aggregate does in the base path. A windowed sum and a plain sum of the same no-type measure must emit identical CAST behavior; the legacy explicit-only distinction no longer exists on the typed pipeline."""
         gen = SQLGenerator(dialect="postgres")
@@ -8938,8 +8938,8 @@ class TestCastEmissionNonBasePaths:
                 DatasetMetric(expression="sum(revenue, window='90d')", name="rev_90d"),
             ],
         )
-        orders_model_for_window.name = "orders_for_window2"
-        sql = await _generate(gen, query, orders_model_for_window)
+        orders_dataset_for_window.name = "orders_for_window2"
+        sql = await _generate(gen, query, orders_dataset_for_window)
         assert "_cm_orders_for_window2__revenue_sum_window_90d" in sql
         norm = _norm(sql).upper()
         # Inferred DOUBLE type drives a CAST around SUM(_src._w_value).
@@ -9018,7 +9018,7 @@ class TestStringHygieneDialectTranslation:
             ("clickhouse", "lowerUTF8(orders.status) = 'active'"),
         ],
     )
-    async def test_lower(self, orders_model: SlayerDataset, dialect: str, expected: str) -> None:
+    async def test_lower(self, orders_dataset: SlayerDataset, dialect: str, expected: str) -> None:
         query = SlayerQuery(
             population="orders",
             metrics=[DatasetMetric(expression="count(*)")],
@@ -9027,7 +9027,7 @@ class TestStringHygieneDialectTranslation:
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
             query=query,
-            model=orders_model,
+            dataset=orders_dataset,
         )
         assert expected in sql, f"{dialect}: {expected!r} not in {sql!r}"
 
@@ -9043,7 +9043,7 @@ class TestStringHygieneDialectTranslation:
         ],
     )
     async def test_instr_translates_per_dialect(
-        self, orders_model: SlayerDataset, dialect: str, expected: str,
+        self, orders_dataset: SlayerDataset, dialect: str, expected: str,
     ) -> None:
         query = SlayerQuery(
             population="orders",
@@ -9053,7 +9053,7 @@ class TestStringHygieneDialectTranslation:
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
             query=query,
-            model=orders_model,
+            dataset=orders_dataset,
         )
         assert expected in sql, f"{dialect}: {expected!r} not in {sql!r}"
 
@@ -9068,7 +9068,7 @@ class TestStringHygieneDialectTranslation:
         ],
     )
     async def test_substr_translates_per_dialect(
-        self, orders_model: SlayerDataset, dialect: str, expected: str,
+        self, orders_dataset: SlayerDataset, dialect: str, expected: str,
     ) -> None:
         query = SlayerQuery(
             population="orders",
@@ -9078,7 +9078,7 @@ class TestStringHygieneDialectTranslation:
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
             query=query,
-            model=orders_model,
+            dataset=orders_dataset,
         )
         assert expected in sql, f"{dialect}: {expected!r} not in {sql!r}"
 
@@ -9094,7 +9094,7 @@ class TestStringHygieneDialectTranslation:
         ],
     )
     async def test_concat_via_pipe_pipe_translates_per_dialect(
-        self, orders_model: SlayerDataset, dialect: str, expected_substring: str,
+        self, orders_dataset: SlayerDataset, dialect: str, expected_substring: str,
     ) -> None:
         query = SlayerQuery(
             population="orders",
@@ -9104,7 +9104,7 @@ class TestStringHygieneDialectTranslation:
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
             query=query,
-            model=orders_model,
+            dataset=orders_dataset,
         )
         assert expected_substring in sql, f"{dialect}: {expected_substring!r} not in {sql!r}"
 
@@ -9114,7 +9114,7 @@ class TestReplaceFunctionInPredicate:
 
     @pytest.mark.parametrize("dialect", ["sqlite", "mysql"])
     async def test_replace_in_query_filter(
-        self, orders_model: SlayerDataset, dialect: str,
+        self, orders_dataset: SlayerDataset, dialect: str,
     ) -> None:
         query = SlayerQuery(
             population="orders",
@@ -9124,7 +9124,7 @@ class TestReplaceFunctionInPredicate:
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
             query=query,
-            model=orders_model,
+            dataset=orders_dataset,
         )
         # Function-call form, not the broken `REPLACE (x, ...)` Command form.
         assert "REPLACE(" in sql.upper() or "replace(" in sql
@@ -9132,9 +9132,9 @@ class TestReplaceFunctionInPredicate:
 
     @pytest.mark.parametrize("dialect", ["sqlite", "mysql"])
     async def test_replace_in_column_filter(
-        self, orders_model: SlayerDataset, dialect: str,
+        self, orders_dataset: SlayerDataset, dialect: str,
     ) -> None:
-        orders_model.fields.append(
+        orders_dataset.fields.append(
             DatasetField(
                 name="cleaned_amt",
                 sql="amount",
@@ -9149,14 +9149,14 @@ class TestReplaceFunctionInPredicate:
         sql = await _generate(
             generator=SQLGenerator(dialect=dialect),
             query=query,
-            model=orders_model,
+            dataset=orders_dataset,
         )
         # Function-call form, not Command.
         assert "REPLACE(" in sql.upper() or "replace(" in sql
         assert "REPLACE (" not in sql.upper()
 
 
-def _build_score_model_dev1539(*, name: str = "m", score_sql: str) -> SlayerDataset:
+def _build_score_dataset_dev1539(*, name: str = "m", score_sql: str) -> SlayerDataset:
     """Test helper: build a minimal model with four numeric columns (``a, b, c, d``) and a derived ``score`` column whose ``sql`` is the multi-term expression under test. Used by both the local- branch positive test and the SQLite integration test so the model setup boilerplate isn't duplicated across files (Sonar ``new_duplicated_lines_density``)."""
     return SlayerDataset(
         name=name,
@@ -9173,7 +9173,7 @@ def _build_score_model_dev1539(*, name: str = "m", score_sql: str) -> SlayerData
     )
 
 
-def _build_backslash_risk_model_dev1539(*, name: str = "m") -> tuple[SlayerDataset, str]:
+def _build_backslash_risk_dataset_dev1539(*, name: str = "m") -> tuple[SlayerDataset, str]:
     """Test helper: build a model with a ``risk`` column whose ``sql`` contains a literal double-backslash inside a string literal. Returns ``(model, double_backslash_literal)``. Used by both the WHERE-side and HAVING-side backslash-safety tests."""
     backslash = chr(92)
     double_bs = backslash * 2  # SQL literal `'\\'` (two backslashes)
@@ -9232,7 +9232,7 @@ class TestFilterOuterParenWrapDev1539:
         self, generator: SQLGenerator,
     ) -> None:
         """A query filter on a Column whose ``sql`` is a multi-term arithmetic expression must surface the inlined body wrapped in outer parens — ``(a + b) > 7``, not ``a + b > 7``."""
-        model = _build_score_model_dev1539(
+        model = _build_score_dataset_dev1539(
             score_sql="a * 0.4 + b * 0.3 + c * 0.1 + d * 0.2",
         )
         query = SlayerQuery(
@@ -9262,7 +9262,7 @@ class TestFilterOuterParenWrapDev1539:
         )
 
     async def test_filter_inlines_bare_column_no_parens(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """When a Column is a bare identifier (``sql == name`` or sql is a single identifier), no extra parens are added around the qualified reference. ``WHERE orders.customer_id > 100``, not ``WHERE (orders.customer_id) > 100``."""
         query = SlayerQuery(
@@ -9270,7 +9270,7 @@ class TestFilterOuterParenWrapDev1539:
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["customer_id > 100"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         norm = _norm(sql)
         assert "orders.customer_id > 100" in norm
         assert "(orders.customer_id) > 100" not in norm, (
@@ -9312,7 +9312,7 @@ class TestFilterOuterParenWrapDev1539:
         )
 
     async def test_dsl_compare_lhs_binop_wrapped(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """A DSL filter ``a + b > 7`` must emit ``(a + b) > 7`` so the precedence of the multi-term arithmetic LHS is explicit by inspection, not only by SQL operator-precedence rules."""
         # Use two bare-name columns so the LHS is a Compare(BinOp(...), 7) and the BinOp wrap applies at the DSL layer, not at column inlining (both columns inline as bare qualified identifiers).
@@ -9321,7 +9321,7 @@ class TestFilterOuterParenWrapDev1539:
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["customer_id + id > 7"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         norm = _norm(sql)
         m = _re.search(
             r"\(\s*orders\.customer_id\s*\+\s*orders\.id\s*\)\s*>\s*7",
@@ -9332,7 +9332,7 @@ class TestFilterOuterParenWrapDev1539:
         )
 
     async def test_dsl_compare_rhs_binop_wrapped(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """A DSL filter ``x > a + b`` must emit ``x > (a + b)``."""
         query = SlayerQuery(
@@ -9340,7 +9340,7 @@ class TestFilterOuterParenWrapDev1539:
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["customer_id > id + 100"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         norm = _norm(sql)
         m = _re.search(
             r"orders\.customer_id\s*>\s*\(\s*orders\.id\s*\+\s*100\s*\)",
@@ -9351,7 +9351,7 @@ class TestFilterOuterParenWrapDev1539:
         )
 
     async def test_dsl_compare_bare_lhs_not_wrapped(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """A DSL filter with a bare Name LHS (``x > 7``) must not gain spurious parens: ``WHERE orders.x > 7``, not ``WHERE (orders.x) > 7``."""
         query = SlayerQuery(
@@ -9359,13 +9359,13 @@ class TestFilterOuterParenWrapDev1539:
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["customer_id > 7"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         norm = _norm(sql)
         assert "orders.customer_id > 7" in norm
         assert "(orders.customer_id) > 7" not in norm
 
     async def test_dsl_compare_call_lhs_not_wrapped(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """A DSL filter whose LHS is a function call (``lower(status) == 'a'``) must not gain spurious parens around the call. Only ``BinOp`` and ``BoolOp`` LHSes get wrapped."""
         query = SlayerQuery(
@@ -9373,7 +9373,7 @@ class TestFilterOuterParenWrapDev1539:
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["lower(status) == 'active'"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         norm = _norm(sql)
         # LOWER(...) = 'active', not (LOWER(...)) = 'active'.
         assert _re.search(r"LOWER\([^)]*\)\s*=\s*'active'", norm, _re.IGNORECASE), (
@@ -9384,7 +9384,7 @@ class TestFilterOuterParenWrapDev1539:
         )
 
     async def test_dsl_compare_lhs_boolop_wrapped(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """A DSL filter whose LHS is an ``ast.BoolOp`` (rare but valid) — e.g. ``(a and b) > 7`` — must emit ``(a AND b) > 7``. Covers the BoolOp half of the Site 2 wrap rule symmetrically with the BinOp half."""
         # NB: customer_id and id are bare-identifier columns, so the only wrap on emit is the DSL-level BoolOp wrap under test.
@@ -9393,7 +9393,7 @@ class TestFilterOuterParenWrapDev1539:
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["(customer_id and id) > 0"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         norm = _norm(sql)
         m = _re.search(
             # A boolean compared with a number reads as its integer; the cast delimits it.
@@ -9406,7 +9406,7 @@ class TestFilterOuterParenWrapDev1539:
         )
 
     async def test_dsl_compare_rhs_boolop_wrapped(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """The RHS-side counterpart: ``x == (a or b)`` must emit ``x = (a OR b)``."""
         query = SlayerQuery(
@@ -9414,7 +9414,7 @@ class TestFilterOuterParenWrapDev1539:
             metrics=[DatasetMetric(expression="count(*)")],
             filter=["customer_id == (id or 0)"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         norm = _norm(sql)
         m = _re.search(
             r"orders\.customer_id\s*=\s*CAST\(\s*orders\.id\s+OR\s+0\s+AS\s+INT\s*\)",
@@ -9452,7 +9452,7 @@ class TestFilterOuterParenWrapDev1539:
         self, generator: SQLGenerator,
     ) -> None:
         """Site 3 backslash safety: HAVING measure-substitution must use lambda-replacement in ``re.sub`` so backslashes inside the aggregated value's source SQL aren't silently halved when the emitted ``agg_sql`` is substituted into the HAVING text."""
-        model, double_bs = _build_backslash_risk_model_dev1539()
+        model, double_bs = _build_backslash_risk_dataset_dev1539()
         query = SlayerQuery(
             population="m",
             dimensions=[FieldRef(name="id")],
@@ -9522,7 +9522,7 @@ class TestFilterOuterParenWrapDev1539:
         )
 
     async def test_having_simple_measure_not_wrapped(
-        self, generator: SQLGenerator, orders_model: SlayerDataset,
+        self, generator: SQLGenerator, orders_dataset: SlayerDataset,
     ) -> None:
         """A HAVING filter on a simple single-aggregation measure (``sum(revenue) > 0``) must NOT gain spurious outer parens: ``HAVING SUM(...) > 0``, not ``HAVING (SUM(...)) > 0``. Only multi-term ``Binary``/``Connector`` ``agg_expr`` shapes warrant the wrap."""
         query = SlayerQuery(
@@ -9531,7 +9531,7 @@ class TestFilterOuterParenWrapDev1539:
             metrics=[DatasetMetric(expression="sum(revenue)")],
             filter=["revenue_sum > 0"],
         )
-        sql = await _generate(generator, query, orders_model)
+        sql = await _generate(generator, query, orders_dataset)
         norm = _norm(sql)
         assert "HAVING" in norm
         having = norm.split("HAVING", 1)[1]
@@ -9548,7 +9548,7 @@ class TestFilterOuterParenWrapDev1539:
         self, generator: SQLGenerator,
     ) -> None:
         """``re.sub(pattern, repl, source)`` interprets backslashes in the replacement string as escape sequences — a literal ``\\\\`` in the inlined Column.sql gets silently halved to ``\\`` in the emitted WHERE. Using ``lambda _: repl`` for the replacement side-steps the bug. This test pins the fix."""
-        model, double_bs = _build_backslash_risk_model_dev1539()
+        model, double_bs = _build_backslash_risk_dataset_dev1539()
         query = SlayerQuery(
             population="m",
             metrics=[DatasetMetric(expression="count(*)")],
@@ -9734,7 +9734,7 @@ class TestFilterOuterParenWrapDev1539:
 class TestBigQueryAliasMangling:
     """BigQuery rejects column names containing dots — SLayer's universal ``<model>.<column>`` alias convention has to be mangled to ``___`` on the way out (and reversed on the way back at the engine)."""
 
-    async def test_no_dotted_aliases_in_bigquery_sql(self, orders_model: SlayerDataset) -> None:
+    async def test_no_dotted_aliases_in_bigquery_sql(self, orders_dataset: SlayerDataset) -> None:
         gen = SQLGenerator(dialect="bigquery")
         query = SlayerQuery.model_validate({
             "population": "orders",
@@ -9742,7 +9742,7 @@ class TestBigQueryAliasMangling:
             "dimensions": [FieldRef(name="status")],
             "order": [{"field": "count", "direction": "desc"}],
         })
-        sql = await _generate(gen, query, orders_model)
+        sql = await _generate(gen, query, orders_dataset)
         # Every backtick-quoted column alias must not contain a dot (BigQuery rejects it). Scope to AS `...` and ORDER/GROUP BY so dotted table FQ refs (backticked segments) don't trip the check.
         ALIAS_PATTERNS = [
             r"\bAS\s+`([^`]+)`",            # SELECT expr AS `<alias>`
@@ -9761,7 +9761,7 @@ class TestBigQueryAliasMangling:
         # Cross-check the mangled separator made it through.
         assert "___" in sql, f"expected ___ alias mangling in:\n{sql}"
 
-    async def test_other_dialects_keep_dotted_aliases(self, orders_model: SlayerDataset) -> None:
+    async def test_other_dialects_keep_dotted_aliases(self, orders_dataset: SlayerDataset) -> None:
         # Mangling is bigquery-only; postgres / sqlite / etc. must keep the dotted alias form (which clients and ORDER BY resolvers depend on).
         gen = SQLGenerator(dialect="postgres")
         query = SlayerQuery(
@@ -9769,12 +9769,12 @@ class TestBigQueryAliasMangling:
             metrics=[DatasetMetric(expression="count(*)")],
             dimensions=[FieldRef(name="status")],
         )
-        sql = await _generate(gen, query, orders_model)
+        sql = await _generate(gen, query, orders_dataset)
         assert '"orders._count"' in sql
         assert "___" not in sql
 
     async def test_inner_stage_render_also_mangles_aliases(
-        self, orders_model: SlayerDataset,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """Inner-stage renders (``source_queries`` stages behind a query-backed model) must mangle aliases too — otherwise the outer stage's references to inner-stage columns would mismatch what the inner stage actually emits."""
         stages_model = SlayerDataset(
@@ -9804,7 +9804,7 @@ class TestBigQueryAliasMangling:
             metrics=[DatasetMetric(expression="sum(revenue_sum_sum)")],
         )
         sql = await _generate(
-            gen, query, orders_model, extra_models=[stages_model],
+            gen, query, orders_dataset, extra_datasets=[stages_model],
         )
         # The inner stage keeps every alias (so the outer stage can reach them); all aliases must be mangled.
         for m in _re.findall(r"`([^`]+)`", sql):
@@ -9821,7 +9821,7 @@ class TestBigQueryAliasMangling:
             )
 
     async def test_rewrite_mangles_the_final_public_projection(
-        self, orders_model: SlayerDataset,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """On BigQuery, the FINAL emitted SQL's public projection carries ``___``-mangled aliases — the rewrite ran on SQL whose projection had already been decided."""
         query = SlayerQuery(
@@ -9831,7 +9831,7 @@ class TestBigQueryAliasMangling:
             # Filter using a windowed transform creates a hidden hoisted column, so the public projection is a real narrowing.
             filter=["dense_rank(sum(revenue), direction='desc') <= 5"],
         )
-        async with _persist_and_engine(orders_model, ds_type="bigquery") as engine:
+        async with _persist_and_engine(orders_dataset, ds_type="bigquery") as engine:
             resp = await engine.execute(query=query, dry_run=True)
         sql = resp.sql or ""
         # The outermost SELECT is exactly the public projection, mangled.
@@ -10119,7 +10119,7 @@ class TestWindowedMeasureGuards:
     """Windowed measures must emit a ``_wm_`` range-join CTE and RAISE loudly on shapes the primitive does not support, rather than silently degrade to a plain grouped aggregate. Today the typed pipeline drops ``window=`` silently, so every guard is pinned strict-xfail to Stage 10."""
 
     @pytest.fixture
-    def orders_model(self) -> SlayerDataset:
+    def orders_dataset(self) -> SlayerDataset:
         return SlayerDataset(
             name="orders", sql_table="public.orders", data_source="test",
             fields=[
@@ -10130,25 +10130,25 @@ class TestWindowedMeasureGuards:
             ],
         )
 
-    async def test_windowed_non_sum_avg_raises(self, orders_model: SlayerDataset) -> None:
+    async def test_windowed_non_sum_avg_raises(self, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"expression": "min(revenue, window='30d')", "name": "rev_w"}],
         })
         # window= is no longer restricted to sum/avg; min renders.
-        sql = await _engine_generate(query=query, model=orders_model)
+        sql = await _engine_generate(query=query, dataset=orders_dataset)
         assert_scope_closed(sql, dialect="postgres")
         assert "__regroup__" not in sql
 
-    async def test_windowed_no_time_dimension_raises(self, orders_model: SlayerDataset) -> None:
+    async def test_windowed_no_time_dimension_raises(self, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "dimensions": [FieldRef(name="status")],
             "metrics": [{"expression": "sum(revenue, window='30d')", "name": "rev_w"}],
         })
         with pytest.raises(ValueError, match="could not resolve its time dimension"):
-            await _engine_generate(query=query, model=orders_model)
+            await _engine_generate(query=query, dataset=orders_dataset)
 
     async def test_windowed_cross_model_raises(self, tmp_path) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path))
@@ -10181,8 +10181,8 @@ class TestWindowedMeasureGuards:
         with pytest.raises(ValueError, match="attributable from"):
             await engine.execute(query, dry_run=True)
 
-    async def test_windowed_with_transform_raises(self, orders_model: SlayerDataset) -> None:
-        orders_model.default_time_dimension = "created_at"
+    async def test_windowed_with_transform_raises(self, orders_dataset: SlayerDataset) -> None:
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery(
             population="orders",
             time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
@@ -10192,34 +10192,34 @@ class TestWindowedMeasureGuards:
             ],
         )
         # A windowed measure coexisting with a transform sibling now renders; the SQL must be scope-closed with __regroup__ lowered away.
-        sql = await _engine_generate(query=query, model=orders_model)
+        sql = await _engine_generate(query=query, dataset=orders_dataset)
         assert_scope_closed(sql, dialect="postgres")
         assert "__regroup__" not in sql
 
-    async def test_windowed_as_transform_input_raises(self, orders_model: SlayerDataset) -> None:
-        orders_model.default_time_dimension = "created_at"
+    async def test_windowed_as_transform_input_raises(self, orders_dataset: SlayerDataset) -> None:
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"expression": "cumsum(sum(revenue, window='90d'))", "name": "cum_w"}],
         })
         # A windowed aggregate feeding a transform now renders instead of raising; the emitted SQL must be scope-closed and fully lowered (no ``__regroup__`` sentinel).
-        sql = await _engine_generate(query=query, model=orders_model)
+        sql = await _engine_generate(query=query, dataset=orders_dataset)
         assert_scope_closed(sql, dialect="postgres")
         assert "__regroup__" not in sql
 
-    async def test_windowed_in_arithmetic_raises(self, orders_model: SlayerDataset) -> None:
+    async def test_windowed_in_arithmetic_raises(self, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"expression": "sum(revenue, window='90d') / 2", "name": "half_w"}],
         })
         # A windowed aggregate inside scalar arithmetic now renders instead of raising; scope-closed and fully lowered.
-        sql = await _engine_generate(query=query, model=orders_model)
+        sql = await _engine_generate(query=query, dataset=orders_dataset)
         assert_scope_closed(sql, dialect="postgres")
         assert "__regroup__" not in sql
 
-    async def test_windowed_filter_only_hidden_raises(self, orders_model: SlayerDataset) -> None:
+    async def test_windowed_filter_only_hidden_raises(self, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
@@ -10227,11 +10227,11 @@ class TestWindowedMeasureGuards:
             "filter": ["sum(revenue, window='90d') > 100"],
         })
         # A filter-only (hidden) windowed aggregate now renders instead of raising; scope-closed and fully lowered.
-        sql = await _engine_generate(query=query, model=orders_model)
+        sql = await _engine_generate(query=query, dataset=orders_dataset)
         assert_scope_closed(sql, dialect="postgres")
         assert "__regroup__" not in sql
 
-    async def test_windowed_mixed_aggregate_filter_raises(self, orders_model: SlayerDataset) -> None:
+    async def test_windowed_mixed_aggregate_filter_raises(self, orders_dataset: SlayerDataset) -> None:
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
@@ -10239,14 +10239,14 @@ class TestWindowedMeasureGuards:
             "filter": ["sum(revenue, window='90d') > 100 and sum(revenue) > 50"],
         })
         # A filter mixing a windowed and a plain aggregate now renders instead of raising; scope-closed and fully lowered.
-        sql = await _engine_generate(query=query, model=orders_model)
+        sql = await _engine_generate(query=query, dataset=orders_dataset)
         assert_scope_closed(sql, dialect="postgres")
         assert "__regroup__" not in sql
 
 
     @pytest.mark.parametrize("bad", ["90x", "d90", "9z"])
     async def test_windowed_malformed_duration_raises(
-        self, bad: str, orders_model: SlayerDataset,
+        self, bad: str, orders_dataset: SlayerDataset,
     ) -> None:
         """A malformed compact duration must raise a clear ``ValueError`` at plan time, not silently degrade."""
         query = SlayerQuery.model_validate({
@@ -10255,9 +10255,9 @@ class TestWindowedMeasureGuards:
             "metrics": [{"expression": f"sum(revenue, window='{bad}')", "name": "rev_w"}],
         })
         with pytest.raises(ValueError, match=r"Use syntax like '1y2m3w5d6h7min8s'"):
-            await _engine_generate(query=query, model=orders_model)
+            await _engine_generate(query=query, dataset=orders_dataset)
 
-    async def test_windowed_empty_duration_raises(self, orders_model: SlayerDataset) -> None:
+    async def test_windowed_empty_duration_raises(self, orders_dataset: SlayerDataset) -> None:
         """An empty window duration must raise the distinct empty-duration error."""
         query = SlayerQuery.model_validate({
             "population": "orders",
@@ -10265,9 +10265,9 @@ class TestWindowedMeasureGuards:
             "metrics": [{"expression": "sum(revenue, window='')", "name": "rev_w"}],
         })
         with pytest.raises(ValueError, match="cannot be empty"):
-            await _engine_generate(query=query, model=orders_model)
+            await _engine_generate(query=query, dataset=orders_dataset)
 
-    async def test_windowed_non_string_duration_raises(self, orders_model: SlayerDataset) -> None:
+    async def test_windowed_non_string_duration_raises(self, orders_dataset: SlayerDataset) -> None:
         """Codex C4: a non-string ``window`` value (e.g. ``window=90``) must be normalized to a ``ValueError`` — never a raw ``TypeError`` from feeding a number to the compact-duration regex."""
         query = SlayerQuery.model_validate({
             "population": "orders",
@@ -10275,7 +10275,7 @@ class TestWindowedMeasureGuards:
             "metrics": [{"expression": "sum(revenue, window=90)", "name": "rev_w"}],
         })
         with pytest.raises(ValueError):
-            await _engine_generate(query=query, model=orders_model)
+            await _engine_generate(query=query, dataset=orders_dataset)
 
     async def test_custom_aggregation_with_window_raises(self) -> None:
         """A custom model-level aggregation accepts ``window=`` like any
@@ -10294,22 +10294,22 @@ class TestWindowedMeasureGuards:
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"expression": "myagg(amount_col, window='90d')", "name": "w"}],
         })
-        sql = await _engine_generate(query=query, model=model)
+        sql = await _engine_generate(query=query, dataset=model)
         assert_scope_closed(sql, dialect="postgres")
         assert "__regroup__" not in sql
 
     async def test_windowed_transform_input_precedence_not_selected(
-        self, orders_model: SlayerDataset,
+        self, orders_dataset: SlayerDataset,
     ) -> None:
         """Codex C1: a windowed aggregate nested in a transform interns as a HIDDEN dependency slot, so the transform guard (G4) must win over the hidden-slot guard (G6) — the error says ``transform``, never ``selected``."""
-        orders_model.default_time_dimension = "created_at"
+        orders_dataset.default_time_dimension = "created_at"
         query = SlayerQuery.model_validate({
             "population": "orders",
             "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
             "metrics": [{"expression": "cumsum(sum(revenue, window='90d'))", "name": "cum_w"}],
         })
         # The G4/G6 guards are gone — a windowed aggregate nested in a transform now renders; the SQL must be scope-closed and fully lowered.
-        sql = await _engine_generate(query=query, model=orders_model)
+        sql = await _engine_generate(query=query, dataset=orders_dataset)
         assert_scope_closed(sql, dialect="postgres")
         assert "__regroup__" not in sql
 
@@ -10447,9 +10447,9 @@ class TestWindowedMeasureGuards:
             "metrics": [{"expression": "sum(revenue, window='90d')", "name": "rev_w"}],
         })
         with pytest.raises(ValueError, match="could not resolve its time dimension"):
-            await _engine_generate(query=query, model=model)
+            await _engine_generate(query=query, dataset=model)
 
-    async def test_windowed_mixed_row_filter_raises(self, orders_model: SlayerDataset) -> None:
+    async def test_windowed_mixed_row_filter_raises(self, orders_dataset: SlayerDataset) -> None:
         """Codex round 5: a single filter mixing a windowed measure with a ROW predicate (not just a plain aggregate — G7's case) is reclassified whole to POST, so the row part would neither filter pre-aggregation nor resolve against an unprojected ``_base`` column. Reject it at plan time."""
         query = SlayerQuery.model_validate({
             "population": "orders",
@@ -10458,6 +10458,6 @@ class TestWindowedMeasureGuards:
             "filter": ["sum(revenue, window='90d') > 100 and status = 'active'"],
         })
         # A filter mixing a windowed aggregate with a row predicate now renders instead of raising; scope-closed and fully lowered.
-        sql = await _engine_generate(query=query, model=orders_model)
+        sql = await _engine_generate(query=query, dataset=orders_dataset)
         assert_scope_closed(sql, dialect="postgres")
         assert "__regroup__" not in sql

@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import open_connection
 
-from tests._dev1739_fixtures import dev1739_models, _seed_duckdb, _seed_sqlite
+from tests._dev1739_fixtures import dev1739_datasets, _seed_duckdb, _seed_sqlite
 from tests._engine_helpers import seeded_exec_engine
 from tests._dev1837_fixtures import (
     DIM_FAMILY_DIMS,
@@ -319,7 +319,7 @@ async def make_law_engine(
         pytest.importorskip("duckdb")
     seed = _seed_sqlite if dialect == "sqlite" else _seed_duckdb
     async with seeded_exec_engine(
-        dialect=dialect, seed=seed, models=dev1739_models(),
+        dialect=dialect, seed=seed, datasets=dev1739_datasets(),
     ) as (engine, db_path):
         # Copy the oracle right after entering — engine connections are lazy, so
         # the file is not yet locked (DuckDB rejects a second config on it).

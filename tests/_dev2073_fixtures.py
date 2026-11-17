@@ -101,8 +101,8 @@ def run_script(*, db_path: str, dialect: str, script: str) -> None:
         con.executescript(script)
 
 
-def edge_key(model: str, join: DatasetRelationship) -> EdgeKey:
-    return (model, join.to, tuple((p[0], p[1]) for p in join.join_pairs))
+def edge_key(dataset: str, join: DatasetRelationship) -> EdgeKey:
+    return (dataset, join.to, tuple((p[0], p[1]) for p in join.join_pairs))
 
 
 class Live(BaseModel):
@@ -174,8 +174,8 @@ async def live(script: str, *, dialect: str = "sqlite") -> AsyncGenerator[Live]:
             await workspace.aclose()
 
 
-def addition_for(result: IdempotentIngestResult, model_name: str) -> DatasetAddition:
-    return next(a for a in result.additions if a.dataset_name == model_name)
+def addition_for(result: IdempotentIngestResult, dataset_name: str) -> DatasetAddition:
+    return next(a for a in result.additions if a.dataset_name == dataset_name)
 
 
 # Hand-built orders → addresses parallel pair, for surfaces that need no live database.
@@ -202,7 +202,7 @@ def orders_with(*joins: DatasetRelationship) -> SlayerDataset:
     )
 
 
-def addresses_model() -> SlayerDataset:
+def addresses_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="addresses", data_source=DS, sql_table="addresses",
         fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -219,7 +219,7 @@ def unnamed_pair() -> tuple[DatasetRelationship, DatasetRelationship]:
 
 
 @contextlib.asynccontextmanager
-async def model_store(*models: SlayerDataset) -> AsyncGenerator[YAMLStorage]:
+async def dataset_store(*models: SlayerDataset) -> AsyncGenerator[YAMLStorage]:
     """A storage holding ``datasets`` under an in-memory SQLite datasource."""
     with tempfile.TemporaryDirectory() as tmp:
         store = YAMLStorage(base_dir=os.path.join(tmp, "store"))
@@ -229,7 +229,7 @@ async def model_store(*models: SlayerDataset) -> AsyncGenerator[YAMLStorage]:
         yield store
 
 
-async def stored_joins(storage: YAMLStorage, model: str = "orders") -> list[tuple[str | None, list[list[str]]]]:
-    stored = await storage.get_dataset(model, data_source=DS)
+async def stored_joins(storage: YAMLStorage, dataset: str = "orders") -> list[tuple[str | None, list[list[str]]]]:
+    stored = await storage.get_dataset(dataset, data_source=DS)
     assert stored is not None
     return [(j.name, j.join_pairs) for j in stored.relationships]

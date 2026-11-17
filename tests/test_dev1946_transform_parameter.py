@@ -28,13 +28,13 @@ from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1840_fixtures import (
     bundle as orders_bundle,
-    dev1840_models,
+    dev1840_datasets,
     gen as orders_gen,
     make_exec_engine as make_orders_engine,
 )
 from tests._dev1841_fixtures import DatasetMetric, associated_warnings, broadcast_warnings
 from tests._dev1847_fixtures import (
-    dev1847_models,
+    dev1847_datasets,
     gen as sales_gen,
     make_exec_engine as make_sales_engine,
     sales_q,
@@ -94,8 +94,8 @@ from tests._dev1946_fixtures import (
 AMOUNT = DatasetMetric(expression="sum(amount)", name="a")
 
 
-def _m(formula: str) -> DatasetMetric:
-    return DatasetMetric(expression=formula, name="w")
+def _m(expression: str) -> DatasetMetric:
+    return DatasetMetric(expression=expression, name="w")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -123,12 +123,12 @@ def _assert_time_axis_error(exc) -> None:
 
 
 def _orders_scope_bundle():
-    models = dev1840_models()
+    models = dev1840_datasets()
     return DatasetScope(population=models[0]), orders_bundle()
 
 
 def _sales_scope_bundle():
-    models = dev1847_models()
+    models = dev1847_datasets()
     return (DatasetScope(population=models[0]),
             ResolvedSourceBundle(dialect="sqlite", population=models[0], referenced_datasets=models[1:]))
 
@@ -456,7 +456,7 @@ class TestPlanShape:
 # Re-aggregation outer (sales graph).
 # --------------------------------------------------------------------------- #
 def _sales_bundle() -> ResolvedSourceBundle:
-    models = dev1847_models()
+    models = dev1847_datasets()
     return ResolvedSourceBundle(dialect="sqlite", population=models[0], referenced_datasets=models[1:])
 
 

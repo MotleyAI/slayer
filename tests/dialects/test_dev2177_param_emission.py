@@ -13,17 +13,17 @@ from sqlglot.expressions.core import Expr
 from slayer.core.models import Aggregation, AggregationParam
 from slayer.sql.dialects import SQLGLOT_NAMES
 
-from tests._dev2046_fixtures import customers_model, m, orders_model, orders_q
+from tests._dev2046_fixtures import customers_dataset, m, orders_dataset, orders_q
 from tests._engine_helpers import _engine_generate
 
 INT_TYPES = frozenset(exp.DataType.INTEGER_TYPES) - {exp.DataType.Type.BIT}
 
 
 async def _statement(dialect: str, *formulas: str, aggregations: Sequence[Aggregation] = ()) -> Expr:
-    model = orders_model()
+    model = orders_dataset()
     model.aggregations.extend(aggregations)
     query = orders_q(measures=[m(f, f"v{i}") for i, f in enumerate(formulas)])
-    sql = await _engine_generate(query=query, model=model, extra_models=[customers_model()], dialect=dialect)
+    sql = await _engine_generate(query=query, dataset=model, extra_datasets=[customers_dataset()], dialect=dialect)
     return sqlglot.parse_one(sql, read=dialect)
 
 

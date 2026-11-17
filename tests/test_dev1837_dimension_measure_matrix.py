@@ -84,7 +84,7 @@ DIM_FAMILIES = tuple(DIM_FAMILY_DIMS)
 MEASURE_KEYS = tuple(ATTACH_MEASURES) + tuple(TRANSFORM_FORMULAS)
 
 
-def _formula(meas: str) -> str:
+def _expression(meas: str) -> str:
     return ATTACH_MEASURES.get(meas) or TRANSFORM_FORMULAS[meas]
 
 
@@ -95,7 +95,7 @@ def _needs_td(meas: str) -> bool:
 def _cell_query(family: str, meas: str, *, include_x: bool = True):
     measures = [DatasetMetric(expression="sum(amount)", name="m")]
     if include_x:
-        measures.append(DatasetMetric(expression=_formula(meas), name="x"))
+        measures.append(DatasetMetric(expression=_expression(meas), name="x"))
     kwargs = {"dimensions": DIM_FAMILY_DIMS[family], "metrics": measures}
     if _needs_td(meas):
         kwargs["time_dimensions"] = month_td()
@@ -214,11 +214,11 @@ class TestCoexistenceTriples:
     the shared oracle tables)."""
 
     @staticmethod
-    def _triple_query(family: str, *, measures):
+    def _triple_query(family: str, *, metrics):
         return q(
             dimensions=DIM_FAMILY_DIMS[family],
             time_dimensions=month_td(),
-            measures=measures,
+            measures=metrics,
         )
 
     async def _assert_triple(self, exec_backend, *, family: str, op: str) -> None:
@@ -226,7 +226,7 @@ class TestCoexistenceTriples:
         m = DatasetMetric(expression="sum(amount)", name="m")
         rt = DatasetMetric(expression="sum(amount, partition_by=region)", name="rt")
         x = DatasetMetric(expression=TRANSFORM_FORMULAS[op], name="x")
-        query = self._triple_query(family, measures=[m, rt, x])
+        query = self._triple_query(family, metrics=[m, rt, x])
         m_map = GROUP_M_MONTH[family]
         x_map = with_nulls(m_map.keys(), TRANSFORM_X[(family, op)])
 
@@ -241,7 +241,7 @@ class TestCoexistenceTriples:
         # Solo runs: each measure alone at the same grain yields the same value.
         for name, measure in (("m", m), ("rt", rt), ("x", x)):
             solo = await engine.execute(
-                self._triple_query(family, measures=[measure]),
+                self._triple_query(family, metrics=[measure]),
             )
             solo_map = _keyed(solo, family=family, with_month=True, cols=(name,))
             assert set(solo_map) == set(got), f"solo {name} moved the grain"

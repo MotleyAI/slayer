@@ -270,7 +270,7 @@ async def test_bigquery_outer_wrap_uses_backticks_for_aliases() -> None:
 # not a hard-coded ``if dialect == "bigquery":`` branch. Codex HIGH #1.
 
 
-def _minimal_orders_model() -> SlayerDataset:
+def _minimal_orders_dataset() -> SlayerDataset:
     """Helper: the two-column model the generator-dispatch test renders."""
     return SlayerDataset(
         name="orders",
@@ -296,7 +296,7 @@ async def test_generator_dispatches_through_rewrite_emitted_sql_hook() -> None:
         side_effect=lambda self, sql, **kw: sql,
     ) as spy:
         await _engine_generate(
-            query=query, model=_minimal_orders_model(), dialect="postgres",
+            query=query, dataset=_minimal_orders_dataset(), dialect="postgres",
         )
     assert spy.called, (
         "SQLGenerator.generate() must dispatch through self._dialect."
@@ -874,7 +874,7 @@ async def test_bigquery_computed_measure_with_order_by_resolves() -> None:
         order=[OrderItem(field="created_at", direction="desc")],
         limit=6,
     )
-    sql = await _engine_generate(query=query, model=model, dialect="bigquery")
+    sql = await _engine_generate(query=query, dataset=model, dialect="bigquery")
     assert "``" not in sql, f"empty identifier emitted: {sql}"
     # BigQuery bans dots in output aliases, so the dotted result key
     # ``orders.created_at`` is mangled to ``orders___created_at`` and must

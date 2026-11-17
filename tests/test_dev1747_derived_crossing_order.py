@@ -37,7 +37,7 @@ from tests._dev1747_fixtures import (
     GROUP_NULL_AMOUNT,
     base_from_join_aliases,
     dev1747_bundle,
-    dev1747_models,
+    dev1747_datasets,
     make_sqlite_engine,
     order_by_text,
     outermost_select,
@@ -59,9 +59,9 @@ _MEASURE = [{"formula": "sum(amount)", "name": "rev"}]
 
 
 async def _sql(query: SlayerQuery, *, dialect: str = "postgres") -> str:
-    models = dev1747_models()
+    models = dev1747_datasets()
     return await _engine_generate(
-        query=query, model=models[0], extra_models=models[1:], dialect=dialect,
+        query=query, dataset=models[0], extra_datasets=models[1:], dialect=dialect,
     )
 
 

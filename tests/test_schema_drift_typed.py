@@ -42,7 +42,7 @@ from slayer.core.syntax import (
 )
 
 
-def _ext_models() -> dict[str, SlayerDataset]:
+def _ext_datasets() -> dict[str, SlayerDataset]:
     """The stage source and the extension joins' target, as the runtime loads them."""
     orders = SlayerDataset(name="orders", data_source="ds", sql_table="orders", fields=[
         DatasetField(name="id", datatype=DataType.INT, primary_key=True),
@@ -53,8 +53,8 @@ def _ext_models() -> dict[str, SlayerDataset]:
         DatasetField(name="name", datatype=DataType.TEXT)])
     return {"orders": orders, "customers": customers}
 
-def _stage_scope(stage: SlayerQuery, models_by_name: dict) -> QueryScope:
-    return query_scopes([stage], datasets_by_ds={"ds": models_by_name}, data_source="ds")[0][0]
+def _stage_scope(stage: SlayerQuery, datasets_by_name: dict) -> QueryScope:
+    return query_scopes([stage], datasets_by_ds={"ds": datasets_by_name}, data_source="ds")[0][0]
 
 
 
@@ -89,7 +89,7 @@ class TestStageGraphBidirectional:
             DatasetRelationship(to="customers",
                       join_pairs=[["customer_id", "id"]], name="buyer"),
         ])])
-        graph = _stage_scope(stage, _ext_models())
+        graph = _stage_scope(stage, _ext_datasets())
         assert _attribute_ref_to_base(
             ref="buyer.name", base_name="customers", scope=graph,
         ) == "name"
@@ -101,7 +101,7 @@ class TestStageGraphBidirectional:
             DatasetRelationship(to="customers",
                       join_pairs=[["s_id", "id"]], name="seller"),
         ])])
-        graph = _stage_scope(stage, _ext_models())
+        graph = _stage_scope(stage, _ext_datasets())
         assert _attribute_ref_to_base(
             ref="seller.name", base_name="customers", scope=graph,
         ) == "name"
@@ -112,7 +112,7 @@ class TestStageGraphBidirectional:
 
     def test_extension_repeating_a_stored_join_is_that_stored_edge(self) -> None:
         join = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])
-        models = _ext_models()
+        models = _ext_datasets()
         models["orders"] = models["orders"].model_copy(update={"joins": [join]})
         graph = _stage_scope(SlayerQuery(population="orders", extensions=[DatasetExtension(source_name="orders", relationships=[join])]), models)
         assert _attribute_ref_to_base(

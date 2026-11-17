@@ -27,10 +27,10 @@ from tests._dev1948_fixtures import (
     CUSTOMER_AMOUNT_BY_TIER,
     SPEND_BY_TIER,
     chain_list,
-    customers_model,
+    customers_dataset,
     inline_join_list,
     make_dev1948_engine,
-    orders_model,
+    orders_dataset,
     pop_check_list,
     producer_at_sibling_list,
     root_over_b,
@@ -209,7 +209,7 @@ class TestPlanStages:
 
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
-        dialect="postgres", population=orders_model(), referenced_datasets=[customers_model()],
+        dialect="postgres", population=orders_dataset(), referenced_datasets=[customers_dataset()],
     )
 
 

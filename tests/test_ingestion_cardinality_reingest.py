@@ -65,8 +65,8 @@ async def _setup(workspace: Path) -> tuple[YAMLStorage, DatasourceConfig]:
     return storage, ds
 
 
-def _order_join(model: SlayerDataset):
-    return next(j for j in model.relationships if j.to == "customers")
+def _order_join(dataset: SlayerDataset):
+    return next(j for j in dataset.relationships if j.to == "customers")
 
 
 class TestFillsMetadataAndPersists:

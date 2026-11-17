@@ -59,7 +59,7 @@ from slayer.core.syntax import parse_expr
 # ---------------------------------------------------------------------------
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         data_source="prod",
@@ -77,13 +77,13 @@ def _orders_model() -> SlayerDataset:
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        population=_orders_model(),
+        population=_orders_dataset(),
         referenced_datasets=[],
     )
 
 
 def _scope() -> DatasetScope:
-    return DatasetScope(population=_orders_model())
+    return DatasetScope(population=_orders_dataset())
 
 
 # ---------------------------------------------------------------------------

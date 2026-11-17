@@ -24,7 +24,7 @@ from slayer.core.query import FieldRef, OrderItem, SlayerQuery
 from tests._engine_helpers import _dataset_where_text, _engine_generate, _having_text, _where_text
 
 
-def _orders_model() -> SlayerDataset:
+def _orders_dataset() -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="public.orders",
@@ -38,8 +38,8 @@ def _orders_model() -> SlayerDataset:
     )
 
 
-async def _generate(query: SlayerQuery, model: SlayerDataset) -> str:
-    return await _engine_generate(query=query, model=model)
+async def _generate(query: SlayerQuery, dataset: SlayerDataset) -> str:
+    return await _engine_generate(query=query, dataset=dataset)
 
 
 class TestFilterRenamedMeasureRemap:
@@ -51,7 +51,7 @@ class TestFilterRenamedMeasureRemap:
         actual aggregate (HAVING COUNT(DISTINCT customer_id) >= 5), NOT to a
         non-existent canonical alias `customer_id_count_distinct`.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -79,7 +79,7 @@ class TestFilterRenamedMeasureRemap:
         """Regression: the documented workaround (`filter` references the
         user alias directly) keeps producing the same correct SQL.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -99,7 +99,7 @@ class TestFilterRenamedMeasureRemap:
         """Regression: when the measure is NOT renamed, filter on the
         aggregation resolves to the canonical alias as before.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -118,7 +118,7 @@ class TestFilterRenamedMeasureRemap:
         one. The renamed half remaps; the unrenamed half stays
         canonical.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -151,7 +151,7 @@ class TestFilterRenamedMeasureRemap:
         ``COUNT(DISTINCT ...)`` lands in the HAVING clause and the WHERE
         clause carries no such predicate.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -182,7 +182,7 @@ class TestOrderByRenamedMeasureRemap:
         measure must resolve to the user alias, not to a non-existent
         canonical column.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -204,7 +204,7 @@ class TestOrderByRenamedMeasureRemap:
 
     async def test_order_by_renamed_measure_alias_form(self) -> None:
         """Regression: ORDER BY referencing the user alias directly still works."""
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="status")],
@@ -430,7 +430,7 @@ class TestRemapEdgeCases:
         message — otherwise alias-form filters silently bind to the source
         column instead of the renamed measure.
         """
-        model = _orders_model()
+        model = _orders_dataset()
         query = SlayerQuery(
             population="orders",
             dimensions=[FieldRef(name="id")],

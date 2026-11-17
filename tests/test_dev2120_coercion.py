@@ -28,8 +28,8 @@ async def engine(request):
         yield e
 
 
-def _measure(formula: str, **kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"population": "lib", "metrics": [{"expression": formula, "name": "v"}], **kw})
+def _metric(expression: str, **kw: Any) -> SlayerQuery:
+    return SlayerQuery.model_validate({"population": "lib", "metrics": [{"expression": expression, "name": "v"}], **kw})
 
 
 def _where(sql: str, *, dialect: str) -> exp.Where:
@@ -53,7 +53,7 @@ class TestScenarios:
         assert float(values[7]) == 3.0
 
     async def test_arithmetic_result_aggregates_as_a_number(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(_measure("sum(num_txt * 2)", filters=["id IN (5, 7)"]))
+        resp = await engine.execute(_metric("sum(num_txt * 2)", filters=["id IN (5, 7)"]))
         assert float(resp.data[0]["lib.v"]) == 9.0
 
     async def test_in_list(self, engine: SlayerQueryEngine) -> None:
@@ -79,7 +79,7 @@ class TestScenarios:
 class TestLimitedToMixedOperands:
     @pytest.mark.parametrize("formula", ["sum(num_txt)", "avg(num_txt)"])
     async def test_numeric_aggregation_over_text_names_try_cast(self, engine: SlayerQueryEngine, formula: str) -> None:
-        query = _measure(formula)
+        query = _metric(formula)
         with pytest.raises(SlayerError, match="TRY_CAST"):
             await engine.execute(query)
 

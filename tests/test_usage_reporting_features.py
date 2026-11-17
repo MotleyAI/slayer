@@ -23,7 +23,7 @@ from tests._usage_reporting_helpers import (
     cli,
     quiet_config,
     run_python,
-    save_models,
+    save_datasets,
     show,
     usage,
 )
@@ -144,7 +144,7 @@ def test_datasources_per_dialect_bucketed(store: str, usage_reporting_env, extra
 
 
 def test_model_count_is_bucketed(store: str) -> None:
-    save_models(store, count=32)
+    save_datasets(store, count=32)
     cli(["models", "--storage", store, "list"])
     context = show()["context"]
     assert context["model_count"] == {"11-50": 1}

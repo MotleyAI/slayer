@@ -227,13 +227,13 @@ class TestFunctionalParseErrors:
 
 
 async def _binding_error(
-    formula: str, *, model: SlayerDataset, extra_models: list | None = None
+    expression: str, *, dataset: SlayerDataset, extra_datasets: list | None = None
 ) -> ValueError:
     query = SlayerQuery(
-        population="orders", metrics=[formula], dimensions=["status"]
+        population="orders", metrics=[expression], dimensions=["status"]
     )
     with pytest.raises(ValueError) as ei:
-        await _engine_generate(query=query, model=model, extra_models=extra_models)
+        await _engine_generate(query=query, dataset=dataset, extra_datasets=extra_datasets)
     return ei.value
 
 
@@ -244,7 +244,7 @@ class TestCustomAggregationBinding:
         )
         sql_f = await _engine_generate(
             query=SlayerQuery(population="orders", metrics=["my_agg(price)"]),
-            model=model,
+            dataset=model,
         )
         assert "AVG(" in sql_f
 
@@ -256,42 +256,42 @@ class TestCustomAggregationBinding:
             query=SlayerQuery(
                 population="orders", metrics=["rolling_avg(customers.score)"]
             ),
-            model=_orders(),
-            extra_models=[customers],
+            dataset=_orders(),
+            extra_datasets=[customers],
         )
         assert "AVG(" in sql_f
 
 
 class TestGlobalNameValidation:
     async def test_unknown_over_column_gets_standard_error(self) -> None:
-        err = await _binding_error("bogus(price)", model=_orders())
+        err = await _binding_error("bogus(price)", dataset=_orders())
         assert "Unknown function 'bogus'" in str(err)
 
     async def test_star_bogus_functional_gets_standard_error(self) -> None:
-        err = await _binding_error("bogus(*)", model=_orders())
+        err = await _binding_error("bogus(*)", dataset=_orders())
         assert "Unknown function 'bogus'" in str(err)
 
     async def test_dotted_star_bogus_gets_standard_error(self) -> None:
         err = await _binding_error(
-            "bogus(customers.*)", model=_orders(), extra_models=[_customers()]
+            "bogus(customers.*)", dataset=_orders(), extra_datasets=[_customers()]
         )
         assert "Unknown function 'bogus'" in str(err)
 
     async def test_avg_star_rejected(self) -> None:
-        await _binding_error("avg(*)", model=_orders())
+        await _binding_error("avg(*)", dataset=_orders())
 
     async def test_unknown_agg_error_hints_scalar_near_miss(self) -> None:
-        err = await _binding_error("rond(price)", model=_orders())
+        err = await _binding_error("rond(price)", dataset=_orders())
         msg = str(err)
         assert "round" in msg
         assert "scalar" in msg.lower()
 
     async def test_missing_weight_parameter(self) -> None:
-        err = await _binding_error("weighted_avg(price)", model=_orders())
+        err = await _binding_error("weighted_avg(price)", dataset=_orders())
         assert "weight" in str(err)
 
     async def test_missing_other_parameter(self) -> None:
-        err = await _binding_error("corr(price)", model=_orders())
+        err = await _binding_error("corr(price)", dataset=_orders())
         assert "other" in str(err)
 
 
@@ -310,7 +310,7 @@ class TestModeAUnchanged:
         )
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(grand_total)"]}),
-            model=model,
+            dataset=model,
         )
         assert "SUM(orders.revenue)" in sql
 

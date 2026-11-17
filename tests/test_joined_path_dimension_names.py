@@ -22,7 +22,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.response_meta import projection_result_keys
 from slayer.sql.dialects import get_dialect
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
-from tests._dev1739_fixtures import customers_model, make_exec_engine
+from tests._dev1739_fixtures import customers_dataset, make_exec_engine
 
 REVENUE = {"formula": "sum(amount)", "name": "revenue"}
 REGION_ID = {"name": "region_id", "expression": "customers.region_id"}
@@ -37,15 +37,15 @@ async def exec_engine(request):
         yield engine
 
 
-def _stage(*, dimensions: list, measures: list | None = None, **kwargs: Any) -> dict:
+def _stage(*, dimensions: list, metrics: list | None = None, **kwargs: Any) -> dict:
     return {
         "name": "cr", "population": "orders", "dimensions": dimensions,
-        "metrics": measures if measures is not None else [REVENUE], **kwargs,
+        "metrics": metrics if metrics is not None else [REVENUE], **kwargs,
     }
 
 
-def _outer(*, dimensions: list, measures: list | None = None, **kwargs: Any) -> dict:
-    return {"population": "cr", "dimensions": dimensions, "metrics": measures or [], **kwargs}
+def _outer(*, dimensions: list, metrics: list | None = None, **kwargs: Any) -> dict:
+    return {"population": "cr", "dimensions": dimensions, "metrics": metrics or [], **kwargs}
 
 
 def _rows(resp, *keys: str) -> List[tuple]:
@@ -66,7 +66,7 @@ STAGE_NAMED_TWO_HOP = [
 ]
 STAGE_DOWNSTREAM_AGG = [
     _stage(dimensions=[RID, "customer_id"]),
-    _outer(dimensions=["rid"], measures=[{"formula": "sum(revenue)", "name": "tot"}]),
+    _outer(dimensions=["rid"], metrics=[{"formula": "sum(revenue)", "name": "tot"}]),
 ]
 SINGLE_UNNAMED_PATH = {"population": "orders", "dimensions": [UNNAMED_PATH], "metrics": [REVENUE]}
 STAGE_UNNAMED_PATH = [
@@ -107,7 +107,7 @@ async def _save_query_backed_cr(engine: SlayerQueryEngine) -> None:
 
 class TestNamedJoinedPathSingleQuery:
     async def test_named_one_hop_keys_by_name(self, exec_engine: SlayerQueryEngine) -> None:
-        customers = customers_model()
+        customers = customers_dataset()
         customers.fields = [
             c.model_copy(update={"label": "Region"}) if c.name == "region_id" else c
             for c in customers.fields

@@ -135,8 +135,8 @@ async def _setup(workspace: Path) -> tuple[YAMLStorage, DatasourceConfig, str]:
     return storage, ds, db_path
 
 
-def _join_to(model: SlayerDataset, target: str):
-    return [j for j in model.relationships if j.to == target]
+def _join_to(dataset: SlayerDataset, target: str):
+    return [j for j in dataset.relationships if j.to == target]
 
 
 # ---------------------------------------------------------------------------

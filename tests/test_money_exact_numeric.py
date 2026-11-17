@@ -100,14 +100,14 @@ class TestEmission:
         ("postgres", "money"), ("tsql", "money"), ("tsql", "smallmoney"),
     ])
     async def test_sum_carries_no_float_cast(self, dialect: str, db_type: str) -> None:
-        sql = await _engine_generate(query=_SUM_QUERY, model=_ledger(db_type=db_type), dialect=dialect)
+        sql = await _engine_generate(query=_SUM_QUERY, dataset=_ledger(db_type=db_type), dialect=dialect)
         assert "CAST(" not in sql.upper(), sql
 
     @pytest.mark.parametrize(("dialect", "db_type"), [
         ("postgres", "money"), ("tsql", "money"), ("tsql", "smallmoney"),
     ])
     async def test_derived_column_carries_no_float_cast(self, dialect: str, db_type: str) -> None:
-        sql = await _engine_generate(query=_DOUBLED_QUERY, model=_ledger(db_type=db_type), dialect=dialect)
+        sql = await _engine_generate(query=_DOUBLED_QUERY, dataset=_ledger(db_type=db_type), dialect=dialect)
         assert "CAST(" not in sql.upper(), sql
 
 

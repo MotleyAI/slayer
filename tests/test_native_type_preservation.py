@@ -120,7 +120,7 @@ class TestSqliteKeepsInferredCast:
         assert result.data[0]["orders.amount_sum"] == 3.0
 
 
-def _model_with_amount(db_type):
+def _dataset_with_amount(db_type):
     return SlayerDataset(
         name="orders",
         data_source="ds",
@@ -138,7 +138,7 @@ class TestMeasureKeyPreservesNativeType:
         ["DECIMAL(18,2)", "NUMERIC", "Decimal(18, 2)", "Decimal64(4)", "BIGNUMERIC"],
     )
     def test_exact_numeric_db_type_preserves(self, db_type):
-        model = _model_with_amount(db_type)
+        model = _dataset_with_amount(db_type)
         assert metric_key_preserves_native_type(dataset=model, key=_SUM_AMOUNT) is True
 
     @pytest.mark.parametrize(
@@ -146,11 +146,11 @@ class TestMeasureKeyPreservesNativeType:
         [None, "Nullable(Decimal(18, 2))", "DOUBLE", "JSON"],
     )
     def test_other_db_types_do_not_preserve(self, db_type):
-        model = _model_with_amount(db_type)
+        model = _dataset_with_amount(db_type)
         assert metric_key_preserves_native_type(dataset=model, key=_SUM_AMOUNT) is False
 
 
-def _wide_model(data_source: str = "ds") -> SlayerDataset:
+def _wide_dataset(data_source: str = "ds") -> SlayerDataset:
     return SlayerDataset(name="t", sql_table="t", data_source=data_source, fields=[
         DatasetField(name="id", datatype=DataType.INT, primary_key=True),
         DatasetField(name="amount", datatype=DataType.INT, db_type="NUMERIC(38,0)"),
@@ -168,7 +168,7 @@ class TestDerivedColumnPreservesNativeType:
             "INSERT INTO t VALUES (1, 10000000000000000000)",
         ], name="wide_pg") as datasource:
             async with pg_query_engine(datasource, base_dir=str(tmp_path / "models"),
-                                       models=[_wide_model(data_source=datasource.name)]) as engine:
+                                       models=[_wide_dataset(data_source=datasource.name)]) as engine:
                 sql = (await engine.execute(query=_WIDE_QUERY, dry_run=True)).sql
                 result = await engine.execute(query=_WIDE_QUERY)
         assert sql is not None
@@ -176,7 +176,7 @@ class TestDerivedColumnPreservesNativeType:
         assert result.data == [{"t.wide": Decimal("100000000000000000000")}]
 
     async def test_sqlite_keeps_the_inferred_cast(self):
-        sql = await _engine_generate(query=_WIDE_QUERY, model=_wide_model(), dialect="sqlite")
+        sql = await _engine_generate(query=_WIDE_QUERY, dataset=_wide_dataset(), dialect="sqlite")
         assert "CAST(t.amount * 10 AS INTEGER)" in sql, sql
 
     async def test_filter_on_a_wide_exact_integer_keeps_its_value(self, tmp_path, postgresql_proc):
@@ -186,7 +186,7 @@ class TestDerivedColumnPreservesNativeType:
             "INSERT INTO t VALUES (1, 10000000000000000000)",
         ], name="wide_filter_pg") as datasource:
             async with pg_query_engine(datasource, base_dir=str(tmp_path / "models"),
-                                       models=[_wide_model(data_source=datasource.name)]) as engine:
+                                       models=[_wide_dataset(data_source=datasource.name)]) as engine:
                 result = await engine.execute(query=query)
         assert result.data == [{"t.wide": Decimal("100000000000000000000")}]
 
@@ -197,5 +197,5 @@ class TestDerivedColumnPreservesNativeType:
             DatasetField(name="whole", sql="amount / 3", datatype=DataType.INT, db_type="NUMERIC(18,2)"),
         ])
         query = SlayerQuery.model_validate({"population": "t", "dimensions": ["whole"]})
-        sql = await _engine_generate(query=query, model=model, dialect="postgres")
+        sql = await _engine_generate(query=query, dataset=model, dialect="postgres")
         assert "CAST(t.amount / 3 AS BIGINT)" in sql, sql

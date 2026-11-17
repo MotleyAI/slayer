@@ -22,7 +22,7 @@ from slayer.flight.handlers import FlightHandlers
 from slayer.flight.types import datatype_to_arrow
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.types import datatype_to_oid, value_to_binary, value_to_text
-from tests._dev2120_fixtures import contractors_model
+from tests._dev2120_fixtures import contractors_dataset
 from tests.flight.test_handlers import _FakeEngine as _FlightEngine
 from tests.flight.test_handlers import _FakeStorage as _FlightStorage
 from tests.pg_facade.test_connection import _FakeEngine as _PgEngine
@@ -32,31 +32,31 @@ from tests.pg_facade.test_connection import _messages, _parse_row_description, _
 DS = "jaffle"
 
 
-def _model() -> SlayerDataset:
-    return contractors_model(data_source=DS).model_copy(update={
+def _dataset() -> SlayerDataset:
+    return contractors_dataset(data_source=DS).model_copy(update={
         "metrics": [DatasetMetric(name="cities", expression="collect(city)")]})
 
 
 class TestCatalogs:
     def test_catalog_keeps_list_models(self) -> None:
-        catalog = build_catalog(datasets_by_datasource={DS: [_model()]})
+        catalog = build_catalog(datasets_by_datasource={DS: [_dataset()]})
         (schema,) = catalog.schemas
         table = next(t for t in schema.tables if t.name == "contractors")
         assert "skills" in {d.name for d in table.dimensions}
 
     def test_list_columns_offer_count_and_distinct_count(self) -> None:
-        model = _model().model_copy(update={"aggregations": [Aggregation(name="my_agg", expression="SUM({value})")]})
+        model = _dataset().model_copy(update={"aggregations": [Aggregation(name="my_agg", expression="SUM({value})")]})
         (schema,) = build_catalog(datasets_by_datasource={DS: [model]}).schemas
         table = next(t for t in schema.tables if t.name == "contractors")
         assert {m.name for m in table.metrics if m.name.startswith("skills_")} == {"skills_count", "skills_count_distinct"}
 
     def test_a_sole_primary_key_offers_collect(self) -> None:
-        (schema,) = build_catalog(datasets_by_datasource={DS: [_model()]}).schemas
+        (schema,) = build_catalog(datasets_by_datasource={DS: [_dataset()]}).schemas
         table = next(t for t in schema.tables if t.name == "contractors")
         assert "id_collect" in {m.name for m in table.metrics}
 
     def test_grouped_catalog_keeps_list_models(self) -> None:
-        catalog = build_catalog_grouped_by_schema(datasets_by_datasource={DS: [_model()]})
+        catalog = build_catalog_grouped_by_schema(datasets_by_datasource={DS: [_dataset()]})
         tables = {t.name for s in catalog.schemas for t in s.tables}
         assert "contractors" in tables
 
@@ -114,7 +114,7 @@ class TestPgWireValues:
 
     async def test_a_collected_list_over_the_postgres_wire(self) -> None:
         writer = await _run(_startup(user="u", database=DS) + _query("SELECT cities FROM contractors") + _terminate(),
-                            storage=_PgStorage({DS: [_model()]}),
+                            storage=_PgStorage({DS: [_dataset()]}),
                             engine=_PgEngine([{"contractors.cities": ["Oslo", "Rome"]}]))
         msgs = _messages(writer.buffer)
         (_name, oid, _fmt), = _parse_row_description(next(b for t, b in msgs if t == "T"))
@@ -134,7 +134,7 @@ class _ArrowField(Protocol):
 def _flight_text(value: Any) -> Any:
     handlers = FlightHandlers(
         engine=_FlightEngine(  # type: ignore[arg-type]
-            response=SlayerResponse(data=[{"contractors.cities": value}]), storage=_FlightStorage({DS: [_model()]}),
+            response=SlayerResponse(data=[{"contractors.cities": value}]), storage=_FlightStorage({DS: [_dataset()]}),
         ),
     )
     result = handlers._translate("SELECT cities FROM contractors")

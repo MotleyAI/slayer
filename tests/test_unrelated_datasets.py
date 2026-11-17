@@ -31,25 +31,25 @@ from tests._unrelated_datasets_fixtures import (
     RATIO,
     WIDE_CITIES,
     WIDE_DATASETS,
-    customers_model,
-    events_model,
+    customers_dataset,
+    events_dataset,
     execute_capturing,
     grouped_query,
     m,
     main_engine,
     only_row,
-    orgs_model,
+    orgs_dataset,
     product_hop_violations,
     query,
     ratio_query,
     rows,
     stages,
     unrelated_warnings,
-    users_model,
+    users_dataset,
     value,
     warnings_of,
     wide_engine,
-    wide_measures,
+    wide_metrics,
 )
 
 JAN_MAR = ["2024-01-01", "2024-03-31"]
@@ -193,8 +193,8 @@ class TestNamesThatAreNotReachableDatasets:
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_hidden_model_is_reported_as_unknown(self, backend) -> None:
-        hidden = events_model().model_copy(update={"access_tags": ["secret"]})
-        async with main_engine(backend, models=[customers_model(), hidden, users_model(), orgs_model()]) as eng:
+        hidden = events_dataset().model_copy(update={"access_tags": ["secret"]})
+        async with main_engine(backend, datasets=[customers_dataset(), hidden, users_dataset(), orgs_dataset()]) as eng:
             scoped = SlayerQueryEngine(storage=AccessFilteredStorage(eng.storage, tags=set(), bypass=False))
             hidden_q = query(measures=[m("count(events.id)", "n")])
             unknown_q = query(measures=[m("count(evnts.id)", "n")])
@@ -223,7 +223,7 @@ async def test_row_level_security_scopes_the_unrelated_dataset(backend) -> None:
 
 class TestStoredDefinitionsRefuse:
     async def test_saved_measure(self, engine: SlayerQueryEngine) -> None:
-        await engine.save_dataset(customers_model(measures=[DatasetMetric(name="ev", expression="count(events.id)")]))
+        await engine.save_dataset(customers_dataset(measures=[DatasetMetric(name="ev", expression="count(events.id)")]))
         q = query(measures=["ev"])
         with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
             await engine.execute(q)
@@ -232,10 +232,10 @@ class TestStoredDefinitionsRefuse:
     @pytest.mark.parametrize("definition", ["column", "filter"])
     async def test_column_sql_and_model_filter(self, engine: SlayerQueryEngine, definition: str) -> None:
         if definition == "column":
-            model = customers_model(columns=[DatasetField(name="ev_amount", datatype=DataType.DOUBLE, sql="events.amount")])
+            model = customers_dataset(columns=[DatasetField(name="ev_amount", datatype=DataType.DOUBLE, sql="events.amount")])
             use, named = query(measures=[m("sum(ev_amount)", "x")]), "ev_amount"
         else:
-            model = customers_model(filters=["events.amount > 1"])
+            model = customers_dataset(filters=["events.amount > 1"])
             use, named = query(measures=[m("count(*)", "x")]), "events.amount > 1"
         with pytest.raises(SlayerError) as saved:
             await engine.save_dataset(model)
@@ -249,7 +249,7 @@ class TestStoredDefinitionsRefuse:
 
     @pytest.mark.parametrize("sql", ['"events".amount', '"events"."amount"'])
     async def test_quoted_qualifier(self, engine: SlayerQueryEngine, sql: str) -> None:
-        model = customers_model(columns=[DatasetField(name="ev_amount", datatype=DataType.DOUBLE, sql=sql)])
+        model = customers_dataset(columns=[DatasetField(name="ev_amount", datatype=DataType.DOUBLE, sql=sql)])
         await engine.storage.save_dataset(model, _validate=False)
         q = query(measures=[m("sum(ev_amount)", "x")])
         with pytest.raises(SlayerError, match="no join path reaches 'events'"):
@@ -261,7 +261,7 @@ class TestStoredDefinitionsRefuse:
             name="logs", sql_table="orgs", data_source="test",
             fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT)],
         ))
-        stale = customers_model(columns=[DatasetField(name="lx", datatype=DataType.TEXT, sql="logs.name")])
+        stale = customers_dataset(columns=[DatasetField(name="lx", datatype=DataType.TEXT, sql="logs.name")])
         await engine.storage.save_dataset(stale, _validate=False)
         await engine.storage.save_dataset(SlayerDataset(name="per_city", data_source="test", source_queries=[
             query(dimensions=["city"], measures=[m("count(lx)", "n")]),
@@ -283,7 +283,7 @@ class TestStoredDefinitionsRefuse:
             query(dimensions=["city"], measures=[m("count(nope)", "n")]),
         ]), _validate=False)
         edge = DatasetRelationship(to="orgs", join_pairs=[["id", "id"]], name="per_city")
-        await engine.storage.save_dataset(customers_model(joins=[edge]), _validate=False)
+        await engine.storage.save_dataset(customers_dataset(joins=[edge]), _validate=False)
         resp = await engine.execute(query(measures=[m("count(per_city.id)", "n")]))
         assert only_row(resp, "n") == (2.0,)
         assert unrelated_warnings(resp) == []
@@ -541,7 +541,7 @@ class TestNoExplosion:
     @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.parametrize("mode", ["broadcast", "associate"])
     async def test_three_unrelated_datasets_grouped(self, backend, mode: str) -> None:
-        measures = wide_measures()
+        measures = wide_metrics()
         names = [x["name"] for x in measures]
         async with wide_engine(backend) as eng:
             resp = await eng.execute(query(dimensions=["city"], measures=measures, to_many_handling=mode))
@@ -558,7 +558,7 @@ class TestNoExplosion:
     @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.parametrize("mode", ["broadcast", "associate", "error"])
     async def test_three_unrelated_datasets_dimensionless(self, backend, mode: str) -> None:
-        measures = wide_measures()
+        measures = wide_metrics()
         names = [x["name"] for x in measures]
         async with wide_engine(backend) as eng:
             resp = await eng.execute(query(measures=measures, to_many_handling=mode))
@@ -573,9 +573,9 @@ class TestEmittedSql:
     @pytest.mark.parametrize("backend", BACKENDS)
     @pytest.mark.parametrize("mode", ["broadcast", "associate", "error"])
     async def test_three_dataset_query(self, backend, mode: str) -> None:
-        shapes = [query(measures=wide_measures(), to_many_handling=mode)]
+        shapes = [query(measures=wide_metrics(), to_many_handling=mode)]
         if mode != "error":
-            shapes.append(query(dimensions=["city"], measures=wide_measures(), to_many_handling=mode))
+            shapes.append(query(dimensions=["city"], measures=wide_metrics(), to_many_handling=mode))
         async with wide_engine(backend) as eng:
             for q in shapes:
                 resp = await eng.execute(q, dry_run=True)

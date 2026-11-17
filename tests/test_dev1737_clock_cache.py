@@ -10,7 +10,7 @@ from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.cache import CacheConfig, QueryCache
 from slayer.database.client import SlayerSQLClient
-from tests._dev1737_fixtures import exec_engine, scenario_models, scenario_tables
+from tests._dev1737_fixtures import exec_engine, scenario_datasets, scenario_tables
 from slayer.engine.query_engine import SlayerQueryEngine
 
 CLOCK_FILTER = "created_at >= date_add(current_date(), -30, 'day')"
@@ -27,7 +27,7 @@ class _Clock:
 @pytest.fixture
 async def engine():
     tables = scenario_tables(today=datetime.now(timezone.utc).date())
-    async with exec_engine("sqlite", tables=tables, models=scenario_models()) as eng:
+    async with exec_engine("sqlite", tables=tables, datasets=scenario_datasets()) as eng:
         yield eng
 
 

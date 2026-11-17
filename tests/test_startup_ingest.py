@@ -102,11 +102,11 @@ def _ok_result() -> IdempotentIngestResult:
     return IdempotentIngestResult(additions=[], to_delete=[], errors=[])
 
 
-def _result_with_addition(model_name: str, data_source: str) -> IdempotentIngestResult:
+def _result_with_addition(dataset_name: str, data_source: str) -> IdempotentIngestResult:
     return IdempotentIngestResult(
         additions=[
             DatasetAddition(
-                dataset_name=model_name,
+                dataset_name=dataset_name,
                 data_source=data_source,
                 created=True,
                 new_fields=["a", "b"],

@@ -107,21 +107,21 @@ def test_block_with_no_variables_raises():
 # ── extract_model_variables ─────────────────────────────────────────────────
 
 
-def _sql_model(**kw) -> SlayerDataset:
+def _sql_dataset(**kw) -> SlayerDataset:
     kw.setdefault("name", "m")
     kw.setdefault("data_source", "ds")
     return SlayerDataset(**kw)
 
 
 def test_extract_bare_var_without_default_is_required():
-    model = _sql_model(sql="SELECT * FROM t WHERE d >= '{d_from}'")
+    model = _sql_dataset(sql="SELECT * FROM t WHERE d >= '{d_from}'")
     v = extract_dataset_variables(model)
     assert v.required == ["d_from"]
     assert v.optional == []
 
 
 def test_extract_bare_var_with_default_is_optional():
-    model = _sql_model(
+    model = _sql_dataset(
         sql="SELECT * FROM t WHERE region = '{region}'",
         query_variables={"region": "EU"},
     )
@@ -131,7 +131,7 @@ def test_extract_bare_var_with_default_is_optional():
 
 
 def test_extract_in_block_var_is_optional():
-    model = _sql_model(sql="SELECT * FROM t WHERE 1=1 AND {? brand IN ({brand}) ?}")
+    model = _sql_dataset(sql="SELECT * FROM t WHERE 1=1 AND {? brand IN ({brand}) ?}")
     v = extract_dataset_variables(model)
     assert v.required == []
     assert v.optional == ["brand"]
@@ -139,7 +139,7 @@ def test_extract_in_block_var_is_optional():
 
 def test_extract_bare_occurrence_wins_over_in_block():
     # A var used bare somewhere AND inside a block classifies as required.
-    model = _sql_model(
+    model = _sql_dataset(
         sql="SELECT '{x}' AS a, CASE WHEN 1=1 THEN {? y = {x} ?} END FROM t"
     )
     v = extract_dataset_variables(model)
@@ -148,7 +148,7 @@ def test_extract_bare_occurrence_wins_over_in_block():
 
 
 def test_extract_walks_all_four_mode_a_surfaces():
-    model = _sql_model(
+    model = _sql_dataset(
         sql="SELECT * FROM t WHERE {? a IN ({a}) ?}",
         filters=["b >= '{b_from}'"],
         columns=[
@@ -165,13 +165,13 @@ def test_extract_on_malformed_block_does_not_raise():
     # Read-only inspection must never crash on a stored model whose SQL only
     # *looks* like a block (a literal '?}' e.g. inside a regex/JSON path). It is
     # classified as block-free; execution still raises.
-    model = _sql_model(sql="SELECT * FROM t WHERE tag ~ 'a?}' AND x = '{y}'")
+    model = _sql_dataset(sql="SELECT * FROM t WHERE tag ~ 'a?}' AND x = '{y}'")
     v = extract_dataset_variables(model)
     assert v.required == ["y"]
 
 
 def test_extract_dedupes_and_sorts():
-    model = _sql_model(
+    model = _sql_dataset(
         sql="WHERE {? a IN ({a}) ?} AND {? a IN ({a}) ?}",
         columns=[DatasetField(name="c", sql="z >= '{z_from}'")],
     )

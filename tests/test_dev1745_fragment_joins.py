@@ -119,11 +119,11 @@ def _orders_local_agg() -> SlayerDataset:
 
 
 async def _sql(
-    query: SlayerQuery, *, model: SlayerDataset, dialect: str = "postgres",
+    query: SlayerQuery, *, dataset: SlayerDataset, dialect: str = "postgres",
 ) -> str:
     return await _engine_generate(
-        query=query, model=model, dialect=dialect, validate=False,
-        extra_models=[_customers(), _regions()],
+        query=query, dataset=dataset, dialect=dialect, validate=False,
+        extra_datasets=[_customers(), _regions()],
     )
 
 
@@ -136,10 +136,10 @@ class TestOnlySubstitutedKwargsAreSql:
     never handed to a SQL parser."""
 
     @staticmethod
-    def _kwargs(formula: str) -> dict:
+    def _kwargs(expression: str) -> dict:
         orders = _orders()
         key = bind_expr(
-            parse_expr(formula), scope=DatasetScope(population=orders),
+            parse_expr(expression), scope=DatasetScope(population=orders),
             bundle=ResolvedSourceBundle(dialect="postgres", population=orders,
                                         referenced_datasets=[_customers(), _regions()]),
         ).value_key
@@ -191,7 +191,7 @@ class TestCrossModelFragmentJoins:
                     "expression": "wscaled_sum(customers.spend)", "name": "m0",
                 }],
             ),
-            model=_orders(),
+            dataset=_orders(),
         )
         body = _cm_body(sql)
         # the fragment renders regions.weight, anchored at the CTE's own root ...
@@ -214,7 +214,7 @@ class TestCrossModelFragmentJoins:
                     {"expression": "sum(amount)", "name": "m1"},
                 ],
             ),
-            model=_orders(),
+            dataset=_orders(),
         )
         body = _cm_body(sql)
         assert "regions.weight" in body, body
@@ -237,7 +237,7 @@ class TestHostPathFragmentJoinsStillWork:
                 "dimensions": [{"formula": "status", "name": "status"}],
                 "metrics": [{"expression": "wscaled_sum(amount)", "name": "m0"}],
             }),
-            model=_orders_local_agg(),
+            dataset=_orders_local_agg(),
         )
         assert "customers__regions.weight" in sql, sql
         assert "JOIN regions" in sql, sql
@@ -252,7 +252,7 @@ class TestHostPathFragmentJoinsStillWork:
                     "name": "m0",
                 }],
             ),
-            model=_orders_local_agg(),
+            dataset=_orders_local_agg(),
         )
         assert "customers__regions.weight" in sql, sql
         assert "JOIN regions" in sql, sql
@@ -267,7 +267,7 @@ async def test_cross_model_fragment_executes_on_duckdb() -> None:
             "dimensions": [{"formula": "status", "name": "status"}],
             "metrics": [{"expression": "wscaled_sum(customers.spend)", "name": "m0"}],
         }),
-        model=_orders(), dialect="duckdb",
+        dataset=_orders(), dialect="duckdb",
     )
     with duckdb.connect() as con:
         con.execute(

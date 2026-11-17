@@ -58,7 +58,7 @@ async def _make_engine(
     return SlayerQueryEngine(storage=storage), storage
 
 
-def _sql_model(
+def _sql_dataset(
     sql: str, *, name: str = "m", data_source: str = _DS
 ) -> SlayerDataset:
     return SlayerDataset(
@@ -126,7 +126,7 @@ class TestSchemaDriftReusesSharedBuilder:
 
     async def test_live_columns_uses_sql_model_trial_query(self) -> None:
         seen: list[str] = []
-        model = _sql_model("SELECT id FROM orders;")  # trailing ';' exercises strip
+        model = _sql_dataset("SELECT id FROM orders;")  # trailing ';' exercises strip
         await _live_columns_for_sql_dataset(dataset=model, client=_CapturingClient(seen))
         assert seen == [_trial("SELECT id FROM orders;")]
 
@@ -138,7 +138,7 @@ class TestSchemaDriftReusesSharedBuilder:
                 return {"id": ResultColumnType(type=DataType.INT, db_type="integer")}
 
         live = await _live_columns_for_sql_dataset(
-            dataset=_sql_model("SELECT id FROM orders"),
+            dataset=_sql_dataset("SELECT id FROM orders"),
             client=_IntClient(),  # pyright: ignore[reportArgumentType] — a probe-only fake
         )
         assert live is not None
@@ -151,12 +151,12 @@ class TestRejectAndAccept:
 
     async def test_valid_sql_persists(self, tmp_path: Path) -> None:
         engine, storage = await _make_engine(tmp_path)
-        await engine.save_dataset(_sql_model("SELECT id FROM orders"))
+        await engine.save_dataset(_sql_dataset("SELECT id FROM orders"))
         assert await storage.get_dataset("m", data_source=_DS) is not None
 
     async def test_trailing_semicolon_valid_persists(self, tmp_path: Path) -> None:
         engine, storage = await _make_engine(tmp_path)
-        await engine.save_dataset(_sql_model("SELECT id FROM orders;"))
+        await engine.save_dataset(_sql_dataset("SELECT id FROM orders;"))
         assert await storage.get_dataset("m", data_source=_DS) is not None
 
     @pytest.mark.parametrize("bad_sql", [
@@ -168,14 +168,14 @@ class TestRejectAndAccept:
         self, tmp_path: Path, bad_sql: str
     ) -> None:
         engine, storage = await _make_engine(tmp_path)
-        model = _sql_model(bad_sql, name="invalid_sql_model")
+        model = _sql_dataset(bad_sql, name="invalid_sql_model")
         with pytest.raises(DatasetSqlValidationError):
             await engine.save_dataset(model)
         assert await storage.get_dataset("invalid_sql_model", data_source=_DS) is None
 
     async def test_error_names_model_and_datasource(self, tmp_path: Path) -> None:
         engine, _ = await _make_engine(tmp_path)
-        model = _sql_model("SELECT id FROM ghosts", name="invalid_sql_model")
+        model = _sql_dataset("SELECT id FROM ghosts", name="invalid_sql_model")
         with pytest.raises(DatasetSqlValidationError) as excinfo:
             await engine.save_dataset(model)
         message = str(excinfo.value)
@@ -185,7 +185,7 @@ class TestRejectAndAccept:
     async def test_error_reports_ds_type_and_hides_secrets(self, tmp_path: Path) -> None:
         secret = "SENTINEL_SECRET_PW"
         engine, _ = await _make_engine(tmp_path, password=secret)
-        model = _sql_model("SELECT id FROM ghosts", name="secretive")
+        model = _sql_dataset("SELECT id FROM ghosts", name="secretive")
         with pytest.raises(DatasetSqlValidationError) as excinfo:
             await engine.save_dataset(model)
         message = str(excinfo.value)
@@ -198,7 +198,7 @@ class TestRejectAndAccept:
         engine, _ = await _make_engine(tmp_path)
         seen: list[str] = []
         monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _capture(seen))
-        await engine.save_dataset(_sql_model("SELECT id FROM orders"))
+        await engine.save_dataset(_sql_dataset("SELECT id FROM orders"))
         assert seen == [_trial("SELECT id FROM orders")]
 
 
@@ -245,7 +245,7 @@ class TestGatesSkipProbe:
             SlayerSQLClient, "get_result_column_types",
             _raise(_op_error("no such table: orders")),
         )
-        model = _sql_model(
+        model = _sql_dataset(
             "SELECT id FROM orders WHERE status = {status}", name="param_model"
         )
         with caplog.at_level(logging.INFO, logger=_ENGINE_LOGGER):
@@ -264,7 +264,7 @@ class TestGatesSkipProbe:
         )
         # Placeholder appears only inside a ``{? ?}`` optional block — still a
         # placeholder in model.sql, so the probe is skipped.
-        model = _sql_model(
+        model = _sql_dataset(
             "SELECT id FROM orders {? WHERE status = {status} ?}",
             name="optblock_model",
         )
@@ -295,7 +295,7 @@ class TestInconclusiveWarnsAndSaves:
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
     ) -> None:
         engine, storage = await _make_engine(tmp_path)
-        model = _sql_model("SELECT id FROM orders", name="ghost_ds", data_source="ghost")
+        model = _sql_dataset("SELECT id FROM orders", name="ghost_ds", data_source="ghost")
         with caplog.at_level(logging.WARNING, logger=_ENGINE_LOGGER):
             await engine.save_dataset(model)
         assert await storage.get_dataset("ghost_ds", data_source="ghost") is not None
@@ -312,7 +312,7 @@ class TestInconclusiveWarnsAndSaves:
             SlayerSQLClient, "get_result_column_types", _raise(_op_error("database is locked")),
         )
         with caplog.at_level(logging.WARNING, logger=_ENGINE_LOGGER):
-            await engine.save_dataset(_sql_model("SELECT id FROM orders", name="transient"))
+            await engine.save_dataset(_sql_dataset("SELECT id FROM orders", name="transient"))
         assert await storage.get_dataset("transient", data_source=_DS) is not None
         assert any("transient" in m for m in _validator_logs(caplog, logging.WARNING))
 
@@ -328,7 +328,7 @@ class TestInconclusiveWarnsAndSaves:
             _raise(_op_error("unable to open database file")),
         )
         with caplog.at_level(logging.WARNING, logger=_ENGINE_LOGGER):
-            await engine.save_dataset(_sql_model("SELECT id FROM orders", name="unreachable"))
+            await engine.save_dataset(_sql_dataset("SELECT id FROM orders", name="unreachable"))
         assert await storage.get_dataset("unreachable", data_source=_DS) is not None
         assert any("unreachable" in m for m in _validator_logs(caplog, logging.WARNING))
 
@@ -342,7 +342,7 @@ class TestInconclusiveWarnsAndSaves:
             _raise(_op_error("password authentication failed for user")),
         )
         with caplog.at_level(logging.WARNING, logger=_ENGINE_LOGGER):
-            await engine.save_dataset(_sql_model("SELECT id FROM orders", name="authfail"))
+            await engine.save_dataset(_sql_dataset("SELECT id FROM orders", name="authfail"))
         assert await storage.get_dataset("authfail", data_source=_DS) is not None
         assert any("authfail" in m for m in _validator_logs(caplog, logging.WARNING))
 
@@ -354,7 +354,7 @@ class TestInconclusiveWarnsAndSaves:
             SlayerSQLClient, "get_result_column_types",
             _raise(_op_error("permission denied for table orders")),
         )
-        model = _sql_model("SELECT id FROM orders", name="permdenied")
+        model = _sql_dataset("SELECT id FROM orders", name="permdenied")
         with pytest.raises(DatasetSqlValidationError):
             await engine.save_dataset(model)
         assert await storage.get_dataset("permdenied", data_source=_DS) is None
@@ -382,7 +382,7 @@ class TestNonReadOnlySqlRejected:
             return {}
 
         monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy)
-        model = _sql_model(bad_sql, name="mutating")
+        model = _sql_dataset(bad_sql, name="mutating")
         with pytest.raises(DatasetSqlValidationError):
             await engine.save_dataset(model)
         assert executed == []  # static guard short-circuits before execution
@@ -393,7 +393,7 @@ class TestNonReadOnlySqlRejected:
 
     async def test_read_only_select_still_saves(self, tmp_path: Path) -> None:
         engine, storage = await _make_engine(tmp_path)
-        await engine.save_dataset(_sql_model("SELECT id FROM orders", name="ok"))
+        await engine.save_dataset(_sql_dataset("SELECT id FROM orders", name="ok"))
         assert await storage.get_dataset("ok", data_source=_DS) is not None
 
     async def test_unparseable_sql_rejected_without_db_call(
@@ -407,7 +407,7 @@ class TestNonReadOnlySqlRejected:
             return {}
 
         monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy)
-        model = _sql_model("SELECT ((( not valid", name="broken")
+        model = _sql_dataset("SELECT ((( not valid", name="broken")
         with pytest.raises(DatasetSqlValidationError):
             await engine.save_dataset(model)
         assert executed == []  # no DB round-trip when the SQL cannot be parsed
@@ -425,7 +425,7 @@ class TestNonReadOnlySqlRejected:
 
         monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy)
         # Parameterized SQL is not trial-run, but its shape is still classified.
-        model = _sql_model("DELETE FROM orders WHERE id = {id}", name="param_dml")
+        model = _sql_dataset("DELETE FROM orders WHERE id = {id}", name="param_dml")
         with pytest.raises(DatasetSqlValidationError):
             await engine.save_dataset(model)
         assert executed == []
@@ -434,7 +434,7 @@ class TestNonReadOnlySqlRejected:
     async def test_select_into_rejected(self, tmp_path: Path) -> None:
         # SELECT ... INTO parses under a SELECT root but creates a table.
         engine, storage = await _make_engine(tmp_path)
-        model = _sql_model("SELECT id INTO archived FROM orders", name="into_model")
+        model = _sql_dataset("SELECT id INTO archived FROM orders", name="into_model")
         with pytest.raises(DatasetSqlValidationError):
             await engine.save_dataset(model)
         assert await storage.get_dataset("into_model", data_source=_DS) is None
@@ -451,7 +451,7 @@ class TestNonReadOnlySqlRejected:
             return {}
 
         monkeypatch.setattr(SlayerSQLClient, "get_result_column_types", _spy)
-        model = _sql_model("SELECT * FROM {table}", name="param_ident")
+        model = _sql_dataset("SELECT * FROM {table}", name="param_ident")
         with pytest.raises(ValueError, match="literal values"):
             await engine.save_dataset(model)
         assert executed == []
@@ -459,7 +459,7 @@ class TestNonReadOnlySqlRejected:
 
     async def test_optional_block_after_predicate_rejected(self, tmp_path: Path) -> None:
         engine, storage = await _make_engine(tmp_path)
-        model = _sql_model(
+        model = _sql_dataset(
             "SELECT id FROM orders WHERE 1=1 {? AND status = {status} ?}",
             name="cube_style",
         )

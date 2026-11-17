@@ -30,7 +30,7 @@ from .seed import Dataset, generate_dataset, seed_database
 # SLayer model definitions for the benchmark schema
 # ---------------------------------------------------------------------------
 
-def _build_orders_model(ds_name: str) -> SlayerDataset:
+def _build_orders_dataset(ds_name: str) -> SlayerDataset:
     return SlayerDataset(
         name="orders",
         sql_table="orders",
@@ -53,7 +53,7 @@ def _build_orders_model(ds_name: str) -> SlayerDataset:
     )
 
 
-def _build_shops_model(ds_name: str) -> SlayerDataset:
+def _build_shops_dataset(ds_name: str) -> SlayerDataset:
     return SlayerDataset(
         name="shops",
         sql_table="shops",
@@ -66,7 +66,7 @@ def _build_shops_model(ds_name: str) -> SlayerDataset:
     )
 
 
-def _build_customers_model(ds_name: str) -> SlayerDataset:
+def _build_customers_dataset(ds_name: str) -> SlayerDataset:
     return SlayerDataset(
         name="customers",
         sql_table="customers",
@@ -143,9 +143,9 @@ async def _create_env(order_count: int) -> BenchEnv:
     storage = YAMLStorage(base_dir=tmpdir)
     await storage.save_datasource(ds)
 
-    await storage.save_dataset(_build_orders_model("bench"))
-    await storage.save_dataset(_build_shops_model("bench"))
-    await storage.save_dataset(_build_customers_model("bench"))
+    await storage.save_dataset(_build_orders_dataset("bench"))
+    await storage.save_dataset(_build_shops_dataset("bench"))
+    await storage.save_dataset(_build_customers_dataset("bench"))
 
     slayer_engine = SlayerQueryEngine(storage=storage)
 

@@ -39,7 +39,7 @@ from slayer.ir.planned import PlannedQuery, RegroupAttachPlan, Stage, StageKind,
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.generator import generate_from_planned as render_planned
 
-from tests._dev1800_fixtures import DatasetMetric, SlayerQuery, dev1800_models, signup_td
+from tests._dev1800_fixtures import DatasetMetric, SlayerQuery, dev1800_datasets, signup_td
 
 CM = "sum(customers.spend)"
 
@@ -48,13 +48,13 @@ CM = "sum(customers.spend)"
 # Planning + slot-walking helpers.
 # --------------------------------------------------------------------------- #
 def _bundle() -> ResolvedSourceBundle:
-    models = dev1800_models()
+    models = dev1800_datasets()
     return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
-def _plan(*, source_model: str = "orders", **kw) -> PlannedQuery:
+def _plan(*, source_dataset: str = "orders", **kw) -> PlannedQuery:
     kw.setdefault("time_dimensions", signup_td())
-    return plan_query(query=SlayerQuery(population=source_model, **kw), bundle=_bundle())
+    return plan_query(query=SlayerQuery(population=source_dataset, **kw), bundle=_bundle())
 
 
 def _all_slots(pq: PlannedQuery, *, recurse: bool = True) -> list[ValueSlot]:

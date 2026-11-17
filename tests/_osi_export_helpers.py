@@ -87,18 +87,18 @@ async def save(env: Env, *models: SlayerDataset) -> None:
         _close(engine, env)
 
 
-async def export(env: Env, *, models: list[str] | None = None, extensions: bool = True) -> OsiExportResult:
+async def export(env: Env, *, datasets: list[str] | None = None, extensions: bool = True) -> OsiExportResult:
     engine = _engine(env)
     try:
-        return await export_osi(engine=engine, datasource=env.datasource, datasets=models, extensions=extensions)
+        return await export_osi(engine=engine, datasource=env.datasource, datasets=datasets, extensions=extensions)
     finally:
         _close(engine, env)
 
 
-async def export_models(env: Env, *models: SlayerDataset, extensions: bool = True,
+async def export_datasets(env: Env, *models: SlayerDataset, extensions: bool = True,
                         subset: list[str] | None = None) -> OsiExportResult:
     await save(env, *models)
-    return await export(env, models=subset, extensions=extensions)
+    return await export(env, datasets=subset, extensions=extensions)
 
 
 async def reimport(env: Env, document: dict[str, Any], *, name: str = "reimported") -> tuple[Env, str]:

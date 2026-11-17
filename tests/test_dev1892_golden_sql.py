@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests._dev1841_fixtures import column_default_agg_models, dev1840_models
-from tests._dev1847_fixtures import INNER_CR, dev1847_models
+from tests._dev1841_fixtures import field_default_agg_datasets, dev1840_datasets
+from tests._dev1847_fixtures import INNER_CR, dev1847_datasets
 from tests._dev1892_fixtures import (
-    qualified_expr_default_models,
-    qualified_reagg_default_models,
+    qualified_expr_default_datasets,
+    qualified_reagg_default_datasets,
 )
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
@@ -23,11 +23,11 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1892_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
 _MODEL_SETS = {
-    "orders": dev1840_models,
-    "orders_coldef": column_default_agg_models,
-    "orders_wsum6": qualified_expr_default_models,
-    "sales": dev1847_models,
-    "sales_cwavg": qualified_reagg_default_models,
+    "orders": dev1840_datasets,
+    "orders_coldef": field_default_agg_datasets,
+    "orders_wsum6": qualified_expr_default_datasets,
+    "sales": dev1847_datasets,
+    "sales_cwavg": qualified_reagg_default_datasets,
 }
 _WEIGHT_COUNT = "weight=count(id, partition_by=[city, region])"
 
@@ -79,7 +79,7 @@ async def _generate_one(case, dialect: str):
             kw["to_many_handling"] = case["mode"]
         query = SlayerQuery(population=case["source"], **kw)
         return await _engine_generate(
-            query=query, model=models[0], extra_models=models[1:],
+            query=query, dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract

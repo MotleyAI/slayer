@@ -23,7 +23,7 @@ def _value(value, *, target: str):
 
 class TestIntegerRule:
     async def test_every_case_in_one_query(self, engine: SlayerQueryEngine) -> None:
-        await check_try_cast_targets(engine, model="orders")
+        await check_try_cast_targets(engine, dataset="orders")
 
     @pytest.mark.parametrize(("source", "target", "expected"), TRY_CAST_TARGET_CASES, ids=TRY_CAST_CASE_IDS)
     async def test_case(self, engine: SlayerQueryEngine, source: str, target: str, expected) -> None:

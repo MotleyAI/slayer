@@ -25,11 +25,11 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2215_fixtures import (
     BACKENDS,
     dev2215_engine,
-    dev2215_models,
+    dev2215_datasets,
     future_warnings,
     m,
     num,
-    orders_model,
+    orders_dataset,
     q,
     recorded_warnings,
     single,
@@ -51,7 +51,7 @@ async def storage(request, tmp_path) -> StorageBackend:
     store: StorageBackend = (YAMLStorage(base_dir=str(tmp_path)) if request.param == "yaml"
                              else SQLiteStorage(db_path=os.path.join(tmp_path, "store.db")))
     await store.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-    for model in dev2215_models()[1:3]:
+    for model in dev2215_datasets()[1:3]:
         await store.save_dataset(model)
     return store
 
@@ -146,7 +146,7 @@ class TestFreshInput:
     ("customers.count(*)", "count(customers.*)"),
 ])
 async def test_a_save_stores_the_canonical_twin(storage: StorageBackend, written: str, stored: str) -> None:
-    model = orders_model().model_copy(update={"metrics": [DatasetMetric(name="paid", expression=written)]})
+    model = orders_dataset().model_copy(update={"metrics": [DatasetMetric(name="paid", expression=written)]})
     with recorded_warnings() as caught:
         await storage.save_dataset(model)
     loaded = await storage.get_dataset("orders", data_source="test")
@@ -156,7 +156,7 @@ async def test_a_save_stores_the_canonical_twin(storage: StorageBackend, written
 
 
 async def test_a_saved_query_stores_the_canonical_twin(storage: StorageBackend) -> None:
-    await storage.save_dataset(orders_model())
+    await storage.save_dataset(orders_dataset())
     saved = SlayerDataset.model_validate({"name": "paid_orders", "data_source": "test", "source_queries": [
         {"population": "orders", "metrics": [{"expression": "count(*)", "name": "n"}],
          "filter": ["status == 'paid' and region is not None"]}]})
@@ -177,7 +177,7 @@ def spelling_payloads(notes: list[Any]) -> list[Any]:
 
 async def test_an_engine_save_returns_one_warning_per_spelling(storage: StorageBackend) -> None:
     engine = SlayerQueryEngine(storage=storage)
-    model = orders_model().model_copy(update={"metrics": [DatasetMetric(name="paid", expression=PAID_SPELLINGS)]})
+    model = orders_dataset().model_copy(update={"metrics": [DatasetMetric(name="paid", expression=PAID_SPELLINGS)]})
     notes: list[Any] = []
     try:
         with recorded_warnings() as caught:
@@ -203,7 +203,7 @@ async def test_a_saved_query_save_returns_its_spelling_warnings(engine: SlayerQu
 
 async def test_a_rest_model_save_returns_the_spelling_warning(storage: StorageBackend) -> None:
     client = TestClient(create_app(storage=storage))
-    body = orders_model().model_copy(update={"metrics": [DatasetMetric(name="paid", expression=PAID_SPELLINGS)]})
+    body = orders_dataset().model_copy(update={"metrics": [DatasetMetric(name="paid", expression=PAID_SPELLINGS)]})
     with recorded_warnings():
         resp = client.post("/models", json=body.model_dump(mode="json"))
     assert resp.status_code == 200, resp.text
@@ -222,7 +222,7 @@ async def test_an_mcp_model_save_lists_the_spelling_warning(storage: StorageBack
 
 async def test_a_canonical_save_is_silent_and_verbatim(storage: StorageBackend) -> None:
     formula = "sum(iif(status = 'paid' AND region IS NOT NULL, amount, NULL))"
-    model = orders_model().model_copy(update={"metrics": [DatasetMetric(name="paid", expression=formula)]})
+    model = orders_dataset().model_copy(update={"metrics": [DatasetMetric(name="paid", expression=formula)]})
     with recorded_warnings() as caught:
         await storage.save_dataset(model)
     loaded = await storage.get_dataset("orders", data_source="test")
@@ -260,7 +260,7 @@ class TestNeverSelfWarns:
         assert warned == []
 
     async def test_facade_query(self, engine: SlayerQueryEngine) -> None:
-        catalog = build_catalog(datasets_by_datasource={"test": dev2215_models()})
+        catalog = build_catalog(datasets_by_datasource={"test": dev2215_datasets()})
         result = translate("SELECT status, COUNT(*) FROM orders WHERE region IS NULL OR status IN ('a', 'b') "
                            "OR status <> 'x' GROUP BY status", catalog)
         assert isinstance(result, QueryResult)

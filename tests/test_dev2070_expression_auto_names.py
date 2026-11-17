@@ -24,7 +24,7 @@ from slayer.core.refs import auto_name_from_expression, key_display
 from slayer.engine.compile.projection import ValueRegistry
 from slayer.sql.naming import canonical_aggregate_alias, expression_source_leaf
 
-from tests._dev2070_fixtures import dev2070_models, make_exec_engine
+from tests._dev2070_fixtures import dev2070_datasets, make_exec_engine
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.query_engine import SlayerResponse
 
@@ -44,9 +44,9 @@ def q(**kw) -> SlayerQuery:
     return SlayerQuery.model_validate(kw)
 
 
-async def only_value(engine: SlayerQueryEngine, formula: str, key: str, **kw):
+async def only_value(engine: SlayerQueryEngine, expression: str, key: str, **kw):
     """Execute ``formula`` as the query's one measure; assert its key, return the single value."""
-    resp = await engine.execute(q(measures=[formula], **kw))
+    resp = await engine.execute(q(measures=[expression], **kw))
     assert key in resp.columns, resp.columns
     assert len(resp.data) == 1, resp.data
     return resp.data[0][key]
@@ -270,7 +270,7 @@ async def test_derived_key_from_a_downstream_stage(engine, query, dim, key, valu
 @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
 @pytest.mark.parametrize("spelling", ["buyer__spend_1_sum", "customers__spend_1_sum"])
 async def test_derived_key_over_a_named_edge_from_a_downstream_stage(dialect, spelling) -> None:
-    models = dev2070_models()
+    models = dev2070_datasets()
     models[0].relationships[0].name = "buyer"
     inner = SlayerQuery.model_validate({
         "population": "orders", "name": "s",
@@ -279,7 +279,7 @@ async def test_derived_key_over_a_named_edge_from_a_downstream_stage(dialect, sp
     outer = SlayerQuery.model_validate({
         "population": "s", "dimensions": ["buyer__regions__name"], "metrics": [f"max({spelling})"],
     })
-    async for e in make_exec_engine(dialect, models=models):
+    async for e in make_exec_engine(dialect, datasets=models):
         resp = await e.execute([inner, outer])
         assert by(resp, dim="s.buyer__regions__name", key="s.buyer__spend_1_sum_max") == {"north": 148, "south": 199}
 

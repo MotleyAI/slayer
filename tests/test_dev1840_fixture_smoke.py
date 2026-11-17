@@ -16,7 +16,7 @@ from tests._dev1840_fixtures import (
     DatasetMetric,
     SPEND_ALL_BY_TIER,
     SPEND_BASIC_BY_TIER,
-    ambiguity_models,
+    ambiguity_datasets,
     bundle,
     make_exec_engine,
     q,
@@ -33,7 +33,7 @@ async def exec_backend(request):
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def exec_backend_amb(request):
-    async for engine in make_exec_engine(request, models=ambiguity_models()):
+    async for engine in make_exec_engine(request, datasets=ambiguity_datasets()):
         yield request.param, engine
 
 

@@ -17,8 +17,8 @@ from pathlib import Path
 from tests._dev1840_fixtures import (
     DatasetMetric,
     SPEND_BAND_170,
-    ambiguity_models,
-    dev1840_models,
+    ambiguity_datasets,
+    dev1840_datasets,
     q,
     tq,
 )
@@ -31,10 +31,10 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery",
 ALLOWED_DELTAS: dict[str, str] = {}
 
 _MODEL_SETS = {
-    "default": lambda: dev1840_models(),
-    "weak": lambda: dev1840_models(strong_plans=False),
-    "rev": lambda: dev1840_models(declare_reverse=True),
-    "amb": ambiguity_models,
+    "default": lambda: dev1840_datasets(),
+    "weak": lambda: dev1840_datasets(strong_plans=False),
+    "rev": lambda: dev1840_datasets(declare_reverse=True),
+    "amb": ambiguity_datasets,
 }
 
 M = DatasetMetric(expression="sum(amount)", name="m")
@@ -106,7 +106,7 @@ async def _generate_one(case, dialect: str):
     models = _MODEL_SETS[case["models"]]()
     try:
         return await _engine_generate(
-            query=case["query"], model=models[0], extra_models=models[1:],
+            query=case["query"], dataset=models[0], extra_datasets=models[1:],
             dialect=dialect, validate=False,
         )
     except Exception as exc:  # noqa: BLE001 — the exception itself is contract

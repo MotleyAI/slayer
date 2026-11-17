@@ -24,7 +24,7 @@ from slayer.sql.dialects.base import ServerProfile
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
 from slayer.sql.physical_tables import physical_tables
 from tests._dev2120_fixtures import emit_contractors
-from tests._dev2137_fixtures import all_models, measure, query
+from tests._dev2137_fixtures import all_datasets, metric, query
 from tests._dev2189_fixtures import (
     EMITTED_DIALECTS,
     POLICIES,
@@ -170,20 +170,20 @@ def _profile(version: tuple[int, int]):
 
 #: Unnests ``skills`` and filters through a correlated semi-join in the same SELECT.
 UNNEST_BESIDE_SEMI_JOIN = query(dimensions=["team"], filters=["assignments.id = 1"],
-                                measures=[measure("count(skills.*)", "n")])
+                                measures=[metric("count(skills.*)", "n")])
 
 
 async def test_unnest_beside_a_semi_join_is_refused_before_25_8(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(SlayerSQLClient, "server_profile", _profile((25, 4)))
-    models = all_models()
+    models = all_datasets()
     with pytest.raises(SlayerError, match="25.8") as exc:
-        await emit_contractors(UNNEST_BESIDE_SEMI_JOIN, dialect="clickhouse", models=models)
+        await emit_contractors(UNNEST_BESIDE_SEMI_JOIN, dialect="clickhouse", datasets=models)
     assert "ARRAY JOIN" in str(exc.value)
 
 
 async def test_unnest_beside_a_semi_join_runs_from_25_8(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(SlayerSQLClient, "server_profile", _profile((25, 8)))
-    assert await emit_contractors(UNNEST_BESIDE_SEMI_JOIN, dialect="clickhouse", models=all_models())
+    assert await emit_contractors(UNNEST_BESIDE_SEMI_JOIN, dialect="clickhouse", datasets=all_datasets())
 
 
 _EXISTS = "EXISTS(SELECT 1 FROM a WHERE a.c = p.id)"

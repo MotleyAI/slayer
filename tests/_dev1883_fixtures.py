@@ -19,7 +19,7 @@ def td(**kw: Any) -> TimeDimension:
     return TimeDimension(**kw)
 
 
-def model(**kw: Any) -> SlayerDataset:
+def dataset(**kw: Any) -> SlayerDataset:
     """Build a ``SlayerModel`` from shorthand kwargs (dict columns/aggregations coerced by validators)."""
     return SlayerDataset(**kw)
 
@@ -34,7 +34,7 @@ ORDER_ROWS = [
 MONTH_SUMS = {"2024-01-01": 10.0, "2024-02-01": 60.0, "2025-03-01": 5.0}
 
 
-async def save_models(storage: YAMLStorage) -> None:
+async def save_datasets(storage: YAMLStorage) -> None:
     await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
         fields=[
@@ -75,7 +75,7 @@ async def build_engine(tmp_path) -> SlayerQueryEngine:
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=":memory:")
     )
-    await save_models(storage)
+    await save_datasets(storage)
     return SlayerQueryEngine(storage=storage)
 
 
@@ -87,5 +87,5 @@ async def build_exec_engine(tmp_path) -> SlayerQueryEngine:
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=db_path)
     )
-    await save_models(storage)
+    await save_datasets(storage)
     return SlayerQueryEngine(storage=storage)

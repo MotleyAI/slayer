@@ -26,7 +26,7 @@ from slayer.memories.models import Memory
 from slayer.search.index import build_in_memory_index, search_index
 
 
-def _make_models() -> list[SlayerDataset]:
+def _make_datasets() -> list[SlayerDataset]:
     return [
         SlayerDataset(
             name="orders",
@@ -78,7 +78,7 @@ def _make_memories() -> list[Memory]:
 def test_build_index_skips_hidden_models_and_hidden_columns() -> None:
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     # Hidden model entirely absent.
@@ -95,7 +95,7 @@ def test_index_has_one_doc_per_memory_and_per_entity() -> None:
     visible across both models)."""
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     # English stemmer + tokenizer: "checkout" appears in orders.description
@@ -109,7 +109,7 @@ def test_english_stemmer_matches_singular_to_plural_form() -> None:
     """`shipped` ↔ `shipping` via Porter stemmer."""
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     hits = search_index(index=idx, question="ship", limit=10)
@@ -124,7 +124,7 @@ def test_snake_case_tokenization_finds_subword() -> None:
     """`customer_id` → ['customer', 'id'] under the default tokenizer."""
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     hits = search_index(index=idx, question="customer", limit=20)
@@ -138,7 +138,7 @@ def test_canonical_field_exact_match() -> None:
     """An agent can search for the exact canonical string and get the doc."""
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     hits = search_index(
@@ -154,7 +154,7 @@ def test_canonical_field_exact_match() -> None:
 def test_kind_field_split_for_memory_vs_entity() -> None:
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     hits = search_index(index=idx, question="customer", limit=20)
@@ -176,7 +176,7 @@ def test_memory_id_round_trips_as_string() -> None:
     """DEV-1428: ``IndexHit.memory_id`` is now the str memory id."""
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     hits = search_index(index=idx, question="anonymous checkouts", limit=10)
@@ -194,7 +194,7 @@ def test_kind_filter_memory_returns_only_memory_hits() -> None:
     only, even when other-kind docs would otherwise outscore them."""
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     hits = search_index(
@@ -207,7 +207,7 @@ def test_kind_filter_memory_returns_only_memory_hits() -> None:
 def test_kind_filter_model_returns_only_model_hits() -> None:
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     hits = search_index(
@@ -222,7 +222,7 @@ def test_exclude_kind_memory_returns_only_non_memory_hits() -> None:
     measure/aggregation) hits and no memory hits."""
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     hits = search_index(
@@ -235,7 +235,7 @@ def test_exclude_kind_memory_returns_only_non_memory_hits() -> None:
 def test_kind_filter_and_exclude_kind_are_mutually_exclusive() -> None:
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     with pytest.raises(ValueError):
@@ -254,7 +254,7 @@ def test_kind_filtered_query_preserves_relative_score_order() -> None:
     unfiltered query against the same `question`."""
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     unfiltered = search_index(index=idx, question="customer", limit=50)
@@ -273,7 +273,7 @@ def test_exclude_kind_query_preserves_relative_score_order() -> None:
     non-memory hits as they appear in the unfiltered query."""
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     unfiltered = search_index(index=idx, question="customer", limit=50)
@@ -292,7 +292,7 @@ def test_kind_filter_limit_clamps_to_kind_subset() -> None:
     `kind_filter` set, the cap applies to the kind-restricted result list."""
     idx = build_in_memory_index(
         memories=_make_memories(),
-        datasets=_make_models(),
+        datasets=_make_datasets(),
         datasources=["warehouse"],
     )
     hits = search_index(

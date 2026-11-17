@@ -27,7 +27,7 @@ from tests._dev2120_fixtures import (
     lib_query,
     patch_profile,
 )
-from tests._dev2137_fixtures import by, measure, query
+from tests._dev2137_fixtures import by, metric, query
 from tests._engine_helpers import seeded_exec_engine
 
 
@@ -40,7 +40,7 @@ _TYPED_EMPTY = (r"CAST\(\s*(ARRAY\s*)?\[\]\s+AS\b", r"ARRAY<\w+>\s*\[\]")
 @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
 @pytest.mark.parametrize("formula", ["collect(rate)", "collect(city)", "collect(skills.value)"])
 async def test_collect_fallback_is_untyped(dialect: str, formula: str) -> None:
-    sql = await emit_contractors(query(dimensions=["team"], measures=[measure(formula, "c")]), dialect=dialect)
+    sql = await emit_contractors(query(dimensions=["team"], measures=[metric(formula, "c")]), dialect=dialect)
     typed = [p for p in _TYPED_EMPTY if re.search(p, sql, re.I)]
     assert not typed, sql
 
@@ -56,7 +56,7 @@ def _seed_amounts(db_path: str) -> None:
                     f"(3, 'a', 1.5, 1.5, '{UUID_B}'), (4, 'b', NULL, NULL, NULL)")
 
 
-def _amounts_model() -> SlayerDataset:
+def _amounts_dataset() -> SlayerDataset:
     """``n`` / ``big`` are exact numerics read as DOUBLE; ``u`` a UUID read as TEXT, as ingestion types them."""
     return SlayerDataset(name="amounts", sql_table="amounts", data_source="test", fields=[
         DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="team", datatype=DataType.TEXT),
@@ -66,22 +66,22 @@ def _amounts_model() -> SlayerDataset:
 
 
 async def test_collect_over_exact_numerics_on_duckdb() -> None:
-    async with seeded_exec_engine(dialect="duckdb", seed=_seed_amounts, models=[_amounts_model()]) as (engine, _db):
+    async with seeded_exec_engine(dialect="duckdb", seed=_seed_amounts, datasets=[_amounts_dataset()]) as (engine, _db):
         resp = await engine.execute(SlayerQuery.model_validate({
             "population": "amounts", "dimensions": ["team"],
-            "metrics": [measure("collect(n)", "cn"), measure("collect(big)", "cbig")],
+            "metrics": [metric("collect(n)", "cn"), metric("collect(big)", "cbig")],
         }))
     for name in ("cn", "cbig"):
-        got = {k: None if v is None else [float(x) for x in v] for k, v in by(resp, "team", name, model="amounts").items()}
+        got = {k: None if v is None else [float(x) for x in v] for k, v in by(resp, "team", name, dataset="amounts").items()}
         assert got == {"a": [1.5, 2.25], "b": []}, resp.sql
 
 
 async def test_collect_over_uuid_on_duckdb() -> None:
-    async with seeded_exec_engine(dialect="duckdb", seed=_seed_amounts, models=[_amounts_model()]) as (engine, _db):
+    async with seeded_exec_engine(dialect="duckdb", seed=_seed_amounts, datasets=[_amounts_dataset()]) as (engine, _db):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "population": "amounts", "dimensions": ["team"], "metrics": [measure("collect(u)", "cu")],
+            "population": "amounts", "dimensions": ["team"], "metrics": [metric("collect(u)", "cu")],
         }))
-    got = {k: None if v is None else [str(x) for x in v] for k, v in by(resp, "team", "cu", model="amounts").items()}
+    got = {k: None if v is None else [str(x) for x in v] for k, v in by(resp, "team", "cu", dataset="amounts").items()}
     assert got == {"a": [UUID_A, UUID_B], "b": []}, resp.sql
 
 
