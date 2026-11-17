@@ -27,8 +27,8 @@ class TestGranularityNamesReserved:
         with pytest.raises(pydantic.ValidationError, match="week_sunday"):
             fx.dataset(
                 name="orders", sql_table="orders", data_source="test",
-                columns=[amount],
-                aggregations=[{"name": "quarter", "formula": "SUM({x})"}],
+                fields=[amount],
+                aggregations=[{"name": "quarter", "expression": "SUM({x})"}],
             )
 
 

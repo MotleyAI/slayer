@@ -53,7 +53,7 @@ class TestFilterRoutingIntoAssociation:
         association before the per-cell distinct-entity aggregation."""
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
-            dimensions=["status"], measures=[CM], filters=["channel = 'app'"]))
+            dimensions=["status"], metrics=[CM], filter=["channel = 'app'"]))
         by = status_key(resp)
         for status, spend in ASSOC_APP_SPEND_BY_STATUS.items():
             assert float(by[(status,)]["orders.cm"]) == pytest.approx(spend)
@@ -65,8 +65,8 @@ class TestFilterRoutingIntoAssociation:
         conjunct restricts the association's membership by semi-join."""
         _, engine = exec_backend_weak
         resp = await engine.execute(assoc_q(
-            dimensions=["status"], measures=[CM],
-            filters=["customers.plans.level = 'basic'"]))
+            dimensions=["status"], metrics=[CM],
+            filter=["customers.plans.level = 'basic'"]))
         by = status_key(resp)
         for status, spend in ASSOC_BASIC_SPEND_BY_STATUS.items():
             assert float(by[(status,)]["orders.cm"]) == pytest.approx(spend)
@@ -80,8 +80,8 @@ class TestFilterRoutingIntoAssociation:
         ``plans.level != 'pro'``; a NULL-insensitive bug would add its 30 (270)."""
         _, engine = exec_backend_weak
         resp = await engine.execute(assoc_q(
-            dimensions=["status"], measures=[CM],
-            filters=["customers.plans.level != 'pro'"]))
+            dimensions=["status"], metrics=[CM],
+            filter=["customers.plans.level != 'pro'"]))
         by = status_key(resp)
         assert float(by[("ok",)]["orders.cm"]) == pytest.approx(240.0)
         assert float(by[("ok",)]["orders.cm"]) != pytest.approx(270.0)
@@ -94,8 +94,8 @@ class TestFilterRoutingIntoAssociation:
         new 250), reported through the informational entry, no dropped warning."""
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
-            dimensions=["status"], measures=[CM],
-            filters=["customers.tier = 'gold' OR channel = 'app'"]))
+            dimensions=["status"], metrics=[CM],
+            filter=["customers.tier = 'gold' OR channel = 'app'"]))
         by = status_key(resp)
         for status, spend in {"ok": 270.0, "new": 250.0}.items():
             assert float(by[(status,)]["orders.cm"]) == pytest.approx(spend), status

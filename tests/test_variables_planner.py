@@ -357,7 +357,7 @@ def _template(entry) -> str | None:
 
 class TestFormulaSurfaces:
     def test_unnamed_measure_substituted_with_template(self) -> None:
-        out = apply_variables_to_query(query=_q(measures=["sum(amount) * {k} / 100"]), variables={"k": 10})
+        out = apply_variables_to_query(query=_q(metrics=["sum(amount) * {k} / 100"]), variables={"k": 10})
         assert out.metrics is not None
         (m,) = out.metrics
         assert m.expression == "sum(amount) * 10 / 100"
@@ -365,7 +365,7 @@ class TestFormulaSurfaces:
         assert _template(m) == "sum(amount) * {k} / 100"
 
     def test_unchanged_measure_has_no_template(self) -> None:
-        out = apply_variables_to_query(query=_q(measures=["sum(amount)"], filters=["a > {k}"]), variables={"k": 1})
+        out = apply_variables_to_query(query=_q(metrics=["sum(amount)"], filter=["a > {k}"]), variables={"k": 1})
         assert out.metrics is not None
         assert _template(out.metrics[0]) is None
 
@@ -390,7 +390,7 @@ class TestFormulaSurfaces:
 
     def test_order_expression_substituted(self) -> None:
         out = apply_variables_to_query(
-            query=_q(order=[{"column": "sum(amount) * {k}", "direction": "desc"}]), variables={"k": -1},
+            query=_q(order=[{"field": "sum(amount) * {k}", "direction": "desc"}]), variables={"k": -1},
         )
         assert out.order is not None
         assert out.order[0].raw_expression == "sum(amount) * -1"
@@ -398,14 +398,14 @@ class TestFormulaSurfaces:
 
     def test_date_range_bounds_substituted(self) -> None:
         q = _q(time_dimensions=[{
-            "dimension": "ordered_at", "granularity": "month", "date_range": ["{start}", "{end}"],
+            "field": "ordered_at", "granularity": "month", "date_range": ["{start}", "{end}"],
         }])
         out = apply_variables_to_query(query=q, variables={"start": "2024-01-01", "end": "2024-02-28"})
         assert out.time_dimensions is not None
         assert out.time_dimensions[0].date_range == ["2024-01-01", "2024-02-28"]
 
     def test_substituted_date_range_bound_is_shape_checked(self) -> None:
-        q = _q(time_dimensions=[{"dimension": "ordered_at", "granularity": "month", "date_range": ["{start}", None]}])
+        q = _q(time_dimensions=[{"field": "ordered_at", "granularity": "month", "date_range": ["{start}", None]}])
         with pytest.raises(ValueError) as info:
             apply_variables_to_query(query=q, variables={"start": "2025/01/01"})
         msg = str(info.value)
@@ -413,13 +413,13 @@ class TestFormulaSurfaces:
             assert form in msg, msg
 
     def test_equal_template_time_dimensions_collapse_after_substitution(self) -> None:
-        td = {"dimension": "ordered_at", "granularity": "month", "date_range": ["{start}", None]}
+        td = {"field": "ordered_at", "granularity": "month", "date_range": ["{start}", None]}
         out = apply_variables_to_query(query=_q(time_dimensions=[td, dict(td)]), variables={"start": "2024-01-01"})
         assert out.time_dimensions is not None
         assert [t.date_range for t in out.time_dimensions] == [["2024-01-01", None]]
 
     def test_string_value_sql_quoted(self) -> None:
-        q = _q(measures=["sum(CASE WHEN status == '{name}' THEN 1 ELSE 0 END)"])
+        q = _q(metrics=["sum(CASE WHEN status == '{name}' THEN 1 ELSE 0 END)"])
         out = apply_variables_to_query(query=q, variables={"name": "O'Brien"})
         assert out.metrics is not None
         assert out.metrics[0].expression == "sum(CASE WHEN status == 'O''Brien' THEN 1 ELSE 0 END)"
@@ -455,14 +455,14 @@ class TestFormulaSurfaces:
             apply_variables_to_query(query=query, variables={})
 
     def test_invalid_variable_name_in_measure_raises(self) -> None:
-        query = _q(measures=["amount:sum * {bad-name}"])
+        query = _q(metrics=["amount:sum * {bad-name}"])
         with pytest.raises(ValueError, match="Invalid variable name"):
             apply_variables_to_query(query=query, variables={})
 
 
 class TestRebuild:
     def test_fields_set_and_version_preserved(self) -> None:
-        q = _q(measures=["sum(amount) * {k}"])
+        q = _q(metrics=["sum(amount) * {k}"])
         out = apply_variables_to_query(query=q, variables={"k": 2})
         assert out.model_fields_set == q.model_fields_set
         assert out.version == q.version
@@ -475,7 +475,7 @@ class TestRebuild:
         assert out.extensions == [ext]
 
     def test_refined_saved_query_preserved(self) -> None:
-        saved = _q(dimensions=["region"], measures=["sum(amount) * {k}"], limit=5)
+        saved = _q(dimensions=["region"], metrics=["sum(amount) * {k}"], limit=5)
         refined = refine_query(saved=saved, refinement=QueryRefinement.model_validate({"filter": ["status == '{s}'"]}))
         out = apply_variables_to_query(query=refined, variables={"k": 3, "s": "ok"})
         assert out.model_fields_set == refined.model_fields_set
@@ -486,7 +486,7 @@ class TestRebuild:
         assert out.limit == 5
 
     def test_input_not_mutated(self) -> None:
-        q = _q(measures=["sum(amount) * {k}"], dimensions=["amount * {k}"])
+        q = _q(metrics=["sum(amount) * {k}"], dimensions=["amount * {k}"])
         apply_variables_to_query(query=q, variables={"k": 2})
         assert q.metrics is not None
         assert q.metrics[0].expression == "sum(amount) * {k}"
@@ -499,12 +499,12 @@ class TestRebuild:
 class TestPlaceholderNames:
     def _all_surfaces(self) -> SlayerQuery:
         return _q(
-            filters=["amount > {f}"],
-            measures=["sum(amount) * {m}"],
+            filter=["amount > {f}"],
+            metrics=["sum(amount) * {m}"],
             dimensions=["amount * {d}"],
-            order=[{"column": "sum(amount) * {o}"}],
+            order=[{"field": "sum(amount) * {o}"}],
             time_dimensions=[TimeDimension.model_validate(
-                {"dimension": "ordered_at", "granularity": "month", "date_range": ["{s}", None]},
+                {"field": "ordered_at", "granularity": "month", "date_range": ["{s}", None]},
             )],
         )
 

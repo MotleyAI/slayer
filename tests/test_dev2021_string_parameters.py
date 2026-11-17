@@ -146,7 +146,7 @@ class TestStringArgumentIsModeB:
 
     async def test_a_setting_is_unchanged(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_q(
-            "sum(amount, window='60d')", time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
+            "sum(amount, window='60d')", time_dimensions=[{"field": "created_at", "granularity": "month"}],
         ))
         assert [float(r["orders.m"]) for r in sorted(resp.data, key=lambda r: str(r["orders.created_at"]))] == [
             10.0, 30.0, 50.0, 70.0,

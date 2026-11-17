@@ -37,7 +37,7 @@ COVAR_SAMP_PAID = statistics.covariance(_AMOUNTS, _PAID01)
 CORR_PAID = statistics.correlation(_AMOUNTS, _PAID01)
 CREDIT_ABOVE_150_AVG = 250.0
 PAID_TOTAL = 345
-MONTH = [{"dimension": "order_date", "granularity": "month"}]
+MONTH = [{"field": "order_date", "granularity": "month"}]
 
 
 def dev2177_datasets(*, data_source: str = "test") -> list[SlayerDataset]:
@@ -76,12 +76,12 @@ def single(resp: SlayerResponse, name: str = "v", *, dataset: str = "orders") ->
 # Boolean aggregation parameters (spec: aggregations/boolean-inputs)
 # --------------------------------------------------------------------------- #
 async def check_boolean_weight(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(measures=[m(f"weighted_avg(amount, weight={PAID})")]))
+    resp = await engine.execute(q(metrics=[m(f"weighted_avg(amount, weight={PAID})")]))
     assert num(single(resp)) == pytest.approx(PAID_AVG), resp.sql
 
 
 async def check_boolean_other(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(measures=[
+    resp = await engine.execute(q(metrics=[
         m(f"covar_samp(amount, other={PAID})", "cv"), m(f"corr(amount, other={PAID})", "cr"),
     ]))
     assert num(single(resp, "cv")) == pytest.approx(COVAR_SAMP_PAID), resp.sql
@@ -89,17 +89,17 @@ async def check_boolean_other(engine: SlayerQueryEngine) -> None:
 
 
 async def check_boolean_weight_under_filter(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(measures=[m(f"weighted_avg(amount, weight={PAID}) FILTER (WHERE amount > 10)")]))
+    resp = await engine.execute(q(metrics=[m(f"weighted_avg(amount, weight={PAID}) FILTER (WHERE amount > 10)")]))
     assert num(single(resp)) == pytest.approx(PAID_AVG_ABOVE_10), resp.sql
 
 
 async def check_boolean_weight_windowed(engine: SlayerQueryEngine) -> None:
     """Each month's trailing-window value equals ``avg(amount, window=)`` over the paid rows alone."""
-    resp = await engine.execute(q(time_dimensions=MONTH, measures=[
+    resp = await engine.execute(q(time_dimensions=MONTH, metrics=[
         m(f"weighted_avg(amount, weight={PAID}, window='90d')"),
     ]))
-    restricted = await engine.execute(q(time_dimensions=MONTH, measures=[m("avg(amount, window='90d')")],
-                                         filters=[PAID]))
+    restricted = await engine.execute(q(time_dimensions=MONTH, metrics=[m("avg(amount, window='90d')")],
+                                         filter=[PAID]))
     got = {str(r["orders.order_date"])[:7]: num(r["orders.v"]) for r in resp.data}
     want = {str(r["orders.order_date"])[:7]: num(r["orders.v"]) for r in restricted.data}
     assert want, (got, want)
@@ -109,7 +109,7 @@ async def check_boolean_weight_windowed(engine: SlayerQueryEngine) -> None:
 
 
 async def check_boolean_weight_partitioned(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(dimensions=["customer_id", "status"], measures=[
+    resp = await engine.execute(q(dimensions=["customer_id", "status"], metrics=[
         m(f"weighted_avg(amount, weight={PAID}, partition_by=customer_id)"),
     ]))
     assert len(resp.data) == 6, resp.data
@@ -130,7 +130,7 @@ async def check_boolean_weight_associated(engine: SlayerQueryEngine) -> None:
     """The association producer picks the boolean parameter per entity before weighting."""
     resp = await engine.execute(q(
         dimensions=["status"], to_many_handling="associate",
-        measures=[m("weighted_avg(customers.credit, weight=customers.credit > 150)")],
+        metrics=[m("weighted_avg(customers.credit, weight=customers.credit > 150)")],
     ))
     got = {r["orders.status"]: num(r["orders.v"]) for r in resp.data}
     assert got == pytest.approx({"open": CREDIT_ABOVE_150_AVG, "paid": CREDIT_ABOVE_150_AVG}), resp.sql
@@ -138,7 +138,7 @@ async def check_boolean_weight_associated(engine: SlayerQueryEngine) -> None:
 
 
 async def check_custom_aggregation_receives_raw_boolean(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(measures=[m(f"true_amount(amount, flag={PAID})")]))
+    resp = await engine.execute(q(metrics=[m(f"true_amount(amount, flag={PAID})")]))
     assert num(single(resp)) == PAID_TOTAL, resp.sql
 
 

@@ -16,7 +16,7 @@ import traceback
 from pathlib import Path
 
 import slayer
-from slayer.core.models import DatasourceConfig, SlayerDataset
+from slayer.core.models import DatasourceConfig, SlayerModel
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -25,7 +25,6 @@ sys.path.insert(0, str(_DIR))
 
 import corpus  # noqa: E402  # ALLOW(import-not-top): sibling module, resolves only after the sys.path insert
 from classify import encode_cell  # noqa: E402  # ALLOW(import-not-top): sibling module, resolves only after the sys.path insert
-from slayer.engine.query_engine import SlayerResponse
 
 MAX_ERROR_LEN = 2000
 
@@ -69,7 +68,7 @@ def _select_entries(args) -> list[dict]:
     return [e for e in corpus.ENTRIES if e["id"] in wanted]
 
 
-def _serialize_response(resp: SlayerResponse) -> dict:
+def _serialize_response(resp) -> dict:
     columns = list(resp.columns)
     rows = []
     for row in resp.data:
@@ -151,10 +150,10 @@ async def _main_async(args, version: str) -> dict:
         name=corpus.DS, type=args.db_type, **ds_kwargs,
     ))
     for model_dict in corpus.MODELS:
-        await storage.save_dataset(SlayerDataset(**model_dict))
+        await storage.save_model(SlayerModel(**model_dict))
 
     engine = SlayerQueryEngine(storage=storage)
-    await engine.execute(query={"population": "orders", "metrics": ["count(*)"]})
+    await engine.execute(query={"source_model": "orders", "measures": ["count(*)"]})
 
     entries = _select_entries(args)
     payload: dict = {

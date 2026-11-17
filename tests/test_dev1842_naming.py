@@ -41,14 +41,14 @@ class TestImplicitAndExplicitName:
         """Unnamed ``customers.aov`` → result key ``orders.customers.aov``."""
         _, engine = exec_backend
         resp = await engine.execute(q(dimensions=["customers.tier"],
-                                      measures=[{"formula": "customers.aov"}]))
+                                      metrics=[{"expression": "customers.aov"}]))
         assert "orders.customers.aov" in resp.columns
 
     async def test_explicit_name_overrides_the_implicit_key(self, exec_backend: tuple[str, SlayerQueryEngine]) -> None:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[{"formula": "customers.aov", "name": "myaov"}]))
+            metrics=[{"expression": "customers.aov", "name": "myaov"}]))
         assert "orders.myaov" in resp.columns
         assert "orders.customers.aov" not in resp.columns
 

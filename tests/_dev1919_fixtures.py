@@ -88,7 +88,7 @@ def keyless_declared_datasets() -> List[SlayerDataset]:
 
 def mode_q(mode: Optional[str], **kw) -> SlayerQuery:
     """An orders-rooted query; ``mode=None`` leaves ``to_many_handling`` at its default."""
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     if mode is not None:
         kw["to_many_handling"] = mode
     return SlayerQuery(**kw)

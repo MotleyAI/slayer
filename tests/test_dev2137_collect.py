@@ -24,7 +24,7 @@ async def engine():
 
 
 async def _collected(engine, expression: str, *, by_key: str = "team", **body: Any) -> dict[Any, Any]:
-    resp = await engine.execute(query(dimensions=[by_key], measures=[metric(expression, "c")], **body))
+    resp = await engine.execute(query(dimensions=[by_key], metrics=[metric(expression, "c")], **body))
     return {k: as_list(v) for k, v in by(resp, by_key, "c").items()}
 
 
@@ -36,8 +36,8 @@ class TestValues:
         assert await _collected(engine, "collect(skills.value)") == {"A": ["go", "sql"], "B": ["go"]}
 
     async def test_all_inputs_null(self, engine) -> None:
-        resp = await engine.execute(query(measures=[metric("collect(city)", "c")],
-                                          filters=["team = 'A' AND city IS NULL"]))
+        resp = await engine.execute(query(metrics=[metric("collect(city)", "c")],
+                                          filter=["team = 'A' AND city IS NULL"]))
         assert as_list(resp.data[0]["contractors.c"]) == []
 
     async def test_a_cell_without_rows_is_empty(self, engine) -> None:
@@ -68,16 +68,16 @@ class TestEligibility:
 
     @pytest.mark.parametrize("type_", ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP"])
     async def test_eligible_on_scalar_columns(self, type_: str) -> None:
-        await emit_contractors(query(dimensions=["team"], measures=[metric("collect(x)", "c")]),
+        await emit_contractors(query(dimensions=["team"], metrics=[metric("collect(x)", "c")]),
                                dialect="duckdb", datasets=[_typed_dataset(DataType(type_))])
 
     async def test_collect_of_a_list(self, engine) -> None:
-        q = query(dimensions=["team"], measures=[metric("collect(skills)", "c")])
+        q = query(dimensions=["team"], metrics=[metric("collect(skills)", "c")])
         with pytest.raises(SlayerError, match=r"collect\(skills\.value\)"):
             await engine.execute(q)
 
     async def test_collect_of_an_opaque_column(self) -> None:
-        q = query(dimensions=["team"], measures=[metric("collect(x)", "c")])
+        q = query(dimensions=["team"], metrics=[metric("collect(x)", "c")])
         models = [_typed_dataset(DataType.UNKNOWN)]
         with pytest.raises(SlayerError):
             await emit_contractors(q, dialect="duckdb", datasets=models)
@@ -85,11 +85,11 @@ class TestEligibility:
 
 class TestListResults:
     async def test_filtering_on_a_collected_list(self, engine) -> None:
-        got = await _collected(engine, "collect(skills.value)", filters=["contains(collect(skills.value), 'sql')"])
+        got = await _collected(engine, "collect(skills.value)", filter=["contains(collect(skills.value), 'sql')"])
         assert set(got) == {"A"}
 
     async def test_list_function_in_a_formula(self, engine) -> None:
-        resp = await engine.execute(query(dimensions=["team"], measures=[
+        resp = await engine.execute(query(dimensions=["team"], metrics=[
             metric("length(collect(skills.value))", "n")]))
         assert {r["contractors.team"]: int(r["contractors.n"]) for r in resp.data} == {"A": 2, "B": 1}
 
@@ -114,7 +114,7 @@ class TestListResults:
         assert {r["contractors.team"]: r["contractors.c"] for r in rows} == {"A": ["Oslo"], "B": ["Oslo", "Rome"]}
 
     async def test_markdown_cell_is_json_text(self, engine) -> None:
-        resp = await engine.execute(query(dimensions=["team"], measures=[metric("collect(city)", "c")]))
+        resp = await engine.execute(query(dimensions=["team"], metrics=[metric("collect(city)", "c")]))
         assert '["Oslo", "Rome"]' in resp.to_markdown() or '["Oslo","Rome"]' in resp.to_markdown()
 
 
@@ -126,13 +126,13 @@ LOWERING = {"bigquery": "IGNORE NULLS", "snowflake": "WITHIN GROUP", "clickhouse
 class TestEmission:
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     async def test_lowering(self, dialect: str) -> None:
-        sql = await emit_contractors(query(dimensions=["team"], measures=[metric("collect(city)", "c")]),
+        sql = await emit_contractors(query(dimensions=["team"], metrics=[metric("collect(city)", "c")]),
                                      dialect=dialect)
         assert LOWERING[dialect] in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     async def test_empty_result_is_an_empty_list(self, dialect: str) -> None:
-        sql = await emit_contractors(query(dimensions=["team"], measures=[metric("collect(city)", "c")]),
+        sql = await emit_contractors(query(dimensions=["team"], metrics=[metric("collect(city)", "c")]),
                                      dialect=dialect)
         assert "NULLIF" not in sql.upper(), sql
         if dialect in ("postgres", "duckdb", "bigquery", "trino"):
@@ -140,13 +140,13 @@ class TestEmission:
 
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "trino"])
     async def test_null_inputs_filtered(self, dialect: str) -> None:
-        sql = await emit_contractors(query(dimensions=["team"], measures=[metric("collect(city)", "c")]),
+        sql = await emit_contractors(query(dimensions=["team"], metrics=[metric("collect(city)", "c")]),
                                      dialect=dialect)
         assert "IS NOT NULL" in sql.upper(), sql
 
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     async def test_elements_per_team_emit(self, dialect: str) -> None:
-        await emit_contractors(query(dimensions=["team"], measures=[metric("collect(skills.value)", "c")]),
+        await emit_contractors(query(dimensions=["team"], metrics=[metric("collect(skills.value)", "c")]),
                                dialect=dialect, datasets=all_datasets())
 
 
@@ -156,7 +156,7 @@ _TYPED_EMPTY = (r"CAST\(\s*(ARRAY\s*)?\[\]\s+AS\b", r"ARRAY<\w+>\s*\[\]")
 class TestJoinBackOfAPrimaryKey:
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     async def test_join_back_fallback_is_untyped(self, dialect: str) -> None:
-        sql = await emit_contractors(query(dimensions=["name"], measures=[metric("collect(assignments.id)", "c")]),
+        sql = await emit_contractors(query(dimensions=["name"], metrics=[metric("collect(assignments.id)", "c")]),
                                      dialect=dialect, datasets=all_datasets())
         assert not [p for p in _TYPED_EMPTY if re.search(p, sql, re.I)], sql
 

@@ -101,7 +101,7 @@ class TestLiftedDirection:
         sql = await gen(q(
             dimensions=["region", BAND],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression=formula, name="x"),
             ],
@@ -114,7 +114,7 @@ class TestLiftedDirection:
         sql = await gen(q(
             dimensions=["region", BAND],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
                 DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
@@ -133,7 +133,7 @@ class TestRemainingArmsExactMessages:
         sql = await gen(q(
             dimensions=["region", BAND],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="sum(amount, window='1y')", name="w"),
             ],
@@ -144,7 +144,7 @@ class TestRemainingArmsExactMessages:
         """Lifted direction: the former ranked-arm shape renders."""
         sql = await gen(q(
             dimensions=["region", BAND],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="last(amount)", name="l"),
             ],
@@ -157,7 +157,7 @@ class TestRemainingArmsExactMessages:
         is gone from the sources."""
         sql = await gen(q(
             dimensions=["region", BAND],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="sum(customers.spend)", name="cm"),
             ],
@@ -191,7 +191,7 @@ class TestCteBodyArms:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region", BAND],
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         ), bundle=bundle)
         self._assert_hoistable(*self._split_cte_body(planned, bundle))
 
@@ -199,7 +199,7 @@ class TestCteBodyArms:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
             ],
         ), bundle=bundle)
@@ -229,7 +229,7 @@ class TestStalePlannerRefsRepointed:
         )
         query = q(
             dimensions=["region", {"expression": cband, "name": "cband"}],
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
             to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:

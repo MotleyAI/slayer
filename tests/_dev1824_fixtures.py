@@ -118,7 +118,7 @@ BAND35_OF = {
 
 
 def q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 

@@ -6,9 +6,9 @@ import pytest
 
 from tests._time_points_fixtures import BACKENDS, monthly, tp_engine
 
-WINDOW = {"formula": "sum(amount, window='90d')", "name": "w"}
-PLAIN = {"formula": "sum(amount)", "name": "s"}
-SHIFT = {"formula": "time_shift(sum(amount), -1)", "name": "p"}
+WINDOW = {"expression": "sum(amount, window='90d')", "name": "w"}
+PLAIN = {"expression": "sum(amount)", "name": "s"}
+SHIFT = {"expression": "time_shift(sum(amount), -1)", "name": "p"}
 
 # "last 3 months" at the pinned clock is [2026-06-01, 2026-09-01).
 LAST_3_MONTHS = [

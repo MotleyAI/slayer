@@ -124,13 +124,13 @@ def _tsales_dataset() -> SlayerDataset:
 # --------------------------------------------------------------------------- #
 class TestSingleColumnUnchanged:
     async def test_single_column_aggregate_sql_unchanged(self) -> None:
-        sql = _norm(await gen(sales_q(measures=[_metric("sum(q_amount)")])))
+        sql = _norm(await gen(sales_q(metrics=[_metric("sum(q_amount)")])))
         assert "SUM(CASE WHEN" in sql.upper().replace("SUM (", "SUM("), sql
         assert "'Q'" in sql
         assert "amount" in sql
 
     async def test_single_column_value(self, exec_backend) -> None:
-        resp = await exec_backend.execute(sales_q(measures=[_metric("sum(q_amount)")]))
+        resp = await exec_backend.execute(sales_q(metrics=[_metric("sum(q_amount)")]))
         assert float(resp.data[0]["sales.m"]) == pytest.approx(QAMT_SUM)
 
     async def test_ranked_over_filtered_picks_masked_value_sql(self) -> None:
@@ -192,19 +192,19 @@ class TestBehaviourChanges:
         weight — the former filter-everything form is now wrong. The built-in
         weighted_avg skips the masked (NULL) values' weights, like any NULL value."""
         resp = await exec_backend.execute(
-            sales_q(measures=[_metric("wavg(q_amount, weight=quantity)")]))
+            sales_q(metrics=[_metric("wavg(q_amount, weight=quantity)")]))
         got = float(resp.data[0]["sales.m"])
         assert got == pytest.approx(WAVG_QAMT_WEIGHT_QTY)
         assert got != pytest.approx(WAVG_QAMT_WEIGHT_QTY_WRONG)
         builtin = await exec_backend.execute(
-            sales_q(measures=[_metric("weighted_avg(q_amount, weight=quantity)")]))
+            sales_q(metrics=[_metric("weighted_avg(q_amount, weight=quantity)")]))
         assert float(builtin.data[0]["sales.m"]) == pytest.approx(WEIGHTED_AVG_QAMT_WEIGHT_QTY)
 
     async def test_filtered_column_used_as_parameter_is_masked(self, exec_backend) -> None:
         """#2: weighted_avg(amount, weight=q_amount) masks the weight (NULL on
         non-Q rows), not the former silently-unfiltered weight."""
         resp = await exec_backend.execute(
-            sales_q(measures=[_metric("weighted_avg(amount, weight=q_amount)")]))
+            sales_q(metrics=[_metric("weighted_avg(amount, weight=q_amount)")]))
         assert float(resp.data[0]["sales.m"]) == pytest.approx(WAVG_AMOUNT_WEIGHT_QAMT)
 
     async def test_filtered_column_as_dimension_groups_non_matching_under_null(
@@ -213,7 +213,7 @@ class TestBehaviourChanges:
         """#3: grouping by q_amount reads the masked value — non-Q rows form the
         NULL group, each Q amount its own cell."""
         resp = await exec_backend.execute(
-            sales_q(dimensions=["q_amount"], measures=[_metric("count(*)", "n")]))
+            sales_q(dimensions=["q_amount"], metrics=[_metric("count(*)", "n")]))
         counts = {k[0]: int(v["sales.n"]) for k, v in rows_by(resp, "sales.q_amount").items()}
         assert counts == COUNT_BY_QAMOUNT
 
@@ -226,12 +226,12 @@ class TestFilteredColumnPositions:
         expected = sum(r[4] for r in _SALES_ROWS
                        if r[3] == "Q" and r[4] is not None and r[4] > 10)
         resp = await exec_backend.execute(
-            sales_q(measures=[_metric("sum(amount)")], filters=["q_amount > 10"]))
+            sales_q(metrics=[_metric("sum(amount)")], filter=["q_amount > 10"]))
         assert float(resp.data[0]["sales.m"]) == pytest.approx(expected)
 
     async def test_order_reads_masked_value(self, exec_backend) -> None:
         query = sales_q(
-            dimensions=["q_amount"], measures=[_metric("sum(amount)")],
+            dimensions=["q_amount"], metrics=[_metric("sum(amount)")],
             order=[OrderItem(field=FieldRef(name="q_amount"), direction="asc")])
         resp = await exec_backend.execute(query)
         ordered = [row["sales.q_amount"] for row in resp.data]
@@ -246,7 +246,7 @@ class TestFilteredColumnPositions:
     async def test_partition_key_reads_masked_value(self, exec_backend) -> None:
         query = sales_q(
             dimensions=["q_amount"],
-            measures=[_metric("sum(amount, partition_by=q_amount)")])
+            metrics=[_metric("sum(amount, partition_by=q_amount)")])
         resp = await exec_backend.execute(query)
         cells = {row["sales.q_amount"] for row in resp.data}
         assert cells == set(COUNT_BY_QAMOUNT)  # one cell per masked value, incl. NULL
@@ -261,12 +261,12 @@ class TestFilteredColumnPositions:
 class TestFilteredLeafInExpression:
     async def test_sum_over_filtered_leaf_expression(self, exec_backend) -> None:
         resp = await exec_backend.execute(
-            sales_q(measures=[_metric("sum(q_amount - 1)")]))
+            sales_q(metrics=[_metric("sum(q_amount - 1)")]))
         assert float(resp.data[0]["sales.m"]) == pytest.approx(SUM_QAMT_MINUS_1)
 
     async def test_count_over_filtered_leaf_expression(self, exec_backend) -> None:
         resp = await exec_backend.execute(
-            sales_q(measures=[_metric("count(q_amount - 1)")]))
+            sales_q(metrics=[_metric("count(q_amount - 1)")]))
         assert int(resp.data[0]["sales.m"]) == COUNT_QAMT_MINUS_1
 
 
@@ -277,7 +277,7 @@ class TestFilteredLeafOnJoinedModel:
     async def test_filtered_joined_leaf_expression(self, exec_backend) -> None:
         resp = await exec_backend.execute(orders_q(
             dimensions=["status"],
-            measures=[_metric("sum(amount - customers.north_spend)")]))
+            metrics=[_metric("sum(amount - customers.north_spend)")]))
         got = {s: float(v["orders.m"]) for s, v in status_key(resp).items()}
         for status, expected in NORTH_SPEND_EXPR_BY_STATUS.items():
             assert got[status] == pytest.approx(expected)
@@ -285,7 +285,7 @@ class TestFilteredLeafOnJoinedModel:
     async def test_fanning_filter_leaf_fails_closed(self) -> None:
         # bad_pop_spend = spend filtered by regions.bad_pop > 0, crossing the
         # fanning regions→region_events hop.
-        query = orders_q(measures=[_metric("sum(amount - customers.bad_pop_spend)")])
+        query = orders_q(metrics=[_metric("sum(amount - customers.bad_pop_spend)")])
         with pytest.raises(ValueError, match="unproven or fanning join hop") as ei:
             await gen(query)
         assert "Aggregate the target column directly" in str(ei.value)
@@ -300,7 +300,7 @@ class TestFilteredLeafOnJoinedModel:
         cust.aggregations.append(Aggregation(
             name="wsum_badw", expression="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="bad_pop_w")]))
-        query = orders_q(measures=[_metric("wsum_badw(customers.spend)")])
+        query = orders_q(metrics=[_metric("wsum_badw(customers.spend)")])
         with pytest.raises(ValueError, match="unproven join hop") as ei:
             await gen(query, datasets=models)
         assert "region_events" in str(ei.value)
@@ -364,14 +364,14 @@ class TestDerivedOverFiltered:
         model = sales_dataset()
         model.fields.append(
             DatasetField(name="q_double", datatype=DataType.DOUBLE, sql="q_amount * 2"))
-        sql = await gen(sales_q(measures=[_metric("sum(q_double)")]), datasets=[model])
+        sql = await gen(sales_q(metrics=[_metric("sum(q_double)")]), datasets=[model])
         assert "CASE WHEN" in sql.upper(), sql
         assert "'Q'" in sql, sql
 
     async def test_derived_column_expands_wrapped_value_exec(self, exec_qdouble) -> None:
         # q_double = q_amount * 2, so sum over Q rows = 2 * QAMT_SUM; a wrong
         # expansion (raw amount) would sum every row and miss this value.
-        resp = await exec_qdouble.execute(sales_q(measures=[_metric("sum(q_double)")]))
+        resp = await exec_qdouble.execute(sales_q(metrics=[_metric("sum(q_double)")]))
         assert float(resp.data[0]["sales.m"]) == pytest.approx(2 * QAMT_SUM)
 
 
@@ -385,7 +385,7 @@ class TestVariableSubstitution:
             name="vcol", datatype=DataType.DOUBLE, sql="amount * {mult}",
             filter="product = '{prod}'"))
         sql = await gen(
-            sales_q(measures=[_metric("sum(vcol)")], variables={"mult": 2, "prod": "Q"}),
+            sales_q(metrics=[_metric("sum(vcol)")], variables={"mult": 2, "prod": "Q"}),
             datasets=[model])
         assert "{" not in sql, sql
         assert "'Q'" in sql, sql

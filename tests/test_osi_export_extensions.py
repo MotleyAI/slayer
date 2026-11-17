@@ -170,7 +170,7 @@ async def test_complete_report(env) -> None:
     m2m = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
                     cardinality=RelationshipCardinality.MANY_TO_MANY)
     growth = slayer_metric("revenue_growth", "change_pct(revenue)")
-    result = await export_datasets(env, customers(), orders(metrics=[*BASIC_MEASURES, growth]), visits(joins=[m2m]))
+    result = await export_datasets(env, customers(), orders(metrics=[*BASIC_MEASURES, growth]), visits(relationships=[m2m]))
     assert sorted((e.severity, e.category if e.severity == "info" else None) for e in result.entries) == [
         ("dropped", None), ("info", "extension_only")]
     dropped = next(e for e in result.entries if e.severity == "dropped")

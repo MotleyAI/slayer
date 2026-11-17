@@ -94,7 +94,7 @@ class TestPreservedGuardsVerbatim:
     async def test_g8_malformed_duration(self) -> None:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount, window='90x')", name="w")],
+            metrics=[DatasetMetric(expression="sum(amount, window='90x')", name="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
@@ -103,7 +103,7 @@ class TestPreservedGuardsVerbatim:
     async def test_g2_no_resolvable_time_dimension(self) -> None:
         query = q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
+            metrics=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
@@ -118,7 +118,7 @@ class TestPreservedGuardsVerbatim:
         })
         query = q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="last(amount)", name="l")],
+            metrics=[DatasetMetric(expression="last(amount)", name="l")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query, datasets=models)
@@ -134,7 +134,7 @@ class TestRepointedGuards:
         # unreachable from the customers root.
         query = q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(customers.spend, window='90d')", name="w",
             )],
             to_many_handling="broadcast",

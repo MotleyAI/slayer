@@ -271,7 +271,7 @@ class TestUnanalysableText:
 
     async def test_no_sql_reaches_the_database(self, engine, monkeypatch: pytest.MonkeyPatch) -> None:
         sent = execution_spy(monkeypatch)
-        query = orders_q(measures=[{"formula": "wbad_agg(amount)", "name": "w"}])
+        query = orders_q(metrics=[{"expression": "wbad_agg(amount)", "name": "w"}])
         with pytest.raises(UnanalyzableAggregationParameterError):
             await engine.execute(query)
         assert sent == []

@@ -35,7 +35,7 @@ def _stages(**stage2_kwargs) -> list:
     stage1 = q(
         name="banded",
         dimensions=["region", {"expression": BAND35, "name": "band"}],
-        measures=[DatasetMetric(expression="sum(amount)", name="bt")],
+        metrics=[DatasetMetric(expression="sum(amount)", name="bt")],
     )
     stage2 = SlayerQuery(population="banded", extensions=[DatasetExtension(source_name="banded")], **stage2_kwargs)
     return [stage1, stage2]
@@ -45,8 +45,8 @@ class TestDownstreamStageConsumesRegroupedDimension:
     async def test_select_order_and_reaggregate_over_band(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
             dimensions=["band"],
-            measures=[DatasetMetric(expression="sum(bt)", name="total")],
-            order=[{"column": "band", "direction": "desc"}],
+            metrics=[DatasetMetric(expression="sum(bt)", name="total")],
+            order=[{"field": "band", "direction": "desc"}],
         ))
         # Exact public result keys: upstream stage name + PUBLIC column names.
         assert resp.columns == ["banded.band", "banded.total"]
@@ -59,8 +59,8 @@ class TestDownstreamStageConsumesRegroupedDimension:
     async def test_filter_on_band_in_downstream_stage(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
             dimensions=["region"],
-            filters=["band == 1"],
-            measures=[DatasetMetric(expression="sum(bt)", name="total")],
+            filter=["band == 1"],
+            metrics=[DatasetMetric(expression="sum(bt)", name="total")],
         ))
         assert resp.columns == ["banded.region", "banded.total"]
         got = {r["banded.region"]: float(r["banded.total"]) for r in resp.data}
@@ -75,7 +75,7 @@ class TestNoInternalNamesLeak:
     async def test_response_surface_is_placeholder_free(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(_stages(
             dimensions=["band"],
-            measures=[DatasetMetric(expression="sum(bt)", name="total")],
+            metrics=[DatasetMetric(expression="sum(bt)", name="total")],
         ))
         assert all("__regroup__" not in c for c in resp.columns)
         for row in resp.data:
@@ -88,7 +88,7 @@ class TestNoInternalNamesLeak:
     ) -> None:
         resp = await exec_engine.execute(_stages(
             dimensions=["band"],
-            measures=[DatasetMetric(expression="sum(bt)", name="total")],
+            metrics=[DatasetMetric(expression="sum(bt)", name="total")],
         ), dry_run=True)
         assert resp.sql is not None
         assert "__regroup__" not in resp.sql

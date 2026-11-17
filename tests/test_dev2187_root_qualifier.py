@@ -135,7 +135,7 @@ async def test_computed_dimension_auto_name_keeps_its_text(engine: SlayerQueryEn
 
 async def test_expression_time_dimension_auto_name_keeps_its_text(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(_orders(
-        time_dimensions=[{"dimension": "coalesce(orders.shipped_at, orders.created_at)", "granularity": "month"}],
+        time_dimensions=[{"field": "coalesce(orders.shipped_at, orders.created_at)", "granularity": "month"}],
         measures=["count(*)"],
     ))
     assert resp.columns == ["orders.coalesce_orders_shipped_at_orders_created_at", "orders._count"]
@@ -261,8 +261,8 @@ async def test_a_spine_rooted_reference_anchors_its_datasource(body: dict[str, A
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_a_root_qualified_hop_into_an_unrelated_dataset(backend: str) -> None:
     async with main_engine(backend) as eng:
-        await assert_same(eng, query(measures=[m("count(customers.events.id)", "n")]),
-                          query(measures=[m("count(events.id)", "n")]))
+        await assert_same(eng, query(metrics=[m("count(customers.events.id)", "n")]),
+                          query(metrics=[m("count(events.id)", "n")]))
 
 
 async def test_a_root_qualified_filter_matches_a_selected_dotted_measure(engine: SlayerQueryEngine) -> None:
@@ -289,15 +289,15 @@ def test_a_root_qualified_duplicate_dedupes(extensions: Any) -> None:
 
 def test_a_root_qualified_duplicate_with_another_range_conflicts() -> None:
     with pytest.raises(ValueError, match="Conflicting time dimensions"):
-        _tds({"dimension": "created_at", "granularity": "month", "date_range": ["2025-01-01", "2025-06-30"]},
-             {"dimension": "orders.created_at", "granularity": "month", "date_range": ["2025-01-01", "2025-03-31"]})
+        _tds({"field": "created_at", "granularity": "month", "date_range": ["2025-01-01", "2025-06-30"]},
+             {"field": "orders.created_at", "granularity": "month", "date_range": ["2025-01-01", "2025-03-31"]})
 
 
 def test_literals_are_never_conflated() -> None:
     query = _tds(
-        {"dimension": "iif(note = 'orders.a', created_at, shipped_at)", "granularity": "month",
+        {"field": "iif(note = 'orders.a', created_at, shipped_at)", "granularity": "month",
          "date_range": ["2025-01-01", "2025-12-31"]},
-        {"dimension": "iif(note = 'a', created_at, shipped_at)", "granularity": "month",
+        {"field": "iif(note = 'a', created_at, shipped_at)", "granularity": "month",
          "date_range": ["2025-01-01", "2025-06-30"]},
     )
     assert len(query.time_dimensions or []) == 2
@@ -338,11 +338,11 @@ async def test_a_root_qualified_entry_is_the_saved_entry(refine: SlayerQueryEngi
 
 
 @pytest.mark.parametrize("measures", [
-    [{"formula": "revenue", "name": "revenue"}, "count(*)"],
-    [{"formula": "revenue"}, "count(*)"],
+    [{"expression": "revenue", "name": "revenue"}, "count(*)"],
+    [{"expression": "revenue"}, "count(*)"],
     ["revenue", "count(*)"],
     ["orders.revenue", "count(*)"],
-    [{"formula": "orders.revenue", "name": "revenue"}, "count(*)"],
+    [{"expression": "orders.revenue", "name": "revenue"}, "count(*)"],
 ], ids=["named", "unnamed", "shorthand", "root-qualified", "root-qualified-named"])
 async def test_restating_a_saved_measure_by_name(refine: SlayerQueryEngine, measures: list) -> None:
     refined = await refine.execute("monthly_revenue", refine={"metrics": measures})

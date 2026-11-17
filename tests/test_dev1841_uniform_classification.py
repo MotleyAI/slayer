@@ -43,7 +43,7 @@ class TestBroadcastModeNeverMultiplies:
     async def test_dimensionless_total_is_all_customers(self, exec_backend):
         """Sanity oracle: the fan-free local total sums every customer once."""
         _, engine = exec_backend
-        resp = await engine.execute(cust_q(measures=[SP]))
+        resp = await engine.execute(cust_q(metrics=[SP]))
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(
             LOCAL_SPEND_TOTAL)
 
@@ -53,7 +53,7 @@ class TestBroadcastModeNeverMultiplies:
         never the fanned figure."""
         _, engine = exec_backend
         resp = await engine.execute(
-            cust_q(dimensions=["orders.status"], measures=[SP],
+            cust_q(dimensions=["orders.status"], metrics=[SP],
                    to_many_handling="broadcast"))
         by = status_key(resp, root="customers")
         vals = {k: float(v["customers.sp"]) for k, v in by.items()}
@@ -69,7 +69,7 @@ class TestAssociateGivesDistinctEntityValue:
         value; c1 counts once in ok."""
         _, engine = exec_backend
         resp = await engine.execute(
-            cust_q(dimensions=["orders.status"], measures=[SP],
+            cust_q(dimensions=["orders.status"], metrics=[SP],
                    to_many_handling="associate"))
         by = status_key(resp, root="customers")
         for status, spend in ASSOC_LOCAL_SPEND_BY_STATUS.items():
@@ -86,7 +86,7 @@ class TestEveryConsumerRoleAvoidsTheFan:
         _, engine = exec_backend
         composite = DatasetMetric(expression="sum(spend) + 1", name="sp1")
         resp = await engine.execute(
-            cust_q(dimensions=["orders.status"], measures=[composite],
+            cust_q(dimensions=["orders.status"], metrics=[composite],
                    to_many_handling="associate"))
         by = status_key(resp, root="customers")
         assert float(by[("ok",)]["customers.sp1"]) == pytest.approx(
@@ -101,8 +101,8 @@ class TestEveryConsumerRoleAvoidsTheFan:
         _, engine = exec_backend
         star = DatasetMetric(expression="count(*)", name="n")
         resp = await engine.execute(
-            cust_q(dimensions=["orders.status"], measures=[star],
-                   filters=["sum(spend) > 450"],
+            cust_q(dimensions=["orders.status"], metrics=[star],
+                   filter=["sum(spend) > 450"],
                    to_many_handling="associate"))
         # Correct ok=420 fails > 450 → ok dropped; a fanned 520 would keep it.
         keys = set(status_key(resp, root="customers"))
@@ -113,7 +113,7 @@ class TestEveryConsumerRoleAvoidsTheFan:
         not the fan: the ok cell carries 420, never the multiplied 520."""
         _, engine = exec_backend
         resp = await engine.execute(
-            cust_q(dimensions=["orders.status"], measures=[SP],
+            cust_q(dimensions=["orders.status"], metrics=[SP],
                    order=[OrderItem.model_validate({"field": "sum(spend)", "direction": "desc"})],
                    to_many_handling="associate"))
         # ok / new / a NULL-status cell for orderless c7 (rooted at customers).

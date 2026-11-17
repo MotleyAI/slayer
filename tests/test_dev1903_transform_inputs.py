@@ -40,7 +40,7 @@ def _check(expression: str, *, projected=frozenset()) -> None:
 
 
 def _plan(**kw) -> None:
-    kw.setdefault("measures", [])
+    kw.setdefault("metrics", [])
     plan_query(
         query=SlayerQuery(population="sales", time_dimensions=month_td(), **kw),
         bundle=_bundle(),
@@ -92,7 +92,7 @@ class TestMessagesMatchTheLedger:
     def test_planner_raises_the_same_message(self):
         measures = [DatasetMetric(expression="cumsum(weight)", name="m")]
         with pytest.raises(ValueError) as ei:
-            _plan(measures=measures)
+            _plan(metrics=measures)
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
 
@@ -104,13 +104,13 @@ class TestInnermostTransformNamed:
     def test_consuming_transform_is_named(self, formula):
         measures = [DatasetMetric(expression=formula, name="m")]
         with pytest.raises(ValueError) as ei:
-            _plan(measures=measures)
+            _plan(metrics=measures)
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_first_over_row_leaf_transform_is_not_the_expression_error(self):
         measures = [DatasetMetric(expression="first(cumsum(weight))", name="m")]
         with pytest.raises(ValueError) as ei:
-            _plan(measures=measures)
+            _plan(metrics=measures)
         assert "not supported over an expression" not in str(ei.value)
 
 
@@ -133,7 +133,7 @@ class TestTraversal:
     def test_filter_position(self):
         measures = [DatasetMetric(expression="sum(revenue)", name="r")]
         with pytest.raises(ValueError) as ei:
-            _plan(measures=measures, filters=["cumsum(weight) > 0"])
+            _plan(metrics=measures, filter=["cumsum(weight) > 0"])
         assert _row_leaf_op(str(ei.value)) == "cumsum"
 
     def test_projected_leaf_exempt(self):

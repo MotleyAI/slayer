@@ -82,7 +82,7 @@ def customers_dataset(**extra: Any) -> SlayerDataset:
         DatasetField(name="id", datatype=DataType.INT, primary_key=True),
         DatasetField(name="city", datatype=DataType.TEXT),
         DatasetField(name="tenant", datatype=DataType.TEXT),
-        *extra.pop("columns", []),
+        *extra.pop("fields", []),
     ]
     return SlayerDataset(name="customers", sql_table="customers", data_source="test", fields=columns, **extra)
 
@@ -205,7 +205,7 @@ def wide_metrics() -> list[dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 def m(expression: str, name: str) -> dict[str, str]:
-    return {"formula": expression, "name": name}
+    return {"expression": expression, "name": name}
 
 
 RATIO = m("count(events.id) / count(*)", "events_per_customer")
@@ -217,7 +217,7 @@ def query(**fields: Any) -> SlayerQuery:
 
 
 def ratio_query(**extra: Any) -> SlayerQuery:
-    return query(measures=[RATIO], **extra)
+    return query(metrics=[RATIO], **extra)
 
 
 def grouped_query(**extra: Any) -> SlayerQuery:

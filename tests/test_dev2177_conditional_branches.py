@@ -156,7 +156,7 @@ class TestScenarios:
 
     async def test_conditional_inside_an_aggregation(self, engine: SlayerQueryEngine) -> None:
         await assert_branch_mismatch(
-            engine, q(measures=[m("max(CASE WHEN amount > 1 THEN 'a' || 'b' ELSE amount END)")]), "TEXT", "INT",
+            engine, q(metrics=[m("max(CASE WHEN amount > 1 THEN 'a' || 'b' ELSE amount END)")]), "TEXT", "INT",
         )
 
     @pytest.mark.parametrize(("expression", "types", "call"), [
@@ -197,17 +197,17 @@ class TestScenarios:
 class TestEveryPosition:
     @pytest.mark.parametrize(("query", "types"), [
         pytest.param(dimension_query(MIXED), ("TEXT", "INT"), id="dimension"),
-        pytest.param(q(measures=[m(f"max({MIXED})")]), ("TEXT", "INT"), id="aggregate-input"),
-        pytest.param(q(measures=[m("coalesce(sum(amount), max(status))")]), ("TEXT", "INT"), id="over-aggregates"),
-        pytest.param(q(time_dimensions=MONTH, measures=[m(f"time_shift(max({MIXED}), -1)")]), ("TEXT", "INT"),
+        pytest.param(q(metrics=[m(f"max({MIXED})")]), ("TEXT", "INT"), id="aggregate-input"),
+        pytest.param(q(metrics=[m("coalesce(sum(amount), max(status))")]), ("TEXT", "INT"), id="over-aggregates"),
+        pytest.param(q(time_dimensions=MONTH, metrics=[m(f"time_shift(max({MIXED}), -1)")]), ("TEXT", "INT"),
                      id="transform"),
-        pytest.param(q(measures=[m(f"count(*) FILTER (WHERE {MIXED} IS NOT NULL)")]), ("TEXT", "INT"),
+        pytest.param(q(metrics=[m(f"count(*) FILTER (WHERE {MIXED} IS NOT NULL)")]), ("TEXT", "INT"),
                      id="filter-clause"),
-        pytest.param(q(measures=["count(*)"], filters=[f"{MIXED} IS NOT NULL"]), ("TEXT", "INT"), id="row-filter"),
-        pytest.param(q(dimensions=["status"], measures=["count(*)"],
-                       filters=["coalesce(max(status), sum(amount)) IS NOT NULL"]), ("TEXT", "INT"),
+        pytest.param(q(metrics=["count(*)"], filter=[f"{MIXED} IS NOT NULL"]), ("TEXT", "INT"), id="row-filter"),
+        pytest.param(q(dimensions=["status"], metrics=["count(*)"],
+                       filter=["coalesce(max(status), sum(amount)) IS NOT NULL"]), ("TEXT", "INT"),
                      id="post-aggregation-filter"),
-        pytest.param(q(dimensions=["id"], distinct_dimension_values=False, order=[{"column": MIXED}]),
+        pytest.param(q(dimensions=["id"], distinct_dimension_values=False, order=[{"field": MIXED}]),
                      ("TEXT", "INT"), id="order"),
     ])
     async def test_rejected_at_plan_time(self, engine: SlayerQueryEngine, query: SlayerQuery,
@@ -216,8 +216,8 @@ class TestEveryPosition:
 
     async def test_time_dimension_rejected_as_a_date_operand(self, engine: SlayerQueryEngine) -> None:
         # The date-operand check runs first; its error still names both branch types and a cast.
-        query = q(time_dimensions=[{"dimension": "greatest(order_date, amount)", "granularity": "month"}],
-                  measures=["count(*)"])
+        query = q(time_dimensions=[{"field": "greatest(order_date, amount)", "granularity": "month"}],
+                  metrics=["count(*)"])
         with pytest.raises(DateOperandTypeError) as info:
             await engine.execute(query)
         message = str(info.value)

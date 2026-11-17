@@ -40,13 +40,13 @@ async def engine(request):
 
 
 def q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery.model_validate(kw)
 
 
 async def only_value(engine: SlayerQueryEngine, expression: str, key: str, **kw):
     """Execute ``formula`` as the query's one measure; assert its key, return the single value."""
-    resp = await engine.execute(q(measures=[expression], **kw))
+    resp = await engine.execute(q(metrics=[expression], **kw))
     assert key in resp.columns, resp.columns
     assert len(resp.data) == 1, resp.data
     return resp.data[0][key]
@@ -66,7 +66,7 @@ REPRO_KEY = "regions.customers.orders.iif_order_date_2025_01_01_1_0_sum"
 
 async def test_repro_date_comparison_inside_a_scalar_call(engine) -> None:
     for _ in range(2):
-        resp = await engine.execute(q(source_model="regions", dimensions=["name"], measures=[REPRO]))
+        resp = await engine.execute(q(population="regions", dimensions=["name"], metrics=[REPRO]))
         assert by(resp, dim="regions.name", key=REPRO_KEY) == {"north": 1, "south": 1}
 
 
@@ -119,9 +119,9 @@ NESTED_TRANSFORM_KEY = (
 @pytest.mark.parametrize("partition", ["[status, ordered_at]", "[ordered_at, status]"])
 async def test_nested_transform_operand(engine: SlayerQueryEngine, partition) -> None:
     formula = f"sum(cumsum(sum(amount, partition_by={partition})) - 1)"
-    month = {"dimension": "ordered_at", "granularity": "month"}
+    month = {"field": "ordered_at", "granularity": "month"}
     for _ in range(2):
-        resp = await engine.execute(q(measures=[formula], time_dimensions=[month]))
+        resp = await engine.execute(q(metrics=[formula], time_dimensions=[month]))
         key = next(c for c in resp.columns if c != "orders.ordered_at")
         assert key == NESTED_TRANSFORM_KEY
         assert not any(t in key for t in _INTERNAL_TOKENS), key
@@ -176,7 +176,7 @@ async def test_nested_constituent_keeps_its_spelling(engine) -> None:
 # --------------------------------------------------------------------------- #
 async def test_equal_and_not_equal_date_comparisons_collide_loudly(engine) -> None:
     eq, ne = "sum(iif(ordered_at == '2024-02', 1, 0))", "sum(iif(ordered_at != '2024-02', 1, 0))"
-    query = q(measures=[eq, ne])
+    query = q(metrics=[eq, ne])
     with pytest.raises(NameCollisionError, match="(?s)Rename") as exc:
         await engine.execute(query)
     assert eq in str(exc.value)

@@ -47,7 +47,7 @@ class TestRawRows:
     @pytest.mark.parametrize("distinct", [False, True])
     async def test_ordering_by_a_list_is_refused(self, distinct: bool) -> None:
         body = query(dimensions=["id"], distinct_dimension_values=distinct,
-                     order=[{"column": "skills", "direction": "asc"}])
+                     order=[{"field": "skills", "direction": "asc"}])
         async with list_engine() as engine:
             with pytest.raises(ListTypeError, match="list"):
                 await engine.execute(body)

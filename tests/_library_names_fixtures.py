@@ -55,7 +55,7 @@ def seed(db_path: str, *, dialect: str) -> None:
 
 
 def agg(name: str, expression: str = "SUM({value})", **params: str) -> dict:
-    out: dict[str, Any] = {"name": name, "formula": expression}
+    out: dict[str, Any] = {"name": name, "expression": expression}
     if params:
         out["params"] = [{"name": k, "sql": v} for k, v in params.items()]
     return out
@@ -121,7 +121,7 @@ async def stored_engine(
 
 
 def metric(expression: str, name: str = "v") -> dict:
-    return {"formula": expression, "name": name}
+    return {"expression": expression, "name": name}
 
 
 def value(resp: SlayerResponse, *, name: str = "v") -> Any:

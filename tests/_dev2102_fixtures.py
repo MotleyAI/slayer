@@ -227,7 +227,7 @@ def ext(source_name: str, **fields: Any) -> dict:
 
 
 def join(target: str, pairs: list[list[str]], **fields: Any) -> dict:
-    return {"target_model": target, "join_pairs": pairs, **fields}
+    return {"to": target, "join_pairs": pairs, **fields}
 
 
 async def run(engine: SlayerQueryEngine, query: Any) -> SlayerResponse:

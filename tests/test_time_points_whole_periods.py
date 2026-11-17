@@ -13,8 +13,8 @@ from tests._time_points_fixtures import (
 )
 
 D = datetime
-PLAIN = {"formula": "sum(amount)", "name": "s"}
-WINDOW = {"formula": "sum(amount, window='90d')", "name": "w"}
+PLAIN = {"expression": "sum(amount)", "name": "s"}
+WINDOW = {"expression": "sum(amount, window='90d')", "name": "w"}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -102,7 +102,7 @@ class TestSubDay:
 def _two_grain_query(order: list[str]) -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "ev", "metrics": [PLAIN],
-        "time_dimensions": [{"dimension": "ts", "granularity": g} for g in order],
+        "time_dimensions": [{"field": "ts", "granularity": g} for g in order],
         "filter": ["ts >= '2025-01-15'"], "whole_periods_only": True,
     })
 
@@ -131,7 +131,7 @@ class TestTwoGranularities:
 
 class TestStageTimeDimension:
     async def test_stage_column_snaps(self, engine) -> None:
-        got = await monthly(engine, metrics=[{"formula": "sum(rev)", "name": "r"}], dataset="daily",
+        got = await monthly(engine, metrics=[{"expression": "sum(rev)", "name": "r"}], dataset="daily",
                             date_range=["2025-01-15", None], whole_periods_only=True)
         assert min(got) == "2025-01"
         assert max(got) == "2026-08"

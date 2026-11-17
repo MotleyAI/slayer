@@ -48,7 +48,7 @@ def _bundle() -> ResolvedSourceBundle:
 def _plan(expression: str):
     return plan_query(
         query=sales_q(dimensions=["region"],
-                      measures=[DatasetMetric(expression=expression, name="m")]),
+                      metrics=[DatasetMetric(expression=expression, name="m")]),
         bundle=_bundle())
 
 
@@ -124,7 +124,7 @@ class TestEmittedGroupByStaysPure:
     async def test_no_group_by_references_the_row_leaf(self, formula):
         sql = await gen(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=formula, name="m")]))
+            metrics=[DatasetMetric(expression=formula, name="m")]))
         ast = sqlglot.parse_one(sql, read="postgres")
         groups = list(ast.find_all(exp.Group))
         assert groups
@@ -167,7 +167,7 @@ class TestDedupOneProducer:
 
     def test_shared_between_two_measures(self):
         planned = plan_query(
-            query=sales_q(dimensions=["region"], measures=[
+            query=sales_q(dimensions=["region"], metrics=[
                 DatasetMetric(expression=f"sum(quantity * {_REGION_SUM})", name="a"),
                 DatasetMetric(expression=f"sum(unit_price * {_REGION_SUM})", name="b")]),
             bundle=_bundle())
@@ -184,7 +184,7 @@ class TestBandedDimensionOpacity:
         planned = plan_query(
             query=sales_q(
                 dimensions=[{"expression": MIXED_BAND_EXPR, "name": "mixed_band"}],
-                measures=[DatasetMetric(expression="sum(amount)", name="tot")]),
+                metrics=[DatasetMetric(expression="sum(amount)", name="tot")]),
             bundle=_bundle())
         assert len(planned.regroup_attach_plans) == 1
 
@@ -199,7 +199,7 @@ class TestPartitionKeyVisibleThroughOpaqueRoot:
     def _plan_banded_partition(self):
         band = {"expression": MIXED_BAND_EXPR, "name": "mixed_band"}
         return plan_query(
-            query=sales_q(dimensions=[band], measures=[DatasetMetric(
+            query=sales_q(dimensions=[band], metrics=[DatasetMetric(
                 expression=f"sum(quantity * {INNER_UP_PRODUCT}, partition_by=mixed_band)",
                 name="m")]),
             bundle=_bundle())
@@ -218,7 +218,7 @@ class TestFirstOverMixedSource:
     async def test_first_over_mixed_source_is_the_ranked_aggregate(self):
         q = sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression=f"first(quantity * {INNER_UP_PRODUCT}, id)",
                 name="f")])
         assert "ROW_NUMBER" in (await gen(q)).upper()

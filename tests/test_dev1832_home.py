@@ -31,7 +31,7 @@ def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple
     elab = elaborate_query(
         query=orders_q(
             dimensions=dimensions or [],
-            measures=[DatasetMetric(expression=expression, name="m")]),
+            metrics=[DatasetMetric(expression=expression, name="m")]),
         bundle=bundle(dev1832_datasets()))
     assert elab.prebound is not None
     root = elab.prebound.declared_metrics[-1].bound.value_key

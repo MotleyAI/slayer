@@ -76,7 +76,7 @@ def _assert_unproven(exc: ValueError) -> None:
 
 async def _assert_fails_closed(engine, metric, *, mode=None):
     kw = {} if mode is None else {"to_many_handling": mode}
-    q = orders_q(measures=[metric], **kw)
+    q = orders_q(metrics=[metric], **kw)
     with pytest.raises(ValueError) as ei:
         await engine.execute(q)
     _assert_unproven(ei.value)
@@ -130,7 +130,7 @@ class TestUnanalyzableDefinition:
         """No dialect parses regions.unparseable; the dependency is unsafe, not
         empty — the typed analyzability error names the column and the dialect
         failure, never the raw parser error."""
-        q = orders_q(measures=[CM_UNPARSE])
+        q = orders_q(metrics=[CM_UNPARSE])
         with pytest.raises(ValueError) as ei:
             await unparse_engine.execute(q)
         msg = str(ei.value)
@@ -141,7 +141,7 @@ class TestUnanalyzableDefinition:
     async def test_unparseable_column_filter_typed_error(self, unparse_engine):
         """A source column's ``filter=`` referencing an unanalyzable derived
         column is an input dependency too — fail closed, never stamped ``()``."""
-        q = orders_q(measures=[DatasetMetric(
+        q = orders_q(metrics=[DatasetMetric(
             expression="sum(customers.flagged_spend)", name="fs")])
         with pytest.raises(ValueError) as ei:
             await unparse_engine.execute(q)
@@ -155,7 +155,7 @@ class TestUnanalyzableDefinition:
         (expr_refs is (None,)): the closure is None while the diagnostic returns
         None, so the guard must still fail closed rather than leak the failure to
         the renderer (CodeRabbit; without the fix the guard is a no-op)."""
-        q = orders_q(measures=[CM_EXPR_UNPARSE])
+        q = orders_q(metrics=[CM_EXPR_UNPARSE])
         with pytest.raises(UnanalyzableAggregationParameterError, match="weight"):
             await unparse_engine.execute(q)
 
@@ -177,7 +177,7 @@ class TestInputDependencyCheckerAlwaysRaises:
 
 class TestReaggregationParameter:
     async def test_fanning_derived_parameter_fails_closed(self, engine):
-        q = orders_q(measures=[REAGG_BAD])
+        q = orders_q(metrics=[REAGG_BAD])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
@@ -185,11 +185,11 @@ class TestReaggregationParameter:
 
 class TestLegalDerivedDependencies:
     async def test_to_one_derived_default_executes(self, engine):
-        resp = await engine.execute(orders_q(measures=[CM_GOOD]))
+        resp = await engine.execute(orders_q(metrics=[CM_GOOD]))
         assert float(resp.data[0]["orders.w"]) == pytest.approx(WGOOD_TOONE_DEFAULT)
 
     async def test_local_only_derived_reagg_parameter_executes(self, engine):
         """weight = regions.derived_pop (= pop * 2, local) over a grain pinning
         regions by its key: each region cell weighted by twice its population."""
-        resp = await engine.execute(orders_q(measures=[REAGG_GOOD]))
+        resp = await engine.execute(orders_q(metrics=[REAGG_GOOD]))
         assert float(resp.data[0]["orders.ra"]) == pytest.approx(REAGG_DERIVED_POP_WAVG)

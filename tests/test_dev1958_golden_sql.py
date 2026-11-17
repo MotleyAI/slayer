@@ -25,7 +25,7 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1958_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_TD = {"dimension": "ordered_at", "granularity": "month"}
+_TD = {"field": "ordered_at", "granularity": "month"}
 _TD_DR = {**_TD, "date_range": ["2024-02-01", "2024-03-31"]}
 _SHARE = "sum(amount) / sum(amount, partition_by=[ordered_at])"
 _REGION_SHARE = "sum(amount) / sum(amount, partition_by=[region])"

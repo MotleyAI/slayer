@@ -51,9 +51,9 @@ async def test_filtered_value_equals_sliced_cell(exec_backend, measure_key, dim,
     measure = DatasetMetric(expression=MEASURES[measure_key], name="m")
 
     filtered = await engine.execute(
-        assoc_q(measures=[measure], filters=[f"{dim} = '{value}'"]))
+        assoc_q(metrics=[measure], filter=[f"{dim} = '{value}'"]))
     sliced = await engine.execute(
-        assoc_q(dimensions=[dim], measures=[measure]))
+        assoc_q(dimensions=[dim], metrics=[measure]))
 
     filtered_value = float(filtered.data[0]["orders.m"])
     sliced_cell = rows_by(sliced, f"orders.{dim}")[(value,)]["orders.m"]
@@ -67,8 +67,8 @@ async def test_holds_by_default(exec_backend, measure_key, dim, value):
     _, engine = exec_backend
     measure = DatasetMetric(expression=MEASURES[measure_key], name="m")
 
-    filtered = await engine.execute(q(measures=[measure], filters=[f"{dim} = '{value}'"]))
-    sliced = await engine.execute(q(dimensions=[dim], measures=[measure]))
+    filtered = await engine.execute(q(metrics=[measure], filter=[f"{dim} = '{value}'"]))
+    sliced = await engine.execute(q(dimensions=[dim], metrics=[measure]))
 
     sliced_cell = rows_by(sliced, f"orders.{dim}")[(value,)]["orders.m"]
     assert float(filtered.data[0]["orders.m"]) == pytest.approx(float(sliced_cell))

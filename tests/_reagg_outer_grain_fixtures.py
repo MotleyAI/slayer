@@ -109,15 +109,15 @@ WAVG_BY_ACCOUNT_MAX = {
 }
 
 def query(**kw: Any) -> SlayerQuery:
-    kw.setdefault("source_model", "customers")
+    kw.setdefault("population", "customers")
     return SlayerQuery.model_validate(kw)
 
 
 def m(expression: str, name: str = "v") -> Dict[str, str]:
-    return {"formula": expression, "name": name}
+    return {"expression": expression, "name": name}
 
 
-MONTH_TD = {"dimension": "account_snapshots.snapshot_date", "granularity": "month"}
+MONTH_TD = {"field": "account_snapshots.snapshot_date", "granularity": "month"}
 
 
 def customers_dataset() -> SlayerDataset:

@@ -206,7 +206,7 @@ async def make_exec_engine(
 # Query shorthands.
 # --------------------------------------------------------------------------- #
 def orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 

@@ -84,11 +84,11 @@ async def _raise_of(case: Case) -> QueryTypeError:
 
 
 def _time_axis() -> Tuple[SlayerQuery, List[SlayerDataset]]:
-    return f1832.monthly_q(measures=[_m(_NO_AXIS, "m")], time_dimensions=f1832.month_td()), f1832.dev1832_datasets()
+    return f1832.monthly_q(metrics=[_m(_NO_AXIS, "m")], time_dimensions=f1832.month_td()), f1832.dev1832_datasets()
 
 
 def _no_time_dimension() -> Tuple[SlayerQuery, List[SlayerDataset]]:
-    return orders_q(dimensions=["region"], measures=[_m("sum(amount, window='90d')", "w")]), f1739.dev1739_datasets()
+    return orders_q(dimensions=["region"], metrics=[_m("sum(amount, window='90d')", "w")]), f1739.dev1739_datasets()
 
 
 def _bad_window() -> Tuple[SlayerQuery, List[SlayerDataset]]:
@@ -100,7 +100,7 @@ def _bad_window() -> Tuple[SlayerQuery, List[SlayerDataset]]:
 
 
 def _rank_partition() -> Tuple[SlayerQuery, List[SlayerDataset]]:
-    return orders_q(dimensions=["region"], measures=[_m("rank(sum(amount), partition_by=city, direction='desc')", "r")]), f1739.dev1739_datasets()
+    return orders_q(dimensions=["region"], metrics=[_m("rank(sum(amount), partition_by=city, direction='desc')", "r")]), f1739.dev1739_datasets()
 
 
 #: (id, case, class, location, has suggestion)
@@ -110,16 +110,16 @@ FAMILY_CASES = [
     ("window-duration", _bad_window, WindowDurationError, None, True),
     ("rank-partition-key", _rank_partition, PartitionKeyError, "transform 'rank'", True),
     ("aggregate-partition-key",
-     lambda: (orders_q(dimensions=["region"], measures=[_m("sum(amount, partition_by=city)", "p")]), f1739.dev1739_datasets()),
+     lambda: (orders_q(dimensions=["region"], metrics=[_m("sum(amount, partition_by=city)", "p")]), f1739.dev1739_datasets()),
      PartitionKeyError, "measure 'p'", True),
     ("unsafe-join-input",
-     lambda: (f1945.orders_q(measures=[f1945.metric("last(amount, li_ts)")]), f1945.dev1945_datasets(orders_default="created_at")),
+     lambda: (f1945.orders_q(metrics=[f1945.metric("last(amount, li_ts)")]), f1945.dev1945_datasets(orders_default="created_at")),
      UnsafeRelationshipInputError, "measure 'amount_last_li_ts'", True),
     ("unanalyzable-dependency",
-     lambda: (f1945.orders_q(measures=[f1945.metric("last(amount)")]), f1945.dev1945_datasets(orders_default="bad_ts")),
+     lambda: (f1945.orders_q(metrics=[f1945.metric("last(amount)")]), f1945.dev1945_datasets(orders_default="bad_ts")),
      UnanalyzableDependencyError, "measure 'amount_last'", True),
     ("transform-input",
-     lambda: (f1832.orders_q(measures=[_m("sum(cumsum(weight) - 1)", "m")], time_dimensions=f1832.month_td()), f1832.dev1832_datasets()),
+     lambda: (f1832.orders_q(metrics=[_m("sum(cumsum(weight) - 1)", "m")], time_dimensions=f1832.month_td()), f1832.dev1832_datasets()),
      TransformInputError, "transform 'cumsum'", True),
     ("computed-dimension",
      lambda: (SlayerQuery.model_validate({
@@ -128,17 +128,17 @@ FAMILY_CASES = [
      }), f1740.dev1740_datasets()),
      ComputedDimensionError, "dimension 'band'", False),
     ("association",
-     lambda: (f1841.assoc_q(dimensions=["status"], measures=[_m("sum(customers.spend, window='90d')", "cm")],
+     lambda: (f1841.assoc_q(dimensions=["status"], metrics=[_m("sum(customers.spend, window='90d')", "cm")],
                             time_dimensions=[TimeDimension(field="customers.signup_at", granularity=TimeGranularity.MONTH)]),
               f1841.dev1840_datasets()),
      AssociationError, "measure 'cm'", True),
     ("parameter-grain",
-     lambda: (f1847.sales_q(dimensions=["region"], measures=[_m(f"wavg({f1847.INNER_CR}, weight=id)", "w")]), f1847.dev1847_datasets()),
+     lambda: (f1847.sales_q(dimensions=["region"], metrics=[_m(f"wavg({f1847.INNER_CR}, weight=id)", "w")]), f1847.dev1847_datasets()),
      ParameterGrainError, "measure 'w'", True),
     ("reaggregation",
      lambda: (orders_q(
          dimensions=["region"], time_dimensions=f1739.month_td(),
-         measures=[_m("sum(sum(amount, partition_by=[region, city]), window='90d')", "w")],
+         metrics=[_m("sum(sum(amount, partition_by=[region, city]), window='90d')", "w")],
      ), f1739.dev1739_datasets()),
      ReaggregationError, "measure 'w'", True),
     ("name-collision",
@@ -159,7 +159,7 @@ FAMILY_CASES = [
      DimensionTypeError, "dimension 'loc'", True),
     ("model-filter",
      lambda: (SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")]),
-              [_orders(measures=[_m("sum(amount)", "tot")], filters=["tot > 100"])]),
+              [_orders(metrics=[_m("sum(amount)", "tot")], filters=["tot > 100"])]),
      DatasetFilterError, "model filter 'tot > 100'", True),
     ("position-typing",
      lambda: (SlayerQuery(

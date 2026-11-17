@@ -17,11 +17,11 @@ from tests._dev1994_fixtures import dev1994_engine
 from tests._engine_helpers import seeded_exec_engine
 from tests._saved_query_refinement_fixtures import call_tool_json
 
-REVENUE = {"formula": "sum(orders.amount)", "name": "revenue"}
+REVENUE = {"expression": "sum(orders.amount)", "name": "revenue"}
 # Rootless: infers ``customers``; with an ``orders.status`` filter it would infer ``orders``.
 BY_CUSTOMER: Dict[str, Any] = {"dimensions": ["customers.name"], "metrics": [REVENUE]}
 OK_FILTER = {"filter": ["orders.status = 'ok'"]}
-N = {"formula": "count(*)", "name": "n"}
+N = {"expression": "count(*)", "name": "n"}
 # The final stage infers model ``orders``, which a sibling stage is named.
 COLLIDING: List[Any] = [
     {"name": "orders", "population": "customers", "dimensions": ["name"], "metrics": [N]},

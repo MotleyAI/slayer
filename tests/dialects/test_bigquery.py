@@ -845,7 +845,7 @@ def test_build_engine_oauth_validates_before_importing_optional_driver() -> None
 )
 async def test_bigquery_outer_wrap_order_by_keeps_full_alias(column: str, alias: str) -> None:
     """No empty backtick qualifier; the alias keeps its model prefix (public or hidden)."""
-    sql = await gen(cumsum_chain(order=[{"column": column, "direction": "desc"}]),
+    sql = await gen(cumsum_chain(order=[{"field": column, "direction": "desc"}]),
                     dialect="bigquery")
     assert "``" not in sql, f"empty identifier emitted: {sql}"
     assert outer_order(sql, "bigquery") == [(alias, "", True)], sql

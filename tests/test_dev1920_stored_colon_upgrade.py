@@ -89,7 +89,7 @@ def _measures(formulas: list[str]) -> list[dict]:
 
 class TestModelMeasures:
     def test_formulas_load_functional(self) -> None:
-        model = _model(measures=_measures([s for s, _ in MODEL_MEASURES]))
+        model = _model(metrics=_measures([s for s, _ in MODEL_MEASURES]))
         assert [m.expression for m in model.metrics] == [f for _, f in MODEL_MEASURES]
 
     @pytest.mark.parametrize("backend", BACKENDS)
@@ -166,16 +166,16 @@ class TestExecution:
     @pytest.mark.parametrize("dialect", DIALECTS)
     async def test_granularity_spans(self, make_store: StoreFactory, dialect: str) -> None:  # noqa: F811
         storage = await make_store(dialect=dialect, granularities=[FISCAL_QUARTER])
-        by_month = _stored(measures=["sum(amount)"], time_dimensions=[{"dimension": "created_at",
+        by_month = _stored(metrics=["sum(amount)"], time_dimensions=[{"field": "created_at",
                                                                         "granularity": "month"}],
-                           order=[{"column": {"name": "created_at_month"}, "direction": "desc",
+                           order=[{"field": {"name": "created_at_month"}, "direction": "desc",
                                    "raw_formula": "created_at:month"}])
         [order] = by_month.order or []
         assert order.raw_expression == "date_trunc('month', created_at)"
         assert rows(await run(storage, by_month)) == rows(await run(storage, _fresh(
-            measures=["sum(amount)"], time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            order=[{"column": "date_trunc('month', created_at)", "direction": "desc"}])))
-        by_fiscal = _stored(measures=["sum(amount)"], dimensions=[
+            metrics=["sum(amount)"], time_dimensions=[{"field": "created_at", "granularity": "month"}],
+            order=[{"field": "date_trunc('month', created_at)", "direction": "desc"}])))
+        by_fiscal = _stored(metrics=["sum(amount)"], dimensions=[
             {"name": "created_at_fiscal_quarter", "expression": "created_at:fiscal_quarter"}])
         [dim] = by_fiscal.dimensions or []
         assert isinstance(dim, ComputedDimension)
@@ -323,8 +323,8 @@ async def _assert_refused_unrewritten(storage: Any, payload: dict) -> None:
 class TestLeftAlone:
     def test_unparseable_text_is_kept_with_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         with _messages(caplog) as messages:
-            model = _model(measures=[{"name": "good", "formula": "amount:sum"},
-                                     {"name": "broken", "formula": "amount:sum +"}])
+            model = _model(metrics=[{"name": "good", "expression": "amount:sum"},
+                                     {"name": "broken", "expression": "amount:sum +"}])
         assert [m.expression for m in model.metrics] == ["sum(amount)", "amount:sum +"]
         assert [m for m in messages if "orders" in m and "measures['broken'].formula" in m], messages
 

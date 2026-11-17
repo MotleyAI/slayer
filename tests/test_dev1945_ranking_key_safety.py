@@ -147,7 +147,7 @@ class TestImplicitDefaultRefused:
         engine = await make_engine(str(tmp_path), orders_default="li_ts")
         await _refused(
             engine, "ranks/reads by li_ts", HOST_HOP, agg_key=agg_key,
-            measures=[metric(f"{agg_key.agg}(amount)")], to_many_handling=mode,
+            metrics=[metric(f"{agg_key.agg}(amount)")], to_many_handling=mode,
         )
 
     @pytest.mark.parametrize("mode", MODES)
@@ -156,7 +156,7 @@ class TestImplicitDefaultRefused:
         await _refused(
             engine, "ranks/reads by sh_ts", "not attributable from line_items", "shipments",
             agg_key=LI_QTY_LAST,
-            measures=[metric("last(line_items.qty)")], to_many_handling=mode,
+            metrics=[metric("last(line_items.qty)")], to_many_handling=mode,
         )
 
 
@@ -169,7 +169,7 @@ class TestImplicitGrainKeyRefused:
         engine = await make_engine(str(tmp_path), orders_default="created_at")
         await _refused(
             engine, "ranks/reads by created_at", HOST_HOP, agg_key=AMOUNT_LAST,
-            dimensions=["line_items.created_at"], measures=[metric("last(amount)")],
+            dimensions=["line_items.created_at"], metrics=[metric("last(amount)")],
             to_many_handling=mode,
         )
 
@@ -178,7 +178,7 @@ class TestImplicitGrainKeyRefused:
         await _refused(
             engine, "ranks/reads by created_at", HOST_HOP, agg_key=AMOUNT_LAST_30D,
             dimensions=["line_items.created_at"], time_dimensions=month_td(),
-            measures=[metric("last(amount, window='30d')")],
+            metrics=[metric("last(amount, window='30d')")],
         )
 
     async def test_fanning_time_dimension(self, tmp_path) -> None:
@@ -186,7 +186,7 @@ class TestImplicitGrainKeyRefused:
         await _refused(
             engine, "ranks/reads by created_at", HOST_HOP, agg_key=AMOUNT_LAST,
             time_dimensions=month_td("line_items.created_at"),
-            measures=[metric("last(amount)")],
+            metrics=[metric("last(amount)")],
         )
 
 
@@ -198,28 +198,28 @@ class TestExplicitAndDefinitionKeys:
         engine = await make_engine(str(tmp_path), orders_default="created_at")
         await _refused(
             engine, "ranks/reads by li_ts", HOST_HOP, agg_key=AMOUNT_LAST_LI_TS,
-            measures=[metric("last(amount, li_ts)")],
+            metrics=[metric("last(amount, li_ts)")],
         )
 
     async def test_explicit_structural_argument_keeps_its_message(self, tmp_path) -> None:
         engine = await make_engine(str(tmp_path), orders_default="created_at")
         await _refused(
             engine, "ranks/reads by created_at", HOST_HOP, agg_key=AMOUNT_LAST_LI_CREATED,
-            measures=[metric("last(amount, line_items.created_at)")],
+            metrics=[metric("last(amount, line_items.created_at)")],
         )
 
     async def test_default_whose_filter_crosses(self, tmp_path) -> None:
         engine = await make_engine(str(tmp_path), orders_default="li_flag_ts")
         await _refused(
             engine, "ranks/reads by li_flag_ts", HOST_HOP, agg_key=AMOUNT_LAST,
-            measures=[metric("last(amount)")],
+            metrics=[metric("last(amount)")],
         )
 
     async def test_unanalyzable_default(self, tmp_path) -> None:
         engine = await make_engine(str(tmp_path), orders_default="bad_ts")
         await _refused(
             engine, "names derived column 'bad_ts'", "no supported dialect can analyse",
-            agg_key=AMOUNT_LAST, measures=[metric("last(amount)")],
+            agg_key=AMOUNT_LAST, metrics=[metric("last(amount)")],
         )
 
 
@@ -230,20 +230,20 @@ class TestSafeKeysExecute:
     async def test_local_default(self, tmp_path) -> None:
         engine = await make_engine(str(tmp_path), orders_default="created_at")
         resp = await engine.execute(orders_q(
-            measures=[metric("last(amount)"), metric("first(amount)", "f")],
+            metrics=[metric("last(amount)"), metric("first(amount)", "f")],
         ))
         assert resp.data == [{"orders.l": LAST_AMOUNT, "orders.f": FIRST_AMOUNT}]
 
     async def test_filter_only_temporal_column_without_default(self, tmp_path) -> None:
         engine = await make_engine(str(tmp_path))
         resp = await engine.execute(orders_q(
-            filters=["created_at > '2023-01-01'"], measures=[metric("last(amount)")],
+            filter=["created_at > '2023-01-01'"], metrics=[metric("last(amount)")],
         ))
         assert resp.data == [{"orders.l": LAST_AMOUNT}]
 
     async def test_derived_default_over_proven_hop(self, tmp_path) -> None:
         engine = await make_engine(str(tmp_path), orders_default="cust_signup")
-        resp = await engine.execute(orders_q(measures=[metric("last(amount)")]))
+        resp = await engine.execute(orders_q(metrics=[metric("last(amount)")]))
         assert resp.data == [{"orders.l": LAST_AMOUNT}]
         assert resp.sql is not None
         order_expr, ranked_select = _ranked_cte_order_expr(resp.sql)
@@ -253,7 +253,7 @@ class TestSafeKeysExecute:
     async def test_windowed_bucket_key_wins_over_a_crossing_default(self, tmp_path) -> None:
         engine = await make_engine(str(tmp_path), orders_default="li_ts")
         resp = await engine.execute(orders_q(
-            time_dimensions=month_td(), measures=[metric("last(amount, window='30d')")],
+            time_dimensions=month_td(), metrics=[metric("last(amount, window='30d')")],
         ))
         assert _by_month(resp) == {JAN: LAST_AMOUNT}
         assert resp.sql is not None
@@ -263,7 +263,7 @@ class TestSafeKeysExecute:
         engine = await make_engine(str(tmp_path), orders_default="created_at")
         resp = await engine.execute(orders_q(
             time_dimensions=month_td(),
-            measures=[metric("last(amount, cust_signup, window='30d')")],
+            metrics=[metric("last(amount, cust_signup, window='30d')")],
         ))
         assert _by_month(resp) == {JAN: LAST_AMOUNT}
         assert resp.sql is not None

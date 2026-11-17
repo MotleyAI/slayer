@@ -44,7 +44,7 @@ def _needs_time(expression: str) -> bool:
 def _metric_query(spelling: str):
     return q(
         dimensions=["customers.tier"],
-        measures=[{"formula": spelling, "name": "x"}],
+        metrics=[{"expression": spelling, "name": "x"}],
         time_dimensions=month_td() if _needs_time(spelling) else None,
     )
 
@@ -97,7 +97,7 @@ class TestExecutedValuesAgainstOracles:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[{"formula": "customers.pop_total", "name": "x"}],
+            metrics=[{"expression": "customers.pop_total", "name": "x"}],
             to_many_handling="broadcast"))
         for row in resp.data:
             _approx(row["orders.x"], POP_TOTAL)
@@ -106,7 +106,7 @@ class TestExecutedValuesAgainstOracles:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[{"formula": "customers.spend_by_tier", "name": "x"}]))
+            metrics=[{"expression": "customers.spend_by_tier", "name": "x"}]))
         by = rows_by(resp, "orders.customers.tier")
         for tier, expected in SPEND_BY_TIER.items():
             _approx(by[(tier,)]["orders.x"], expected)
@@ -116,7 +116,7 @@ class TestExecutedValuesAgainstOracles:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.regions.name"],
-            measures=[{"formula": "customers.gold_spend_total", "name": "x"}]))
+            metrics=[{"expression": "customers.gold_spend_total", "name": "x"}]))
         by = rows_by(resp, "orders.customers.regions.name")
         for name, expected in GOLD_SPEND_BY_REGION.items():
             _approx(by[(name,)]["orders.x"], expected)
@@ -133,7 +133,7 @@ class TestComputedDimensionSource:
     def _dim_query(self, expr: str):
         return q(
             dimensions=[{"expression": expr, "name": "band"}],
-            measures=[{"formula": "sum(amount)", "name": "a"}],
+            metrics=[{"expression": "sum(amount)", "name": "a"}],
         )
 
     async def test_computed_dimension_sql_equals_hand(self) -> None:

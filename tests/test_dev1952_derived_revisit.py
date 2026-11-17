@@ -621,12 +621,12 @@ async def unresolved_engine(request):
 
 
 def _cust_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "customers")
+    kw.setdefault("population", "customers")
     return SlayerQuery(**kw)
 
 
 def _orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -653,21 +653,21 @@ async def _assert_circular(
 class TestQueryTimeBackstop:
     async def test_aggregated_across_to_one_hop(self, qengine) -> None:
         await _assert_circular(qengine, _orders_q(
-            measures=[DatasetMetric(expression="sum(customers.revisit_spend)", name="w")]))
+            metrics=[DatasetMetric(expression="sum(customers.revisit_spend)", name="w")]))
 
     async def test_aggregated_on_declaring_model(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            measures=[DatasetMetric(expression="sum(revisit_spend)", name="w")]))
+            metrics=[DatasetMetric(expression="sum(revisit_spend)", name="w")]))
 
     async def test_as_dimension(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
             dimensions=["revisit_spend"],
-            measures=[DatasetMetric(expression="sum(spend)", name="s")]))
+            metrics=[DatasetMetric(expression="sum(spend)", name="s")]))
 
     async def test_in_filter(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
-            measures=[DatasetMetric(expression="sum(spend)", name="s")],
-            filters=["revisit_spend > 0"]))
+            metrics=[DatasetMetric(expression="sum(spend)", name="s")],
+            filter=["revisit_spend > 0"]))
 
     async def test_raw_row_mode(self, qengine) -> None:
         await _assert_circular(qengine, _cust_q(
@@ -675,24 +675,24 @@ class TestQueryTimeBackstop:
 
     async def test_through_a_derived_chain(self, qengine) -> None:
         exc = await _assert_circular(qengine, _cust_q(
-            measures=[DatasetMetric(expression="sum(chain)", name="w")]))
+            metrics=[DatasetMetric(expression="sum(chain)", name="w")]))
         assert exc.field == "revisit_spend"  # the innermost expanded definition
 
     async def test_filter_kind_definition(self, qengine) -> None:
         # reference comes from the filter fragment, proving the filter surface.
         await _assert_circular(qengine, _cust_q(
-            measures=[DatasetMetric(expression="sum(filt_revisit)", name="w")]))
+            metrics=[DatasetMetric(expression="sum(filt_revisit)", name="w")]))
 
     async def test_leading_host_qualifier_keeps_full_spelling(self, qengine) -> None:
         # The door keeps the complete pre-strip reference (leading host qualifier).
         await _assert_circular(
-            qengine, _cust_q(measures=[DatasetMetric(expression="sum(revisit_lead)", name="w")]),
+            qengine, _cust_q(metrics=[DatasetMetric(expression="sum(revisit_lead)", name="w")]),
             reference="customers.regions.customers.spend")
 
     async def test_refused_before_sql_executes(self, qengine) -> None:
         # dry_run builds SQL but does not execute it — a raise here proves the
         # refusal is at compile time, before any SQL runs.
-        query = _cust_q(measures=[DatasetMetric(expression="sum(revisit_spend)", name="w")])
+        query = _cust_q(metrics=[DatasetMetric(expression="sum(revisit_spend)", name="w")])
         with pytest.raises(CircularRelationshipPathError):
             await qengine.execute(query, dry_run=True)
 
@@ -700,7 +700,7 @@ class TestQueryTimeBackstop:
         # The binder builds its own reference fields; pin only the class, the
         # revisited model, and that the message names the circular path.
         exc = await _assert_circular(
-            qengine, _orders_q(measures=[DatasetMetric(
+            qengine, _orders_q(metrics=[DatasetMetric(
                 expression="sum(customers.regions.customers.spend)", name="w")]),
             reference=None)
         assert "customers.regions.customers" in str(exc)
@@ -709,7 +709,7 @@ class TestQueryTimeBackstop:
 
     async def test_unresolved_model_refused_as_unresolvable(self, unresolved_engine) -> None:
         query = _cust_q(dimensions=["ghost_spend"],
-                        measures=[DatasetMetric(expression="sum(spend)", name="s")])
+                        metrics=[DatasetMetric(expression="sum(spend)", name="s")])
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             await unresolved_engine.execute(query)
         msg = str(ei.value)
@@ -724,7 +724,7 @@ class TestQueryTimeBackstop:
 class TestBinderParity:
     async def test_query_typed_revisit_raises_circular_class(self, qengine) -> None:
         exc = await _assert_circular(
-            qengine, _orders_q(measures=[DatasetMetric(
+            qengine, _orders_q(metrics=[DatasetMetric(
                 expression="sum(customers.regions.customers.spend)", name="w")]),
             reference=None)
         assert isinstance(exc, CircularRelationshipPathError)
@@ -773,7 +773,7 @@ class TestViaHostRerootUnchanged:
         # reroot_from_root / attributable_from_root over a composed via-host path.
         resp = await reroot_engine.execute(_dev1900_orders_q(
             dimensions=["status"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(customers.spend, partition_by=status)", name="w")],
             to_many_handling="associate"))
         got = {r["orders.status"]: r["orders.w"] for r in resp.data}
@@ -784,7 +784,7 @@ class TestDefinitionDefaultsUnchanged:
     @staticmethod
     async def _value(engine, expression: str) -> float:
         resp = await engine.execute(
-            _dev1931_orders_q(measures=[DatasetMetric(expression=expression, name="w")]))
+            _dev1931_orders_q(metrics=[DatasetMetric(expression=expression, name="w")]))
         return float(resp.data[0]["orders.w"])
 
     async def test_scalar_default_matches_explicit(self, default_engine) -> None:

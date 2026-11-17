@@ -28,7 +28,7 @@ BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -106,7 +106,7 @@ class TestMultiOutputProducer:
                 "AND count(amount, partition_by=city) > 1 THEN 1 ELSE 0 END")
         sql = await gen(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert _count_isolated_ctes(sql) == 1
 
@@ -118,7 +118,7 @@ class TestMultiOutputProducer:
                 {"expression": "CASE WHEN count(amount, partition_by=city) > 1 "
                                "THEN 1 ELSE 0 END", "name": "band_n"},
             ],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert _count_isolated_ctes(sql) == 1
 
@@ -130,8 +130,8 @@ class TestFilterClassifier:
     async def test_not_over_computed_dim_stays_final(self) -> None:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            filters=["not (band == 1)"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["not (band == 1)"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert "5000" not in cm_cte_bodies(sql)
 
@@ -143,10 +143,10 @@ class TestFilterClassifier:
             measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         anded = await gen(_q(
-            filters=["band == 1 and status == 'ok'"], **base_kwargs,
+            filter=["band == 1 and status == 'ok'"], **base_kwargs,
         ))
         separate = await gen(_q(
-            filters=["band == 1", "status == 'ok'"], **base_kwargs,
+            filter=["band == 1", "status == 'ok'"], **base_kwargs,
         ))
         assert anded == separate
 
@@ -155,8 +155,8 @@ class TestFilterClassifier:
         # both resolve at row scope, so the OR row-masks before re-aggregation.
         query = _q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            filters=["band == 1 or status == 'ok'"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["band == 1 or status == 'ok'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         sql = await gen(query)
         assert "status" in sql
@@ -164,8 +164,8 @@ class TestFilterClassifier:
     async def test_scalar_call_row_filter_copies_into_producer(self) -> None:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            filters=["coalesce(city, 'x') != 'Lyon'"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["coalesce(city, 'x') != 'Lyon'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert "Lyon" in cm_cte_bodies(sql)
 
@@ -175,8 +175,8 @@ class TestFilterClassifier:
         # (so the final GROUP BY counts only ok rows).
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            filters=["status == 'ok'"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["status == 'ok'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert "status" in cm_cte_bodies(sql)
         assert "status" in _consumer_body(sql)
@@ -186,8 +186,8 @@ class TestFilterClassifier:
         # a HAVING on the final stage, never inside the producer.
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            filters=["sum(amount) > 0"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["sum(amount) > 0"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert "> 0" not in cm_cte_bodies(sql)
         assert "HAVING" in _consumer_body(sql).upper()
@@ -207,7 +207,7 @@ class TestDiscoveryGuards:
                 {"expression": "CASE WHEN sum(customers.spend, partition_by=city) "
                                "> 100 THEN 1 ELSE 0 END", "name": "band"},
             ],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
             to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"attributable from customers"):
@@ -216,7 +216,7 @@ class TestDiscoveryGuards:
     async def test_reserved_prefix_column_rejected_when_regroup_active(self) -> None:
         q = _q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         with pytest.raises(ValueError, match=r"__regroup__"):
             await _gen_with_reserved_column(q)
@@ -224,7 +224,7 @@ class TestDiscoveryGuards:
     async def test_reserved_prefix_column_fine_without_regroup(self) -> None:
         q = _q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         sql = await _gen_with_reserved_column(q)
         assert "SELECT" in sql

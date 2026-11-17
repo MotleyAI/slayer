@@ -23,16 +23,16 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH = [{"dimension": "ordered_at", "granularity": "month"}]
+_MONTH = [{"field": "ordered_at", "granularity": "month"}]
 
 
 def _orders(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 def _sales(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "sales")
+    kw.setdefault("population", "sales")
     kw.setdefault("time_dimensions", _MONTH)
     return SlayerQuery(**kw)
 
@@ -43,72 +43,72 @@ def _cases() -> dict:
         # W1 — cross-model ranked × partition_by, every position.
         "w1/last_tier_measure": _orders(
             dimensions=["customers.tier"],
-            measures=[{"formula": LAST_TIER, "name": "l"}],
+            metrics=[{"expression": LAST_TIER, "name": "l"}],
         ),
         "w1/first_region_measure": _orders(
             dimensions=["customers.regions.name"],
-            measures=[{"formula": FIRST_REGION, "name": "f"}],
+            metrics=[{"expression": FIRST_REGION, "name": "f"}],
         ),
         "w1/filter": _orders(
             dimensions=["customers.tier"],
-            filters=[f"{LAST_TIER} > 100"],
-            measures=[{"formula": "sum(amount)", "name": "s"}],
+            filter=[f"{LAST_TIER} > 100"],
+            metrics=[{"expression": "sum(amount)", "name": "s"}],
         ),
         "w1/order": _orders(
             dimensions=["customers.tier"],
-            filters=["customers.tier is not null"],
-            measures=[{"formula": "sum(amount)", "name": "s"}],
-            order=[{"column": LAST_TIER, "direction": "desc"}],
+            filter=["customers.tier is not null"],
+            metrics=[{"expression": "sum(amount)", "name": "s"}],
+            order=[{"field": LAST_TIER, "direction": "desc"}],
         ),
         # W2 — cross-model partitioned inners under transforms.
         "w2/cumsum_part_tier": _orders(
             dimensions=["customers.tier"], time_dimensions=_MONTH,
-            measures=[{"formula": f"cumsum({CM_PART_TIER})", "name": "c"}],
+            metrics=[{"expression": f"cumsum({CM_PART_TIER})", "name": "c"}],
         ),
         "w2/change_last_region": _orders(
             dimensions=["customers.regions.name"], time_dimensions=_MONTH,
-            measures=[{"formula": f"change({LAST_REGION})", "name": "ch"}],
+            metrics=[{"expression": f"change({LAST_REGION})", "name": "ch"}],
         ),
         "w2/shared_inner": _orders(
             dimensions=["customers.tier"], time_dimensions=_MONTH,
-            filters=[f"{CM_PART_TIER} > 100"],
-            measures=[{"formula": f"cumsum({CM_PART_TIER})", "name": "c"}],
+            filter=[f"{CM_PART_TIER} > 100"],
+            metrics=[{"expression": f"cumsum({CM_PART_TIER})", "name": "c"}],
         ),
         # W3 — composite routes (already combined; pinned against regression).
         "w3/scalar_call": _orders(
             dimensions=["customers.tier"],
-            measures=[{"formula": "round(sum(customers.spend) / sum(amount), 2)",
+            metrics=[{"expression": "round(sum(customers.spend) / sum(amount), 2)",
                        "name": "r"}],
         ),
         "w3/multi_remote": _orders(
             dimensions=["customers.tier"],
-            measures=[{"formula": "sum(customers.spend) - max(customers.spend)",
+            metrics=[{"expression": "sum(customers.spend) - max(customers.spend)",
                        "name": "r"}],
         ),
         "w3/two_roots": _orders(
             dimensions=["customers.regions.name"],
-            measures=[{"formula": "sum(customers.spend) / sum(customers.regions.pop)",
+            metrics=[{"expression": "sum(customers.spend) / sum(customers.regions.pop)",
                        "name": "r"}],
         ),
         # Series-regime time_shift emission.
-        "ts/series_nested_cumsum": _sales(measures=[
-            {"formula": "time_shift(cumsum(sum(revenue)), -1)", "name": "t"},
+        "ts/series_nested_cumsum": _sales(metrics=[
+            {"expression": "time_shift(cumsum(sum(revenue)), -1)", "name": "t"},
         ]),
         "ts/series_nested_by_store": _sales(
             dimensions=["store"],
-            measures=[{"formula": "time_shift(cumsum(sum(revenue)), -1)",
+            metrics=[{"expression": "time_shift(cumsum(sum(revenue)), -1)",
                        "name": "t"}],
         ),
-        "ts/series_cm_leaf": _sales(to_many_handling="broadcast", measures=[
-            {"formula": "time_shift(sum(revenue) + sum(regions.factor), -1)",
+        "ts/series_cm_leaf": _sales(to_many_handling="broadcast", metrics=[
+            {"expression": "time_shift(sum(revenue) + sum(regions.factor), -1)",
              "name": "t"},
         ]),
-        "ts/series_in_pred": _sales(measures=[
-            {"formula": "time_shift(sum(revenue) in (100, 999), -1)", "name": "t"},
+        "ts/series_in_pred": _sales(metrics=[
+            {"expression": "time_shift(sum(revenue) in (100, 999), -1)", "name": "t"},
         ]),
         "ts/series_filters_once": _sales(
-            filters=["status = 'a'"],
-            measures=[{"formula": "time_shift(cumsum(sum(revenue)), -1)",
+            filter=["status = 'a'"],
+            metrics=[{"expression": "time_shift(cumsum(sum(revenue)), -1)",
                        "name": "t"}],
         ),
         # Residue split — the two permanent typed errors, recorded as raises.
@@ -117,14 +117,14 @@ def _cases() -> dict:
                         {"expression": "CASE WHEN cumsum(amount) > 50 "
                                        "THEN 1 ELSE 0 END", "name": "b"}],
             time_dimensions=_MONTH,
-            measures=[{"formula": "sum(amount)", "name": "s"}],
+            metrics=[{"expression": "sum(amount)", "name": "s"}],
         ),
         "res/transform_ungrained": _orders(
             dimensions=["customers.tier",
                         {"expression": "CASE WHEN cumsum(sum(amount)) > 50 "
                                        "THEN 1 ELSE 0 END", "name": "b"}],
             time_dimensions=_MONTH,
-            measures=[{"formula": "sum(amount)", "name": "s"}],
+            metrics=[{"expression": "sum(amount)", "name": "s"}],
         ),
     }
 

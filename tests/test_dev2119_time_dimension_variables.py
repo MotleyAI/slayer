@@ -22,7 +22,7 @@ async def engine(request):
 
 
 def _query(**kw: Any) -> SlayerQuery:
-    return q(measures=[m("count(*)")], **kw)
+    return q(metrics=[m("count(*)")], **kw)
 
 
 class TestConstruction:

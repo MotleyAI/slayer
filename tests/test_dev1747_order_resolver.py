@@ -52,7 +52,7 @@ from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.tsql import TsqlDialect
 import pydantic
 
-_MEASURE = [{"formula": "sum(amount)", "name": "rev"}]
+_MEASURE = [{"expression": "sum(amount)", "name": "rev"}]
 
 _MONTH = TimeDimension(
     field="created_at", granularity=TimeGranularity.MONTH,

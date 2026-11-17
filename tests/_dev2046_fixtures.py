@@ -83,7 +83,7 @@ def m(expression: str, name: str = "v") -> DatasetMetric:
 
 
 def orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 

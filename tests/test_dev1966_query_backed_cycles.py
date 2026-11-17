@@ -22,7 +22,7 @@ from tests._dev1966_fixtures import customers_dataset, m, orders_dataset, query,
 
 def _qb(name: str, source: str) -> SlayerDataset:
     return SlayerDataset(name=name, data_source="test", source_queries=[
-        query(source_model=source, measures=[m("sum(amount)", "amount")])])
+        query(population=source, metrics=[m("sum(amount)", "amount")])])
 
 
 #: shape → (stored models, the model the surface starts from, the expected ordered path).
@@ -35,7 +35,7 @@ _SHAPES = {
 async def _raise_via(surface: str, engine: SlayerQueryEngine, datasets: List[SlayerDataset],
                      start: str) -> BaseException:
     calls: dict[str, Callable[[], Awaitable[object]]] = {
-        "consumer": lambda: engine.execute(query(source_model=start, measures=[m("sum(amount)", "t")])),
+        "consumer": lambda: engine.execute(query(population=start, metrics=[m("sum(amount)", "t")])),
         "run_by_name": lambda: engine.execute(start),
         "save_model": lambda: engine.save_dataset(next(x for x in datasets if x.name == start)),
     }

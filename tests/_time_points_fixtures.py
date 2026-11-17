@@ -243,7 +243,7 @@ async def monthly(
     date_range: Any = None, whole_periods_only: bool = False, column: str = "ts", dataset: str = "ev",
 ) -> dict[str, dict[str, Any]]:
     """Monthly buckets → {measure name: value}."""
-    td: dict[str, Any] = {"dimension": column, "granularity": "month"}
+    td: dict[str, Any] = {"field": column, "granularity": "month"}
     if date_range is not None:
         td["date_range"] = date_range
     resp = await engine.execute(SlayerQuery.model_validate({

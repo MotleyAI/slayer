@@ -71,10 +71,10 @@ async def run(engine: SlayerQueryEngine, query: Any) -> tuple[SlayerResponse, li
 # --------------------------------------------------------------------------- #
 class TestFreshInput:
     async def test_python_spellings(self, engine: SlayerQueryEngine) -> None:
-        legacy, python_warned = await run(engine, q(measures=[m("count(*)", "n")],
-                                                    filters=["status == 'paid' and region is not None"]))
-        canonical, sql_warned = await run(engine, q(measures=[m("count(*)", "n")],
-                                                    filters=["status = 'paid' AND region IS NOT NULL"]))
+        legacy, python_warned = await run(engine, q(metrics=[m("count(*)", "n")],
+                                                    filter=["status == 'paid' and region is not None"]))
+        canonical, sql_warned = await run(engine, q(metrics=[m("count(*)", "n")],
+                                                    filter=["status = 'paid' AND region IS NOT NULL"]))
         assert legacy.sql == canonical.sql
         assert legacy.data == canonical.data
         assert len(deprecations(legacy)) == 2
@@ -94,8 +94,8 @@ class TestFreshInput:
     ])
     async def test_twins_share_sql_key_and_value(self, engine: SlayerQueryEngine, legacy: str,
                                                  canonical: str) -> None:
-        old, old_warned = await run(engine, q(measures=[legacy]))
-        new, new_warned = await run(engine, q(measures=[canonical]))
+        old, old_warned = await run(engine, q(metrics=[legacy]))
+        new, new_warned = await run(engine, q(metrics=[canonical]))
         assert old.columns == new.columns
         assert old.sql == new.sql
         assert old.data == new.data
@@ -105,32 +105,32 @@ class TestFreshInput:
         assert new_warned == []
 
     async def test_method_call_warning_names_the_functional_spelling(self, engine: SlayerQueryEngine) -> None:
-        resp, warned = await run(engine, q(measures=["customers.count_distinct(status)"]))
+        resp, warned = await run(engine, q(metrics=["customers.count_distinct(status)"]))
         assert warnings_mentioning(resp, SLAYER_3, "count_distinct(customers.status)")
         assert any("count_distinct(customers.status)" in w for w in warned)
 
     async def test_a_date_part_method_call_shows_its_functional_spelling(self, engine: SlayerQueryEngine) -> None:
         query = q(dimensions=[{"expression": "customers.month(updated_at)", "name": "mo"}],
-                  measures=[m("count(*)", "n")])
+                  metrics=[m("count(*)", "n")])
         with pytest.raises(ValueError, match=re.escape("month(customers.updated_at)")):
             await engine.execute(query)
 
     async def test_bare_none_list_and_method_call_warn_per_spelling(self, engine: SlayerQueryEngine) -> None:
-        resp, warned = await run(engine, q(measures=[
+        resp, warned = await run(engine, q(metrics=[
             m("sum(iif(region IN ['EU', 'US'], amount, None))", "a"), m("customers.count_distinct(status)", "b")]))
         assert len(deprecations(resp)) == 3
         assert len(warned) == 3
 
     async def test_a_spelling_used_twice_warns_once(self, engine: SlayerQueryEngine) -> None:
-        resp, warned = await run(engine, q(measures=[m("count(*)", "n")],
-                                           filters=["status == 'paid'", "region == 'EU'"]))
+        resp, warned = await run(engine, q(metrics=[m("count(*)", "n")],
+                                           filter=["status == 'paid'", "region == 'EU'"]))
         assert len(warned) == 1
         assert len(deprecations(resp)) == 1
         assert int(single(resp, "n")) == 3
 
     async def test_true_false_and_not_equal_are_not_deprecated(self, engine: SlayerQueryEngine) -> None:
-        resp, warned = await run(engine, q(measures=[m("count(*)", "n")],
-                                           filters=["status != 'void'", "(amount > 15) = True"]))
+        resp, warned = await run(engine, q(metrics=[m("count(*)", "n")],
+                                           filter=["status != 'void'", "(amount > 15) = True"]))
         assert deprecations(resp) == []
         assert warned == []
 
@@ -253,8 +253,8 @@ class TestNeverSelfWarns:
         assert parse_expr(rendered) == parse_expr(text)
 
     async def test_case_query(self, engine: SlayerQueryEngine) -> None:
-        resp, warned = await run(engine, q(measures=[m("sum(CASE status WHEN 'paid' THEN 1 END)")],
-                                           filters=["CASE WHEN region IS NULL THEN 0 ELSE 1 END = 1"]))
+        resp, warned = await run(engine, q(metrics=[m("sum(CASE status WHEN 'paid' THEN 1 END)")],
+                                           filter=["CASE WHEN region IS NULL THEN 0 ELSE 1 END = 1"]))
         assert num(single(resp)) == 4.0
         assert deprecations(resp) == []
         assert warned == []
@@ -269,7 +269,7 @@ class TestNeverSelfWarns:
         assert warned == []
 
     async def test_engine_remedies_are_canonical(self, engine: SlayerQueryEngine) -> None:
-        query = q(measures=[m("weighted_avg(amount, wieght = qty)")])
+        query = q(metrics=[m("weighted_avg(amount, wieght = qty)")])
         with pytest.raises(ValueError) as err:
             await engine.execute(query)
         assert "==" not in str(err.value)

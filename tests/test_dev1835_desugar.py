@@ -75,11 +75,11 @@ class TestBareExplicitTwins:
         _, engine = exec_backend
         bare = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount, window='1y')", name="w")],
+            metrics=[DatasetMetric(expression="sum(amount, window='1y')", name="w")],
         ))
         explicit = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(amount, window='1y', partition_by=region)", name="w",
             )],
         ))
@@ -90,11 +90,11 @@ class TestBareExplicitTwins:
         _, engine = exec_backend
         bare = await engine.execute(q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="last(amount)", name="l")],
+            metrics=[DatasetMetric(expression="last(amount)", name="l")],
         ))
         explicit = await engine.execute(q(
             dimensions=["region"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="last(amount, partition_by=region)", name="l",
             )],
         ))
@@ -105,7 +105,7 @@ class TestBareExplicitTwins:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, window='1y')", name="wb"),
                 DatasetMetric(
                     expression="sum(amount, window='1y', partition_by=region)",
@@ -127,7 +127,7 @@ class TestMigratedFamilyValuePins:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="sum(amount, window='1y')", name="w"),
             ],
@@ -147,7 +147,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount, window='45d')", name="w")],
+            metrics=[DatasetMetric(expression="sum(amount, window='45d')", name="w")],
         ))
         _assert_map(_by_region_month(resp, "w"), TRAILING_45D_REGION)
 
@@ -155,7 +155,7 @@ class TestMigratedFamilyValuePins:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(expression="last(amount)", name="l")],
+            metrics=[DatasetMetric(expression="last(amount)", name="l")],
         )
         resp = await engine.execute(query)
         got = {
@@ -170,7 +170,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="last(amount)", name="l")],
+            metrics=[DatasetMetric(expression="last(amount)", name="l")],
         ))
         got = {
             (r["orders.region"], r["orders.city"],
@@ -183,7 +183,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="first(amount)", name="f")],
+            metrics=[DatasetMetric(expression="first(amount)", name="f")],
         ))
         _assert_map(_by_region(resp, "f"), REGION_FIRST)
 
@@ -193,7 +193,7 @@ class TestMigratedFamilyValuePins:
         _, engine = exec_backend
         resp = await engine.execute(q(
             time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
+            metrics=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
         ))
         got = {
             month_key(r["orders.ordered_at"]): r["orders.w"] for r in resp.data
@@ -204,7 +204,7 @@ class TestMigratedFamilyValuePins:
         """Empty grain — the producer degenerates to one row (rendered as a
         single-row CROSS JOIN attach post-migration)."""
         dialect, engine = exec_backend
-        query = q(measures=[
+        query = q(metrics=[
             DatasetMetric(expression="sum(amount)", name="m"),
             DatasetMetric(expression="last(amount)", name="l"),
         ])
@@ -229,8 +229,8 @@ class TestOrderOnlyHiddenProducers:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
-            order=[{"column": "sum(amount, window='90d')", "direction": "desc"}],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            order=[{"field": "sum(amount, window='90d')", "direction": "desc"}],
         ))
         got = [
             (r["orders.region"], month_key(r["orders.ordered_at"]))
@@ -245,8 +245,8 @@ class TestOrderOnlyHiddenProducers:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
-            order=[{"column": "last(amount)", "direction": "desc"}],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+            order=[{"field": "last(amount)", "direction": "desc"}],
         ))
         # REGION_LAST desc: NULL 60, North 30, South 25.
         assert [r["orders.region"] for r in resp.data] == [None, "North", "South"]
@@ -256,8 +256,8 @@ class TestOrderOnlyHiddenProducers:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
-            filters=["last(amount) > 28"],
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            filter=["last(amount) > 28"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         ))
         _assert_map(_by_region(resp, "m"), {"North": 100.0, None: 60.0})
 
@@ -269,11 +269,11 @@ class TestFilteredMeasureNeutrality:
         _, engine = exec_backend
         base = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         ))
         plus = await engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="sum(ok_amount, window='90d')", name="w"),
             ],
@@ -290,7 +290,7 @@ class TestFilteredMeasureNeutrality:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="last(ok_amount)", name="ol"),
                 DatasetMetric(expression="last(nomatch)", name="nl"),
@@ -311,7 +311,7 @@ class TestDerivedColumnDimension:
         _, engine = shipped_backend
         resp = await engine.execute(q(
             dimensions=["region", "city_key"],
-            measures=[DatasetMetric(expression="last(amount)", name="l")],
+            metrics=[DatasetMetric(expression="last(amount)", name="l")],
         ))
         got = {
             (r["orders.region"], r["orders.city_key"]): r["orders.l"]
@@ -329,7 +329,7 @@ class TestDerivedColumnDimension:
         _, engine = shipped_backend
         resp = await engine.execute(q(
             dimensions=["region", "city_key"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount, window='1y')", name="w")],
+            metrics=[DatasetMetric(expression="sum(amount, window='1y')", name="w")],
         ))
         got = {
             (r["orders.region"], r["orders.city_key"],
@@ -358,7 +358,7 @@ class TestDualRoleWithBareWindowed:
         query = q(
             dimensions=["region", {"expression": band, "name": "rband"}],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
                 DatasetMetric(expression="sum(amount, window='1y')", name="w"),

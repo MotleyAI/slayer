@@ -23,7 +23,7 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -33,23 +33,23 @@ def _cases() -> dict:
     return {
         "filter/cross_model_partitioned": _q(
             dimensions=["customers.regions.name", "customers.tier"],
-            filters=[f"{cm_part} > 100"],
-            measures=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            filter=[f"{cm_part} > 100"],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
         ),
         "filter/computed_dim_mix_field": _q(
             dimensions=["region", "city", band],
-            filters=["band == 1 or channel == 'app'"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["band == 1 or channel == 'app'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
         "filter/computed_dim_mix_measure": _q(
             dimensions=["region", "city", band],
-            filters=["sum(amount, partition_by=city) > 45 or sum(amount) > 55"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["sum(amount, partition_by=city) > 45 or sum(amount) > 55"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
         "order/cross_model_partitioned": _q(
             dimensions=["customers.regions.name", "customers.tier"],
-            measures=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
-            order=[{"column": cm_part, "direction": "desc"}],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            order=[{"field": cm_part, "direction": "desc"}],
         ),
     }
 

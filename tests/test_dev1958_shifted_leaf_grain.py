@@ -73,7 +73,7 @@ def _dr_td() -> list:
 def _q(expression: str, *, date_range: bool = False, **kw):
     kw.setdefault("dimensions", ["region"])
     return monthly_q(time_dimensions=_dr_td() if date_range else month_td(),
-                     measures=[DatasetMetric(expression=expression, name="t")], **kw)
+                     metrics=[DatasetMetric(expression=expression, name="t")], **kw)
 
 
 def _cells(resp, name: str = "monthly.t") -> dict:
@@ -170,7 +170,7 @@ class TestFrameRule:
         """Regression guard: already correct before the producer rewrite."""
         resp = await exec_engine.execute(_q(
             "time_shift(sum(amount) + sum(amount, partition_by=[ordered_at]), -1)",
-            filters=["ordered_at >= '2024-02-01' and region = 'North'"]))
+            filter=["ordered_at >= '2024-02-01' and region = 'North'"]))
         _assert_cells(_cells(resp), cells={(N, FEB), (N, MAR)},
                       expected={(N, FEB): 20.0, (N, MAR): 40.0})
 
@@ -189,7 +189,7 @@ class TestSharedShiftedRelation:
     def _two_offsets(self):
         return monthly_q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression=f"time_shift({SHARE}, -1)", name="t1"),
+            metrics=[DatasetMetric(expression=f"time_shift({SHARE}, -1)", name="t1"),
                       DatasetMetric(expression=f"time_shift({SHARE}, -2)", name="t2")])
 
     async def test_two_offsets_values(self, exec_engine) -> None:

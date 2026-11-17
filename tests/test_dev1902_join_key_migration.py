@@ -53,7 +53,7 @@ def _orders(*, fk_sql: str | None = "cust_fk", joins: list[dict] | None = None) 
 
 
 def _join(target: str, pairs: list[list[str]], **extra) -> dict:
-    return {"target_model": target, "join_pairs": pairs, **extra}
+    return {"to": target, "join_pairs": pairs, **extra}
 
 
 @pytest.fixture(params=["yaml", "sqlite"])

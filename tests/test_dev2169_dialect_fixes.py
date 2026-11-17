@@ -40,7 +40,7 @@ _TYPED_EMPTY = (r"CAST\(\s*(ARRAY\s*)?\[\]\s+AS\b", r"ARRAY<\w+>\s*\[\]")
 @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
 @pytest.mark.parametrize("formula", ["collect(rate)", "collect(city)", "collect(skills.value)"])
 async def test_collect_fallback_is_untyped(dialect: str, formula: str) -> None:
-    sql = await emit_contractors(query(dimensions=["team"], measures=[metric(formula, "c")]), dialect=dialect)
+    sql = await emit_contractors(query(dimensions=["team"], metrics=[metric(formula, "c")]), dialect=dialect)
     typed = [p for p in _TYPED_EMPTY if re.search(p, sql, re.I)]
     assert not typed, sql
 
@@ -89,7 +89,7 @@ async def test_collect_over_uuid_on_duckdb() -> None:
 # Postgres: contains_any / contains_all compare canonical array types
 # --------------------------------------------------------------------------- #
 async def _postgres(expr: str) -> str:
-    sql = await emit_contractors(query(dimensions=["id"], filters=[expr]), dialect="postgres")
+    sql = await emit_contractors(query(dimensions=["id"], filter=[expr]), dialect="postgres")
     return " ".join(sql.upper().split())
 
 

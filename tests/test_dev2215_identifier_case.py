@@ -65,31 +65,31 @@ async def storage(request, tmp_path) -> StorageBackend:
 # --------------------------------------------------------------------------- #
 class TestFolding:
     async def test_any_case_reaches_a_column(self, engine: SlayerQueryEngine) -> None:
-        folded = await engine.execute(q(dimensions=["ORDERS.Status"], measures=[m("SUM(Amount)")]))
-        plain = await engine.execute(q(dimensions=["status"], measures=[m("sum(amount)")]))
+        folded = await engine.execute(q(dimensions=["ORDERS.Status"], metrics=[m("SUM(Amount)")]))
+        plain = await engine.execute(q(dimensions=["status"], metrics=[m("sum(amount)")]))
         assert folded.columns == plain.columns
         assert sorted_rows(folded) == sorted_rows(plain)
 
     async def test_quoted_names_are_exact(self, engine: SlayerQueryEngine) -> None:
-        query = q(measures=[m('sum("Amount")')])
+        query = q(metrics=[m('sum("Amount")')])
         with pytest.raises(UnknownReferenceError):
             await engine.execute(query)
-        assert num(single(await engine.execute(q(measures=[m('sum("amount")')])))) == 160.0
+        assert num(single(await engine.execute(q(metrics=[m('sum("amount")')])))) == 160.0
 
     @pytest.mark.parametrize("dimension", ['"customers".REGION', 'CUSTOMERS."region"'])
     async def test_quoting_per_segment(self, engine: SlayerQueryEngine, dimension: str) -> None:
-        resp = await engine.execute(q(dimensions=[dimension], measures=[m("count(*)", "n")]))
+        resp = await engine.execute(q(dimensions=[dimension], metrics=[m("count(*)", "n")]))
         assert "orders.customers.region" in resp.columns
 
     async def test_quoted_segment_with_wrong_case_fails(self, engine: SlayerQueryEngine) -> None:
-        query = q(dimensions=['"Customers".region'], measures=[m("count(*)", "n")])
+        query = q(dimensions=['"Customers".region'], metrics=[m("count(*)", "n")])
         with pytest.raises(UnknownReferenceError):
             await engine.execute(query)
 
     @pytest.mark.parametrize("query", [
-        q(dimensions=['"ORDERS".status'], measures=[m("count(*)", "n")]),
-        q(measures=[m('count("ORDERS".*)', "n")]),
-        q(time_dimensions=[{"dimension": '"ORDERS".created_at', "granularity": "month"}], measures=[m("count(*)", "n")]),
+        q(dimensions=['"ORDERS".status'], metrics=[m("count(*)", "n")]),
+        q(metrics=[m('count("ORDERS".*)', "n")]),
+        q(time_dimensions=[{"field": '"ORDERS".created_at', "granularity": "month"}], metrics=[m("count(*)", "n")]),
     ], ids=["dimension", "star", "time-dimension"])
     async def test_a_quoted_root_qualifier_is_exact(self, engine: SlayerQueryEngine, query: Any) -> None:
         with pytest.raises(UnknownReferenceError):
@@ -97,29 +97,29 @@ class TestFolding:
 
     @pytest.mark.parametrize("dimension", ['"status"', '"orders".status', 'orders."status"', '"orders"."status"'])
     async def test_a_quoted_dimension_is_its_column(self, engine: SlayerQueryEngine, dimension: str) -> None:
-        quoted = await engine.execute(q(dimensions=[dimension], measures=[m("count(*)", "n")]))
-        plain = await engine.execute(q(dimensions=["status"], measures=[m("count(*)", "n")]))
+        quoted = await engine.execute(q(dimensions=[dimension], metrics=[m("count(*)", "n")]))
+        plain = await engine.execute(q(dimensions=["status"], metrics=[m("count(*)", "n")]))
         assert quoted.columns == plain.columns
         assert sorted_rows(quoted) == sorted_rows(plain)
 
     async def test_a_quoted_time_dimension_is_its_column(self, engine: SlayerQueryEngine) -> None:
-        quoted = await engine.execute(q(time_dimensions=[{"dimension": '"orders"."created_at"', "granularity": "month"}],
-                                        measures=[m("count(*)", "n")]))
-        plain = await engine.execute(q(time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-                                       measures=[m("count(*)", "n")]))
+        quoted = await engine.execute(q(time_dimensions=[{"field": '"orders"."created_at"', "granularity": "month"}],
+                                        metrics=[m("count(*)", "n")]))
+        plain = await engine.execute(q(time_dimensions=[{"field": "created_at", "granularity": "month"}],
+                                       metrics=[m("count(*)", "n")]))
         assert quoted.columns == plain.columns
         assert sorted_rows(quoted) == sorted_rows(plain)
 
     async def test_a_quoted_column_object_time_dimension_is_exact(self, engine: SlayerQueryEngine) -> None:
-        query = q(time_dimensions=[{"dimension": {"name": "CREATED_AT", "quoted": [True]}, "granularity": "month"}],
-                  measures=[m("count(*)", "n")])
+        query = q(time_dimensions=[{"field": {"name": "CREATED_AT", "quoted": [True]}, "granularity": "month"}],
+                  metrics=[m("count(*)", "n")])
         with pytest.raises(UnknownReferenceError):
             await engine.execute(query)
 
     @pytest.mark.parametrize(("column", "error"), [('"status"', None), ('"STATUS"', UnknownReferenceError)])
     async def test_a_quoted_order_column_is_exact(self, engine: SlayerQueryEngine, column: str,
                                                   error: type[SlayerError] | None) -> None:
-        query = q(measures=[m("count(*)", "n")], dimensions=["region"], order=[{"column": column, "direction": "desc"}])
+        query = q(metrics=[m("count(*)", "n")], dimensions=["region"], order=[{"field": column, "direction": "desc"}])
         if error is None:
             assert (await engine.execute(query)).data
         else:
@@ -127,7 +127,7 @@ class TestFolding:
                 await engine.execute(query)
 
     async def test_a_quoted_root_qualifier_in_its_case_is_dropped(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(measures=[m('count("orders".status)', "n")]))
+        resp = await engine.execute(q(metrics=[m('count("orders".status)', "n")]))
         assert num(single(resp, "n")) == 6.0
 
     @pytest.mark.parametrize(("ref", "error"), [
@@ -147,8 +147,8 @@ class TestFolding:
                     await eng.execute(stages)
 
     async def test_join_names_fold(self, engine: SlayerQueryEngine) -> None:
-        folded = await engine.execute(q(dimensions=["CUSTOMERS.region"], measures=[m("count(*)", "n")]))
-        plain = await engine.execute(q(dimensions=["customers.region"], measures=[m("count(*)", "n")]))
+        folded = await engine.execute(q(dimensions=["CUSTOMERS.region"], metrics=[m("count(*)", "n")]))
+        plain = await engine.execute(q(dimensions=["customers.region"], metrics=[m("count(*)", "n")]))
         assert folded.columns == plain.columns
         assert sorted_rows(folded) == sorted_rows(plain)
 
@@ -162,7 +162,7 @@ class TestFolding:
         assert [num(v) for r in resp.data for k, v in r.items() if k.endswith(".t")] == [6.0]
 
     async def test_model_names_fold(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(source_model="ORDERS", measures=[m("count(*)", "n")]))
+        resp = await engine.execute(q(population="ORDERS", metrics=[m("count(*)", "n")]))
         assert resp.columns == ["orders.n"]
 
     @pytest.mark.parametrize(("folded", "plain"), [
@@ -170,15 +170,15 @@ class TestFolding:
         ("CumSum(sum(amount))", "cumsum(sum(amount))"),
     ])
     async def test_transform_names_fold(self, engine: SlayerQueryEngine, folded: str, plain: str) -> None:
-        td = [{"dimension": "created_at", "granularity": "month"}]
-        a = await engine.execute(q(time_dimensions=td, measures=[m(folded)]))
-        b = await engine.execute(q(time_dimensions=td, measures=[m(plain)]))
+        td = [{"field": "created_at", "granularity": "month"}]
+        a = await engine.execute(q(time_dimensions=td, metrics=[m(folded)]))
+        b = await engine.execute(q(time_dimensions=td, metrics=[m(plain)]))
         assert a.sql == b.sql
         assert sorted_rows(a) == sorted_rows(b)
 
     async def test_model_aggregation_parameter_names_fold(self, engine: SlayerQueryEngine) -> None:
-        a = await engine.execute(q(measures=[m("TRIMMED(amount, cutoff = 25)")]))
-        b = await engine.execute(q(measures=[m("trimmed(amount, cutoff = 25)")]))
+        a = await engine.execute(q(metrics=[m("TRIMMED(amount, cutoff = 25)")]))
+        b = await engine.execute(q(metrics=[m("trimmed(amount, cutoff = 25)")]))
         assert num(single(a)) == num(single(b))
 
 
@@ -187,11 +187,11 @@ class TestFolding:
 # --------------------------------------------------------------------------- #
 class TestExactSpellingWins:
     async def test_exact_spelling_in_a_colliding_model(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(source_model="ledger", measures=[m("sum(Revenue)", "a"), m("sum(revenue)", "b")]))
+        resp = await engine.execute(q(population="ledger", metrics=[m("sum(Revenue)", "a"), m("sum(revenue)", "b")]))
         assert (num(single(resp, "a", dataset="ledger")), num(single(resp, "b", dataset="ledger"))) == (3.0, 30.0)
 
     async def test_ambiguous_spelling(self, engine: SlayerQueryEngine) -> None:
-        query = q(source_model="ledger", measures=[m("sum(REVENUE)")])
+        query = q(population="ledger", metrics=[m("sum(REVENUE)")])
         with pytest.raises(AmbiguousReferenceError) as err:
             await engine.execute(query)
         text = str(err.value)
@@ -201,7 +201,7 @@ class TestExactSpellingWins:
         assert '"revenue"' in text
 
     async def test_quoting_resolves_the_ambiguity(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(source_model="ledger", measures=[m('sum("Revenue")')]))
+        resp = await engine.execute(q(population="ledger", metrics=[m('sum("Revenue")')]))
         assert num(single(resp, dataset="ledger")) == 3.0
 
 
@@ -210,12 +210,12 @@ class TestExactSpellingWins:
 # --------------------------------------------------------------------------- #
 class TestCanonicalKeys:
     async def test_case_variant_references_share_one_key(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(measures=["sum(AMOUNT)", "sum(amount)"]))
+        resp = await engine.execute(q(metrics=["sum(AMOUNT)", "sum(amount)"]))
         assert resp.columns == ["orders.amount_sum"]
         assert num(resp.data[0]["orders.amount_sum"]) == 160.0
 
     async def test_dimension_key_uses_the_declared_spelling(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["CUSTOMERS.REGION"], measures=[m("count(*)", "n")]))
+        resp = await engine.execute(q(dimensions=["CUSTOMERS.REGION"], metrics=[m("count(*)", "n")]))
         assert "orders.customers.region" in resp.columns
 
 
@@ -299,7 +299,7 @@ class TestSaveCollisions:
         assert messages(caught, "Revenue", "revenue")
 
     async def test_a_query_reading_the_model_returns_the_warning(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(source_model="ledger", measures=[m('sum("Revenue")')]))
+        resp = await engine.execute(q(population="ledger", metrics=[m('sum("Revenue")')]))
         assert warnings_mentioning(resp, "Revenue", "revenue")
 
     async def test_a_facade_query_reading_the_model_returns_the_warning(self, engine: SlayerQueryEngine) -> None:
@@ -309,7 +309,7 @@ class TestSaveCollisions:
         assert warnings_mentioning(await engine.execute(result.query), "Revenue", "revenue")
 
     async def test_a_query_not_reading_the_model_is_silent(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(measures=[m("count(*)", "n")]))
+        resp = await engine.execute(q(metrics=[m("count(*)", "n")]))
         assert not warnings_mentioning(resp, "Revenue", "revenue")
 
 
@@ -320,7 +320,7 @@ COLLIDING = [m("sum(amount)", "Total"), m("count(*)", "total")]
 
 
 async def test_result_names_colliding_by_case_are_refused(engine: SlayerQueryEngine) -> None:
-    query = q(measures=COLLIDING)
+    query = q(metrics=COLLIDING)
     with pytest.raises(SlayerError) as err:
         await engine.execute(query)
     assert "Total" in str(err.value)
@@ -330,7 +330,7 @@ async def test_result_names_colliding_by_case_are_refused(engine: SlayerQueryEng
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_result_names_colliding_by_case_are_refused_on_every_dialect(dialect: str) -> None:
     first, *rest = dev2215_datasets()
-    query = q(measures=COLLIDING)
+    query = q(metrics=COLLIDING)
     with pytest.raises(SlayerError):
         await _engine_generate(query=query, dataset=first, extra_datasets=rest, dialect=dialect, validate=False)
 
@@ -340,7 +340,7 @@ async def test_a_stored_query_with_colliding_names_keeps_running() -> None:
         {"population": "orders", "metrics": [{"expression": "sum(amount)", "name": "Total"},
                                                 {"expression": "count(*)", "name": "total"}]}]})
     async with dev2215_engine("sqlite", datasets=[*dev2215_datasets(), saved]) as eng:
-        resp = await eng.execute(q(source_model="saved", measures=[m("sum(Total)", "a")]))
+        resp = await eng.execute(q(population="saved", metrics=[m("sum(Total)", "a")]))
     assert num(single(resp, "a", dataset="saved")) == 160.0
 
 
@@ -365,7 +365,7 @@ def test_dotted_names_colliding_by_case_are_ambiguous() -> None:
     ("Revenue", {"name": "Revenue"}),
 ])
 def test_a_reference_dimension_is_a_column_ref_keeping_its_quoting(dimension: str, expected: dict[str, Any]) -> None:
-    query = q(source_model="ledger", dimensions=[dimension], measures=[m("count(*)", "n")])
+    query = q(population="ledger", dimensions=[dimension], metrics=[m("count(*)", "n")])
     dumped = query.model_dump(mode="json", exclude_none=True)["dimensions"]
     assert dumped == [expected]
     assert SlayerQuery.model_validate(query.model_dump(mode="json")).dimensions == query.dimensions
@@ -377,16 +377,16 @@ def test_an_explicitly_named_reference_stays_computed() -> None:
 
 
 def test_a_refinement_dedupes_a_quoted_and_a_plain_reference() -> None:
-    saved = q(dimensions=['"orders".status'], measures=[m("count(*)", "n")])
+    saved = q(dimensions=['"orders".status'], metrics=[m("count(*)", "n")])
     refined = refine_query(saved=saved, refinement=QueryRefinement.model_validate({"dimensions": ["status"]}))
     assert [d.full_name for d in refined.dimensions or [] if isinstance(d, FieldRef)] == ["orders.status"]
 
 
 def test_a_quoted_dimension_takes_its_column_name() -> None:
     with pytest.raises(ValueError, match="used twice"):
-        q(dimensions=['"status"'], time_dimensions=[{"dimension": "created_at", "granularity": "month", "name": "status"}])
+        q(dimensions=['"status"'], time_dimensions=[{"field": "created_at", "granularity": "month", "name": "status"}])
     q(dimensions=['"orders".status'],
-      time_dimensions=[{"dimension": "created_at", "granularity": "month", "name": "orders_status"}])
+      time_dimensions=[{"field": "created_at", "granularity": "month", "name": "orders_status"}])
 
 
 def test_model_lookups_fold() -> None:

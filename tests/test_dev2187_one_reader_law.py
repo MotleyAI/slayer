@@ -38,7 +38,7 @@ def _month(**extra: Any) -> dict[str, Any]:
     return {"dimension": "created_at", "granularity": "month", **extra}
 
 
-SPINE_MONTHS = [{"dimension": "time_spine.timestamp", "granularity": "month",
+SPINE_MONTHS = [{"field": "time_spine.timestamp", "granularity": "month",
                  "date_range": ["2025-01-01", "2025-03-31"]}]
 
 # A Mode-B surface holding the boolean text ``t``.
@@ -69,7 +69,7 @@ async def test_a_literal_naming_the_root_filters_on_its_text(engine: SlayerQuery
 
 
 async def test_a_literal_naming_the_root_inside_a_measure(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(measures=[{"formula": "sum(iif(note = 'see orders.x', amount, 0))", "name": "m"}]))
+    resp = await engine.execute(_orders(measures=[{"expression": "sum(iif(note = 'see orders.x', amount, 0))", "name": "m"}]))
     assert float(resp.data[0]["orders.m"]) == 10.0
 
 

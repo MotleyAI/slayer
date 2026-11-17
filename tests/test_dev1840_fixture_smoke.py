@@ -45,7 +45,7 @@ class TestGraphExecutes:
     async def test_unfiltered_cross_model_by_tier(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(q(dimensions=["customers.tier"],
-                                      measures=[M, CM]))
+                                      metrics=[M, CM]))
         by = rows_by(resp, "orders.customers.tier")
         assert set(by) == {("gold",), ("silver",), ("bronze",), (None,)}
         for tier, spend in SPEND_ALL_BY_TIER.items():
@@ -58,8 +58,8 @@ class TestGraphExecutes:
         """strong plans: the m:1 hop is proven, the filter applies inline."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.plans.level = 'basic'"],
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.plans.level = 'basic'"],
         ))
         by = rows_by(resp, "orders.customers.tier")
         assert set(by) == {("gold",), ("silver",)}
@@ -72,11 +72,11 @@ class TestGraphExecutes:
         fails closed. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
         resp = await engine.execute(
-            tq(measures=[DatasetMetric(expression="sum(reviews.stars)", name="rv")]),
+            tq(metrics=[DatasetMetric(expression="sum(reviews.stars)", name="rv")]),
         )
         assert float(resp.data[0]["tickets.rv"]) == pytest.approx(11.0)
         ambiguous = tq(
-            measures=[DatasetMetric(expression="sum(agents.score)", name="sm")],
+            metrics=[DatasetMetric(expression="sum(agents.score)", name="sm")],
         )
         with pytest.raises(AmbiguousRelationshipPathError):
             await engine.execute(ambiguous)
@@ -84,8 +84,8 @@ class TestGraphExecutes:
 
 def test_planner_entry_point_builds_the_producer() -> None:
     planned = plan_query(
-        query=q(dimensions=["customers.tier"], measures=[CM],
-                filters=["channel = 'app'"]),
+        query=q(dimensions=["customers.tier"], metrics=[CM],
+                filter=["channel = 'app'"]),
         bundle=bundle(),
     )
     assert len(planned.regroup_attach_plans) == 1

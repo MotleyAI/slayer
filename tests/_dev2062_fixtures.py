@@ -88,7 +88,7 @@ def m(expression: str, name: str = "v") -> DatasetMetric:
 
 
 def orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -100,7 +100,7 @@ def month_td(*, date_range: Optional[List[Optional[str]]] = None) -> List[TimeDi
 
 def monthly_q(*measures: DatasetMetric, **kw) -> SlayerQuery:
     kw.setdefault("time_dimensions", month_td())
-    return orders_q(measures=list(measures), **kw)
+    return orders_q(metrics=list(measures), **kw)
 
 
 # --------------------------------------------------------------------------- #

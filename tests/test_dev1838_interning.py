@@ -56,7 +56,7 @@ def _band_wm_query(*windows: str, filters=None):
     ]
     kw = {"filter": filters} if filters else {}
     return q(dimensions=["region", BAND], time_dimensions=month_td(),
-             measures=measures, **kw)
+             metrics=measures, **kw)
 
 
 class TestSharedAcrossScopes:
@@ -142,7 +142,7 @@ class TestSharedAcrossScopes:
         query = q(
             dimensions=["customers.tier", {"expression": SPEND_BAND,
                                            "name": "sband"}],
-            measures=[M, DatasetMetric(
+            metrics=[M, DatasetMetric(
                 expression="sum(customers.spend, partition_by=customers.tier)",
                 name="rt")],
         )
@@ -180,7 +180,7 @@ class TestProducersThatMustStaySeparate:
         """Default ``ordered_at`` vs an explicit joined ranking column: two
         producers, distinct values (green pin)."""
         dialect, engine = exec_backend
-        query = q(dimensions=["status"], measures=[
+        query = q(dimensions=["status"], metrics=[
             DatasetMetric(expression="last(amount)", name="lb"),
             DatasetMetric(expression="last(amount, customers.signup_at)", name="ls"),
         ])
@@ -199,7 +199,7 @@ class TestProducersThatMustStaySeparate:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", BAND], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, window='90d')", name="w"),
                 DatasetMetric(expression="sum(ok_amount, window='90d')", name="wok"),
             ],
@@ -238,11 +238,11 @@ class TestProducersThatMustStaySeparate:
         )
         base = plan.plan_query(query=q(
             dimensions=["region", BAND],
-            measures=[M],
+            metrics=[M],
         ), bundle=bundle)
         filtered = plan.plan_query(query=q(
             dimensions=["region", BAND],
-            measures=[M], filters=["status = 'ok'"],
+            metrics=[M], filter=["status = 'ok'"],
         ), bundle=bundle)
         (attach_a,) = base.regroup_attach_plans
         (attach_b,) = filtered.regroup_attach_plans
@@ -265,8 +265,8 @@ class TestWarningsUnchangedBySharing:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M, DatasetMetric(expression="sum(customers.spend)", name="cm")],
-            filters=["city = 'CityA' OR customers.tier = '__none__'"],
+            metrics=[M, DatasetMetric(expression="sum(customers.spend)", name="cm")],
+            filter=["city = 'CityA' OR customers.tier = '__none__'"],
         ))
         pushed = pushed_filter_infos(resp)
         assert len({w.metric for w in pushed}) == 2, pushed
@@ -285,10 +285,10 @@ class TestWarningsUnchangedBySharing:
         resp = await engine.execute(q(
             dimensions=["customers.tier", {"expression": SPEND_BAND,
                                            "name": "sband"}],
-            measures=[M, DatasetMetric(
+            metrics=[M, DatasetMetric(
                 expression="sum(customers.spend, partition_by=customers.tier)",
                 name="rt")],
-            filters=["city = 'CityA' OR customers.tier = '__none__'"],
+            filter=["city = 'CityA' OR customers.tier = '__none__'"],
         ))
         pushed = pushed_filter_infos(resp)
         assert len(pushed) == 1, [w.metric for w in pushed]

@@ -71,7 +71,7 @@ def _bundle() -> ResolvedSourceBundle:
 def _outer_where_query() -> SlayerQuery:
     return SlayerQuery.model_validate({
         "population": "orders",
-        "dimensions": [{"formula": "status", "name": "status"}],
+        "dimensions": [{"expression": "status", "name": "status"}],
         "metrics": [{"expression": "sum(eu_amount)", "name": "eu"}],
         "filter": ["sum(eu_amount) > 100"],
     })
@@ -99,7 +99,7 @@ class TestPlanCarriesOuterWhereRouting:
     def test_routing_is_empty_without_an_isolated_aggregate(self) -> None:
         plain = SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"formula": "status", "name": "status"}],
+            "dimensions": [{"expression": "status", "name": "status"}],
             "metrics": [{"expression": "sum(amount)", "name": "a"}],
             "filter": ["sum(amount) > 100"],
         })

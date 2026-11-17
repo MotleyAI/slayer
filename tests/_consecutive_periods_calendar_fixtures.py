@@ -171,7 +171,7 @@ async def calendar_engine(
 def orders_query(*, expression: str, filters=None, dimensions=None, date_range=None,
                  granularity: str = "month") -> SlayerQuery:
     """One measure ``v`` over customer 1's series unless ``filters`` is given."""
-    td: dict = {"dimension": "order_date", "granularity": granularity}
+    td: dict = {"field": "order_date", "granularity": granularity}
     if date_range is not None:
         td["date_range"] = date_range
     return SlayerQuery.model_validate({

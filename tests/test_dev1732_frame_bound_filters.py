@@ -325,7 +325,7 @@ def _orders(**kw) -> SlayerDataset:
         name="orders",
         sql_table="orders",
         data_source="test",
-        columns=[
+        fields=[
             DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
             DatasetField(name="status", sql="status", datatype=DataType.TEXT),
             DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
@@ -344,7 +344,7 @@ def _customers(**kw) -> SlayerDataset:
         name="customers",
         sql_table="customers",
         data_source="test",
-        columns=[
+        fields=[
             DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
             DatasetField(name="tier", sql="tier", datatype=DataType.TEXT),
             DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
@@ -367,7 +367,7 @@ def _regions() -> SlayerDataset:
 
 def _joined_orders() -> SlayerDataset:
     return _orders(
-        joins=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
@@ -378,9 +378,9 @@ _MONTHLY_CREATED_AT = TimeDimension(
 
 def _windowed_query(**kw) -> SlayerQuery:
     base = dict(
-        source_model="orders",
+        population="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        measures=[DatasetMetric(expression="sum(revenue, window='90d')", name="rev_90d")],
+        metrics=[DatasetMetric(expression="sum(revenue, window='90d')", name="rev_90d")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)
@@ -430,7 +430,7 @@ class TestWindowedSrcFrameBounds:
         sibling population filter is untouched."""
         sql = await _wm_sql(
             _windowed_query(
-                filters=["created_at >= '2024-06-01'", "status = 'paid'"],
+                filter=["created_at >= '2024-06-01'", "status = 'paid'"],
             ),
             _orders(),
         )
@@ -444,7 +444,7 @@ class TestWindowedSrcFrameBounds:
         carrier — i.e. both — so equivalence demands the same."""
         sql = await _wm_sql(
             _windowed_query(
-                filters=["created_at <= '2024-12-31'", "status = 'paid'"],
+                filter=["created_at <= '2024-12-31'", "status = 'paid'"],
             ),
             _orders(),
         )
@@ -456,7 +456,7 @@ class TestWindowedSrcFrameBounds:
     async def test_both_bounds_stripped_from_src_kept_on_base(self) -> None:
         sql = await _wm_sql(
             _windowed_query(
-                filters=[
+                filter=[
                     "created_at >= '2024-06-01' and created_at <= '2024-12-31'",
                     "status = 'paid'",
                 ],
@@ -474,7 +474,7 @@ class TestWindowedSrcFrameBounds:
     async def test_literal_on_the_left_is_stripped_from_src(self) -> None:
         sql = await _wm_sql(
             _windowed_query(
-                filters=["'2024-06-01' <= created_at", "status = 'paid'"],
+                filter=["'2024-06-01' <= created_at", "status = 'paid'"],
             ),
             _orders(),
         )
@@ -486,7 +486,7 @@ class TestWindowedSrcFrameBounds:
         """The split in §2.3, end to end: ``_src`` keeps ``status``, loses the
         bound; ``_base`` keeps both."""
         sql = await _wm_sql(
-            _windowed_query(filters=["created_at >= '2024-06-01' and status = 'paid'"]),
+            _windowed_query(filter=["created_at >= '2024-06-01' and status = 'paid'"]),
             _orders(),
         )
         src = _extract_src_body(sql)
@@ -504,7 +504,7 @@ class TestWindowedSrcFrameBounds:
         """
         sql = await _wm_sql(
             _windowed_query(
-                filters=[
+                filter=[
                     "created_at >= '2024-06-01' or status = 'paid'",
                     "created_at >= '2024-07-01'",
                 ],
@@ -522,7 +522,7 @@ class TestWindowedSrcFrameBounds:
         IS a query TD, strips in the same query."""
         sql = await _wm_sql(
             _windowed_query(
-                filters=["delivery_at >= '2024-06-01'", "created_at >= '2024-07-01'"],
+                filter=["delivery_at >= '2024-06-01'", "created_at >= '2024-07-01'"],
             ),
             _orders(),
         )
@@ -535,7 +535,7 @@ class TestWindowedSrcFrameBounds:
         literal's kind decide, not the column."""
         sql = await _wm_sql(
             _windowed_query(
-                filters=["created_at == '2024-06-01 00:00:00'", "created_at >= '2024-07-01'"],
+                filter=["created_at == '2024-06-01 00:00:00'", "created_at >= '2024-07-01'"],
             ),
             _orders(),
         )
@@ -546,7 +546,7 @@ class TestWindowedSrcFrameBounds:
     async def test_period_equality_on_time_dimension_column_is_stripped_from_src(self) -> None:
         """A period ``=`` lowers to a half-open range: a frame bound like ``>=`` / ``<``."""
         sql = await _wm_sql(
-            _windowed_query(filters=["created_at in '2024-06-01'"]),
+            _windowed_query(filter=["created_at in '2024-06-01'"]),
             _orders(),
         )
         src = _extract_src_body(sql)
@@ -565,7 +565,7 @@ class TestWindowedSrcFrameBounds:
         thing separating them is their carrier — which is exactly the rule.
         """
         sql = await _wm_sql(
-            _windowed_query(filters=["created_at >= '2024-07-01'"]),
+            _windowed_query(filter=["created_at >= '2024-07-01'"]),
             _orders(filters=["created_at >= '2024-01-01'"]),
         )
         src = _extract_src_body(sql)
@@ -585,7 +585,7 @@ class TestWindowedSrcFrameBounds:
                 ),
             ],
             main_time_dimension="created_at",
-            filters=["ship_date >= '2024-06-01'"],
+            filter=["ship_date >= '2024-06-01'"],
         )
         sql = await _wm_sql(query, _orders())
         src = _extract_src_body(sql)
@@ -597,7 +597,7 @@ class TestWindowedSrcFrameBounds:
         """``{variable}`` substitution runs before planning, so the filter
         arrives as an ordinary ``LiteralKey`` and needs no special casing."""
         query = _windowed_query(
-            filters=["created_at >= '{start}'"],
+            filter=["created_at >= '{start}'"],
             variables={"start": "2024-06-01"},
         )
         sql = await _wm_sql(query, _orders())
@@ -608,7 +608,7 @@ class TestWindowedSrcFrameBounds:
         """Join discovery must run over the RESIDUAL: the surviving
         ``customers.tier`` conjunct still needs its join."""
         query = _windowed_query(
-            filters=["created_at >= '2024-06-01' and customers.tier = 'gold'"],
+            filter=["created_at >= '2024-06-01' and customers.tier = 'gold'"],
         )
         sql = await _wm_sql(query, _joined_orders(), extra_models=[_customers()])
         src = _extract_src_body(sql)
@@ -637,7 +637,7 @@ class TestWindowedSrcFrameBounds:
                 ),
             ],
             main_time_dimension="created_at",
-            filters=["customers.signup_at >= '2024-06-01'"],
+            filter=["customers.signup_at >= '2024-06-01'"],
         )
         sql = await _wm_sql(query, _joined_orders(), extra_models=[_customers()])
         src = _extract_src_body(sql)
@@ -653,7 +653,7 @@ class TestWindowedSrcFrameBounds:
         regions because the residual needs it — and only the bound disappears.
         """
         customers = _customers(
-            joins=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
         )
         query = _windowed_query(
             time_dimensions=[
@@ -664,7 +664,7 @@ class TestWindowedSrcFrameBounds:
                 ),
             ],
             main_time_dimension="created_at",
-            filters=[
+            filter=[
                 "customers.signup_at >= '2024-06-01' "
                 "and customers.regions.name = 'North'",
             ],
@@ -686,10 +686,10 @@ class TestWindowedSrcFrameBounds:
     async def test_multi_hop_residual_keeps_its_full_join_chain(self) -> None:
         """Codex F4: a residual crossing two hops keeps every hop."""
         customers = _customers(
-            joins=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
         )
         query = _windowed_query(
-            filters=["created_at >= '2024-06-01' and customers.regions.name = 'North'"],
+            filter=["created_at >= '2024-06-01' and customers.regions.name = 'North'"],
         )
         sql = await _wm_sql(
             query, _joined_orders(), extra_models=[customers, _regions()],
@@ -706,11 +706,11 @@ class TestWindowedSrcFrameBounds:
 
     async def test_two_windowed_measures_share_the_residual(self) -> None:
         query = _windowed_query(
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(revenue, window='90d')", name="rev_90d"),
                 DatasetMetric(expression="avg(revenue, window='30d')", name="rev_30d"),
             ],
-            filters=["created_at >= '2024-06-01' and status = 'paid'"],
+            filter=["created_at >= '2024-06-01' and status = 'paid'"],
         )
         sql = await _wm_sql(query, _orders())
         # DEV-1835: producer CTEs render under ``_cm_`` naming, keyed by the
@@ -737,7 +737,7 @@ class TestWindowedSrcFrameBounds:
         pass without any stripping."""
         query = _windowed_query(
             dimensions=[FieldRef(name="status")],
-            filters=["created_at >= '2024-06-01' and status = 'paid'"],
+            filter=["created_at >= '2024-06-01' and status = 'paid'"],
         )
         sql = await _wm_sql(query, _orders())
         src = _extract_src_body(sql)
@@ -759,7 +759,7 @@ class TestWindowedSrcFrameBounds:
         """
         sql = await _wm_sql(
             _windowed_query(
-                filters=["ship_date >= '2024-06-01'", "created_at >= '2024-07-01'"],
+                filter=["ship_date >= '2024-06-01'", "created_at >= '2024-07-01'"],
             ),
             _orders(),
         )
@@ -785,7 +785,7 @@ class TestWindowedSrcFrameBounds:
 
     async def test_plain_row_filter_still_applied_inside_src(self) -> None:
         """Stage-10 regression guard: a population filter is untouched."""
-        sql = await _wm_sql(_windowed_query(filters=["status = 'paid'"]), _orders())
+        sql = await _wm_sql(_windowed_query(filter=["status = 'paid'"]), _orders())
         assert "'paid'" in _extract_src_body(sql), sql
 
 
@@ -835,7 +835,7 @@ class TestFrameBoundColumnSet:
                     ),
                 ],
                 main_time_dimension="created_at",
-                filters=["delivery_at >= '2024-06-01'"],
+                filter=["delivery_at >= '2024-06-01'"],
             ),
             _orders(),
         )
@@ -863,9 +863,9 @@ class TestFrameBoundColumnSet:
 # --------------------------------------------------------------------------- #
 def _shift_query(**kw) -> SlayerQuery:
     base = dict(
-        source_model="orders",
+        population="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        measures=[DatasetMetric(expression="time_shift(sum(revenue), -1, 'month')", name="prev")],
+        metrics=[DatasetMetric(expression="time_shift(sum(revenue), -1, 'month')", name="prev")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)
@@ -883,7 +883,7 @@ class TestTimeShiftFrameBounds:
         of the same intent produced a correct value."""
         body = await _shifted_body(
             _shift_query(
-                filters=["created_at >= '2024-06-01' and created_at <= '2024-12-31'"],
+                filter=["created_at >= '2024-06-01' and created_at <= '2024-12-31'"],
             ),
             _orders(),
         )
@@ -892,7 +892,7 @@ class TestTimeShiftFrameBounds:
 
     async def test_mixed_conjunction_keeps_population_predicate(self) -> None:
         body = await _shifted_body(
-            _shift_query(filters=["created_at >= '2024-06-01' and status = 'paid'"]),
+            _shift_query(filter=["created_at >= '2024-06-01' and status = 'paid'"]),
             _orders(),
         )
         assert "'paid'" in body, body
@@ -907,7 +907,7 @@ class TestTimeShiftFrameBounds:
         """
         body = await _shifted_body(
             _shift_query(
-                filters=["status = 'paid'", "created_at >= '2024-07-01'"],
+                filter=["status = 'paid'", "created_at >= '2024-07-01'"],
             ),
             _orders(),
         )
@@ -926,7 +926,7 @@ class TestTimeShiftFrameBounds:
                         date_range=["2024-06-01", "2024-12-31"],
                     ),
                 ],
-                filters=["status = 'paid'"],
+                filter=["status = 'paid'"],
             ),
             _orders(),
         )
@@ -936,7 +936,7 @@ class TestTimeShiftFrameBounds:
     async def test_non_time_dimension_bound_still_propagates(self) -> None:
         body = await _shifted_body(
             _shift_query(
-                filters=["delivery_at >= '2024-06-01'", "created_at >= '2024-07-01'"],
+                filter=["delivery_at >= '2024-06-01'", "created_at >= '2024-07-01'"],
             ),
             _orders(),
         )

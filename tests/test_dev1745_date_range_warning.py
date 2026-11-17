@@ -26,7 +26,7 @@ def _orders() -> SlayerDataset:
 
 
 def _query(date_range) -> SlayerQuery:
-    td: dict = {"dimension": "created_at", "granularity": "month"}
+    td: dict = {"field": "created_at", "granularity": "month"}
     if date_range is not None:
         td["date_range"] = date_range
     return SlayerQuery.model_validate({

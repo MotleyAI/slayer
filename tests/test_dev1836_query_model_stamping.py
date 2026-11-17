@@ -38,7 +38,7 @@ class TestStamping:
     async def test_aggregated_query_stamps_composite_grain(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
             q(dimensions=["status", "channel"],
-              measures=[DatasetMetric(expression="sum(amount)", name="total")]),
+              metrics=[DatasetMetric(expression="sum(amount)", name="total")]),
             "vm_agg",
         )
         assert _pk_names(model) == {"status", "channel"}
@@ -68,7 +68,7 @@ class TestStampedModelProvesJoins:
     async def test_join_onto_complete_grain_is_provable(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
             q(dimensions=["status", "channel"],
-              measures=[DatasetMetric(expression="sum(amount)", name="total")]),
+              metrics=[DatasetMetric(expression="sum(amount)", name="total")]),
             "vm_kpis",
         )
         full = DatasetRelationship(
@@ -80,7 +80,7 @@ class TestStampedModelProvesJoins:
     async def test_join_onto_partial_grain_stays_unproven(self, engine: SlayerQueryEngine) -> None:
         model = await engine.create_dataset_from_query(
             q(dimensions=["status", "channel"],
-              measures=[DatasetMetric(expression="sum(amount)", name="total")]),
+              metrics=[DatasetMetric(expression="sum(amount)", name="total")]),
             "vm_kpis2",
         )
         partial = DatasetRelationship(
@@ -95,7 +95,7 @@ class TestStampedModelProvesJoins:
         join onto the query-backed model keeps exact per-dimension values."""
         await engine.create_dataset_from_query(
             q(dimensions=["status", "channel"],
-              measures=[DatasetMetric(expression="sum(amount)", name="total")]),
+              metrics=[DatasetMetric(expression="sum(amount)", name="total")]),
             "vm_grain",
         )
         host = orders_dataset()
@@ -106,8 +106,8 @@ class TestStampedModelProvesJoins:
         ))
         await engine.storage.save_dataset(host, _validate=False)
         resp = await engine.execute(q(
-            source_model="orders_kpi", dimensions=["status"],
-            measures=[DatasetMetric(expression="sum(vm_grain.total)", name="t")],
+            population="orders_kpi", dimensions=["status"],
+            metrics=[DatasetMetric(expression="sum(vm_grain.total)", name="t")],
         ))
         got = {r["orders_kpi.status"]: float(r["orders_kpi.t"])
                for r in resp.data}

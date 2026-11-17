@@ -97,7 +97,7 @@ class TestSpineExpressionRejected:
     async def test_typed_error_before_sql(self, engine, expression: str, with_axis: bool) -> None:
         tds = [spine_td()] if with_axis else []
         query = spine_query(metrics=TWO_FACTS, time_dimensions=[
-            *tds, {"dimension": expression, "granularity": "month", "date_range": JAN_JUN},
+            *tds, {"field": expression, "granularity": "month", "date_range": JAN_JUN},
         ])
         with pytest.raises(TimeSpineError) as info:
             await engine.execute(query, dry_run=True)
@@ -109,15 +109,15 @@ class TestSpineExpressionRejected:
 class TestFactExpressionIsADimensionOfP:
     async def test_values_per_spine_month_and_bucket(self, engine) -> None:
         resp = await engine.execute(spine_query(metrics=TWO_FACTS, time_dimensions=[
-            spine_td(), {"dimension": EFF_EXPR, "granularity": "month"},
+            spine_td(), {"field": EFF_EXPR, "granularity": "month"},
         ], to_many_handling="broadcast"))
         assert _cells(resp) == _expected()
 
     async def test_equal_to_the_column_holding_the_value(self, engine) -> None:
         expr = await engine.execute(spine_query(metrics=TWO_FACTS, time_dimensions=[
-            spine_td(), {"dimension": EFF_EXPR, "granularity": "month"},
+            spine_td(), {"field": EFF_EXPR, "granularity": "month"},
         ]))
         col = await engine.execute(spine_query(metrics=TWO_FACTS, time_dimensions=[
-            spine_td(), {"dimension": "orders.eff", "granularity": "month"},
+            spine_td(), {"field": "orders.eff", "granularity": "month"},
         ]))
         assert _cells(expr) == _cells(col)

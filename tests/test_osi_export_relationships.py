@@ -65,7 +65,7 @@ async def test_undetermined_cardinality_proven_by_source_key(env) -> None:
 
 async def test_undetermined_cardinality_not_provable_is_reported(env) -> None:
     unkeyed = DatasetRelationship(to="orders", join_pairs=[["status", "status"]])
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES), visits(joins=[unkeyed]))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES), visits(relationships=[unkeyed]))
     assert [_shape(r) for r in relationships(result.document)] == [_FK]
     [entry] = mentions(result, "visits", severity="dropped")
     assert entry.suggestion is not None
@@ -76,7 +76,7 @@ async def test_undetermined_cardinality_not_provable_is_reported(env) -> None:
 async def test_many_to_many_join_is_reported(env) -> None:
     m2m = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
                     cardinality=RelationshipCardinality.MANY_TO_MANY)
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES, joins=[]), visits(joins=[m2m]))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES, joins=[]), visits(relationships=[m2m]))
     assert relationships(result.document) == []
     [entry] = mentions(result, "visits", severity="dropped")
     assert entry.suggestion
@@ -91,7 +91,7 @@ async def test_relationship_named_after_its_join(env) -> None:
 async def test_generated_relationship_names_are_unique(env) -> None:
     to_cust = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
                         cardinality=RelationshipCardinality.MANY_TO_ONE)
-    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES), visits(joins=[to_cust]))
+    result = await export_datasets(env, customers(), orders(metrics=BASIC_MEASURES), visits(relationships=[to_cust]))
     names = [r["name"] for r in relationships(result.document)]
     assert len(names) == 2
     assert len(set(names)) == 2

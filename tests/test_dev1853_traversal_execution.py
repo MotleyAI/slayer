@@ -202,7 +202,7 @@ class TestOrientedCardinalityValues:
         # Broadcast repeats the distinct-customer total; associate
         # dedups each customer's spend once per status, never join-multiplied.
         kw = dict(source_model="customers", dimensions=["orders.status"],
-                  measures=[{"formula": "sum(spend)", "name": "s"}])
+                  measures=[{"expression": "sum(spend)", "name": "s"}])
         bcast = await fwd_engine.execute(SlayerQuery.model_validate({**kw, "to_many_handling": "broadcast"}))
         assert broadcast_warnings(bcast)
         assert {r["customers.s"] for r in bcast.data} == {

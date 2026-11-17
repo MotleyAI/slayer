@@ -30,7 +30,7 @@ from slayer.engine.cardinality import relationship_safety
 from slayer.engine.compile import stages
 
 #: Cross-model aggregate + a dimension a hop past the target → planner re-roots the CTE at ``customers``.
-_CROSS_MODEL_MEASURE = {"formula": "sum(customers.spend)", "name": "cs"}
+_CROSS_MODEL_MEASURE = {"expression": "sum(customers.spend)", "name": "cs"}
 
 #: Reachable from the re-rooted target (``customers -> regions``).
 FILTER_REACHABLE = "customers.regions.name == 'Alpha'"

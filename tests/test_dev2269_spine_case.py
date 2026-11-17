@@ -45,7 +45,7 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 
 def td(head: str) -> dict[str, Any]:
-    return {"dimension": f"{head}.timestamp", "granularity": "month", "date_range": JAN_FEB}
+    return {"field": f"{head}.timestamp", "granularity": "month", "date_range": JAN_FEB}
 
 
 def sum_orders(**extra: Any) -> dict[str, Any]:
@@ -187,21 +187,21 @@ class TestReservedName:
 
     @pytest.mark.parametrize("variant_engine", BACKENDS, indirect=True)
     async def test_other_spellings_are_ambiguous(self, variant_engine) -> None:
-        query = spine_query(metrics=TWO_FACTS, source_model="TIME_SPINE", time_dimensions=[td("TIME_SPINE")])
+        query = spine_query(metrics=TWO_FACTS, population="TIME_SPINE", time_dimensions=[td("TIME_SPINE")])
         with pytest.raises(AmbiguousReferenceError) as err:
             await variant_engine.execute(query)
         assert {"time_spine", "Time_Spine"} <= set(err.value.candidates)
 
     @pytest.mark.parametrize("variant_engine", BACKENDS, indirect=True)
     async def test_the_exact_spelling_reads_the_built_in_spine(self, variant_engine) -> None:
-        resp = await variant_engine.execute(spine_query(metrics=TWO_FACTS, source_model="time_spine"))
+        resp = await variant_engine.execute(spine_query(metrics=TWO_FACTS, population="time_spine"))
         assert by_bucket(resp, ["o", "r", "n"]) == TWO_FACT_ROWS
 
     async def test_a_variant_in_another_datasource_is_no_ambiguity(self, engine: SlayerQueryEngine) -> None:
         await engine.storage.save_datasource(DatasourceConfig(name="a", type="sqlite", database=":memory:"))
         await engine.storage.save_dataset(_variant(data_source="a"), _validate=False)
-        resp = await engine.execute(spine_query(metrics=TWO_FACTS, source_model="TIME_SPINE", time_dimensions=[
-            {"dimension": "TIME_SPINE.timestamp", "granularity": "month", "date_range": JAN_JUN}]), data_source="test")
+        resp = await engine.execute(spine_query(metrics=TWO_FACTS, population="TIME_SPINE", time_dimensions=[
+            {"field": "TIME_SPINE.timestamp", "granularity": "month", "date_range": JAN_JUN}]), data_source="test")
         assert by_bucket(resp, ["o", "r", "n"]) == TWO_FACT_ROWS
 
 

@@ -59,7 +59,7 @@ def query(**kw: Any) -> SlayerQuery:
 
 
 def m(expression: str, name: str) -> Dict[str, str]:
-    return {"formula": expression, "name": name}
+    return {"expression": expression, "name": name}
 
 
 # --------------------------------------------------------------------------- #
@@ -127,23 +127,23 @@ def _qb(name: str, *stages: SlayerQuery, **kw: Any) -> SlayerDataset:
 
 def rev_by_status_dataset() -> SlayerDataset:
     return _qb("rev_by_status", query(
-        source_model="orders", dimensions=["status"], measures=[m("sum(amount)", "rev")]))
+        population="orders", dimensions=["status"], metrics=[m("sum(amount)", "rev")]))
 
 
 def status_share_dataset() -> SlayerDataset:
     """Query-backed over the query-backed ``rev_by_status``."""
     return _qb("status_share", query(
-        source_model="rev_by_status", dimensions=["status"], measures=[m("sum(rev)", "rr")]))
+        population="rev_by_status", dimensions=["status"], metrics=[m("sum(rev)", "rr")]))
 
 
 def cust_rev_dataset() -> SlayerDataset:
     """Multi-stage with a private stage ``x``; grain ``{customer_id}``."""
     return _qb(
         "cust_rev",
-        query(name="x", source_model="orders", dimensions=["customer_id", "status"],
-              measures=[m("sum(amount)", "amt")]),
-        query(source_model="x", dimensions=["customer_id"],
-              measures=[m("sum(amt)", "rev"), m("max(amt)", "top")]),
+        query(name="x", population="orders", dimensions=["customer_id", "status"],
+              metrics=[m("sum(amount)", "amt")]),
+        query(population="x", dimensions=["customer_id"],
+              metrics=[m("sum(amt)", "rev"), m("max(amt)", "top")]),
     )
 
 
@@ -151,9 +151,9 @@ def ok_rev_dataset() -> SlayerDataset:
     """Multi-stage, also with a private stage ``x``."""
     return _qb(
         "ok_rev",
-        query(name="x", source_model="orders", dimensions=["customer_id", "status"],
-              measures=[m("sum(amount)", "amt")], filters=["status = 'ok'"]),
-        query(source_model="x", dimensions=["customer_id"], measures=[m("sum(amt)", "ok_rev")]),
+        query(name="x", population="orders", dimensions=["customer_id", "status"],
+              metrics=[m("sum(amount)", "amt")], filter=["status = 'ok'"]),
+        query(population="x", dimensions=["customer_id"], metrics=[m("sum(amt)", "ok_rev")]),
     )
 
 
@@ -161,27 +161,27 @@ def qb_shadow_dataset() -> SlayerDataset:
     """Private stage named ``customers``; the final stage reaches model ``customers`` via a stored join."""
     return _qb(
         "qb_shadow",
-        query(name="customers", source_model="orders", dimensions=["status"],
-              measures=[m("sum(amount)", "a")]),
-        query(source_model="orders", dimensions=["customers.tier"],
-              measures=[m("sum(amount)", "amt")]),
+        query(name="customers", population="orders", dimensions=["status"],
+              metrics=[m("sum(amount)", "a")]),
+        query(population="orders", dimensions=["customers.tier"],
+              metrics=[m("sum(amount)", "amt")]),
     )
 
 
 def monthly_dataset() -> SlayerDataset:
     return _qb("monthly", query(
-        source_model="orders", dimensions=["status"],
-        time_dimensions=[{"dimension": "ordered_at", "granularity": "month"}],
-        measures=[m("sum(amount)", "rev")]))
+        population="orders", dimensions=["status"],
+        time_dimensions=[{"field": "ordered_at", "granularity": "month"}],
+        metrics=[m("sum(amount)", "rev")]))
 
 
 def bcast_qb_dataset() -> SlayerDataset:
     """Private stage ``bstage`` broadcasts ``sum(customers.spend)`` across ``status``."""
     return _qb(
         "bcast_qb",
-        query(name="bstage", source_model="orders", dimensions=["status"], to_many_handling="broadcast",
-              measures=[m("sum(amount)", "amt"), m("sum(customers.spend)", "cs")]),
-        query(source_model="bstage", dimensions=["status"], measures=[m("sum(amt)", "amt2")]),
+        query(name="bstage", population="orders", dimensions=["status"], to_many_handling="broadcast",
+              metrics=[m("sum(amount)", "amt"), m("sum(customers.spend)", "cs")]),
+        query(population="bstage", dimensions=["status"], metrics=[m("sum(amt)", "amt2")]),
     )
 
 
@@ -190,13 +190,13 @@ def jt_qb_dataset() -> SlayerDataset:
     return _qb(
         "jt_qb",
         query(name="a",
-              source_model="customers",
+              population="customers",
               extensions=[{"source_name": "customers",
                            "relationships": [{"to": "b", "join_pairs": [["id", "customer_id"]]}]}],
-              dimensions=["tier"], measures=[m("sum(b.rev)", "ab")]),
-        query(name="b", source_model="orders", dimensions=["customer_id"],
-              measures=[m("sum(amount)", "rev")]),
-        query(source_model="a", dimensions=["tier"], measures=[m("max(ab)", "v")]),
+              dimensions=["tier"], metrics=[m("sum(b.rev)", "ab")]),
+        query(name="b", population="orders", dimensions=["customer_id"],
+              metrics=[m("sum(amount)", "rev")]),
+        query(population="a", dimensions=["tier"], metrics=[m("max(ab)", "v")]),
     )
 
 

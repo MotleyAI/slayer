@@ -61,7 +61,7 @@ class TestKernelCarriesPickedParams:
     def test_reaggregation_kernel_picks_the_weight(self) -> None:
         planned = plan_query(
             query=sales_q(dimensions=["region"],
-                          measures=[DatasetMetric(expression=_WAVG_REAGG, name="w")]),
+                          metrics=[DatasetMetric(expression=_WAVG_REAGG, name="w")]),
             bundle=_sales_bundle())
         [attach] = _association_attaches(planned)
         names = [p.name for p in attach.kernel.picked_params]
@@ -69,7 +69,7 @@ class TestKernelCarriesPickedParams:
 
     def test_association_kernel_picks_the_weight(self) -> None:
         planned = plan_query(
-            query=assoc_q(dimensions=["status"], measures=[DatasetMetric(
+            query=assoc_q(dimensions=["status"], metrics=[DatasetMetric(
                 expression="weighted_avg(customers.spend, weight=customers.spend)",
                 name="w")]),
             bundle=_orders_bundle())
@@ -85,7 +85,7 @@ class TestCombinedConsumerExemption:
         combined-consumer partition-key error (the exemption covers kwargs)."""
         planned = plan_query(
             query=sales_q(dimensions=["region"],
-                          measures=[DatasetMetric(expression=_WAVG_REAGG, name="w")]),
+                          metrics=[DatasetMetric(expression=_WAVG_REAGG, name="w")]),
             bundle=_sales_bundle())
         assert _association_attaches(planned)
 
@@ -97,7 +97,7 @@ class TestCombinedConsumerExemption:
             "partition_by=[region, product]))")
         planned = plan_query(
             query=sales_q(dimensions=["product"],
-                          measures=[DatasetMetric(expression=formula, name="d")]),
+                          metrics=[DatasetMetric(expression=formula, name="d")]),
             bundle=_sales_bundle())
         assert _association_attaches(planned)
 
@@ -106,7 +106,7 @@ class TestEmittedShape:
     async def test_operand_carrier_is_one_producer_and_scope_closed(self) -> None:
         sql = await gen(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=_WAVG_REAGG, name="w")]))
+            metrics=[DatasetMetric(expression=_WAVG_REAGG, name="w")]))
         # value (amount:sum) and weight (id:count) ride ONE operand carrier.
         ctes = re.findall(r"(_cm_\w+) AS \(", sql)
         carriers = [n for n in ctes if "weighted_avg" not in n]
@@ -117,7 +117,7 @@ class TestEmittedShape:
     async def test_no_placeholder_leak(self, dialect) -> None:
         sql = await gen(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=_WAVG_REAGG, name="w")]), dialect=dialect)
+            metrics=[DatasetMetric(expression=_WAVG_REAGG, name="w")]), dialect=dialect)
         assert "__regroup__" not in sql, sql
 
 
@@ -127,10 +127,10 @@ class TestCardinalityInvariant:
     ) -> None:
         base = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(amount)", name="tot")]))
+            metrics=[DatasetMetric(expression="sum(amount)", name="tot")]))
         withw = await reagg_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(amount)", name="tot"),
+            metrics=[DatasetMetric(expression="sum(amount)", name="tot"),
                       DatasetMetric(expression=_WAVG_REAGG, name="w")]))
         a = {k: v["sales.tot"] for k, v in region_key(base).items()}
         b = {k: v["sales.tot"] for k, v in region_key(withw).items()}

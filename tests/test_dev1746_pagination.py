@@ -283,7 +283,7 @@ class TestChainOuterWrapInjectsOrderingForOffset:
 
     async def test_bare_offset_is_ordered_by_a_noop(self) -> None:
         # An inner stage: a final stage with dimensions is default-ordered.
-        stages = [cumsum_chain(name="s1", offset=5), q(source_model="s1", measures=["sum(running)"])]
+        stages = [cumsum_chain(name="s1", offset=5), q(population="s1", metrics=["sum(running)"])]
         sql = await gen(stages, dialect="tsql")
         paged = next(s for s in parse(sql, "tsql").find_all(exp.Select) if s.args.get("offset"))
         order = paged.args.get("order")
@@ -296,7 +296,7 @@ class TestChainOuterWrapInjectsOrderingForOffset:
 
     async def test_user_order_is_never_replaced(self) -> None:
         sql = await gen(cumsum_chain(
-            order=[{"column": "created_at", "direction": "desc"}], offset=5,
+            order=[{"field": "created_at", "direction": "desc"}], offset=5,
         ), dialect="tsql")
         assert "SELECT NULL" not in sql.upper(), (
             f"the user's ORDER BY was replaced by the fallback ordering:\n{sql}"

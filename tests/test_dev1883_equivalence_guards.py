@@ -28,9 +28,9 @@ async def engine(tmp_path):
 
 def _mtd(*grans_and_cols: tuple) -> SlayerQuery:
     return fx.q(
-        source_model="orders",
-        time_dimensions=[{"dimension": c, "granularity": g} for g, c in grans_and_cols],
-        measures=[{"formula": "sum(amount)"}],
+        population="orders",
+        time_dimensions=[{"field": c, "granularity": g} for g, c in grans_and_cols],
+        metrics=[{"expression": "sum(amount)"}],
         main_time_dimension="created_at",
     )
 
@@ -45,10 +45,10 @@ async def _orders_dataset(engine: SlayerQueryEngine, **overrides):
 class TestMainTimeDimensionAmbiguity:
     async def test_two_same_column_buckets_raise_via_execute(self, engine) -> None:
         q = fx.q(
-            source_model="orders",
+            population="orders",
             dimensions=["date_trunc('month', created_at)", "date_trunc('year', created_at)"],
             main_time_dimension="created_at",
-            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
+            metrics=[{"expression": "cumsum(sum(amount))", "name": "cs"}],
         )
         with pytest.raises(AmbiguousReferenceError) as ei:
             await engine.execute(q, dry_run=True)
@@ -81,24 +81,24 @@ class TestMainTimeDimensionAmbiguity:
         # no-transform queries still run; a transform then fails at point of use.
         model = await _orders_dataset(engine, default_time_dimension="created_at")
         q = fx.q(
-            source_model="orders",
+            population="orders",
             time_dimensions=[
-                {"dimension": "created_at", "granularity": "month"},
-                {"dimension": "created_at", "granularity": "year"},
+                {"field": "created_at", "granularity": "month"},
+                {"field": "created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"expression": "sum(amount)"}],
         )
         assert _resolve_main_time_dimension(query=q, dataset=model) is None
 
     async def test_default_time_dimension_single_host_match_resolves(self, engine) -> None:
         model = await _orders_dataset(engine, default_time_dimension="created_at")
         q = fx.q(
-            source_model="orders",
+            population="orders",
             time_dimensions=[
-                {"dimension": "created_at", "granularity": "month"},
-                {"dimension": "customers.created_at", "granularity": "year"},
+                {"field": "created_at", "granularity": "month"},
+                {"field": "customers.created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"expression": "sum(amount)"}],
         )
         resolved = _resolve_main_time_dimension(query=q, dataset=model)
         assert resolved is not None
@@ -114,12 +114,12 @@ class TestMainTimeDimensionAmbiguity:
     async def test_ambiguous_default_transform_fails_closed(self, tmp_path) -> None:
         engine = await self._orders_with_default_axis(tmp_path)
         q = fx.q(
-            source_model="orders",
+            population="orders",
             time_dimensions=[
-                {"dimension": "created_at", "granularity": "month"},
-                {"dimension": "created_at", "granularity": "year"},
+                {"field": "created_at", "granularity": "month"},
+                {"field": "created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
+            metrics=[{"expression": "cumsum(sum(amount))", "name": "cs"}],
         )
         with pytest.raises(ValueError, match="unambiguous time dimension"):
             await engine.execute(q, dry_run=True)
@@ -127,12 +127,12 @@ class TestMainTimeDimensionAmbiguity:
     async def test_ambiguous_default_without_transform_runs(self, tmp_path) -> None:
         engine = await self._orders_with_default_axis(tmp_path)
         q = fx.q(
-            source_model="orders",
+            population="orders",
             time_dimensions=[
-                {"dimension": "created_at", "granularity": "month"},
-                {"dimension": "created_at", "granularity": "year"},
+                {"field": "created_at", "granularity": "month"},
+                {"field": "created_at", "granularity": "year"},
             ],
-            measures=[{"formula": "sum(amount)"}],
+            metrics=[{"expression": "sum(amount)"}],
         )
         resp = await engine.execute(q, dry_run=True)
         assert resp.sql

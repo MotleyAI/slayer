@@ -50,12 +50,12 @@ def _rerooted_paths(att: RegroupAttachPlan, leaf: str):
 class TestHomeRooting:
     def test_producer_roots_at_the_home(self):
         att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"], measures=[CM]), bundle=bundle()))
+            query=assoc_q(dimensions=["status"], metrics=[CM]), bundle=bundle()))
         assert att.producer_root_dataset == "customers"
 
     def test_entity_keys_are_in_root_coordinates(self):
         att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"], measures=[CM]), bundle=bundle()))
+            query=assoc_q(dimensions=["status"], metrics=[CM]), bundle=bundle()))
         assert _akernel(att).entity_keys == [FieldKey(path=(), leaf="id")]
 
 
@@ -64,8 +64,8 @@ class TestReachableConjunctIsInlined:
         """The weak-plans conjunct inlines (no semi-join); its text rides the
         attach's restricted-filter list so the informational entry is kept."""
         att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"], measures=[CM],
-                          filters=["customers.plans.level = 'basic'"]),
+            query=assoc_q(dimensions=["status"], metrics=[CM],
+                          filter=["customers.plans.level = 'basic'"]),
             bundle=bundle(dev1840_datasets(strong_plans=False))))
         assert list(att.producer_plan.semi_join_filters) == []
         assert any("basic" in t for t in att.association_restricted_filter_texts)
@@ -77,7 +77,7 @@ class TestTwoHopHome:
         the two-hop reverse path ('customers', 'orders')."""
         att = _assoc(plan_query(
             query=orders_q(dimensions=["status"],
-                           measures=[DatasetMetric(expression="sum(customers.regions.pop)",
+                           metrics=[DatasetMetric(expression="sum(customers.regions.pop)",
                                                   name="rp")],
                            to_many_handling="associate"),
             bundle=_bundle1900()))
@@ -90,8 +90,8 @@ class TestSerialization:
         """association_restricted_filter_texts (attach) round-trips through
         model_dump / model_validate."""
         att = _assoc(plan_query(
-            query=assoc_q(dimensions=["status"], measures=[CM],
-                          filters=["customers.plans.level = 'basic'"]),
+            query=assoc_q(dimensions=["status"], metrics=[CM],
+                          filter=["customers.plans.level = 'basic'"]),
             bundle=bundle(dev1840_datasets(strong_plans=False))))
         restored = RegroupAttachPlan.model_validate(att.model_dump())
         assert (restored.association_restricted_filter_texts
@@ -105,7 +105,7 @@ class TestNestedAttachedParameterProducer:
         amount-sum parameter's own orders-rooted producer, not a host-rooted one."""
         att = _assoc(plan_query(
             query=assoc_q(dimensions=["status"],
-                          measures=[DatasetMetric(expression=HEADLINE, name="w")]),
+                          metrics=[DatasetMetric(expression=HEADLINE, name="w")]),
             bundle=bundle()))
         nested_roots = [n.producer_root_dataset
                         for n in att.producer_plan.regroup_attach_plans]

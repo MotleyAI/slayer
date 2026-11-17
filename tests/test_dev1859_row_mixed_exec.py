@@ -225,7 +225,7 @@ class TestHeadlineOracle:
         re-aggregation — and from the plain per-row product."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=MIXED_SUM, name="m")]))
+            metrics=[DatasetMetric(expression=MIXED_SUM, name="m")]))
         vals = _region_vals(resp, "sales.m")
         for region, expected in MIXED_SUM_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
@@ -240,10 +240,10 @@ class TestHeadlineOracle:
         """Scenario: Adding a mixed measure is cardinality-neutral."""
         base = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(amount)", name="tot")]))
+            metrics=[DatasetMetric(expression="sum(amount)", name="tot")]))
         with_mixed = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(amount)", name="tot"),
+            metrics=[DatasetMetric(expression="sum(amount)", name="tot"),
                       DatasetMetric(expression=MIXED_SUM, name="m")]))
         assert len(with_mixed.data) == len(base.data)
         a = {k: v["sales.tot"] for k, v in region_key(base).items()}
@@ -258,7 +258,7 @@ class TestUngrainedInner:
         dimensions — no degenerate-re-aggregation warning."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(quantity * avg(unit_price))",
+            metrics=[DatasetMetric(expression="sum(quantity * avg(unit_price))",
                                    name="m")]))
         vals = _region_vals(resp, "sales.m")
         for region, expected in UNGRAINED_MIXED_BY_REGION.items():
@@ -275,7 +275,7 @@ class TestNullConstituent:
         Xi's all-NULL city cell broadcasts NULL, restored by coalesce."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression=f"sum(quantity * {INNER_UP_CITY})",
                              name="bare"),
                 DatasetMetric(
@@ -298,8 +298,8 @@ class TestFilterInheritance:
         """Scenario: Row filters bound both the population and the
         constituents — quantity >= 2 shifts avg_P from 5 to 6."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"], filters=["quantity >= 2"],
-            measures=[DatasetMetric(expression=MIXED_SUM, name="m")]))
+            dimensions=["region"], filter=["quantity >= 2"],
+            metrics=[DatasetMetric(expression=MIXED_SUM, name="m")]))
         vals = _region_vals(resp, "sales.m")
         for region, expected in FILTERED_MIXED_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
@@ -312,7 +312,7 @@ class TestCountFamily:
         NULL city constituent, so its count is 0, not a dropped row."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=f"count(quantity * {INNER_UP_CITY})",
+            metrics=[DatasetMetric(expression=f"count(quantity * {INNER_UP_CITY})",
                                    name="n")]))
         vals = _region_vals(resp, "sales.n")
         for region, expected in COUNT_CITY_MIXED_BY_REGION.items():
@@ -321,7 +321,7 @@ class TestCountFamily:
     async def test_count_distinct_over_mixed_values(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression=f"count_distinct(quantity * {INNER_UP_PRODUCT})",
                 name="nd")]))
         vals = _region_vals(resp, "sales.nd")
@@ -349,8 +349,8 @@ class TestFilterAndOrderPositions:
         """Scenario: Filter and order positions — the filter types as a
         measure, pruning rows with surviving values unchanged."""
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region"], filters=[f"{MIXED_SUM} > 40"],
-            measures=[DatasetMetric(expression="sum(amount)", name="tot")]))
+            dimensions=["region"], filter=[f"{MIXED_SUM} > 40"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="tot")]))
         vals = _region_vals(resp, "sales.tot")
         assert set(vals) == {"North", "South", "East"}
         for region in vals:
@@ -360,8 +360,8 @@ class TestFilterAndOrderPositions:
     async def test_order_position_sorts_by_the_mixed_value(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(amount)", name="tot")],
-            order=[{"column": MIXED_SUM, "direction": "desc"}]))
+            metrics=[DatasetMetric(expression="sum(amount)", name="tot")],
+            order=[{"field": MIXED_SUM, "direction": "desc"}]))
         order = [r["sales.region"] for r in resp.data]
         assert order == ["South", "North", "East", "Gap", "Void"]
 
@@ -372,7 +372,7 @@ class TestDimensionPosition:
         mixed value groups rows with unchanged cardinality."""
         resp = await exec_engine.execute(sales_q(
             dimensions=[{"expression": MIXED_BAND_EXPR, "name": "mixed_band"}],
-            measures=[DatasetMetric(expression="sum(amount)", name="tot")]))
+            metrics=[DatasetMetric(expression="sum(amount)", name="tot")]))
         by = rows_by(resp, "sales.mixed_band")
         assert len(resp.data) == len(AMOUNT_BY_MIXED_BAND)
         for band, expected in AMOUNT_BY_MIXED_BAND.items():
@@ -384,7 +384,7 @@ class TestOuterModifiers:
         """Scenario: Outer partition_by over a mixed source."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", "product"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression=f"sum(quantity * {INNER_UP_PRODUCT}, "
                         f"partition_by=region)",
                 name="m")]))
@@ -399,7 +399,7 @@ class TestOuterModifiers:
         """Scenario: Parametric outer with a row-valued parameter."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression=f"wavg(quantity * {INNER_UP_PRODUCT}, weight=quantity)",
                 name="w")]))
         vals = _region_vals(resp, "sales.w")
@@ -410,7 +410,7 @@ class TestOuterModifiers:
         """Scenario: Custom and multi-input aggregations — dsum is SUM."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=f"dsum(quantity * {INNER_UP_PRODUCT})",
+            metrics=[DatasetMetric(expression=f"dsum(quantity * {INNER_UP_PRODUCT})",
                                    name="ds")]))
         vals = _region_vals(resp, "sales.ds")
         for region, expected in MIXED_SUM_BY_REGION.items():
@@ -421,7 +421,7 @@ class TestOuterModifiers:
         rendering path; Gap's operand is exactly linear in quantity."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression=f"corr(quantity * {INNER_UP_PRODUCT}, other=quantity)",
                 name="c")]))
         vals = _region_vals(resp, "sales.c")
@@ -486,6 +486,6 @@ class TestSqlHygiene:
     async def test_no_placeholder_leak_and_closed_scopes(self, formula):
         sql = await gen(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=formula, name="m")]))
+            metrics=[DatasetMetric(expression=formula, name="m")]))
         assert "__regroup__" not in sql, f"placeholder leaked:\n{sql}"
         assert_scope_closed(sql)

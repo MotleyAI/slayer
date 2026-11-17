@@ -512,7 +512,7 @@ class TestTrinoInvariants:
         def query(*measures: str) -> SlayerQuery:
             return SlayerQuery.model_validate({
                 "population": "orders", "dimensions": ["status"],
-                "metrics": [{"formula": f} for f in measures],
+                "metrics": [{"expression": f} for f in measures],
             })
 
         narrow = await trino_env.execute(query=query("count(*)"))
@@ -710,7 +710,7 @@ class TestCrossModelAndMultistageTrino:
         def query(*measures: str) -> SlayerQuery:
             return SlayerQuery.model_validate({
                 "population": "orders", "dimensions": ["status"],
-                "metrics": [{"formula": f} for f in measures],
+                "metrics": [{"expression": f} for f in measures],
             })
 
         narrow = await trino_cross_dataset_env.execute(query=query("count(*)"))

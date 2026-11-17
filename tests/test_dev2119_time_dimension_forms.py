@@ -35,9 +35,9 @@ def _td_schema() -> dict:
 
 class TestTextCoercion:
     def test_column_alias_validates_and_dumps_as_dimension_text(self) -> None:
-        query = _q(time_dimensions=[{"column": "created_at", "granularity": "month"}])
+        query = _q(time_dimensions=[{"field": "created_at", "granularity": "month"}])
         assert _tds(query)[0].field == "created_at"
-        assert _dumped_tds(query) == [{"dimension": "created_at", "granularity": "month"}]
+        assert _dumped_tds(query) == [{"field": "created_at", "granularity": "month"}]
 
     def test_dimension_keyword_takes_text(self) -> None:
         td = TimeDimension(field="created_at", granularity="month")
@@ -46,22 +46,22 @@ class TestTextCoercion:
     @pytest.mark.parametrize("key", ["dimension", "column"])
     def test_legacy_object_form_reads_as_dotted_text(self, key: str) -> None:
         legacy = _q(time_dimensions=[{key: {"name": "created_at", "model": "customers"}, "granularity": "month"}])
-        text = _q(time_dimensions=[{"dimension": "customers.created_at", "granularity": "month"}])
+        text = _q(time_dimensions=[{"field": "customers.created_at", "granularity": "month"}])
         assert legacy == text
-        assert _dumped_tds(legacy) == [{"dimension": "customers.created_at", "granularity": "month"}]
+        assert _dumped_tds(legacy) == [{"field": "customers.created_at", "granularity": "month"}]
 
     def test_legacy_object_without_model_reads_as_its_name(self) -> None:
-        query = _q(time_dimensions=[{"dimension": {"name": "created_at"}, "granularity": "month"}])
+        query = _q(time_dimensions=[{"field": {"name": "created_at"}, "granularity": "month"}])
         assert _tds(query)[0].field == "created_at"
 
     @pytest.mark.parametrize("text", [EFF, CAST_TXT, "coalesce(customers.signup_ts, created_at)"])
     def test_expression_text_kept_verbatim(self, text: str) -> None:
-        query = _q(time_dimensions=[{"dimension": text, "granularity": "month"}])
+        query = _q(time_dimensions=[{"field": text, "granularity": "month"}])
         assert _tds(query)[0].field == text
-        assert _dumped_tds(query) == [{"dimension": text, "granularity": "month"}]
+        assert _dumped_tds(query) == [{"field": text, "granularity": "month"}]
 
     def test_dump_round_trips(self) -> None:
-        query = _q(time_dimensions=[{"dimension": EFF, "granularity": "month", "name": "effective_at"}])
+        query = _q(time_dimensions=[{"field": EFF, "granularity": "month", "name": "effective_at"}])
         assert SlayerQuery.model_validate(query.model_dump()) == query
 
 
@@ -78,17 +78,17 @@ class TestSchema:
 class TestFunctionalForms:
     def test_functional_dimension_over_an_expression(self) -> None:
         functional = _q(dimensions=[f"date_trunc('month', {EFF})"])
-        explicit = _q(time_dimensions=[{"dimension": EFF, "granularity": "month"}])
+        explicit = _q(time_dimensions=[{"field": EFF, "granularity": "month"}])
         assert functional == explicit
         assert functional.dimensions is None
 
     def test_functional_time_dimension_string_over_a_cast(self) -> None:
         functional = _q(time_dimensions=[f"date_trunc('month', {CAST_TXT})"])
-        explicit = _q(time_dimensions=[{"dimension": CAST_TXT, "granularity": "month"}])
+        explicit = _q(time_dimensions=[{"field": CAST_TXT, "granularity": "month"}])
         assert functional == explicit
 
     def test_functional_order_of_appearance_with_expressions(self) -> None:
-        query = _q(time_dimensions=[{"dimension": "created_at", "granularity": "year"}],
+        query = _q(time_dimensions=[{"field": "created_at", "granularity": "year"}],
                    dimensions=["region", f"date_trunc('month', {EFF})", f"date_trunc('week', {CAST_TXT})"])
         assert [(t.field, t.granularity) for t in _tds(query)] == [
             ("created_at", "year"), (EFF, "month"), (CAST_TXT, "week"),
@@ -114,26 +114,26 @@ class TestFunctionalForms:
 
 class TestNames:
     def test_name_field_dumps(self) -> None:
-        query = _q(time_dimensions=[{"dimension": EFF, "granularity": "month", "name": "effective_at"}])
+        query = _q(time_dimensions=[{"field": EFF, "granularity": "month", "name": "effective_at"}])
         assert _tds(query)[0].name == "effective_at"
-        assert _dumped_tds(query) == [{"dimension": EFF, "granularity": "month", "name": "effective_at"}]
+        assert _dumped_tds(query) == [{"field": EFF, "granularity": "month", "name": "effective_at"}]
 
     def test_unnamed_has_no_name(self) -> None:
-        assert _tds(_q(time_dimensions=[{"dimension": EFF, "granularity": "month"}]))[0].name is None
+        assert _tds(_q(time_dimensions=[{"field": EFF, "granularity": "month"}]))[0].name is None
 
     def test_collision_with_a_computed_dimension(self) -> None:
         with pytest.raises(ValueError, match="'m'|\\bm\\b"):
             _q(dimensions=[{"expression": "upper(city)", "name": "m"}],
-               time_dimensions=[{"dimension": EFF, "granularity": "month", "name": "m"}])
+               time_dimensions=[{"field": EFF, "granularity": "month", "name": "m"}])
 
     def test_collision_between_time_dimensions(self) -> None:
         with pytest.raises(ValueError, match="'m'|\\bm\\b"):
-            _q(time_dimensions=[{"dimension": EFF, "granularity": "month", "name": "m"},
-                                {"dimension": "created_at", "granularity": "year", "name": "m"}])
+            _q(time_dimensions=[{"field": EFF, "granularity": "month", "name": "m"},
+                                {"field": "created_at", "granularity": "year", "name": "m"}])
 
     def test_collision_with_a_plain_dimension(self) -> None:
         with pytest.raises(ValueError, match="region"):
-            _q(dimensions=["region"], time_dimensions=[{"dimension": EFF, "granularity": "month", "name": "region"}])
+            _q(dimensions=["region"], time_dimensions=[{"field": EFF, "granularity": "month", "name": "region"}])
 
     @pytest.mark.parametrize("entries", [
         {"dimensions": [{"expression": EFF}], "time_dimensions": [{"field": EFF, "granularity": "month"}]},
@@ -152,35 +152,35 @@ class TestNames:
 
     def test_one_explicit_name_at_two_granularities_collides(self) -> None:
         with pytest.raises(ValueError, match="used twice"):
-            _q(time_dimensions=[{"dimension": EFF, "granularity": "month", "name": "m"},
-                                {"dimension": EFF, "granularity": "year", "name": "m"}])
+            _q(time_dimensions=[{"field": EFF, "granularity": "month", "name": "m"},
+                                {"field": EFF, "granularity": "year", "name": "m"}])
 
     def test_one_explicit_name_on_two_spellings_collapses_at_construction(self) -> None:
-        query = _q(time_dimensions=[{"dimension": EFF, "granularity": "month", "name": "m"},
-                                    {"dimension": "COALESCE(shipped_at,created_at)", "granularity": "month",
+        query = _q(time_dimensions=[{"field": EFF, "granularity": "month", "name": "m"},
+                                    {"field": "COALESCE(shipped_at,created_at)", "granularity": "month",
                                      "name": "m"}])
         assert len(_tds(query)) == 1
 
     @pytest.mark.parametrize("dimension", [EFF, "created_at"])
     def test_one_source_at_two_granularities_is_not_a_collision(self, dimension: str) -> None:
-        query = _q(time_dimensions=[{"dimension": dimension, "granularity": "month"},
-                                    {"dimension": dimension, "granularity": "year"}])
+        query = _q(time_dimensions=[{"field": dimension, "granularity": "month"},
+                                    {"field": dimension, "granularity": "year"}])
         assert [t.granularity for t in _tds(query)] == ["month", "year"]
 
 
 class TestDedupe:
-    @pytest.mark.parametrize("second", [f"date_trunc('month', {EFF})", {"dimension": EFF, "granularity": "month"}])
+    @pytest.mark.parametrize("second", [f"date_trunc('month', {EFF})", {"field": EFF, "granularity": "month"}])
     def test_exact_duplicate_expression_dedupes(self, second: Any) -> None:
         query = _q(dimensions=[f"date_trunc('month', {EFF})"], time_dimensions=[second])
         assert [(t.field, t.granularity) for t in _tds(query)] == [(EFF, "month")]
 
     def test_model_prefixed_column_dedupes(self) -> None:
-        query = _q(time_dimensions=[{"dimension": "created_at", "granularity": "month"},
-                                    {"dimension": "orders.created_at", "granularity": "month"}])
+        query = _q(time_dimensions=[{"field": "created_at", "granularity": "month"},
+                                    {"field": "orders.created_at", "granularity": "month"}])
         assert len(_tds(query)) == 1
 
     @pytest.mark.parametrize("diff", [{"label": "b"}, {"date_range": ["2025-01-01", "2025-02-01"]}, {"name": "b"}])
     def test_same_text_differing_metadata_rejected(self, diff: dict) -> None:
         with pytest.raises((GranularityCallError, ValidationError), match="(?i)conflicting|collision"):
-            _q(time_dimensions=[{"dimension": EFF, "granularity": "month", "label": "a"},
-                                {"dimension": EFF, "granularity": "month", "label": "a", **diff}])
+            _q(time_dimensions=[{"field": EFF, "granularity": "month", "label": "a"},
+                                {"field": EFF, "granularity": "month", "label": "a", **diff}])

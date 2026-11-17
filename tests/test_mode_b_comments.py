@@ -122,16 +122,16 @@ async def engine(request):
 
 class TestExecution:
     async def test_double_dash_renders_like_no_comment(self) -> None:
-        with_comment = await emit(q(measures=[m("sum(amount) --discount")]), dialect="postgres")
-        plain = await emit(q(measures=[m("sum(amount)")]), dialect="postgres")
+        with_comment = await emit(q(metrics=[m("sum(amount) --discount")]), dialect="postgres")
+        plain = await emit(q(metrics=[m("sum(amount)")]), dialect="postgres")
         assert with_comment == plain
 
     async def test_multi_line_formula(self, engine: SlayerQueryEngine) -> None:
         formula = "sum(amount) /* gross */ - sum(discount) -- net of discounts\n+ 0"
-        assert num(single(await engine.execute(q(measures=[m(formula)])))) == 92
+        assert num(single(await engine.execute(q(metrics=[m(formula)])))) == 92
 
     async def test_nested_block_in_a_filter(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filters=[
+        resp = await engine.execute(q(dimensions=["id"], filter=[
             "status = 'paid' /* old: /* status = 'open' */ */ AND amount > 15",
         ]))
         assert ids(resp) == {2, 4}, resp.sql
@@ -140,16 +140,16 @@ class TestExecution:
         orders = orders_dataset()
         orders.fields.append(DatasetField(name="x--y", sql="amount", datatype=DataType.DOUBLE))
         models = [orders, customers_dataset()]
-        quoted = await emit(q(measures=[m('sum("x--y")')]), dialect="postgres", datasets=models)
-        plain = await emit(q(measures=[m("sum(amount)")]), dialect="postgres", datasets=models)
+        quoted = await emit(q(metrics=[m('sum("x--y")')]), dialect="postgres", datasets=models)
+        plain = await emit(q(metrics=[m("sum(amount)")]), dialect="postgres", datasets=models)
         assert quoted.replace("x--y", "amount") == plain, quoted
 
     async def test_markers_in_a_literal_are_text(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filters=[
+        resp = await engine.execute(q(dimensions=["id"], filter=[
             "status || ' -- /* x */' = 'paid -- /* x */'",
         ]))
         assert ids(resp) == {1, 2, 4}, resp.sql
 
     async def test_placeholder_in_a_comment_runs_without_the_variable(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(dimensions=["id"], filters=["status = 'paid' -- region = {region}"]))
+        resp = await engine.execute(q(dimensions=["id"], filter=["status = 'paid' -- region = {region}"]))
         assert ids(resp) == {1, 2, 4}, resp.sql

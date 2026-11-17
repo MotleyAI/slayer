@@ -1552,7 +1552,7 @@ def _sqlserver_boolean_storage(sqlserver_container, tmp_path_factory):
 class TestSQLServerBooleanAggregation:
     async def test_bit_column_aggregates(self, _sqlserver_boolean_storage) -> None:
         engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
-        resp = await engine.execute(orders_q(measures=[
+        resp = await engine.execute(orders_q(metrics=[
             bool_measure("sum(flag)", "s"), bool_measure("avg(flag)", "a"), bool_measure("min(flag)", "mn"), bool_measure("max(flag)", "mx"),
             bool_measure("count(flag)", "c"),
         ]))
@@ -1565,7 +1565,7 @@ class TestSQLServerBooleanAggregation:
 
     async def test_predicate_inputs(self, _sqlserver_boolean_storage) -> None:
         engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
-        resp = await engine.execute(orders_q(measures=[
+        resp = await engine.execute(orders_q(metrics=[
             bool_measure("sum(amount > 15)", "s"), bool_measure("count(amount > 15)", "c"), bool_measure("max(amount > 15)", "mx"),
         ]))
         row = resp.data[0]
@@ -1576,15 +1576,15 @@ class TestSQLServerBooleanAggregation:
     async def test_avg_is_fractional(self, _sqlserver_boolean_storage) -> None:
         """T-SQL's AVG over integers truncates; ``avg`` never does."""
         engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
-        resp = await engine.execute(orders_q(dimensions=["region"], measures=[bool_measure("avg(customer_id)")]))
+        resp = await engine.execute(orders_q(dimensions=["region"], metrics=[bool_measure("avg(customer_id)")]))
         assert {k: float(v) for k, v in by_dim(resp, "region").items()} == pytest.approx({"east": 400 / 3, "west": 200.0})
-        resp = await engine.execute(orders_q(measures=[bool_measure("avg(amount > 15)", "a")]))
+        resp = await engine.execute(orders_q(metrics=[bool_measure("avg(amount > 15)", "a")]))
         assert float(resp.data[0]["orders.a"]) == pytest.approx(GT15_TOTALS["avg"])
 
     async def test_projected_boolean_measure(self, _sqlserver_boolean_storage) -> None:
         """``sum(amount) > 50`` projects as a BIT value; NULL when the sum is NULL."""
         engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
-        resp = await engine.execute(orders_q(dimensions=["region"], measures=[bool_measure("sum(amount) > 50")]))
+        resp = await engine.execute(orders_q(dimensions=["region"], metrics=[bool_measure("sum(amount) > 50")]))
         values = by_dim(resp, "region")
         assert values["west"] is None
         assert bool(values["east"]) is True
@@ -1593,7 +1593,7 @@ class TestSQLServerBooleanAggregation:
     async def test_post_aggregation_filters(self, _sqlserver_boolean_storage, having: str) -> None:
         engine = SlayerQueryEngine(storage=_sqlserver_boolean_storage)
         resp = await engine.execute(orders_q(
-            dimensions=["region"], measures=[bool_measure("sum(flag)")], filters=["amount > 5 or amount is None", having],
+            dimensions=["region"], metrics=[bool_measure("sum(flag)")], filter=["amount > 5 or amount is None", having],
         ))
         assert by_dim(resp, "region") == {"east": 2}
 
@@ -1750,7 +1750,7 @@ def _jdocs(request, tmp_path_factory):
 
 def _jq(*dims: Any, ids: Optional[list[int]] = None, **body: Any) -> SlayerQuery:
     filters = [f"id IN ({', '.join(map(str, ids))})"] if ids else []
-    filters += body.pop("filters", [])
+    filters += body.pop("filter", [])
     return SlayerQuery.model_validate({"population": "jdocs", "dimensions": list(dims), "filter": filters, **body})
 
 
@@ -1772,7 +1772,7 @@ class TestSQLServerLongJsonScalars:
             await engine.execute(query)
 
     async def test_long_scalar_fails_loud_grouped(self, _jdocs) -> None:
-        query = _jq(_v("json_value(payload, '$.a')"), measures=[{"formula": "count(*)", "name": "n"}])
+        query = _jq(_v("json_value(payload, '$.a')"), metrics=[{"expression": "count(*)", "name": "n"}])
         engine = SlayerQueryEngine(storage=_jdocs)
         with pytest.raises(Exception, match="(?i)truncat"):  # noqa: B017 — SQL Server's own error (13625)
             await engine.execute(query)
@@ -1782,8 +1782,8 @@ class TestSQLServerLongJsonScalars:
         assert _per_id(resp) == {rid: "short" if rid == 2 else None for rid in _SHORT_IDS}, resp.sql
 
     async def test_grouped_having_ordered(self, _jdocs) -> None:
-        query = _jq(_v("json_value(payload, '$.a')"), ids=_SHORT_IDS, measures=[{"formula": "count(*)", "name": "n"}],
-                    filters=["n >= 1"], order=[{"column": "v"}])
+        query = _jq(_v("json_value(payload, '$.a')"), ids=_SHORT_IDS, metrics=[{"expression": "count(*)", "name": "n"}],
+                    filter=["n >= 1"], order=[{"field": "v"}])
         resp = await SlayerQueryEngine(storage=_jdocs).execute(query)
         assert {r["jdocs.v"]: int(r["jdocs.n"]) for r in resp.data} == {"short": 1, None: len(_SHORT_IDS) - 1}, resp.sql
 

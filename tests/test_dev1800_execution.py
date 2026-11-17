@@ -68,7 +68,7 @@ def _by_month(resp) -> dict:
 
 
 async def _orders(engine, **kw):
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     kw.setdefault("time_dimensions", month_td())
     return await engine.execute(SlayerQuery(**kw))
 
@@ -89,11 +89,11 @@ class TestTransformPlusHiddenAggregate:
     ``RenderContextMissingFacilityError`` before the change."""
 
     async def _assert_sum_invariant(self, engine, *, transform, operand) -> None:
-        comps = _by_month(await _orders(engine, measures=[
+        comps = _by_month(await _orders(engine, metrics=[
             DatasetMetric(expression=transform, name="t"),
             DatasetMetric(expression=operand, name="o"),
         ]))
-        got = _by_month(await _orders(engine, measures=[
+        got = _by_month(await _orders(engine, metrics=[
             DatasetMetric(expression=f"{transform} + {operand}", name="c"),
         ]))
         assert set(got) == set(comps)
@@ -126,10 +126,10 @@ class TestTransformPlusHiddenAggregate:
         await self._assert_sum_invariant(dev1750_engine, transform="change(sum(amount))", operand=f"change({CM})")
 
     async def test_transform_plus_literal(self, dev1750_engine) -> None:
-        comps = _by_month(await _orders(dev1750_engine, measures=[
+        comps = _by_month(await _orders(dev1750_engine, metrics=[
             DatasetMetric(expression=f"change({CM})", name="t"),
         ]))
-        got = _by_month(await _orders(dev1750_engine, measures=[
+        got = _by_month(await _orders(dev1750_engine, metrics=[
             DatasetMetric(expression=f"change({CM}) + 100", name="c"),
         ]))
         assert set(got) == set(comps)
@@ -146,11 +146,11 @@ class TestTransformPlusHiddenAggregate:
                 for r in resp.data
             }
 
-        comps = by_status_month(await _orders(dev1750_engine, dimensions=["status"], measures=[
+        comps = by_status_month(await _orders(dev1750_engine, dimensions=["status"], metrics=[
             DatasetMetric(expression=f"change({CM})", name="t"),
             DatasetMetric(expression="sum(amount)", name="o"),
         ]))
-        got = by_status_month(await _orders(dev1750_engine, dimensions=["status"], measures=[
+        got = by_status_month(await _orders(dev1750_engine, dimensions=["status"], metrics=[
             DatasetMetric(expression=f"change({CM}) + sum(amount)", name="c"),
         ]))
         assert set(got) == set(comps)
@@ -263,14 +263,14 @@ class TestInnerVaryingAlongTimeAxis:
 # --------------------------------------------------------------------------- #
 class TestNamedShapes:
     async def test_change_of_wscaled(self, dev1750_engine) -> None:
-        got = _by_month(await _orders(dev1750_engine, measures=[
+        got = _by_month(await _orders(dev1750_engine, metrics=[
             DatasetMetric(expression="change(wscaled_sum(amount))", name="d"),
         ]))
         for m, want in {"2024-01": None, "2024-02": 13.0, "2024-03": -2.0}.items():
             _approx_or_none(got[m]["orders.d"], want)
 
     async def test_change_pct_of_wscaled(self, dev1750_engine) -> None:
-        got = _by_month(await _orders(dev1750_engine, measures=[
+        got = _by_month(await _orders(dev1750_engine, metrics=[
             DatasetMetric(expression="change_pct(wscaled_sum(amount))", name="d"),
         ]))
         for m, want in {"2024-01": None, "2024-02": 13.0 / 35.0, "2024-03": -2.0 / 48.0}.items():
@@ -280,7 +280,7 @@ class TestNamedShapes:
         """The broadcast cross-model inner (spend constant across ordered_at)
         yields a zero delta and zero percentage after the first period."""
         for formula in (f"change({CM})", f"change_pct({CM})"):
-            got = _by_month(await _orders(dev1750_engine, measures=[
+            got = _by_month(await _orders(dev1750_engine, metrics=[
                 DatasetMetric(expression=formula, name="d"),
             ], to_many_handling="broadcast"))
             _approx_or_none(got["2024-01"]["orders.d"], None)

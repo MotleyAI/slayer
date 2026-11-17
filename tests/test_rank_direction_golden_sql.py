@@ -18,7 +18,7 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 
 def _q(expression: str, dimensions: list[str]) -> SlayerQuery:
-    return sales_q(dimensions=dimensions, measures=[DatasetMetric(expression=expression, name="r")])
+    return sales_q(dimensions=dimensions, metrics=[DatasetMetric(expression=expression, name="r")])
 
 
 def _cases() -> dict[str, SlayerQuery]:

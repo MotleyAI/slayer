@@ -39,9 +39,9 @@ async def test_join_target_keeps_its_onward_relationship(engine: SlayerQueryEngi
     await engine.save_dataset(consumer)
 
     response = await engine.execute(_query(
-        source_model="consumer",
+        population="consumer",
         dimensions=["customer_totals.customers.name"],
-        measures=[{"formula": "sum(amount)", "name": "total"}],
+        metrics=[{"expression": "sum(amount)", "name": "total"}],
     ))
 
     assert cells(response, dim_suffix="customers.name", metric="total") == AMOUNT_BY_CUSTOMER
@@ -56,9 +56,9 @@ async def test_saved_relation_without_outgoing_joins_can_use_incoming_edge(engin
     ]}))
 
     response = await engine.execute(_query(
-        source_model="customer_totals",
+        population="customer_totals",
         dimensions=["customers.name"],
-        measures=[{"formula": "sum(amt)", "name": "total"}],
+        metrics=[{"expression": "sum(amt)", "name": "total"}],
     ))
 
     assert cells(response, dim_suffix="name", metric="total") == AMOUNT_BY_CUSTOMER
@@ -71,11 +71,11 @@ async def test_extension_join_alias_resolves_to_the_named_stored_edge(engine: Sl
     }))
 
     response = await engine.execute(_query(
-        source_model="customer_totals", extensions=[{"source_name": "customer_totals", "relationships": [{
+        population="customer_totals", extensions=[{"source_name": "customer_totals", "relationships": [{
             "to": "customers", "join_pairs": [["customer_id", "id"]], "name": "reviewer",
         }]}],
         dimensions=["owner.name", "reviewer.tier"],
-        measures=[{"formula": "sum(amt)", "name": "total"}],
+        metrics=[{"expression": "sum(amt)", "name": "total"}],
     ))
 
     assert {
@@ -88,12 +88,12 @@ async def test_extension_join_alias_resolves_to_the_named_stored_edge(engine: Sl
 
 async def test_ordinary_stage_does_not_inherit_backing_source_joins(engine):
     stage = _query(
-        name="s", source_model="orders", dimensions=["customer_id"],
-        measures=[{"formula": "sum(amount)", "name": "amt"}],
+        name="s", population="orders", dimensions=["customer_id"],
+        metrics=[{"expression": "sum(amount)", "name": "amt"}],
     )
     consumer = _query(
-        source_model="s", dimensions=["customers.name"],
-        measures=[{"formula": "sum(amt)", "name": "total"}],
+        population="s", dimensions=["customers.name"],
+        metrics=[{"expression": "sum(amt)", "name": "total"}],
     )
 
     with pytest.raises(UnrelatedDatasetError):
@@ -108,13 +108,13 @@ async def test_legal_stage_named_join_target_is_not_a_synthetic_self_join(engine
     }))
 
     unjoined = await engine.execute(_query(
-        source_model="customer_totals",
-        measures=[{"formula": "sum(amt)", "name": "total"}],
+        population="customer_totals",
+        metrics=[{"expression": "sum(amt)", "name": "total"}],
     ))
     assert unjoined.data == [{"customer_totals.total": 150.0}]
 
     joined = await engine.execute(_query(
-        source_model="customer_totals", dimensions=["_stage.name"],
-        measures=[{"formula": "sum(amt)", "name": "total"}],
+        population="customer_totals", dimensions=["_stage.name"],
+        metrics=[{"expression": "sum(amt)", "name": "total"}],
     ))
     assert cells(joined, dim_suffix="_stage.name", metric="total") == AMOUNT_BY_CUSTOMER

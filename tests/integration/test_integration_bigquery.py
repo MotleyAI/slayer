@@ -504,7 +504,7 @@ def bq_amounts(bq_dataset, tmp_path_factory):
 async def test_collect_over_exact_numerics(bq_amounts) -> None:
     resp = await SlayerQueryEngine(storage=bq_amounts).execute(SlayerQuery.model_validate({
         "population": "amounts", "dimensions": ["team"],
-        "metrics": [{"formula": f"collect({c})", "name": f"{c}_set"} for c in _AMOUNT_COLUMNS],
+        "metrics": [{"expression": f"collect({c})", "name": f"{c}_set"} for c in _AMOUNT_COLUMNS],
     }))
     got = {r["amounts.team"]: {c: [num(v) for v in as_list(r[f"amounts.{c}_set"]) or ()] for c in _AMOUNT_COLUMNS}
            for r in resp.data}

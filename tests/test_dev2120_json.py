@@ -152,7 +152,7 @@ class TestPathSubset:
         await _rejected(engine, "json_value(payload, prefix)", any_of=("path",))
 
     async def test_variable_path(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(lib_query("json_value(payload, {p})", filters=["id = 1"], variables={"p": "$.a.b"}))
+        resp = await engine.execute(lib_query("json_value(payload, {p})", filter=["id = 1"], variables={"p": "$.a.b"}))
         assert lib_values(resp) == {1: "x"}
 
     async def test_bad_variable_path_rejected(self, engine: SlayerQueryEngine) -> None:
@@ -166,7 +166,7 @@ def _metric_query(expression: str, **kw: Any) -> SlayerQuery:
 class TestTyping:
     async def test_typed_sum(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(_metric_query("sum(json_value(payload, '$.qty' RETURNING INT))",
-                                                   filters=["id IN (1, 2, 3, 8)"]))
+                                                   filter=["id IN (1, 2, 3, 8)"]))
         assert float(resp.data[0]["lib.v"]) == 5
 
     async def test_text_result_keeps_the_numeric_aggregation_error(self, engine: SlayerQueryEngine) -> None:

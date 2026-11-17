@@ -84,7 +84,7 @@ class TestNestedAttachInsideProducer:
     async def test_row_attach_inside_filtered_local_subplan(self, exec_backend):
         dialect, engine = exec_backend
         query = q(dimensions=["status", BAND],
-                  measures=[M, DatasetMetric(expression="sum(gold_amount)", name="g")])
+                  metrics=[M, DatasetMetric(expression="sum(gold_amount)", name="g")])
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status", "orders.band")
         got = {
@@ -103,7 +103,7 @@ class TestNestedAttachInsideProducer:
 
     async def test_row_attach_inside_host_grain_wrap_subplan(self, exec_backend):
         dialect, engine = exec_backend
-        query = q(dimensions=["status", BAND], measures=[M],
+        query = q(dimensions=["status", BAND], metrics=[M],
                   order=[OrderItem(field=FieldRef(name="tier", dataset="customers"),
                                    direction="asc")])
         resp = await engine.execute(query)
@@ -121,7 +121,7 @@ class TestNestedAttachInsideProducer:
         query = q(
             dimensions=["status", {"expression": "last(amount, partition_by=city)",
                                    "name": "cl"}],
-            measures=[DatasetMetric(expression="sum(gold_amount)", name="g")],
+            metrics=[DatasetMetric(expression="sum(gold_amount)", name="g")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.status", "orders.cl")
@@ -146,7 +146,7 @@ class TestNestedAttachInsideProducer:
         regress it."""
         dialect, engine = exec_backend
         query = q(dimensions=["status", BAND],
-                  measures=[DatasetMetric(expression="last(customers.spend)",
+                  metrics=[DatasetMetric(expression="last(customers.spend)",
                                          name="sl")],
                   to_many_handling="broadcast")
         resp = await engine.execute(query)
@@ -165,7 +165,7 @@ class TestNestedAttachInsideProducer:
         filtered-local measure renders one flat WITH today."""
         dialect, engine = exec_backend
         query = q(dimensions=["status"],
-                  measures=[DatasetMetric(expression="sum(gold_amount)", name="g")],
+                  metrics=[DatasetMetric(expression="sum(gold_amount)", name="g")],
                   order=[OrderItem.model_validate({"field": "last(amount)", "direction": "desc"})])
         resp = await engine.execute(query)
         got = [(r["orders.status"], float(r["orders.g"])) for r in resp.data]
@@ -180,7 +180,7 @@ class TestNonFinalStage:
     @staticmethod
     def _banded_stages(**stage2_kwargs) -> list:
         stage1 = q(name="banded", dimensions=["region", BAND],
-                   measures=[DatasetMetric(expression="sum(amount)", name="bt")])
+                   metrics=[DatasetMetric(expression="sum(amount)", name="bt")])
         stage2 = SlayerQuery(population="banded",
                              extensions=[DatasetExtension(source_name="banded")],
                              **stage2_kwargs)
@@ -191,8 +191,8 @@ class TestNonFinalStage:
     ):
         dialect, engine = exec_backend
         stages = self._banded_stages(
-            dimensions=["region"], filters=["band == 1"],
-            measures=[DatasetMetric(expression="sum(bt)", name="total")],
+            dimensions=["region"], filter=["band == 1"],
+            metrics=[DatasetMetric(expression="sum(bt)", name="total")],
         )
         resp = await engine.execute(stages)
         by = rows_by(resp, "banded.region")
@@ -210,7 +210,7 @@ class TestNonFinalStage:
         dialect, engine = exec_backend
         stages = [
             q(name="s1", dimensions=["region"],
-              measures=[DatasetMetric(expression="sum(amount)", name="m"),
+              metrics=[DatasetMetric(expression="sum(amount)", name="m"),
                         DatasetMetric(expression="sum(amount, partition_by=[])",
                                      name="gt")]),
             SlayerQuery(population="s1", extensions=[DatasetExtension(source_name="s1")],
@@ -233,7 +233,7 @@ class TestNonFinalStage:
         stages = [
             q(name="s1", dimensions=["region", BAND],
               time_dimensions=month_td(),
-              measures=[DatasetMetric(expression="sum(amount)", name="m"),
+              metrics=[DatasetMetric(expression="sum(amount)", name="m"),
                         DatasetMetric(expression="sum(amount, window='1y')",
                                      name="w")]),
             SlayerQuery(population="s1", extensions=[DatasetExtension(source_name="s1")],
@@ -260,7 +260,7 @@ class TestNestingIsCardinalityNeutral:
             dims = ["region", BAND] if with_band else ["region"]
             return [
                 q(name="s1", dimensions=dims,
-                  measures=[DatasetMetric(expression="sum(amount)", name="bt")]),
+                  metrics=[DatasetMetric(expression="sum(amount)", name="bt")]),
                 SlayerQuery(population="s1", extensions=[DatasetExtension(source_name="s1")],
                             dimensions=["region"],
                             metrics=[DatasetMetric(expression="sum(bt)", name="t")]),

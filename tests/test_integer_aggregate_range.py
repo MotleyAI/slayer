@@ -96,8 +96,8 @@ def test_explicit_integer_measure_casts_to_64_bit(integer_orders: SlayerDataset,
 def test_integer_range_survives_window_and_shift_paths(integer_orders: SlayerDataset, formula, expected):
     sql, _ = _sql(
         dataset=integer_orders,
-        metrics=[{"formula": formula, "name": "total"}],
-        time_dimensions=[{"dimension": "created_at", "granularity": "day"}],
+        metrics=[{"expression": formula, "name": "total"}],
+        time_dimensions=[{"field": "created_at", "granularity": "day"}],
     )
     with duckdb.connect() as connection:
         connection.execute("CREATE TABLE orders (id INT, amount BIGINT, created_at TIMESTAMP)")
@@ -120,7 +120,7 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDa
             "relationships": [],
         }
     )
-    measure = {"formula": "sum(customers.amount)", "name": "total"}
+    measure = {"expression": "sum(customers.amount)", "name": "total"}
     if explicit:
         measure["type"] = "INT"
     sql, _ = _sql(
@@ -139,7 +139,7 @@ def test_joined_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDa
 
 @pytest.mark.parametrize("explicit", [False, True])
 def test_partitioned_integer_aggregate_preserves_cast_intent(integer_orders: SlayerDataset, explicit):
-    measure = {"formula": "sum(amount, partition_by=created_at)", "name": "total"}
+    measure = {"expression": "sum(amount, partition_by=created_at)", "name": "total"}
     if explicit:
         measure["type"] = "INT"
     sql, _ = _sql(dataset=integer_orders, metrics=[measure], dimensions=["id", "created_at"])

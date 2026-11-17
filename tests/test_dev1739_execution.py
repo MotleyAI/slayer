@@ -23,7 +23,7 @@ async def exec_engine(request):
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -38,7 +38,7 @@ class TestCoarserRepeatAndShare:
     async def test_region_total_repeats_across_cities(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="city_rev"),
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
             ],
@@ -53,7 +53,7 @@ class TestCoarserRepeatAndShare:
     async def test_share_of_region_sums_to_one_per_region(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(
                     expression="sum(amount) / sum(amount, partition_by=region)",
                     name="share",
@@ -70,7 +70,7 @@ class TestCoarserRepeatAndShare:
     async def test_per_cell_share_is_city_over_region(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(
                     expression="sum(amount) / sum(amount, partition_by=region)",
                     name="share",
@@ -88,7 +88,7 @@ class TestCoarserRepeatAndShare:
     async def test_share_of_total_sums_to_one(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(
                     expression="sum(amount) / sum(amount, partition_by=[])",
                     name="share",
@@ -102,7 +102,7 @@ class TestNullGrainSurvival:
     async def test_null_region_group_keeps_its_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
             ],
         ))
@@ -115,11 +115,11 @@ class TestCardinalityAndSiblingInvariance:
     async def test_adding_partition_measure_changes_nothing_else(self, exec_engine) -> None:
         base = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(expression="sum(amount)", name="city_rev")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="city_rev")],
         ))
         widened = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="city_rev"),
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
             ],
@@ -137,8 +137,8 @@ class TestFullTotalUnderHavingAndPagination:
     async def test_having_does_not_shrink_parent_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            filters=["sum(amount) > 30"],
-            measures=[
+            filter=["sum(amount) > 30"],
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="city_rev"),
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
             ],
@@ -150,9 +150,9 @@ class TestFullTotalUnderHavingAndPagination:
     async def test_pagination_does_not_shrink_parent_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            order=[{"column": "city_rev", "direction": "asc"}],
+            order=[{"field": "city_rev", "direction": "asc"}],
             limit=1, offset=1,
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="city_rev"),
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
             ],
@@ -168,7 +168,7 @@ class TestFilteredAggregateShare:
     async def test_filter_applies_inside_partition_cte(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(ok_amount)", name="city_ok"),
                 DatasetMetric(expression="sum(ok_amount, partition_by=region)", name="region_ok"),
             ],
@@ -183,8 +183,8 @@ class TestRowLevelFilterAppliesToTotal:
     async def test_row_filter_shrinks_partition_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            filters=["status == 'ok'"],
-            measures=[
+            filter=["status == 'ok'"],
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
             ],
         ))
@@ -198,7 +198,7 @@ class TestGrandTotal:
     async def test_empty_partition_is_grand_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=[])", name="grand"),
             ],
         ))
@@ -210,7 +210,7 @@ class TestZeroSurvivingGrandTotal:
     async def test_empty_input_grand_total_keeps_rows(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="city_rev"),
                 DatasetMetric(expression="sum(nomatch, partition_by=[])", name="nsum"),
                 DatasetMetric(expression="count(nomatch, partition_by=[])", name="ncount"),
@@ -229,7 +229,7 @@ class TestTimeDimensionPartition:
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="cell"),
                 DatasetMetric(
                     expression="sum(amount, partition_by=ordered_at)", name="month_total",
@@ -251,7 +251,7 @@ class TestStarCountPartition:
     async def test_star_count_repeats_region_count(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="count(*, partition_by=region)", name="region_n"),
             ],
         ))
@@ -265,7 +265,7 @@ class TestMultiKeyPartition:
     async def test_partition_by_region_and_channel(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "channel", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(
                     expression="sum(amount, partition_by=[region, channel])", name="rc",
                 ),
@@ -284,7 +284,7 @@ class TestDegeneratePartition:
     async def test_full_grain_partition_equals_plain(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="plain"),
                 DatasetMetric(
                     expression="sum(amount, partition_by=[region, city])", name="deg",
@@ -299,7 +299,7 @@ class TestCrossModelNarrowedGrain:
     async def test_grand_total_over_target(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["customers.tier"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(customers.spend)", name="sp"),
                 DatasetMetric(expression="sum(customers.spend, partition_by=[])", name="total"),
                 DatasetMetric(
@@ -318,7 +318,7 @@ class TestCrossModelNarrowedGrain:
     async def test_degenerate_equals_plain(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["customers.tier"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(customers.spend)", name="sp"),
                 DatasetMetric(
                     expression="sum(customers.spend, partition_by=customers.tier)",
@@ -332,7 +332,7 @@ class TestCrossModelNarrowedGrain:
     async def test_rerooted_grand_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["customers.regions.name"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(customers.spend)", name="sp"),
                 DatasetMetric(expression="sum(customers.spend, partition_by=[])", name="total"),
             ],
@@ -346,7 +346,7 @@ class TestCrossModelNarrowedGrain:
     async def test_rerooted_partition_key_narrows_grain(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["customers.regions.name", "customers.tier"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(customers.spend)", name="sp"),
                 DatasetMetric(
                     expression="sum(customers.spend, partition_by=customers.regions.name)",
@@ -367,8 +367,8 @@ class TestCrossModelFilterRouting:
         least one North order (c1+c2 spend = 300), not the unfiltered 350."""
         resp = await exec_engine.execute(_q(
             dimensions=["customers.tier"],
-            filters=["region == 'North'"],
-            measures=[
+            filter=["region == 'North'"],
+            metrics=[
                 DatasetMetric(expression="sum(customers.spend, partition_by=[])", name="total"),
             ],
         ))
@@ -379,8 +379,8 @@ class TestCrossModelFilterRouting:
     async def test_target_reachable_filter_applies_to_total(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["customers.regions.name"],
-            filters=["customers.tier == 'gold'"],
-            measures=[
+            filter=["customers.tier == 'gold'"],
+            metrics=[
                 DatasetMetric(expression="sum(customers.spend)", name="sp"),
                 DatasetMetric(expression="sum(customers.spend, partition_by=[])", name="total"),
             ],

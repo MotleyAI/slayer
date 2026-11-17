@@ -37,12 +37,12 @@ async def _values(engine, expr: str, **body: Any) -> dict[str, Any]:
 
 
 async def _count(engine, filter_: str, **body: Any) -> float | None:
-    resp = await engine.execute(query(measures=[metric("count(*)", "n")], filters=[filter_], **body))
+    resp = await engine.execute(query(metrics=[metric("count(*)", "n")], filter=[filter_], **body))
     return num(resp.data[0]["contractors.n"])
 
 
 async def _names(engine, filter_: str, **body: Any) -> set[str]:
-    resp = await engine.execute(query(dimensions=["name"], filters=[filter_], **body))
+    resp = await engine.execute(query(dimensions=["name"], filter=[filter_], **body))
     return {r["contractors.name"] for r in resp.data}
 
 
@@ -97,12 +97,12 @@ class TestLength:
 
 class TestPositions:
     async def test_in_a_measure_formula(self, engine) -> None:
-        resp = await engine.execute(query(measures=[metric("sum(length(skills))", "n")]))
+        resp = await engine.execute(query(metrics=[metric("sum(length(skills))", "n")]))
         assert num(resp.data[0]["contractors.n"]) == 4
 
     async def test_in_a_measure_filter(self, engine) -> None:
-        resp = await engine.execute(query(measures=[metric("count(*)", "n")], dimensions=["team"],
-                                          filters=["contains(skills, 'go')"]))
+        resp = await engine.execute(query(metrics=[metric("count(*)", "n")], dimensions=["team"],
+                                          filter=["contains(skills, 'go')"]))
         assert {r["contractors.team"]: num(r["contractors.n"]) for r in resp.data} == {"A": 1, "B": 1}
 
     async def test_in_a_case_expression(self, engine) -> None:

@@ -61,7 +61,7 @@ class TestCrossModelPartitioned:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier", "status"],
-            measures=[M, DatasetMetric(
+            metrics=[M, DatasetMetric(
                 expression="sum(customers.spend, partition_by=customers.tier)",
                 name="pt",
             )],
@@ -82,7 +82,7 @@ class TestCrossModelRanked:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            measures=[
+            metrics=[
                 M,
                 DatasetMetric(expression="first(customers.spend, customers.signup_at)",
                              name="f"),
@@ -105,10 +105,10 @@ class TestCrossModelRanked:
 
     async def test_ranked_is_cardinality_neutral(self, exec_backend):
         _, engine = exec_backend
-        solo = await engine.execute(q(dimensions=["customers.tier"], measures=[M]))
+        solo = await engine.execute(q(dimensions=["customers.tier"], metrics=[M]))
         both = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[M, DatasetMetric(
+            metrics=[M, DatasetMetric(
                 expression="last(customers.spend, customers.signup_at)", name="l",
             )],
         ))
@@ -125,7 +125,7 @@ class TestCrossModelWindowed:
         dialect, engine = exec_backend
         query = q(
             time_dimensions=signup_month_td(),
-            measures=[DatasetMetric(expression="sum(customers.spend, window='1y')",
+            metrics=[DatasetMetric(expression="sum(customers.spend, window='1y')",
                                    name="w")],
         )
         resp = await engine.execute(query)
@@ -144,7 +144,7 @@ class TestCrossModelWindowed:
         query = q(
             dimensions=["customers.tier"],
             time_dimensions=signup_month_td(),
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(customers.spend, window='1y', partition_by=customers.tier)",
                 name="w",
             )],
@@ -174,7 +174,7 @@ class TestCrossModelWindowed:
         _, engine = exec_backend
         query = q(
             time_dimensions=month_td(),
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(customers.spend, window='1y')", name="w",
             )],
             to_many_handling="broadcast",

@@ -25,7 +25,7 @@ from tests._dev1840_fixtures import _seed_sqlite, dev1840_datasets
 from tests._engine_helpers import build_exec_engine
 
 SAVED = "by_status"
-CM = {"formula": "sum(customers.spend)", "name": "cm"}
+CM = {"expression": "sum(customers.spend)", "name": "cm"}
 CLEAN = {"population": "orders", "metrics": ["count(*)"]}
 CROSS = {"population": "orders", "dimensions": ["status"], "metrics": [CM]}
 

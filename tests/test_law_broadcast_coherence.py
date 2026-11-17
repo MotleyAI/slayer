@@ -64,11 +64,11 @@ def _combine(op: str, a, b):
 async def test_formula_equals_client_side_combine(pair_case):
     engine, pair, grain = pair_case
     kwargs = _pair_kwargs(pair=pair, grain=grain)
-    left = await engine.execute(q(**kwargs, measures=[
+    left = await engine.execute(q(**kwargs, metrics=[
         DatasetMetric(expression=f"{OPERANDS[pair.a]} {pair.op} {OPERANDS[pair.b]}",
                      name="x"),
     ]))
-    right = await engine.execute(q(**kwargs, measures=[
+    right = await engine.execute(q(**kwargs, metrics=[
         DatasetMetric(expression=OPERANDS[pair.a], name="a"),
         DatasetMetric(expression=OPERANDS[pair.b], name="b"),
     ]))
@@ -95,13 +95,13 @@ async def test_ill_typed_operand_refuses_identically_in_both_phrasings(exec_engi
     The rm-grain pair sample excludes part_city for exactly this reason."""
     kwargs: dict = {"dimensions": ["region"], "time_dimensions": month_td()}
     refusal = r"partition_by column 'city' is not a query dimension"
-    as_formula = q(**kwargs, measures=[
+    as_formula = q(**kwargs, metrics=[
         DatasetMetric(
             expression=f"{OPERANDS['part_city']} + {OPERANDS['plain']}",
             name="x",
         ),
     ])
-    as_separate = q(**kwargs, measures=[
+    as_separate = q(**kwargs, metrics=[
         DatasetMetric(expression=OPERANDS["part_city"], name="a"),
         DatasetMetric(expression=OPERANDS["plain"], name="b"),
     ])
@@ -122,7 +122,7 @@ async def test_region_grain_operand_agrees_along_the_grain_chain(exec_engine):
         {"dimensions": ["region", "city"]},
         {"dimensions": ["region", "city"], "time_dimensions": month_td()},
     ):
-        resp = await exec_engine.execute(q(**kwargs, measures=[rt]))
+        resp = await exec_engine.execute(q(**kwargs, metrics=[rt]))
         values: dict = {}
         for row in resp.data:
             values.setdefault(row["orders.region"], set()).add(

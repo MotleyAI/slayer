@@ -364,7 +364,7 @@ def discount_rows_query(*, direction: str, nulls: str) -> SlayerQuery:
 
 def hidden_max_query(*, direction: str, nulls: str) -> SlayerQuery:
     return q(dimensions=["city"], order=[
-        {"column": "max(discount)", "direction": direction, "nulls": nulls}, {"column": "city"},
+        {"field": "max(discount)", "direction": direction, "nulls": nulls}, {"field": "city"},
     ])
 
 
@@ -397,14 +397,14 @@ def seed_server(cursor: Any, *, dialect: str) -> None:
 async def check_server_forms(engine: SlayerQueryEngine) -> None:
     """Every SQL-form predicate as a filter, and the forms the spec pins on every Tier-1 dialect."""
     for pred, expected in PREDICATES:
-        resp = await engine.execute(q(dimensions=["id"], filters=[pred]))
+        resp = await engine.execute(q(dimensions=["id"], filter=[pred]))
         assert ids(resp) == expected, (pred, resp.sql)
     for expr, values in VALUES:
         resp = await engine.execute(q(dimensions=["id", {"expression": expr, "name": "x"}]))
         got = {int(k): (v if v is None or isinstance(v, str) else float(v)) for k, v in by_key(resp, "id", "x").items()}
         want = {k: (v if v is None or isinstance(v, str) else float(v)) for k, v in values.items()}
         assert got == want, (expr, resp.sql)
-    assert num(single(await engine.execute(q(measures=[m("min(-7 % 3)")])))) == -1
+    assert num(single(await engine.execute(q(metrics=[m("min(-7 % 3)")])))) == -1
 
 
 async def check_try_cast(engine: SlayerQueryEngine, *, nulls_invalid: bool = True) -> None:
@@ -422,9 +422,9 @@ async def check_try_cast(engine: SlayerQueryEngine, *, nulls_invalid: bool = Tru
 
 
 async def check_filtered_aggregations(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(dimensions=["region"], measures=[m("count(*) FILTER (WHERE status = 'paid')")]))
+    resp = await engine.execute(q(dimensions=["region"], metrics=[m("count(*) FILTER (WHERE status = 'paid')")]))
     assert {k: num(v) for k, v in by_key(resp, "region").items()} == {"EU": 2, "US": 1, None: 0}, resp.sql
-    resp = await engine.execute(q(measures=[m("weighted_avg(price, weight=quantity) FILTER (WHERE status = 'paid')")]))
+    resp = await engine.execute(q(metrics=[m("weighted_avg(price, weight=quantity) FILTER (WHERE status = 'paid')")]))
     assert num(single(resp)) == pytest.approx(3.6), resp.sql
     resp = await engine.execute(SlayerQuery.model_validate({
         "population": "balances", "dimensions": ["customer_id"],
@@ -444,10 +444,10 @@ async def check_filtered_custom_aggregations(engine: SlayerQueryEngine) -> None:
     """A FILTERed custom aggregation restricts every row its formula reads, inline and as a saved measure."""
     for formula, by_region, total in CUSTOM_PAID:
         measure = m(f"{formula} FILTER (WHERE status = 'paid')")
-        resp = await engine.execute(q(dimensions=["region"], measures=[measure]))
+        resp = await engine.execute(q(dimensions=["region"], metrics=[measure]))
         got = {k: num(v) for k, v in by_key(resp, "region").items()}
         assert got == pytest.approx(by_region), (formula, resp.sql)
-        assert num(single(await engine.execute(q(measures=[measure])))) == pytest.approx(total), formula
-    resp = await engine.execute(q(dimensions=["region"], measures=["paid_rows"]))
+        assert num(single(await engine.execute(q(metrics=[measure])))) == pytest.approx(total), formula
+    resp = await engine.execute(q(dimensions=["region"], metrics=["paid_rows"]))
     assert {k: num(v) for k, v in by_key(resp, "region", "paid_rows").items()} == {"EU": 2, "US": 1, None: None}
-    assert num(single(await engine.execute(q(measures=["paid_rows"])), "paid_rows")) == 3
+    assert num(single(await engine.execute(q(metrics=["paid_rows"])), "paid_rows")) == 3

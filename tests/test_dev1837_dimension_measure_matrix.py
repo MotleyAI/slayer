@@ -218,7 +218,7 @@ class TestCoexistenceTriples:
         return q(
             dimensions=DIM_FAMILY_DIMS[family],
             time_dimensions=month_td(),
-            measures=metrics,
+            metrics=metrics,
         )
 
     async def _assert_triple(self, exec_backend, *, family: str, op: str) -> None:
@@ -292,7 +292,7 @@ class TestPartitionedShiftFix:
         query = q(
             dimensions=["region"],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
                 DatasetMetric(expression=TRANSFORM_FORMULAS[op], name="x"),
             ],
@@ -317,7 +317,7 @@ class TestPartitionedShiftFix:
         dry = await engine.execute(q(
             dimensions=["region"],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
                 DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
             ],
@@ -370,7 +370,7 @@ class TestConsecutivePeriodsReset:
         resp = await engine.execute(q(
             dimensions=[DIM_FAMILY_DIMS["band"][1]],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(
                     expression="consecutive_periods(sum(amount) != 40)", name="x",
@@ -396,7 +396,7 @@ class TestExplicitTransformPartition:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=DIM_FAMILY_DIMS["band"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(
                     expression="rank(sum(amount), partition_by=region, direction='desc')", name="x",

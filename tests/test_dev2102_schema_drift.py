@@ -46,47 +46,47 @@ _BUYER = DatasetExtension(source_name="orders", relationships=[
 
 class TestExtensionDefinitionDependencies:
     def test_computed_dimension_reading_dropped_column(self) -> None:
-        qb = _qb(dimensions=[_NET_DIMENSION], measures=[{"formula": "count(*)"}])
+        qb = _qb(dimensions=[_NET_DIMENSION], metrics=[{"expression": "count(*)"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="tax") == {"qb"}
 
     def test_extension_measure_over_an_expression(self) -> None:
-        qb = _qb(extension=_NET, measures=[{"formula": "net", "name": "n"}])
+        qb = _qb(extension=_NET, metrics=[{"expression": "net", "name": "n"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="tax") == {"qb"}
 
     def test_extension_measure_condition_reading_dropped_column(self) -> None:
         ext = DatasetExtension(source_name="orders", metrics=[
             DatasetMetric(name="paid", expression="sum(iif(status = 'paid', amount, 0))"),
         ])
-        qb = _qb(extension=ext, measures=[{"formula": "paid", "name": "p"}])
+        qb = _qb(extension=ext, metrics=[{"expression": "paid", "name": "p"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="status") == {"qb"}
 
     def test_extension_measure_reading_dropped_column(self) -> None:
         ext = DatasetExtension(source_name="orders", metrics=[DatasetMetric(name="taxes", expression="sum(tax)")])
-        qb = _qb(extension=ext, measures=[{"formula": "taxes"}])
+        qb = _qb(extension=ext, metrics=[{"expression": "taxes"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="tax") == {"qb"}
 
     def test_extension_measure_unused_by_the_stage(self) -> None:
-        qb = _qb(extension=_NET, measures=[{"formula": "sum(amount)", "name": "a"}])
+        qb = _qb(extension=_NET, metrics=[{"expression": "sum(amount)", "name": "a"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="tax") == set()
 
     def test_extension_join_local_key_dropped(self) -> None:
-        qb = _qb(extension=_BUYER, dimensions=["buyer.name"], measures=[{"formula": "count(*)"}])
+        qb = _qb(extension=_BUYER, dimensions=["buyer.name"], metrics=[{"expression": "count(*)"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="buyer_ref") == {"qb"}
 
     def test_extension_join_foreign_key_dropped(self) -> None:
         ext = DatasetExtension(source_name="orders", relationships=[
             DatasetRelationship(to="customers", join_pairs=[["status", "code"]], name="by_code"),
         ])
-        qb = _qb(extension=ext, dimensions=["by_code.name"], measures=[{"formula": "count(*)"}])
+        qb = _qb(extension=ext, dimensions=["by_code.name"], metrics=[{"expression": "count(*)"}])
         assert _whole_dropped(qb=qb, dataset=_customers(), column="code") == {"qb"}
 
     def test_extension_join_unused_by_the_stage(self) -> None:
-        qb = _qb(extension=_BUYER, dimensions=["status"], measures=[{"formula": "count(*)"}])
+        qb = _qb(extension=_BUYER, dimensions=["status"], metrics=[{"expression": "count(*)"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="buyer_ref") == set()
 
     def test_extension_measure_aliasing_a_dropped_column(self) -> None:
         ext = DatasetExtension(source_name="orders", metrics=[DatasetMetric(name="gross", expression="sum(amount)")])
-        qb = _qb(extension=ext, measures=[{"formula": "gross", "name": "g"}])
+        qb = _qb(extension=ext, metrics=[{"expression": "gross", "name": "g"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="amount") == {"qb"}
 
 
@@ -101,18 +101,18 @@ def _orders_with_stored_buyer() -> SlayerDataset:
 
 class TestExtensionDefinitionJoinPaths:
     def test_computed_dimension_through_extension_join(self) -> None:
-        qb = _qb(extension=_BUYER, dimensions=[_UPPER_BUYER], measures=[{"formula": "count(*)"}])
+        qb = _qb(extension=_BUYER, dimensions=[_UPPER_BUYER], metrics=[{"expression": "count(*)"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="buyer_ref") == {"qb"}
 
     def test_computed_dimension_through_stored_join(self) -> None:
         orders = _orders_with_stored_buyer()
-        qb = _qb(dimensions=[_UPPER_BUYER], measures=[{"formula": "count(*)"}])
+        qb = _qb(dimensions=[_UPPER_BUYER], metrics=[{"expression": "count(*)"}])
         entries = field_dependents(datasets=[orders, _customers(), qb], dataset=orders, field="buyer_ref")
         assert {e.dataset_name for e in entries if isinstance(e, WholeDatasetDelete)} == {"qb"}
 
     def test_extension_measure_through_extension_join(self) -> None:
         ext = _BUYER.model_copy(update={"metrics": [DatasetMetric(name="buyers", expression="count_distinct(buyer.name)")]})
-        qb = _qb(extension=ext, measures=[{"formula": "buyers"}])
+        qb = _qb(extension=ext, metrics=[{"expression": "buyers"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="buyer_ref") == {"qb"}
 
     def test_sibling_stage_computed_dimension_through_extension_join(self) -> None:
@@ -126,7 +126,7 @@ class TestExtensionDefinitionJoinPaths:
     def test_extension_measure_through_join_unused_by_the_stage(self) -> None:
         ext = _BUYER.model_copy(update={"metrics": [
             DatasetMetric(name="buyer_names", expression="count_distinct(UPPER(buyer.name))")]})
-        qb = _qb(extension=ext, dimensions=["status"], measures=[{"formula": "count(*)"}])
+        qb = _qb(extension=ext, dimensions=["status"], metrics=[{"expression": "count(*)"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="buyer_ref") == set()
 
 
@@ -138,19 +138,19 @@ def _inner(*pair: str) -> DatasetExtension:
 
 class TestInnerExtensionJoinRestriction:
     def test_local_key_dropped(self) -> None:
-        qb = _qb(extension=_inner("buyer_ref", "id"), measures=[{"formula": "count(*)"}])
+        qb = _qb(extension=_inner("buyer_ref", "id"), metrics=[{"expression": "count(*)"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="buyer_ref") == {"qb"}
 
     def test_target_primary_key_dropped(self) -> None:
-        qb = _qb(extension=_inner("buyer_ref", "id"), measures=[{"formula": "count(*)"}])
+        qb = _qb(extension=_inner("buyer_ref", "id"), metrics=[{"expression": "count(*)"}])
         assert _whole_dropped(qb=qb, dataset=_customers(), column="id") == {"qb"}
 
     def test_target_key_dropped(self) -> None:
-        qb = _qb(extension=_inner("status", "code"), measures=[{"formula": "count(*)"}])
+        qb = _qb(extension=_inner("status", "code"), metrics=[{"expression": "count(*)"}])
         assert _whole_dropped(qb=qb, dataset=_customers(), column="code") == {"qb"}
 
     def test_left_join_unused_by_the_stage(self) -> None:
-        qb = _qb(extension=_BUYER, measures=[{"formula": "count(*)"}])
+        qb = _qb(extension=_BUYER, metrics=[{"expression": "count(*)"}])
         assert _whole_dropped(qb=qb, dataset=_orders(), column="buyer_ref") == set()
 
     def test_restriction_declared_on_a_routed_model(self) -> None:
@@ -183,11 +183,11 @@ class TestExtensionDefinitionFrames:
         })
         ext = DatasetExtension(source_name="customers", metrics=[
             DatasetMetric(name="latest", expression="max(last_order.amount)")])
-        qb = _qb(extension=ext, measures=[{"formula": "customer.latest", "name": "l"}])
+        qb = _qb(extension=ext, metrics=[{"expression": "customer.latest", "name": "l"}])
         entries = field_dependents(datasets=[orders, customers, qb], dataset=customers, field="last_order_id")
         assert {e.dataset_name for e in entries if isinstance(e, WholeDatasetDelete)} == {"qb"}
 
 
 def test_a_computed_dimension_over_an_expression_depends_on_what_it_reads() -> None:
-    qb = _qb(dimensions=[{"expression": "(amount - tax) + 1", "name": "net1"}], measures=[{"formula": "count(*)"}])
+    qb = _qb(dimensions=[{"expression": "(amount - tax) + 1", "name": "net1"}], metrics=[{"expression": "count(*)"}])
     assert _whole_dropped(qb=qb, dataset=_orders(), column="tax") == {"qb"}

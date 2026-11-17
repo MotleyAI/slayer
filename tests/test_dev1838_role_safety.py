@@ -62,7 +62,7 @@ class TestCrossedPredicateFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="sum(alpha_amount)", name="a")],
+            metrics=[DatasetMetric(expression="sum(alpha_amount)", name="a")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -72,7 +72,7 @@ class TestCrossedPredicateFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="sum(rush_amount)", name="r")],
+            metrics=[DatasetMetric(expression="sum(rush_amount)", name="r")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -82,7 +82,7 @@ class TestCrossedPredicateFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="last(alpha_amount)", name="al")],
+            metrics=[DatasetMetric(expression="last(alpha_amount)", name="al")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -92,7 +92,7 @@ class TestCrossedPredicateFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(rush_amount, window='90d')",
+            metrics=[DatasetMetric(expression="sum(rush_amount, window='90d')",
                                    name="rw")],
         )
         with pytest.raises(RAISES) as ei:
@@ -107,7 +107,7 @@ class TestCrossedArgumentFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="tscaled_sum(amount)", name="t")],
+            metrics=[DatasetMetric(expression="tscaled_sum(amount)", name="t")],
         )
         with pytest.raises(RAISES) as ei:
             await engine.execute(query)
@@ -117,7 +117,7 @@ class TestCrossedArgumentFailsClosed:
         _, engine = exec_backend
         query = q(
             dimensions=["status"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="last(amount, customers.segments.updated_at)",
                 name="lu")],
         )
@@ -134,7 +134,7 @@ class TestProvenHopsKeepExactValues:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"],
-            measures=[M, DatasetMetric(expression="sum(gold_amount)", name="g")],
+            metrics=[M, DatasetMetric(expression="sum(gold_amount)", name="g")],
         ))
         by = rows_by(resp, "orders.status")
         for status, expected in GOLD_BY_STATUS.items():
@@ -149,7 +149,7 @@ class TestProvenHopsKeepExactValues:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="last(gold_amount)", name="gl")],
+            metrics=[DatasetMetric(expression="last(gold_amount)", name="gl")],
         ))
         by = rows_by(resp, "orders.status")
         assert by[("ok",)]["orders.gl"] is None
@@ -161,7 +161,7 @@ class TestProvenHopsKeepExactValues:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["city"],
-            measures=[DatasetMetric(expression="last(gold_amount)", name="gl")],
+            metrics=[DatasetMetric(expression="last(gold_amount)", name="gl")],
         ))
         by = rows_by(resp, "orders.city")
         assert float(by[("CityA",)]["orders.gl"]) == pytest.approx(20.0)
@@ -172,7 +172,7 @@ class TestProvenHopsKeepExactValues:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"],
-            measures=[M, DatasetMetric(expression="wscaled_sum(amount)", name="w")],
+            metrics=[M, DatasetMetric(expression="wscaled_sum(amount)", name="w")],
         ))
         by = rows_by(resp, "orders.status")
         for status, expected in WSCALED_BY_STATUS.items():
@@ -182,7 +182,7 @@ class TestProvenHopsKeepExactValues:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="last(amount, customers.signup_at)",
+            metrics=[DatasetMetric(expression="last(amount, customers.signup_at)",
                                    name="ls")],
         ))
         by = rows_by(resp, "orders.status")
@@ -197,7 +197,7 @@ class TestHostGrainWrapStaysLegal:
 
     @staticmethod
     def _order_query(*, dataset: str, name: str, direction: str):
-        return q(dimensions=["status"], measures=[M],
+        return q(dimensions=["status"], metrics=[M],
                  order=[OrderItem(field=FieldRef(name=name, dataset=dataset),
                                   direction=direction)])
 

@@ -162,7 +162,7 @@ class TestOrMixRestrictsPopulation:
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             resp = await engine.execute(cust_q(
-                measures=[SPEND], filters=[OR_MIX_LOCAL], to_many_handling=mode))
+                metrics=[SPEND], filter=[OR_MIX_LOCAL], to_many_handling=mode))
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(OR_MIX_SPEND)
         (info,) = _pop_infos(resp)
         assert "status" in info.filter_text
@@ -172,7 +172,7 @@ class TestOrMixRestrictsPopulation:
         """tier='gold' or orders.status='ok' = 475: the gold customer with no
         orders survives on the null-extended row (never 420, never 675)."""
         _, engine = backend
-        resp = await engine.execute(cust_q(measures=[SPEND], filters=[GOLD_OR_OK]))
+        resp = await engine.execute(cust_q(metrics=[SPEND], filter=[GOLD_OR_OK]))
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(GOLD_OR_OK_SPEND)
 
     async def test_negation_keeps_existential_reading(self, backend):
@@ -180,7 +180,7 @@ class TestOrMixRestrictsPopulation:
         a non-ok order; an orderless gold customer is not counted (never 520)."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            measures=[SPEND], filters=[NOT_GOLD_AND_OK]))
+            metrics=[SPEND], filter=[NOT_GOLD_AND_OK]))
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(
             NOT_GOLD_AND_OK_SPEND)
 
@@ -188,7 +188,7 @@ class TestOrMixRestrictsPopulation:
         """orders.id is null = 55: exactly the customers with no orders; the
         response carries the population entry."""
         _, engine = backend
-        resp = await engine.execute(cust_q(measures=[SPEND], filters=[NO_ORDERS]))
+        resp = await engine.execute(cust_q(metrics=[SPEND], filter=[NO_ORDERS]))
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(NO_ORDERS_SPEND)
         assert _pop_infos(resp), "expected the population semi_join_pushed entry"
 
@@ -198,7 +198,7 @@ class TestMultiBranch:
         """orders.status='new' or regions.region_events.value>=50 = 320; one entry."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            measures=[SPEND], filters=[NEW_OR_EVENT]))
+            metrics=[SPEND], filter=[NEW_OR_EVENT]))
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(NEW_OR_EVENT_SPEND)
         assert _pop_infos(resp), "expected a population entry"
 
@@ -206,7 +206,7 @@ class TestMultiBranch:
         """orders.amount < regions.region_events.value = 420 (product), no warning."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            measures=[SPEND], filters=[ATOM_TWO_BRANCH]))
+            metrics=[SPEND], filter=[ATOM_TWO_BRANCH]))
         assert float(resp.data[0]["customers.sp"]) == pytest.approx(
             ATOM_TWO_BRANCH_SPEND)
 
@@ -220,7 +220,7 @@ class TestMaterialisedBranchBinding:
         emits this inline, so it is a same-row-binding + null-extension anchor."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["orders.id"], filters=[MATERIALISED_OR]))
+            dimensions=["orders.id"], filter=[MATERIALISED_OR]))
         cells = {r["customers.orders.id"] for r in resp.data}
         cells = {int(c) if c is not None else None for c in cells}
         assert cells == MATERIALISED_ORDER_CELLS
@@ -237,7 +237,7 @@ class TestReducedPushOnPartialMaterialisation:
         (never a sibling order admitted through another order of the customer)."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["orders.id"], filters=[REDUCED_PUSH_OR]))
+            dimensions=["orders.id"], filter=[REDUCED_PUSH_OR]))
         cells = {r["customers.orders.id"] for r in resp.data}
         assert {int(c) if c is not None else None for c in cells} == \
             REDUCED_PUSH_ORDER_CELLS
@@ -248,7 +248,7 @@ class TestReducedPushOnPartialMaterialisation:
         holds only the unmaterialised branch."""
         dialect, engine = backend
         sql = await _dry(engine, cust_q(
-            dimensions=["orders.id"], filters=[REDUCED_PUSH_OR]), dialect)
+            dimensions=["orders.id"], filter=[REDUCED_PUSH_OR]), dialect)
         tree = sqlglot.parse_one(sql, dialect=dialect)
         (exists_node,) = list(tree.find_all(exp.Exists))
         inside = {t.name for t in exists_node.find_all(exp.Table)}
@@ -258,7 +258,7 @@ class TestReducedPushOnPartialMaterialisation:
 
     def test_reduced_push_drops_the_materialised_hop(self):
         planned = plan_query(
-            query=cust_q(dimensions=["orders.id"], filters=[REDUCED_PUSH_OR]),
+            query=cust_q(dimensions=["orders.id"], filter=[REDUCED_PUSH_OR]),
             bundle=_bundle(datasets=dev1900_datasets(), root="customers"))
         assert {h.to for h in _base_hops(planned)} == {
             "regions", "region_events"}
@@ -272,7 +272,7 @@ class TestPartitionedOverOrMix:
         no dropped warning, error mode does not error."""
         _, engine = backend
         q = cust_q(
-            dimensions=["tier"], measures=[PARTITIONED], filters=[OR_MIX_LOCAL],
+            dimensions=["tier"], metrics=[PARTITIONED], filter=[OR_MIX_LOCAL],
             to_many_handling=mode)
         resp = await engine.execute(q)
         by = rows_by(resp, "customers.tier")
@@ -290,7 +290,7 @@ class TestRawRowMode:
         (6), never one per matching order (7)."""
         _, engine = backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], filters=[OR_MIX_LOCAL],
+            dimensions=["tier"], filter=[OR_MIX_LOCAL],
             distinct_dimension_values=False))
         assert len(resp.data) == OR_MIX_RAW_ROWS
 
@@ -304,8 +304,8 @@ class TestProducerSideMixedOr:
         and the filter, no dropped warning, error mode does not error."""
         _, engine = backend
         q = orders_q(
-            dimensions=["customers.tier"], measures=[SPEND_X],
-            filters=[OR_MIX_PRODUCER], to_many_handling=mode)
+            dimensions=["customers.tier"], metrics=[SPEND_X],
+            filter=[OR_MIX_PRODUCER], to_many_handling=mode)
         resp = await engine.execute(q)
         by = rows_by(resp, "orders.customers.tier")
         for tier, spend in OR_MIX_PRODUCER_BY_TIER.items():
@@ -322,7 +322,7 @@ class TestAssociationArmMixedOr:
         that status that is app or belongs to a gold customer (ok 270, new 250)."""
         _, engine = backend
         resp = await engine.execute(orders_q(
-            dimensions=["status"], measures=[SPEND_X], filters=[ASSOC_OR],
+            dimensions=["status"], metrics=[SPEND_X], filter=[ASSOC_OR],
             to_many_handling="associate"))
         by = rows_by(resp, "orders.status")
         for status, spend in ASSOC_OR_BY_STATUS.items():
@@ -335,7 +335,7 @@ class TestAssociationArmMixedOr:
         customers with an order of that status (ok 270, new 100)."""
         _, engine = unproven_backend
         resp = await engine.execute(orders_q(
-            dimensions=["status"], measures=[SPEND_X], filters=[ASSOC_OR_ABSENT],
+            dimensions=["status"], metrics=[SPEND_X], filter=[ASSOC_OR_ABSENT],
             to_many_handling="associate"))
         by = rows_by(resp, "orders.status")
         for status, spend in ASSOC_OR_ABSENT_BY_STATUS.items():
@@ -348,8 +348,8 @@ class TestTwoSpellingsOneNode:
         spellings) bind to one order: gold 60 / silver 80 (never 160 / 230)."""
         _, engine = two_spellings_backend
         resp = await engine.execute(cust_q(
-            dimensions=["tier"], measures=[SPEND],
-            filters=list(TWO_SPELLINGS)))
+            dimensions=["tier"], metrics=[SPEND],
+            filter=list(TWO_SPELLINGS)))
         by = rows_by(resp, "customers.tier")
         for tier, spend in TWO_SPELLINGS_BY_TIER.items():
             assert float(by[(tier,)]["customers.sp"]) == pytest.approx(spend), tier
@@ -360,7 +360,7 @@ class TestTwoSpellingsOneNode:
         `FROM orders ... JOIN orders` duplicate cannot slip past a text count)."""
         dialect, engine = two_spellings_backend
         sql = await _dry(engine, cust_q(
-            dimensions=["tier"], measures=[SPEND], filters=list(TWO_SPELLINGS)),
+            dimensions=["tier"], metrics=[SPEND], filter=list(TWO_SPELLINGS)),
             dialect)
         (exists_node,) = list(sqlglot.parse_one(sql, dialect=dialect).find_all(exp.Exists))
         orders = [t for t in exists_node.find_all(exp.Table) if t.name == "orders"]
@@ -424,8 +424,8 @@ class TestGenuinelyUnreachableFilterRefused:
     @pytest.mark.parametrize("mode", MODES)
     async def test_unreachable_ref_is_refused(self, unreachable_backend, mode):
         _, engine = unreachable_backend
-        q = cust_q(dimensions=["tier"], measures=[PARTITIONED],
-                   filters=["promos.discount > 0"], to_many_handling=mode)
+        q = cust_q(dimensions=["tier"], metrics=[PARTITIONED],
+                   filter=["promos.discount > 0"], to_many_handling=mode)
         with pytest.raises((SlayerError, ValueError)):
             await engine.execute(q)
 
@@ -438,7 +438,7 @@ class TestGroupingAndDeterminism:
         """Union-find grouping keeps first-appearance order: generating an OR-mix
         query twice yields byte-identical SQL."""
         dialect, engine = backend
-        q = cust_q(measures=[SPEND], filters=[OR_MIX_LOCAL])
+        q = cust_q(metrics=[SPEND], filter=[OR_MIX_LOCAL])
         first = await _dry(engine, q, dialect)
         second = await _dry(engine, q, dialect)
         assert first == second
@@ -448,8 +448,8 @@ class TestGroupingAndDeterminism:
         merges them)."""
         dialect, engine = backend
         sql = await _dry(engine, cust_q(
-            measures=[SPEND],
-            filters=["orders.status = 'ok'", "regions.region_events.value >= 50"]),
+            metrics=[SPEND],
+            filter=["orders.status = 'ok'", "regions.region_events.value >= 50"]),
             dialect)
         assert sql.upper().count("EXISTS") == 2, sql
 
@@ -461,7 +461,7 @@ class TestExistsIsNeverUnderOr:
         of an OR (Snowflake forbids a correlated EXISTS under OR). Checked on the
         AST, so `EXISTS(...) OR local` cannot slip past a text match."""
         dialect, engine = backend
-        sql = await _dry(engine, cust_q(measures=[SPEND], filters=[OR_MIX_LOCAL]),
+        sql = await _dry(engine, cust_q(metrics=[SPEND], filter=[OR_MIX_LOCAL]),
                          dialect)
         tree = sqlglot.parse_one(sql, dialect=dialect)
         exists_nodes = list(tree.find_all(exp.Exists))
@@ -515,7 +515,7 @@ class TestPopulationDroppedArmImpossible:
         population push produces a base semi-join and never a dropped-filter
         disposition (the two-way disposition's dropped arm is impossible)."""
         dialect, engine = backend
-        q = cust_q(measures=[SPEND], filters=[OR_MIX_LOCAL])
+        q = cust_q(metrics=[SPEND], filter=[OR_MIX_LOCAL])
         planned = plan_query(query=q, bundle=_bundle(datasets=dev1900_datasets(), root="customers"))
         assert planned.semi_join_filters, "the OR-mix population must push"
         await engine.execute(q)

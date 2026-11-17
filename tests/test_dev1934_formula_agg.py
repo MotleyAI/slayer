@@ -411,7 +411,7 @@ class TestValueResolutionIsAst:
 
 
 def _picked_q(metric: DatasetMetric) -> SlayerQuery:
-    return orders_1900_q(dimensions=[BAD_POP], measures=[metric], to_many_handling="associate")
+    return orders_1900_q(dimensions=[BAD_POP], metrics=[metric], to_many_handling="associate")
 
 
 class TestPickedValueExecution:
@@ -434,7 +434,7 @@ class TestPickedValueExecution:
         async with seeded_exec_engine(
             dialect="sqlite", seed=seed_1832_sqlite, datasets=dev1832_datasets(),
         ) as (engine, _db):
-            resp = await engine.execute(sales_q(measures=[DatasetMetric(
+            resp = await engine.execute(sales_q(metrics=[DatasetMetric(
                 expression="weighted_avg(amount, weight=q_amount)", name="m")]))
         assert resp.data[0]["sales.m"] == pytest.approx(WAVG_AMOUNT_WEIGHT_QAMT)
 

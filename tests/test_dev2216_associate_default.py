@@ -57,7 +57,7 @@ INELIGIBLE = {
 
 
 def _q(mode: str | None, **kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     if mode is not None:
         kw["to_many_handling"] = mode
     return SlayerQuery(**kw)
@@ -104,15 +104,15 @@ async def null_status_engine(request):
 
 class TestTheDefaultAssociates:
     async def test_cross_model_metric(self, engine) -> None:
-        default = await engine.execute(_q(None, dimensions=["status"], measures=[CM]))
-        assoc = await engine.execute(_q("associate", dimensions=["status"], measures=[CM]))
+        default = await engine.execute(_q(None, dimensions=["status"], metrics=[CM]))
+        assoc = await engine.execute(_q("associate", dimensions=["status"], metrics=[CM]))
         assert _status(default, "cm") == ASSOC_SPEND_BY_STATUS
         assert _same_rows(default, assoc)
         assert associated_warnings(default)
         assert not broadcast_warnings(default)
 
     async def test_explicit_broadcast_keeps_the_previous_behaviour(self, engine) -> None:
-        resp = await engine.execute(_q("broadcast", dimensions=["status"], measures=[CM]))
+        resp = await engine.execute(_q("broadcast", dimensions=["status"], metrics=[CM]))
         assert _status(resp, "cm") == dict.fromkeys(ASSOC_SPEND_BY_STATUS, BCAST_SPEND_CROSS)
         (w,) = broadcast_warnings(resp)
         assert w.association_unsupported is None
@@ -130,15 +130,15 @@ class TestTheDefaultAssociates:
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_derived_fanning_dimension(self, fanning_engine, mode) -> None:
-        resp = await fanning_engine.execute(_q(mode, dimensions=[BAD_POP], measures=[AMOUNT_SUM, SPEND_SUM]))
+        resp = await fanning_engine.execute(_q(mode, dimensions=[BAD_POP], metrics=[AMOUNT_SUM, SPEND_SUM]))
         assert bad_pop_vals(resp, "orders.amt") == pytest.approx(ASSOC_AMOUNT_BY_BAD_POP)
         assert bad_pop_vals(resp, "orders.csp") == pytest.approx(ASSOC_SPEND_BY_BAD_POP)
         assert associated_warnings(resp)
 
     async def test_host_safe_partition_key_associates(self, engine) -> None:
         part = DatasetMetric(expression="sum(customers.spend, partition_by=status)", name="cm")
-        default = await engine.execute(_q(None, dimensions=["status"], measures=[part]))
-        assoc = await engine.execute(_q("associate", dimensions=["status"], measures=[part]))
+        default = await engine.execute(_q(None, dimensions=["status"], metrics=[part]))
+        assoc = await engine.execute(_q("associate", dimensions=["status"], metrics=[part]))
         assert _same_rows(default, assoc)
         assert _status(default, "cm") == ASSOC_SPEND_BY_STATUS
 
@@ -152,31 +152,31 @@ class TestModeInvariance:
         for r in runs:
             assert not broadcast_warnings(r)
             assert not associated_warnings(r)
-        total = await engine.execute(_q(None, measures=[DatasetMetric(expression="sum(amount)", name="amt")]))
+        total = await engine.execute(_q(None, metrics=[DatasetMetric(expression="sum(amount)", name="amt")]))
         assert sum(float(r["orders.amt"]) for r in runs[0].data) == pytest.approx(float(total.data[0]["orders.amt"]))
 
     async def test_an_associated_measure_is_cardinality_neutral(self, engine) -> None:
         amt = DatasetMetric(expression="sum(amount)", name="amt")
-        without = await engine.execute(_q(None, dimensions=["status"], measures=[amt]))
-        with_cm = await engine.execute(_q(None, dimensions=["status"], measures=[amt, CM]))
+        without = await engine.execute(_q(None, dimensions=["status"], metrics=[amt]))
+        with_cm = await engine.execute(_q(None, dimensions=["status"], metrics=[amt, CM]))
         assert len(with_cm.data) == len(without.data)
         assert _status(with_cm, "amt") == _status(without, "amt")
 
 
 class TestRowSupply:
     async def test_the_population_keeps_only_its_own_tuples(self, engine) -> None:
-        resp = await engine.execute(_q(None, dimensions=["status"], measures=[COUNT]))
+        resp = await engine.execute(_q(None, dimensions=["status"], metrics=[COUNT]))
         assert _status(resp, "n") == ASSOC_COUNT_BY_STATUS
 
     async def test_the_orderless_entity_reaches_the_null_cell(self, null_status_engine) -> None:
-        resp = await null_status_engine.execute(_q(None, dimensions=["status"], measures=[COUNT]))
+        resp = await null_status_engine.execute(_q(None, dimensions=["status"], metrics=[COUNT]))
         assert _status(resp, "n")[None] == 2.0
 
 
 class TestBroadcastFallback:
     async def test_first_last_broadcasts_with_its_reason(self, engine) -> None:
-        default = await engine.execute(_q(None, dimensions=["status"], measures=[LAST]))
-        bcast = await engine.execute(_q("broadcast", dimensions=["status"], measures=[LAST]))
+        default = await engine.execute(_q(None, dimensions=["status"], metrics=[LAST]))
+        bcast = await engine.execute(_q("broadcast", dimensions=["status"], metrics=[LAST]))
         assert _same_rows(default, bcast)
         assert len(set(_status(default, "ls").values())) == 1
         (w,) = _fallbacks(default)
@@ -205,7 +205,7 @@ class TestBroadcastFallback:
 
     async def test_each_reason_is_reported(self, engine) -> None:
         resp = await engine.execute(_q(
-            None, dimensions=["status"], time_dimensions=SIGNUP_MONTH, measures=[MIXED]))
+            None, dimensions=["status"], time_dimensions=SIGNUP_MONTH, metrics=[MIXED]))
         reasons = [w.association_unsupported or "" for w in _fallbacks(resp)]
         assert any(FIRST_LAST.search(r) for r in reasons)
         assert any(WINDOW.search(r) for r in reasons)
@@ -214,14 +214,14 @@ class TestBroadcastFallback:
     @pytest.mark.parametrize("shape", INELIGIBLE)
     async def test_explicit_associate_keeps_the_typed_error(self, engine, shape) -> None:
         kw, measure = INELIGIBLE[shape]
-        query = _q("associate", measures=[measure], **kw)
+        query = _q("associate", metrics=[measure], **kw)
         with pytest.raises(AssociationError):
             await engine.execute(query)
 
     @pytest.mark.parametrize("shape", INELIGIBLE)
     async def test_explicit_broadcast_warns_ordinarily(self, engine, shape) -> None:
         kw, measure = INELIGIBLE[shape]
-        resp = await engine.execute(_q("broadcast", measures=[measure], **kw))
+        resp = await engine.execute(_q("broadcast", metrics=[measure], **kw))
         (w,) = broadcast_warnings(resp)
         assert w.association_unsupported is None
         assert w.hint == DICE_SLICE_HINT
@@ -229,25 +229,25 @@ class TestBroadcastFallback:
     @pytest.mark.parametrize("shape", INELIGIBLE)
     async def test_error_mode_refuses(self, engine, shape) -> None:
         kw, measure = INELIGIBLE[shape]
-        query = _q("error", measures=[measure], **kw)
+        query = _q("error", metrics=[measure], **kw)
         with pytest.raises(SlayerError):
             await engine.execute(query)
 
     async def test_a_stages_error_mode_refuses_under_a_default_root(self, engine) -> None:
-        stages = [_q("error", name="s", dimensions=["status"], measures=[CM]),
-                  _q(None, source_model="s", measures=[STAGE_ROWS])]
+        stages = [_q("error", name="s", dimensions=["status"], metrics=[CM]),
+                  _q(None, population="s", metrics=[STAGE_ROWS])]
         with pytest.raises(SlayerError):
             await engine.execute(query=stages)
 
     async def test_a_root_error_mode_spares_a_default_stages_fallback(self, engine) -> None:
-        stage = _q(None, name="s", dimensions=["status"], measures=[LAST])
-        resp = await engine.execute(query=[stage, _q("error", source_model="s", measures=[STAGE_ROWS])])
+        stage = _q(None, name="s", dimensions=["status"], metrics=[LAST])
+        resp = await engine.execute(query=[stage, _q("error", population="s", metrics=[STAGE_ROWS])])
         assert resp.data[0]["s.k"] == len(ASSOC_SPEND_BY_STATUS)
         assert _fallbacks(resp)
 
     async def test_requested_grain_is_never_broadcast(self, engine) -> None:
         part = DatasetMetric(expression="last(customers.spend, customers.signup_at, partition_by=status)", name="lp")
-        default, associate = (_q(mode, dimensions=["status"], measures=[part]) for mode in (None, "associate"))
+        default, associate = (_q(mode, dimensions=["status"], metrics=[part]) for mode in (None, "associate"))
         with pytest.raises(AssociationError) as by_default:
             await engine.execute(default)
         with pytest.raises(AssociationError) as by_associate:
@@ -256,13 +256,13 @@ class TestBroadcastFallback:
 
     @pytest.mark.parametrize("mode", [None, "broadcast", "associate", "error"])
     async def test_input_safety_is_not_a_fallback(self, crossing_engine, mode) -> None:
-        query = _q(mode, dimensions=["status"], measures=[DatasetMetric(expression="sum(customers.vip_spend)", name="vip")])
+        query = _q(mode, dimensions=["status"], metrics=[DatasetMetric(expression="sum(customers.vip_spend)", name="vip")])
         with pytest.raises(UnsafeRelationshipInputError, match="unproven join hop"):
             await crossing_engine.execute(query)
 
     async def test_partition_key_fanning_from_its_host_fails_by_default(self, fanning_engine) -> None:
-        query = _q(None, source_model="regions", dimensions=["bad_pop"],
-                   measures=[DatasetMetric(expression="sum(pop, partition_by=bad_pop)", name="w")])
+        query = _q(None, population="regions", dimensions=["bad_pop"],
+                   metrics=[DatasetMetric(expression="sum(pop, partition_by=bad_pop)", name="w")])
         with pytest.raises(PartitionKeyError, match="region_events"):
             await fanning_engine.execute(query)
 
@@ -278,26 +278,26 @@ class TestUngrainedReaggregationInner:
     @pytest.mark.parametrize("mode", MODES)
     async def test_plain_inner_associates(self, engine, mode) -> None:
         nested = DatasetMetric(expression="sum(sum(customers.spend))", name="ss")
-        resp = await engine.execute(_q(mode, dimensions=["status"], measures=[nested]))
+        resp = await engine.execute(_q(mode, dimensions=["status"], metrics=[nested]))
         assert _status(resp, "ss") == ASSOC_SPEND_BY_STATUS
         assert associated_warnings(resp)
         assert not broadcast_warnings(resp)
 
     async def test_plain_inner_under_broadcast_and_error(self, engine) -> None:
         nested = DatasetMetric(expression="sum(sum(customers.spend))", name="ss")
-        resp = await engine.execute(_q("broadcast", dimensions=["status"], measures=[nested]))
+        resp = await engine.execute(_q("broadcast", dimensions=["status"], metrics=[nested]))
         assert _status(resp, "ss") == dict.fromkeys(ASSOC_SPEND_BY_STATUS, BCAST_SPEND_CROSS)
-        query = _q("error", dimensions=["status"], measures=[nested])
+        query = _q("error", dimensions=["status"], metrics=[nested])
         with pytest.raises(SlayerError):
             await engine.execute(query)
 
     async def test_ranked_inner_falls_back_by_default(self, engine) -> None:
         nested = DatasetMetric(expression="sum(last(customers.spend, customers.signup_at))", name="sl")
-        resp = await engine.execute(_q(None, dimensions=["status"], measures=[nested]))
+        resp = await engine.execute(_q(None, dimensions=["status"], metrics=[nested]))
         assert any(FIRST_LAST.search(w.association_unsupported or "") for w in _fallbacks(resp))
 
     async def test_ranked_inner_fails_under_associate(self, engine) -> None:
         query = _q("associate", dimensions=["status"],
-                   measures=[DatasetMetric(expression="sum(last(customers.spend, customers.signup_at))", name="sl")])
+                   metrics=[DatasetMetric(expression="sum(last(customers.spend, customers.signup_at))", name="sl")])
         with pytest.raises(AssociationError):
             await engine.execute(query)

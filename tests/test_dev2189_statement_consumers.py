@@ -169,8 +169,8 @@ def _profile(version: tuple[int, int]):
 
 
 #: Unnests ``skills`` and filters through a correlated semi-join in the same SELECT.
-UNNEST_BESIDE_SEMI_JOIN = query(dimensions=["team"], filters=["assignments.id = 1"],
-                                measures=[metric("count(skills.*)", "n")])
+UNNEST_BESIDE_SEMI_JOIN = query(dimensions=["team"], filter=["assignments.id = 1"],
+                                metrics=[metric("count(skills.*)", "n")])
 
 
 async def test_unnest_beside_a_semi_join_is_refused_before_25_8(monkeypatch: pytest.MonkeyPatch) -> None:

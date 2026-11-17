@@ -49,7 +49,7 @@ async def test_null_keys_are_skipped_in_both_directions(engine: SlayerQueryEngin
 
 
 async def test_partitioned_cross_model(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(dimensions=["customers.region", "customers.name"], measures=[
+    resp = await engine.execute(q(dimensions=["customers.region", "customers.name"], metrics=[
         m("last(customers.status, customers.updated_at, partition_by=customers.region)", "l"),
         m("first(customers.status, customers.updated_at, partition_by=customers.region)", "f"),
     ]))
@@ -58,7 +58,7 @@ async def test_partitioned_cross_model(engine: SlayerQueryEngine) -> None:
 
 
 async def test_partitioned_on_the_home_model(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(q(source_model="events", dimensions=["id", "customer_id"], measures=[
+    resp = await engine.execute(q(population="events", dimensions=["id", "customer_id"], metrics=[
         m("last(status, updated_at, partition_by=customer_id)", "l")]))
     by_id = {int(r["events.id"]): r["events.l"] for r in resp.data}
     assert by_id == {1: "c", 2: "c", 3: "c", 4: None, 5: None, 6: None, 7: None}
@@ -68,9 +68,9 @@ async def test_partitioned_on_the_home_model(engine: SlayerQueryEngine) -> None:
 # Windowed (the DEV-1915 trailing-window seed)
 # --------------------------------------------------------------------------- #
 async def test_windowed_explicit_ranking_column_with_null_keys(windowed: SlayerQueryEngine) -> None:
-    resp = await windowed.execute(W.q(time_dimensions=W.month_td(), measures=[
-        {"formula": "last(amount, updated_at, window='90d')", "name": "l"},
-        {"formula": "first(amount, updated_at, window='90d')", "name": "f"},
+    resp = await windowed.execute(W.q(time_dimensions=W.month_td(), metrics=[
+        {"expression": "last(amount, updated_at, window='90d')", "name": "l"},
+        {"expression": "first(amount, updated_at, window='90d')", "name": "f"},
     ]))
     assert {k: float(v) for k, v in W.by_month(resp, "orders.l").items()} == W.LAST_UPDATED_90D
     assert {k: float(v) for k, v in W.by_month(resp, "orders.f").items()} == {
@@ -78,8 +78,8 @@ async def test_windowed_explicit_ranking_column_with_null_keys(windowed: SlayerQ
 
 
 async def test_windowed_interval_of_only_null_keys(windowed: SlayerQueryEngine) -> None:
-    resp = await windowed.execute(W.q(dimensions=["region"], time_dimensions=W.month_td(), measures=[
-        {"formula": "last(amount, updated_at, window='90d')", "name": "l"}]))
+    resp = await windowed.execute(W.q(dimensions=["region"], time_dimensions=W.month_td(), metrics=[
+        {"expression": "last(amount, updated_at, window='90d')", "name": "l"}]))
     cells = {(r["orders.region"], W.month_key(r["orders.created_at"])): r["orders.l"] for r in resp.data}
     assert cells[("EU", "2024-02")] is None
 
@@ -97,9 +97,9 @@ async def test_plain_first_last_order_by_a_null_flag(dialect: str) -> None:
 
 @pytest.mark.parametrize("dialect", TIER1)
 async def test_windowed_first_last_order_by_a_null_flag(dialect: str) -> None:
-    sql = await W.gen(W.q(time_dimensions=W.month_td(), measures=[
-        {"formula": "last(amount, updated_at, window='90d')", "name": "l"},
-        {"formula": "first(amount, window='90d')", "name": "f"},
+    sql = await W.gen(W.q(time_dimensions=W.month_td(), metrics=[
+        {"expression": "last(amount, updated_at, window='90d')", "name": "l"},
+        {"expression": "first(amount, window='90d')", "name": "f"},
     ]), dialect=dialect)
     orders = ranking_orders(sql, dialect=dialect)
     assert len(orders) >= 2, sql

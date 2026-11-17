@@ -35,13 +35,13 @@ def _cases() -> dict:
     return {
         "lift/window_partition": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(amount, window='90d', partition_by=region)", name="w",
             )],
         ),
         "lift/two_ranked_producers": q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="last(amount, partition_by=region)", name="a"),
                 DatasetMetric(expression="last(amount, partition_by=city)", name="b"),
             ],
@@ -49,7 +49,7 @@ def _cases() -> dict:
         "lift/three_level_nesting": q(
             dimensions=["region", {"expression": CBAND, "name": "cband"}],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="s"),
                 DatasetMetric(
                     expression="sum(amount, window='90d', partition_by=region)",
@@ -60,40 +60,40 @@ def _cases() -> dict:
         ),
         "lift/first_last_partition": q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="last(amount, partition_by=region)", name="l",
             )],
         ),
         "lift/temporal_partition_last": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="last(amount, partition_by=[region, ordered_at])", name="l",
             )],
         ),
         "lift/cumsum_partitioned": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="cumsum(sum(amount, partition_by=[region, ordered_at]))",
                 name="c",
             )],
         ),
         "lift/rank_partitioned_measure": q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(expression=RANK_DIM, name="r")],
+            metrics=[DatasetMetric(expression=RANK_DIM, name="r")],
         ),
         "lift/filter_partitioned": q(
             dimensions=["region", "city"],
-            filters=["sum(amount, partition_by=region) > 50"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["sum(amount, partition_by=region) > 50"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
         "lift/filter_conjunct_split": q(
             dimensions=["region", "city"],
-            filters=["sum(amount, partition_by=region) > 50 and city != 'CityB'"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["sum(amount, partition_by=region) > 50 and city != 'CityB'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
         "lift/coexist_row_combined": q(
             dimensions=["region", {"expression": BAND35, "name": "band"}],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="s"),
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
             ],
@@ -104,25 +104,25 @@ def _cases() -> dict:
                 {"expression": "CASE WHEN sum(amount, partition_by=region) > 55 "
                                "THEN 1 ELSE 0 END", "name": "band"},
             ],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(amount, partition_by=region)", name="rt",
             )],
         ),
         "lift/order_raw_aggregate": q(
             dimensions=["region", "city", {"expression": BAND35, "name": "band"}],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
-            order=[{"column": "sum(amount, partition_by=city)", "direction": "asc"}],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            order=[{"field": "sum(amount, partition_by=city)", "direction": "asc"}],
         ),
         "lift/coexist_windowed": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
                 DatasetMetric(expression="sum(amount, window='1y')", name="w"),
             ],
         ),
         "lift/coexist_first_last": q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
                 DatasetMetric(expression="last(amount)", name="l"),
             ],
@@ -130,14 +130,14 @@ def _cases() -> dict:
         "lift/coexist_cross_model": q(
             to_many_handling="broadcast",
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
                 DatasetMetric(expression="sum(customers.spend)", name="cm"),
             ],
         ),
         "lift/coexist_transform": q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
                 DatasetMetric(expression="cumsum(sum(amount))", name="c"),
             ],
@@ -148,23 +148,23 @@ def _cases() -> dict:
                 {"expression": "sum(amount, partition_by=city) - "
                                "sum(amount, partition_by=region)", "name": "gap"},
             ],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
         "lift/dim_rank": q(
             dimensions=["region", {"expression": RANK_DIM, "name": "rr"}],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
         "lift/dim_first_last": q(
             dimensions=[
                 "region",
                 {"expression": "last(amount, partition_by=region)", "name": "la"},
             ],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
         "lift/dim_window": q(
             dimensions=["region", {"expression": WBAND, "name": "wband"}],
             time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
         "guard/dim_bare_aggregate": q(
             dimensions=[
@@ -172,7 +172,7 @@ def _cases() -> dict:
                 {"expression": "CASE WHEN sum(amount) > 50 THEN 1 ELSE 0 END",
                  "name": "b"},
             ],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
         "guard/dim_cross_model_source": q(
             to_many_handling="broadcast",
@@ -181,12 +181,12 @@ def _cases() -> dict:
                 {"expression": "CASE WHEN sum(customers.spend, partition_by=region) "
                                "> 100 THEN 1 ELSE 0 END", "name": "cband"},
             ],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
         "guard/filter_no_common_scope": q(
             dimensions=["region", "city"],
-            filters=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
         "lift/nested_attach": q(
             dimensions=[
@@ -198,7 +198,7 @@ def _cases() -> dict:
                 {"expression": "sum(amount, partition_by=[band, region, customer_id])",
                  "name": "b2"},
             ],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
     }
 

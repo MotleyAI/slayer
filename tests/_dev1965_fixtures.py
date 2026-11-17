@@ -61,18 +61,18 @@ def orders_dataset(*, filters: Optional[list[str]] = None) -> SlayerDataset:
 
 
 def q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery.model_validate(kw)
 
 
 def month_td() -> list[dict]:
-    return [{"dimension": "created_at", "granularity": "month"}]
+    return [{"field": "created_at", "granularity": "month"}]
 
 
 def cumsum_chain(**kw) -> SlayerQuery:
     """``cumsum(sum(amount))`` by month (a one-step transform chain)."""
     kw.setdefault("time_dimensions", month_td())
-    kw.setdefault("measures", [{"formula": "cumsum(sum(amount))", "name": "running"}])
+    kw.setdefault("metrics", [{"expression": "cumsum(sum(amount))", "name": "running"}])
     return q(**kw)
 
 
@@ -81,7 +81,7 @@ MODE_A_OR = "status = 'a' OR status = 'b'"
 
 def where_having_query() -> SlayerQuery:
     """Same-phase WHERE / HAVING conjuncts, two of them ORs."""
-    return q(dimensions=["region"], measures=["sum(amount)"], filters=[
+    return q(dimensions=["region"], metrics=["sum(amount)"], filter=[
         "amount > 15",
         "region == 'US' or region == 'EU'",
         "sum(amount) > 55 or count(amount) > 2",

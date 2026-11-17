@@ -185,7 +185,7 @@ def test_tsql_build_covar_2arg_covar_pop_uses_varp() -> None:
 # Outer wrap: T-SQL accepts WITH only as a statement prefix, so the chain's CTEs
 # sit on the statement and pagination is TOP / OFFSET … FETCH.
 
-_DESC_CREATED = [{"column": "created_at", "direction": "desc"}]
+_DESC_CREATED = [{"field": "created_at", "direction": "desc"}]
 _FETCH = r"FETCH\s+(?:FIRST|NEXT)"
 
 
@@ -200,8 +200,8 @@ async def _tsql(query) -> str:
 
 def _plain_hidden_order(**kw) -> SlayerQuery:
     """A no-transform query whose hidden ORDER BY slot forces the outer trim wrap."""
-    return q(dimensions=["status"], measures=["sum(amount)"],
-             order=[{"column": "max(amount)", "direction": "desc"}], **kw)
+    return q(dimensions=["status"], metrics=["sum(amount)"],
+             order=[{"field": "max(amount)", "direction": "desc"}], **kw)
 
 
 async def test_tsql_chain_ctes_are_hoisted_to_the_statement() -> None:
@@ -254,7 +254,7 @@ async def test_tsql_chain_with_order_and_offset() -> None:
 
 async def test_tsql_hidden_alias_in_order_by() -> None:
     """ORDER BY may name a carried alias that is not in the public projection."""
-    sql = await _tsql(cumsum_chain(order=[{"column": "max(amount)", "direction": "desc"}]))
+    sql = await _tsql(cumsum_chain(order=[{"field": "max(amount)", "direction": "desc"}]))
     top = parse(sql, "tsql")
     assert [c.name for c in top.args["order"].find_all(exp.Column)] == ["orders___amount_max"]
     assert "orders___amount_max" in outer_derived(top).named_selects
@@ -262,9 +262,9 @@ async def test_tsql_hidden_alias_in_order_by() -> None:
 
 
 async def test_tsql_hoisted_ctes_keep_dependency_order() -> None:
-    sql = await _tsql(cumsum_chain(measures=[
-        {"formula": "cumsum(sum(amount))", "name": "running"},
-        {"formula": "change(cumsum(sum(amount)))", "name": "d"},
+    sql = await _tsql(cumsum_chain(metrics=[
+        {"expression": "cumsum(sum(amount))", "name": "running"},
+        {"expression": "change(cumsum(sum(amount)))", "name": "d"},
     ]))
     names = cte_names(assert_single_top_level_with(sql, "tsql"))
     assert names[0] == "base", names

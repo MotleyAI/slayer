@@ -183,7 +183,7 @@ async def test_relationship_and_metric_names_unique_document_wide(env) -> None:
                         cardinality=RelationshipCardinality.MANY_TO_ONE)
     ratio = slayer_metric("aov_per_customer", "sum(amount) / count_distinct(customers.id)")
     result = await export_datasets(env, customers(), orders(metrics=[*BASIC_MEASURES, ratio]),
-                                 visits(joins=[to_cust]))
+                                 visits(relationships=[to_cust]))
     names = [r["name"].lower() for r in relationships(result.document)]
     names += [m["name"].lower() for m in result.document.get("metrics") or []]
     assert len(names) == 3

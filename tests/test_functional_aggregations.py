@@ -54,14 +54,14 @@ def _orders(**overrides) -> SlayerDataset:
         name="orders",
         data_source="test",
         sql_table="orders",
-        columns=[
+        fields=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
             DatasetField(name="customer_id", datatype=DataType.INT),
             DatasetField(name="status", datatype=DataType.TEXT),
             DatasetField(name="revenue", datatype=DataType.DOUBLE),
             DatasetField(name="price", datatype=DataType.DOUBLE),
         ],
-        joins=[
+        relationships=[
             DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
         ],
     )
@@ -74,7 +74,7 @@ def _customers(**overrides) -> SlayerDataset:
         name="customers",
         data_source="test",
         sql_table="customers",
-        columns=[
+        fields=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
             DatasetField(name="score", datatype=DataType.DOUBLE),
         ],
@@ -366,7 +366,7 @@ class TestFunctionalIsFirstClass:
             )
             engine = SlayerQueryEngine(storage=storage)
             model = _orders(
-                measures=[DatasetMetric(name="rev", expression="sum(revenue)")]
+                metrics=[DatasetMetric(name="rev", expression="sum(revenue)")]
             )
             with warnings_mod.catch_warnings():
                 warnings_mod.simplefilter("error", SlayerNormalizationWarning)

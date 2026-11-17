@@ -54,8 +54,8 @@ class TestPushedFilterEntryIdentity:
     ):
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["customers.tier"], measures=[M, CM, POP],
-            filters=[_EXCLUDED_APP],
+            dimensions=["customers.tier"], metrics=[M, CM, POP],
+            filter=[_EXCLUDED_APP],
         ))
         assert sorted((w.metric, w.filter_text) for w in pushed_filter_infos(resp)) == [
             ("cm", _EXCLUDED_APP), ("pop", _EXCLUDED_APP),
@@ -68,8 +68,8 @@ class TestPushedFilterEntryIdentity:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M, CM],
-            filters=[_EXCLUDED_APP],
+            metrics=[M, CM],
+            filter=[_EXCLUDED_APP],
         ))
         pushed = pushed_filter_infos(resp)
         assert {w.filter_text for w in pushed} == {_EXCLUDED_APP}
@@ -94,8 +94,8 @@ class TestPushedFilterEntryIdentity:
                                "THEN 'hi' ELSE 'lo' END"),
                 "name": "pband",
             }],
-            measures=[M],
-            filters=["customers.tier = 'gold' OR customers.regions.name = '__none__'"],
+            metrics=[M],
+            filter=["customers.tier = 'gold' OR customers.regions.name = '__none__'"],
         ))
         (pushed,) = pushed_filter_infos(resp)
         assert "tier" in pushed.filter_text
@@ -112,8 +112,8 @@ class TestBroadcastDedup:
         roles (measure, filter, order) and pop in one — two warnings total."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"], measures=[M, CM, POP],
-            filters=["sum(customers.spend) > 0"],
+            dimensions=["status"], metrics=[M, CM, POP],
+            filter=["sum(customers.spend) > 0"],
             order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
             to_many_handling="broadcast",
         ))
@@ -129,7 +129,7 @@ class TestBroadcastDedup:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}, "status"],
-            measures=[M, CM],
+            metrics=[M, CM],
             to_many_handling="broadcast",
         ))
         # status is unattributable for cm → one broadcast for cm; the band
@@ -147,7 +147,7 @@ class TestBroadcastDedup:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M, CM],
+            metrics=[M, CM],
         ))
         assert broadcast_warnings(resp) == []
         by = rows_by(resp, "orders.sband")

@@ -22,7 +22,7 @@ BAND_CITY = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -36,7 +36,7 @@ class TestDeferredMeasureShapesStillRaise:
         # values in test_dev1824_partitioned_execution.py::TestWindowPlusPartition.
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(amount, window='90d', partition_by=region)",
             )],
         )
@@ -49,7 +49,7 @@ class TestDeferredMeasureShapesStillRaise:
         # (Executed values: test_dev1824_partitioned_execution.py.)
         q = _q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(expression=f"{agg}(amount, partition_by=region)")],
+            metrics=[DatasetMetric(expression=f"{agg}(amount, partition_by=region)")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -60,7 +60,7 @@ class TestDeferredMeasureShapesStillRaise:
         # (Executed values: test_dev1824_partitioned_execution.py.)
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="cumsum(sum(amount, partition_by=region))",
             )],
         )
@@ -72,8 +72,8 @@ class TestDeferredMeasureShapesStillRaise:
         # tests/test_dev1824_partitioned_execution.py::TestFilterOnPartitioned).
         q = _q(
             dimensions=["region", "city"],
-            filters=["sum(amount, partition_by=region) > 50"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["sum(amount, partition_by=region) > 50"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -88,7 +88,7 @@ class TestSharedAggregateRowPlusCombined:
         band = "CASE WHEN sum(amount, partition_by=region) > 5000 THEN 1 ELSE 0 END"
         q = _q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(amount, partition_by=region)", name="region_total",
             )],
         )
@@ -106,7 +106,7 @@ class TestGrainGuardsPreserved:
         # discovery must NOT relax this to the computed-dimension leniency.
         q = _q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(amount, partition_by=city)")],
+            metrics=[DatasetMetric(expression="sum(amount, partition_by=city)")],
         )
         with pytest.raises(
             ValueError, match=r"partition_by.*not a query dimension",
@@ -119,7 +119,7 @@ class TestGrainGuardsPreserved:
         # aggregate's root — `region` is a host column, unreachable from customers.
         q = _q(
             dimensions=["region", "customers.tier"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(customers.spend, partition_by=region)",
             )],
             to_many_handling="broadcast",
@@ -142,8 +142,8 @@ class TestGuardOrderingWithActiveRegroup:
         # no placeholder leak.
         q = _q(
             dimensions=["region", {"expression": BAND_CITY, "name": "band"}],
-            filters=["sum(amount, partition_by=region) > 50"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["sum(amount, partition_by=region) > 50"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -152,8 +152,8 @@ class TestGuardOrderingWithActiveRegroup:
         # is legitimate and must NOT be rejected by the reordered guard.
         q = _q(
             dimensions=["region", {"expression": BAND_CITY, "name": "band"}],
-            filters=["band == 1"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["band == 1"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         sql = await gen(q)
         assert "SELECT" in sql

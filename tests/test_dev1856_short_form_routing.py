@@ -147,7 +147,7 @@ async def _seeded_chain_engine(tmp_path) -> SlayerQueryEngine:
 def _q(source_dataset: str = "Invoice", **kw) -> SlayerQuery:
     base: dict = dict(
         source_model=source_dataset,
-        measures=[{"formula": "sum(amount)", "name": "amt"}],
+        measures=[{"expression": "sum(amount)", "name": "amt"}],
     )
     base.update(kw)
     return SlayerQuery(**base)
@@ -202,7 +202,7 @@ async def _multi_engine(tmp_path, *, branches: int, safe: int) -> SlayerQueryEng
 
 def _root_q(**kw) -> SlayerQuery:
     base: dict = dict(
-        source_model="Root", measures=[{"formula": "sum(amount)", "name": "amt"}]
+        source_model="Root", measures=[{"expression": "sum(amount)", "name": "amt"}]
     )
     base.update(kw)
     return SlayerQuery(**base)
@@ -453,7 +453,7 @@ class TestAdjacentParallelParity:
     async def test_saved_measure_stays_ambiguous_hop(self, tmp_path) -> None:
         """Parity: a short-form saved measure fails closed too, not routed via the safe edge."""
         engine = await self._engine(tmp_path)
-        q = _root_q(measures=[{"formula": "Target.aov"}])
+        q = _root_q(metrics=[{"expression": "Target.aov"}])
         with pytest.raises(AmbiguousRelationshipPathError):
             await _cols_sql(engine, q)
 
@@ -544,13 +544,13 @@ class TestUniformSurfaces:
         engine = await _chain_engine(tmp_path)
         short = _q(
             dimensions=["status"],
-            measures=[{"formula": "sum(Consumer.amount)", "name": "s"},
-                      {"formula": "count(Consumer.*)", "name": "c"}],
+            metrics=[{"expression": "sum(Consumer.amount)", "name": "s"},
+                      {"expression": "count(Consumer.*)", "name": "c"}],
         )
         full = _q(
             dimensions=["status"],
-            measures=[{"formula": "sum(Subscription.Customer.Consumer.amount)", "name": "s"},
-                      {"formula": "count(Subscription.Customer.Consumer.*)", "name": "c"}],
+            metrics=[{"expression": "sum(Subscription.Customer.Consumer.amount)", "name": "s"},
+                      {"expression": "count(Subscription.Customer.Consumer.*)", "name": "c"}],
         )
         await _assert_equiv(engine, short, full)
         # Both aggregates bind to the routed terminal, not the root — the SUM reads
@@ -562,9 +562,9 @@ class TestUniformSurfaces:
         engine = await _chain_engine(tmp_path)
         await _assert_equiv(
             engine,
-            _q(dimensions=["status"], filters=["Consumer.email = 'a@b.com'"]),
+            _q(dimensions=["status"], filter=["Consumer.email = 'a@b.com'"]),
             _q(dimensions=["status"],
-               filters=["Subscription.Customer.Consumer.email = 'a@b.com'"]),
+               filter=["Subscription.Customer.Consumer.email = 'a@b.com'"]),
         )
 
     async def test_short_form_order_by_matches_routed_dimension(self, tmp_path) -> None:
@@ -580,9 +580,9 @@ class TestUniformSurfaces:
         engine = await _chain_engine(tmp_path)
         await _assert_equiv(
             engine,
-            _q(time_dimensions=[{"dimension": "Consumer.signup_at", "granularity": "month"}]),
+            _q(time_dimensions=[{"field": "Consumer.signup_at", "granularity": "month"}]),
             _q(time_dimensions=[{
-                "dimension": "Subscription.Customer.Consumer.signup_at",
+                "field": "Subscription.Customer.Consumer.signup_at",
                 "granularity": "month",
             }]),
         )
@@ -590,14 +590,14 @@ class TestUniformSurfaces:
     async def test_short_form_main_time_dimension(self, tmp_path) -> None:
         engine = await _chain_engine(tmp_path)
         short = _q(
-            measures=[{"formula": "cumsum(sum(amount))", "name": "c"}],
-            time_dimensions=[{"dimension": "Consumer.signup_at", "granularity": "month"}],
+            metrics=[{"expression": "cumsum(sum(amount))", "name": "c"}],
+            time_dimensions=[{"field": "Consumer.signup_at", "granularity": "month"}],
             main_time_dimension="Consumer.signup_at",
         )
         full = _q(
-            measures=[{"formula": "cumsum(sum(amount))", "name": "c"}],
+            metrics=[{"expression": "cumsum(sum(amount))", "name": "c"}],
             time_dimensions=[{
-                "dimension": "Subscription.Customer.Consumer.signup_at",
+                "field": "Subscription.Customer.Consumer.signup_at",
                 "granularity": "month",
             }],
             main_time_dimension="Subscription.Customer.Consumer.signup_at",
@@ -647,9 +647,9 @@ class TestSavedMeasureRouting:
     async def test_routed_saved_measure_keeps_type_and_full_name(self, tmp_path) -> None:
         """Unnamed ``Consumer.aov`` ≡ its full-path form (same key, same type); surfaced key is the full routed path."""
         engine = await _chain_engine(tmp_path)
-        short = _q(dimensions=["status"], measures=[{"formula": "Consumer.aov"}])
+        short = _q(dimensions=["status"], metrics=[{"expression": "Consumer.aov"}])
         full = _q(dimensions=["status"],
-                  measures=[{"formula": "Subscription.Customer.Consumer.aov"}])
+                  metrics=[{"expression": "Subscription.Customer.Consumer.aov"}])
         await _assert_equiv(engine, short, full)
         cols, _ = await _cols_sql(engine, short)
         assert any(

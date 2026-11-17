@@ -30,12 +30,12 @@ class TestKeylessFilterRowRoutes:
         dims = [{"expression": CM_BAND, "name": "band"}, "customers.regions.name"]
         unfiltered = (await exec_engine.execute(q(
             dimensions=dims,
-            measures=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
         ))).data
         filtered = (await exec_engine.execute(q(
             dimensions=dims,
-            filters=[f"{KEYLESS_AGG} > 175"],
-            measures=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            filter=[f"{KEYLESS_AGG} > 175"],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
         ))).data
         assert 0 < len(filtered) <= len(unfiltered)
         # Row-routed against the attached tier-total: only silver rows survive → 'hi'.
@@ -56,8 +56,8 @@ class TestKeylessOrderByDimensionName:
         dims = [{"expression": CM_BAND, "name": "band"}, "customers.regions.name"]
         resp = await exec_engine.execute(q(
             dimensions=dims,
-            measures=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
-            order=[{"column": "band", "direction": "asc"}],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            order=[{"field": "band", "direction": "asc"}],
         ))
         bands = [r["orders.band"] for r in resp.data]
         assert bands == sorted(bands)
@@ -69,7 +69,7 @@ class TestKeylessDualRoleRejected:
         # measure while its partition key (tier) is absent → partition-key error.
         query = q(
             dimensions=[{"expression": CM_BAND, "name": "band"}, "customers.regions.name"],
-            measures=[DatasetMetric(expression=KEYLESS_AGG, name="dual")],
+            metrics=[DatasetMetric(expression=KEYLESS_AGG, name="dual")],
         )
         with pytest.raises(
             ValueError,

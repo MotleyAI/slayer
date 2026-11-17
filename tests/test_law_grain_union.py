@@ -114,7 +114,7 @@ async def test_mixed_grain_formula_constant_within_union_grain_cells(exec_engine
     resp = await exec_engine.execute(q(
         dimensions=["region", "city"],
         time_dimensions=month_td(),
-        measures=[DatasetMetric(
+        metrics=[DatasetMetric(
             expression="sum(amount, partition_by=region) + sum(amount, partition_by=city)",
             name="x",
         )],

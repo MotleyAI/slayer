@@ -12,8 +12,8 @@ from slayer.engine.plan import plan_query, plan_stages
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1836_fixtures import dev1836_datasets
 
-MONTH = [{"dimension": "ordered_at", "granularity": "month"}]
-AMOUNT = {"formula": "sum(amount)", "name": "t"}
+MONTH = [{"field": "ordered_at", "granularity": "month"}]
+AMOUNT = {"expression": "sum(amount)", "name": "t"}
 CHANNEL_TOTAL = {"expression": "sum(amount, partition_by=channel)", "name": "ct"}
 
 
@@ -31,7 +31,7 @@ def _grain(**body):
 
 class TestGrainEmission:
     def test_aggregating_stage_grain_is_dimensions_and_time_dimensions(self) -> None:
-        grain = _grain(dimensions=["status"], time_dimensions=MONTH, measures=[AMOUNT])
+        grain = _grain(dimensions=["status"], time_dimensions=MONTH, metrics=[AMOUNT])
         assert grain == ["status", "ordered_at"]
 
     def test_dimension_only_stage_grain_is_its_dimensions(self) -> None:
@@ -41,15 +41,15 @@ class TestGrainEmission:
         assert _grain(dimensions=["status"], distinct_dimension_values=False) is None
 
     def test_measures_only_stage_has_empty_grain(self) -> None:
-        assert _grain(measures=[AMOUNT]) == []
+        assert _grain(metrics=[AMOUNT]) == []
 
     def test_dotted_dimension_member_is_its_flat_name(self) -> None:
-        assert _grain(dimensions=["customers.tier"], measures=[AMOUNT]) == ["customers__tier"]
+        assert _grain(dimensions=["customers.tier"], metrics=[AMOUNT]) == ["customers__tier"]
 
     def test_aggregate_valued_computed_dimension_is_a_member(self) -> None:
         grain = _grain(
             dimensions=["status", CHANNEL_TOTAL],
-            measures=[{"formula": "count(*)", "name": "n"}],
+            metrics=[{"expression": "count(*)", "name": "n"}],
         )
         assert grain == ["status", "ct"]
 
@@ -59,21 +59,21 @@ class TestGrainEmission:
     def test_partitioned_measure_is_not_a_member(self) -> None:
         grain = _grain(
             dimensions=["status", "channel"],
-            measures=[{"formula": "sum(amount, partition_by=status)", "name": "st"}],
+            metrics=[{"expression": "sum(amount, partition_by=status)", "name": "st"}],
         )
         assert grain == ["status", "channel"]
 
     def test_transform_valued_computed_dimension_is_a_member(self) -> None:
         grain = _grain(
             dimensions=["status", {"expression": "rank(sum(amount, partition_by=channel), direction='desc')", "name": "rk"}],
-            measures=[{"formula": "count(*)", "name": "n"}],
+            metrics=[{"expression": "count(*)", "name": "n"}],
         )
         assert grain == ["status", "rk"]
 
     def test_cumsum_stage_grain_includes_its_time_bucket(self) -> None:
         grain = _grain(
             time_dimensions=MONTH,
-            measures=[{"formula": "cumsum(sum(amount))", "name": "cs"}],
+            metrics=[{"expression": "cumsum(sum(amount))", "name": "cs"}],
         )
         assert grain == ["ordered_at"]
 
@@ -81,14 +81,14 @@ class TestGrainEmission:
         expr = "sum(amount, partition_by=status)"
         grain = _grain(
             dimensions=["status", {"expression": expr, "name": "ct"}],
-            measures=[{"formula": expr, "name": "ct2"}],
+            metrics=[{"expression": expr, "name": "ct2"}],
         )
         assert grain == ["status", "ct"]
 
     def test_slot_under_two_dimension_aliases_contributes_the_first(self) -> None:
         grain = _grain(
             dimensions=["status", {"expression": "status", "name": "s2"}],
-            measures=[AMOUNT],
+            metrics=[AMOUNT],
         )
         assert grain == ["status"]
 

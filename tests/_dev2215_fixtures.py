@@ -198,7 +198,7 @@ def q(**kw: Any) -> SlayerQuery:
 
 
 def m(expression: str, name: str = "v") -> dict[str, str]:
-    return {"formula": expression, "name": name}
+    return {"expression": expression, "name": name}
 
 
 FIRST_LAST = [m("first(status, updated_at)", "f"), m("last(status, updated_at)", "l")]
@@ -207,7 +207,7 @@ FIRST_LAST_BY_CUSTOMER = {1: ("a", "c"), 2: (None, None), 3: ("p", None)}
 
 
 def events_query() -> SlayerQuery:
-    return q(source_model="events", dimensions=["customer_id"], measures=FIRST_LAST)
+    return q(population="events", dimensions=["customer_id"], metrics=FIRST_LAST)
 
 
 async def check_events(engine: SlayerQueryEngine) -> None:

@@ -47,12 +47,12 @@ async def decimal_engine(tmp_path):
     argvalues=[
         ("sum(amount)", {}, [Decimal("90071992547409.93")]),
         (
-            {"formula": "sum(amount, window='2d')", "name": "total"},
+            {"expression": "sum(amount, window='2d')", "name": "total"},
             {"time_dimensions": [{"field": "created_at", "granularity": "day"}]},
             [Decimal("90071992547409.91"), Decimal("90071992547409.93")],
         ),
         (
-            {"formula": "sum(amount, partition_by=created_at)", "name": "total"},
+            {"expression": "sum(amount, partition_by=created_at)", "name": "total"},
             {"dimensions": ["id", "created_at"]},
             [Decimal("0.02"), Decimal("90071992547409.91")],
         ),

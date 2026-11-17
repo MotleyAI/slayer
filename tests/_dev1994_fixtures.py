@@ -102,7 +102,7 @@ def query(**kw: Any) -> SlayerQuery:
 
 
 def m(expression: str, name: str) -> Dict[str, str]:
-    return {"formula": expression, "name": name}
+    return {"expression": expression, "name": name}
 
 
 # --------------------------------------------------------------------------- #

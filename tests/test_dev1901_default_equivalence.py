@@ -50,7 +50,7 @@ from tests import _dev1954_fixtures
 from tests._dev1954_fixtures import RNAME, WPOP_BY_RNAME, by_key
 from tests._engine_helpers import _engine_generate
 
-TD = [{"dimension": "customers.signup_at", "granularity": "month"}]
+TD = [{"field": "customers.signup_at", "granularity": "month"}]
 CASE_C_Q = CASE_C.replace("spend", "customers.spend")
 
 
@@ -65,26 +65,26 @@ async def engine(request):
 
 
 async def _value(engine, expression: str) -> float:
-    resp = await engine.execute(orders_q(measures=[{"formula": expression, "name": "w"}]))
+    resp = await engine.execute(orders_q(metrics=[{"expression": expression, "name": "w"}]))
     return float(resp.data[0]["orders.w"])
 
 
 async def _by(engine, expression: str, *, dim: str, **kw) -> dict:
     resp = await engine.execute(orders_q(
-        dimensions=[dim], measures=[{"formula": expression, "name": "w"}], **kw))
+        dimensions=[dim], metrics=[{"expression": expression, "name": "w"}], **kw))
     return {r[f"orders.{dim}"]: float(r["orders.w"]) for r in resp.data}
 
 
 async def _by_month(engine, expression: str) -> dict:
     resp = await engine.execute(orders_q(
-        time_dimensions=TD, measures=[{"formula": expression, "name": "w"}]))
+        time_dimensions=TD, metrics=[{"expression": expression, "name": "w"}]))
     return {month_key(r["orders.customers.signup_at"]): float(r["orders.w"])
             for r in resp.data if r["orders.customers.signup_at"] is not None}
 
 
 def _home_path(expression: str) -> tuple:
     elab = elaborate_query(
-        query=orders_q(measures=[{"formula": expression, "name": "m"}]), bundle=bundle1901())
+        query=orders_q(metrics=[{"expression": expression, "name": "m"}]), bundle=bundle1901())
     assert elab.prebound is not None
     root = elab.prebound.declared_metrics[-1].bound.value_key
     assert isinstance(root, AggregateKey), root
@@ -96,7 +96,7 @@ def _home_path(expression: str) -> tuple:
 class TestDefaultEqualsTwin:
     async def test_one_query_both_spellings(self, engine) -> None:
         resp = await engine.execute(orders_q(
-            measures=["wsum(amount)", "wsum(amount, weight=store_no)"]))
+            metrics=["wsum(amount)", "wsum(amount, weight=store_no)"]))
         row = resp.data[0]
         assert float(row["orders.amount_wsum"]) == pytest.approx(WSUM)
         assert float(row["orders.amount_wsum_weight_store_no"]) == pytest.approx(WSUM)
@@ -145,8 +145,8 @@ class TestDefaultInFilterAndOrder:
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_filter_position(self, engine, agg: str) -> None:
         threshold = (WCS_BY_STATUS["ok"] + WCS_BY_STATUS["new"]) / 2
-        query = orders_q(dimensions=["status"], measures=[{"formula": "sum(amount)", "name": "s"}],
-                         filters=[f"{agg}(amount) > {threshold}"])
+        query = orders_q(dimensions=["status"], metrics=[{"expression": "sum(amount)", "name": "s"}],
+                         filter=[f"{agg}(amount) > {threshold}"])
         resp = await engine.execute(query)
         assert {r["orders.status"]: float(r["orders.s"]) for r in resp.data} \
             == {"ok": AMOUNT_BY_STATUS["ok"]}
@@ -156,8 +156,8 @@ class TestDefaultInFilterAndOrder:
 
     @pytest.mark.parametrize("agg", ["wcs", "wcd"])
     async def test_order_key(self, engine, agg: str) -> None:
-        query = orders_q(dimensions=["status"], measures=[{"formula": "sum(amount)", "name": "s"}],
-                         order=[{"column": f"{agg}(amount)", "direction": "asc"}])
+        query = orders_q(dimensions=["status"], metrics=[{"expression": "sum(amount)", "name": "s"}],
+                         order=[{"field": f"{agg}(amount)", "direction": "asc"}])
         resp = await engine.execute(query)
         assert [r["orders.status"] for r in resp.data] == sorted(
             WCS_BY_STATUS, key=WCS_BY_STATUS.__getitem__)

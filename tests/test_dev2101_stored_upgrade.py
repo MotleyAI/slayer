@@ -75,7 +75,7 @@ class TestTokenRewrite:
 
     @pytest.mark.parametrize(("stored", "loaded"), TOKEN_CASES)
     def test_query_filter(self, stored: str, loaded: str) -> None:
-        assert _query(filters=[stored]).filter == [loaded]
+        assert _query(filter=[stored]).filter == [loaded]
 
     def test_current_version_document_is_never_rewritten(self) -> None:
         text = 'sum(iif(status == "paid", amount, 0))'
@@ -93,10 +93,10 @@ class TestTokenRewrite:
 class TestEverySurface:
     def test_query_fields(self) -> None:
         query = _query(
-            measures=['sum(iif(region == "EU", amount, 0))', {"formula": 'count_distinct(status | "x")', "name": "c"}],
+            metrics=['sum(iif(region == "EU", amount, 0))', {"expression": 'count_distinct(status | "x")', "name": "c"}],
             dimensions=['concat(status, "!")', {"expression": 'status | "-"', "name": "tag"}],
-            filters=['status == "paid"'],
-            order=[{"column": 'sum(iif(status == "paid", amount, 0))', "direction": "desc"}],
+            filter=['status == "paid"'],
+            order=[{"field": 'sum(iif(status == "paid", amount, 0))', "direction": "desc"}],
         )
         assert [m.expression for m in query.metrics or []] == [
             "sum(iif(region = 'EU', amount, 0))", "count_distinct(status || 'x')",
@@ -107,8 +107,8 @@ class TestEverySurface:
         assert query.order[0].raw_expression == "sum(iif(status = 'paid', amount, 0))"
 
     def test_inline_extension_measures(self) -> None:
-        query = _query(source_model={"source_name": "orders", "metrics": [
-            {"name": "paid", "expression": 'sum(iif(status == "paid", amount, 0))'}]}, measures=["paid"])
+        query = _query(population={"source_name": "orders", "metrics": [
+            {"name": "paid", "expression": 'sum(iif(status == "paid", amount, 0))'}]}, metrics=["paid"])
         assert query.population == "orders"
         (extension,) = query.extensions or []
         assert (extension.metrics or [])[0].expression == "sum(iif(status = 'paid', amount, 0))"

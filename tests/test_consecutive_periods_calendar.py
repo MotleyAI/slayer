@@ -158,7 +158,7 @@ class TestEveryGranularity:
     async def test_own_calendar_step(self, exec_engine, granularity: str) -> None:
         got = await _ticks_columns(exec_engine, ticks_query(
             series=f"streak_{granularity}", granularity=granularity,
-            metrics=[{"formula": "consecutive_periods(sum(amount) > 0)", "name": "v"}],
+            metrics=[{"expression": "consecutive_periods(sum(amount) > 0)", "name": "v"}],
         ), "v")
         assert got["v"] == [1, 2, 1, 2]
 
@@ -171,8 +171,8 @@ class TestSubDayTimeOffsets:
         got = await _ticks_columns(exec_engine, ticks_query(
             series=f"shift_{granularity}", granularity=granularity,
             metrics=[
-                {"formula": "time_shift(sum(amount), -1)", "name": "prev"},
-                {"formula": "change(sum(amount))", "name": "chg"},
+                {"expression": "time_shift(sum(amount), -1)", "name": "prev"},
+                {"expression": "change(sum(amount))", "name": "chg"},
             ],
         ), "prev", "chg")
         assert got == {"prev": [None, 1, 2, None], "chg": [None, 1, 1, None]}

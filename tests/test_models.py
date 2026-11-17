@@ -1502,7 +1502,7 @@ class TestStringCoercion:
         assert td.field == "customers.ordered_at"
 
     def test_time_dimension_dict_still_works(self) -> None:
-        td = TimeDimension.model_validate({"dimension": {"name": "created_at"}, "granularity": "month"})
+        td = TimeDimension.model_validate({"field": {"name": "created_at"}, "granularity": "month"})
         assert td.field == "created_at"
 
     def test_query_with_simplified_order_and_time_dimensions(self) -> None:
@@ -1751,7 +1751,7 @@ async def _prefix_sql(query: dict) -> str:
     return await _engine_generate(query=SlayerQuery.model_validate(query), dataset=model, extra_datasets=extra)
 
 
-_MONTH = {"dimension": "created_at", "granularity": "month"}
+_MONTH = {"field": "created_at", "granularity": "month"}
 
 # (root-qualified, bare) spellings of one query.
 _ROOT_QUALIFIED = {

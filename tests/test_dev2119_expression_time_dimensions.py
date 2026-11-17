@@ -55,7 +55,7 @@ async def _plan_fails(engine: SlayerQueryEngine, query: Any, error: type[Excepti
 
 
 def _count(**kw: Any) -> SlayerQuery:
-    return q(measures=[m("count(*)")], **kw)
+    return q(metrics=[m("count(*)")], **kw)
 
 
 def _rows(resp: SlayerResponse, *, key: str) -> set[tuple]:
@@ -155,7 +155,7 @@ class TestTimePositions:
                                                              expected: dict) -> None:
         resp = await engine.execute(_count(
             time_dimensions=[td(dimension)], whole_periods_only=True,
-            filters=[f"'2025-01-15' <= {dimension}", f"{dimension} <= '2025-03-10'"],
+            filter=[f"'2025-01-15' <= {dimension}", f"{dimension} <= '2025-03-10'"],
         ))
         assert by_bucket(resp, key, "orders.v") == expected
 
@@ -173,7 +173,7 @@ class TestTimePositions:
     async def test_rolling_window_and_change_over_an_expression_axis(self, engine) -> None:
         resp = await engine.execute(q(
             time_dimensions=[td(EFF, date_range=["2025-02-01", "2025-04-30"])],
-            measures=[m("sum(amount)", "s"), m("sum(amount, window='3m')", "w"), m("change(sum(amount))", "c")],
+            metrics=[m("sum(amount)", "s"), m("sum(amount, window='3m')", "w"), m("change(sum(amount))", "c")],
         ))
         assert by_bucket(resp, KEY, "orders.s") == FEB_APR_SUM
         assert by_bucket(resp, KEY, "orders.w") == FEB_APR_WINDOW
@@ -181,8 +181,8 @@ class TestTimePositions:
 
     @pytest.mark.parametrize("bound", [f"{EFF} >= '2025-02'", f"date_trunc('month', {EFF}) >= '2025-02-01'"])
     async def test_filter_on_the_expression_is_a_frame_bound(self, engine, bound: str) -> None:
-        resp = await engine.execute(q(time_dimensions=[td(EFF)], filters=[bound],
-                                      measures=[m("sum(amount, window='3m')", "w")]))
+        resp = await engine.execute(q(time_dimensions=[td(EFF)], filter=[bound],
+                                      metrics=[m("sum(amount, window='3m')", "w")]))
         assert by_bucket(resp, KEY, "orders.w") == FEB_APR_WINDOW
 
     @pytest.mark.parametrize("measures", [
@@ -191,8 +191,8 @@ class TestTimePositions:
         [m("last(amount)", "l"), m("first(amount)", "f")],
     ], ids=["plain", "time-ordered", "ranked"])
     async def test_equal_to_a_column_holding_the_per_row_values(self, engine, measures: list) -> None:
-        by_expr = await engine.execute(q(time_dimensions=[td(EFF)], measures=measures))
-        by_col = await engine.execute(q(time_dimensions=[td("eff")], measures=measures))
+        by_expr = await engine.execute(q(time_dimensions=[td(EFF)], metrics=measures))
+        by_col = await engine.execute(q(time_dimensions=[td("eff")], metrics=measures))
         assert _rows(by_expr, key=KEY) == _rows(by_col, key="orders.eff")
 
 
@@ -256,7 +256,7 @@ class TestNamesAndKeys:
     async def test_named_expression_key_and_main_time_dimension(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(q(
             time_dimensions=[td("created_at"), td(EFF, name="effective_at")], main_time_dimension="effective_at",
-            measures=[m("cumsum(count(*))")],
+            metrics=[m("cumsum(count(*))")],
         ))
         assert set(resp.columns) == {"orders.created_at", "orders.effective_at", "orders.v"}
         got = {(bucket(r["orders.created_at"]), bucket(r["orders.effective_at"])): num(r["orders.v"])
@@ -278,7 +278,7 @@ class TestNamesAndKeys:
     async def test_partition_by_a_time_dimension_name(self, engine) -> None:
         resp = await engine.execute(q(
             dimensions=["region"], time_dimensions=[td(EFF, name="effective_at")],
-            measures=[m("sum(amount, partition_by=effective_at)")],
+            metrics=[m("sum(amount, partition_by=effective_at)")],
         ))
         got = by_bucket(resp, "orders.effective_at", "orders.v", by=["orders.region"])
         assert got == {("EU", "2025-01"): 10.0, ("EU", "2025-02"): 50.0, ("EU", "2025-04"): 50.0,
@@ -306,7 +306,7 @@ class TestNamesAndKeys:
     async def test_main_time_dimension_by_expression_name(self, engine) -> None:
         resp = await engine.execute(q(
             dimensions=["date_trunc('month', created_at)"], time_dimensions=[td(EFF, name="effective_at")],
-            main_time_dimension="effective_at", measures=[m("cumsum(count(*))")],
+            main_time_dimension="effective_at", metrics=[m("cumsum(count(*))")],
         ))
         got = {(bucket(r["orders.created_at"]), bucket(r["orders.effective_at"])): num(r["orders.v"])
                for r in resp.data}
@@ -317,12 +317,12 @@ class TestNamesAndKeys:
 class TestOrderKey:
     async def test_order_by_a_projected_expression_bucket(self, engine) -> None:
         resp = await engine.execute(_count(
-            dimensions=[f"date_trunc('month', {EFF})"], order=[{"column": f"date_trunc('month', {EFF})", "direction": "desc"}],
+            dimensions=[f"date_trunc('month', {EFF})"], order=[{"field": f"date_trunc('month', {EFF})", "direction": "desc"}],
         ))
         assert [bucket(r[KEY]) for r in resp.data] == ["2025-04", "2025-03", "2025-02", "2025-01"]
 
     async def test_order_by_an_unprojected_granularity_names_the_remedy(self, engine) -> None:
-        query = _count(dimensions=[f"date_trunc('year', {EFF})"], order=[{"column": f"date_trunc('month', {EFF})"}])
+        query = _count(dimensions=[f"date_trunc('year', {EFF})"], order=[{"field": f"date_trunc('month', {EFF})"}])
         msg = str(await _plan_fails(engine, query, GranularityCallError))
         assert "month" in msg
 

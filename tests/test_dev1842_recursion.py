@@ -43,11 +43,11 @@ class TestNestedSavedMeasure:
         _, engine = exec_backend
         dotted = await engine.execute(
             q(dimensions=["customers.tier"],
-              measures=[{"formula": "customers.aov_big", "name": "x"}]),
+              metrics=[{"expression": "customers.aov_big", "name": "x"}]),
         )
         hand = await engine.execute(
             q(dimensions=["customers.tier"],
-              measures=[{"formula":
+              metrics=[{"expression":
                          "(sum(customers.spend) / count(customers.*)) * 2",
                          "name": "x"}]),
         )
@@ -60,10 +60,10 @@ class TestHostMeasureContainingDottedRef:
         reference (``host_runs_dotted`` = ``cumsum(customers.aov)``) resolves
         recursively — identical SQL to writing the dotted form inline."""
         bare = q(dimensions=["customers.tier"],
-                 measures=[{"formula": "host_runs_dotted", "name": "x"}],
+                 metrics=[{"expression": "host_runs_dotted", "name": "x"}],
                  time_dimensions=month_td())
         inline = q(dimensions=["customers.tier"],
-                   measures=[{"formula": "cumsum(customers.aov)", "name": "x"}],
+                   metrics=[{"expression": "cumsum(customers.aov)", "name": "x"}],
                    time_dimensions=month_td())
         assert await gen(bare) == await gen(inline)
 
@@ -73,7 +73,7 @@ class TestCrossModelCycle:
         """``customers.cyc_c`` → ``orders.cyc_o`` → ``customers.cyc_c`` is a
         cross-model measure cycle. The error names the full (model, measure)
         chain, not a wrong or double-counted value."""
-        query = q(measures=[{"formula": "customers.cyc_c", "name": "x"}])
+        query = q(metrics=[{"expression": "customers.cyc_c", "name": "x"}])
         with pytest.raises(ValueError) as ei:
             await gen(query)
         message = str(ei.value).lower()
@@ -112,8 +112,8 @@ class TestDepthLimit:
     async def _generate(self, expression: str) -> str:
         main, sub = self._datasets()
         return await _engine_generate(
-            query=q(source_model="main",
-                    measures=[{"formula": expression, "name": "x"}]),
+            query=q(population="main",
+                    metrics=[{"expression": expression, "name": "x"}]),
             dataset=main, extra_datasets=[sub], dialect="duckdb", validate=False,
         )
 

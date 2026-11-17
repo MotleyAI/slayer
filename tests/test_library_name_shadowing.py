@@ -126,7 +126,7 @@ class TestCaseResolution:
 
 class TestContainers:
     async def test_a_stored_measure(self) -> None:
-        doc = t_doc(aggregations=[agg("reverse")], metrics=[{"name": "rev", "formula": "reverse(a)"}])
+        doc = t_doc(aggregations=[agg("reverse")], metrics=[{"name": "rev", "expression": "reverse(a)"}])
         async with stored_engine(datasets=[doc]) as engine:
             resp = await engine.execute(_query(metric("rev")))
         assert float(value(resp)) == SUM_A

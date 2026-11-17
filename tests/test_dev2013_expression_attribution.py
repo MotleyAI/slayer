@@ -209,11 +209,11 @@ async def fanning_engine(request):
 
 
 def _acr(**kw) -> SlayerQuery:
-    return sales_q(measures=[reagg("avg", INNER_CR, name="acr")], **kw)
+    return sales_q(metrics=[reagg("avg", INNER_CR, name="acr")], **kw)
 
 
 def _acc(**kw) -> SlayerQuery:
-    return chain_q(measures=[reagg("avg", INNER_CUST, name="acc")], **kw)
+    return chain_q(metrics=[reagg("avg", INNER_CUST, name="acc")], **kw)
 
 
 class TestRowLevelExpressionPartitions:
@@ -299,7 +299,7 @@ class TestAttachedParameterGrain:
     async def test_expression_grained_parameter(self, variant_engine, grain):
         resp = await variant_engine.execute(chain_q(
             dimensions=[_dim("customers.region_id * 10", "rid10")],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression=f"wsum(customers.region_id, weight=sum(amount, partition_by={grain}))",
                 name="w")]))
         _assert_cells(
@@ -346,7 +346,7 @@ class TestNegativeControls:
     async def test_explicit_outer_partition_does_not_warn(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", _dim("city == 'Alpha'", "is_alpha")],
-            measures=[reagg("avg", INNER_CR, name="acr", partition_by="region")]))
+            metrics=[reagg("avg", INNER_CR, name="acr", partition_by="region")]))
         cells = _cells(resp, ["sales.region", "sales.is_alpha"], "sales.acr",
                        norm=[str, _bool])
         assert set(cells) == set(ALPHA_CELLS)
@@ -358,9 +358,9 @@ class TestNegativeControls:
     async def test_adding_the_reaggregation_is_cardinality_neutral(self, exec_engine):
         dims = ["region", _dim("city == 'Alpha'", "is_alpha")]
         tot = DatasetMetric(expression="sum(amount)", name="tot")
-        base = await exec_engine.execute(sales_q(dimensions=dims, measures=[tot]))
+        base = await exec_engine.execute(sales_q(dimensions=dims, metrics=[tot]))
         both = await exec_engine.execute(sales_q(
-            dimensions=dims, measures=[tot, reagg("avg", INNER_CR, name="acr")]))
+            dimensions=dims, metrics=[tot, reagg("avg", INNER_CR, name="acr")]))
         keys = ["sales.region", "sales.is_alpha"]
         assert _cells(base, keys, "sales.tot") == _cells(both, keys, "sales.tot")
 
@@ -371,7 +371,7 @@ class TestDiagnosticNaming:
     def _joined(self, mode: str = "broadcast") -> SlayerQuery:
         return chain_q(
             dimensions=["customers.regions.name"], to_many_handling=mode,
-            measures=[DatasetMetric(expression="avg(sum(amount, partition_by=amount))",
+            metrics=[DatasetMetric(expression="avg(sum(amount, partition_by=amount))",
                                    name="a")])
 
     async def test_joined_dimension_broadcast_named_dotted(self, exec_engine):
@@ -417,7 +417,7 @@ class TestDiagnosticNaming:
     async def test_degenerate_warning_grains_dotted(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
-            measures=[DatasetMetric(expression="avg(sum(amount))", name="a")]))
+            metrics=[DatasetMetric(expression="avg(sum(amount))", name="a")]))
         (w,) = degenerate_warnings(resp)
         msg = w.human_message()
         assert "customers.regions.name" in msg
@@ -426,7 +426,7 @@ class TestDiagnosticNaming:
     async def test_parameter_grain_listing_dotted(self, exec_engine):
         query = chain_q(
             dimensions=["customers.regions.name"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="weighted_avg(sum(amount, partition_by=customers.regions.name), "
                         "weight=id)", name="w")])
         with pytest.raises(ParameterGrainError) as ei:
@@ -440,7 +440,7 @@ class TestBroadcastReasons:
     async def test_undetermined_to_one_column_names_it(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
-            measures=[DatasetMetric(expression="avg(sum(amount, partition_by=amount))",
+            metrics=[DatasetMetric(expression="avg(sum(amount, partition_by=amount))",
                                    name="a")],
             to_many_handling="broadcast"))
         (w,) = broadcast_warnings(resp)
@@ -479,26 +479,26 @@ class TestBroadcastReasons:
 
 class TestDefinitionDefaultParameters:
     async def test_one_undetermined_ref_refuses(self, variant_engine):
-        query = sales_q(dimensions=["region"], measures=[reagg("wmix", INNER_CR, name="w")])
+        query = sales_q(dimensions=["region"], metrics=[reagg("wmix", INNER_CR, name="w")])
         with pytest.raises(ParameterGrainError) as ei:
             await variant_engine.execute(query)
         assert "weight" in str(ei.value)
 
     async def test_unanalysable_ref_refuses(self, variant_engine):
-        query = sales_q(dimensions=["region"], measures=[reagg("wbad", INNER_CR, name="w")])
+        query = sales_q(dimensions=["region"], metrics=[reagg("wbad", INNER_CR, name="w")])
         with pytest.raises(ParameterGrainError):
             await variant_engine.execute(query)
 
     async def test_all_refs_determined_executes(self, variant_engine):
         resp = await variant_engine.execute(sales_q(
-            dimensions=["region"], measures=[reagg("wok", INNER_CR, name="w")]))
+            dimensions=["region"], metrics=[reagg("wok", INNER_CR, name="w")]))
         vals = _cells(resp, ["sales.region"], "sales.w")
         assert float(vals[("North",)]) == pytest.approx(840.0 / 19.0)
         assert float(vals[("South",)]) == pytest.approx(70.0)
 
     async def test_literal_default_is_determined(self, variant_engine):
         resp = await variant_engine.execute(sales_q(
-            dimensions=["region"], measures=[reagg("wlit", INNER_CR, name="w")]))
+            dimensions=["region"], metrics=[reagg("wlit", INNER_CR, name="w")]))
         vals = _cells(resp, ["sales.region"], "sales.w")
         for region, expected in AVG_CITY_TOTAL_BY_REGION.items():
             assert float(vals[(region,)]) == pytest.approx(expected)
@@ -521,7 +521,7 @@ class TestDerivedColumnSpelling:
     async def test_derived_parameter_executes(self, variant_engine):
         resp = await variant_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=f"weighted_avg({INNER_CR}, weight=city_len)",
+            metrics=[DatasetMetric(expression=f"weighted_avg({INNER_CR}, weight=city_len)",
                                    name="w")]))
         _assert_cells(
             _cells(resp, ["sales.region"], "sales.w"),
@@ -536,7 +536,7 @@ class TestDerivedColumnSpelling:
     async def test_undetermined_derived_parameter_refuses(self, variant_engine):
         query = sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression=f"weighted_avg({INNER_CR}, weight=prod_flag)", name="w")])
         with pytest.raises(ParameterGrainError):
             await variant_engine.execute(query)

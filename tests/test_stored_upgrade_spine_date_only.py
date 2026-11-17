@@ -58,7 +58,7 @@ def memory(memory_id: str, body: dict, *, version: int = PRE["Memory"]) -> dict:
 
 
 def to_customers() -> dict:
-    return {"target_model": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}
+    return {"to": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}
 
 
 def axisless_customers() -> dict:

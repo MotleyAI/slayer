@@ -139,7 +139,7 @@ def _dim(case_id: str, name: str, expr: str, *, mentions: str | None = None) -> 
 
 
 def _flt(case_id: str, name: str, expr: str, *, mentions: str | None = None) -> LibCase:
-    return LibCase(case_id=case_id, name=name, build=lambda: lib_query(filters=[expr]), mentions=mentions or name)
+    return LibCase(case_id=case_id, name=name, build=lambda: lib_query(filter=[expr]), mentions=mentions or name)
 
 
 def _lib(**body: Any) -> SlayerQuery:
@@ -214,11 +214,11 @@ COERCION_CASES = [
     _dim("coerce|greatest", "try_cast", "greatest(num_txt, 5)", mentions="number"),
     _dim("coerce|least", "try_cast", "least(5, num_txt)", mentions="number"),
     LibCase(case_id="coerce|measure", name="try_cast", mentions="number",
-            build=lambda: _lib(measures=[{"formula": "sum(num_txt * 2)", "name": "t"}])),
+            build=lambda: _lib(metrics=[{"expression": "sum(num_txt * 2)", "name": "t"}])),
     LibCase(case_id="coerce|saved-measure", name="try_cast", mentions="number",
-            build=lambda: _lib(measures=["txt_total"]), datasets=_with_saved_metric),
+            build=lambda: _lib(metrics=["txt_total"]), datasets=_with_saved_metric),
     LibCase(case_id="coerce|order-by", name="try_cast", mentions="number",
-            build=lambda: _lib(dimensions=["id"], order=[{"column": "num_txt * 2"}])),
+            build=lambda: _lib(dimensions=["id"], order=[{"field": "num_txt * 2"}])),
     LibCase(case_id="coerce|stage", name="try_cast", mentions="number", build=_stages),
 ]
 CASES = [*FUNCTION_CASES, *SPELLING_CASES, *COERCION_CASES]
@@ -272,7 +272,7 @@ async def test_refusal_outranks_an_invalid_argument(ds_type: str, expr: str, nam
 
 class TestTier2Like:
     async def test_databricks_like_keeps_the_escape(self) -> None:
-        sql = await emit_lib(lib_query(filters=[r"code LIKE 'a\_%'"]), dialect="databricks")
+        sql = await emit_lib(lib_query(filter=[r"code LIKE 'a\_%'"]), dialect="databricks")
         escape = next(sqlglot.parse_one(sql, read="databricks").find_all(exp.Escape))
         assert isinstance(escape.this, exp.Like), sql
         assert (escape.this.expression.name, escape.expression.name) == ("a\\_%", "\\"), sql
@@ -289,12 +289,12 @@ class TestPresto:
     @pytest.mark.parametrize("expr", ["regexp_like(notes, 'paid.*late')", "regexp_like(code, '^ab$')",
                                       "regexp_like(word, '^paid$', 'i')"])
     async def test_patterns_match_trino(self, expr: str) -> None:
-        presto = await emit_lib(lib_query(filters=[expr]), dialect="presto")
-        trino = await emit_lib(lib_query(filters=[expr]), dialect="trino")
+        presto = await emit_lib(lib_query(filter=[expr]), dialect="presto")
+        trino = await emit_lib(lib_query(filter=[expr]), dialect="trino")
         assert _strings(presto, read="presto") == _strings(trino, read="trino"), presto
 
     async def test_dot_matches_newline(self) -> None:
-        sql = await emit_lib(lib_query(filters=["regexp_like(notes, 'paid.*late')"]), dialect="presto")
+        sql = await emit_lib(lib_query(filter=["regexp_like(notes, 'paid.*late')"]), dialect="presto")
         assert any("(?s)" in s for s in _strings(sql, read="presto")), sql
 
     @pytest.mark.parametrize("expr", ["regexp_like(notes, 'paid.*late')", "regexp_extract(notes, 'paid(.*)late', 1)"])
@@ -303,7 +303,7 @@ class TestPresto:
         assert any(s.startswith("(?s)") for s in _strings(sql, read="presto")), sql
 
     async def test_end_anchor_is_absolute(self) -> None:
-        sql = await emit_lib(lib_query(filters=["regexp_like(code, '^ab$')"]), dialect="presto")
+        sql = await emit_lib(lib_query(filter=["regexp_like(code, '^ab$')"]), dialect="presto")
         assert "(?s)^ab\\z" in _strings(sql, read="presto"), sql
 
     @pytest.mark.parametrize(("expr", "function"), [
@@ -440,7 +440,7 @@ def _contractors(**body: Any) -> SlayerQuery:
 
 
 def _count(name: str = "n") -> dict[str, str]:
-    return {"formula": "count(*)", "name": name}
+    return {"expression": "count(*)", "name": name}
 
 
 class ListCase(BaseModel):
@@ -452,20 +452,20 @@ class ListCase(BaseModel):
 
 LIST_CASES = [
     ListCase(case_id="contains", mentions="contains",
-             build=lambda: _contractors(dimensions=["id"], filters=["contains(skills, 'go')"])),
+             build=lambda: _contractors(dimensions=["id"], filter=["contains(skills, 'go')"])),
     ListCase(case_id="contains_any-literal", mentions="contains_any",
-             build=lambda: _contractors(dimensions=["id"], filters=["contains_any(skills, ['go', 'sql'])"])),
+             build=lambda: _contractors(dimensions=["id"], filter=["contains_any(skills, ['go', 'sql'])"])),
     ListCase(case_id="contains_all-list-column", mentions="contains_all",
-             build=lambda: _contractors(dimensions=["id"], filters=["contains_all(skills, required)"])),
+             build=lambda: _contractors(dimensions=["id"], filter=["contains_all(skills, required)"])),
     ListCase(case_id="length", mentions="length",
              build=lambda: _contractors(dimensions=["id", {"expression": "length(skills)", "name": "v"}])),
     ListCase(case_id="array-literal", mentions="length",
              build=lambda: _contractors(dimensions=["id", {"expression": "length(['go', 'sql'])", "name": "v"}])),
     ListCase(case_id="element-access", mentions="skills", build=lambda: _contractors(dimensions=["skills.value"])),
     ListCase(case_id="list-child", mentions="skills",
-             build=lambda: _contractors(measures=[{"formula": "count(skills.*)", "name": "n"}])),
+             build=lambda: _contractors(metrics=[{"expression": "count(skills.*)", "name": "n"}])),
     ListCase(case_id="child-filter", mentions="skills",
-             build=lambda: _contractors(measures=[_count()], filters=["skills.value = 'go'"])),
+             build=lambda: _contractors(metrics=[_count()], filter=["skills.value = 'go'"])),
     ListCase(case_id="nested-hop", mentions="skills",
              build=lambda: SlayerQuery.model_validate({"population": "assignments", "dimensions": ["id"],
                                                        "filter": ["contractors.skills.value = 'sql'"]})),
@@ -476,10 +476,10 @@ LIST_CASES = [
                  SlayerQuery.model_validate({"population": "s1", "metrics": [_count()]}),
              ]),
     ListCase(case_id="collect", mentions="collect",
-             build=lambda: _contractors(dimensions=["team"], measures=[{"formula": "collect(city)", "name": "c"}])),
+             build=lambda: _contractors(dimensions=["team"], metrics=[{"expression": "collect(city)", "name": "c"}])),
     ListCase(case_id="collect-elements", mentions="collect",
              build=lambda: _contractors(dimensions=["team"],
-                                        measures=[{"formula": "collect(skills.value)", "name": "c"}])),
+                                        metrics=[{"expression": "collect(skills.value)", "name": "c"}])),
 ]
 
 

@@ -33,7 +33,7 @@ def _bundle() -> ResolvedSourceBundle:
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -55,7 +55,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
         planned = plan_query(
             query=_q(
                 dimensions=["region", "city"],
-                measures=[DatasetMetric(
+                metrics=[DatasetMetric(
                     expression="sum(amount, partition_by=region)", name="region_rev",
                 )],
             ),
@@ -70,7 +70,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
         planned = plan_query(
             query=_q(
                 dimensions=["region", "city"],
-                measures=[DatasetMetric(
+                metrics=[DatasetMetric(
                     expression="sum(amount, partition_by=region)", name="region_rev",
                 )],
             ),
@@ -91,7 +91,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
         planned = plan_query(
             query=_q(
                 dimensions=["region", "city"],
-                measures=[DatasetMetric(
+                metrics=[DatasetMetric(
                     expression="sum(amount, partition_by=region)", name="region_rev",
                 )],
             ),
@@ -117,7 +117,7 @@ class TestCombinedAttachReplacesCrossModelPlan:
         planned = plan_query(
             query=_q(
                 dimensions=["region", "city"],
-                measures=[DatasetMetric(
+                metrics=[DatasetMetric(
                     expression="sum(amount, partition_by=[])", name="g",
                 )],
             ),
@@ -134,7 +134,7 @@ class TestSamePartitionSetInterning:
         planned = plan_query(
             query=_q(
                 dimensions=["region", "city"],
-                measures=[
+                metrics=[
                     DatasetMetric(expression="sum(amount, partition_by=region)", name="rsum"),
                     DatasetMetric(expression="avg(amount, partition_by=region)", name="ravg"),
                 ],
@@ -151,7 +151,7 @@ class TestSamePartitionSetInterning:
     async def test_two_distinct_aggregates_emit_one_cte(self) -> None:
         sql = await gen(_q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rsum"),
                 DatasetMetric(expression="avg(amount, partition_by=region)", name="ravg"),
             ],
@@ -162,7 +162,7 @@ class TestSamePartitionSetInterning:
         planned = plan_query(
             query=_q(
                 dimensions=["region", "city"],
-                measures=[
+                metrics=[
                     DatasetMetric(expression="sum(amount, partition_by=region)", name="a"),
                     DatasetMetric(expression="sum(amount, partition_by=region)", name="b"),
                 ],
@@ -178,7 +178,7 @@ class TestSamePartitionSetInterning:
     async def test_same_aggregate_two_names_projects_both(self) -> None:
         sql = await gen(_q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="a"),
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="b"),
             ],
@@ -193,7 +193,7 @@ class TestSamePartitionSetInterning:
         planned = plan_query(
             query=_q(
                 dimensions=["region", "channel", "city"],
-                measures=[
+                metrics=[
                     DatasetMetric(expression="sum(amount, partition_by=region)", name="rr"),
                     DatasetMetric(
                         expression="sum(amount, partition_by=[region, channel])", name="rc",
@@ -220,7 +220,7 @@ class TestCoexistenceWithIsolatedFamilies:
         # measure (its own _cm_ CTE) — both are combined-SELECT join-backs.
         q = _q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
                 DatasetMetric(expression="sum(customers.spend)", name="cm"),
             ],
@@ -239,7 +239,7 @@ class TestCoexistenceWithIsolatedFamilies:
     async def test_combined_attach_plus_windowed_measure(self) -> None:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
                 DatasetMetric(expression="sum(amount, window='90d')", name="w"),
             ],
@@ -258,7 +258,7 @@ class TestCoexistenceWithIsolatedFamilies:
     async def test_combined_attach_plus_ranked_measure(self) -> None:
         q = _q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
                 DatasetMetric(expression="last(amount)", name="lst"),
             ],
@@ -277,7 +277,7 @@ class TestCoexistenceWithIsolatedFamilies:
     async def test_combined_attach_plus_transform_measure(self) -> None:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
                 DatasetMetric(expression="cumsum(sum(amount))", name="cs"),
             ],
@@ -298,7 +298,7 @@ class TestCoexistenceWithIsolatedFamilies:
                 {"expression": "CASE WHEN sum(amount, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "name": "band"},
             ],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(amount, partition_by=region)", name="region_rev",
             )],
         )

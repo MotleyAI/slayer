@@ -32,7 +32,7 @@ from slayer.core.models import (
     DatasetRelationship,
     SlayerDataset,
 )
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ComputedDimension, SlayerQuery
 from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.core.syntax import parse_expr
@@ -186,7 +186,7 @@ class TestCrossModelFragmentJoins:
         sql = await _sql(
             SlayerQuery(
                 population="orders",
-                dimensions=[{"formula": "status", "name": "status"}],
+                dimensions=[ComputedDimension(expression="status", name="status")],
                 metrics=[{
                     "expression": "wscaled_sum(customers.spend)", "name": "m0",
                 }],
@@ -208,7 +208,7 @@ class TestCrossModelFragmentJoins:
         sql = await _sql(
             SlayerQuery(
                 population="orders",
-                dimensions=[{"formula": "status", "name": "status"}],
+                dimensions=[ComputedDimension(expression="status", name="status")],
                 metrics=[
                     {"expression": "wscaled_sum(customers.spend)", "name": "m0"},
                     {"expression": "sum(amount)", "name": "m1"},
@@ -234,7 +234,7 @@ class TestHostPathFragmentJoinsStillWork:
         sql = await _sql(
             SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"formula": "status", "name": "status"}],
+                "dimensions": [{"expression": "status", "name": "status"}],
                 "metrics": [{"expression": "wscaled_sum(amount)", "name": "m0"}],
             }),
             dataset=_orders_local_agg(),
@@ -246,7 +246,7 @@ class TestHostPathFragmentJoinsStillWork:
         sql = await _sql(
             SlayerQuery(
                 population="orders",
-                dimensions=[{"formula": "status", "name": "status"}],
+                dimensions=[ComputedDimension(expression="status", name="status")],
                 metrics=[{
                     "expression": "wscaled_sum(amount, w='customers.regions.weight')",
                     "name": "m0",
@@ -264,7 +264,7 @@ async def test_cross_model_fragment_executes_on_duckdb() -> None:
     sql = await _sql(
         SlayerQuery.model_validate({
             "population": "orders",
-            "dimensions": [{"formula": "status", "name": "status"}],
+            "dimensions": [{"expression": "status", "name": "status"}],
             "metrics": [{"expression": "wscaled_sum(customers.spend)", "name": "m0"}],
         }),
         dataset=_orders(), dialect="duckdb",

@@ -108,7 +108,7 @@ FIRST = f"first(balance, {PB})"
 
 
 def snap_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "account_snapshots")
+    kw.setdefault("population", "account_snapshots")
     return SlayerQuery(**kw)
 
 

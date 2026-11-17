@@ -45,7 +45,7 @@ INLINE_MODEL = {
     "fields": [{"name": "x", "sql": "x", "datatype": "DOUBLE"}],
 }
 JOIN_TO_CUSTOMERS = {"target_model": "customers", "join_pairs": [["customer_id", "id"]]}
-ONE_MEASURE = [{"formula": "sum(amount)"}]
+ONE_MEASURE = [{"expression": "sum(amount)"}]
 
 
 def _leaf_types(tp) -> set:
@@ -149,7 +149,7 @@ class TestRejection:
 
     def test_source_name_plus_model_keys_is_an_extension_never_a_model(self) -> None:
         with pytest.raises(ValidationError) as ei:
-            _query(source_model={
+            _query(population={
                 "source_name": "orders", "name": "x", "sql_table": "t", "data_source": "ds",
             })
         assert _error_keys(ei.value) == {
@@ -196,7 +196,7 @@ class TestRejection:
 class TestTypedAtConstruction:
     def test_legacy_extension_object_converts_typed(self) -> None:
         with pytest.warns(FutureWarning, match="extensions"):
-            q = _query(source_model={
+            q = _query(population={
                 **EXTENSION_WITH_MEASURES,
                 "joins": [JOIN_TO_CUSTOMERS],
             })
@@ -212,7 +212,7 @@ class TestTypedAtConstruction:
 
     def test_inline_model_object_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="(?i)inline"):
-            _query(source_model=INLINE_MODEL)
+            _query(population=INLINE_MODEL)
 
     def test_string_stays_a_string(self) -> None:
         assert SlayerQuery(population="orders").population == "orders"
@@ -248,14 +248,14 @@ class TestRoundTrip:
     ], ids=["extension"])
     @pytest.mark.parametrize("mode", ["python", "json"])
     def test_dump_then_validate_equals_the_original(self, raw, mode) -> None:
-        q = _query(**raw, measures=["sum(amount)"])
+        q = _query(**raw, metrics=["sum(amount)"])
         again = SlayerQuery.model_validate(q.model_dump(mode=mode))
         assert again == q
         assert type(again.population) is type(q.population)
         assert not isinstance(again.population, dict)
 
     def test_exclude_none_dump_is_the_minimal_object(self) -> None:
-        q = _query(source_model="orders", extensions=[EXTENSION_WITH_MEASURES])
+        q = _query(population="orders", extensions=[EXTENSION_WITH_MEASURES])
         assert q.model_dump(exclude_none=True)["extensions"] == [EXTENSION_WITH_MEASURES]
         assert SlayerQuery(population="orders").model_dump(exclude_none=True)["source_model"] == "orders"
 
@@ -280,8 +280,8 @@ class TestSourceModelName:
 
     async def test_root_qualifier_uses_the_typed_name(self, chain_engine: SlayerQueryEngine) -> None:
         qualified = await chain_engine.execute(_query(
-            source_model="orders", extensions=[EXTENSION], dimensions=["orders.status"]))
-        bare = await chain_engine.execute(_query(source_model="orders", extensions=[EXTENSION], dimensions=["status"]))
+            population="orders", extensions=[EXTENSION], dimensions=["orders.status"]))
+        bare = await chain_engine.execute(_query(population="orders", extensions=[EXTENSION], dimensions=["status"]))
         assert qualified.sql == bare.sql
         assert qualified.columns == bare.columns == ["orders.status"]
 
@@ -317,13 +317,13 @@ class TestStageOrdering:
 class TestTimeDimensionColumnAlias:
     def test_column_key_validates_and_dumps_as_dimension(self) -> None:
         q = _query(
-            source_model="orders",
-            time_dimensions=[{"column": "created_at", "granularity": "month"}],
+            population="orders",
+            time_dimensions=[{"field": "created_at", "granularity": "month"}],
         )
         assert q.time_dimensions
         assert q.time_dimensions[0].field == "created_at"
         dumped = q.model_dump(mode="json", exclude_none=True)["time_dimensions"][0]
-        assert dumped == {"dimension": "created_at", "granularity": "month"}
+        assert dumped == {"field": "created_at", "granularity": "month"}
 
     def test_column_key_accepts_a_column_ref_object(self) -> None:
         td = TimeDimension.model_validate({
@@ -332,7 +332,7 @@ class TestTimeDimensionColumnAlias:
         assert td.field == "orders.created_at"
 
     def test_dimension_key_and_keyword_still_validate(self) -> None:
-        via_key = TimeDimension.model_validate({"dimension": "created_at", "granularity": "month"})
+        via_key = TimeDimension.model_validate({"field": "created_at", "granularity": "month"})
         via_kw = TimeDimension(
             field="created_at", granularity=TimeGranularity.MONTH,
         )

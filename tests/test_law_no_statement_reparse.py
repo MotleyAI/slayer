@@ -169,7 +169,7 @@ class TestLiveGenerator:
             _inner().sql()
 
         monkeypatch.setattr(SQLGenerator, "_assert_stages_assigned", staticmethod(_renders))
-        query = q(dimensions=["status"], measures=["sum(amount)"])
+        query = q(dimensions=["status"], metrics=["sum(amount)"])
         with pytest.raises(law.StatementRenderedDuringComposition):
             await gen(query, dialect="postgres")
 
@@ -192,24 +192,24 @@ def _stats_datasets() -> list[SlayerDataset]:
 
 _SEAMS = {
     "plain_hidden_order": q(
-        dimensions=["status"], measures=["sum(amount)"],
-        order=[{"column": "max(amount)", "direction": "desc"}], limit=2,
+        dimensions=["status"], metrics=["sum(amount)"],
+        order=[{"field": "max(amount)", "direction": "desc"}], limit=2,
     ),
     "where_having": q(
-        dimensions=["region"], measures=["sum(amount)"],
-        filters=["amount > 15", "region == 'US' or region == 'EU'", "sum(amount) > 55 or count(amount) > 2"],
+        dimensions=["region"], metrics=["sum(amount)"],
+        filter=["amount > 15", "region == 'US' or region == 'EU'", "sum(amount) > 55 or count(amount) > 2"],
     ),
     "chain_post_filter_paginated": cumsum_chain(
-        filters=["cumsum(sum(amount)) > 50"],
-        order=[{"column": "created_at", "direction": "desc"}], limit=2, offset=1,
+        filter=["cumsum(sum(amount)) > 50"],
+        order=[{"field": "created_at", "direction": "desc"}], limit=2, offset=1,
     ),
     "windowed_producer": q(
         time_dimensions=month_td(),
-        measures=[{"formula": "covar_samp(amount, other=qty, window='90d')", "name": "cv"}],
+        metrics=[{"expression": "covar_samp(amount, other=qty, window='90d')", "name": "cv"}],
     ),
     "cross_model_combined": q(
         dimensions=["status"],
-        measures=[{"formula": "sum(amount) / count(customers.id)", "name": "r"}],
+        metrics=[{"expression": "sum(amount) / count(customers.id)", "name": "r"}],
     ),
     "multi_stage": [
         {"name": "s1", "population": "orders", "dimensions": ["status"],

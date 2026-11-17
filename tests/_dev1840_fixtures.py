@@ -263,12 +263,12 @@ def ambiguity_datasets() -> List[SlayerDataset]:
 # Query shorthands.
 # --------------------------------------------------------------------------- #
 def q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 def tq(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "tickets")
+    kw.setdefault("population", "tickets")
     return SlayerQuery(**kw)
 
 

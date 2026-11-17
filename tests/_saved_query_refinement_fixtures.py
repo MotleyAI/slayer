@@ -27,8 +27,8 @@ ORDERS_ROWS = [
     (5, "c2", "US", "paid", 50.0, "2025-03-09"),
 ]
 
-REVENUE = {"formula": "sum(amount)", "name": "revenue"}
-MONTH_TD = {"dimension": "ordered_at", "granularity": "month"}
+REVENUE = {"expression": "sum(amount)", "name": "revenue"}
+MONTH_TD = {"field": "ordered_at", "granularity": "month"}
 Q1_RANGE = ["2025-01-01", "2025-02-28"]
 
 MONTHLY_REVENUE: Dict[str, Any] = {

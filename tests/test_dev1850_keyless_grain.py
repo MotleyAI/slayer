@@ -159,11 +159,11 @@ async def test_keyless_dual_role_error_shape_matches_local() -> None:
     same wording, differing only in the offending key and the available dims."""
     local_query = q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        measures=[DatasetMetric(expression=LOCAL_AGG, name="rt")],
+        metrics=[DatasetMetric(expression=LOCAL_AGG, name="rt")],
     )
     cm_query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[DatasetMetric(expression=CM_AGG, name="rt")],
+        metrics=[DatasetMetric(expression=CM_AGG, name="rt")],
     )
     with pytest.raises(ValueError) as local_ei:
         await gen(local_query)
@@ -182,7 +182,7 @@ async def test_keyless_banded_only_executes(exec_backend) -> None:
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[DatasetMetric(expression="sum(amount)", name="m")],
+        metrics=[DatasetMetric(expression="sum(amount)", name="m")],
     )
     resp = await engine.execute(query)
     got = {r["orders.sband"]: r["orders.m"] for r in resp.data}
@@ -206,8 +206,8 @@ async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[DatasetMetric(expression="sum(amount)", name="m")],
-        filters=[f"{CM_AGG} > 100"],
+        metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+        filter=[f"{CM_AGG} > 100"],
     )
     resp = await engine.execute(query)
     got = {r["orders.sband"]: r["orders.m"] for r in resp.data}
@@ -227,8 +227,8 @@ def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None
     )
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[DatasetMetric(expression="sum(amount)", name="m")],
-        filters=[f"{CM_AGG} > 100"],
+        metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+        filter=[f"{CM_AGG} > 100"],
     )
     scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope)
@@ -247,8 +247,8 @@ async def test_keyless_order_by_dimension_name_cross_model_row_routes(
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[DatasetMetric(expression="sum(amount)", name="m")],
-        order=[{"column": "sband", "direction": "asc"}],
+        metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+        order=[{"field": "sband", "direction": "asc"}],
     )
     resp = await engine.execute(query)
     rows = [(r["orders.sband"], r["orders.m"]) for r in resp.data]
@@ -266,8 +266,8 @@ async def test_keyless_filter_over_own_local_aggregate_row_routes(
     _, engine = exec_backend
     resp = await engine.execute(q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        measures=[DatasetMetric(expression="sum(amount)", name="m")],
-        filters=[f"{LOCAL_AGG} > 25"],
+        metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+        filter=[f"{LOCAL_AGG} > 25"],
     ))
     got = {r["orders.cband"]: r["orders.m"] for r in resp.data}
     assert got == {"hi": pytest.approx(107.0)}
@@ -279,8 +279,8 @@ async def test_keyless_order_by_dimension_name_local_row_routes(
     _, engine = exec_backend
     resp = await engine.execute(q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        measures=[DatasetMetric(expression="sum(amount)", name="m")],
-        order=[{"column": "cband", "direction": "asc"}],
+        metrics=[DatasetMetric(expression="sum(amount)", name="m")],
+        order=[{"field": "cband", "direction": "asc"}],
     ))
     rows = [(r["orders.cband"], r["orders.m"]) for r in resp.data]
     assert rows == [("hi", pytest.approx(107.0)), ("lo", pytest.approx(10.0))]

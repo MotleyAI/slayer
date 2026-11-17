@@ -62,7 +62,7 @@ class TestEquivalenceVsSourceQueries:
         """Each re-aggregation returns the manual multi-stage encoding's values,
         region by region."""
         reagg_resp = await exec_engine.execute(sales_q(
-            dimensions=["region"], measures=[reagg(outer, INNER_CR, name="v")]))
+            dimensions=["region"], metrics=[reagg(outer, INNER_CR, name="v")]))
         manual_resp = await exec_engine.execute(f"sq_{outer}")
         got = _by_region_suffix(reagg_resp, ".v")
         want = _by_region_suffix(manual_resp, ".v")
@@ -81,5 +81,5 @@ class TestNoPlaceholderLeak:
         """The emitted SQL never leaks a ``__regroup__`` placeholder column."""
         sql = await gen(sales_q(
             dimensions=["region"],
-            measures=[reagg("avg", INNER_CR, name="acr")]), dialect=dialect)
+            metrics=[reagg("avg", INNER_CR, name="acr")]), dialect=dialect)
         assert "__regroup__" not in sql, sql

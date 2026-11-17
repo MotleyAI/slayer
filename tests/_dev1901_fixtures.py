@@ -211,7 +211,7 @@ async def make_exec_engine(
 
 
 def orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery.model_validate(kw)
 
 

@@ -38,14 +38,14 @@ def _metrics(source: str, *, suffix: str = "") -> List[DatasetMetric]:
 EXPECTED = {**EMPTY, "bsum": None, "bmax": None}
 
 LOCATIONS: Dict[str, Callable[[], object]] = {
-    "local": lambda: orders_q(dimensions=["region"], measures=_metrics("amount"), filters=WEST),
+    "local": lambda: orders_q(dimensions=["region"], metrics=_metrics("amount"), filter=WEST),
     "partition": lambda: orders_q(
-        dimensions=["region", "status"], measures=_metrics("amount", suffix=", partition_by=region"), filters=WEST,
+        dimensions=["region", "status"], metrics=_metrics("amount", suffix=", partition_by=region"), filter=WEST,
     ),
     "window": lambda: orders_q(
-        time_dimensions=month_td(), measures=_metrics("amount", suffix=", window='30d'"), filters=WEST,
+        time_dimensions=month_td(), metrics=_metrics("amount", suffix=", window='30d'"), filter=WEST,
     ),
-    "cross_model": lambda: orders_q(measures=_metrics("customers.score")),
+    "cross_model": lambda: orders_q(metrics=_metrics("customers.score")),
     "stage": lambda: [
         {"name": "s1", "population": "orders", "dimensions": ["region", "status"],
          "metrics": [{"expression": "sum(amount)", "name": "x"}]},

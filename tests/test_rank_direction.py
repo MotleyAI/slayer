@@ -135,47 +135,47 @@ class TestOracleSelfCheck:
 class TestDirectionValues:
     async def test_ascending_rank_lowest_first(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=["region"], measures=[_m("rank(sum(amount), direction='asc')")]))
+            dimensions=["region"], metrics=[_m("rank(sum(amount), direction='asc')")]))
         assert _by_region(resp) == RANK_ASC
 
     async def test_descending_rank_highest_first(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=["region"], measures=[_m("rank(sum(amount), direction='desc')")]))
+            dimensions=["region"], metrics=[_m("rank(sum(amount), direction='desc')")]))
         assert _by_region(resp) == RANK_DESC
 
     async def test_dense_rank_takes_direction(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=["region"], measures=[_m("dense_rank(sum(amount), direction='asc')")]))
+            dimensions=["region"], metrics=[_m("dense_rank(sum(amount), direction='asc')")]))
         assert _by_region(resp) == RANK_ASC
 
     @pytest.mark.parametrize("spelling", ["ASC", "Ascending", " ascending "])
     async def test_synonyms_execute(self, engine, spelling):
         resp = await engine.execute(sales_q(
-            dimensions=["region"], measures=[_m(f"rank(sum(amount), direction='{spelling}')")]))
+            dimensions=["region"], metrics=[_m(f"rank(sum(amount), direction='{spelling}')")]))
         assert _by_region(resp) == RANK_ASC
 
     async def test_non_numeric_inner(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=["region"], measures=[_m("rank(min(city), direction='asc')")]))
+            dimensions=["region"], metrics=[_m("rank(min(city), direction='asc')")]))
         assert _by_region(resp) == MIN_CITY_RANK_ASC
 
     async def test_combines_with_partition_by(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=["region", "city"],
-            measures=[_m("rank(sum(amount), partition_by=region, direction='asc')")]))
+            metrics=[_m("rank(sum(amount), partition_by=region, direction='asc')")]))
         assert _by_region_city(resp) == CITY_RANK_ASC
 
     async def test_both_directions_stay_distinct(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=["region"],
-            measures=["rank(sum(amount), direction='asc')", "rank(sum(amount), direction='desc')"]))
+            metrics=["rank(sum(amount), direction='asc')", "rank(sum(amount), direction='desc')"]))
         assert _by_region(resp, "rank_amount_sum_asc") == RANK_ASC
         assert _by_region(resp, "rank_amount_sum_desc") == RANK_DESC
 
     async def test_ntile_and_percent_rank_ascending(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=["region"],
-            measures=[_m("ntile(sum(amount), n=2)", "nt"), _m("percent_rank(sum(amount))", "pr")]))
+            metrics=[_m("ntile(sum(amount), n=2)", "nt"), _m("percent_rank(sum(amount))", "pr")]))
         assert _by_region(resp, "nt") == NTILE2
         assert _by_region(resp, "pr") == _approx(PERCENT_RANK)
 
@@ -183,33 +183,33 @@ class TestDirectionValues:
 class TestDirectionInEveryPosition:
     async def test_filter_keeps_the_cheapest(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=["region"], measures=[_m("sum(amount)", "a")],
-            filters=["rank(sum(amount), direction='asc') <= 1"]))
+            dimensions=["region"], metrics=[_m("sum(amount)", "a")],
+            filter=["rank(sum(amount), direction='asc') <= 1"]))
         assert set(_by_region(resp, "a")) == {"Gap"}
 
     async def test_order_by_ascending_rank(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=["region"], measures=[_m("sum(amount)", "a")],
-            order=[{"column": "rank(sum(amount), direction='asc')", "direction": "asc"}]))
+            dimensions=["region"], metrics=[_m("sum(amount)", "a")],
+            order=[{"field": "rank(sum(amount), direction='asc')", "direction": "asc"}]))
         assert [r["sales.region"] for r in resp.data] == ["Gap", "North", "South", "East", "Void"]
 
     async def test_computed_dimension(self, engine):
         dim = {"expression": "rank(sum(amount, partition_by=region), direction='asc')", "name": "rk"}
         resp = await engine.execute(sales_q(
-            dimensions=["region", dim], measures=[_m("sum(amount)", "a")]))
+            dimensions=["region", dim], metrics=[_m("sum(amount)", "a")]))
         got = {k[0]: k[1] for k in rows_by(resp, "sales.region", "sales.rk")}
         assert got == RANK_ASC
 
     @pytest.mark.parametrize(("direction", "want"), [("asc", 1340 / 32), ("desc", 810 / 33)])
     async def test_aggregation_parameter(self, engine, direction, want):
-        resp = await engine.execute(sales_q(measures=[_m(
+        resp = await engine.execute(sales_q(metrics=[_m(
             f"weighted_avg(amount, weight=rank(sum(amount, partition_by=region), "
             f"direction='{direction}'))", "w")]))
         [row] = resp.data
         assert float(row["sales.w"]) == pytest.approx(want)
 
     async def test_saved_model_measure(self, saved_asc_engine):
-        resp = await saved_asc_engine.execute(sales_q(dimensions=["region"], measures=["saved_rank"]))
+        resp = await saved_asc_engine.execute(sales_q(dimensions=["region"], metrics=["saved_rank"]))
         assert _by_region(resp, "saved_rank") == RANK_ASC
 
 
@@ -278,7 +278,7 @@ class TestDirectionErrors:
             _assert_missing_direction(str(ei.value), op=op)
 
     async def test_saved_measure_without_direction(self, saved_bare_engine):
-        query = sales_q(dimensions=["region"], measures=["saved_rank"])
+        query = sales_q(dimensions=["region"], metrics=["saved_rank"])
         with pytest.raises(core_errors.TransformArgumentError) as ei:
             await saved_bare_engine.execute(query)
         _assert_missing_direction(str(ei.value))
@@ -290,7 +290,7 @@ class TestDirectionErrors:
         "dense_rank(sum(amount), direction='')",
     ])
     async def test_unrecognised_or_non_literal(self, engine, formula):
-        query = sales_q(dimensions=["region"], measures=[_m(formula)])
+        query = sales_q(dimensions=["region"], metrics=[_m(formula)])
         with pytest.raises(core_errors.TransformArgumentError) as ei:
             await engine.execute(query)
         msg = str(ei.value)
@@ -302,7 +302,7 @@ class TestDirectionErrors:
         ("percent_rank(sum(amount), direction='asc')", "percent_rank"),
     ])
     async def test_ntile_and_percent_rank_reject_direction(self, engine, formula, op):
-        query = sales_q(dimensions=["region"], measures=[_m(formula)])
+        query = sales_q(dimensions=["region"], metrics=[_m(formula)])
         with pytest.raises(core_errors.TransformArgumentError) as ei:
             await engine.execute(query)
         msg = str(ei.value)
@@ -373,7 +373,7 @@ class TestNullInputs:
     async def test_mixed_null_and_non_null(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=["region"],
-            measures=[_m("rank(sum(amount), direction='desc')", "rk"),
+            metrics=[_m("rank(sum(amount), direction='desc')", "rk"),
                       _m("percent_rank(sum(amount))", "pr"),
                       _m("ntile(sum(amount), n=2)", "nt")]))
         assert _by_region(resp, "rk") == RANK_DESC
@@ -383,19 +383,19 @@ class TestNullInputs:
     async def test_all_null_partition(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=["region", "city"],
-            measures=[_m("dense_rank(sum(amount), partition_by=region, direction='desc')")]))
+            metrics=[_m("dense_rank(sum(amount), partition_by=region, direction='desc')")]))
         assert _by_region_city(resp) == CITY_DENSE_DESC
 
     async def test_null_row_inside_partition_takes_no_position(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=["region", "city"],
-            measures=[_m("rank(city, partition_by=region, direction='asc')")]))
+            metrics=[_m("rank(city, partition_by=region, direction='asc')")]))
         assert _by_region_city(resp) == CITY_NAME_RANK_ASC
 
     async def test_filter_drops_null_ranked_rows(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=["region"], measures=[_m("sum(amount)", "a")],
-            filters=["rank(sum(amount), direction='asc') <= 5"]))
+            dimensions=["region"], metrics=[_m("sum(amount)", "a")],
+            filter=["rank(sum(amount), direction='asc') <= 5"]))
         assert set(_by_region(resp, "a")) == {"East", "Gap", "North", "South"}
 
     @pytest.mark.parametrize(("formula", "op"), [
@@ -404,7 +404,7 @@ class TestNullInputs:
         ("dense_rank(sum(amount), direction='asc')", "dense_rank"),
     ])
     async def test_null_inner_is_null_for_every_function(self, engine, formula, op):
-        resp = await engine.execute(sales_q(dimensions=["region"], measures=[_m(formula)]))
+        resp = await engine.execute(sales_q(dimensions=["region"], metrics=[_m(formula)]))
         got = _by_region(resp)
         assert got["Void"] is None, (op, got)
         assert all(v is not None for k, v in got.items() if k != "Void"), (op, got)
@@ -427,7 +427,7 @@ class TestEmission:
     @pytest.mark.parametrize("dialect", DIALECTS)
     @pytest.mark.parametrize(("formula", "fn", "descending"), _EMISSION)
     async def test_window_orders_by_direction_and_isolates_nulls(self, dialect, formula, fn, descending):
-        sql = await gen(sales_q(dimensions=["region"], measures=[_m(formula)]), dialect=dialect)
+        sql = await gen(sales_q(dimensions=["region"], metrics=[_m(formula)]), dialect=dialect)
         [window] = rank_windows(sql, dialect=dialect)
         assert window.fn == fn
         assert window.descending is descending
@@ -439,7 +439,7 @@ class TestEmission:
     async def test_partition_keys_precede_the_null_flag(self, dialect):
         sql = await gen(sales_q(
             dimensions=["region", "city"],
-            measures=[_m("rank(sum(amount), partition_by=region, direction='asc')")]), dialect=dialect)
+            metrics=[_m("rank(sum(amount), partition_by=region, direction='asc')")]), dialect=dialect)
         [window] = rank_windows(sql, dialect=dialect)
         assert len(window.partition_sql) == 1, sql
         assert "region" in window.partition_sql[0], sql
@@ -449,7 +449,7 @@ class TestEmission:
 
     @pytest.mark.parametrize("formula", [p.values[0] for p in _EMISSION])
     async def test_tsql_matches_postgres(self, formula):
-        query = sales_q(dimensions=["region"], measures=[_m(formula)])
+        query = sales_q(dimensions=["region"], metrics=[_m(formula)])
         [pg] = rank_windows(await gen(query, dialect="postgres"), dialect="postgres")
         [ts] = rank_windows(await gen(query, dialect="tsql"), dialect="tsql")
         assert (ts.fn, ts.descending, ts.null_flag, ts.null_guarded) == (
@@ -469,6 +469,6 @@ class TestNaming:
         ("ntile(sum(amount), n=4)", "sales.ntile_amount_sum_n_4"),
     ])
     async def test_unnamed_key(self, engine: SlayerQueryEngine, formula, key):
-        resp = await engine.execute(sales_q(dimensions=["region", "city"], measures=[formula]))
+        resp = await engine.execute(sales_q(dimensions=["region", "city"], metrics=[formula]))
         assert key in resp.columns, resp.columns
         assert not any("direction" in c for c in resp.columns), resp.columns

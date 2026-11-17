@@ -35,7 +35,7 @@ def _returns(name: str, *, target: str, **kw) -> SlayerDataset:
 
 
 def _with_total(name: str) -> SlayerDataset:
-    return _orders(name, measures=[DatasetMetric(expression="sum(amount)", name="tot")], filters=["tot > 100"])
+    return _orders(name, metrics=[DatasetMetric(expression="sum(amount)", name="tot")], filters=["tot > 100"])
 
 
 @pytest.fixture

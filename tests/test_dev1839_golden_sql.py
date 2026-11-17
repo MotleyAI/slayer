@@ -41,45 +41,45 @@ def _cases() -> dict:
     return {
         "lift/dim_mixed_rank": q(
             dimensions=["region", "city", {"expression": MIXED_RANK, "name": "rr"}],
-            measures=[s],
+            metrics=[s],
         ),
         "lift/dim_keyless_share": q(
             dimensions=["region", {"expression": KEYLESS_RANK, "name": "kr"}],
-            measures=[s],
+            metrics=[s],
         ),
         "lift/dim_subset_rank": q(
             dimensions=["region", "city", {"expression": SUBSET_RANK, "name": "sr"}],
-            measures=[s],
+            metrics=[s],
         ),
         "lift/dim_nested_cumsum": q(
             dimensions=["region", "city", {"expression": NESTED_RANK, "name": "nr"}],
             time_dimensions=month_td(),
-            measures=[s],
+            metrics=[s],
         ),
         "lift/dim_explicit_partition": q(
             dimensions=[
                 "region", "city", {"expression": EXPLICIT_PART_RANK, "name": "er"},
             ],
-            measures=[s],
+            metrics=[s],
         ),
         "lift/dual_role": q(
             dimensions=[
                 "region", "city", "channel",
                 {"expression": MIXED_RANK, "name": "rr"},
             ],
-            measures=[DatasetMetric(expression=MIXED_RANK, name="rm"), s],
+            metrics=[DatasetMetric(expression=MIXED_RANK, name="rm"), s],
         ),
         "lift/measure_mixed_arithmetic": q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(expression=MEASURE_DIFF, name="d"), s],
+            metrics=[DatasetMetric(expression=MEASURE_DIFF, name="d"), s],
         ),
         "lift/measure_same_grain_arithmetic": q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=SAMEGRAIN_DIFF, name="d")],
+            metrics=[DatasetMetric(expression=SAMEGRAIN_DIFF, name="d")],
         ),
         "lift/dim_same_grain_rank": q(
             dimensions=["region", {"expression": SAMEGRAIN_RANK, "name": "gr"}],
-            measures=[s],
+            metrics=[s],
         ),
         # DEV-1835 stage-2 lifts the windowed / first-last mixed-grain union
         # (design D9): these render now instead of raising the residual guard.
@@ -90,7 +90,7 @@ def _cases() -> dict:
                                " - sum(amount, partition_by=city), direction='desc')", "name": "x"},
             ],
             time_dimensions=month_td(),
-            measures=[s],
+            metrics=[s],
         ),
         "lift/dim_mixed_first_last": q(
             dimensions=[
@@ -98,7 +98,7 @@ def _cases() -> dict:
                 {"expression": "rank(last(amount, partition_by=region) - "
                                "sum(amount, partition_by=city), direction='desc')", "name": "x"},
             ],
-            measures=[s],
+            metrics=[s],
         ),
         "guard/dim_temporal_axis_missing": q(
             dimensions=[
@@ -107,7 +107,7 @@ def _cases() -> dict:
                  "name": "cs"},
             ],
             time_dimensions=month_td(),
-            measures=[s],
+            metrics=[s],
         ),
         "guard/dim_kwarg_outside_union": q(
             dimensions=[
@@ -116,7 +116,7 @@ def _cases() -> dict:
                                "sum(amount, partition_by=city), "
                                "partition_by=channel, direction='desc')", "name": "x"},
             ],
-            measures=[s],
+            metrics=[s],
         ),
     }
 

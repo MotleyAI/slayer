@@ -32,7 +32,7 @@ SHIFT_CASES = [
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "sales")
+    kw.setdefault("population", "sales")
     return SlayerQuery(**kw)
 
 
@@ -72,7 +72,7 @@ class TestShiftFamilyCovered:
     @pytest.mark.parametrize("op, formula, leaf", SHIFT_CASES)
     def test_rejected_at_plan_time(self, op, formula, leaf) -> None:
         query = _q(time_dimensions=month_td(),
-                   measures=[DatasetMetric(expression=formula, name="t")])
+                   metrics=[DatasetMetric(expression=formula, name="t")])
         bundle = _bundle()
         with pytest.raises(ValueError) as ei:
             plan_query(query=query, bundle=bundle)
@@ -81,7 +81,7 @@ class TestShiftFamilyCovered:
     @pytest.mark.parametrize("op, formula, leaf", SHIFT_CASES)
     async def test_rejected_via_engine(self, exec_engine, op, formula, leaf) -> None:
         query = _q(time_dimensions=month_td(),
-                   measures=[DatasetMetric(expression=formula, name="t")])
+                   metrics=[DatasetMetric(expression=formula, name="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(query)
         _assert_unified_message(str(ei.value), op=op, leaf=leaf)
@@ -91,7 +91,7 @@ class TestOneMessageForEveryOp:
     @pytest.mark.parametrize("op", RULED_OPS)
     def test_bare_row_leaf_message(self, op) -> None:
         query = _q(time_dimensions=month_td(),
-                   measures=[DatasetMetric(expression=_call(op, "weight"), name="t")])
+                   metrics=[DatasetMetric(expression=_call(op, "weight"), name="t")])
         bundle = _bundle()
         with pytest.raises(ValueError) as ei:
             plan_query(query=query, bundle=bundle)
@@ -102,9 +102,9 @@ class TestProjectedGrainKeyUnderShift:
     async def test_time_shift_over_projected_dimension(self, exec_engine) -> None:
         kw = {"dimensions": ["store"], "time_dimensions": month_td()}
         resp = await exec_engine.execute(_q(
-            measures=[DatasetMetric(expression="time_shift(store, -1)", name="t")], **kw))
+            metrics=[DatasetMetric(expression="time_shift(store, -1)", name="t")], **kw))
         plain = await exec_engine.execute(_q(
-            measures=[DatasetMetric(expression="sum(revenue)", name="r")], **kw))
+            metrics=[DatasetMetric(expression="sum(revenue)", name="r")], **kw))
         cells = {(r["sales.store"], month_key(r["sales.ordered_at"])) for r in resp.data}
         assert len(cells) == len(resp.data) == len(plain.data)
         for r in resp.data:
@@ -114,10 +114,10 @@ class TestProjectedGrainKeyUnderShift:
     async def test_predicate_over_projected_dimension(self, exec_engine) -> None:
         kw = {"dimensions": ["store"], "time_dimensions": month_td()}
         resp = await exec_engine.execute(_q(
-            measures=[DatasetMetric(expression="time_shift(store in ('A', 'B'), -1)",
+            metrics=[DatasetMetric(expression="time_shift(store in ('A', 'B'), -1)",
                                    name="t")], **kw))
         plain = await exec_engine.execute(_q(
-            measures=[DatasetMetric(expression="sum(revenue)", name="r")], **kw))
+            metrics=[DatasetMetric(expression="sum(revenue)", name="r")], **kw))
         assert len(resp.data) == len(plain.data)
         for r in resp.data:
             assert r["sales.t"] in (None, r["sales.store"] in ("A", "B")), r
@@ -126,10 +126,10 @@ class TestProjectedGrainKeyUnderShift:
     async def test_time_shift_in_filter_position(self, exec_engine) -> None:
         kw = {"dimensions": ["store"], "time_dimensions": month_td()}
         resp = await exec_engine.execute(_q(
-            filters=["time_shift(store, -1) = 'A'"],
-            measures=[DatasetMetric(expression="sum(revenue)", name="r")], **kw))
+            filter=["time_shift(store, -1) = 'A'"],
+            metrics=[DatasetMetric(expression="sum(revenue)", name="r")], **kw))
         plain = await exec_engine.execute(_q(
-            measures=[DatasetMetric(expression="sum(revenue)", name="r")], **kw))
+            metrics=[DatasetMetric(expression="sum(revenue)", name="r")], **kw))
         store_a = sorted(month_key(r["sales.ordered_at"]) for r in plain.data
                          if r["sales.store"] == "A")
         got = sorted((r["sales.store"], month_key(r["sales.ordered_at"])) for r in resp.data)

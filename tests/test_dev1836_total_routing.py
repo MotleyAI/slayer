@@ -54,7 +54,7 @@ class TestExplicitRejections:
         _, engine = exec_backend
         query = q(
             dimensions=[{"expression": "sum(amount)", "name": "d"}],
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         )
         with pytest.raises(expected_exception=ValueError, match="partition_by") as ei:
             await engine.execute(query)
@@ -67,7 +67,7 @@ class TestExplicitRejections:
         _, engine = exec_backend
         query = q(
             dimensions=[LOCAL_BAND],
-            measures=[DatasetMetric(expression="sum(amount, partition_by=band)",
+            metrics=[DatasetMetric(expression="sum(amount, partition_by=band)",
                                    name="x"),
                       DatasetMetric(expression="sum(amount)", name="s")],
         )
@@ -82,7 +82,7 @@ class TestExplicitRejections:
         bundle = _bundle()
         planned = plan_query(query=q(
             dimensions=["customers.tier"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="sum(customers.spend)", name="cm"),
             ],
@@ -105,7 +105,7 @@ class TestTotalRoutingInvariant:
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="sum(amount, partition_by=channel)",
+            metrics=[DatasetMetric(expression="sum(amount, partition_by=channel)",
                                    name="pt")],
         )
         bundle = _bundle()
@@ -126,7 +126,7 @@ class TestTotalRoutingInvariant:
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="sum(customers.spend)", name="cm")],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="cm")],
         )
         bundle = _bundle()
         with pytest.raises(expected_exception=ValueError, match="no routing disposition"):
@@ -149,7 +149,7 @@ class TestTotalRoutingInvariant:
         monkeypatch.setattr(stages, "discover_roots", _blind_discovery)
         query = q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
             **role_kwargs,
         )
         bundle = _bundle()
@@ -163,7 +163,7 @@ class TestNoSilentDrops:
         _, engine = exec_backend
         resp = await engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="sum(customers.spend)", name="cm"),
                 DatasetMetric(expression="sum(customers.spend) / sum(amount)",

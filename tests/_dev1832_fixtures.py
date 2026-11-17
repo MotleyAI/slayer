@@ -134,27 +134,27 @@ def dev1832_unparseable_datasets() -> List[SlayerDataset]:
 # Query shorthands.
 # --------------------------------------------------------------------------- #
 def orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
 def cust_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "customers")
+    kw.setdefault("population", "customers")
     return SlayerQuery(**kw)
 
 
 def sales_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "sales")
+    kw.setdefault("population", "sales")
     return SlayerQuery(**kw)
 
 
 def monthly_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "monthly")
+    kw.setdefault("population", "monthly")
     return SlayerQuery(**kw)
 
 
 def monthly_multi_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "monthly_multi")
+    kw.setdefault("population", "monthly_multi")
     return SlayerQuery(**kw)
 
 

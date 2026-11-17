@@ -22,7 +22,7 @@ def test_string_dimension_with_placeholder() -> None:
 
 
 def test_order_expression_with_placeholder() -> None:
-    q = build(order=[{"column": "sum(amount) * {k}", "direction": "desc"}])
+    q = build(order=[{"field": "sum(amount) * {k}", "direction": "desc"}])
     assert q.order is not None
     assert q.order[0].raw_expression == "sum(amount) * {k}"
     assert q.order[0].direction == "desc"
@@ -34,20 +34,20 @@ def test_order_expression_with_placeholder() -> None:
     ("{period}", ["{period}"]),
 ])
 def test_placeholder_date_range_bound_accepted(date_range, stored) -> None:
-    q = build(time_dimensions=[{"dimension": "ordered_at", "granularity": "month", "date_range": date_range}])
+    q = build(time_dimensions=[{"field": "ordered_at", "granularity": "month", "date_range": date_range}])
     assert q.time_dimensions is not None
     assert q.time_dimensions[0].date_range == stored
 
 
 def test_literal_bound_beside_placeholder_still_checked() -> None:
     with pytest.raises(ValueError, match="YYYY-Qn"):
-        build(time_dimensions=[{"dimension": "ordered_at", "granularity": "month", "date_range": ["{start}", "2025/01/01"]}])
+        build(time_dimensions=[{"field": "ordered_at", "granularity": "month", "date_range": ["{start}", "2025/01/01"]}])
 
 
 @pytest.mark.parametrize(("time_dimension", "what"), [
-    ({"dimension": "ordered_at", "granularity": "{g}"}, "granularity"),
+    ({"field": "ordered_at", "granularity": "{g}"}, "granularity"),
     ("{g}(ordered_at)", "granularity"),
-    ({"dimension": "{col}", "granularity": "month"}, "column"),
+    ({"field": "{col}", "granularity": "month"}, "column"),
     ("date_trunc('month', {col})", "column"),
 ])
 def test_granularity_or_column_placeholder_rejected(time_dimension, what: str) -> None:

@@ -37,13 +37,13 @@ class TestDefinitionDefaultJoinsHomeCandidates:
     async def test_explicit_weight_widens_the_home(self, engine):
         """Reference: an explicit weight=customers.spend already roots the
         aggregate at the shallower customers home."""
-        resp = await engine.execute(orders_q(measures=[EXPLICIT]))
+        resp = await engine.execute(orders_q(metrics=[EXPLICIT]))
         assert float(resp.data[0]["orders.w"]) == pytest.approx(HOME_WIDEN_VALUE)
 
     async def test_definition_default_matches_the_explicit(self, engine):
         """Subject: the non-overridden default must join the home candidates the
         same way — identical value to spelling it explicitly."""
-        resp = await engine.execute(orders_q(measures=[DEFAULT]))
+        resp = await engine.execute(orders_q(metrics=[DEFAULT]))
         assert float(resp.data[0]["orders.w"]) == pytest.approx(HOME_WIDEN_VALUE)
 
 

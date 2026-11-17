@@ -40,7 +40,7 @@ class TestSeededDataset:
     async def test_city_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == set(CITY_TOTAL)
@@ -50,7 +50,7 @@ class TestSeededDataset:
     async def test_region_month_totals(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         got = {
             (r["orders.region"], month_key(r["orders.ordered_at"])):

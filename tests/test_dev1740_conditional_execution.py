@@ -34,7 +34,7 @@ async def exec_engine(request):
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -43,7 +43,7 @@ class TestConditionalMeasureOverAggregate:
         # EU total 14000 >= 10000 -> 1 ; US total 8000 -> 0.
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="rev"),
                 DatasetMetric(
                     expression="CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
@@ -60,7 +60,7 @@ class TestConditionalMeasureOverAggregate:
         # EU 14000 -> 2 ; US 8000 -> 1.
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(
                     expression=(
                         "CASE WHEN sum(amount) >= 14000 THEN 2 "
@@ -77,7 +77,7 @@ class TestConditionalMeasureOverAggregate:
     async def test_iif_spelling_matches_case(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="iif(sum(amount) >= 10000, 1, 0)", name="big"),
             ],
         ))
@@ -90,8 +90,8 @@ class TestConditionalInFilter:
     async def test_case_predicate_removes_a_group(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            filters=["CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END == 1"],
-            measures=[DatasetMetric(expression="sum(amount)", name="rev")],
+            filter=["CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END == 1"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="rev")],
         ))
         regions = {r["orders.region"] for r in resp.data}
         assert regions == {"EU"}
@@ -102,7 +102,7 @@ class TestNullBranchKeepsValue:
         # US falls to the (missing) ELSE -> NULL, but the US row must remain.
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="rev"),
                 DatasetMetric(
                     expression="CASE WHEN sum(amount) >= 10000 THEN 1 END", name="big",
@@ -120,7 +120,7 @@ class TestBranchTypingThroughPlanning:
         # THEN 'big' (TEXT) vs ELSE 0 (INT) — a plan-time error naming both.
         q = _q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(
                     expression="CASE WHEN sum(amount) >= 100 THEN 'big' ELSE 0 END",
                     name="bad",
@@ -137,7 +137,7 @@ class TestBranchTypingThroughPlanning:
         # INT / DOUBLE branches widen to DOUBLE and execute cleanly.
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(
                     expression="CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0.5 END",
                     name="w",
@@ -155,8 +155,8 @@ class TestOrderByCaseComposite:
         # slot and sort correctly. EU total 17000 > 12000 → 0 (first); US → 1.
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(amount)", name="rev")],
-            order=[{"column": "CASE WHEN sum(amount) > 12000 THEN 0 ELSE 1 END",
+            metrics=[DatasetMetric(expression="sum(amount)", name="rev")],
+            order=[{"field": "CASE WHEN sum(amount) > 12000 THEN 0 ELSE 1 END",
                     "direction": "asc"}],
         ))
         regions = [r["orders.region"] for r in resp.data]
@@ -169,7 +169,7 @@ class TestConditionalOverCrossModelAggregate:
         # CTE). By tier: gold=150 → 0, silver=500 → 1.
         resp = await exec_engine.execute(_q(
             dimensions=["customers.tier"],
-            measures=[
+            metrics=[
                 DatasetMetric(
                     expression="CASE WHEN sum(customers.spend) > 300 THEN 1 ELSE 0 END",
                     name="b",
@@ -186,7 +186,7 @@ class TestConditionalNestedInScalarCall:
         # a literal) and its inner aggregate must be discovered.
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(
                     expression="coalesce(iif(sum(amount) >= 10000, 1, 0), -1)",
                     name="c",
@@ -224,7 +224,7 @@ class TestIifWrongArityAtBind:
         # Arity is enforced by the generic scalar path at bind time (3, 3).
         q = _q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="iif(sum(amount) >= 10000, 1)", name="b")],
+            metrics=[DatasetMetric(expression="iif(sum(amount) >= 10000, 1)", name="b")],
         )
         with pytest.raises(ValueError, match=r"iif"):
             await gen(q)
@@ -236,8 +236,8 @@ class TestConditionalFilterPullsJoin:
         # customers join (gold customers 1 & 3 → orders 1, 2, 5, 6 — all EU).
         resp = await exec_engine.execute(_q(
             dimensions=["region"],
-            filters=["CASE WHEN customers.tier = 'gold' THEN 1 ELSE 0 END == 1"],
-            measures=[DatasetMetric(expression="sum(amount)", name="rev")],
+            filter=["CASE WHEN customers.tier = 'gold' THEN 1 ELSE 0 END == 1"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="rev")],
         ))
         by = rows_by(resp, "orders.region")
         assert set(by) == {("EU",)}
@@ -251,7 +251,7 @@ class TestConditionalOverTransform:
         # Feb 14000, Mar 1800 → change NULL, +4800, -12200 → up 0, 1, 0.
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(
                     expression="CASE WHEN change(sum(amount)) > 0 THEN 1 ELSE 0 END",
                     name="up",
@@ -273,7 +273,7 @@ class TestChangeOverComputedDimension:
             dimensions=[{"expression": "CASE WHEN amount > 5000 THEN 1 ELSE 0 END",
                          "name": "band"}],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="rev"),
                 DatasetMetric(expression="change(sum(amount))", name="chg"),
             ],
@@ -299,7 +299,7 @@ class TestCaseInColumnSql:
         ]}))
         resp = await exec_engine.execute(_q(
             dimensions=["row_band"],
-            measures=[DatasetMetric(expression="sum(amount)", name="rev")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="rev")],
         ))
         by = {int(r["orders.row_band"]): float(r["orders.rev"]) for r in resp.data}
         assert by == {0: pytest.approx(19000.0), 1: pytest.approx(6000.0)}

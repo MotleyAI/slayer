@@ -24,14 +24,14 @@ class TestAssociationKernel:
         """An unattributable slice under associate synthesizes an association
         producer, not the default plain/broadcast one."""
         planned = plan_query(
-            query=assoc_q(dimensions=["status"], measures=[CM]),
+            query=assoc_q(dimensions=["status"], metrics=[CM]),
             bundle=bundle())
         assert len(_association_attaches(planned)) == 1
 
     def test_explicit_partition_by_builds_association_kernel(self) -> None:
         """An unattributable explicit partition key attributes under associate."""
         planned = plan_query(
-            query=assoc_q(dimensions=["status"], measures=[DatasetMetric(
+            query=assoc_q(dimensions=["status"], metrics=[DatasetMetric(
                 expression="sum(customers.spend, partition_by=status)", name="cm")]),
             bundle=bundle())
         assert len(_association_attaches(planned)) == 1
@@ -41,8 +41,8 @@ class TestAssociationKernel:
         association joins (no semi-join); its text rides the attach so the
         informational entry is kept."""
         planned = plan_query(
-            query=assoc_q(dimensions=["status"], measures=[CM],
-                          filters=["customers.plans.level = 'basic'"]),
+            query=assoc_q(dimensions=["status"], metrics=[CM],
+                          filter=["customers.plans.level = 'basic'"]),
             bundle=bundle(dev1840_datasets(strong_plans=False)))
         (att,) = _association_attaches(planned)
         assert list(att.producer_plan.semi_join_filters) == []

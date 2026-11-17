@@ -97,7 +97,7 @@ def dev1842_datasets() -> List[SlayerDataset]:
 
 # Query + generation shorthands.
 def q(**kw):
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 

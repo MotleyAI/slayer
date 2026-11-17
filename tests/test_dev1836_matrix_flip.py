@@ -81,7 +81,7 @@ class TestRowAttachWithCrossModelMeasure:
 
     async def test_band_dim_with_cm_executes(self, exec_backend):
         dialect, engine = exec_backend
-        query = q(dimensions=[LOCAL_BAND], measures=[M, CM], to_many_handling="broadcast")
+        query = q(dimensions=[LOCAL_BAND], metrics=[M, CM], to_many_handling="broadcast")
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.band")
         assert set(by) == {(1,), (0,)}
@@ -98,7 +98,7 @@ class TestRowAttachWithCrossModelMeasure:
 
     async def test_bare_dim_with_cm_executes(self, exec_backend):
         _, engine = exec_backend
-        resp = await engine.execute(q(dimensions=[LOCAL_BARE], measures=[M, CM], to_many_handling="broadcast"))
+        resp = await engine.execute(q(dimensions=[LOCAL_BARE], metrics=[M, CM], to_many_handling="broadcast"))
         by = rows_by(resp, "orders.ct")
         assert set(by) == {(87.0,), (30.0,)}
         for row in resp.data:
@@ -106,8 +106,8 @@ class TestRowAttachWithCrossModelMeasure:
 
     async def test_adding_cm_keeps_the_band_grain(self, exec_backend):
         _, engine = exec_backend
-        solo = await engine.execute(q(dimensions=[LOCAL_BAND], measures=[M]))
-        both = await engine.execute(q(dimensions=[LOCAL_BAND], measures=[M, CM]))
+        solo = await engine.execute(q(dimensions=[LOCAL_BAND], metrics=[M]))
+        both = await engine.execute(q(dimensions=[LOCAL_BAND], metrics=[M, CM]))
         solo_by = rows_by(solo, "orders.band")
         both_by = rows_by(both, "orders.band")
         assert set(solo_by) == set(both_by)
@@ -122,7 +122,7 @@ class TestRowAttachWithCrossModelMeasure:
         resp = await engine.execute(q(
             dimensions=[{"expression": "rank(sum(amount, partition_by=channel), direction='desc')",
                          "name": "rr"}],
-            measures=[M, CM], to_many_handling="broadcast",
+            metrics=[M, CM], to_many_handling="broadcast",
         ))
         by = {int(k[0]): row for k, row in rows_by(resp, "orders.rr").items()}
         # Channel totals rank descending: web 87 → 1, app 30 → 2.
@@ -141,7 +141,7 @@ class TestRowAttachWithCrossModelMeasure:
                                "sum(amount, partition_by=status), direction='desc')"),
                 "name": "mr",
             }],
-            measures=[M, CM], to_many_handling="broadcast",
+            metrics=[M, CM], to_many_handling="broadcast",
         ))
         by = {int(k[0]): row for k, row in rows_by(resp, "orders.mr").items()}
         # (channel−status) deltas at the union grain, ranked descending:
@@ -156,7 +156,7 @@ class TestRowAttachWithCrossModelMeasure:
         """Plan structure: the migrated cross-model measure is a combined-phase
         regroup attach; the bespoke cross-model plan list is empty/gone."""
         planned = plan_query(
-            query=q(dimensions=[LOCAL_BAND], measures=[M, CM]), bundle=_bundle(),
+            query=q(dimensions=[LOCAL_BAND], metrics=[M, CM]), bundle=_bundle(),
         )
         phases = {p.attach_phase for p in planned.regroup_attach_plans}
         assert phases == {"row", "combined"}
@@ -170,7 +170,7 @@ class TestCrossModelSourceInComputedDimension:
         dialect, engine = exec_backend
         query = q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M],
+            metrics=[M],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.sband")
@@ -185,7 +185,7 @@ class TestCrossModelSourceInComputedDimension:
         dialect, engine = exec_backend
         query = q(
             dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-            measures=[M, CM],
+            metrics=[M, CM],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.sband")
@@ -203,7 +203,7 @@ class TestCrossModelSourceInComputedDimension:
         planned = plan_query(
             query=q(
                 dimensions=[{"expression": SPEND_BAND, "name": "sband"}],
-                measures=[M, CM],
+                metrics=[M, CM],
             ),
             bundle=_bundle(),
         )
@@ -249,7 +249,7 @@ class TestIntermediateHopDimensions:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            measures=[M, DatasetMetric(expression="sum(customers.regions.pop)",
+            metrics=[M, DatasetMetric(expression="sum(customers.regions.pop)",
                                       name="pop")],
             to_many_handling="broadcast",
         )

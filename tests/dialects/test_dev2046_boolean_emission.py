@@ -37,7 +37,7 @@ def _bool_type(dialect: str):
 
 async def _statement(dialect: str, *formulas: str, **kw) -> Expr:
     model = kw.pop("model", None) or orders_dataset()
-    query = orders_q(measures=[m(f, f"v{i}") for i, f in enumerate(formulas)], **kw)
+    query = orders_q(metrics=[m(f, f"v{i}") for i, f in enumerate(formulas)], **kw)
     sql = await _engine_generate(query=query, dataset=model, extra_datasets=[customers_dataset()], dialect=dialect)
     return sqlglot.parse_one(sql, read=dialect)
 
@@ -80,7 +80,7 @@ class TestLoweringOnEveryDialect:
     async def test_having_lowers_like_projection(self, dialect: str) -> None:
         """The post-aggregation filter path applies the same lowering."""
         tree = await _statement(
-            dialect, "count(*)", dimensions=["region"], filters=["sum(flag) > 1", "max(flag) = true"],
+            dialect, "count(*)", dimensions=["region"], filter=["sum(flag) > 1", "max(flag) = true"],
         )
         having = _nodes(tree, exp.Having)[0]
         for agg in (*_nodes(having, exp.Sum), *_nodes(having, exp.Max)):
@@ -145,7 +145,7 @@ class TestBooleansInNumericPositions:
     async def test_compared_with_numeric_expressions(self, dialect: str) -> None:
         """A boolean compared with a numeric scalar or aggregate reads as its integer."""
         tree = await _statement(
-            dialect, "count(*)", dimensions=["region"], filters=["flag = abs(amount)", "max(flag) = count(*)"],
+            dialect, "count(*)", dimensions=["region"], filter=["flag = abs(amount)", "max(flag) = count(*)"],
         )
         assert _bare_flags(_nodes(tree, exp.Where)[0]) == [], tree.sql(dialect=dialect)
         having = _nodes(tree, exp.Having)[0].this
@@ -155,7 +155,7 @@ class TestBooleansInNumericPositions:
 
     @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
     async def test_boolean_compared_with_a_boolean_stays_boolean(self, dialect: str) -> None:
-        tree = await _statement(dialect, "count(*)", filters=["flag = true"])
+        tree = await _statement(dialect, "count(*)", filter=["flag = true"])
         where = _nodes(tree, exp.Where)[0]
         assert not [c for c in where.find_all(exp.Cast) if _int_cast(c)], where.sql(dialect=dialect)
 
@@ -163,7 +163,7 @@ class TestBooleansInNumericPositions:
     @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
     async def test_having_boolean_compared_with_a_boolean_stays_boolean(self, dialect: str) -> None:
         """``max(flag) = true`` compares two booleans: neither side reads as an integer."""
-        tree = await _statement(dialect, "count(*)", dimensions=["region"], filters=["max(flag) = true"])
+        tree = await _statement(dialect, "count(*)", dimensions=["region"], filter=["max(flag) = true"])
         having = _nodes(tree, exp.Having)[0]
         # Only the aggregate's own lowering / restore casts may appear (SQLite / MySQL spell BOOLEAN as an int).
         stray = [c for c in having.find_all(exp.Cast) if not isinstance(c.parent, exp.Max) and not isinstance(c.this, exp.Max)]
@@ -262,7 +262,7 @@ class TestSqlServerPredicateValues:
     async def test_conditions_stay_bare(self) -> None:
         tree = await _statement(
             "tsql", "sum(amount) > 50", "sum(amount)", dimensions=["region"],
-            filters=["amount > 15", "sum(amount) > 50"],
+            filter=["amount > 15", "sum(amount) > 50"],
         )
         assert isinstance(_nodes(tree, exp.Where)[0].this, exp.GT)
         assert isinstance(_nodes(tree, exp.Having)[0].this, exp.GT)

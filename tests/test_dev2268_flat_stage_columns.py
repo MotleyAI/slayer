@@ -18,7 +18,7 @@ from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from tests._dev2102_fixtures import DIALECTS, DS, customers, ext, join, orders, q, rows, shop, with_datasets
 
-_N = {"formula": "count(*)", "name": "n"}
+_N = {"expression": "count(*)", "name": "n"}
 _S = {"name": "s", "population": "orders", "dimensions": ["customers.name"], "metrics": [_N]}
 _ISSUE_PAIRS = [["id", "n"]]
 _REGION_PAIRS = [["region_id", "id"]]
@@ -27,8 +27,8 @@ _REGION_PAIRS = [["region_id", "id"]]
 def _joined(root: str, ref: str, *, stage: dict | None = None, pairs: list[list[str]] | None = None,
             leading: str = "id") -> list[SlayerQuery | dict]:
     """Stage ``s``, then a query rooted at ``root`` that joins ``s`` and selects ``ref``."""
-    return [q(**(stage or _S)), q(source_model=root, dimensions=[leading, ref],
-                                  extensions=[ext(root, joins=[join("s", pairs or _ISSUE_PAIRS)])])]
+    return [q(**(stage or _S)), q(population=root, dimensions=[leading, ref],
+                                  extensions=[ext(root, relationships=[join("s", pairs or _ISSUE_PAIRS)])])]
 
 
 async def _refused(payload: Any, *, datasets: list[SlayerDataset] | None = None,
@@ -62,10 +62,10 @@ _CUSTOMER_PAIRS = [["id", "customer_id"]]
     pytest.param(_joined("customers", "s.customers__name", stage=_KEYED, pairs=_CUSTOMER_PAIRS),
                  ("customers.id", "customers.s.customers__name"),
                  [(1, "Ann"), (2, "Bob"), (3, "Cid"), (4, "Dee"), (5, "Eve")], id="stored-customers"),
-    pytest.param([q(name="s", source_model="orders", dimensions=["customer_id"]),
-                  q(source_model="addresses", dimensions=["id", "s.customers.name"], extensions=[
-                      ext("addresses", joins=[join("s", [["customer_id", "customer_id"]])]),
-                      ext("s", joins=[join("customers", [["customer_id", "id"]])])])],
+    pytest.param([q(name="s", population="orders", dimensions=["customer_id"]),
+                  q(population="addresses", dimensions=["id", "s.customers.name"], extensions=[
+                      ext("addresses", relationships=[join("s", [["customer_id", "customer_id"]])]),
+                      ext("s", relationships=[join("customers", [["customer_id", "id"]])])])],
                  ("addresses.id", "addresses.s.customers.name"), _BY_CUSTOMER, id="genuine-join-through-a-stage"),
 ])
 async def test_a_joined_stage_column_executes(dialect: str, payload: list[SlayerQuery | dict], keys: tuple[str, str],
@@ -104,8 +104,8 @@ def _authored(name: str, flat: str, *joins: DatasetRelationship) -> SlayerDatase
 
 
 def _root_joining(target: str, ref: str) -> SlayerQuery:
-    return q(source_model="addresses", dimensions=["id", ref],
-             extensions=[ext("addresses", joins=[join(target, [["customer_id", "id"]])])])
+    return q(population="addresses", dimensions=["id", ref],
+             extensions=[ext("addresses", relationships=[join(target, [["customer_id", "id"]])])])
 
 
 async def test_the_longest_flat_name_wins() -> None:
@@ -178,13 +178,13 @@ async def test_a_routing_short_form_is_not_pre_empted_by_a_flat_column() -> None
         *orders().fields, DatasetField(name="regions__name", sql="status", datatype=DataType.TEXT)]})
     models = with_datasets(flat, customers(DatasetRelationship(to="regions", join_pairs=_REGION_PAIRS)))
     async with shop("sqlite", models) as engine:
-        resp = await engine.execute(q(source_model="orders", dimensions=["id", "regions.name"]))
+        resp = await engine.execute(q(population="orders", dimensions=["id", "regions.name"]))
     assert rows(resp, "orders.id", "orders.customers.regions.name") == [
         (1, "North"), (2, "North"), (3, "South"), (4, None), (5, None), (6, "East"), (7, None)]
 
 
 async def test_a_downstream_stages_dotted_spelling_names_the_flat_column() -> None:
-    err = await _refused([q(**_S), q(source_model="s", dimensions=["s.customers.name"])],
+    err = await _refused([q(**_S), q(population="s", dimensions=["s.customers.name"])],
                          exc=IllegalScopeReferenceError)
     assert "customers__name" in err.reason
 
@@ -193,13 +193,13 @@ async def test_a_downstream_dotted_spelling_shaped_like_a_list_element_names_the
     valued = customers().model_copy(update={"columns": [
         *customers().fields, DatasetField(name="value", sql="credit", datatype=DataType.DOUBLE)]})
     stage = {**_S, "dimensions": ["customers.value"]}
-    err = await _refused([q(**stage), q(source_model="s", dimensions=["s.customers.value"])],
+    err = await _refused([q(**stage), q(population="s", dimensions=["s.customers.value"])],
                          datasets=with_datasets(valued), exc=IllegalScopeReferenceError)
     assert "customers__value" in err.reason
 
 
 async def test_an_unrelated_short_form_suggests_the_populations_flat_column() -> None:
-    err = await _refused([q(**_S), q(source_model="s", dimensions=["customers.name"])], exc=UnrelatedDatasetError)
+    err = await _refused([q(**_S), q(population="s", dimensions=["customers.name"])], exc=UnrelatedDatasetError)
     assert "customers__name" in err.suggestion
     assert err.suggestion.index("customers__name") < err.suggestion.index("max(")
 
@@ -215,15 +215,15 @@ async def test_an_unknown_field_of_a_joined_stage_names_the_stage() -> None:
 
 
 async def test_an_unknown_field_of_a_stage_source_names_the_stage() -> None:
-    err = await _refused([q(**_S), q(source_model="s", dimensions=["nope"])])
+    err = await _refused([q(**_S), q(population="s", dimensions=["nope"])])
     assert "'s'" in str(err)
     assert "__slayer_" not in str(err)
 
 
 @pytest.mark.parametrize("payload", [
     _joined("addresses", "s.customers.nope"),
-    [q(**_S), q(source_model="addresses", dimensions=["id"], measures=[{"formula": "count(s.customers.*)", "name": "c"}],
-                extensions=[ext("addresses", joins=[join("s", _ISSUE_PAIRS)])])],
+    [q(**_S), q(population="addresses", dimensions=["id"], metrics=[{"expression": "count(s.customers.*)", "name": "c"}],
+                extensions=[ext("addresses", relationships=[join("s", _ISSUE_PAIRS)])])],
 ], ids=["column", "star"])
 async def test_a_broken_chain_through_a_joined_stage_names_its_columns(payload: list[SlayerQuery | dict]) -> None:
     err = await _refused(payload, exc=UnresolvableDimensionRelationshipError)

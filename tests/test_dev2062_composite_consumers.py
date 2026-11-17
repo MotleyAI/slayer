@@ -154,9 +154,9 @@ async def test_measure_filter_on_transform_of_selected_ratio(exec_engine, ratio)
     r, ratio_values = _RATIOS[ratio]
     threshold, kept = _FILTER_CASES[ratio]
     predicate = f"cumsum(({r})) > {threshold}"
-    with_ratio = await _run(exec_engine, monthly_q(m(r, "a"), filters=[predicate], to_many_handling="broadcast"))
+    with_ratio = await _run(exec_engine, monthly_q(m(r, "a"), filter=[predicate], to_many_handling="broadcast"))
     without = await _run(exec_engine, monthly_q(
-        m("sum(amount)", "s"), filters=[predicate], to_many_handling="broadcast"))
+        m("sum(amount)", "s"), filter=[predicate], to_many_handling="broadcast"))
     assert set(by_month(without, "s")) == kept
     assert by_month(with_ratio, "a") == approx_map({k: ratio_values[k] for k in kept})
 
@@ -164,7 +164,7 @@ async def test_measure_filter_on_transform_of_selected_ratio(exec_engine, ratio)
 @pytest.mark.parametrize("ratio", sorted(_RATIOS))
 async def test_order_by_transform_of_selected_ratio(exec_engine, ratio) -> None:
     r, ratio_values = _RATIOS[ratio]
-    order = [{"column": f"cumsum(({r}))", "direction": "desc"}]
+    order = [{"field": f"cumsum(({r}))", "direction": "desc"}]
     with_ratio = await _run(exec_engine, monthly_q(m(r, "a"), order=order, to_many_handling="broadcast"))
     without = await _run(exec_engine, monthly_q(m("sum(amount)", "s"), order=order, to_many_handling="broadcast"))
     assert month_order(without) == [MAR, FEB, JAN]

@@ -46,7 +46,7 @@ class TestErrorModeRefusesBroadcast:
     async def test_cross_model_broadcast_errors(self, exec_backend):
         """Scenario: broadcast-would-happen errors — cross-model."""
         _, engine = exec_backend
-        query = error_q(dimensions=["status"], measures=[M, CM])
+        query = error_q(dimensions=["status"], metrics=[M, CM])
         with pytest.raises((SlayerError, ValueError)) as ei:
             await engine.execute(query)
         msg = str(ei.value)
@@ -58,7 +58,7 @@ class TestErrorModeRefusesBroadcast:
         """Scenario: broadcast-would-happen errors — local (the new coverage:
         a fanning local aggregate errors instead of silently multiplying)."""
         _, engine = exec_backend
-        query = cust_q(dimensions=["orders.status"], measures=[SP],
+        query = cust_q(dimensions=["orders.status"], metrics=[SP],
                        to_many_handling="error")
         with pytest.raises((SlayerError, ValueError)) as ei:
             await engine.execute(query)
@@ -71,8 +71,8 @@ class TestErrorModeRefusesExcludedFilters:
         restricts the producer by semi-join (gold 160, silver 230, bronze 40)."""
         _, engine = exec_backend
         resp = await engine.execute(error_q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.tier = 'bronze' OR channel = 'app'"]))
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.tier = 'bronze' OR channel = 'app'"]))
         by = rows_by(resp, "orders.customers.tier")
         for tier, spend in {"gold": 160.0, "silver": 230.0, "bronze": 40.0}.items():
             assert float(by[(tier,)]["orders.cm"]) == pytest.approx(spend), tier
@@ -81,7 +81,7 @@ class TestErrorModeRefusesExcludedFilters:
         """An ambiguous correlation hop fails closed in every mode — not an
         error-mode concern, but it must not be masked by it."""
         _, engine = exec_backend_amb
-        query = error_q(source_model="tickets", measures=[SM], filters=["effort > 2"])
+        query = error_q(population="tickets", metrics=[SM], filter=["effort > 2"])
         with pytest.raises(AmbiguousRelationshipPathError):
             await engine.execute(query)
 
@@ -105,7 +105,7 @@ class TestErrorModePasses:
     async def test_fully_attributable_passes(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(
-            error_q(dimensions=["customers.tier"], measures=[M, CM]))
+            error_q(dimensions=["customers.tier"], metrics=[M, CM]))
         assert {r["orders.customers.tier"] for r in resp.data} >= {"gold", "silver"}
 
     async def test_explicit_partition_broadcast_does_not_error(self, exec_backend):
@@ -114,7 +114,7 @@ class TestErrorModePasses:
         _, engine = exec_backend
         resp = await engine.execute(error_q(
             dimensions=["status"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(customers.spend, partition_by=[])", name="total")]))
         for row in resp.data:
             assert float(row["orders.total"]) == pytest.approx(BCAST_SPEND_CROSS)
@@ -126,9 +126,9 @@ class TestStrictParity:
         pass with identical values, broadcast → error."""
         _, engine = exec_backend
         ok = await engine.execute(
-            error_q(dimensions=["customers.tier"], measures=[CM]))
+            error_q(dimensions=["customers.tier"], metrics=[CM]))
         assert ok.data
-        broadcast_query = error_q(dimensions=["status"], measures=[CM])
+        broadcast_query = error_q(dimensions=["status"], metrics=[CM])
         with pytest.raises((SlayerError, ValueError)):
             await engine.execute(broadcast_query)
 

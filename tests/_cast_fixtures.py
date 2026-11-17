@@ -62,7 +62,7 @@ def tags_query(**kw: Any) -> SlayerQuery:
 
 async def check_array_cast(engine: SlayerQueryEngine) -> None:
     """``contains`` / ``length`` over ``CAST(codes AS INT[])`` read it as a list of INT."""
-    resp = await engine.execute(tags_query(dimensions=["id"], filters=["contains(CAST(codes AS INT[]), 3)"]))
+    resp = await engine.execute(tags_query(dimensions=["id"], filter=["contains(CAST(codes AS INT[]), 3)"]))
     assert {int(r["tags.id"]) for r in resp.data} == CONTAINS_3, resp.sql
     resp = await engine.execute(tags_query(dimensions=["id", {"expression": "length(codes::INT[])", "name": "n"}]))
     got = {int(r["tags.id"]): (None if r["tags.n"] is None else int(r["tags.n"])) for r in resp.data}
@@ -112,7 +112,7 @@ TRY_CAST_CASE_IDS = [f"{src}->{to}" for src, to, _ in TRY_CAST_TARGET_CASES]
 
 
 def try_cast_metrics() -> list[dict[str, str]]:
-    return [{"formula": f"max(TRY_CAST({src} AS {to}))", "name": f"c{i}"}
+    return [{"expression": f"max(TRY_CAST({src} AS {to}))", "name": f"c{i}"}
             for i, (src, to, _) in enumerate(TRY_CAST_TARGET_CASES)]
 
 

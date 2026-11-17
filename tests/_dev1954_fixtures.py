@@ -126,7 +126,7 @@ def slayer_query(**kw) -> SlayerQuery:
 
 
 def orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return slayer_query(**kw)
 
 

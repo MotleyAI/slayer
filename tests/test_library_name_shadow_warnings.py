@@ -127,7 +127,7 @@ class TestEveryResponse:
 
 class TestEveryContainer:
     async def test_a_stored_measure(self) -> None:
-        doc = t_doc(aggregations=[_REVERSE], metrics=[{"name": "rev", "formula": "reverse(a)"}])
+        doc = t_doc(aggregations=[_REVERSE], metrics=[{"name": "rev", "expression": "reverse(a)"}])
         async with stored_engine(datasets=[doc]) as engine:
             got = await _both(engine.execute(_query("rev")))
         assert got == (_SHADOW, _SHADOW)

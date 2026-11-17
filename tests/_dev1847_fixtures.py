@@ -115,12 +115,12 @@ def source_queries_equiv_dataset() -> SlayerDataset:
 
 
 def sales_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "sales")
+    kw.setdefault("population", "sales")
     return SlayerQuery(**kw)
 
 
 def chain_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "corders")
+    kw.setdefault("population", "corders")
     return SlayerQuery(**kw)
 
 

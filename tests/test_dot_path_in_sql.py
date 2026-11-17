@@ -32,12 +32,12 @@ def _orders_with_customers_join(**overrides) -> SlayerDataset:
         name="orders",
         data_source="prod",
         sql_table="orders",
-        columns=[
+        fields=[
             DatasetField(name="id", datatype=DataType.INT, primary_key=True),
             DatasetField(name="customer_id", datatype=DataType.INT),
             DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
-        joins=[
+        relationships=[
             DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
         ],
     )
@@ -129,7 +129,7 @@ class TestModeASurfacesPreservedVerbatim:
         # ModelMeasure.expression is Mode-B (DSL); the dotted colon form is a
         # join-path reference and must survive save verbatim.
         m = _orders_with_customers_join(
-            measures=[
+            metrics=[
                 DatasetMetric(
                     name="region_count",
                     expression="count(customers.regions.name)",

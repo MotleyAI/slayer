@@ -43,8 +43,8 @@ class TestGrouping:
     def test_same_first_hop_conjuncts_share_one_exists(self):
         """Scenario: filters sharing a branch bind to the same related row."""
         att = _attach(_plan(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["status = 'ok'", "channel = 'app'"],
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["status = 'ok'", "channel = 'app'"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert len(sj.conjuncts) == 2
@@ -54,8 +54,8 @@ class TestGrouping:
 
     def test_distinct_first_hops_get_independent_exists(self):
         att = _attach(_plan(
-            q(dimensions=["customers.tier"], measures=[CM],
-              filters=["channel = 'web'", "customers.plans.level = 'basic'"]),
+            q(dimensions=["customers.tier"], metrics=[CM],
+              filter=["channel = 'web'", "customers.plans.level = 'basic'"]),
             datasets=dev1840_datasets(strong_plans=False),
         ), "customers")
         sjs = list(att.producer_plan.semi_join_filters)
@@ -67,8 +67,8 @@ class TestGrouping:
         """Two conjuncts, one on orders and one a hop further on customers,
         share the first reverse hop: ONE group whose tree joins both."""
         att = _attach(_plan(q(
-            dimensions=["status"], measures=[M, RM],
-            filters=["channel = 'app'", "customers.tier = 'gold'"],
+            dimensions=["status"], metrics=[M, RM],
+            filter=["channel = 'app'", "customers.tier = 'gold'"],
             to_many_handling="broadcast",
         )), "stores")
         (sj,) = att.producer_plan.semi_join_filters
@@ -80,16 +80,16 @@ class TestGrouping:
 class TestHopDescriptors:
     def test_inverted_hop_is_oriented_root_to_target(self):
         att = _attach(_plan(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["channel = 'app'"],
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["channel = 'app'"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert _pairs(sj.hops[0]) == [("id", "customer_id")]
 
     def test_composite_inverted_hop_keeps_every_pair(self):
         att = _attach(_plan(q(
-            dimensions=["status"], measures=[M, RM],
-            filters=["channel = 'app'"],
+            dimensions=["status"], metrics=[M, RM],
+            filter=["channel = 'app'"],
             to_many_handling="broadcast",
         )), "stores")
         (sj,) = att.producer_plan.semi_join_filters
@@ -100,8 +100,8 @@ class TestHopDescriptors:
         """``cust_tier`` expands through orders back into customers: the tree
         holds a second customers node that must not alias the root."""
         att = _attach(_plan(q(
-            dimensions=["status"], measures=[CM],
-            filters=["cust_tier = 'gold'"],
+            dimensions=["status"], metrics=[CM],
+            filter=["cust_tier = 'gold'"],
             to_many_handling="broadcast",
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
@@ -114,8 +114,8 @@ class TestThreading:
         """The computed dimension's nested producer receives the pushdown."""
         planned = _plan(q(
             dimensions=[{"expression": SPEND_BAND_170, "name": "sband"}],
-            measures=[M],
-            filters=["channel = 'app'"],
+            metrics=[M],
+            filter=["channel = 'app'"],
         ))
         carrying = [
             att for att in _walk_regroup_attaches(planned)

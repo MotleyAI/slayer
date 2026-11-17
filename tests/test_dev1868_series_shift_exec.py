@@ -33,7 +33,7 @@ from tests._dev1868_fixtures import (
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "sales")
+    kw.setdefault("population", "sales")
     return SlayerQuery(**kw)
 
 
@@ -66,7 +66,7 @@ class TestNestedTransformInput:
     async def test_shifts_the_inner_series(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="time_shift(cumsum(sum(revenue)), -1)",
+            metrics=[DatasetMetric(expression="time_shift(cumsum(sum(revenue)), -1)",
                                    name="t"),
                       DatasetMetric(expression="sum(revenue)", name="r")],
         ))
@@ -79,7 +79,7 @@ class TestNestedTransformInput:
     async def test_partitions_by_the_query_dimension(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["store"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="time_shift(cumsum(sum(revenue)), -1)",
+            metrics=[DatasetMetric(expression="time_shift(cumsum(sum(revenue)), -1)",
                                    name="t")],
         ))
         by = keyed_by_month(resp, "sales.store")
@@ -94,7 +94,7 @@ class TestNestedTransformInput:
     async def test_inner_series_is_computed_once(self) -> None:
         sql = await gen(_q(
             time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="time_shift(cumsum(sum(revenue)), -1)",
+            metrics=[DatasetMetric(expression="time_shift(cumsum(sum(revenue)), -1)",
                                    name="t")],
         ))
         assert len(re.findall(r"OVER\s*\(", sql)) == 1, sql
@@ -104,7 +104,7 @@ class TestCrossModelCompositeLeaf:
     async def test_shifts_the_composed_series(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="time_shift(sum(revenue) + sum(regions.factor), -1)",
                 name="t")],
         ))
@@ -113,7 +113,7 @@ class TestCrossModelCompositeLeaf:
     async def test_cross_model_operand_has_one_producer(self) -> None:
         sql = await gen(_q(
             time_dimensions=month_td(),
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="time_shift(sum(revenue) + sum(regions.factor), -1)",
                 name="t")],
         ))
@@ -124,7 +124,7 @@ class TestAggregateTypedPredicateInput:
     async def test_in_predicate_shifts_as_a_boolean_series(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="time_shift(sum(revenue) in (100, 999), -1)",
+            metrics=[DatasetMetric(expression="time_shift(sum(revenue) in (100, 999), -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t", expected=SHIFTED_IN_PRED, boolean=True)
@@ -134,7 +134,7 @@ class TestAggregateTypedPredicateInput:
     ) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="time_shift(sum(revenue) > 80, -1)",
+            metrics=[DatasetMetric(expression="time_shift(sum(revenue) > 80, -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t", expected=SHIFTED_GT_PRED, boolean=True)
@@ -144,7 +144,7 @@ class TestAggregateTypedPredicateInput:
         # silent 0/1 arithmetic and no engine-level error.
         query = _q(
             time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="change(sum(revenue) > 100)",
+            metrics=[DatasetMetric(expression="change(sum(revenue) > 100)",
                                    name="t")],
         )
         with pytest.raises(ValueError, match=r"(?i)boolean"):
@@ -159,7 +159,7 @@ class TestSeriesEdgeVsReaggregation:
     async def test_series_input_is_null_outside_the_range(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=_dr_td(),
-            measures=[DatasetMetric(expression="time_shift(cumsum(sum(revenue)), -1)",
+            metrics=[DatasetMetric(expression="time_shift(cumsum(sum(revenue)), -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t",
@@ -170,7 +170,7 @@ class TestSeriesEdgeVsReaggregation:
     ) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=_dr_td(),
-            measures=[DatasetMetric(expression="time_shift(sum(revenue) > 80, -1)",
+            metrics=[DatasetMetric(expression="time_shift(sum(revenue) > 80, -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t",
@@ -179,7 +179,7 @@ class TestSeriesEdgeVsReaggregation:
     async def test_bare_leaf_keeps_the_lookback(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=_dr_td(),
-            measures=[DatasetMetric(expression="time_shift(sum(revenue), -1)",
+            metrics=[DatasetMetric(expression="time_shift(sum(revenue), -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t",
@@ -188,7 +188,7 @@ class TestSeriesEdgeVsReaggregation:
     async def test_local_composite_keeps_the_lookback(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             time_dimensions=_dr_td(),
-            measures=[DatasetMetric(expression="time_shift(sum(revenue) / sum(qty), -1)",
+            metrics=[DatasetMetric(expression="time_shift(sum(revenue) / sum(qty), -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t",
@@ -198,16 +198,16 @@ class TestSeriesEdgeVsReaggregation:
 class TestFiltersApplyOnce:
     async def test_row_filter_shapes_the_series_once(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
-            time_dimensions=month_td(), filters=["status = 'a'"],
-            measures=[DatasetMetric(expression="time_shift(cumsum(sum(revenue)), -1)",
+            time_dimensions=month_td(), filter=["status = 'a'"],
+            metrics=[DatasetMetric(expression="time_shift(cumsum(sum(revenue)), -1)",
                                    name="t")],
         ))
         _assert_months(resp, name="sales.t", expected=SHIFTED_CUMSUM_STATUS_A)
 
     async def test_the_predicate_renders_once(self) -> None:
         sql = await gen(_q(
-            time_dimensions=month_td(), filters=["status = 'a'"],
-            measures=[DatasetMetric(expression="time_shift(cumsum(sum(revenue)), -1)",
+            time_dimensions=month_td(), filter=["status = 'a'"],
+            metrics=[DatasetMetric(expression="time_shift(cumsum(sum(revenue)), -1)",
                                    name="t")],
         ))
         assert sql.count("= 'a'") == 1, sql
@@ -259,21 +259,21 @@ class TestRowLeafStaysFailClosed:
     async def test_mixed_aggregate_and_row_composite(self, exec_engine) -> None:
         await self._assert_row_leaf_rejected(exec_engine, _q(
             time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="time_shift(sum(revenue) * weight, -1)",
+            metrics=[DatasetMetric(expression="time_shift(sum(revenue) * weight, -1)",
                                    name="t")],
         ))
 
     async def test_row_level_predicate_input(self, exec_engine) -> None:
         await self._assert_row_leaf_rejected(exec_engine, _q(
             time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="time_shift(store in ('A', 'B'), -1)",
+            metrics=[DatasetMetric(expression="time_shift(store in ('A', 'B'), -1)",
                                    name="t")],
         ))
 
     async def test_nested_transform_over_row_leaf(self, exec_engine) -> None:
         await self._assert_row_leaf_rejected(exec_engine, _q(
             time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="time_shift(cumsum(weight), -1)",
+            metrics=[DatasetMetric(expression="time_shift(cumsum(weight), -1)",
                                    name="t")],
         ), op="cumsum")
 
@@ -282,7 +282,7 @@ class TestRowLeafStaysFailClosed:
     ) -> None:
         await self._assert_row_leaf_rejected(exec_engine, _q(
             time_dimensions=month_td(),
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="time_shift(sum(revenue) + cumsum(weight), -1)",
                 name="t")],
         ), op="cumsum")

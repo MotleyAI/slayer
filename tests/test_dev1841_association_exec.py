@@ -52,7 +52,7 @@ class TestCrossModelAssociation:
         """Scenario: cross-model metric attributes per cell by executed values."""
         _, engine = exec_backend
         resp = await engine.execute(
-            assoc_q(dimensions=["status"], measures=[CM]))
+            assoc_q(dimensions=["status"], metrics=[CM]))
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}  # grain unchanged
         for status, spend in ASSOC_SPEND_BY_STATUS.items():
@@ -62,7 +62,7 @@ class TestCrossModelAssociation:
         """The default broadcasts the same value to every cell; associate does
         not — the two modes are observably different on this shape."""
         _, engine = exec_backend
-        resp = await engine.execute(bcast_q(dimensions=["status"], measures=[CM]))
+        resp = await engine.execute(bcast_q(dimensions=["status"], metrics=[CM]))
         by = status_key(resp)
         for cell in by.values():
             assert float(cell["orders.cm"]) == pytest.approx(BCAST_SPEND_CROSS)
@@ -72,7 +72,7 @@ class TestCrossModelAssociation:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="count(customers.*)", name="nc")]))
+            metrics=[DatasetMetric(expression="count(customers.*)", name="nc")]))
         by = status_key(resp)
         for status, n in ASSOC_COUNT_BY_STATUS.items():
             assert int(by[(status,)]["orders.nc"]) == n
@@ -89,7 +89,7 @@ class TestCrossModelAssociation:
         _, engine = exec_backend_ext
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="count(customers.gold_spend)", name="gc")]))
+            metrics=[DatasetMetric(expression="count(customers.gold_spend)", name="gc")]))
         by = status_key(resp)
         # gold (c1,c3,c6) with an ok order: c1,c3,c6 → 3; with a new order: c1 → 1.
         for status, n in {"ok": 3, "new": 1}.items():
@@ -101,7 +101,7 @@ class TestCrossModelAssociation:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="median(customers.spend)", name="med")]))
+            metrics=[DatasetMetric(expression="median(customers.spend)", name="med")]))
         by = status_key(resp)
         for status, med in ASSOC_MEDIAN_BY_STATUS.items():
             assert float(by[(status,)]["orders.med"]) == pytest.approx(med)
@@ -112,7 +112,7 @@ class TestCrossModelAssociation:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="sum(customers.regions.pop)",
+            metrics=[DatasetMetric(expression="sum(customers.regions.pop)",
                                    name="pop")]))
         by = status_key(resp)
         for status, pop in ASSOC_POP_BY_STATUS.items():
@@ -131,7 +131,7 @@ class TestCrossModelAssociation:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression=f"{agg}(customers.spend)", name="v")]))
+            metrics=[DatasetMetric(expression=f"{agg}(customers.spend)", name="v")]))
         by = status_key(resp)
         for status, val in expected.items():
             assert float(by[(status,)]["orders.v"]) == pytest.approx(val)
@@ -147,7 +147,7 @@ class TestMixedGrain:
         distinct values."""
         _, engine = exec_backend
         assoc = await engine.execute(assoc_q(
-            dimensions=["customers.tier", "status"], measures=[CM]))
+            dimensions=["customers.tier", "status"], metrics=[CM]))
         by = rows_by(assoc, "orders.customers.tier", "orders.status")
         assert float(by[("gold", "ok")]["orders.cm"]) == pytest.approx(190.0)
         assert float(by[("gold", "new")]["orders.cm"]) == pytest.approx(100.0)
@@ -162,7 +162,7 @@ class TestMixedGrain:
         status."""
         _, engine = exec_backend
         resp = await engine.execute(bcast_q(
-            dimensions=["customers.tier", "status"], measures=[CM]))
+            dimensions=["customers.tier", "status"], metrics=[CM]))
         by = rows_by(resp, "orders.customers.tier", "orders.status")
         assert float(by[("gold", "ok")]["orders.cm"]) == pytest.approx(
             float(by[("gold", "new")]["orders.cm"]))
@@ -178,7 +178,7 @@ class TestMeasureLocalFilter:
         _, engine = exec_backend_ext
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="sum(customers.gold_spend)",
+            metrics=[DatasetMetric(expression="sum(customers.gold_spend)",
                                    name="gs")]))
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}
@@ -210,9 +210,9 @@ class TestCardinalityNeutral:
         """Scenario: adding an associated measure is cardinality-neutral."""
         _, engine = exec_backend
         without = await engine.execute(
-            assoc_q(dimensions=["status"], measures=[M]))
+            assoc_q(dimensions=["status"], metrics=[M]))
         with_cm = await engine.execute(
-            assoc_q(dimensions=["status"], measures=[M, CM]))
+            assoc_q(dimensions=["status"], metrics=[M, CM]))
         a = status_key(without)
         b = status_key(with_cm)
         assert set(a) == set(b)

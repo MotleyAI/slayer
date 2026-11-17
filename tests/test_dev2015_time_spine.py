@@ -293,10 +293,10 @@ class TestPopulation:
 
     async def test_explicit_p_and_explicit_spine(self, engine) -> None:
         inferred = await engine.execute(_per_group())
-        explicit = await engine.execute(_per_group(source_model="customers"))
+        explicit = await engine.execute(_per_group(population="customers"))
         assert _canon(explicit.data) == _canon(inferred.data)
         spine_only = await engine.execute(spine_query(metrics=TWO_FACTS))
-        named = await engine.execute(spine_query(metrics=TWO_FACTS, source_model="time_spine"))
+        named = await engine.execute(spine_query(metrics=TWO_FACTS, population="time_spine"))
         assert _canon(named.data) == _canon(spine_only.data)
 
     async def test_result_keys(self, engine) -> None:
@@ -375,7 +375,7 @@ class TestSpineStages:
         stored = await engine.storage.get_dataset("saved_monthly", data_source="test")
         assert stored is not None and stored.source_queries is not None
         assert [s.population for s in stored.source_queries] == [pinned]
-        resp = await engine.execute(_over_monthly(source_model="saved_monthly"))
+        resp = await engine.execute(_over_monthly(population="saved_monthly"))
         assert [(num(value(r, "t")), num(value(r, "c"))) for r in resp.data] == [(220.0, count)]
 
     async def test_missing_lower_bound_inside_a_stage(self, engine) -> None:
@@ -410,7 +410,7 @@ class TestBounds:
     async def test_bound_filters_bound_the_spine(self, engine) -> None:
         resp = await engine.execute(spine_query(
             metrics=TWO_FACTS, date_range=None,
-            filters=["time_spine.timestamp >= '2025-04-01'", "time_spine.timestamp < '2025-07-01'"],
+            filter=["time_spine.timestamp >= '2025-04-01'", "time_spine.timestamp < '2025-07-01'"],
         ))
         assert by_bucket(resp, ["o", "r", "n"]) == {k: TWO_FACT_ROWS[k] for k in MONTHS[3:]}
 
@@ -461,14 +461,14 @@ class TestBounds:
 
 class TestFilters:
     async def test_a_fact_filter_keeps_every_month(self, engine) -> None:
-        resp = await engine.execute(spine_query(metrics=TWO_FACTS[:2], filters=["orders.amount > 60"]))
+        resp = await engine.execute(spine_query(metrics=TWO_FACTS[:2], filter=["orders.amount > 60"]))
         assert by_bucket(resp, ["o", "r"]) == {
             "2025-01": (100.0, None), "2025-02": (70.0, 20.0), "2025-03": (None, None),
             "2025-04": (None, None), "2025-05": (None, 5.0), "2025-06": (None, None),
         }
 
     async def test_a_filter_on_p_keeps_every_month(self, engine) -> None:
-        resp = await engine.execute(_per_group(filters=["customers.region = 'N'"]))
+        resp = await engine.execute(_per_group(filter=["customers.region = 'N'"]))
         assert by_bucket(resp, ["o", "r"], by=["region"]) == {
             k: v for k, v in PER_GROUP_ROWS.items() if k[0] == "N"
         }
@@ -478,13 +478,13 @@ class TestFilters:
         ["time_spine.timestamp >= '2025-01-01' and time_spine.timestamp < '2025-04-01' and customers.region = 'N'"],
     ], ids=["separate", "one-conjunction"])
     async def test_bounds_and_a_p_filter(self, engine, filters) -> None:
-        resp = await engine.execute(spine_query(metrics=PER_GROUP, date_range=None, filters=filters))
+        resp = await engine.execute(spine_query(metrics=PER_GROUP, date_range=None, filter=filters))
         assert by_bucket(resp, ["o", "r"]) == {
             "2025-01": (100.0, None), "2025-02": (70.0, 20.0), "2025-03": (None, None),
         }
 
     async def test_non_bound_spine_filter(self, engine) -> None:
-        query = spine_query(metrics=TWO_FACTS, filters=["date_part('day_of_week', time_spine.timestamp) = 1"])
+        query = spine_query(metrics=TWO_FACTS, filter=["date_part('day_of_week', time_spine.timestamp) = 1"])
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute(query, dry_run=True)
         msg = str(exc.value)

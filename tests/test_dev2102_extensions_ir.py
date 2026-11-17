@@ -25,7 +25,7 @@ CUSTOMERS_EXT = {
 ORDERS_EXT = {"source_name": "orders", "metrics": [{"name": "double_amount", "expression": "sum(amount * 2)"}]}
 WITH_FILTERS = {"source_name": "customers", "filters": ["credit > 5"]}
 MEASURES_ONLY = {"source_name": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}]}
-ONE_MEASURE = [{"formula": "count(*)"}]
+ONE_MEASURE = [{"expression": "count(*)"}]
 
 
 def _query(**raw: Any) -> SlayerQuery:
@@ -66,7 +66,7 @@ def mcp_server(tmp_path):
 
 class TestTyped:
     def test_extensions_validate_into_typed_objects(self) -> None:
-        q = _query(source_model="orders", extensions=[CUSTOMERS_EXT, ORDERS_EXT])
+        q = _query(population="orders", extensions=[CUSTOMERS_EXT, ORDERS_EXT])
         assert q.population == "orders"
         assert [type(e) for e in q.extensions or []] == [DatasetExtension, DatasetExtension]
         first = (q.extensions or [])[0]
@@ -83,23 +83,23 @@ class TestTyped:
         assert (q.extensions or [])[0].source_name == "customers"
 
     def test_source_model_name_ignores_extensions(self) -> None:
-        assert _query(source_model="orders", extensions=[CUSTOMERS_EXT]).population_name == "orders"
+        assert _query(population="orders", extensions=[CUSTOMERS_EXT]).population_name == "orders"
 
 
 class TestRejected:
     def test_two_extensions_of_one_model(self) -> None:
         with pytest.raises(ValidationError) as info:
-            _query(source_model="orders", extensions=[CUSTOMERS_EXT, {"source_name": "customers"}])
+            _query(population="orders", extensions=[CUSTOMERS_EXT, {"source_name": "customers"}])
         _assert_rejected_naming(info.value, "customers")
 
     def test_unknown_extension_key_is_named(self) -> None:
         with pytest.raises(ValidationError) as info:
-            _query(source_model="orders", extensions=[WITH_FILTERS])
+            _query(population="orders", extensions=[WITH_FILTERS])
         assert {(e["type"], str(e["loc"][-1])) for e in info.value.errors()} == {("extra_forbidden", "filters")}
 
     def test_an_extension_without_source_name(self) -> None:
         with pytest.raises(ValidationError, match="source_name"):
-            _query(source_model="orders", extensions=[{"metrics": []}])
+            _query(population="orders", extensions=[{"metrics": []}])
 
     def test_refinements_carry_no_extensions(self) -> None:
         with pytest.raises(ValidationError) as info:
@@ -179,13 +179,13 @@ class TestRestAndMcp:
 class TestRoundTrip:
     @pytest.mark.parametrize("mode", ["python", "json"])
     def test_dump_then_validate_equals_the_original(self, mode) -> None:
-        q = _query(source_model="orders", extensions=[CUSTOMERS_EXT, ORDERS_EXT], measures=["count(*)"])
+        q = _query(population="orders", extensions=[CUSTOMERS_EXT, ORDERS_EXT], metrics=["count(*)"])
         again = SlayerQuery.model_validate(q.model_dump(mode=mode))
         assert again == q
         assert all(isinstance(e, DatasetExtension) for e in again.extensions or [])
 
     def test_exclude_none_dump_is_what_the_author_wrote(self) -> None:
-        q = _query(source_model="orders", extensions=[MEASURES_ONLY])
+        q = _query(population="orders", extensions=[MEASURES_ONLY])
         dumped = q.model_dump(exclude_none=True)
         assert dumped["source_model"] == "orders"
         assert dumped["extensions"] == [MEASURES_ONLY]

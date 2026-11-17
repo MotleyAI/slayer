@@ -22,7 +22,7 @@ ALLOWED_DELTAS: dict[str, str] = {}
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -30,33 +30,33 @@ def _cases() -> dict:
     return {
         "measure/simple": _q(
             dimensions=["region"],
-            measures=[
-                {"formula": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
+            metrics=[
+                {"expression": "CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END",
                  "name": "big"},
             ],
         ),
         "measure/nested": _q(
             dimensions=["region"],
-            measures=[
-                {"formula": "CASE WHEN sum(amount) >= 14000 THEN 2 "
+            metrics=[
+                {"expression": "CASE WHEN sum(amount) >= 14000 THEN 2 "
                             "WHEN sum(amount) >= 8000 THEN 1 ELSE 0 END",
                  "name": "tier"},
             ],
         ),
         "measure/iif": _q(
             dimensions=["region"],
-            measures=[{"formula": "iif(sum(amount) >= 10000, 1, 0)", "name": "big"}],
+            metrics=[{"expression": "iif(sum(amount) >= 10000, 1, 0)", "name": "big"}],
         ),
         "measure/missing_else_null": _q(
             dimensions=["region"],
-            measures=[
-                {"formula": "CASE WHEN sum(amount) >= 10000 THEN 1 END", "name": "big"},
+            metrics=[
+                {"expression": "CASE WHEN sum(amount) >= 10000 THEN 1 END", "name": "big"},
             ],
         ),
         "filter/case_predicate": _q(
             dimensions=["region"],
-            filters=["CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END == 1"],
-            measures=[{"formula": "sum(amount)", "name": "rev"}],
+            filter=["CASE WHEN sum(amount) >= 10000 THEN 1 ELSE 0 END == 1"],
+            metrics=[{"expression": "sum(amount)", "name": "rev"}],
         ),
     }
 

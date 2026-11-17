@@ -336,14 +336,14 @@ async def cg_engine(
 # ---------------------------------------------------------------------------
 
 def spine_td(*, granularity: str = "month", date_range: Any = JAN_JUN) -> dict[str, Any]:
-    td: dict[str, Any] = {"dimension": "time_spine.timestamp", "granularity": granularity}
+    td: dict[str, Any] = {"field": "time_spine.timestamp", "granularity": granularity}
     if date_range is not None:
         td["date_range"] = date_range
     return td
 
 
 def m(expression: str, name: str) -> dict[str, str]:
-    return {"formula": expression, "name": name}
+    return {"expression": expression, "name": name}
 
 
 TWO_FACTS = [m("sum(orders.amount)", "o"), m("sum(returns.amount)", "r"), m("count(orders.id)", "n")]

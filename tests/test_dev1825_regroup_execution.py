@@ -29,7 +29,7 @@ async def exec_engine(request):
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -41,7 +41,7 @@ class TestMultiOutputProducerValues:
                 "AND count(amount, partition_by=city) > 1 THEN 1 ELSE 0 END")
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -57,7 +57,7 @@ class TestMultiOutputProducerValues:
                 {"expression": "CASE WHEN count(amount, partition_by=city) > 1 "
                                "THEN 1 ELSE 0 END", "name": "band_n"},
             ],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band_hi"]), int(r["orders.band_n"])):
               float(r["orders.s"]) for r in resp.data}
@@ -73,8 +73,8 @@ class TestNotFilterOnComputedDim:
     async def test_not_band_keeps_only_band_zero_groups(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            filters=["not (band == 1)"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["not (band == 1)"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -96,7 +96,7 @@ class TestDateRangeReachesProducer:
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             time_dimensions=jan,
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], month_key(r["orders.ordered_at"]),
                int(r["orders.band"])): float(r["orders.s"]) for r in resp.data}
@@ -110,8 +110,8 @@ class TestOrderByComputedDimDescending:
     async def test_order_by_band_desc(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
-            order=[{"column": "band", "direction": "desc"}],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            order=[{"field": "band", "direction": "desc"}],
         ))
         bands = [int(r["orders.band"]) for r in resp.data]
         assert bands == sorted(bands, reverse=True)

@@ -27,7 +27,7 @@ class TestIntegerRule:
 
     @pytest.mark.parametrize(("source", "target", "expected"), TRY_CAST_TARGET_CASES, ids=TRY_CAST_CASE_IDS)
     async def test_case(self, engine: SlayerQueryEngine, source: str, target: str, expected) -> None:
-        resp = await engine.execute(q(measures=[m(f"max(TRY_CAST({source} AS {target}))")]))
+        resp = await engine.execute(q(metrics=[m(f"max(TRY_CAST({source} AS {target}))")]))
         assert _value(single(resp), target=target) == expected, resp.sql
 
     async def test_fractional_double_column(self, engine: SlayerQueryEngine) -> None:
@@ -36,17 +36,17 @@ class TestIntegerRule:
         assert got == {1: 1, 2: None, 3: 2, 4: None, 5: None}, resp.sql
 
     async def test_rounding_is_the_author_s_choice(self, engine: SlayerQueryEngine) -> None:
-        resp = await engine.execute(q(measures=[m("max(TRY_CAST(round(CAST(1.6 AS DOUBLE)) AS INT))")]))
+        resp = await engine.execute(q(metrics=[m("max(TRY_CAST(round(CAST(1.6 AS DOUBLE)) AS INT))")]))
         assert _value(single(resp), target="INT") == 2, resp.sql
 
     @pytest.mark.parametrize("bound", ["-9223372036854775808", "9223372036854775807"])
     async def test_int64_bounds_of_an_integer(self, engine: SlayerQueryEngine, bound: str) -> None:
-        resp = await engine.execute(q(measures=[m(f"max(TRY_CAST(CAST('{bound}' AS BIGINT) AS BIGINT))")]))
+        resp = await engine.execute(q(metrics=[m(f"max(TRY_CAST(CAST('{bound}' AS BIGINT) AS BIGINT))")]))
         assert _value(single(resp), target="BIGINT") == int(bound), resp.sql
 
     @pytest.mark.parametrize(("source", "expected"), [("2.0", 2), ("CAST(quantity AS INT) * 2.0", 8), ("quantity", 4)])
     async def test_number_that_is_not_integer_text(self, engine: SlayerQueryEngine, source: str, expected: int) -> None:
-        resp = await engine.execute(q(measures=[m(f"max(TRY_CAST({source} AS INT))")]))
+        resp = await engine.execute(q(metrics=[m(f"max(TRY_CAST({source} AS INT))")]))
         assert _value(single(resp), target="INT") == expected, resp.sql
 
 
@@ -55,7 +55,7 @@ class TestJsonSource:
         ('{{"v": 32768}}', None), ('{{"v": "32768"}}', None), ('{{"v": 7}}', 7), ('{{"v": "7"}}', 7), ('{{"v": 1.5}}', None),
     ])
     async def test_narrow_target_range(self, engine: SlayerQueryEngine, json: str, expected) -> None:
-        resp = await engine.execute(q(measures=[m(f"max(TRY_CAST(json_value('{json}', '$.v') AS SMALLINT))")]))
+        resp = await engine.execute(q(metrics=[m(f"max(TRY_CAST(json_value('{json}', '$.v') AS SMALLINT))")]))
         assert _value(single(resp), target="SMALLINT") == expected, resp.sql
 
 
@@ -87,7 +87,7 @@ async def duckdb_engine(request):
 class TestUnsignedTarget:
     @pytest.mark.parametrize(("source", "expected"), [("'1.5'", None), ("' 7 '", 7), ("'-1'", None), ("'1e3'", None)])
     async def test_integer_rule(self, duckdb_engine: SlayerQueryEngine, source: str, expected) -> None:
-        resp = await duckdb_engine.execute(q(measures=[m(f"max(TRY_CAST({source} AS UBIGINT))")]))
+        resp = await duckdb_engine.execute(q(metrics=[m(f"max(TRY_CAST({source} AS UBIGINT))")]))
         assert _value(single(resp), target="UBIGINT") == expected, resp.sql
 
     @pytest.mark.parametrize(("source", "target", "expected"), [
@@ -96,7 +96,7 @@ class TestUnsignedTarget:
     ])
     async def test_wide_target_of_a_number(self, duckdb_engine: SlayerQueryEngine, source: str, target: str,
                                            expected) -> None:
-        resp = await duckdb_engine.execute(q(measures=[m(f"max(TRY_CAST({source} AS {target}))")]))
+        resp = await duckdb_engine.execute(q(metrics=[m(f"max(TRY_CAST({source} AS {target}))")]))
         assert _value(single(resp), target=target) == expected, resp.sql
 
 

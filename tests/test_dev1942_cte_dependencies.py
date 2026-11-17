@@ -111,7 +111,7 @@ class TestDualPhaseEmissionOrder:
     def _dual_q(self):
         return monthly_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=REAGG_STANDALONE, name="a"),
+            metrics=[DatasetMetric(expression=REAGG_STANDALONE, name="a"),
                       DatasetMetric(expression=HANDWRITTEN_MIN, name="b")],
             time_dimensions=month_td())
 
@@ -132,7 +132,7 @@ class TestDualPhaseEmissionOrder:
         # distinct re-keyed edges, not one global position).
         sql = await gen(monthly_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=REAGG_STANDALONE, name="a"),
+            metrics=[DatasetMetric(expression=REAGG_STANDALONE, name="a"),
                       DatasetMetric(expression=HANDWRITTEN_MIN, name="b"),
                       DatasetMetric(expression=REAGG_MAX_STANDALONE, name="c"),
                       DatasetMetric(expression=HANDWRITTEN_MAX, name="d")],
@@ -154,7 +154,7 @@ class TestDualPhaseEmissionOrder:
         _, engine = exec_backend
         query = monthly_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=REAGG_STANDALONE, name="a"),
+            metrics=[DatasetMetric(expression=REAGG_STANDALONE, name="a"),
                       DatasetMetric(expression=HANDWRITTEN_MIN, name="b"),
                       DatasetMetric(expression="cumsum(sum(amount))", name="c")],
             time_dimensions=month_td())

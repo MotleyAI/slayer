@@ -12,7 +12,7 @@ import pytest
 from slayer.core.query import ComputedDimension, SlayerQuery
 from tests._dev1920_fixtures import FISCAL_QUARTER, StoreFactory, make_store, run  # noqa: F401 — fixture
 
-MONTH = {"dimension": "created_at", "granularity": "month"}
+MONTH = {"field": "created_at", "granularity": "month"}
 
 #: (unnamed measure, its result key).
 MEASURE_KEYS = [

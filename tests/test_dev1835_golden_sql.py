@@ -44,34 +44,34 @@ def _cases() -> dict:
     return {
         "mig/bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="sum(amount, window='90d')", name="w"),
             ],
         ),
         "mig/bare_rk": q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="last(amount)", name="l"),
             ],
         ),
         "lift/band_x_wm": q(
             dimensions=["region", BAND], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="sum(amount, window='1y')", name="w"),
             ],
         ),
         "lift/cumsum_over_bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="cumsum(sum(amount, window='90d'))", name="x"),
             ],
         ),
         "dedup/dual_role": q(
             dimensions=["region", RBAND],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
             ],

@@ -105,7 +105,7 @@ class TestThreeLevelNesting:
         return q(
             dimensions=["region", {"expression": self.CBAND, "name": "cband"}],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="s"),
                 DatasetMetric(
                     expression="sum(amount, window='90d', partition_by=region)", name="w",

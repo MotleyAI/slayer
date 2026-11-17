@@ -61,11 +61,11 @@ async def app_null_engine(request):
 
 
 def _cross(prefix: str = "") -> list:
-    return [{"formula": f"sum({prefix}orders.amount)", "name": "s"},
-            {"formula": f"count({prefix}orders.id)", "name": "n"}]
+    return [{"expression": f"sum({prefix}orders.amount)", "name": "s"},
+            {"expression": f"count({prefix}orders.id)", "name": "n"}]
 
 
-LOCAL = [{"formula": "sum(amount)", "name": "s"}, {"formula": "count(id)", "name": "n"}]
+LOCAL = [{"expression": "sum(amount)", "name": "s"}, {"expression": "count(id)", "name": "n"}]
 
 
 def _assert_cells(actual: dict, expected: dict) -> None:
@@ -156,8 +156,8 @@ class TestParityWithMaterialisedAggregate:
         _assert_cells(n, case["source"][1])
 
 
-SPEND = {"formula": "sum(customers.spend)", "name": "c"}
-AMOUNT = {"formula": "sum(amount)", "name": "a"}
+SPEND = {"expression": "sum(customers.spend)", "name": "c"}
+AMOUNT = {"expression": "sum(amount)", "name": "a"}
 
 
 def _orders_assoc(**kw) -> dict:
@@ -174,7 +174,7 @@ class TestSpellingInvariantAssociation:
             self, null_engine, formula):
         """NULL-status cell = c1 (owner) + c7 (no orders) = 155 in every measure spelling."""
         resp = await null_engine.execute(q(_orders_assoc(
-            measures=[{"formula": formula, "name": "c"}])))
+            measures=[{"expression": formula, "name": "c"}])))
         _assert_cells(cells(resp, "orders.status", "orders.c"), SPEND_BY_STATUS)
 
     async def test_customers_rooted_twin_agrees(self, null_engine):

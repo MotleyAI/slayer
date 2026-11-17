@@ -127,7 +127,7 @@ def _pay(name: str, **extra) -> SlayerDataset:
         DatasetField(name="id", datatype=DataType.INT, primary_key=True),
         DatasetField(name="staff_id", datatype=DataType.INT),
         DatasetField(name="gross", datatype=DataType.DOUBLE),
-        *extra.pop("columns", []),
+        *extra.pop("fields", []),
     ]
     return SlayerDataset(name=name, sql_table="pay_runs", data_source=DS, fields=columns, relationships=[_staff_join()], **extra)
 
@@ -172,11 +172,11 @@ def table_datasets() -> list[SlayerDataset]:
             fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
             relationships=[DatasetRelationship(to="ghost", join_pairs=[["id", "id"]])],
         ),
-        _pay("pay", columns=[hr_dept], measures=[hr_total], filters=["hr.dept IS NOT NULL"]),
-        _pay("pay_col", columns=[hr_dept]),
-        _pay("pay_colfilter", columns=[masked]),
+        _pay("pay", fields=[hr_dept], metrics=[hr_total], filters=["hr.dept IS NOT NULL"]),
+        _pay("pay_col", fields=[hr_dept]),
+        _pay("pay_colfilter", fields=[masked]),
         _pay("pay_filter", filters=["hr.dept = 'eng'"]),
-        _pay("pay_measure", measures=[hr_total]),
+        _pay("pay_measure", metrics=[hr_total]),
         _pay("pay_agg", aggregations=[Aggregation(
             name="weighted", expression="SUM({value} * {weight})", params=[AggregationParam(name="weight", sql="hr.salary")],
         )]),

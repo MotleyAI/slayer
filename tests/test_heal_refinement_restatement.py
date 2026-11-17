@@ -12,8 +12,8 @@ from tests._query_heal_fixtures import BACKENDS, table
 from tests._saved_query_refinement_fixtures import REVENUE, refine_engine
 
 RESTATEMENTS = {
-    "named": {"formula": "revenue", "name": "revenue"},
-    "unnamed": {"formula": "revenue"},
+    "named": {"expression": "revenue", "name": "revenue"},
+    "unnamed": {"expression": "revenue"},
     "shorthand": "revenue",
 }
 FIELD_VALUES = {"label": "Rev", "type": "DOUBLE", "description": "Paid revenue", "meta": {"unit": "usd"}}
@@ -42,7 +42,7 @@ class TestRestatementCollapses:
 
     @pytest.mark.parametrize("form", sorted(RESTATEMENTS))
     def test_picks_the_named_entry_among_several(self, form: str) -> None:
-        base = saved({"formula": "count(*)", "name": "orders_n"}, REVENUE)
+        base = saved({"expression": "count(*)", "name": "orders_n"}, REVENUE)
         assert merge(base, RESTATEMENTS[form]) == base
 
     @pytest.mark.parametrize("field", sorted(FIELD_VALUES))
@@ -69,16 +69,16 @@ class TestRestatementConflicts:
         assert "revenue" in message
 
     def test_another_entry_named_like_the_saved_one_still_conflicts(self) -> None:
-        message = conflict(saved(REVENUE), RESTATEMENTS["named"], {"formula": "count(*)", "name": "revenue"})
+        message = conflict(saved(REVENUE), RESTATEMENTS["named"], {"expression": "count(*)", "name": "revenue"})
         assert "revenue" in message
 
     def test_same_name_other_formula_still_conflicts(self) -> None:
-        assert "revenue" in conflict(saved(REVENUE), {"formula": "count(*)", "name": "revenue"})
+        assert "revenue" in conflict(saved(REVENUE), {"expression": "count(*)", "name": "revenue"})
 
 
 class TestNotARestatement:
     def test_other_name_appends(self) -> None:
-        merged = merge(saved(REVENUE), {"formula": "revenue", "name": "r2"})
+        merged = merge(saved(REVENUE), {"expression": "revenue", "name": "r2"})
         assert [(m.name, m.expression) for m in merged.metrics or []] == [("revenue", "sum(amount)"), ("r2", "revenue")]
 
     def test_bare_name_of_no_saved_entry_appends(self) -> None:

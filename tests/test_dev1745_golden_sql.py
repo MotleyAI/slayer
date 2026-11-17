@@ -161,7 +161,7 @@ def _orders() -> SlayerDataset:
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -169,78 +169,78 @@ def _q(**kw) -> SlayerQuery:
 # The matrix. Keys are stable ids — renaming one is a golden change.
 # --------------------------------------------------------------------------- #
 def _cases() -> dict:
-    dim_status = [{"formula": "status", "name": "status"}]
+    dim_status = [{"expression": "status", "name": "status"}]
     return {
         # --- host scope, plain Mode-A surfaces ---
         "host/model_filter": _q(
             dimensions=dim_status,
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            metrics=[{"expression": "sum(amount)", "name": "m"}],
         ),
         "host/column_sql_derived": _q(
-            dimensions=[{"formula": "doubled", "name": "doubled"}],
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            dimensions=[{"expression": "doubled", "name": "doubled"}],
+            metrics=[{"expression": "sum(amount)", "name": "m"}],
         ),
         "host/column_filter_crossing": _q(
             dimensions=dim_status,
-            measures=[{"formula": "sum(eu_amount)", "name": "m"}],
+            metrics=[{"expression": "sum(eu_amount)", "name": "m"}],
         ),
         "host/const_expanding_ref": _q(
             dimensions=dim_status,
-            measures=[{"formula": "sum(amount)", "name": "m"}],
-            filters=["flag_const == 1"],
+            metrics=[{"expression": "sum(amount)", "name": "m"}],
+            filter=["flag_const == 1"],
         ),
         "host/quoted_dotted_identifier": _q(
-            dimensions=[{"formula": "quoted_cross", "name": "quoted_cross"}],
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            dimensions=[{"expression": "quoted_cross", "name": "quoted_cross"}],
+            metrics=[{"expression": "sum(amount)", "name": "m"}],
         ),
         "host/statement_keyword_column": _q(
-            dimensions=[{"formula": "select", "name": "select"}],
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            dimensions=[{"expression": "select", "name": "select"}],
+            metrics=[{"expression": "sum(amount)", "name": "m"}],
         ),
         "host/same_named_column_and_model": _q(
             dimensions=dim_status,
-            measures=[{"formula": "sum(amount)", "name": "m"}],
-            filters=["status == 'x'"],
+            metrics=[{"expression": "sum(amount)", "name": "m"}],
+            filter=["status == 'x'"],
         ),
         # --- derived expansion ---
         "expand/derived_of_derived": _q(
-            dimensions=[{"formula": "deep_pop", "name": "deep_pop"}],
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            dimensions=[{"expression": "deep_pop", "name": "deep_pop"}],
+            metrics=[{"expression": "sum(amount)", "name": "m"}],
         ),
         "expand/multi_model_derived": _q(
-            dimensions=[{"formula": "multi_model", "name": "multi_model"}],
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            dimensions=[{"expression": "multi_model", "name": "multi_model"}],
+            metrics=[{"expression": "sum(amount)", "name": "m"}],
         ),
         # --- cross-model _cm_ scope ---
         "cm/joined_measure": _q(
             to_many_handling="broadcast",
             dimensions=dim_status,
-            measures=[{"formula": "sum(customers.spend)"}],
+            metrics=[{"expression": "sum(customers.spend)"}],
         ),
         "cm/fragment_default_crossing": _q(
             to_many_handling="broadcast",
             dimensions=dim_status,
-            measures=[{"formula": "wscaled_sum(customers.spend)"}],
+            metrics=[{"expression": "wscaled_sum(customers.spend)"}],
         ),
         "cm/outer_where_wrapper": _q(
             dimensions=dim_status,
-            measures=[{"formula": "sum(eu_amount)", "name": "eu"}],
-            filters=["sum(eu_amount) > 100"],
+            metrics=[{"expression": "sum(eu_amount)", "name": "eu"}],
+            filter=["sum(eu_amount) > 100"],
         ),
         # --- windowed _src scope ---
         "windowed/src_scope": _q(
             time_dimensions=[{
-                "dimension": "created_at", "granularity": "month",
+                "field": "created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-12-31"],
             }],
-            measures=[{"formula": "sum(eu_amount)", "name": "m"}],
+            metrics=[{"expression": "sum(eu_amount)", "name": "m"}],
         ),
         "windowed/date_range_filter": _q(
             time_dimensions=[{
-                "dimension": "created_at", "granularity": "month",
+                "field": "created_at", "granularity": "month",
                 "date_range": ["2024-01-01", "2024-12-31"],
             }],
-            measures=[{"formula": "sum(amount)", "name": "m"}],
+            metrics=[{"expression": "sum(amount)", "name": "m"}],
         ),
     }
 

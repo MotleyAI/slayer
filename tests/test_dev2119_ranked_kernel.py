@@ -32,11 +32,11 @@ WINDOWED_SHAPES: dict[str, tuple[str, dict[str, float]]] = {
 
 
 def _region_query(expression: str) -> SlayerQuery:
-    return q(dimensions=["region"], measures=[m(expression)])
+    return q(dimensions=["region"], metrics=[m(expression)])
 
 
 def _windowed_query(expression: str) -> SlayerQuery:
-    return q(time_dimensions=[td("created_at")], measures=[m(expression)])
+    return q(time_dimensions=[td("created_at")], metrics=[m(expression)])
 
 
 @pytest.fixture(params=BACKENDS)

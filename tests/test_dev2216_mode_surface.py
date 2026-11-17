@@ -49,7 +49,7 @@ class TestRefinement:
     @pytest.mark.parametrize("saved", [None, "broadcast", "associate", "error"])
     def test_unset_and_null_inherit(self, saved: str | None) -> None:
         base = _saved(to_many_handling=saved)
-        assert _refined(base, filters=["amount > 1"]).to_many_handling == saved
+        assert _refined(base, filter=["amount > 1"]).to_many_handling == saved
         assert _refined(base, to_many_handling=None).to_many_handling == saved
 
     @pytest.mark.parametrize("saved", [None, "associate"])

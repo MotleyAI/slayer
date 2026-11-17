@@ -39,7 +39,7 @@ class TestMeasurePosition:
     async def test_last_by_tier_with_plain_sibling(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[DatasetMetric(expression=LAST_TIER, name="l"),
+            metrics=[DatasetMetric(expression=LAST_TIER, name="l"),
                       DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = rows_by(resp, TIER)
@@ -56,7 +56,7 @@ class TestMeasurePosition:
     async def test_first_by_region(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.regions.name"],
-            measures=[DatasetMetric(expression=FIRST_REGION, name="f"),
+            metrics=[DatasetMetric(expression=FIRST_REGION, name="f"),
                       DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = rows_by(resp, REGION)
@@ -70,8 +70,8 @@ class TestFilterPosition:
     async def test_filter_masks_by_the_measure_form_value(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
-            filters=[f"{LAST_TIER} > 100"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=[f"{LAST_TIER} > 100"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         # Only silver's last spend (150) clears 100.
         assert [(r[TIER], float(r["orders.s"])) for r in resp.data] == [
@@ -82,9 +82,9 @@ class TestOrderPosition:
     async def test_order_sorts_by_the_undeclared_aggregate(self, exec_engine: SlayerQueryEngine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
-            filters=["customers.tier is not null"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
-            order=[{"column": LAST_TIER, "direction": "desc"}],
+            filter=["customers.tier is not null"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            order=[{"field": LAST_TIER, "direction": "desc"}],
         ))
         # silver 150 > gold 60 > bronze 40; the sort key stays hidden.
         assert [r[TIER] for r in resp.data] == ["silver", "gold", "bronze"]
@@ -96,7 +96,7 @@ class TestDimensionPosition:
         band = f"CASE WHEN {LAST_TIER} > 100 THEN 'hi' ELSE 'lo' END"
         resp = await exec_engine.execute(q(
             dimensions=[{"expression": band, "name": "band"}],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = rows_by(resp, "orders.band")
         # hi = silver (30); lo = gold + bronze + NULL-customer (40+40+7).
@@ -115,7 +115,7 @@ class TestRanklessTargetStaysTyped:
         ]}))
         query = q(
             dimensions=["customers.tier"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="last(customers.spend, partition_by=customers.tier)",
                 name="l")],
         )

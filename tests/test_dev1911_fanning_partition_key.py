@@ -109,7 +109,7 @@ def _rows(resp, dim: str, val: str) -> dict:
 
 
 def _regions_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "regions")
+    kw.setdefault("population", "regions")
     return SlayerQuery(**kw)
 
 
@@ -130,7 +130,7 @@ def _status_xmodel_q(mode: str) -> SlayerQuery:
     unattributable only from the cross-model ``customers`` root — the mode-aware case."""
     return orders_q(
         dimensions=["status"],
-        measures=[DatasetMetric(expression="sum(customers.spend, partition_by=status)", name="w")],
+        metrics=[DatasetMetric(expression="sum(customers.spend, partition_by=status)", name="w")],
         to_many_handling=mode)
 
 
@@ -141,7 +141,7 @@ class TestPathlessDerivedFanningEveryMode:
     async def test_repro_raises_naming_the_hop(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            measures=[DatasetMetric(expression="sum(pop, partition_by=bad_pop)", name="w")],
+            metrics=[DatasetMetric(expression="sum(pop, partition_by=bad_pop)", name="w")],
             to_many_handling=mode))
 
 
@@ -152,7 +152,7 @@ class TestChainedDerived:
     async def test_chained_raises_naming_the_hop(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop2"],
-            measures=[DatasetMetric(expression="sum(pop, partition_by=bad_pop2)", name="w")],
+            metrics=[DatasetMetric(expression="sum(pop, partition_by=bad_pop2)", name="w")],
             to_many_handling=mode))
 
 
@@ -163,37 +163,37 @@ class TestEveryPosition:
     async def test_transform_partition_set(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            measures=[DatasetMetric(expression="rank(sum(pop), partition_by=bad_pop, direction='desc')", name="w")],
+            metrics=[DatasetMetric(expression="rank(sum(pop), partition_by=bad_pop, direction='desc')", name="w")],
             to_many_handling=mode))
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_reaggregation_inner(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["name"],
-            measures=[DatasetMetric(expression="avg(sum(pop, partition_by=bad_pop))", name="w")],
+            metrics=[DatasetMetric(expression="avg(sum(pop, partition_by=bad_pop))", name="w")],
             to_many_handling=mode))
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_computed_dimension(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["CASE WHEN sum(pop, partition_by=bad_pop) > 150 THEN 1 ELSE 0 END"],
-            measures=[DatasetMetric(expression="sum(pop)", name="p")],
+            metrics=[DatasetMetric(expression="sum(pop)", name="p")],
             to_many_handling=mode))
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_filter_position(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            measures=[DatasetMetric(expression="sum(pop)", name="p")],
-            filters=["sum(pop, partition_by=bad_pop) > 150"],
+            metrics=[DatasetMetric(expression="sum(pop)", name="p")],
+            filter=["sum(pop, partition_by=bad_pop) > 150"],
             to_many_handling=mode))
 
     @pytest.mark.parametrize("mode", MODES)
     async def test_order_position(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            measures=[DatasetMetric(expression="sum(pop)", name="p")],
-            order=[{"column": "sum(pop, partition_by=bad_pop)", "direction": "asc"}],
+            metrics=[DatasetMetric(expression="sum(pop)", name="p")],
+            order=[{"field": "sum(pop, partition_by=bad_pop)", "direction": "asc"}],
             to_many_handling=mode))
 
     @pytest.mark.parametrize("mode", MODES)
@@ -201,7 +201,7 @@ class TestEveryPosition:
         await _assert_fails_naming_hop(fan_engine, orders_q(
             dimensions=["bad_amt"],
             time_dimensions=["date_trunc('month', ordered_at)"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(amount, window='90d', partition_by=bad_amt)", name="w")],
             to_many_handling=mode))
 
@@ -209,7 +209,7 @@ class TestEveryPosition:
     async def test_cross_model_aggregate_with_fanning_host_key(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(region_events.value, partition_by=bad_pop)", name="w")],
             to_many_handling=mode))
 
@@ -221,7 +221,7 @@ class TestUnanalysableKey:
     async def test_unparseable_fails_closed_no_false_hop(self, unparse_engine, mode):
         query = _regions_q(
             dimensions=["name"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(pop, partition_by=unparseable)", name="w")],
             to_many_handling=mode)
         with pytest.raises(ValueError) as ei:
@@ -251,7 +251,7 @@ class TestHostSafeKeyStaysModeAware:
         """A local derived key (``derived_pop = pop * 2``) crosses no hop — it still runs."""
         resp = await engine.execute(_regions_q(
             dimensions=["derived_pop"],
-            measures=[DatasetMetric(expression="sum(pop, partition_by=derived_pop)", name="w")]))
+            metrics=[DatasetMetric(expression="sum(pop, partition_by=derived_pop)", name="w")]))
         assert _rows(resp, "regions.derived_pop", "regions.w") == pytest.approx(
             {200.0: 100.0, 400.0: 200.0})
 
@@ -264,14 +264,14 @@ class TestDiagnosticNamesHop:
     async def test_path_bearing_spelling_names_the_hop(self, engine, mode):
         await _assert_fails_naming_hop(engine, orders_q(
             dimensions=[BAD_POP],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(amount, partition_by=customers.regions.bad_pop)", name="w")],
             to_many_handling=mode))
 
     async def test_error_names_the_remedy(self, engine):
         msg = await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            measures=[DatasetMetric(expression="sum(pop, partition_by=bad_pop)", name="w")]))
+            metrics=[DatasetMetric(expression="sum(pop, partition_by=bad_pop)", name="w")]))
         assert "cardinality" in msg, msg
         assert "unique key" in msg, msg
 
@@ -284,7 +284,7 @@ class TestUnreachableAndAmbiguousFailClosed:
     async def test_unreachable_path_fails_closed_no_false_hop(self, island_engine):
         query = _regions_q(
             dimensions=["name"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(pop, partition_by=island.value)", name="w")])
         with pytest.raises(UnrelatedDatasetError) as ei:
             await island_engine.execute(query)
@@ -293,7 +293,7 @@ class TestUnreachableAndAmbiguousFailClosed:
     async def test_ambiguous_path_fails_closed_deterministically(self, ambig_engine):
         query = _regions_q(
             dimensions=["name"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(pop, partition_by=region_events.value)", name="w")])
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await ambig_engine.execute(query)
@@ -309,7 +309,7 @@ class TestAxiom8Clause:
     async def test_fanning_from_host_fails_in_every_mode(self, engine, mode):
         await _assert_fails_naming_hop(engine, _regions_q(
             dimensions=["bad_pop"],
-            measures=[DatasetMetric(expression="sum(pop, partition_by=bad_pop)", name="w")],
+            metrics=[DatasetMetric(expression="sum(pop, partition_by=bad_pop)", name="w")],
             to_many_handling=mode))
 
     async def test_unattributable_from_further_root_still_associates(self, engine):

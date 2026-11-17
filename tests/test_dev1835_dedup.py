@@ -84,7 +84,7 @@ class TestDedupPositive:
         band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
         query = q(
             dimensions=["region", {"expression": band, "name": "rband"}],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
             ],
@@ -111,7 +111,7 @@ class TestDedupPositive:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, window='1y')", name="wb"),
                 DatasetMetric(
                     expression="sum(amount, window='1y', partition_by=region)",
@@ -131,7 +131,7 @@ class TestDedupPositive:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="last(amount)", name="lb"),
                 DatasetMetric(expression="last(amount, partition_by=region)", name="le"),
             ],
@@ -152,7 +152,7 @@ class TestDedupPositive:
         query = q(
             dimensions=["region", {"expression": band, "name": "rband"}],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
                 DatasetMetric(expression="sum(amount, window='1y')", name="w"),
             ],
@@ -174,7 +174,7 @@ class TestDedupNegative:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, window='90d')", name="w90"),
                 DatasetMetric(expression="sum(amount, window='45d')", name="w45"),
             ],
@@ -191,7 +191,7 @@ class TestDedupNegative:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, window='90d')", name="w"),
                 DatasetMetric(expression="sum(ok_amount, window='90d')", name="wok"),
             ],
@@ -210,7 +210,7 @@ class TestDedupNegative:
         dialect, engine = shipped_backend
         query = q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="last(amount)", name="lo"),
                 DatasetMetric(expression="last(amount, shipped_at)", name="ls"),
             ],

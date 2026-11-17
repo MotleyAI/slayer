@@ -31,7 +31,7 @@ async def engine(request):
 
 
 async def _value(engine: SlayerQueryEngine, expr: str, *, row: int = 1):
-    return lib_values(await engine.execute(lib_query(expr, filters=[f"id = {row}"])))[row]
+    return lib_values(await engine.execute(lib_query(expr, filter=[f"id = {row}"])))[row]
 
 
 async def _rejected(engine: SlayerQueryEngine, expr: str, *needles: str) -> str:
@@ -51,7 +51,7 @@ class TestPostgresMeaning:
     async def test_non_ascii_characters(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(lib_query({"expression": "reverse(s)", "name": "v1"},
                                               {"expression": "ascii(s)", "name": "v2"},
-                                              {"expression": "left(s, 1)", "name": "v3"}, filters=["id = 2"]))
+                                              {"expression": "left(s, 1)", "name": "v3"}, filter=["id = 2"]))
         row = resp.data[0]
         assert (row["lib.v1"], int(row["lib.v2"]), row["lib.v3"]) == ("é€", 8364, "€")
 
@@ -62,19 +62,19 @@ class TestPostgresMeaning:
         resp = await engine.execute(lib_query({"expression": "split_part(s, '/', 2)", "name": "v1"},
                                               {"expression": "split_part(s, '/', -1)", "name": "v2"},
                                               {"expression": "split_part(s, '/', 9)", "name": "v3"},
-                                              filters=["id = 3"]))
+                                              filter=["id = 3"]))
         row = resp.data[0]
         assert (row["lib.v1"], row["lib.v2"], row["lib.v3"]) == ("b", "c", "")
 
     async def test_lpad_truncates(self, engine: SlayerQueryEngine) -> None:
-        values = lib_values(await engine.execute(lib_query("lpad(s, 3, '0')", filters=["id IN (1, 8)"])))
+        values = lib_values(await engine.execute(lib_query("lpad(s, 3, '0')", filter=["id IN (1, 8)"])))
         assert values == {1: "ABC", 8: "0ab"}
 
     async def test_concat_ws_skips_nulls(self, engine: SlayerQueryEngine) -> None:
         assert await _value(engine, "concat_ws('-', 'x', p, 'z')", row=10) == "x-z"
 
     async def test_plain_text_containment(self, engine: SlayerQueryEngine) -> None:
-        assert lib_ids(await engine.execute(lib_query(filters=["contains(tag, '5%')"]))) == {6}
+        assert lib_ids(await engine.execute(lib_query(filter=["contains(tag, '5%')"]))) == {6}
 
     @pytest.mark.parametrize(("expr", "expected"), [
         ("div(7, 2)", 3), ("div(-7, 2)", -3), ("div(7, -2)", -3), ("div(-7, -2)", 3),
@@ -92,12 +92,12 @@ class TestPostgresMeaning:
         assert await _value(engine, "div(i, m)", row=3) is None
 
     async def test_asin_column_out_of_domain(self, engine: SlayerQueryEngine) -> None:
-        values = lib_values(await engine.execute(lib_query("asin(x)", filters=["id IN (1, 2)"])))
+        values = lib_values(await engine.execute(lib_query("asin(x)", filter=["id IN (1, 2)"])))
         assert values[2] is None
         assert float(values[1]) == pytest.approx(0.5235987755982989)
 
     async def test_greatest_ignores_nulls_in_any_position(self, engine: SlayerQueryEngine) -> None:
-        values = lib_values(await engine.execute(lib_query("greatest(a, b, c)", filters=["id IN (1, 2, 3, 4)"])))
+        values = lib_values(await engine.execute(lib_query("greatest(a, b, c)", filter=["id IN (1, 2, 3, 4)"])))
         assert {k: (None if v is None else int(v)) for k, v in values.items()} == {1: 2, 2: 3, 3: 2, 4: None}
 
 
@@ -274,7 +274,7 @@ class TestFloorDivisionHint:
         query = lib_query("i // m")
         with pytest.raises(ValueError, match=r"div\(a, b\)"):
             await engine.execute(query)
-        values = lib_values(await engine.execute(lib_query("div(i, m)", filters=["id = 1"])))
+        values = lib_values(await engine.execute(lib_query("div(i, m)", filter=["id = 1"])))
         assert int(values[1]) == 3
 
 

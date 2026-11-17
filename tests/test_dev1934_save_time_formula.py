@@ -364,7 +364,7 @@ class TestMcp:
         server, _engine, _store = mcp
         out = await _call(server=server, name="create_model", arguments={
             "name": "qb", "query": {"population": "orders", "metrics": ["count(*)"]},
-            "aggregations": [{"name": "sum_sq", "formula": "SUM({value} * {value})"}],
+            "aggregations": [{"name": "sum_sq", "expression": "SUM({value} * {value})"}],
         })
         assert "Error" in out
         assert "aggregations" in out
@@ -374,7 +374,7 @@ class TestMcp:
         await engine.save_dataset(_dataset("SUM({value})"))
         out = await _call(server=server, name="edit_model", arguments={
             "model_name": "orders", "data_source": _DS,
-            "aggregations": [{"name": "custom_agg", "formula": _BROKEN}],
+            "aggregations": [{"name": "custom_agg", "expression": _BROKEN}],
         })
         assert "Error" in out or "error" in out
         kept = await store.get_dataset("orders", data_source=_DS)
@@ -405,7 +405,7 @@ class TestBlankAggregationFieldsMigration:
         assert len(raw["aggregations"][0]["params"]) == 2
 
     def test_blank_custom_formula_still_fails_to_load(self) -> None:
-        raw = _v11([{"name": "custom_agg", "formula": ""}])
+        raw = _v11([{"name": "custom_agg", "expression": ""}])
         with pytest.raises(ValidationError, match="'custom_agg' is not a built-in"):
             SlayerDataset.model_validate(raw)
 

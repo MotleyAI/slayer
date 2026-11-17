@@ -39,24 +39,24 @@ def by_region(resp, key: str) -> dict:
     return {r["orders.region"]: r[key] for r in resp.data}
 
 
-MONTH_TD = {"dimension": "ordered_at", "granularity": "month"}
+MONTH_TD = {"field": "ordered_at", "granularity": "month"}
 
 
 class TestQuerySurfaces:
     async def test_measure_formula(self, exec_engine) -> None:
-        resp = await exec_engine.execute(q(measures=["sum(amount) * {k} / 100"], variables={"k": 10}))
+        resp = await exec_engine.execute(q(metrics=["sum(amount) * {k} / 100"], variables={"k": 10}))
         assert only_value(resp) == pytest.approx(21.0)
 
     @pytest.mark.parametrize("dimension", ["amount * {k}", {"expression": "amount * {k}"}])
     async def test_computed_dimension(self, exec_engine, dimension) -> None:
-        resp = await exec_engine.execute(q(dimensions=[dimension], measures=["count(*)"], variables={"k": 10}))
+        resp = await exec_engine.execute(q(dimensions=[dimension], metrics=["count(*)"], variables={"k": 10}))
         got = {float(r["orders.amount_k"]): r["orders._count"] for r in resp.data}
         assert got == {100.0: 1, 200.0: 1, 250.0: 2, 300.0: 1, 400.0: 1, 600.0: 1}
 
     async def test_order_expression(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"], measures=["sum(amount)"],
-            order=[{"column": "sum(amount) * {k}", "direction": "desc"}], variables={"k": -1},
+            dimensions=["region"], metrics=["sum(amount)"],
+            order=[{"field": "sum(amount) * {k}", "direction": "desc"}], variables={"k": -1},
         ))
         assert [r["orders.amount_sum"] for r in resp.data] == [50.0, 60.0, 100.0]
 
@@ -66,12 +66,12 @@ class TestQuerySurfaces:
         ("sum(CASE WHEN amount > 30 THEN {hi} ELSE 0 END)", {"hi": 1}, 2),
     ])
     async def test_operand_positions(self, exec_engine, measure: str, variables: dict, expected) -> None:
-        resp = await exec_engine.execute(q(measures=[measure], variables=variables))
+        resp = await exec_engine.execute(q(metrics=[measure], variables=variables))
         assert only_value(resp) == pytest.approx(expected)
 
     async def test_transform_argument(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            measures=["lag(sum(amount), {n})"], time_dimensions=[MONTH_TD], variables={"n": 1},
+            metrics=["lag(sum(amount), {n})"], time_dimensions=[MONTH_TD], variables={"n": 1},
         ))
         rows = sorted(resp.data, key=lambda r: month_key(r["orders.ordered_at"]))
         lagged = [next(v for k, v in r.items() if k != "orders.ordered_at") for r in rows]
@@ -79,27 +79,27 @@ class TestQuerySurfaces:
 
     async def test_whole_in_rhs(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=[{"expression": "region in ({regions})", "name": "ns"}], measures=["sum(amount)"],
+            dimensions=[{"expression": "region in ({regions})", "name": "ns"}], metrics=["sum(amount)"],
             variables={"regions": ["North", "South"]},
         ))
         assert {r["orders.ns"]: r["orders.amount_sum"] for r in resp.data} == {None: 60.0, True: 150.0}
 
     async def test_quoted_string_value_escaped(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=[{"expression": "concat(status, '{suffix}')", "name": "tagged"}], measures=["count(*)"],
+            dimensions=[{"expression": "concat(status, '{suffix}')", "name": "tagged"}], metrics=["count(*)"],
             variables={"suffix": "'s"},
         ))
         assert {r["orders.tagged"]: r["orders._count"] for r in resp.data} == {"ok's": 6, "hold's": 1}
 
     async def test_quoted_string_value_in_measure(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            measures=["sum(CASE WHEN status == '{name}' THEN 1 ELSE 0 END)"], variables={"name": "O'Brien"},
+            metrics=["sum(CASE WHEN status == '{name}' THEN 1 ELSE 0 END)"], variables={"name": "O'Brien"},
         ))
         assert only_value(resp) == 0
 
     async def test_variable_date_range(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            measures=["sum(amount)"],
+            metrics=["sum(amount)"],
             time_dimensions=[{**MONTH_TD, "date_range": ["{start}", "{end}"]}],
             variables={"start": "2024-01-01", "end": "2024-02-28"},
         ))
@@ -108,7 +108,7 @@ class TestQuerySurfaces:
 
     async def test_malformed_substituted_bound(self, exec_engine) -> None:
         query = q(
-            measures=["sum(amount)"],
+            metrics=["sum(amount)"],
             time_dimensions=[{**MONTH_TD, "date_range": ["{start}", None]}],
             variables={"start": "2025/01/01"},
         )
@@ -121,21 +121,21 @@ class TestQuerySurfaces:
 
 class TestTemplateNaming:
     async def test_template_derived_key(self, exec_engine) -> None:
-        resp = await exec_engine.execute(q(measures=["sum(amount) * {k} / 100"], variables={"k": 10}))
+        resp = await exec_engine.execute(q(metrics=["sum(amount) * {k} / 100"], variables={"k": 10}))
         assert only_row(resp) == {"orders.amount_sum_k_100": pytest.approx(21.0)}
 
     async def test_equal_unnamed_template_measures_merge(self, exec_engine) -> None:
-        resp = await exec_engine.execute(q(measures=["sum(amount) * {k}", "sum(amount) * {k}"], variables={"k": 10}))
+        resp = await exec_engine.execute(q(metrics=["sum(amount) * {k}", "sum(amount) * {k}"], variables={"k": 10}))
         assert only_row(resp) == {"orders.amount_sum_k": pytest.approx(2100.0)}
 
     async def test_different_values_colliding_template_keys_fail(self, exec_engine) -> None:
-        query = q(measures=["sum(amount) * {a_b}", "sum(amount) * {a__b}"], variables={"a_b": 2, "a__b": 3})
+        query = q(metrics=["sum(amount) * {a_b}", "sum(amount) * {a__b}"], variables={"a_b": 2, "a__b": 3})
         with pytest.raises(NameCollisionError):
             await exec_engine.execute(query)
 
     def test_template_entries_stay_unnamed(self) -> None:
         query = apply_variables_to_query(
-            query=q(dimensions=["amount * {k}"], measures=["sum(amount) * {k}"]), variables={"k": 10},
+            query=q(dimensions=["amount * {k}"], metrics=["sum(amount) * {k}"]), variables={"k": 10},
         )
         elab = elaborate_query(query=query, bundle=bundle(dev1739_datasets()))
         assert elab.prebound is not None
@@ -144,8 +144,8 @@ class TestTemplateNaming:
 
     async def test_filter_and_order_by_template_name(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"], measures=["sum(amount) * {k}"],
-            filters=["amount_sum_k > 550"], order=[{"column": "amount_sum_k", "direction": "desc"}],
+            dimensions=["region"], metrics=["sum(amount) * {k}"],
+            filter=["amount_sum_k > 550"], order=[{"field": "amount_sum_k", "direction": "desc"}],
             variables={"k": 10},
         ))
         assert [(r["orders.region"], r["orders.amount_sum_k"]) for r in resp.data] == [
@@ -154,8 +154,8 @@ class TestTemplateNaming:
 
     async def test_filter_and_order_by_substituted_formula_text(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["region"], measures=["sum(amount) * {k}"],
-            filters=["sum(amount) * {k} > 550"], order=[{"column": "sum(amount) * {k}", "direction": "desc"}],
+            dimensions=["region"], metrics=["sum(amount) * {k}"],
+            filter=["sum(amount) * {k} > 550"], order=[{"field": "sum(amount) * {k}", "direction": "desc"}],
             variables={"k": 10},
         ))
         assert [set(r) for r in resp.data] == [{"orders.region", "orders.amount_sum_k"}] * 2
@@ -163,7 +163,7 @@ class TestTemplateNaming:
 
     async def test_computed_dimension_template_name(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
-            dimensions=["amount * {k}"], measures=["count(*)"], filters=["amount_k > 450"], variables={"k": 10},
+            dimensions=["amount * {k}"], metrics=["count(*)"], filter=["amount_k > 450"], variables={"k": 10},
         ))
         assert {float(r["orders.amount_k"]) for r in resp.data} == {600.0}
 
@@ -177,7 +177,7 @@ class TestTemplateNaming:
 
     async def test_query_backed_model_columns_stable(self, exec_engine: SlayerQueryEngine) -> None:
         saved = await exec_engine.create_dataset_from_query(
-            query=q(dimensions=["region"], measures=["sum(amount) * {k}"]), name="scaled_by_region",
+            query=q(dimensions=["region"], metrics=["sum(amount) * {k}"]), name="scaled_by_region",
             variables={"k": 1},
         )
         assert "amount_sum_k" in {c.name for c in saved.fields}
@@ -200,7 +200,7 @@ class TestSavedMeasures:
         await exec_engine.save_dataset(orders_dataset().model_copy(update={
             "metrics": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         }))
-        resp = await exec_engine.execute(q(measures=["amt_scaled"], variables={"k": 10}))
+        resp = await exec_engine.execute(q(metrics=["amt_scaled"], variables={"k": 10}))
         assert only_value(resp) == pytest.approx(2100.0)
 
     async def test_saved_measure_uses_model_default(self, exec_engine: SlayerQueryEngine) -> None:
@@ -208,7 +208,7 @@ class TestSavedMeasures:
             "measures": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
             "query_variables": {"k": 10},
         }))
-        resp = await exec_engine.execute(q(measures=["amt_scaled"]))
+        resp = await exec_engine.execute(q(metrics=["amt_scaled"]))
         assert only_value(resp) == pytest.approx(2100.0)
 
     async def test_saved_measure_on_stage_source(self, exec_engine: SlayerQueryEngine) -> None:
@@ -226,7 +226,7 @@ class TestSavedMeasures:
         await exec_engine.save_dataset(customers_dataset().model_copy(update={
             "metrics": [DatasetMetric(name="spend_scaled", expression="sum(spend) * {k}")],
         }))
-        query = q(measures=["customers.spend_scaled"], variables={"k": 10})
+        query = q(metrics=["customers.spend_scaled"], variables={"k": 10})
         with pytest.raises(UnresolvedPlaceholderError, match=r"\{k\}"):
             await exec_engine.execute(query)
 
@@ -234,7 +234,7 @@ class TestSavedMeasures:
         await exec_engine.save_dataset(orders_dataset().model_copy(update={
             "metrics": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         }))
-        query = q(measures=["amt_scaled"], variables={"other": 1})
+        query = q(metrics=["amt_scaled"], variables={"other": 1})
         with pytest.raises(ValueError, match="Undefined variable 'k'"):
             await exec_engine.execute(query)
 
@@ -266,7 +266,7 @@ class TestErrors:
             await exec_engine.execute(query)
 
     async def test_escaped_braces_reach_binding(self, exec_engine) -> None:
-        query = q(measures=["sum(amount)"], filters=["amount > {{k}}"])
+        query = q(metrics=["sum(amount)"], filter=["amount > {{k}}"])
         with pytest.raises(UnresolvedPlaceholderError) as info:
             await exec_engine.execute(query)
         msg = str(info.value)
@@ -277,7 +277,7 @@ class TestErrors:
         assert "}}" in msg, msg
 
     async def test_multi_element_set_is_invalid_variable_name(self, exec_engine) -> None:
-        query = q(measures=["amount:sum * {a, b}"])
+        query = q(metrics=["amount:sum * {a, b}"])
         with pytest.raises(ValueError, match="Invalid variable name 'a, b'") as info:
             await exec_engine.execute(query)
         assert not isinstance(info.value, UnresolvedPlaceholderError)
@@ -301,14 +301,14 @@ class TestSave:
         await exec_engine.save_dataset(orders_dataset().model_copy(update={
             "metrics": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
         }))
-        query = q(measures=["amt_scaled"])
+        query = q(metrics=["amt_scaled"])
         with pytest.raises(ValueError, match="Undefined variable 'k'"):
             await exec_engine.create_dataset_from_query(query=query, name="refused")
         assert await exec_engine.storage.get_dataset("refused") is None
 
     async def test_stage_variables_satisfy_save(self, exec_engine: SlayerQueryEngine) -> None:
         saved = await exec_engine.create_dataset_from_query(
-            query=q(dimensions=["region"], measures=["sum(amount) * {k}"], variables={"k": 10}), name="staged",
+            query=q(dimensions=["region"], metrics=["sum(amount) * {k}"], variables={"k": 10}), name="staged",
         )
         assert saved.fields
 
@@ -317,12 +317,12 @@ class TestSave:
             "measures": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
             "query_variables": {"k": 10},
         }))
-        saved = await exec_engine.create_dataset_from_query(query=q(measures=["amt_scaled"]), name="sourced")
+        saved = await exec_engine.create_dataset_from_query(query=q(metrics=["amt_scaled"]), name="sourced")
         assert saved.fields
 
     async def test_defaulted_variable_renders_by_default(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.create_dataset_from_query(
-            query=q(dimensions=["region"], measures=["sum(amount) * {k}"]), name="scaled", variables={"k": 10},
+            query=q(dimensions=["region"], metrics=["sum(amount) * {k}"]), name="scaled", variables={"k": 10},
         )
         default = (await exec_engine.execute("scaled", dry_run=True)).sql
         at_10 = (await exec_engine.execute("scaled", variables={"k": 10}, dry_run=True)).sql

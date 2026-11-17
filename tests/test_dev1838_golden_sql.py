@@ -31,30 +31,30 @@ def _cases() -> dict:
     return {
         "fuse/plain_hidden_order": q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
             order=[OrderItem.model_validate({"field": "avg(amount)", "direction": "desc"})],
         ),
         "fuse/post_filter_on_transform": q(
             dimensions=["status"], time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="cumsum(sum(amount))", name="x"),
             ],
-            filters=["cumsum(sum(amount)) > 50"],
+            filter=["cumsum(sum(amount)) > 50"],
         ),
         "fuse/multi_alias": q(
             dimensions=["status"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m1"),
                 DatasetMetric(expression="sum(amount)", name="m2"),
             ],
         ),
         "fuse/dim_only_dedup": q(dimensions=["region", "city"]),
         "fuse/scalar_local": q(
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         ),
         "fuse/scalar_cm_spine": q(
-            measures=[DatasetMetric(expression="sum(customers.spend)", name="cm")],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="cm")],
         ),
     }
 

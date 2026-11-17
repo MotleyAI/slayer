@@ -24,11 +24,11 @@ async def _sql(
     dialect: str, *, filters: list[str], date_range=None, granularity: str = "month", column: str = "ts",
     metrics: list | None = None,
 ) -> str:
-    td: dict = {"dimension": column, "granularity": granularity}
+    td: dict = {"field": column, "granularity": granularity}
     if date_range is not None:
         td["date_range"] = date_range
     query = {
-        "population": "ev", "metrics": metrics or [{"formula": "count(*)", "name": "n"}],
+        "population": "ev", "metrics": metrics or [{"expression": "count(*)", "name": "n"}],
         "time_dimensions": [td], "filter": filters,
     }
     return await _engine_generate(
@@ -103,7 +103,7 @@ async def test_granularity_call_literal_comparison_is_a_raw_column_bound(dialect
     ("date_add(d, 2, 'hour') >= '2025-Q1'", None),
     ("date_trunc('month', ts) >= '2025-Q1'", None),
     ("now() >= '2025-Q1'", None),
-    ("max(ts) >= '2025-Q1'", [{"formula": "count(*)", "name": "n"}]),
+    ("max(ts) >= '2025-Q1'", [{"expression": "count(*)", "name": "n"}]),
 ], ids=["column", "timestamp_add", "date_add", "datetime_add", "trunc", "now", "aggregate"])
 async def test_bigquery_bounds_are_plain_iso_text(filt, measures) -> None:
     sql = _flat(await _sql("bigquery", filters=[filt], metrics=measures))

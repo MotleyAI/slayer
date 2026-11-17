@@ -59,7 +59,7 @@ class TestKernelSynthesis:
     def test_bare_windowed_attach_carries_trailing_window_kernel(self) -> None:
         planned = _plan(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
+            metrics=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
         ))
         (attach,) = _combined_attaches(planned)
         kern = attach.kernel
@@ -78,7 +78,7 @@ class TestKernelSynthesis:
     def test_plain_partitioned_attaches_default_to_plain_kernel(self) -> None:
         planned = _plan(q(
             dimensions=["status", BAND],
-            measures=[M, DatasetMetric(
+            metrics=[M, DatasetMetric(
                 expression="sum(amount, partition_by=status)", name="rm")],
         ))
         assert planned.regroup_attach_plans
@@ -90,8 +90,8 @@ class TestKernelSynthesis:
         partly-frame-bound one keeps its id and gains the population residual."""
         planned = _plan(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
-            filters=["ordered_at >= '2024-02-01' and status = 'ok'"],
+            metrics=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
+            filter=["ordered_at >= '2024-02-01' and status = 'ok'"],
         ))
         (attach,) = _combined_attaches(planned)
         kern = attach.kernel
@@ -103,8 +103,8 @@ class TestKernelSynthesis:
     def test_wholly_frame_bound_filter_is_excluded_from_src(self) -> None:
         planned = _plan(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
-            filters=["ordered_at >= '2024-02-01'"],
+            metrics=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
+            filter=["ordered_at >= '2024-02-01'"],
         ))
         (attach,) = _combined_attaches(planned)
         assert attach.kernel.src_where_filter_ids == []
@@ -117,7 +117,7 @@ class TestKernelSynthesis:
                 field="customers.signup_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(customers.spend, window='1y')", name="w")],
         ))
         (attach,) = _combined_attaches(planned)
@@ -134,7 +134,7 @@ class TestRankedKernelSynthesis:
     def test_bare_last_attach_carries_ranked_kernel(self) -> None:
         planned = _plan(q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="last(amount)", name="lb")],
+            metrics=[DatasetMetric(expression="last(amount)", name="lb")],
         ))
         (attach,) = _combined_attaches(planned)
         kern = attach.kernel
@@ -146,7 +146,7 @@ class TestRankedKernelSynthesis:
     def test_explicit_ranking_arg_lands_on_the_kernel(self) -> None:
         planned = _plan(q(
             dimensions=["status"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="last(amount, customers.signup_at)", name="ls")],
         ))
         (attach,) = _combined_attaches(planned)
@@ -159,7 +159,7 @@ class TestRankedKernelSynthesis:
     def test_cross_model_last_attach_carries_ranked_kernel(self) -> None:
         planned = _plan(q(
             dimensions=["customers.tier"],
-            measures=[DatasetMetric(expression="last(customers.spend)", name="sl")],
+            metrics=[DatasetMetric(expression="last(customers.spend)", name="sl")],
         ))
         (attach,) = _combined_attaches(planned)
         kern = attach.kernel
@@ -174,7 +174,7 @@ def _plan48(query):
 
 
 def _q48(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -199,14 +199,14 @@ class TestRankingKeyPrecedence:
     def test_the_kernel_carries_an_explicit_ranking_time_key(self) -> None:
         planned = _plan48(_q48(
             dimensions=["status"],
-            measures=[{"formula": "last(amount, shipped_at)", "name": "l"}],
+            metrics=[{"expression": "last(amount, shipped_at)", "name": "l"}],
         ))
         assert _ranking_leaf(planned) == "shipped_at"
 
     def test_a_temporal_dimension_outranks_the_model_default(self) -> None:
         planned = _plan48(_q48(
             dimensions=["shipped_at"],
-            measures=[{"formula": "last(amount)", "name": "l"}],
+            metrics=[{"expression": "last(amount)", "name": "l"}],
         ))
         assert _ranking_leaf(planned) == "shipped_at"
 
@@ -214,15 +214,15 @@ class TestRankingKeyPrecedence:
         """Never the truncated bucket — ranking within a month by the month
         ties every row in it."""
         planned = _plan48(_q48(
-            time_dimensions=[{"dimension": "shipped_at", "granularity": "month"}],
-            measures=[{"formula": "last(amount)", "name": "l"}],
+            time_dimensions=[{"field": "shipped_at", "granularity": "month"}],
+            metrics=[{"expression": "last(amount)", "name": "l"}],
         ))
         assert _ranking_leaf(planned) == "shipped_at"
 
     def test_the_model_default_is_the_last_resort(self) -> None:
         planned = _plan48(_q48(
             dimensions=["status"],
-            measures=[{"formula": "last(amount)", "name": "l"}],
+            metrics=[{"expression": "last(amount)", "name": "l"}],
         ))
         ranking = _ranked_kernel_of(planned).ranking_time_key
         assert isinstance(ranking, FieldKey)
@@ -256,8 +256,8 @@ class TestRankingKeyPrecedence:
         """Precedence is per-scope: a cross-model ranked kernel ranks TARGET
         rows, so a host time dimension is never a candidate."""
         planned = _plan48(_q48(
-            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[{"formula": "last(customers.spend)", "name": "l"}],
+            time_dimensions=[{"field": "created_at", "granularity": "month"}],
+            metrics=[{"expression": "last(customers.spend)", "name": "l"}],
             to_many_handling="broadcast",
         ))
         (attach,) = [
@@ -269,8 +269,8 @@ class TestRankingKeyPrecedence:
         assert attach.kernel.ranking_time_key.leaf == "signup_at"
 
     def test_a_host_column_as_a_target_ranking_key_is_rejected(self) -> None:
-        query = _q48(measures=[
-            {"formula": "last(customers.spend, created_at)", "name": "l"},
+        query = _q48(metrics=[
+            {"expression": "last(customers.spend, created_at)", "name": "l"},
         ])
         with pytest.raises(ValueError) as excinfo:
             _plan48(query)
@@ -287,8 +287,8 @@ class TestRankedKernelGrain:
     def test_one_join_pair_per_query_dimension(self) -> None:
         planned = _plan48(_q48(
             dimensions=["status"],
-            time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[{"formula": "last(amount)", "name": "l"}],
+            time_dimensions=[{"field": "created_at", "granularity": "month"}],
+            metrics=[{"expression": "last(amount)", "name": "l"}],
         ))
         (attach,) = planned.regroup_attach_plans
         assert isinstance(attach.kernel, RankedProducerKernel)
@@ -298,7 +298,7 @@ class TestRankedKernelGrain:
 
     def test_a_scalar_ranked_kernel_has_an_empty_grain(self) -> None:
         planned = _plan48(_q48(
-            measures=[{"formula": "last(amount)", "name": "l"}],
+            metrics=[{"expression": "last(amount)", "name": "l"}],
         ))
         (attach,) = planned.regroup_attach_plans
         assert isinstance(attach.kernel, RankedProducerKernel)
@@ -307,8 +307,8 @@ class TestRankedKernelGrain:
     def test_an_order_only_ranked_measure_stays_hidden(self) -> None:
         planned = _plan48(_q48(
             dimensions=["status"],
-            measures=[{"formula": "sum(amount)", "name": "s"}],
-            order=[{"column": "last(amount)", "direction": "desc"}],
+            metrics=[{"expression": "sum(amount)", "name": "s"}],
+            order=[{"field": "last(amount)", "direction": "desc"}],
         ))
         (attach,) = planned.regroup_attach_plans
         assert isinstance(attach.kernel, RankedProducerKernel)
@@ -324,7 +324,7 @@ class TestRankedKernelGrain:
     def test_a_rerooted_cross_model_last_is_a_target_rooted_kernel(self) -> None:
         planned = _plan48(_q48(
             dimensions=["customers.regions.name"],
-            measures=[{"formula": "last(customers.spend)", "name": "l"}],
+            metrics=[{"expression": "last(customers.spend)", "name": "l"}],
         ))
         (attach,) = [
             a for a in planned.regroup_attach_plans
@@ -338,7 +338,7 @@ class TestKernelIdentity:
         def windowed_attach(window: str):
             planned = _plan(q(
                 dimensions=["region"], time_dimensions=month_td(),
-                measures=[DatasetMetric(
+                metrics=[DatasetMetric(
                     expression=f"sum(amount, window='{window}')", name="w")],
             ))
             (attach,) = _combined_attaches(planned)
@@ -353,7 +353,7 @@ class TestKernelIdentity:
 
 class TestKernelModel:
     def test_default_kernel_is_plain(self) -> None:
-        planned = _plan(q(dimensions=["status"], measures=[M, DatasetMetric(
+        planned = _plan(q(dimensions=["status"], metrics=[M, DatasetMetric(
             expression="sum(amount, partition_by=status)", name="rm")]))
         (attach,) = _combined_attaches(planned)
         assert isinstance(attach.kernel, PlainProducerKernel)

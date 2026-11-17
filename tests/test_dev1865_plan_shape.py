@@ -42,8 +42,8 @@ class TestMaskEntries:
     def test_planned_query_exposes_typed_masks_per_conjunct(self) -> None:
         planned = plan(q(
             dimensions=["region"],
-            filters=["sum(amount) > 100", "status = 'ok'"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["sum(amount) > 100", "status = 'ok'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert hasattr(planned, "masks"), "PlannedQuery must carry typed mask entries"
         masks = planned.masks
@@ -58,8 +58,8 @@ class TestMaskEntries:
     def test_mask_slots_are_hidden(self) -> None:
         planned = plan(q(
             dimensions=["region"],
-            filters=["sum(amount) > 100", "status = 'ok'"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["sum(amount) > 100", "status = 'ok'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert hasattr(planned, "masks")
         slots = _slots_by_id(planned)
@@ -71,8 +71,8 @@ class TestMaskEntries:
     def test_mask_slot_ids_are_stable_across_planning(self) -> None:
         query = q(
             dimensions=["region"],
-            filters=["sum(amount) > 100", "status = 'ok'"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["sum(amount) > 100", "status = 'ok'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         first, second = plan(query), plan(query)
         assert hasattr(first, "masks")
@@ -81,8 +81,8 @@ class TestMaskEntries:
     def test_field_conjunct_is_stratum_zero(self) -> None:
         planned = plan(q(
             dimensions=["region"],
-            filters=["status = 'ok'"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["status = 'ok'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert hasattr(planned, "masks")
         (mask,) = planned.masks
@@ -101,15 +101,15 @@ class TestDev1840DispositionUnchanged:
 
     def test_root_local_filter_stays_inline(self) -> None:
         att = _dev1840_attach(plan_query(query=_dev1840_q(
-            dimensions=["customers.tier"], measures=[_DEV1840_CM],
-            filters=["customers.tier = 'gold'"],
+            dimensions=["customers.tier"], metrics=[_DEV1840_CM],
+            filter=["customers.tier = 'gold'"],
         ), bundle=_dev1840_bundle()), "customers")
         assert list(att.producer_plan.semi_join_filters) == []
 
     def test_unsafe_reverse_hop_pushes_one_semi_join(self) -> None:
         att = _dev1840_attach(plan_query(query=_dev1840_q(
-            dimensions=["customers.tier"], measures=[_DEV1840_CM],
-            filters=["channel = 'app'"],
+            dimensions=["customers.tier"], metrics=[_DEV1840_CM],
+            filter=["channel = 'app'"],
         ), bundle=_dev1840_bundle()), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.to for h in sj.hops] == ["orders"]

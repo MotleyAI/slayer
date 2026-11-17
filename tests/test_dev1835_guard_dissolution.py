@@ -62,7 +62,7 @@ def _assert_map(got: dict, expected: dict) -> None:
 async def _run_x(engine, dialect, *, metrics, filters=None, dims=("region",)):
     query = q(
         dimensions=list(dims), time_dimensions=month_td(),
-        measures=metrics, **({"filter": filters} if filters else {}),
+        metrics=metrics, **({"filter": filters} if filters else {}),
     )
     resp = await engine.execute(query)
     dry = await engine.execute(query, dry_run=True)
@@ -176,8 +176,8 @@ class TestWindowedFilters:
         _, engine = exec_backend
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            filters=["sum(amount, window='90d') > 40 or status = 'ok'"],
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            filter=["sum(amount, window='90d') > 40 or status = 'ok'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         )
         with pytest.raises(ValueError, match="neither a field nor a measure"):
             await engine.execute(query)

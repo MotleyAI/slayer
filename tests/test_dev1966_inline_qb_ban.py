@@ -118,7 +118,7 @@ class TestOtherInlineSourcesRejected:
         }
         measures = [m("sum(amount)", "a")]
         with pytest.raises(ValueError, match="(?i)inline"):
-            query(source_model=inline, dimensions=["customer_id"], measures=measures)
+            query(population=inline, dimensions=["customer_id"], metrics=measures)
 
     def test_inline_sql_backed(self) -> None:
         inline = {
@@ -130,13 +130,13 @@ class TestOtherInlineSourcesRejected:
         }
         measures = [m("sum(amount)", "a")]
         with pytest.raises(ValueError, match="(?i)inline"):
-            query(source_model=inline, dimensions=["customer_id"], measures=measures)
+            query(population=inline, dimensions=["customer_id"], metrics=measures)
 
 
 class TestExtensionsAccepted:
     async def test_extension_over_a_stored_query_backed_model(self, engine) -> None:
         ext = {"source_name": "cust_rev", "metrics": [m("sum(rev * 2)", "r2")]}
         resp = await engine.execute(query(
-            source_model="cust_rev", extensions=[ext], dimensions=["customer_id"], measures=["r2"]))
+            population="cust_rev", extensions=[ext], dimensions=["customer_id"], metrics=["r2"]))
         assert rows_by(resp.data, key="cust_rev.customer_id", value="cust_rev.r2") == {
             c: 2 * v for c, v in CUST_REV.items()}

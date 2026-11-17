@@ -32,9 +32,9 @@ async def exec_engine(tmp_path):
 
 def _q(dimensions: list) -> SlayerQuery:
     return fx.q(
-        source_model="orders",
+        population="orders",
         dimensions=dimensions,
-        measures=[{"formula": "count(*)"}],
+        metrics=[{"expression": "count(*)"}],
     )
 
 
@@ -107,10 +107,10 @@ class TestNonRegression:
         self, exec_engine, bound, expected,
     ) -> None:
         query = fx.q(
-            source_model="orders",
+            population="orders",
             dimensions=["status"],
-            measures=[{"formula": "count(*)"}],
-            filters=[f"date_trunc('month', created_at) >= '{bound}'"],
+            metrics=[{"expression": "count(*)"}],
+            filter=[f"date_trunc('month', created_at) >= '{bound}'"],
         )
         resp = await exec_engine.execute(query)
         assert {r["orders.status"]: r["orders._count"] for r in resp.data} == expected
@@ -120,7 +120,7 @@ class TestNonRegression:
     ) -> None:
         """Position parity: a bare ``date_trunc`` measure gets the same treatment as another row-level temporal scalar."""
         async def outcome(formula: str):
-            query = fx.q(source_model="orders", dimensions=["status"], measures=[{"formula": formula, "name": "v"}])
+            query = fx.q(population="orders", dimensions=["status"], metrics=[{"expression": formula, "name": "v"}])
             try:
                 resp = await exec_engine.execute(query)
             except Exception as exc:  # noqa: BLE001 — the raised class is the compared outcome

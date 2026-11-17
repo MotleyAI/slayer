@@ -11,8 +11,8 @@ from slayer.core.errors import PartitionKeyError
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._query_heal_fixtures import BACKENDS, assert_equivalent, heal_engine
 
-MONTH = {"dimension": "created_at", "granularity": "month"}
-YEAR = {"dimension": "created_at", "granularity": "year"}
+MONTH = {"field": "created_at", "granularity": "month"}
+YEAR = {"field": "created_at", "granularity": "year"}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -73,14 +73,14 @@ class TestProjectedTimeDimension:
 
 class TestOtherTimeColumns:
     async def test_joined_time_column(self, engine: SlayerQueryEngine) -> None:
-        td = [{"dimension": "customers.signup_at", "granularity": "month"}]
+        td = [{"field": "customers.signup_at", "granularity": "month"}]
         await assert_equivalent(
             engine, partitioned("date_trunc('month', customers.signup_at)", time_dimensions=td),
             partitioned("customers.signup_at", time_dimensions=td),
         )
 
     async def test_custom_granularity(self, engine: SlayerQueryEngine) -> None:
-        td = [{"dimension": "created_at", "granularity": "fiscal_year"}]
+        td = [{"field": "created_at", "granularity": "fiscal_year"}]
         await assert_equivalent(
             engine, partitioned("date_trunc('fiscal_year', created_at)", time_dimensions=td), partitioned("created_at", time_dimensions=td),
         )

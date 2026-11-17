@@ -87,10 +87,10 @@ def table_datasets() -> list[SlayerDataset]:
     return [
         _orders("orders"),
         _orders("done_orders", filters=["status = 'done'"]),
-        _orders("ups_orders", joins=to_shipments, filters=["shipments.carrier = 'ups'"]),
-        _orders("ups_or_big_orders", joins=to_shipments, filters=["shipments.carrier = 'ups' or amount > 350"]),
-        _orders("split_entry_orders", joins=to_shipments, filters=["shipments.id = 20", "shipments.id = 21"]),
-        _orders("joint_entry_orders", joins=to_shipments, filters=["shipments.id = 20 and shipments.id = 21"]),
+        _orders("ups_orders", relationships=to_shipments, filters=["shipments.carrier = 'ups'"]),
+        _orders("ups_or_big_orders", relationships=to_shipments, filters=["shipments.carrier = 'ups' or amount > 350"]),
+        _orders("split_entry_orders", relationships=to_shipments, filters=["shipments.id = 20", "shipments.id = 21"]),
+        _orders("joint_entry_orders", relationships=to_shipments, filters=["shipments.id = 20 and shipments.id = 21"]),
         SlayerDataset(name="shipments", data_source="test", sql_table="shipments", fields=[
             _id(), DatasetField(name="order_ref", datatype=DataType.INT), DatasetField(name="carrier", datatype=DataType.TEXT),
         ]),

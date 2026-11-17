@@ -57,8 +57,8 @@ class TestAssocInline:
             kwargs["time_dimensions"] = month_td()
         resp = await engine.execute(q(
             **kwargs,
-            filters=["customers.tier = 'gold'"],
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            filter=["customers.tier = 'gold'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         ))
         month_col = f", {_MONTH_EXPR[dialect]}" if with_month else ""
         oracle = raw_rows(dialect=dialect, db_path=db_path, sql=(
@@ -94,7 +94,7 @@ class TestFusionParity:
         )
         query = q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         )
         return plan_query(query=query, bundle=bundle), bundle
 

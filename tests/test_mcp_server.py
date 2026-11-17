@@ -1654,7 +1654,7 @@ class TestEditModel:
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
-            "measures": [{"name": "aov", "formula": "sum(revenue) / count(*)"}],
+            "measures": [{"name": "aov", "expression": "sum(revenue) / count(*)"}],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -1672,7 +1672,7 @@ class TestEditModel:
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
-            "measures": [{"name": "aov", "formula": "avg(revenue)"}],
+            "measures": [{"name": "aov", "expression": "avg(revenue)"}],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -1713,7 +1713,7 @@ class TestEditModel:
         await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
-            "aggregations": [{"name": "my_agg", "formula": "SUM({value})"}],
+            "aggregations": [{"name": "my_agg", "expression": "SUM({value})"}],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -1728,7 +1728,7 @@ class TestEditModel:
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
-            "aggregations": [{"name": "my_agg", "formula": "AVG({value})"}],
+            "aggregations": [{"name": "my_agg", "expression": "AVG({value})"}],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -2338,8 +2338,8 @@ class TestEditModelMultiStageRename:
         """Renaming an inner-stage measure old→new refreshes the cached SQL/columns."""
         await self._setup_orders_with_two_stage_dataset(
             storage,
-            inner_metrics=[{"formula": "sum(amount)", "name": "old"}],
-            outer_metrics=[{"formula": "sum(old)"}],
+            inner_metrics=[{"expression": "sum(amount)", "name": "old"}],
+            outer_metrics=[{"expression": "sum(old)"}],
         )
         # Sanity: initial cache reflects 'old'.
         before = await storage.get_dataset("qb")
@@ -2392,10 +2392,10 @@ class TestEditModelMultiStageRename:
         await self._setup_orders_with_two_stage_dataset(
             storage,
             inner_metrics=[
-                {"formula": "sum(amount)", "name": "rev"},
-                {"formula": "count(*)", "name": "n"},
+                {"expression": "sum(amount)", "name": "rev"},
+                {"expression": "count(*)", "name": "n"},
             ],
-            outer_metrics=[{"formula": "sum(rev)"}],
+            outer_metrics=[{"expression": "sum(rev)"}],
         )
         before = await storage.get_dataset("qb")
         assert before is not None

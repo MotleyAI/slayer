@@ -27,7 +27,7 @@ def _zoned_lib() -> SlayerDataset:
 
 
 async def _sql(expr: str, *, dialect: str = "bigquery", filtered: bool = False, zoned: bool = False) -> str:
-    query = lib_query(filters=[expr]) if filtered else lib_query(expr)
+    query = lib_query(filter=[expr]) if filtered else lib_query(expr)
     sql = await emit_lib(query, dialect=dialect, datasets=[_zoned_lib()] if zoned else None)
     return " ".join(sql.upper().split())
 

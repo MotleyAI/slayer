@@ -57,8 +57,8 @@ async def engine():
 
 
 async def _dry(engine, **kw):
-    kw.setdefault("source_model", "orders")
-    kw.setdefault("measures", [{"formula": "count(*)", "name": "n"}])
+    kw.setdefault("population", "orders")
+    kw.setdefault("metrics", [{"expression": "count(*)", "name": "n"}])
     return await engine.execute(SlayerQuery.model_validate(kw), dry_run=True)
 
 
@@ -168,12 +168,12 @@ class TestOperandRejections:
     ])
     async def test_non_temporal_operand(self, engine, filt: str, operand: str) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, filters=[filt])
+            await _dry(engine, filter=[filt])
         _assert_type_error(exc, operand, "DATE", "TIMESTAMP")
 
     async def test_numeric_measure_operand(self, engine) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, measures=[{"formula": "max(date_part('year', amount))", "name": "y"}])
+            await _dry(engine, metrics=[{"expression": "max(date_part('year', amount))", "name": "y"}])
         _assert_type_error(exc, "amount")
 
     @pytest.mark.parametrize("filt,literal", [
@@ -186,7 +186,7 @@ class TestOperandRejections:
     ])
     async def test_invalid_literal(self, engine, filt: str, literal: str) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, filters=[filt])
+            await _dry(engine, filter=[filt])
         assert literal in str(exc.value)
 
 
@@ -194,17 +194,17 @@ class TestCountRules:
     @pytest.mark.parametrize("count", ["1.5", "True", "None", "'1'", "-0.5"])
     async def test_bad_literal_count(self, engine, count: str) -> None:
         with pytest.raises(ValueError, match=r"(?s)date_add.*count|count.*date_add"):
-            await _dry(engine, filters=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
+            await _dry(engine, filter=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
 
     @pytest.mark.parametrize("count", ["1.5", "True", "None", "'1'", "-0.5"])
     async def test_bad_interval_literal_count(self, engine, count: str) -> None:
         with pytest.raises(ValueError, match=r"(?s)(date_add|interval).*count|count.*(date_add|interval)"):
-            await _dry(engine, filters=[f"order_date + interval({count}, 'day') > order_date"])
+            await _dry(engine, filter=[f"order_date + interval({count}, 'day') > order_date"])
 
     @pytest.mark.parametrize("count", ["status", "created_at", "is_paid"])
     async def test_non_numeric_interval_count(self, engine, count: str) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, filters=[f"order_date - interval({count}, 'day') > order_date"])
+            await _dry(engine, filter=[f"order_date - interval({count}, 'day') > order_date"])
         _assert_type_error(exc, "date_add")
 
     @pytest.mark.parametrize("count", [
@@ -212,7 +212,7 @@ class TestCountRules:
     ])
     async def test_non_numeric_computed_count(self, engine, count: str) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, filters=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
+            await _dry(engine, filter=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
         _assert_type_error(exc, "date_add")
 
     @pytest.mark.parametrize("count", [
@@ -221,20 +221,20 @@ class TestCountRules:
     ])
     async def test_non_numeric_composite_count(self, engine, count: str) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, filters=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
+            await _dry(engine, filter=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
         _assert_type_error(exc, "date_add")
 
     async def test_non_numeric_aggregate_count(self, engine) -> None:
         with pytest.raises(QueryTypeError) as exc:
-            await _dry(engine, measures=[{"formula": "date_add(max(order_date), max(status), 'day')", "name": "m"}])
+            await _dry(engine, metrics=[{"expression": "date_add(max(order_date), max(status), 'day')", "name": "m"}])
         _assert_type_error(exc, "date_add")
 
     @pytest.mark.parametrize("count", ["3", "-3", "sla_days", "-sla_days", "sla_days * 2", "id"])
     async def test_numeric_counts_accepted(self, engine, count: str) -> None:
-        await _dry(engine, filters=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
+        await _dry(engine, filter=[f"date_add(order_date, {count}, 'day') > '2024-01-01'"])
 
     async def test_aggregate_count_accepted(self, engine) -> None:
-        await _dry(engine, measures=[{"formula": "date_add(max(order_date), max(sla_days), 'month')", "name": "m"}])
+        await _dry(engine, metrics=[{"expression": "date_add(max(order_date), max(sla_days), 'month')", "name": "m"}])
 
 
 class TestAcceptedOperands:
@@ -262,7 +262,7 @@ class TestAcceptedOperands:
         "interval(7, 'day') + order_date > current_date()",
     ])
     async def test_filter_binds(self, engine, filt: str) -> None:
-        await _dry(engine, filters=[filt])
+        await _dry(engine, filter=[filt])
 
     @pytest.mark.parametrize("formula", [
         "date_diff('day', min(created_at), max(created_at))",
@@ -273,25 +273,25 @@ class TestAcceptedOperands:
         "max(shipped_at - interval(2, 'day'))",
     ])
     async def test_measure_binds(self, engine, formula: str) -> None:
-        await _dry(engine, measures=[{"formula": formula, "name": "m"}])
+        await _dry(engine, metrics=[{"expression": formula, "name": "m"}])
 
     async def test_placeholder_in_date_position(self, engine) -> None:
         await _dry(
-            engine, filters=["date_diff('day', '{launch}', created_at) >= 0"], variables={"launch": "2024-05-01"},
+            engine, filter=["date_diff('day', '{launch}', created_at) >= 0"], variables={"launch": "2024-05-01"},
         )
 
     async def test_placeholder_invalid_date_rejected(self, engine) -> None:
         with pytest.raises(QueryTypeError):
             await _dry(
-                engine, filters=["date_diff('day', '{launch}', created_at) >= 0"], variables={"launch": "someday"},
+                engine, filter=["date_diff('day', '{launch}', created_at) >= 0"], variables={"launch": "someday"},
             )
 
     async def test_placeholder_unit(self, engine) -> None:
-        await _dry(engine, filters=["date_diff('{u}', created_at, shipped_at) > 1"], variables={"u": "day"})
+        await _dry(engine, filter=["date_diff('{u}', created_at, shipped_at) > 1"], variables={"u": "day"})
 
     async def test_placeholder_unit_must_be_listed(self, engine) -> None:
         with pytest.raises(ValueError, match="week_sunday"):
-            await _dry(engine, filters=["date_diff('{u}', created_at, shipped_at) > 1"], variables={"u": "fortnight"})
+            await _dry(engine, filter=["date_diff('{u}', created_at, shipped_at) > 1"], variables={"u": "fortnight"})
 
 
 class TestArityEndToEnd:
@@ -304,7 +304,7 @@ class TestArityEndToEnd:
     ])
     async def test_wrong_arity_rejected_naming_function(self, engine, filt: str, name: str) -> None:
         with pytest.raises(ValueError, match=rf"(?s){name}.*argument"):
-            await _dry(engine, filters=[filt])
+            await _dry(engine, filter=[filt])
 
 
 class TestStageOperands:

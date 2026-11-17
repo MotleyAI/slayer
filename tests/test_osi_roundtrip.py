@@ -28,7 +28,7 @@ EXAMPLE_DIR = Path(__file__).parent.parent / "docs" / "examples" / "13_osi_impor
 
 Run = Callable[[dict[str, Any]], Awaitable[list[dict[str, Any]]]]
 
-_MONTH = [{"dimension": "ordered_on", "granularity": "month"}]
+_MONTH = [{"field": "ordered_on", "granularity": "month"}]
 
 
 @contextlib.asynccontextmanager
@@ -109,7 +109,7 @@ def _datasets() -> list[SlayerDataset]:
         rich,
         orders(name="active_orders", columns=[*orders_columns(), col("deleted_at", DataType.TIMESTAMP)], joins=[],
                filters=["deleted_at IS NULL", "status <> 'test'"], metrics=BASIC_MEASURES, hidden=True),
-        visits(joins=[visitor], measures=[slayer_metric("n_visits", "count(*)")], access_tags=["ops"]),
+        visits(relationships=[visitor], metrics=[slayer_metric("n_visits", "count(*)")], access_tags=["ops"]),
         monthly_revenue(),
     ]
 

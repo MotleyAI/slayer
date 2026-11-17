@@ -98,7 +98,7 @@ class TestPositiveResolutionThroughBinder:
 
     async def test_transform_input_expanded(self) -> None:
         model = _dataset([_REV])
-        td = [{"dimension": "created_at", "granularity": "month"}]
+        td = [{"field": "created_at", "granularity": "month"}]
         assert await _gen(model, "cumsum(rev)", time_dimensions=td) == await _gen(
             _dataset([]), "cumsum(sum(amount))", time_dimensions=td)
 
@@ -177,7 +177,7 @@ class TestTransformArgEligibilityDropped:
         with pytest.raises(ValueError):
             await _gen(model, "rank(sum(amount), partition_by=grp, direction='desc')",
                        dimensions=["status"],
-                       time_dimensions=[{"dimension": "created_at",
+                       time_dimensions=[{"field": "created_at",
                                          "granularity": "month"}])
 
 

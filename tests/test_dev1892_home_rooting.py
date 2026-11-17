@@ -84,7 +84,7 @@ class TestBroadcastHomeRule:
         """C broadcast roots at customers (weight=spend forces the home shallower than the source) and repeats across status."""
         resp = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression=_C_BROADCAST, name="w")]))
+            metrics=[DatasetMetric(expression=_C_BROADCAST, name="w")]))
         vals = _vals(resp, "orders.w")
         for v in vals.values():
             assert float(v) == pytest.approx(CBCAST_ALL_CUSTOMERS)
@@ -95,7 +95,7 @@ class TestBroadcastHomeRule:
         """Home == host (orders determines both) → status attributable, a per-status weighted avg with no broadcast warning."""
         resp = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="weighted_avg(customers.spend, weight=amount)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in HOST_HOME_BY_STATUS.items():
@@ -108,7 +108,7 @@ class TestHostLocusSourceRendering:
         """A measure-local filter (north_spend) renders from the host home, joining the customers→regions hop."""
         resp = await filter_engine.execute(bcast_q(
             dimensions=["status"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="wsum(customers.north_spend, weight=amount)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in FILTERED_WSUM_BY_STATUS.items():
@@ -118,7 +118,7 @@ class TestHostLocusSourceRendering:
         """A source-owned default over a to-one path (wsum4 scale=regions.pop) resolves on the source model and joins its hop."""
         resp = await filter_engine.execute(bcast_q(
             dimensions=["status"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="wsum4(customers.spend, weight=amount)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in WSUM4_BY_STATUS.items():
@@ -131,7 +131,7 @@ class TestHomeRootingPlanShape:
         key in the home-rooted producer's own (root) coordinates (DEV-1910)."""
         planned = plan_query(
             query=assoc_q(dimensions=["status"],
-                          measures=[DatasetMetric(expression=_C_BROADCAST, name="w")]),
+                          metrics=[DatasetMetric(expression=_C_BROADCAST, name="w")]),
             bundle=_orders_bundle())
         [attach] = _association_attaches(planned)
         assert attach.kernel.entity_keys == [FieldKey(path=(), leaf="id")]
@@ -140,7 +140,7 @@ class TestHomeRootingPlanShape:
         """The broadcast producer CTE reads FROM customers with a LEFT JOIN regions, never FROM regions."""
         sql = await gen(bcast_q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression=_C_BROADCAST, name="w")]), dialect="sqlite")
+            metrics=[DatasetMetric(expression=_C_BROADCAST, name="w")]), dialect="sqlite")
         assert "FROM customers AS customers" in sql
         assert "LEFT JOIN regions" in sql
         assert "FROM regions" not in sql
@@ -153,7 +153,7 @@ class TestDerivedColumnEdgeCases:
         bare (nonexistent) column reference."""
         resp = await derived_default_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="wsum5(customers.spend)", name="w")]))
+            metrics=[DatasetMetric(expression="wsum5(customers.spend)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in DERIVED_DEFAULT_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -161,7 +161,7 @@ class TestDerivedColumnEdgeCases:
     async def test_fanning_derived_source_fails_closed(self) -> None:
         """A host-locus source whose Column.sql crosses a fanning hop is rejected,
         never emitted as a multiplying join."""
-        query = bcast_q(dimensions=["status"], measures=[DatasetMetric(
+        query = bcast_q(dimensions=["status"], metrics=[DatasetMetric(
             expression="weighted_avg(customers.bad_spend, weight=amount)", name="w")])
         models = fanning_derived_source_datasets()
         with pytest.raises(ValueError, match="unproven join hop"):
@@ -173,10 +173,10 @@ class TestCardinalityInvariant:
         """Adding the broadcast C measure keeps the status rows and amount:sum sibling values (semantics Law 7)."""
         base = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="sum(amount)", name="tot")]))
+            metrics=[DatasetMetric(expression="sum(amount)", name="tot")]))
         withw = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            measures=[DatasetMetric(expression="sum(amount)", name="tot"),
+            metrics=[DatasetMetric(expression="sum(amount)", name="tot"),
                       DatasetMetric(expression=_C_BROADCAST, name="w")]))
         a = _vals(base, "orders.tot")
         b = _vals(withw, "orders.tot")

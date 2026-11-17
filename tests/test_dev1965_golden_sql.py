@@ -17,7 +17,7 @@ ALLOWED_DELTAS: dict[str, str] = {}
 def _cases() -> dict:
     return {
         "where_having_or_mode_a": {"query": where_having_query(), "filters": [MODE_A_OR]},
-        "post_or_conjuncts": {"query": cumsum_chain(filters=[
+        "post_or_conjuncts": {"query": cumsum_chain(filter=[
             "cumsum(sum(amount)) > 250 or cumsum(sum(amount)) < 50", "cumsum(sum(amount)) < 260",
         ])},
     }

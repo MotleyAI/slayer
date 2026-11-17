@@ -54,14 +54,14 @@ def _bundle() -> ResolvedSourceBundle:
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "sales")
+    kw.setdefault("population", "sales")
     kw.setdefault("time_dimensions", month_td())
     return SlayerQuery(**kw)
 
 
 def _metric_key(expression: str, **kw):
     env = elaborate_query(
-        query=_q(measures=[DatasetMetric(expression=expression, name="m")], **kw),
+        query=_q(metrics=[DatasetMetric(expression=expression, name="m")], **kw),
         bundle=_bundle(),
     )
     assert env.prebound is not None
@@ -196,7 +196,7 @@ class TestSavedMeasureOperand:
     def test_plans_identically(self, saved, inline):
         def plan(formula):
             return plan_query(
-                query=_q(measures=[DatasetMetric(expression=formula, name="m")]),
+                query=_q(metrics=[DatasetMetric(expression=formula, name="m")]),
                 bundle=_bundle())
         assert plan(saved) == plan(inline)
 
@@ -219,9 +219,9 @@ class TestSavedMeasureExecution:
     ])
     async def test_values_match_inline(self, exec_engine: SlayerQueryEngine, saved, inline):
         got = await exec_engine.execute(
-            _q(measures=[DatasetMetric(expression=saved, name="m")]))
+            _q(metrics=[DatasetMetric(expression=saved, name="m")]))
         want = await exec_engine.execute(
-            _q(measures=[DatasetMetric(expression=inline, name="m")]))
+            _q(metrics=[DatasetMetric(expression=inline, name="m")]))
         assert got.data, "expected monthly rows"
         assert (got.columns, got.data, got.sql, got.warnings) == (
             want.columns, want.data, want.sql, want.warnings)

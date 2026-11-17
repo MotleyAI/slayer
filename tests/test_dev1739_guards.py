@@ -18,7 +18,7 @@ from tests._engine_helpers import _engine_generate
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -29,7 +29,7 @@ class TestGrainGuards:
     async def test_non_dimension_partition_key_raises(self) -> None:
         q = _q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(amount, partition_by=city)")],
+            metrics=[DatasetMetric(expression="sum(amount, partition_by=city)")],
         )
         with pytest.raises(ValueError, match=r"partition_by.*not a query dimension") as ei:
             await gen(q)
@@ -43,7 +43,7 @@ class TestGrainGuards:
                 TimeDimension(field="ordered_at",
                               granularity=TimeGranularity.DAY),
             ],
-            measures=[DatasetMetric(expression="sum(amount, partition_by=ordered_at)")],
+            metrics=[DatasetMetric(expression="sum(amount, partition_by=ordered_at)")],
         )
         with pytest.raises(ValueError, match=r"ambiguous"):
             await gen(q)
@@ -53,7 +53,7 @@ class TestGrainGuards:
         # root — `region` is a host column, unreachable from `customers`.
         q = _q(
             dimensions=["region", "customers.tier"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(customers.spend, partition_by=region)"),
             ],
             to_many_handling="broadcast",
@@ -73,7 +73,7 @@ class TestDeferredShapeGuards:
         q = _q(
             dimensions=["region"],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount, window='90d', partition_by=region)"),
             ],
         )
@@ -86,7 +86,7 @@ class TestDeferredShapeGuards:
         # tests/test_dev1824_partitioned_execution.py); cross-model stays deferred.
         q = _q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(expression=f"{agg}(amount, partition_by=region)")],
+            metrics=[DatasetMetric(expression=f"{agg}(amount, partition_by=region)")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -99,7 +99,7 @@ class TestDeferredShapeGuards:
         q = _q(
             dimensions=["region"],
             time_dimensions=month_td(),
-            measures=[
+            metrics=[
                 DatasetMetric(expression="cumsum(sum(amount, partition_by=region))"),
             ],
         )
@@ -111,8 +111,8 @@ class TestDeferredShapeGuards:
         # values: tests/test_dev1824_partitioned_execution.py::TestFilterOnPartitioned.)
         q = _q(
             dimensions=["region", "city"],
-            filters=["sum(amount, partition_by=region) > 50"],
-            measures=[DatasetMetric(expression="sum(amount)")],
+            filter=["sum(amount, partition_by=region) > 50"],
+            metrics=[DatasetMetric(expression="sum(amount)")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -135,7 +135,7 @@ class TestDriveByNonRankTransform:
         q = _q(
             dimensions=["region"],
             time_dimensions=month_td(),
-            measures=[DatasetMetric(expression=formula)],
+            metrics=[DatasetMetric(expression=formula)],
         )
         with pytest.raises(ValueError, match=r"partition_by"):
             await gen(q)
@@ -143,7 +143,7 @@ class TestDriveByNonRankTransform:
     async def test_partition_by_still_accepted_on_rank(self) -> None:
         sql = await gen(_q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(expression="rank(sum(amount), partition_by=region, direction='desc')")],
+            metrics=[DatasetMetric(expression="rank(sum(amount), partition_by=region, direction='desc')")],
         ))
         upper = sql.upper()
         assert "RANK()" in upper

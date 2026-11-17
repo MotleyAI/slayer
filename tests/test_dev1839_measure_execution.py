@@ -55,7 +55,7 @@ class TestCompositeMeasureLift:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression=MEASURE_DIFF, name="d"),
                 DatasetMetric(expression="sum(amount)", name="s"),
             ],
@@ -75,7 +75,7 @@ class TestCompositeMeasureLift:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=SAMEGRAIN_DIFF, name="d")],
+            metrics=[DatasetMetric(expression=SAMEGRAIN_DIFF, name="d")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region")
@@ -90,7 +90,7 @@ class TestCompositeMeasureLift:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(amount, partition_by=region) - "
                         "sum(amount, partition_by=[])",
                 name="d",
@@ -109,7 +109,7 @@ class TestCompositeMeasureLift:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(expression=f"abs({MEASURE_DIFF})", name="d")],
+            metrics=[DatasetMetric(expression=f"abs({MEASURE_DIFF})", name="d")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
@@ -124,7 +124,7 @@ class TestCompositeMeasureLift:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression=f"CASE WHEN {MEASURE_DIFF} > 0 THEN 1 ELSE 0 END",
                 name="d",
             )],
@@ -142,7 +142,7 @@ class TestConformingSurfaces:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(amount) - sum(amount, partition_by=region)", name="d",
             )],
         )
@@ -162,7 +162,7 @@ class TestConformingSurfaces:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", "city"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression=MIXED_RANK, name="r"),
                 DatasetMetric(expression="sum(amount)", name="s"),
             ],
@@ -175,7 +175,7 @@ class TestConformingSurfaces:
 
         solo = await engine.execute(q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         solo_by = rows_by(solo, "orders.region", "orders.city")
         assert set(solo_by) == set(by)
@@ -189,12 +189,12 @@ class TestConformingSurfaces:
         dialect, engine = exec_backend
         unfiltered = rows_by(await engine.execute(q(
             dimensions=["region", "city"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )), "orders.region", "orders.city")
         query = q(
             dimensions=["region", "city"],
-            filters=[f"{MEASURE_DIFF} > 0"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=[f"{MEASURE_DIFF} > 0"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region", "orders.city")
@@ -215,12 +215,12 @@ class TestConformingSurfaces:
             DatasetMetric(expression=MEASURE_DIFF, name="d"),
         ]
         unfiltered = rows_by(await engine.execute(q(
-            dimensions=["region", "city"], measures=measures,
+            dimensions=["region", "city"], metrics=measures,
         )), "orders.region", "orders.city")
         resp = await engine.execute(q(
             dimensions=["region", "city"],
-            filters=[f"{MEASURE_DIFF} > 0"],
-            measures=measures,
+            filter=[f"{MEASURE_DIFF} > 0"],
+            metrics=measures,
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == {k for k, v in MIXED_DIFF_OF.items() if v > 0}

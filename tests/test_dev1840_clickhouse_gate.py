@@ -50,8 +50,8 @@ _SETTING = "allow_experimental_correlated_subqueries"
 M = DatasetMetric(expression="sum(amount)", name="m")
 CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 
-PUSHED = q(dimensions=["customers.tier"], measures=[M, CM],
-           filters=["channel = 'app'"])
+PUSHED = q(dimensions=["customers.tier"], metrics=[M, CM],
+           filter=["channel = 'app'"])
 
 _ORDERS_RULE = RelationshipFilterRule(
     target_table="orders", relationship_path=("orders.customer_id = customers.id",),
@@ -107,15 +107,15 @@ def _version_probe(ch_server: ChServer, raw: str | None) -> FakeClickHouse:
 class TestPlanPredicate:
     def test_false_without_any_filter(self):
         planned = plan_query(
-            query=q(dimensions=["customers.tier"], measures=[M, CM]),
+            query=q(dimensions=["customers.tier"], metrics=[M, CM]),
             bundle=bundle(),
         )
         assert plan_has_semi_join_filters(planned) is False
 
     def test_false_on_an_inline_filter(self):
         planned = plan_query(
-            query=q(dimensions=["customers.tier"], measures=[CM],
-                    filters=["customers.regions.name = 'North'"]),
+            query=q(dimensions=["customers.tier"], metrics=[CM],
+                    filter=["customers.regions.name = 'North'"]),
             bundle=bundle(),
         )
         assert plan_has_semi_join_filters(planned) is False
@@ -127,7 +127,7 @@ class TestPlanPredicate:
     def test_true_when_only_a_nested_producer_pushes(self):
         planned = plan_query(
             query=q(dimensions=[{"expression": SPEND_BAND_170, "name": "sband"}],
-                    measures=[M], filters=["channel = 'app'"]),
+                    metrics=[M], filter=["channel = 'app'"]),
             bundle=bundle(),
         )
         assert plan_has_semi_join_filters(planned) is True
@@ -186,8 +186,8 @@ class TestVersionGate:
         engine = await _ch_engine(tmp_path)
         sql = await _dry_sql(
             engine,
-            q(dimensions=["customers.tier"], measures=[CM],
-              filters=["customers.plans.level = 'basic'"]),
+            q(dimensions=["customers.tier"], metrics=[CM],
+              filter=["customers.plans.level = 'basic'"]),
         )
         assert _SETTING not in sql
         assert fake.permission_checks() == 0
@@ -274,10 +274,10 @@ class TestOnlyEmittedStagesGate:
         engine = await _ch_engine(tmp_path)
         unused = PUSHED.model_copy(update={"name": "unused"})
         await engine.storage.save_dataset(
-            SlayerDataset(name="qb", data_source="test", source_queries=[unused, q(dimensions=["status"], measures=[M])]),
+            SlayerDataset(name="qb", data_source="test", source_queries=[unused, q(dimensions=["status"], metrics=[M])]),
             _validate=False,
         )
-        sql = await _dry_sql(engine, q(source_model="qb", dimensions=["status"]))
+        sql = await _dry_sql(engine, q(population="qb", dimensions=["status"]))
         assert "EXISTS" not in sql.upper()
         assert _SETTING not in sql
         assert fake.permission_checks() == 0
@@ -307,7 +307,7 @@ class TestPolicyNeedsNoProbe:
         fake = ch_server.start(version="25.4.1.1", readonly=1, correlated=False)
         engine = await _ch_engine(tmp_path, policy=SessionPolicy(ruleset=ruleset))
         monkeypatch.setattr(engine, "_field_present", _always_present)
-        sql = await _dry_sql(engine, q(measures=[M]))
+        sql = await _dry_sql(engine, q(metrics=[M]))
         assert fake.requests == []
         assert _SETTING not in sql
         assert "EXISTS" not in sql.upper()
@@ -373,7 +373,7 @@ class TestGeneratorAttachesTheSetting:
         assert sql.count(f"{_SETTING} = 1") == 1
 
     def test_inline_statement_carries_none(self):
-        sql = _generated(q(dimensions=["customers.tier"], measures=[CM]), dialect="clickhouse")
+        sql = _generated(q(dimensions=["customers.tier"], metrics=[CM]), dialect="clickhouse")
         assert _SETTING not in sql
 
     async def test_gating_adds_no_reparse_of_the_rendered_statement(self, tmp_path, ch_server, monkeypatch: pytest.MonkeyPatch):

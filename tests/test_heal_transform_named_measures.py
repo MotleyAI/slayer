@@ -12,7 +12,7 @@ from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._query_heal_fixtures import BACKENDS, heal_engine, heal_datasets, orders_dataset, table
 
-MONTH = {"dimension": "created_at", "granularity": "month"}
+MONTH = {"field": "created_at", "granularity": "month"}
 
 
 @pytest.fixture(params=BACKENDS)

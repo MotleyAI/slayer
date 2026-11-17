@@ -32,11 +32,11 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 # A PENDING list, not a log: a committed state always has this empty.
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH = [{"dimension": "ordered_at", "granularity": "month"}]
+_MONTH = [{"field": "ordered_at", "granularity": "month"}]
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     kw.setdefault("time_dimensions", _MONTH)
     return SlayerQuery(**kw)
 
@@ -45,61 +45,61 @@ def _cases() -> dict:
     """The matrix. Keys are stable ids — renaming one is a golden change."""
     return {
         # (a) local time_shift beside a cross-model sibling.
-        "a/local_ts_cm_sibling": _q(to_many_handling="broadcast", measures=[
-            {"formula": "sum(customers.spend)", "name": "cm"},
-            {"formula": "time_shift(sum(amount), -1)", "name": "prev"},
+        "a/local_ts_cm_sibling": _q(to_many_handling="broadcast", metrics=[
+            {"expression": "sum(customers.spend)", "name": "cm"},
+            {"expression": "time_shift(sum(amount), -1)", "name": "prev"},
         ]),
         # (b) host-rooted crossing-fragment inner — the named repro.
-        "b/host_rooted_wscaled": _q(measures=[
-            {"formula": "time_shift(wscaled_sum(amount), -1)", "name": "prev"},
+        "b/host_rooted_wscaled": _q(metrics=[
+            {"expression": "time_shift(wscaled_sum(amount), -1)", "name": "prev"},
         ]),
-        "b/host_rooted_wscaled_user_kwarg": _q(measures=[
-            {"formula": "time_shift(wscaled_sum(amount, w='customers.regions.weight'), -1)",
+        "b/host_rooted_wscaled_user_kwarg": _q(metrics=[
+            {"expression": "time_shift(wscaled_sum(amount, w='customers.regions.weight'), -1)",
              "name": "prev"},
         ]),
-        "b/wscaled_with_local_sibling": _q(measures=[
-            {"formula": "sum(amount)", "name": "s"},
-            {"formula": "time_shift(wscaled_sum(amount), -1)", "name": "prev"},
+        "b/wscaled_with_local_sibling": _q(metrics=[
+            {"expression": "sum(amount)", "name": "s"},
+            {"expression": "time_shift(wscaled_sum(amount), -1)", "name": "prev"},
         ]),
         # (b) crossing a 1:N join — the shifted CTE must pull the fan-out join.
-        "b/liscaled_one_to_many": _q(measures=[
-            {"formula": "sum(amount)", "name": "s"},
-            {"formula": "time_shift(liscaled_sum(amount), -1)", "name": "prev"},
+        "b/liscaled_one_to_many": _q(metrics=[
+            {"expression": "sum(amount)", "name": "s"},
+            {"expression": "time_shift(liscaled_sum(amount), -1)", "name": "prev"},
         ]),
         # consecutive_periods — lifted entirely (no target-grain failure mode).
-        "cp/local_with_cm_sibling": _q(to_many_handling="broadcast", measures=[
-            {"formula": "sum(customers.spend)", "name": "cm"},
-            {"formula": "consecutive_periods(sum(amount) > 0)", "name": "streak"},
+        "cp/local_with_cm_sibling": _q(to_many_handling="broadcast", metrics=[
+            {"expression": "sum(customers.spend)", "name": "cm"},
+            {"expression": "consecutive_periods(sum(amount) > 0)", "name": "streak"},
         ]),
-        "cp/over_target_grain": _q(to_many_handling="broadcast", measures=[
-            {"formula": "consecutive_periods(sum(customers.spend) > 0)", "name": "streak"},
+        "cp/over_target_grain": _q(to_many_handling="broadcast", metrics=[
+            {"expression": "consecutive_periods(sum(customers.spend) > 0)", "name": "streak"},
         ]),
         # change / change_pct desugar to time_shift.
-        "change/of_wscaled": _q(measures=[
-            {"formula": "change(wscaled_sum(amount))", "name": "delta"},
+        "change/of_wscaled": _q(metrics=[
+            {"expression": "change(wscaled_sum(amount))", "name": "delta"},
         ]),
-        "change_pct/of_local_with_cm_sibling": _q(to_many_handling="broadcast", measures=[
-            {"formula": "sum(customers.spend)", "name": "cm"},
-            {"formula": "change_pct(sum(amount))", "name": "delta"},
+        "change_pct/of_local_with_cm_sibling": _q(to_many_handling="broadcast", metrics=[
+            {"expression": "sum(customers.spend)", "name": "cm"},
+            {"expression": "change_pct(sum(amount))", "name": "delta"},
         ]),
         # (c) target-grain inner — stays guarded (records the narrowed raise).
-        "c/target_grain_guarded": _q(to_many_handling="broadcast", measures=[
-            {"formula": "time_shift(sum(customers.spend), -1)", "name": "prev"},
+        "c/target_grain_guarded": _q(to_many_handling="broadcast", metrics=[
+            {"expression": "time_shift(sum(customers.spend), -1)", "name": "prev"},
         ]),
         # window op over cross-model — never guarded; a regression anchor.
-        "window/cumsum_cross_model": _q(to_many_handling="broadcast", measures=[
-            {"formula": "cumsum(sum(customers.spend))", "name": "run"},
+        "window/cumsum_cross_model": _q(to_many_handling="broadcast", metrics=[
+            {"expression": "cumsum(sum(customers.spend))", "name": "run"},
         ]),
         # composite-input transform — lifted; it now renders a
         # shifted-CTE re-aggregation beside the cross-model sibling.
-        "composite/lifted": _q(to_many_handling="broadcast", measures=[
-            {"formula": "sum(customers.spend)", "name": "cm"},
-            {"formula": "time_shift(sum(amount) + sum(amount), -1)", "name": "prev"},
+        "composite/lifted": _q(to_many_handling="broadcast", metrics=[
+            {"expression": "sum(customers.spend)", "name": "cm"},
+            {"expression": "time_shift(sum(amount) + sum(amount), -1)", "name": "prev"},
         ]),
         # first/last crossing time arg — records whatever the seam does.
-        "first_last/crossing_time_arg": _q(to_many_handling="broadcast", measures=[
-            {"formula": "sum(customers.spend)", "name": "cm"},
-            {"formula": "time_shift(last(amount, customers.signup_at), -1)", "name": "prev"},
+        "first_last/crossing_time_arg": _q(to_many_handling="broadcast", metrics=[
+            {"expression": "sum(customers.spend)", "name": "cm"},
+            {"expression": "time_shift(last(amount, customers.signup_at), -1)", "name": "prev"},
         ]),
     }
 

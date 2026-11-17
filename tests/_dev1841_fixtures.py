@@ -83,24 +83,24 @@ def field_default_agg_datasets() -> List[SlayerDataset]:
 
 
 def assoc_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(to_many_handling="associate", **kw)
 
 
 def error_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(to_many_handling="error", **kw)
 
 
 def bcast_q(**kw) -> SlayerQuery:
     """Explicit broadcast."""
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(to_many_handling="broadcast", **kw)
 
 
 def cust_q(**kw) -> SlayerQuery:
     """Rooted at customers (local-aggregate-over-a-fanning-dimension shapes)."""
-    kw.setdefault("source_model", "customers")
+    kw.setdefault("population", "customers")
     return SlayerQuery(**kw)
 
 

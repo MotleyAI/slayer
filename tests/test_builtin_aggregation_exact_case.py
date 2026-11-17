@@ -36,7 +36,7 @@ class TestACaseVariantIsNoOverride:
 
 class TestContainers:
     async def test_a_stored_measure(self) -> None:
-        doc = t_doc(aggregations=[_hijacker("sum")], metrics=[{"name": "total", "formula": "SUM(a)"}])
+        doc = t_doc(aggregations=[_hijacker("sum")], metrics=[{"name": "total", "expression": "SUM(a)"}])
         async with stored_engine(datasets=[doc]) as engine:
             resp = await engine.execute({"population": "t", "metrics": [metric("total")]})
         assert float(value(resp)) == SUM_A

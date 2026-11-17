@@ -17,63 +17,63 @@ MODELS = [
         "sql_table": "orders",
         "data_source": DS,
         "default_time_dimension": "created_at",
-        "fields": [
-            {"name": "id", "sql": "id", "datatype": "INT", "primary_key": True},
-            {"name": "customer_id", "sql": "customer_id", "datatype": "INT"},
-            {"name": "shop_id", "sql": "shop_id", "datatype": "INT"},
-            {"name": "category", "sql": "category", "datatype": "TEXT"},
-            {"name": "created_at", "sql": "created_at", "datatype": "TIMESTAMP"},
-            {"name": "completed_at", "sql": "completed_at", "datatype": "TIMESTAMP"},
-            {"name": "cancelled_at", "sql": "cancelled_at", "datatype": "TIMESTAMP"},
-            {"name": "total_cost", "sql": "cost", "datatype": "DOUBLE"},
-            {"name": "latest_cost", "sql": "cost", "datatype": "DOUBLE"},
+        "columns": [
+            {"name": "id", "sql": "id", "type": "INT", "primary_key": True},
+            {"name": "customer_id", "sql": "customer_id", "type": "INT"},
+            {"name": "shop_id", "sql": "shop_id", "type": "INT"},
+            {"name": "category", "sql": "category", "type": "TEXT"},
+            {"name": "created_at", "sql": "created_at", "type": "TIMESTAMP"},
+            {"name": "completed_at", "sql": "completed_at", "type": "TIMESTAMP"},
+            {"name": "cancelled_at", "sql": "cancelled_at", "type": "TIMESTAMP"},
+            {"name": "total_cost", "sql": "cost", "type": "DOUBLE"},
+            {"name": "latest_cost", "sql": "cost", "type": "DOUBLE"},
             # measure whose Column.filter crosses the customers join → forces
             # host-rooted filtered-local isolation (DEV-1503/1709 _cm_ CTE)
-            {"name": "whale_cost", "sql": "cost", "datatype": "DOUBLE",
+            {"name": "whale_cost", "sql": "cost", "type": "DOUBLE",
              "filter": "customers.segment = 'whale'"},
         ],
-        "metrics": [
-            {"name": "order_count", "expression": "count(*)"},
-            {"name": "revenue", "expression": "sum(total_cost)"},
+        "measures": [
+            {"name": "order_count", "formula": "count(*)"},
+            {"name": "revenue", "formula": "sum(total_cost)"},
         ],
-        "relationships": [
-            {"to": "customers", "join_pairs": [["customer_id", "id"]]},
-            {"to": "shops", "join_pairs": [["shop_id", "id"]]},
+        "joins": [
+            {"target_model": "customers", "join_pairs": [["customer_id", "id"]]},
+            {"target_model": "shops", "join_pairs": [["shop_id", "id"]]},
         ],
     },
     {
         "name": "customers",
         "sql_table": "customers",
         "data_source": DS,
-        "fields": [
-            {"name": "id", "sql": "id", "datatype": "INT", "primary_key": True},
-            {"name": "name", "sql": "name", "datatype": "TEXT"},
-            {"name": "segment", "sql": "segment", "datatype": "TEXT"},
-            {"name": "primary_shop_id", "sql": "primary_shop_id", "datatype": "INT"},
+        "columns": [
+            {"name": "id", "sql": "id", "type": "INT", "primary_key": True},
+            {"name": "name", "sql": "name", "type": "TEXT"},
+            {"name": "segment", "sql": "segment", "type": "TEXT"},
+            {"name": "primary_shop_id", "sql": "primary_shop_id", "type": "INT"},
         ],
     },
     {
         "name": "shops",
         "sql_table": "shops",
         "data_source": DS,
-        "fields": [
-            {"name": "id", "sql": "id", "datatype": "INT", "primary_key": True},
-            {"name": "name", "sql": "name", "datatype": "TEXT"},
-            {"name": "region_id", "sql": "region_id", "datatype": "INT"},
-            {"name": "avg_cost", "sql": "avg_cost", "datatype": "DOUBLE"},
-            {"name": "size", "sql": "size", "datatype": "INT"},
+        "columns": [
+            {"name": "id", "sql": "id", "type": "INT", "primary_key": True},
+            {"name": "name", "sql": "name", "type": "TEXT"},
+            {"name": "region_id", "sql": "region_id", "type": "INT"},
+            {"name": "avg_cost", "sql": "avg_cost", "type": "DOUBLE"},
+            {"name": "size", "sql": "size", "type": "INT"},
         ],
-        "relationships": [
-            {"to": "regions", "join_pairs": [["region_id", "id"]]},
+        "joins": [
+            {"target_model": "regions", "join_pairs": [["region_id", "id"]]},
         ],
     },
     {
         "name": "regions",
         "sql_table": "regions",
         "data_source": DS,
-        "fields": [
-            {"name": "id", "sql": "id", "datatype": "INT", "primary_key": True},
-            {"name": "name", "sql": "name", "datatype": "TEXT"},
+        "columns": [
+            {"name": "id", "sql": "id", "type": "INT", "primary_key": True},
+            {"name": "name", "sql": "name", "type": "TEXT"},
         ],
     },
 ]
@@ -162,7 +162,7 @@ def _entry(entry_id, family, query, *, ordered=False, expect_error=False, **extr
 
 
 def _q(**kwargs):
-    return {"population": "orders", **kwargs}
+    return {"source_model": "orders", **kwargs}
 
 
 def _month_oracle(aggs, post=None, **extra):
@@ -618,93 +618,93 @@ ENTRIES = [
     # ---- multi-stage query lists --------------------------------------------
     _entry("ms_chain_count", "multi_stage",
            [
-               {"name": "monthly", "population": "orders",
-                "metrics": ["count(*)", "sum(total_cost)"], "time_dimensions": MONTH_TD},
-               {"population": "monthly", "metrics": ["count(*)"]},
+               {"name": "monthly", "source_model": "orders",
+                "measures": ["count(*)", "sum(total_cost)"], "time_dimensions": MONTH_TD},
+               {"source_model": "monthly", "measures": ["count(*)"]},
            ],
            oracle={"fn": "agg", "args": {
                "time_bucket": {"col": "created_at", "gran": "month"},
                "aggs": [{"col": "created_at_month", "op": "count_distinct"}]}}),
     _entry("ms_chain_agg_over_agg", "multi_stage",
            [
-               {"name": "cat_rev", "population": "orders", "dimensions": ["category"],
-                "metrics": [{"expression": "sum(total_cost)", "name": "rev"}]},
-               {"population": "cat_rev", "metrics": ["avg(rev)"]},
+               {"name": "cat_rev", "source_model": "orders", "dimensions": ["category"],
+                "measures": [{"formula": "sum(total_cost)", "name": "rev"}]},
+               {"source_model": "cat_rev", "measures": ["avg(rev)"]},
            ]),
     _entry("ms_extension_join", "multi_stage",
            [
-               {"name": "cust_spend", "population": "orders",
+               {"name": "cust_spend", "source_model": "orders",
                 "dimensions": ["customer_id"],
-                "metrics": [{"expression": "sum(total_cost)", "name": "spend"}]},
-               {"population": "orders",
+                "measures": [{"formula": "sum(total_cost)", "name": "spend"}]},
+               {"source_model": "orders",
                 "extensions": [{"source_name": "orders",
-                                "relationships": [{"to": "cust_spend",
+                                "joins": [{"target_model": "cust_spend",
                                            "join_pairs": [["customer_id", "customer_id"]]}]}],
-                "metrics": ["count(*)", "avg(cust_spend.spend)"],
+                "measures": ["count(*)", "avg(cust_spend.spend)"],
                 "time_dimensions": MONTH_TD,
                 "order": ASC_TIME},
            ],
            ordered=True, subset_100k=True),
     _entry("ms_dag_parallel", "multi_stage",
            [
-               {"name": "cust_spend", "population": "orders",
+               {"name": "cust_spend", "source_model": "orders",
                 "dimensions": ["customer_id"],
-                "metrics": [{"expression": "sum(total_cost)", "name": "spend"}]},
+                "measures": [{"formula": "sum(total_cost)", "name": "spend"}]},
                {"name": "tagged_orders",
-                "population": "orders",
+                "source_model": "orders",
                 "extensions": [{"source_name": "orders",
-                                "relationships": [{"to": "cust_spend",
+                                "joins": [{"target_model": "cust_spend",
                                            "join_pairs": [["customer_id", "customer_id"]]}]}],
-                "dimensions": ["cust_spend.spend"], "metrics": ["count(*)"]},
-               {"population": "tagged_orders", "metrics": ["max(_count)"]},
+                "dimensions": ["cust_spend.spend"], "measures": ["count(*)"]},
+               {"source_model": "tagged_orders", "measures": ["max(_count)"]},
            ]),
     _entry("ms_out_of_order", "multi_stage",
            [
-               {"name": "stage_b", "population": "stage_a", "metrics": ["count(*)"]},
-               {"name": "stage_a", "population": "orders",
-                "metrics": ["sum(total_cost)"], "time_dimensions": MONTH_TD},
-               {"population": "stage_b", "metrics": ["count(*)"]},
+               {"name": "stage_b", "source_model": "stage_a", "measures": ["count(*)"]},
+               {"name": "stage_a", "source_model": "orders",
+                "measures": ["sum(total_cost)"], "time_dimensions": MONTH_TD},
+               {"source_model": "stage_b", "measures": ["count(*)"]},
            ]),
     _entry("ms_unreachable_stage", "multi_stage",
            [
-               {"name": "monthly", "population": "orders",
-                "metrics": ["sum(total_cost)"], "time_dimensions": MONTH_TD},
-               {"name": "orphan", "population": "orders", "metrics": ["count(*)"]},
-               {"population": "monthly", "metrics": ["count(*)"]},
+               {"name": "monthly", "source_model": "orders",
+                "measures": ["sum(total_cost)"], "time_dimensions": MONTH_TD},
+               {"name": "orphan", "source_model": "orders", "measures": ["count(*)"]},
+               {"source_model": "monthly", "measures": ["count(*)"]},
            ]),
     _entry("ms_stage_variable", "multi_stage",
            [
-               {"name": "filtered", "population": "orders",
-                "metrics": ["sum(total_cost)"], "dimensions": ["category"],
-                "filter": ["category = '{cat}'"]},
-               {"population": "filtered", "metrics": ["count(*)"]},
+               {"name": "filtered", "source_model": "orders",
+                "measures": ["sum(total_cost)"], "dimensions": ["category"],
+                "filters": ["category = '{cat}'"]},
+               {"source_model": "filtered", "measures": ["count(*)"]},
            ],
            variables={"cat": "food"}),
     _entry("ms_stage_join_then_agg", "multi_stage",
            # stage 1 is itself a join+group CTE (revenue by customer segment);
            # stage 2 aggregates over it — a stage CTE stacked on a joined CTE.
            [
-               {"name": "seg_rev", "population": "orders",
+               {"name": "seg_rev", "source_model": "orders",
                 "dimensions": ["customers.segment"],
-                "metrics": [{"expression": "sum(total_cost)", "name": "rev"}]},
-               {"population": "seg_rev", "metrics": ["avg(rev)", "count(*)"]},
+                "measures": [{"formula": "sum(total_cost)", "name": "rev"}]},
+               {"source_model": "seg_rev", "measures": ["avg(rev)", "count(*)"]},
            ]),
     _entry("ms_stage_transform_then_agg", "multi_stage",
            # stage 1 carries a transform (cumsum → base+step CTEs); stage 2 wraps
            # it — a transform CTE nested inside a stage CTE (the tallest chain).
            [
-               {"name": "monthly", "population": "orders",
-                "metrics": ["sum(total_cost)",
-                             {"expression": "cumsum(sum(total_cost))", "name": "run"}],
+               {"name": "monthly", "source_model": "orders",
+                "measures": ["sum(total_cost)",
+                             {"formula": "cumsum(sum(total_cost))", "name": "run"}],
                 "time_dimensions": MONTH_TD},
-               {"population": "monthly", "metrics": ["max(run)", "count(*)"]},
+               {"source_model": "monthly", "measures": ["max(run)", "count(*)"]},
            ],
            subset_100k=True),
     _entry("ms_cycle_error", "multi_stage",
            [
-               {"name": "stage_a", "population": "stage_b", "metrics": ["count(*)"]},
-               {"name": "stage_b", "population": "stage_a", "metrics": ["count(*)"]},
-               {"population": "stage_a", "metrics": ["count(*)"]},
+               {"name": "stage_a", "source_model": "stage_b", "measures": ["count(*)"]},
+               {"name": "stage_b", "source_model": "stage_a", "measures": ["count(*)"]},
+               {"source_model": "stage_a", "measures": ["count(*)"]},
            ],
            expect_error=True),
 
@@ -748,7 +748,7 @@ ENTRIES = [
            _q(measures=["sum(nonexistent)"]),
            expect_error=True, expect_error_match="nonexistent"),
     _entry("err_unknown_model", "errors",
-           {"population": "no_such_model", "metrics": ["count(*)"]},
+           {"source_model": "no_such_model", "measures": ["count(*)"]},
            expect_error=True, expect_error_match="no_such_model"),
     _entry("err_unknown_agg", "errors",
            _q(measures=["sumx(total_cost)"]),

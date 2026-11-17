@@ -200,26 +200,26 @@ class TestBindingSymmetry:
 class TestExecutedPositions:
     async def test_measure(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG, "city"], measures=[DatasetMetric(expression=RANK_UREG, name="r")]))
+            dimensions=[UREG, "city"], metrics=[DatasetMetric(expression=RANK_UREG, name="r")]))
         got = {k: v["sales.r"] for k, v in rows_by(resp, "sales.ureg", "sales.city").items()}
         assert got == MEASURE_RANKS
 
     async def test_aggregation_parameter(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG], measures=[DatasetMetric(expression=PARAM_UREG, name="w")]))
+            dimensions=[UREG], metrics=[DatasetMetric(expression=PARAM_UREG, name="w")]))
         got = {k[0]: v["sales.w"] for k, v in rows_by(resp, "sales.ureg").items()}
         approx_map(got=got, want=PARAM_BY_UREG)
 
     async def test_filter(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG, "city"], measures=[AMOUNT],
-            filters=[f"{RANK_UREG} <= 1"]))
+            dimensions=[UREG, "city"], metrics=[AMOUNT],
+            filter=[f"{RANK_UREG} <= 1"]))
         assert set(rows_by(resp, "sales.ureg", "sales.city")) == FILTER_RANK1
 
     async def test_order(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG, "city"], measures=[AMOUNT],
-            order=[{"column": RANK_UREG, "direction": "asc"}]))
+            dimensions=[UREG, "city"], metrics=[AMOUNT],
+            order=[{"field": RANK_UREG, "direction": "asc"}]))
         keys = [(r["sales.ureg"], r["sales.city"]) for r in resp.data]
         pos = {MEASURE_RANKS[k]: [] for k in keys}
         for i, k in enumerate(keys):
@@ -228,13 +228,13 @@ class TestExecutedPositions:
         assert max(pos[1]) < min(pos[2])
 
     async def test_dimension_position_member_key(self, engine):
-        resp = await engine.execute(sales_q(dimensions=[UREG, DIM_R], measures=[AMOUNT]))
+        resp = await engine.execute(sales_q(dimensions=[UREG, DIM_R], metrics=[AMOUNT]))
         got = {k: v["sales.a"] for k, v in rows_by(resp, "sales.ureg", "sales.r").items()}
         approx_map(got=got, want=DIM_CELLS)
 
     async def test_undeclared_name_stays_unknown(self, engine):
         query = sales_q(
-            dimensions=["city"], measures=[DatasetMetric(expression=RANK_UREG, name="r")])
+            dimensions=["city"], metrics=[DatasetMetric(expression=RANK_UREG, name="r")])
         with pytest.raises(UnknownReferenceError, match="ureg"):
             await engine.execute(query)
 
@@ -245,20 +245,20 @@ class TestExecutedPositions:
 class TestAttachCarryingKey:
     async def test_filter(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[BAND, "city"], measures=[AMOUNT], filters=[f"{RANK_BAND} <= 1"]))
+            dimensions=[BAND, "city"], metrics=[AMOUNT], filter=[f"{RANK_BAND} <= 1"]))
         got = {k: v["sales.a"] for k, v in rows_by(resp, "sales.spend_band", "sales.city").items()}
         approx_map(got=got, want=BAND_RANK1)
 
     async def test_order(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[BAND, "city"], measures=[AMOUNT],
-            order=[{"column": RANK_BAND, "direction": "asc"}]))
+            dimensions=[BAND, "city"], metrics=[AMOUNT],
+            order=[{"field": RANK_BAND, "direction": "asc"}]))
         keys = [(r["sales.spend_band"], r["sales.city"]) for r in resp.data]
         assert set(keys[:2]) == set(BAND_RANK1)
 
     async def test_measure(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[BAND, "city"], measures=[DatasetMetric(expression=RANK_BAND, name="r")]))
+            dimensions=[BAND, "city"], metrics=[DatasetMetric(expression=RANK_BAND, name="r")]))
         got = {k: v["sales.r"]
                for k, v in rows_by(resp, "sales.spend_band", "sales.city").items()}
         assert got == _band_city_ranks()
@@ -267,7 +267,7 @@ class TestAttachCarryingKey:
     async def test_parameter(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=[BAND],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression=f"weighted_avg(amount, weight={PARAM_BAND})", name="w")]))
         approx_map(got={r["sales.spend_band"]: r["sales.w"] for r in resp.data},
                    want=_param_by_band())

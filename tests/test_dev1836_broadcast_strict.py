@@ -44,7 +44,7 @@ class TestBroadcastMetadata:
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             resp = await engine.execute(q(
-                to_many_handling="broadcast", dimensions=["status"], measures=[M, CM],
+                to_many_handling="broadcast", dimensions=["status"], metrics=[M, CM],
             ))
         (w,) = broadcast_warnings(resp)
         assert "cm" in w.metric
@@ -62,7 +62,7 @@ class TestBroadcastMetadata:
         resp = await engine.execute(
             q(
                 to_many_handling="broadcast",
-                dimensions=["customers.tier", "status"], measures=[M, CM],
+                dimensions=["customers.tier", "status"], metrics=[M, CM],
             ),
         )
         (w,) = broadcast_warnings(resp)
@@ -75,8 +75,8 @@ class TestBroadcastMetadata:
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="broadcast",
-            dimensions=["status"], measures=[M, CM],
-            filters=["sum(customers.spend) > 0"],
+            dimensions=["status"], metrics=[M, CM],
+            filter=["sum(customers.spend) > 0"],
             order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
         ))
         assert len(broadcast_warnings(resp)) == 1
@@ -86,7 +86,7 @@ class TestBroadcastMetadata:
         resp = await engine.execute(q(
             to_many_handling="broadcast",
             dimensions=["status"],
-            measures=[
+            metrics=[
                 CM,
                 DatasetMetric(expression="sum(customers.regions.pop)", name="pop"),
             ],
@@ -99,8 +99,8 @@ class TestBroadcastMetadata:
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="broadcast",
-            dimensions=["status"], measures=[M],
-            filters=["sum(customers.spend) > 0"],
+            dimensions=["status"], metrics=[M],
+            filter=["sum(customers.spend) > 0"],
         ))
         (w,) = broadcast_warnings(resp)
         assert "spend" in w.metric
@@ -108,16 +108,16 @@ class TestBroadcastMetadata:
     async def test_attributable_grain_never_warns(self, exec_backend):
         _, engine = exec_backend
         resp = await engine.execute(
-            q(dimensions=["customers.tier"], measures=[M, CM]),
+            q(dimensions=["customers.tier"], metrics=[M, CM]),
         )
         assert broadcast_warnings(resp) == []
 
     async def test_explicit_partition_broadcast_never_warns(self, exec_backend):
         _, engine = exec_backend
-        control = await engine.execute(q(dimensions=["status"], measures=[M]))
+        control = await engine.execute(q(dimensions=["status"], metrics=[M]))
         resp = await engine.execute(q(
             dimensions=["status"],
-            measures=[M, DatasetMetric(
+            metrics=[M, DatasetMetric(
                 expression="sum(customers.spend, partition_by=[])", name="total",
             )],
         ))
@@ -139,7 +139,7 @@ class TestBroadcastMetadata:
         via_hop = await engine.execute(
             q(
                 to_many_handling="broadcast",
-                dimensions=["customers.segments.label"], measures=[CM],
+                dimensions=["customers.segments.label"], metrics=[CM],
             ),
         )
         (w_hop,) = broadcast_warnings(via_hop)
@@ -148,7 +148,7 @@ class TestBroadcastMetadata:
         via_reverse = await engine.execute(q(
             to_many_handling="broadcast",
             dimensions=["customers.tier"],
-            measures=[DatasetMetric(expression="sum(customers.regions.pop)",
+            metrics=[DatasetMetric(expression="sum(customers.regions.pop)",
                                    name="pop")],
         ))
         (w_rev,) = broadcast_warnings(via_reverse)
@@ -163,7 +163,7 @@ class TestBroadcastMetadata:
 class TestStrictMode:
     async def test_strict_broadcast_errors_with_remedy(self, exec_backend):
         _, engine = exec_backend
-        query = q(to_many_handling="error", dimensions=["status"], measures=[M, CM])
+        query = q(to_many_handling="error", dimensions=["status"], metrics=[M, CM])
         with pytest.raises((SlayerError, ValueError)) as ei:
             await engine.execute(query)
         message = str(ei.value)
@@ -177,8 +177,8 @@ class TestStrictMode:
         nothing to flag; the metric covers the app customers (c1, c3)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            to_many_handling="error", dimensions=["customers.tier"], measures=[M, CM],
-            filters=["channel = 'app'"],
+            to_many_handling="error", dimensions=["customers.tier"], metrics=[M, CM],
+            filter=["channel = 'app'"],
         ))
         by = rows_by(resp, "orders.customers.tier")
         assert set(by) == {("gold",)}
@@ -190,8 +190,8 @@ class TestStrictMode:
         producer is restricted by a boolean-total semi-join (gold cm = 160)."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            to_many_handling="error", dimensions=["customers.tier"], measures=[M, CM],
-            filters=["customers.tier = 'gold' OR channel = 'app'"],
+            to_many_handling="error", dimensions=["customers.tier"], metrics=[M, CM],
+            filter=["customers.tier = 'gold' OR channel = 'app'"],
         ))
         by = rows_by(resp, "orders.customers.tier")
         # Every app order belongs to a gold customer, so both legs yield gold only.
@@ -201,10 +201,10 @@ class TestStrictMode:
     async def test_strict_passes_when_all_attributable(self, exec_backend):
         _, engine = exec_backend
         lenient = await engine.execute(
-            q(dimensions=["customers.tier"], measures=[M, CM]),
+            q(dimensions=["customers.tier"], metrics=[M, CM]),
         )
         strict = await engine.execute(
-            q(to_many_handling="error", dimensions=["customers.tier"], measures=[M, CM]),
+            q(to_many_handling="error", dimensions=["customers.tier"], metrics=[M, CM]),
         )
         lenient_by = rows_by(lenient, "orders.customers.tier")
         strict_by = rows_by(strict, "orders.customers.tier")
@@ -219,7 +219,7 @@ class TestStrictMode:
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="error", dimensions=["status"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(customers.spend, partition_by=[])", name="total",
             )],
         ))

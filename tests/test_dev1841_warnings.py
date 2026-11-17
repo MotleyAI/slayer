@@ -53,7 +53,7 @@ class TestBroadcastReason:
         (fanning) hop, so its reason must not say 'unreachable'."""
         _, engine = exec_backend
         resp = await engine.execute(q(
-            dimensions=["status"], measures=[CM], to_many_handling="broadcast"))
+            dimensions=["status"], metrics=[CM], to_many_handling="broadcast"))
         (w,) = broadcast_warnings(resp)
         reason = " ".join(d.reason for d in w.dimensions).lower()
         assert "unreachable" not in reason
@@ -87,7 +87,7 @@ class TestAssociatedWarning:
         with _warnings.catch_warnings(record=True) as caught:
             _warnings.simplefilter("always")
             resp = await engine.execute(
-                assoc_q(dimensions=["status"], measures=[CM]))
+                assoc_q(dimensions=["status"], metrics=[CM]))
         (w,) = associated_warnings(resp)
         assert "cm" in w.metric or "spend" in w.metric
         assert "status" in " ".join(getattr(w, "dimensions", []) or []) \
@@ -100,7 +100,7 @@ class TestAssociatedWarning:
         _, engine = exec_backend
         resp = await engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(customers.spend, partition_by=status)", name="cm")]))
         assert associated_warnings(resp) == []
         by = status_key(resp)

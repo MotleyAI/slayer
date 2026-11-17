@@ -144,8 +144,8 @@ class TestStatementsReachTheFactoryClient:
 
 _PUSHED = q(
     dimensions=["customers.tier"],
-    measures=[DatasetMetric(expression="sum(amount)", name="m"), DatasetMetric(expression="sum(customers.spend)", name="cm")],
-    filters=["channel = 'app'"],
+    metrics=[DatasetMetric(expression="sum(amount)", name="m"), DatasetMetric(expression="sum(customers.spend)", name="cm")],
+    filter=["channel = 'app'"],
 )
 
 

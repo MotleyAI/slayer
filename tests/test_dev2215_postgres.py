@@ -76,7 +76,7 @@ async def test_extraction_equals_its_date_part_twin(pg: tuple[SlayerQueryEngine,
 
 async def test_week_is_the_iso_week_number(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
     engine, _ = pg
-    assert ids(await engine.execute(q(dimensions=["id"], filters=["week(created_at) = 1"]))) == {3}
+    assert ids(await engine.execute(q(dimensions=["id"], filter=["week(created_at) = 1"]))) == {3}
 
 
 async def test_first_last_never_pick_a_null_key(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
@@ -86,7 +86,7 @@ async def test_first_last_never_pick_a_null_key(pg: tuple[SlayerQueryEngine, Dat
 
 async def test_first_last_partitioned_cross_model(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
     engine, _ = pg
-    resp = await engine.execute(q(dimensions=["customers.region", "customers.name"], measures=[
+    resp = await engine.execute(q(dimensions=["customers.region", "customers.name"], metrics=[
         m("last(customers.status, customers.updated_at, partition_by=customers.region)", "l"),
         m("first(customers.status, customers.updated_at, partition_by=customers.region)", "f")]))
     got = {r["orders.customers.name"]: (r["orders.f"], r["orders.l"]) for r in resp.data}
@@ -117,7 +117,7 @@ async def test_two_case_variants(pg: tuple[SlayerQueryEngine, Any]) -> None:
     assert "foo_2" in notes
     assert "foo" in notes
     await engine.storage.save_dataset(model)
-    resp = await engine.execute(q(source_model="casey", dimensions=["Foo", "foo_2"]))
+    resp = await engine.execute(q(population="casey", dimensions=["Foo", "foo_2"]))
     assert sorted((r["casey.Foo"], r["casey.foo_2"]) for r in resp.data) == [(1, 10), (2, 20)]
 
 
@@ -131,5 +131,5 @@ async def test_suffix_already_taken_and_reingestion(pg: tuple[SlayerQueryEngine,
     assert named["foo_3"] != named["foo_2"]
     assert _columns(first) == _columns(again)
     await engine.storage.save_dataset(first)
-    resp = await engine.execute(q(source_model="casey3", dimensions=["Foo", "foo_3", "foo_2"]))
+    resp = await engine.execute(q(population="casey3", dimensions=["Foo", "foo_3", "foo_2"]))
     assert [(r["casey3.Foo"], r["casey3.foo_3"], r["casey3.foo_2"]) for r in resp.data] == [(1, 10, 100)]

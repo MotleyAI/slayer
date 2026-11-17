@@ -14,7 +14,7 @@ from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2215_fixtures import BACKENDS, dev2215_engine, m, num, orders_dataset, q, single
 
-TD = [{"dimension": "created_at", "granularity": "month"}]
+TD = [{"field": "created_at", "granularity": "month"}]
 
 
 @pytest.fixture(params=BACKENDS)
@@ -24,7 +24,7 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 
 async def _value(engine: SlayerQueryEngine, expression: str) -> float | None:
-    return num(single(await engine.execute(q(measures=[m(expression)]))))
+    return num(single(await engine.execute(q(metrics=[m(expression)]))))
 
 
 # --------------------------------------------------------------------------- #
@@ -65,18 +65,18 @@ class TestKeywordOrComparison:
             await _value(engine, "corr(amount, iif(qty = 1, 1, 0))"))
 
     async def test_duplicate_keyword_after_classification(self, engine: SlayerQueryEngine) -> None:
-        query = q(measures=[m("weighted_avg(amount, weight = qty, WEIGHT = qty)")])
+        query = q(metrics=[m("weighted_avg(amount, weight = qty, WEIGHT = qty)")])
         with pytest.raises(SlayerError, match="(?i)weight"):
             await engine.execute(query)
 
     async def test_positional_after_keyword_after_classification(self, engine: SlayerQueryEngine) -> None:
-        query = q(measures=[m("weighted_avg(weight = qty, amount)")])
+        query = q(metrics=[m("weighted_avg(weight = qty, amount)")])
         with pytest.raises(SlayerError):
             await engine.execute(query)
 
     async def test_transform_parameters(self, engine: SlayerQueryEngine) -> None:
-        keyword = await engine.execute(q(time_dimensions=TD, measures=[m("time_shift(sum(amount), PERIODS = -1)")]))
-        plain = await engine.execute(q(time_dimensions=TD, measures=[m("time_shift(sum(amount), -1)")]))
+        keyword = await engine.execute(q(time_dimensions=TD, metrics=[m("time_shift(sum(amount), PERIODS = -1)")]))
+        plain = await engine.execute(q(time_dimensions=TD, metrics=[m("time_shift(sum(amount), -1)")]))
         assert keyword.data == plain.data
 
     async def test_comparison_inside_a_scalar_call(self, engine: SlayerQueryEngine) -> None:
@@ -116,7 +116,7 @@ class TestAggIsReserved:
         async with dev2215_engine("sqlite", datasets=[with_column, with_measure]) as eng:
             await eng.storage.save_dataset(with_column)
             await eng.storage.save_dataset(with_measure)
-            column = await eng.execute(q(measures=[m("sum(agg)")]))
-            measure = await eng.execute(q(source_model="totals", measures=["agg"]))
+            column = await eng.execute(q(metrics=[m("sum(agg)")]))
+            measure = await eng.execute(q(population="totals", metrics=["agg"]))
         assert num(single(column)) == 160.0
         assert num(measure.data[0]["totals.agg"]) == 160.0

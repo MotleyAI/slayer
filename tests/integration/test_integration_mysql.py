@@ -1673,7 +1673,7 @@ class TestMySQLPortableLibrary:
     async def test_comparisons_follow_the_column_collation(self, _mysql_dev2120_storage) -> None:
         engine = SlayerQueryEngine(storage=_mysql_dev2120_storage)
         for filt, expected in (("word = 'ada'", {3, 4}), ("word IN ('paid')", {1, 2}), ("word LIKE 'ada%'", {3, 4})):
-            resp = await engine.execute(lib_query(filters=[filt]))
+            resp = await engine.execute(lib_query(filter=[filt]))
             assert {int(r["lib.id"]) for r in resp.data} == expected, (filt, resp.sql)
 
 

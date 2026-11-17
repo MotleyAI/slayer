@@ -25,7 +25,7 @@ async def exec_engine(request):
 
 async def _rows(engine, *measures: str) -> list[dict]:
     resp = await engine.execute(sales_q(
-        dimensions=["region"], measures=list(measures)))
+        dimensions=["region"], metrics=list(measures)))
     return sorted(resp.data, key=lambda r: (r["sales.region"] is None,
                                             str(r["sales.region"])))
 
@@ -44,11 +44,11 @@ class TestPositionalEqualsNamed:
     async def test_reaggregation_outer(self, exec_engine):
         pos = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=f"percentile({INNER_CR}, 0.9)",
+            metrics=[DatasetMetric(expression=f"percentile({INNER_CR}, 0.9)",
                                    name="p")]))
         named = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=f"percentile({INNER_CR}, p=0.9)",
+            metrics=[DatasetMetric(expression=f"percentile({INNER_CR}, p=0.9)",
                                    name="p")]))
         assert region_key(pos) == region_key(named)
 

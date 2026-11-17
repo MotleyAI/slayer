@@ -52,8 +52,8 @@ class TestPostFilterOnShiftedValue:
         resp = await exec_engine.execute(q(
             dimensions=[BAND],
             time_dimensions=month_td(),
-            filters=["change(sum(amount)) > 0"],
-            measures=[
+            filter=["change(sum(amount)) > 0"],
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="m"),
                 DatasetMetric(expression="change(sum(amount))", name="c"),
             ],
@@ -69,8 +69,8 @@ class TestPostFilterOnShiftedValue:
         dry = await exec_engine.execute(q(
             dimensions=[BAND],
             time_dimensions=month_td(),
-            filters=["change(sum(amount)) > 0"],
-            measures=[DatasetMetric(expression="change(sum(amount))", name="c")],
+            filter=["change(sum(amount)) > 0"],
+            metrics=[DatasetMetric(expression="change(sum(amount))", name="c")],
         ), dry_run=True)
         assert dry.sql is not None
         assert "__regroup__" not in dry.sql, dry.sql
@@ -90,10 +90,10 @@ class TestConjunctionSplits:
             ],
         )
         anded = await exec_engine.execute(q(
-            filters=["band == 1 and change(sum(amount)) > 0"], **base_kwargs,
+            filter=["band == 1 and change(sum(amount)) > 0"], **base_kwargs,
         ))
         separate = await exec_engine.execute(q(
-            filters=["band == 1", "change(sum(amount)) > 0"], **base_kwargs,
+            filter=["band == 1", "change(sum(amount)) > 0"], **base_kwargs,
         ))
         got = _by_band_month(anded, "m", "c")
         assert set(got) == {(1, "2024-02"), (1, "2024-03")}
@@ -107,10 +107,10 @@ class TestConjunctionSplits:
             measures=[DatasetMetric(expression="sum(amount)", name="m")],
         )
         anded = await exec_engine.execute(q(
-            filters=["band == 1 and status == 'ok'"], **base_kwargs,
+            filter=["band == 1 and status == 'ok'"], **base_kwargs,
         ))
         separate = await exec_engine.execute(q(
-            filters=["band == 1", "status == 'ok'"], **base_kwargs,
+            filter=["band == 1", "status == 'ok'"], **base_kwargs,
         ))
         got = {int(r["orders.band"]): float(r["orders.m"]) for r in anded.data}
         assert got == {1: pytest.approx(100.0)}
@@ -125,8 +125,8 @@ class TestConjunctionSplits:
         resp = await exec_engine.execute(q(
             dimensions=[BAND],
             time_dimensions=month_td(),
-            filters=["band == 1 or change(sum(amount)) > 0"],
-            measures=[DatasetMetric(expression="change(sum(amount))", name="c")],
+            filter=["band == 1 or change(sum(amount)) > 0"],
+            metrics=[DatasetMetric(expression="change(sum(amount))", name="c")],
         ))
         got = _by_band_month(resp, "c")
         assert set(got) == {(1, "2024-01"), (1, "2024-02"), (1, "2024-03")}

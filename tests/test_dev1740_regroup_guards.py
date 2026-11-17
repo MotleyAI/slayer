@@ -15,7 +15,7 @@ from tests._dev1740_fixtures import gen, month_td
 
 
 def _q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -27,7 +27,7 @@ class TestPartitionByRequired:
                 {"expression": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
                  "name": "band"},
             ],
-            measures=[DatasetMetric(expression="sum(amount)", name="t")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="t")],
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:
             await gen(q)
@@ -48,7 +48,7 @@ class TestAggregateReferencingDimGenerates:
                 {"expression": "CASE WHEN sum(amount, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "name": "band"},
             ],
-            measures=[DatasetMetric(expression="sum(amount)", name="t")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="t")],
         )
         sql = await gen(q)
         assert "_cm_" in sql
@@ -65,7 +65,7 @@ class TestDeferredShapesRaiseDev1824:
                  "name": "x"},
             ],
             time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount)", name="t")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="t")],
         )
         with pytest.raises(ValueError) as ei:
             await gen(q)
@@ -83,7 +83,7 @@ class TestDeferredShapesRaiseDev1824:
                                "> 5000 THEN 1 ELSE 0 END", "name": "x"},
             ],
             time_dimensions=month_td(),
-            measures=[DatasetMetric(expression="sum(amount)", name="t")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="t")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -101,7 +101,7 @@ class TestDeferredShapesRaiseDev1824:
                 {"expression": f"CASE WHEN {agg}(amount, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "name": "x"},
             ],
-            measures=[DatasetMetric(expression="sum(amount)", name="t")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="t")],
         )
         assert "__regroup__" not in await gen(q)
 

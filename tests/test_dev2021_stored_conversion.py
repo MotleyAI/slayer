@@ -315,7 +315,7 @@ class TestEveryPosition:
     async def test_partition_and_ranking_keys_and_extension_measures(self, tmp_path, shop_ds) -> None:
         stage = _stage(
             extensions=[_ext("orders", _STAMP, _BUCKET,
-                             measures=[{"name": "big_total", "formula": "sum(iif(bucket = 'big', amount, 0))"}])],
+                             metrics=[{"name": "big_total", "expression": "sum(iif(bucket = 'big', amount, 0))"}])],
             dimensions=["status", "bucket"],
             measures=[{"formula": "sum(amount, partition_by=bucket)", "name": "per_bucket"},
                       {"formula": "last(amount, stamp)", "name": "latest"}, "big_total"],
@@ -356,7 +356,7 @@ _UNCONVERTIBLE = {
                     dimensions=["a"], measures=[_REV]),
     "join-key-source": _stage(
         extensions=[_ext("orders", {"name": "cid", "sql": "customer_id"},
-                         joins=[{"target_model": "customers", "name": "c2", "join_pairs": [["cid", "id"]]}])],
+                         relationships=[{"to": "customers", "name": "c2", "join_pairs": [["cid", "id"]]}])],
         dimensions=["c2.region"], measures=[_REV]),
     "join-key-target": _stage(
         extensions=[{"source_name": "orders",

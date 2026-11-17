@@ -51,15 +51,15 @@ class TestInlineUnchanged:
     def test_provably_safe_hop_stays_inline(self):
         """Scenario: provably safe filter paths keep the inline form."""
         att = _attach(_plan(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.regions.name = 'North'"],
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.regions.name = 'North'"],
         )), "customers")
         assert list(att.producer_plan.semi_join_filters) == []
 
     def test_root_local_stays_inline(self):
         att = _attach(_plan(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.tier = 'gold'"],
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.tier = 'gold'"],
         )), "customers")
         assert list(att.producer_plan.semi_join_filters) == []
 
@@ -69,8 +69,8 @@ class TestSemiJoinPushdown:
         """Scenario: pushdown works without a declared reverse join —
         the stored forward edge is inverted, oriented root→orders."""
         att = _attach(_plan(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["channel = 'app'"],
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["channel = 'app'"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.to for h in sj.hops] == ["orders"]
@@ -82,8 +82,8 @@ class TestSemiJoinPushdown:
         """The edge declared on the customers side pushes exactly like the
         forward declaration — which model stores it is storage trivia
         (mirror parity)."""
-        query = q(dimensions=["customers.tier"], measures=[CM],
-                  filters=["channel = 'app'"])
+        query = q(dimensions=["customers.tier"], metrics=[CM],
+                  filter=["channel = 'app'"])
         att = _attach(_plan(
             query, datasets=dev1840_datasets(declare_reverse=True),
         ), "customers")
@@ -98,8 +98,8 @@ class TestSemiJoinPushdown:
         """An unproven hop needs no inversion: the stored forward edge is the
         correlation path."""
         att = _attach(_plan(
-            q(dimensions=["customers.tier"], measures=[CM],
-              filters=["customers.plans.level = 'basic'"]),
+            q(dimensions=["customers.tier"], metrics=[CM],
+              filter=["customers.plans.level = 'basic'"]),
             datasets=dev1840_datasets(strong_plans=False),
         ), "customers")
         (sj,) = att.producer_plan.semi_join_filters
@@ -109,16 +109,16 @@ class TestSemiJoinPushdown:
     def test_pure_cross_path_disjunction_pushes(self):
         """One branch, no root-local refs: the whole OR moves into the EXISTS."""
         att = _attach(_plan(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["status = 'ok' OR channel = 'app'"],
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["status = 'ok' OR channel = 'app'"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert len(sj.conjuncts) == 1
 
     def test_pure_cross_path_negation_pushes(self):
         att = _attach(_plan(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["NOT (channel = 'app')"],
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["NOT (channel = 'app')"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.to for h in sj.hops] == ["orders"]
@@ -127,8 +127,8 @@ class TestSemiJoinPushdown:
         """An atomic comparison may mix a root-local ref (correlated outer
         reference) with cross-path refs."""
         att = _attach(_plan(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.spend > amount"],
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.spend > amount"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert [h.to for h in sj.hops] == ["orders"]
@@ -140,8 +140,8 @@ class TestExpandedDependencies:
         raw ref is host-local, its SQL reads customers across the unsafe hop;
         it must not inline."""
         att = _attach(_plan(q(
-            dimensions=["status"], measures=[CM],
-            filters=["cust_tier = 'gold'"], to_many_handling="broadcast",
+            dimensions=["status"], metrics=[CM],
+            filter=["cust_tier = 'gold'"], to_many_handling="broadcast",
         )), "customers")
         sjs = list(att.producer_plan.semi_join_filters)
         assert len(sjs) == 1
@@ -152,8 +152,8 @@ class TestExpandedDependencies:
         the root but reads orders across the declared 1:N hop. Today it
         inlines and fans; it must classify by its expanded dependencies."""
         att = _attach(_plan(
-            q(dimensions=["customers.tier"], measures=[CM],
-              filters=["customers.last_status = 'ok'"]),
+            q(dimensions=["customers.tier"], metrics=[CM],
+              filter=["customers.last_status = 'ok'"]),
             datasets=dev1840_datasets(declare_reverse=True),
         ), "customers")
         (sj,) = att.producer_plan.semi_join_filters
@@ -167,23 +167,23 @@ class TestBooleanTotalPushdown:
 
     def test_mixed_disjunction_pushes(self):
         att = _attach(_plan(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["customers.tier = 'gold' OR channel = 'app'"],
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["customers.tier = 'gold' OR channel = 'app'"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
         assert any("channel" in (t or "") for t in sj.filter_texts)
 
     def test_mixed_negation_pushes(self):
         att = _attach(_plan(q(
-            dimensions=["customers.tier"], measures=[CM],
-            filters=["NOT (customers.tier = 'gold' AND channel = 'app')"],
+            dimensions=["customers.tier"], metrics=[CM],
+            filter=["NOT (customers.tier = 'gold' AND channel = 'app')"],
         )), "customers")
         assert att.producer_plan.semi_join_filters
 
     def test_cross_branch_disjunction_pushes(self):
         att = _attach(_plan(
-            q(dimensions=["customers.tier"], measures=[CM],
-              filters=["channel = 'app' OR customers.plans.level = 'basic'"]),
+            q(dimensions=["customers.tier"], metrics=[CM],
+              filter=["channel = 'app' OR customers.plans.level = 'basic'"]),
             datasets=dev1840_datasets(strong_plans=False),
         ), "customers")
         assert att.producer_plan.semi_join_filters
@@ -191,8 +191,8 @@ class TestBooleanTotalPushdown:
     def test_cross_branch_atomic_comparison_pushes(self):
         """Cross-path refs spanning two join branches in ONE conjunct -> product."""
         att = _attach(_plan(
-            q(dimensions=["customers.tier"], measures=[CM],
-              filters=["channel = customers.plans.level"]),
+            q(dimensions=["customers.tier"], metrics=[CM],
+              filter=["channel = customers.plans.level"]),
             datasets=dev1840_datasets(strong_plans=False),
         ), "customers")
         assert att.producer_plan.semi_join_filters
@@ -203,7 +203,7 @@ class TestExcludedConjuncts:
         """Scenario: ambiguous hops fail closed — two unnamed edges
         tickets→agents make the measure's hop an error, retiring the silent
         first-match. Divergence class (d)."""
-        query = tq(measures=[SM], filters=["effort > 2"])
+        query = tq(metrics=[SM], filter=["effort > 2"])
         models = ambiguity_datasets()
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             _plan(query, datasets=models)
@@ -215,7 +215,7 @@ class TestExcludedConjuncts:
         """Scenario: ambiguous correlation hop fails closed — the measure's
         path is clean (tickets→reviews) but the filter crosses the ambiguous
         pair; drop+warn is retired. Divergence class (d)."""
-        query = tq(measures=[RV], filters=["agents.name = 'Ann'"])
+        query = tq(metrics=[RV], filter=["agents.name = 'Ann'"])
         models = ambiguity_datasets()
         with pytest.raises(AmbiguousRelationshipPathError) as ei:
             _plan(query, datasets=models)

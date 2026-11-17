@@ -24,7 +24,7 @@ from slayer.sql.dialects import get_dialect
 from slayer.sql.stage_wrapper import build_flat_rename_wrapper
 from tests._dev1739_fixtures import customers_dataset, make_exec_engine
 
-REVENUE = {"formula": "sum(amount)", "name": "revenue"}
+REVENUE = {"expression": "sum(amount)", "name": "revenue"}
 REGION_ID = {"name": "region_id", "expression": "customers.region_id"}
 REGION_NAME = {"name": "region_name", "expression": "customers.regions.name"}
 RID = {"name": "rid", "expression": "customers.region_id"}
@@ -66,7 +66,7 @@ STAGE_NAMED_TWO_HOP = [
 ]
 STAGE_DOWNSTREAM_AGG = [
     _stage(dimensions=[RID, "customer_id"]),
-    _outer(dimensions=["rid"], metrics=[{"formula": "sum(revenue)", "name": "tot"}]),
+    _outer(dimensions=["rid"], metrics=[{"expression": "sum(revenue)", "name": "tot"}]),
 ]
 SINGLE_UNNAMED_PATH = {"population": "orders", "dimensions": [UNNAMED_PATH], "metrics": [REVENUE]}
 STAGE_UNNAMED_PATH = [

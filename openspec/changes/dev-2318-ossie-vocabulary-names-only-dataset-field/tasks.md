@@ -66,5 +66,5 @@
 
 - [ ] 6.1 Run the local test scope (`la-affected-tests --base main`, plus goldens, fixtures and conftests this change reaches) and fix every failure.
 - [ ] 6.2 Verify that ruff, `la-typecheck` (no new errors, baseline not rewritten), `la-arch-check` and LikeC4 validation pass.
-- [ ] 6.3 Run a final word-boundary sweep for `model`, `column`, `measure`, `join` and `formula` over `slayer/`, `tests/`, `docs/` and `examples/`. Every hit is inside a carve-out, an upgrade path, a back-compat test, or (in `tests/` only) a test function name, test class name or test-local variable.
+- [ ] 6.3 Run a final word-boundary sweep for `model`, `column`, `measure`, `join` and `formula` over `slayer/`, `tests/`, `docs/` and `examples/`. Every hit is inside a carve-out, an upgrade path, a back-compat test, the engine A/B corpus under `tests/perf/compare/` (also fed to the pinned PyPI engine, so it keeps the old spelling until that pin moves past this release), or (in `tests/` only) a test function name, test class name or test-local variable.
 - [ ] 6.4 Post a comment on DEV-1607 noting that its Ossie payload becomes version 3 and that it keeps the Ossie datatype values (design decision 20).

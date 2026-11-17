@@ -72,7 +72,7 @@ class TestUnsupportedCombinations:
         _, engine = exec_backend
         query = assoc_q(
             dimensions=["status"], time_dimensions=_SIGNUP_TD,
-            measures=[DatasetMetric(expression="last(customers.spend)", name="lastspend")])
+            metrics=[DatasetMetric(expression="last(customers.spend)", name="lastspend")])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(query)
         assert _COMBO.search(str(ei.value))
@@ -83,7 +83,7 @@ class TestUnsupportedCombinations:
         _, engine = exec_backend
         query = assoc_q(
             dimensions=["status"], time_dimensions=_SIGNUP_TD,
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="sum(customers.spend, window='90d')", name="win")])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(query)
@@ -94,7 +94,7 @@ class TestMissingUniqueKey:
     async def test_root_without_unique_key_associates(self, exec_backend_keyless):
         """A keyless root is deduplicated by its per-query row identity."""
         _, engine = exec_backend_keyless
-        resp = await engine.execute(assoc_q(dimensions=["status"], measures=[CM]))
+        resp = await engine.execute(assoc_q(dimensions=["status"], metrics=[CM]))
         by = status_key(resp)
         for status, expected in ASSOC_SPEND_BY_STATUS.items():
             assert float(by[(status,)]["orders.cm"]) == pytest.approx(expected)
@@ -107,8 +107,8 @@ class TestUnsafeInputInAssociate:
 
     async def test_crossing_input_rejected_in_associate(self, exec_backend_crossing):
         _, engine = exec_backend_crossing
-        error_query = error_q(dimensions=["status"], measures=[self.VIP])
-        assoc_query = assoc_q(dimensions=["status"], measures=[self.VIP])
+        error_query = error_q(dimensions=["status"], metrics=[self.VIP])
+        assoc_query = assoc_q(dimensions=["status"], metrics=[self.VIP])
         # Reference: the broadcast/error path already rejects the unsafe input.
         with pytest.raises(ValueError, match="unproven join hop"):
             await engine.execute(error_query)
@@ -127,14 +127,14 @@ class TestColumnReferenceParameter:
 
     async def test_explicit_column_param_executes(self, exec_backend):
         _, engine = exec_backend
-        resp = await engine.execute(assoc_q(dimensions=["status"], measures=[self.WAVG]))
+        resp = await engine.execute(assoc_q(dimensions=["status"], metrics=[self.WAVG]))
         by = status_key(resp)
         for status, expected in ASSOC_WAVG_SPEND_BY_STATUS.items():
             assert float(by[(status,)]["orders.wavg"]) == pytest.approx(expected)
 
     async def test_column_default_param_executes(self, exec_backend_coldef):
         _, engine = exec_backend_coldef
-        resp = await engine.execute(assoc_q(dimensions=["status"], measures=[self.WSUM]))
+        resp = await engine.execute(assoc_q(dimensions=["status"], metrics=[self.WSUM]))
         by = status_key(resp)
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(by[(status,)]["orders.wsum"]) == pytest.approx(expected)

@@ -19,21 +19,21 @@ _OVER = {"source_name": "orders", "metrics": [
 
 def _over_rev(**fields) -> SlayerDataset:
     return SlayerDataset(name="over_rev", data_source="test", source_queries=[query(
-        source_model="orders", extensions=[_OVER], dimensions=["customer_id"], measures=["rev"])],
+        population="orders", extensions=[_OVER], dimensions=["customer_id"], metrics=["rev"])],
         **fields)
 
 
 def _wrap(name: str, floor: int) -> SlayerDataset:
     return SlayerDataset(name=name, data_source="test", query_variables={"floor": floor}, source_queries=[
-        query(source_model="over_rev", dimensions=["customer_id"], measures=[m("sum(rev)", "r")])])
+        query(population="over_rev", dimensions=["customer_id"], metrics=[m("sum(rev)", "r")])])
 
 
 async def test_conflicting_contexts_of_an_extension_variable_fail_closed() -> None:
     models = [orders_dataset(), customers_dataset(), _over_rev(query_variables={"floor": 0}),
               _wrap("wrap_a", 20), _wrap("wrap_b", 30)]
-    s1 = query(name="s1", source_model="wrap_a", dimensions=["customer_id"], measures=[m("sum(r)", "a")])
-    s2 = query(name="s2", source_model="wrap_b", dimensions=["customer_id"], measures=[m("sum(r)", "b")])
-    root = query(source_model="s1", extensions=[{"source_name": "s1", "relationships": [
+    s1 = query(name="s1", population="wrap_a", dimensions=["customer_id"], metrics=[m("sum(r)", "a")])
+    s2 = query(name="s2", population="wrap_b", dimensions=["customer_id"], metrics=[m("sum(r)", "b")])
+    root = query(population="s1", extensions=[{"source_name": "s1", "relationships": [
         {"to": "s2", "join_pairs": [["customer_id", "customer_id"]]}]}],
         dimensions=["customer_id", "a", "s2.b"])
     async with dev1966_engine("sqlite", datasets=models) as e:
@@ -48,11 +48,11 @@ async def test_inspection_reports_an_extension_variable_as_required() -> None:
 
 
 @pytest.mark.parametrize("extension", [
-    ext("customers", measures=[{"name": "region_count", "formula": "count(regions.id)"}]),
+    ext("customers", metrics=[{"name": "region_count", "expression": "count(regions.id)"}]),
 ], ids=["measure"])
 def test_a_joined_models_extension_reads_what_its_definitions_read(extension: dict) -> None:
     home = DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])
-    query = q(source_model="orders", dimensions=["status"], extensions=[extension])
+    query = q(population="orders", dimensions=["status"], extensions=[extension])
     reads = datasets_read_by(query, datasets=[orders(), customers(home), regions()], data_source=DS)
     assert (DS, "regions") in reads
 
@@ -61,11 +61,11 @@ _TO_REGIONS = join("regions", [["region_id", "id"]])
 
 
 @pytest.mark.parametrize(("source", "dimensions", "extension"), [
-    ({"population": "orders"}, ["customers.regions.countries.name"], ext("customers", joins=[_TO_REGIONS])),
-    ({"population": "orders"}, ["status"], ext("customers", joins=[_TO_REGIONS],
-                                               measures=[{"name": "countries_n",
-                                                          "formula": "count_distinct(regions.countries.name)"}])),
-    ({}, ["customers.regions.countries.name"], ext("customers", joins=[_TO_REGIONS])),
+    ({"population": "orders"}, ["customers.regions.countries.name"], ext("customers", relationships=[_TO_REGIONS])),
+    ({"population": "orders"}, ["status"], ext("customers", relationships=[_TO_REGIONS],
+                                               metrics=[{"name": "countries_n",
+                                                          "expression": "count_distinct(regions.countries.name)"}])),
+    ({}, ["customers.regions.countries.name"], ext("customers", relationships=[_TO_REGIONS])),
 ], ids=["query-reference", "extension-measure", "anchorless"])
 def test_a_path_through_an_extension_join_reads_its_downstream_models(
     source: dict, dimensions: list, extension: dict,
@@ -80,48 +80,48 @@ _TO_CUSTOMERS = join("customers", [["customer_id", "id"]])
 
 
 @pytest.mark.parametrize(("dimensions", "extension"), [
-    (["customer_id"], ext("s", joins=[_TO_CUSTOMERS], measures=[{"name": "n", "formula": "count(customers.regions.id)"}])),
+    (["customer_id"], ext("s", relationships=[_TO_CUSTOMERS], metrics=[{"name": "n", "expression": "count(customers.regions.id)"}])),
     (["customer_id", {"expression": "upper(customers.regions.name)", "name": "region"}],
-     ext("s", joins=[_TO_CUSTOMERS])),
-    (["customer_id", "customers.regions.name"], ext("s", joins=[_TO_CUSTOMERS])),
+     ext("s", relationships=[_TO_CUSTOMERS])),
+    (["customer_id", "customers.regions.name"], ext("s", relationships=[_TO_CUSTOMERS])),
 ], ids=["measure", "computed-dimension", "query-reference"])
 @pytest.mark.parametrize("data_source", [DS, ""], ids=["datasource", "no-datasource"])
 def test_a_sibling_stage_extension_reads_through_its_joins(dimensions: list, extension: dict, data_source: str) -> None:
     home = DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])
     backed = SlayerDataset(name="backed", data_source=data_source, source_queries=[
-        q(name="s", source_model="orders", dimensions=["customer_id"]),
-        q(source_model="s", dimensions=dimensions, extensions=[extension])])
+        q(name="s", population="orders", dimensions=["customer_id"]),
+        q(population="s", dimensions=dimensions, extensions=[extension])])
     assert (DS, "regions") in datasets_read_by(backed, datasets=[orders(), customers(home), regions()])
 
 
 @pytest.mark.parametrize("column", ["name", "label"], ids=["stored-column-name", "fresh-name"])
 def test_a_sibling_stage_shadows_a_same_named_stored_model(column: str) -> None:
     backed = SlayerDataset(name="backed", data_source=DS, source_queries=[
-        q(name="customers", source_model="orders", dimensions=["customer_id"]),
-        q(source_model="customers", measures=[column], extensions=[
-            ext("customers", measures=[{"name": column, "formula": "sum(customer_id * 10)"}])])])
+        q(name="customers", population="orders", dimensions=["customer_id"]),
+        q(population="customers", metrics=[column], extensions=[
+            ext("customers", metrics=[{"name": column, "expression": "sum(customer_id * 10)"}])])])
     assert datasets_read_by(backed, datasets=[orders(), customers(), regions()]) == {(DS, "orders")}
 
 
 def test_a_path_through_chained_sibling_stages_reads_its_downstream_models() -> None:
     home = DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])
     backed = SlayerDataset(name="backed", data_source=DS, source_queries=[
-        q(name="s2", source_model="orders", dimensions=["customer_id"]),
-        q(name="s1", source_model="orders", dimensions=["customer_id"]),
-        q(source_model="s1", dimensions=["customer_id", "s2.customers.regions.name"], extensions=[
-            ext("s1", joins=[join("s2", [["customer_id", "customer_id"]])]), ext("s2", joins=[_TO_CUSTOMERS])])])
+        q(name="s2", population="orders", dimensions=["customer_id"]),
+        q(name="s1", population="orders", dimensions=["customer_id"]),
+        q(population="s1", dimensions=["customer_id", "s2.customers.regions.name"], extensions=[
+            ext("s1", relationships=[join("s2", [["customer_id", "customer_id"]])]), ext("s2", relationships=[_TO_CUSTOMERS])])])
     assert (DS, "regions") in datasets_read_by(backed, datasets=[orders(), customers(home), regions()])
 
 
 def test_a_short_form_reference_reads_the_models_on_its_route() -> None:
     home = DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])
-    query = q(source_model="orders", dimensions=["regions.name"])
+    query = q(population="orders", dimensions=["regions.name"])
     reads = datasets_read_by(query, datasets=[orders(), customers(home), regions()], data_source=DS)
     assert {(DS, "customers"), (DS, "regions")} <= reads
 
 
 def test_a_product_read_reads_the_unrelated_model() -> None:
-    query = q(source_model="orders", dimensions=["status"], measures=[{"formula": "count(countries.id)", "name": "n"}])
+    query = q(population="orders", dimensions=["status"], metrics=[{"expression": "count(countries.id)", "name": "n"}])
     reads = datasets_read_by(query, datasets=[orders(), customers(), regions(), countries()], data_source=DS)
     assert (DS, "countries") in reads
 
@@ -130,16 +130,16 @@ def test_a_rootless_sibling_stage_extension_reads_through_its_joins() -> None:
     home = DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])
     backed = SlayerDataset(name="backed", data_source="", source_queries=[
         q(name="s", dimensions=["orders.customer_id"]),
-        q(source_model="s", dimensions=["customer_id", "customers.regions.name"],
-          extensions=[ext("s", joins=[_TO_CUSTOMERS])])])
+        q(population="s", dimensions=["customer_id", "customers.regions.name"],
+          extensions=[ext("s", relationships=[_TO_CUSTOMERS])])])
     assert (DS, "regions") in datasets_read_by(backed, datasets=[orders(), customers(home), regions()])
 
 
 def test_a_sibling_join_key_its_extension_defines_is_one_column() -> None:
     home = DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])
     backed = SlayerDataset(name="backed", data_source=DS, source_queries=[
-        q(name="s", source_model="orders", dimensions=[{"expression": "customer_id", "name": "customer_key"}]),
-        q(source_model="s", dimensions=["customers.regions.name"], extensions=[ext(
-            "s", joins=[join("customers", [["customer_key", "id"]])])])])
+        q(name="s", population="orders", dimensions=[{"expression": "customer_id", "name": "customer_key"}]),
+        q(population="s", dimensions=["customers.regions.name"], extensions=[ext(
+            "s", relationships=[join("customers", [["customer_key", "id"]])])])])
     assert (DS, "regions") in datasets_read_by(backed, datasets=[orders(), customers(home), regions()])
 

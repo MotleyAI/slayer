@@ -168,7 +168,7 @@ async def make_engine(
 # Query shorthands + oracles
 # --------------------------------------------------------------------------- #
 def orders_q(**kw) -> SlayerQuery:
-    kw.setdefault("source_model", "orders")
+    kw.setdefault("population", "orders")
     return SlayerQuery(**kw)
 
 
@@ -179,7 +179,7 @@ def month_td(column: str = "created_at") -> List[TimeDimension]:
 
 
 def metric(expression: str, name: str = "l") -> dict:
-    return {"formula": expression, "name": name}
+    return {"expression": expression, "name": name}
 
 
 #: ``last(amount)`` by ``created_at`` and by ``cust_signup`` both pick order 2.

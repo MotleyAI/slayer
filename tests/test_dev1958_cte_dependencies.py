@@ -38,7 +38,7 @@ def _q(expression: str, *, date_range: bool = False):
                          date_range=["2024-02-01", "2024-03-31"])]
           if date_range else month_td())
     return monthly_q(dimensions=["region"], time_dimensions=td,
-                     measures=[DatasetMetric(expression=f"time_shift({expression}, -1)", name="t")])
+                     metrics=[DatasetMetric(expression=f"time_shift({expression}, -1)", name="t")])
 
 
 def _ctes(sql: str) -> list[str]:

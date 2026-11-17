@@ -78,7 +78,7 @@ async def unparse_engine(request):
 
 def _q(expression: str, mode=None):
     return mode_q(mode, dimensions=["status"],
-                  measures=[DatasetMetric(expression=expression, name="w")])
+                  metrics=[DatasetMetric(expression=expression, name="w")])
 
 
 def _plan(expression: str, datasets=None, mode=None):

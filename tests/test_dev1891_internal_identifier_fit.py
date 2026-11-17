@@ -92,7 +92,7 @@ COLLIDE_QUERY = q(
         {"expression": RBAND, "name": "rband"},
         {"expression": BAND35, "name": "cband"},
     ],
-    measures=[DatasetMetric(expression="sum(amount)", name="s")],
+    metrics=[DatasetMetric(expression="sum(amount)", name="s")],
 )
 
 _GOLDEN_CASES = _cases()
@@ -426,7 +426,7 @@ class TestUserSurfacesExempt:
         )
         host = self._orders(
             extra_columns=[DatasetField(name="dim_id", datatype=DataType.INT)],
-            joins=[DatasetRelationship(to="dims", join_pairs=[["dim_id", "id"]])],
+            relationships=[DatasetRelationship(to="dims", join_pairs=[["dim_id", "id"]])],
         )
         query = SlayerQuery(
             population="orders",

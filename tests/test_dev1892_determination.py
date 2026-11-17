@@ -44,7 +44,7 @@ class TestNestedPathKeySeed:
         broadcast warning (the previous rule broadcast them)."""
         resp = await exec_engine.execute(chain_q(
             dimensions=[dim],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="avg(sum(amount, partition_by=customers.id))", name="a")]))
         by = rows_by(resp, col)
         for key, expected in oracle.items():
@@ -59,7 +59,7 @@ class TestForeignKeySeedsToOneTarget:
         so customers.regions.name is attributable exactly, no broadcast warning."""
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="avg(sum(amount, partition_by=customers.region_id))",
                 name="a")]))
         by = rows_by(resp, "corders.customers.regions.name")
@@ -77,7 +77,7 @@ class TestNestedPathNonKeyDoesNotSeed:
         the deliberate expansion — and is covered separately.)"""
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.id"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression="avg(sum(amount, partition_by=customers.region_id))",
                 name="a")],
             to_many_handling="broadcast"))

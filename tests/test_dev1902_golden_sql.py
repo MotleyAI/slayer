@@ -14,8 +14,8 @@ from tests._golden_harness import bind_golden_tests, record_raise
 GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1902_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb"]
 
-_AMT = {"formula": "sum(amount)", "name": "amt"}
-_CREDIT = {"formula": "sum(credit)", "name": "cr"}
+_AMT = {"expression": "sum(amount)", "name": "amt"}
+_CREDIT = {"expression": "sum(credit)", "name": "cr"}
 
 
 def _cases() -> dict:

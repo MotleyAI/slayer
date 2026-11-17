@@ -21,8 +21,8 @@ class TestMixedGrainOr:
         # a query dimension) — neither scope holds the whole OR.
         query = q(
             dimensions=["region", "city"],
-            filters=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         with pytest.raises(PositionTypingError) as ei:
             await exec_engine.execute(query)
@@ -38,7 +38,7 @@ class TestRawRowsHaveNoMeasurePosition:
         query = q(
             dimensions=["status"],
             distinct_dimension_values=False,
-            filters=["sum(amount) > 100"],
+            filter=["sum(amount) > 100"],
         )
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await exec_engine.execute(query)
@@ -50,7 +50,7 @@ class TestRawRowsHaveNoMeasurePosition:
         query = q(
             dimensions=["status"],
             distinct_dimension_values=False,
-            order=[{"column": "sum(amount)", "direction": "desc"}],
+            order=[{"field": "sum(amount)", "direction": "desc"}],
         )
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await exec_engine.execute(query)

@@ -66,7 +66,7 @@ class TestFullyAttachedAccepted:
     async def test_reaggregation_compiles_to_sql(self):
         """Accepted end-to-end: emits SQL rather than raising the gate."""
         sql = await gen(sales_q(dimensions=["region"],
-                                measures=[DatasetMetric(expression=f"avg({INNER_CR})",
+                                metrics=[DatasetMetric(expression=f"avg({INNER_CR})",
                                                        name="acr")]))
         assert "SELECT" in sql.upper()
 
@@ -88,7 +88,7 @@ class TestRejections:
         ref-free."""
         query = sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression=f"wavg({INNER_CR}, weight=id)", name="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
@@ -104,7 +104,7 @@ class TestRejections:
         grain; same one-rule error."""
         query = sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=f"wavg({INNER_CR})", name="w")])
+            metrics=[DatasetMetric(expression=f"wavg({INNER_CR})", name="w")])
         with pytest.raises(SlayerError) as ei:
             await gen(query)
         msg = str(ei.value)
@@ -119,7 +119,7 @@ class TestRejections:
         NotImplementedError."""
         query = sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression=f"sum({INNER_CR}, window='90d')", name="w")])
         with pytest.raises((SlayerError, ValueError)) as ei:
             await gen(query)
@@ -148,7 +148,7 @@ class TestCrossModelAndFilteredOperandNowAccepted:
     async def test_filtered_column_operand_accepted(self):
         """A filtered column operand desugars to CASE WHEN, not a rejection."""
         query = sales_q(dimensions=["region"],
-                        measures=[DatasetMetric(expression="sum(q_amount - 1)",
+                        metrics=[DatasetMetric(expression="sum(q_amount - 1)",
                                                name="x")])
         assert "CASE WHEN" in (await gen(query)).upper()
 
@@ -181,6 +181,6 @@ class TestUnknownOuterAggregationRejectedAtBinding:
         """Unknown custom-aggregation candidates are rejected at binding."""
         query = sales_q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression=f"magic_fn({INNER_CR})", name="x")])
+            metrics=[DatasetMetric(expression=f"magic_fn({INNER_CR})", name="x")])
         with pytest.raises((SlayerError, ValueError), match="(?i)unknown function"):
             await gen(query)

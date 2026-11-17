@@ -56,7 +56,7 @@ def _home_path(expression: str, *, dimensions: list[str] | None = None) -> tuple
     """`home_path` of a measure's outer aggregate over the DEV-1908 graph."""
     elab = elaborate_query(
         query=orders_q(dimensions=dimensions or [],
-                       measures=[DatasetMetric(expression=expression, name="m")]),
+                       metrics=[DatasetMetric(expression=expression, name="m")]),
         bundle=bundle1908())
     assert elab.prebound is not None
     root = elab.prebound.declared_metrics[-1].bound.value_key
@@ -119,7 +119,7 @@ async def engine(request):
 
 async def _value(engine, expression: str) -> float:
     resp = await engine.execute(
-        orders_q(measures=[DatasetMetric(expression=expression, name="w")]))
+        orders_q(metrics=[DatasetMetric(expression=expression, name="w")]))
     return float(resp.data[0]["orders.w"])
 
 
@@ -226,10 +226,10 @@ class TestKernelExpressionDefaults:
         base = "wsum_region_pop_expr(customers.regions.countries.gdp)"
         default = _cells(await engine.execute(orders_q(
             dimensions=["status"], to_many_handling="associate",
-            measures=[DatasetMetric(expression=base, name="w")])))
+            metrics=[DatasetMetric(expression=base, name="w")])))
         explicit = _cells(await engine.execute(orders_q(
             dimensions=["status"], to_many_handling="associate",
-            measures=[DatasetMetric(expression=f"{base[:-1]}, weight=customers.regions.pop)",
+            metrics=[DatasetMetric(expression=f"{base[:-1]}, weight=customers.regions.pop)",
                                    name="w")])))
         assert default == explicit
         assert {k[0]: float(v) for k, v in default.items()} == ASSOC_EXPR
@@ -238,10 +238,10 @@ class TestKernelExpressionDefaults:
         base = "wsum_cust_spend2_expr(customers.regions.countries.gdp)"
         default = _cells(await engine.execute(orders_q(
             time_dimensions=signup_month_td(),
-            measures=[DatasetMetric(expression=f"{base[:-1]}, window='1y')", name="w")])))
+            metrics=[DatasetMetric(expression=f"{base[:-1]}, window='1y')", name="w")])))
         explicit = _cells(await engine.execute(orders_q(
             time_dimensions=signup_month_td(),
-            measures=[DatasetMetric(
+            metrics=[DatasetMetric(
                 expression=f"{base[:-1]}, window='1y', weight=customers.spend)", name="w")])))
         assert default == explicit
         months = {month_key(k[0]): float(v) for k, v in default.items()
@@ -262,7 +262,7 @@ class TestStageQueryUnaffected:
         """A later stage aggregating a stage's output resolves no definition
         default (a stage has no model host) — executes exactly as before."""
         stage1 = orders_q(name="stage1", dimensions=["status"],
-                          measures=[DatasetMetric(expression="sum(amount)", name="amount_sum")])
+                          metrics=[DatasetMetric(expression="sum(amount)", name="amount_sum")])
         root = SlayerQuery(population="stage1", dimensions=[FieldRef(name="status")],
                            metrics=[DatasetMetric(expression="max(amount_sum)", name="mx")])
         resp = await engine.execute([stage1, root])

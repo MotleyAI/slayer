@@ -151,7 +151,7 @@ def test_extract_walks_all_four_mode_a_surfaces():
     model = _sql_dataset(
         sql="SELECT * FROM t WHERE {? a IN ({a}) ?}",
         filters=["b >= '{b_from}'"],
-        columns=[
+        fields=[
             DatasetField(name="c1", sql="CASE WHEN {? c IN ({c}) ?} THEN 1 END"),
             DatasetField(name="c2", sql="x", filter="d = '{d}'"),
         ],
@@ -173,7 +173,7 @@ def test_extract_on_malformed_block_does_not_raise():
 def test_extract_dedupes_and_sorts():
     model = _sql_dataset(
         sql="WHERE {? a IN ({a}) ?} AND {? a IN ({a}) ?}",
-        columns=[DatasetField(name="c", sql="z >= '{z_from}'")],
+        fields=[DatasetField(name="c", sql="z >= '{z_from}'")],
     )
     v = extract_dataset_variables(model)
     assert v.optional == ["a"]

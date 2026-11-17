@@ -406,7 +406,7 @@ class TestInlineScalarsAreNotReferences:
         planned = plan_query(
             query=SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"formula": "amount", "name": "amount"}],
+                "dimensions": [{"expression": "amount", "name": "amount"}],
                 "metrics": [{"expression": "percentile(amount, p=0.9)", "name": "p90"}],
                 "filter": ["percentile(amount, p=0.9) > 100"],
             }),
@@ -464,7 +464,7 @@ class TestCoordinateSystemInvariant:
         planned = plan_query(
             query=SlayerQuery.model_validate({
                 "population": "orders",
-                "dimensions": [{"formula": "amount", "name": "amount"}],
+                "dimensions": [{"expression": "amount", "name": "amount"}],
                 "metrics": [{"expression": "sum(eu_amount)", "name": "eu"}],
                 "filter": ["sum(eu_amount) > 100"],
             }),

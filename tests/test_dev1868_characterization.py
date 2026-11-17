@@ -38,7 +38,7 @@ class TestW1SubstrateIsComplete:
     async def test_ranked_measure_executes_end_to_end(self, bypassed_engine) -> None:
         resp = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[DatasetMetric(expression=LAST_TIER, name="l")],
+            metrics=[DatasetMetric(expression=LAST_TIER, name="l")],
         ))
         got = {r[TIER]: r["orders.l"] for r in resp.data}
         for tier, expected in LAST_SPEND_BY_TIER.items():
@@ -50,15 +50,15 @@ class TestW1SubstrateIsComplete:
     async def test_filter_and_order_positions_execute(self, bypassed_engine) -> None:
         filtered = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
-            filters=[f"{LAST_TIER} > 100"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=[f"{LAST_TIER} > 100"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert [r[TIER] for r in filtered.data] == ["silver"]
         ordered = await bypassed_engine.execute(q(
             dimensions=["customers.tier"],
-            filters=["customers.tier is not null"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
-            order=[{"column": LAST_TIER, "direction": "desc"}],
+            filter=["customers.tier is not null"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            order=[{"field": LAST_TIER, "direction": "desc"}],
         ))
         assert [r[TIER] for r in ordered.data] == ["silver", "gold", "bronze"]
 
@@ -69,7 +69,7 @@ class TestW2SubstrateIsComplete:
     ) -> None:
         resp = await bypassed_engine.execute(q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            measures=[DatasetMetric(expression=f"cumsum({CM_PART_TIER})", name="c")],
+            metrics=[DatasetMetric(expression=f"cumsum({CM_PART_TIER})", name="c")],
         ))
         by = keyed_by_month(resp, TIER)
         assert set(by) == set(CUMSUM_PART_BY_TIER_MONTH)

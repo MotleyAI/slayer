@@ -15,7 +15,7 @@ async def _raises(band: str) -> str:
     query = q(
         dimensions=["customers.tier", {"expression": band, "name": "b"}],
         time_dimensions=month_td(),
-        measures=[DatasetMetric(expression="sum(amount)", name="s")],
+        metrics=[DatasetMetric(expression="sum(amount)", name="s")],
     )
     with pytest.raises(ValueError) as ei:
         await gen(query=query)

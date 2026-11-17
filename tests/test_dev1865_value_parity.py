@@ -27,10 +27,10 @@ async def _twin_query_law(engine, *, dims, value_expression, threshold, td=None)
         base["time_dimensions"] = td
     display = [DatasetMetric(expression="sum(amount)", name="s")]
     filtered = (await engine.execute(q(
-        **base, measures=display, filters=[f"{value_expression} > {threshold}"],
+        **base, metrics=display, filter=[f"{value_expression} > {threshold}"],
     ))).data
     twin = (await engine.execute(q(
-        **base, measures=display + [DatasetMetric(expression=value_expression, name="e")],
+        **base, metrics=display + [DatasetMetric(expression=value_expression, name="e")],
     ))).data
     assert filtered, "threshold kept no rows — the law would be vacuous"
     dim_cols = sorted(set(filtered[0]) - {"orders.s"})
@@ -78,7 +78,7 @@ class TestNullPredicateDropsRow:
         # NULL > 0 is NULL, so WHERE/HAVING drops the cell.
         twin = (await exec_engine.execute(q(
             dimensions=["region"],
-            measures=[
+            metrics=[
                 DatasetMetric(expression="sum(amount)", name="s"),
                 DatasetMetric(expression="sum(nomatch)", name="e"),
             ],
@@ -87,8 +87,8 @@ class TestNullPredicateDropsRow:
         assert all(r["orders.e"] is None for r in twin)
         filtered = (await exec_engine.execute(q(
             dimensions=["region"],
-            measures=[DatasetMetric(expression="sum(amount)", name="s")],
-            filters=["sum(nomatch) > 0"],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
+            filter=["sum(nomatch) > 0"],
         ))).data
         assert filtered == []
 
@@ -100,19 +100,19 @@ class TestPositionSupportCannotLag:
         expr = "sum(customers.spend, partition_by=customers.regions.name)"
         dims = ["customers.regions.name", "customers.tier"]
         as_measure = (await exec_engine.execute(q(
-            dimensions=dims, measures=[DatasetMetric(expression=expr, name="e")],
+            dimensions=dims, metrics=[DatasetMetric(expression=expr, name="e")],
         ))).data
         assert as_measure
         as_filter = (await exec_engine.execute(q(
             dimensions=dims,
-            measures=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
-            filters=[f"{expr} > 100"],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            filter=[f"{expr} > 100"],
         ))).data
         assert 0 < len(as_filter) <= len(as_measure)
         ordered = (await exec_engine.execute(q(
             dimensions=dims,
-            measures=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
-            order=[{"column": expr, "direction": "desc"}],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
+            order=[{"field": expr, "direction": "desc"}],
         ))).data
         assert len(ordered) == len(as_measure)
         # Sorted by the region partition total desc (RegN=300 before RegS=50);
