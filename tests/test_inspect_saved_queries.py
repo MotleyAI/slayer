@@ -175,7 +175,7 @@ class TestSkeletonListings:
         payload = json.loads(await InspectService(storage=storage).inspect(
             reference="test", entity_type="datasource", compact=False, format="json",
         ))
-        models = {m["name"]: m for m in payload["models"]}
+        models = {m["name"]: m for m in payload["datasets"]}
         assert _listed(models["orders"]) == ON_ORDERS
         assert "saved_queries" not in models["untouched"]
         assert "hidden_q" not in models
@@ -185,7 +185,7 @@ class TestSkeletonListings:
             reference=None, entity_type="datasource", compact=False, format="json",
         ))
         (entry,) = payload["datasources"]
-        models = {m["name"]: m for m in entry["models"]}
+        models = {m["name"]: m for m in entry["datasets"]}
         assert _listed(models["orders"]) == ON_ORDERS
 
 

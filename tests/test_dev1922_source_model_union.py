@@ -92,7 +92,7 @@ async def chain_engine():
 class TestSchema:
     def test_source_model_is_a_name_or_null(self) -> None:
         schema = SlayerQuery.model_json_schema()
-        prop = schema["properties"]["source_model"]
+        prop = schema["properties"]["population"]
         assert "$ref" not in str(prop)
         assert {a.get("type") for a in prop["anyOf"]} == {"string", "null"}
         assert "ModelExtension" in schema["$defs"]
@@ -100,10 +100,10 @@ class TestSchema:
         assert "filters" not in prop["description"]
 
     def test_extension_definition_is_closed_and_typed(self) -> None:
-        ext = SlayerQuery.model_json_schema()["$defs"]["ModelExtension"]
+        ext = SlayerQuery.model_json_schema()["$defs"]["DatasetExtension"]
         assert ext["additionalProperties"] is False
         assert ext["required"] == ["source_name"]
-        assert ext["properties"]["measures"]["anyOf"][0]["items"] == {"$ref": "#/$defs/ModelMeasure"}
+        assert ext["properties"]["metrics"]["anyOf"][0]["items"] == {"$ref": "#/$defs/DatasetMetric"}
         assert ext["properties"]["joins"]["anyOf"][0]["items"] == {"$ref": "#/$defs/ModelJoin"}
 
     def test_source_spec_is_defined_in_core_and_reused_by_ir(self) -> None:
@@ -121,9 +121,9 @@ class TestSchema:
     def test_openapi_embeds_the_forms_for_the_rest_body(self, rest_client) -> None:
         spec = rest_client.get("/openapi.json").json()
         props = spec["components"]["schemas"]["QueryRequest"]["properties"]
-        assert "#/components/schemas/ModelExtension" not in str(props["source_model"])
+        assert "#/components/schemas/DatasetExtension" not in str(props["population"])
         assert "#/components/schemas/SlayerModel" not in str(props["source_model"])
-        assert "#/components/schemas/ModelExtension" in str(props["extensions"])
+        assert "#/components/schemas/DatasetExtension" in str(props["extensions"])
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +257,7 @@ class TestRoundTrip:
     def test_exclude_none_dump_is_the_minimal_object(self) -> None:
         q = _query(population="orders", extensions=[EXTENSION_WITH_MEASURES])
         assert q.model_dump(exclude_none=True)["extensions"] == [EXTENSION_WITH_MEASURES]
-        assert SlayerQuery(population="orders").model_dump(exclude_none=True)["source_model"] == "orders"
+        assert SlayerQuery(population="orders").model_dump(exclude_none=True)["population"] == "orders"
 
 
 # ---------------------------------------------------------------------------

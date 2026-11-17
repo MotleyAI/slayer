@@ -593,6 +593,6 @@ class TestMCPSurfaces:
                 "dataset_name": "orders", "fields": [{"name": "created_at", "granularity": "month"}]})
             out = await _call(server, name="inspect", arguments={
                 "entity_type": "dataset", "reference": "orders", "compact": False, "format": "json"})
-            cols = {c["name"]: c for c in json.loads(out)["columns"]}
+            cols = {c["name"]: c for c in json.loads(out)["fields"]}
             assert cols["created_at"].get("granularity") == "month"
             assert "granularity" not in cols["note"]

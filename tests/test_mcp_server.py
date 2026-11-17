@@ -305,7 +305,7 @@ DatasetField(name="revenue", sql="amount", label="Revenue", description="USD tot
             "entity_type": "dataset", "reference": "m", "compact": False, "sections": ["fields"], "format": "json",
         })
         payload = json.loads(js)
-        assert payload["columns"][0]["meta"] == {"kb_id": 7}
+        assert payload["fields"][0]["meta"] == {"kb_id": 7}
 
     async def test_inspect_renders_meta_on_measures(self, mcp_server, storage: YAMLStorage) -> None:
         """ModelMeasure.meta surfaces in both markdown and JSON model inspect output."""
@@ -326,7 +326,7 @@ DatasetField(name="revenue", sql="amount", label="Revenue", description="USD tot
             "entity_type": "dataset", "reference": "m", "compact": False, "sections": ["metrics"], "format": "json",
         })
         payload = json.loads(js)
-        assert payload["measures"][0]["meta"] == {"kb_id": "abc-123"}
+        assert payload["metrics"][0]["meta"] == {"kb_id": "abc-123"}
 
     async def test_inspect_renders_meta_on_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
         """Aggregation.meta surfaces in both markdown and JSON model inspect output."""
@@ -430,7 +430,7 @@ class TestMdCodeSpan:
         )
         # Without types, label falls back to avg (no dim to trigger the heuristic).
         args_no_types = _build_sample_query_args(dataset=model, num_rows=3)
-        formulas = [f["formula"] for f in args_no_types["measures"]]
+        formulas = [f["expression"] for f in args_no_types["metrics"]]
         assert "avg(label)" in formulas
 
         args_with_types = _build_sample_query_args(
@@ -563,7 +563,7 @@ DatasetField(name="m", sql="val", datatype=DataType.DOUBLE)
         parsed = json.loads(result)
         assert "sample_data" in parsed
         assert "sample_data_error" in parsed
-        assert parsed["model_name"] == "jtest"
+        assert parsed["dataset_name"] == "jtest"
         # sample_sql should NOT appear when show_sql is not requested
         assert "sample_sql" not in parsed
         # A complete profile must advertise itself as not reduced, so a JSON
@@ -627,7 +627,7 @@ DatasetField(name="val", sql="val", filter="val > 0", datatype=DataType.DOUBLE)
         assert "sql" not in parsed
         assert "sql_table" not in parsed
         # Column dicts should not have sql/filter keys when show_sql=False
-        for c in parsed["columns"]:
+        for c in parsed["fields"]:
             assert "sql" not in c
             assert "filter" not in c
 
@@ -648,7 +648,7 @@ DatasetField(name="val", sql="val", filter="val > 0", datatype=DataType.DOUBLE)
         parsed = json.loads(result)
         assert "sql" in parsed
         assert parsed["sql"] == "SELECT id, val FROM raw_table"
-        for c in parsed["columns"]:
+        for c in parsed["fields"]:
             assert "sql" in c
             assert "filter" in c
 
@@ -1107,7 +1107,7 @@ class TestInspectModelJsonGating:
         )
         parsed = json.loads(raw)
         agg = parsed["aggregations"][0]
-        assert agg["formula"] == "SUM({a})"
+        assert agg["expression"] == "SUM({a})"
         assert agg["params"] == [{"name": "a", "sql": "amount"}]
 
     async def test_json_descriptions_truncated(self, mcp_server, storage: YAMLStorage) -> None:
@@ -1246,7 +1246,7 @@ class TestBuildSampleQueryArgs:
             ],
         )
         args = _build_sample_query_args(dataset=model, num_rows=7)
-        assert [f["formula"] for f in args["measures"]] == ["count(*)", "avg(rev)", "avg(qty)"]
+        assert [f["expression"] for f in args["metrics"]] == ["count(*)", "avg(rev)", "avg(qty)"]
         assert [d["name"] for d in args["dimensions"]] == ["status", "region"]
         assert args["limit"] == 7
         assert args["source_model"] == "t"
@@ -1257,7 +1257,7 @@ class TestBuildSampleQueryArgs:
             fields=[DatasetField(name="rev", sql="amt", allowed_aggregations=["sum", "max"], datatype=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(dataset=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["count(*)", "sum(rev)"]
+        assert [f["expression"] for f in args["metrics"]] == ["count(*)", "sum(rev)"]
 
     def test_prefers_safe_agg_over_first_allowed(self) -> None:
         """A non-safe first aggregation is skipped for the first safe zero-arg one."""
@@ -1266,7 +1266,7 @@ class TestBuildSampleQueryArgs:
             fields=[DatasetField(name="rev", sql="amt", allowed_aggregations=["last", "first", "min", "max"], datatype=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(dataset=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["count(*)", "min(rev)"]
+        assert [f["expression"] for f in args["metrics"]] == ["count(*)", "min(rev)"]
 
     def test_falls_back_to_first_allowed_when_no_safe_agg(self) -> None:
         """No safe aggregation ⇒ fall back to the first allowed entry."""
@@ -1275,7 +1275,7 @@ class TestBuildSampleQueryArgs:
             fields=[DatasetField(name="rev", sql="amt", allowed_aggregations=["last", "first"], datatype=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(dataset=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["count(*)", "last(rev)"]
+        assert [f["expression"] for f in args["metrics"]] == ["count(*)", "last(rev)"]
 
     def test_skip_when_allowed_is_empty(self) -> None:
         model = SlayerDataset(
@@ -1283,7 +1283,7 @@ class TestBuildSampleQueryArgs:
             fields=[DatasetField(name="rev", sql="amt", allowed_aggregations=[], datatype=DataType.DOUBLE)],
         )
         args = _build_sample_query_args(dataset=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["count(*)"]
+        assert [f["expression"] for f in args["metrics"]] == ["count(*)"]
 
     def test_dims_cap_at_two_and_exclude_pk_and_hidden(self) -> None:
         model = SlayerDataset(
@@ -1308,7 +1308,7 @@ class TestBuildSampleQueryArgs:
             ],
         )
         args = _build_sample_query_args(dataset=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["count(*)", "avg(qty)"]
+        assert [f["expression"] for f in args["metrics"]] == ["count(*)", "avg(qty)"]
 
     def test_count_distinct_fallback_for_non_numeric_columns(self) -> None:
         """Non-numeric columns not used as dims get count_distinct; numeric get avg."""
@@ -1324,7 +1324,7 @@ class TestBuildSampleQueryArgs:
         )
         args = _build_sample_query_args(dataset=model, num_rows=3)
         assert [d["name"] for d in args["dimensions"]] == ["sku", "is_flagged"]
-        assert [f["formula"] for f in args["measures"]] == [
+        assert [f["expression"] for f in args["metrics"]] == [
             "count(*)", "count_distinct(extra_string)", "avg(quantity)",
         ]
 
@@ -1346,7 +1346,7 @@ class TestBuildSampleQueryArgs:
             ],
         )
         args = _build_sample_query_args(dataset=model, num_rows=3)
-        assert [f["formula"] for f in args["measures"]] == ["count(*)", "avg(area)"]
+        assert [f["expression"] for f in args["metrics"]] == ["count(*)", "avg(area)"]
         assert [d["name"] for d in args["dimensions"]] == ["city"]
 
 

@@ -55,6 +55,10 @@ def _query(expression: str = "reverse(a)", **body: Any) -> dict:
     return {"population": "t", "metrics": [metric(expression)], **body}
 
 
+#: ``_query()`` as the previous release stored it.
+_STORED_QUERY = {"source_model": "t", "measures": [{"formula": "reverse(a)", "name": "v"}]}
+
+
 class TestSaveAndLoad:
     async def test_save(self) -> None:
         fresh = {k: v for k, v in t_doc(aggregations=[_REVERSE]).items() if k != "version"}
@@ -127,19 +131,19 @@ class TestEveryResponse:
 
 class TestEveryContainer:
     async def test_a_stored_measure(self) -> None:
-        doc = t_doc(aggregations=[_REVERSE], metrics=[{"name": "rev", "expression": "reverse(a)"}])
+        doc = t_doc(aggregations=[_REVERSE], metrics=[{"name": "rev", "formula": "reverse(a)"}])
         async with stored_engine(datasets=[doc]) as engine:
             got = await _both(engine.execute(_query("rev")))
         assert got == (_SHADOW, _SHADOW)
 
     async def test_a_saved_query(self) -> None:
-        saved = saved_query_doc(name="rev_q", stage=_query())
+        saved = saved_query_doc(name="rev_q", stage=_STORED_QUERY)
         async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE]), saved]) as engine:
             got = await _both(engine.execute("rev_q"))
         assert got == (_SHADOW, _SHADOW)
 
     async def test_a_memory_query(self) -> None:
-        mem = memory_doc(memory_id="m_rev", query=_query())
+        mem = memory_doc(memory_id="m_rev", query=_STORED_QUERY)
         async with stored_engine(datasets=[t_doc(aggregations=[_REVERSE])], memories=[mem]) as engine:
             stored = await engine.storage.get_memory("m_rev")
             assert stored.query is not None

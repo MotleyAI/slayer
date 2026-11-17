@@ -147,7 +147,7 @@ def test_model_count_is_bucketed(store: str) -> None:
     save_datasets(store, count=32)
     cli(["datasets", "--storage", store, "list"])
     context = show()["context"]
-    assert context["model_count"] == {"11-50": 1}
+    assert context["dataset_count"] == {"11-50": 1}
     assert context["storage"] == {"yaml": 1}
 
 

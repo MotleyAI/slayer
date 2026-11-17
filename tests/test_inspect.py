@@ -775,7 +775,7 @@ class TestJsonShapes:
         )
         payload = json.loads(out)
         # Reuses inspect_model JSON keys ...
-        assert payload["model_name"] == "orders"
+        assert payload["dataset_name"] == "orders"
         # ... plus the inspect additions (normalized id always present).
         assert payload["canonical_id"] == "mydb.orders"
         assert "warnings" in payload
@@ -1009,7 +1009,7 @@ class TestModelSkeletonHelpers:
                 DatasetField(name="secret", sql="secret", datatype=DataType.TEXT, hidden=True),
             ],
         )
-        assert dataset_skeleton_fields(dataset=m)["column_names"] == ["id", "visible"]
+        assert dataset_skeleton_fields(dataset=m)["field_names"] == ["id", "visible"]
 
     def test_model_skeleton_fields_excludes_unnamed_measures(self) -> None:
 
@@ -1040,7 +1040,7 @@ class TestModelSkeletonHelpers:
                 DatasetRelationship(to="apple", join_pairs=[("a_id", "id")]),
             ],
         )
-        assert dataset_skeleton_fields(dataset=m)["joins_to"] == ["apple", "zebra"]
+        assert dataset_skeleton_fields(dataset=m)["relationships_to"] == ["apple", "zebra"]
 
     def test_canonical_id_has_no_leading_dot_without_data_source(self) -> None:
 
@@ -1092,7 +1092,7 @@ class TestModelCompactSkeletonJson:
         )
         p = json.loads(out)
         assert p["canonical_id"] == "mydb.customers"
-        assert p["column_names"] == ["id", "region"]
+        assert p["field_names"] == ["id", "region"]
         assert p["measure_names"] == []
         assert p["aggregation_names"] == []
         assert p["joins_to"] == []
@@ -1131,7 +1131,7 @@ class TestModelCompactSkeletonJson:
         assert p["description"] != "One row per placed order."
         assert p["description"].startswith("One ")
         # Structure intact despite truncation.
-        assert p["column_names"] == ["id", "amount", "customer_id", "big"]
+        assert p["field_names"] == ["id", "amount", "customer_id", "big"]
 
 
 class TestDatasourceCompactFalseSkeletons:
@@ -1162,9 +1162,9 @@ class TestDatasourceCompactFalseSkeletons:
         assert p["entity_type"] == "datasource"
         assert p["description"] == "Primary analytics warehouse."
         assert "text" not in p
-        names = [m["name"] for m in p["models"]]
+        names = [m["name"] for m in p["datasets"]]
         assert names == ["customers", "orders", "time_spine"]   # sorted by name
-        orders = next(m for m in p["models"] if m["name"] == "orders")
+        orders = next(m for m in p["datasets"] if m["name"] == "orders")
         assert orders["canonical_id"] == "mydb.orders"
         assert orders["column_names"] == ["id", "amount", "customer_id", "big"]
         assert orders["measure_names"] == ["aov"]
@@ -1186,7 +1186,7 @@ class TestDatasourceCompactFalseSkeletons:
             reference="mydb", entity_type="datasource",
             format="json", compact=False,
         )
-        assert all(m["name"] != "hiddends" for m in json.loads(outj)["models"])
+        assert all(m["name"] != "hiddends" for m in json.loads(outj)["datasets"])
 
     async def test_no_visible_models_empty_list(
         self, storage: YAMLStorage
@@ -1234,7 +1234,7 @@ class TestDatasourceCompactFalseSkeletons:
         p = json.loads(out)
         assert p["description"] != "Primary analytics warehouse."
         assert p["description"].startswith("Prim")
-        orders = next(m for m in p["models"] if m["name"] == "orders")
+        orders = next(m for m in p["datasets"] if m["name"] == "orders")
         assert orders["description"] != "One row per placed order."
         assert orders["description"].startswith("One ")
 

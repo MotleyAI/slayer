@@ -189,7 +189,7 @@ class TestRefineDictWithLiveSchema:
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
         changed = await _refine(d, ds)
         assert changed is True
-        assert d["columns"][0]["type"] == "INT"
+        assert d["fields"][0]["datatype"] == "INT"
         assert d["columns"][1]["type"] == "INT"
 
     async def test_leaves_double_for_real_columns(self, sqlite_with_int_double_text) -> None:
@@ -204,7 +204,7 @@ class TestRefineDictWithLiveSchema:
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
         changed = await _refine(d, ds)
         assert changed is False
-        assert d["columns"][0]["type"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "DOUBLE"
 
     async def test_skips_text_and_other_types(self, sqlite_with_int_double_text) -> None:
         d = {
@@ -218,7 +218,7 @@ class TestRefineDictWithLiveSchema:
         }
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
         await _refine(d, ds)
-        assert d["columns"][0]["type"] == "TEXT"
+        assert d["fields"][0]["datatype"] == "TEXT"
         assert d["columns"][1]["type"] == "DOUBLE"
 
     async def test_skips_non_base_derived_columns(self, sqlite_with_int_double_text) -> None:
@@ -235,7 +235,7 @@ class TestRefineDictWithLiveSchema:
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
         changed = await _refine(d, ds)
         assert changed is False
-        assert d["columns"][0]["type"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "DOUBLE"
 
     async def test_skips_query_backed_models(self) -> None:
         """Models without ``sql_table`` (e.g. query-backed) must short-circuit."""
@@ -250,7 +250,7 @@ class TestRefineDictWithLiveSchema:
         ds = DatasourceConfig(name="live", type="sqlite", database=":memory:")
         changed = await _refine(d, ds)
         assert changed is False
-        assert d["columns"][0]["type"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "DOUBLE"
 
     async def test_skips_sql_mode_models(self) -> None:
         """Models in ``sql`` source-mode (explicit subquery) must short-circuit."""
@@ -265,7 +265,7 @@ class TestRefineDictWithLiveSchema:
         ds = DatasourceConfig(name="live", type="sqlite", database=":memory:")
         changed = await _refine(d, ds)
         assert changed is False
-        assert d["columns"][0]["type"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "DOUBLE"
 
     async def test_unreachable_datasource_propagates(self) -> None:
         """DS unreachable → SQLAlchemy connect error propagates. Hard-fail per
@@ -603,7 +603,7 @@ class TestRefineSqliteAffinityProbe:
         }
         ds = self._ds_for(db_path)
         await _refine(d, ds)
-        assert d["columns"][0]["type"] == "INT"
+        assert d["fields"][0]["datatype"] == "INT"
 
     async def test_custom_format_preserved_on_widening(self, tmp_path: Path) -> None:
         """A user-set custom format on a widening column is left untouched."""
@@ -628,7 +628,7 @@ class TestRefineSqliteAffinityProbe:
         }
         ds = self._ds_for(db_path)
         await _refine(d, ds)
-        assert d["columns"][0]["type"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "DOUBLE"
         # Custom format preserved verbatim.
         assert d["columns"][0]["format"]["type"] == "currency"
         assert d["columns"][0]["format"]["symbol"] == "€"
@@ -657,7 +657,7 @@ class TestRefineSqliteAffinityProbe:
         ds = self._ds_for(db_path)
         changed = await _refine(d, ds)
         assert changed is True
-        assert d["columns"][0]["type"] == "TEXT"
+        assert d["fields"][0]["datatype"] == "TEXT"
         # Auto-default integer format must be cleared on TEXT widening.
         assert d["columns"][0].get("format") in (None, {})
 

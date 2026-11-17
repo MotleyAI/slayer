@@ -117,14 +117,14 @@ class TestRejected:
 class TestSchema:
     def test_source_model_is_a_name_or_null(self) -> None:
         schema = SlayerQuery.model_json_schema()
-        prop = schema["properties"]["source_model"]
+        prop = schema["properties"]["population"]
         assert _refs(prop) == {"string", "null"}
         assert "source_name" not in prop.get("description", "")
 
     def test_extensions_list_model_extension_references(self) -> None:
         schema = SlayerQuery.model_json_schema()
         prop = schema["properties"]["extensions"]
-        assert _refs(prop) == {"array", "#/$defs/ModelExtension", "null"}
+        assert _refs(prop) == {"array", "#/$defs/DatasetExtension", "null"}
         assert prop.get("description")
         ext = schema["$defs"]["ModelExtension"]
         assert ext["additionalProperties"] is False
@@ -142,9 +142,9 @@ class TestSchema:
 
     def test_openapi_rest_body_carries_extensions(self, rest_client) -> None:
         props = rest_client.get("/openapi.json").json()["components"]["schemas"]["QueryRequest"]["properties"]
-        assert "#/components/schemas/ModelExtension" in json.dumps(props["extensions"])
-        assert "#/components/schemas/ModelExtension" not in json.dumps(props["source_model"])
-        assert "#/components/schemas/SlayerModel" not in json.dumps(props["source_model"])
+        assert "#/components/schemas/DatasetExtension" in json.dumps(props["extensions"])
+        assert "#/components/schemas/DatasetExtension" not in json.dumps(props["population"])
+        assert "#/components/schemas/SlayerModel" not in json.dumps(props["population"])
 
 
 class TestRestAndMcp:
@@ -187,7 +187,7 @@ class TestRoundTrip:
     def test_exclude_none_dump_is_what_the_author_wrote(self) -> None:
         q = _query(population="orders", extensions=[MEASURES_ONLY])
         dumped = q.model_dump(exclude_none=True)
-        assert dumped["source_model"] == "orders"
+        assert dumped["population"] == "orders"
         assert dumped["extensions"] == [MEASURES_ONLY]
 
     def test_no_extensions_key_when_unset(self) -> None:

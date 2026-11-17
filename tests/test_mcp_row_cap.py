@@ -481,7 +481,7 @@ class TestAttributesMachineSafe:
         assert isinstance(payload, dict)
         assert len(payload["data"]) == 3
         assert payload["attributes"]["dimensions"]["nums.id"]["label"] == "ID"
-        assert payload["attributes"]["measures"]["nums._count"]["label"] == "Count"
+        assert payload["attributes"]["metrics"]["nums._count"]["label"] == "Count"
 
     async def test_csv_attributes_are_leading_comments(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -519,7 +519,7 @@ class TestAttributesMachineSafe:
     ) -> None:
         payload = json.loads(await self._dry_run(tmp_path, monkeypatch, "json"))
         assert payload["sql"] == "SELECT 1"
-        assert payload["attributes"]["measures"]["nums._count"]["label"] == "Count"
+        assert payload["attributes"]["metrics"]["nums._count"]["label"] == "Count"
         assert payload["population"] == "nums"
         assert payload["population_inferred"] is True
 

@@ -109,7 +109,7 @@ async def test_model_stored_before_the_shape_change(env) -> None:
     path = env.store / "models" / env.datasource / "orders.yaml"
     stored = yaml.safe_load(path.read_text(encoding="utf-8"))
     stored["version"] = 21
-    [amount] = [c for c in stored["columns"] if c["name"] == "amount"]
+    [amount] = [c for c in stored["fields"] if c["name"] == "amount"]
     amount["meta"] = {"osi_custom_extensions": [{"vendor_name": "ACME", "data": '{"k": 1}'},
                                                 {"vendor_name": "ACME", "data": "not json"}]}
     path.write_text(yaml.safe_dump(stored, sort_keys=False), encoding="utf-8")
@@ -148,7 +148,7 @@ async def test_retypable_strings_round_trip(env, tmp_path: Path) -> None:
     for loaded in (yaml.safe_load(text), _yaml12(text)):
         amount = field(dataset(loaded, "orders"), "amount")
         assert amount is not None
-        assert payload(amount)["column"]["meta"] == meta
+        assert payload(amount)["field"]["meta"] == meta
     assert yaml.safe_load(text) == _yaml12(text)
 
 

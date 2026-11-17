@@ -300,7 +300,7 @@ async def test_inspect_model_passes_all_columns_in_one_call(
     real = mr.ensure_samples_fresh
 
     async def recording(**kwargs):  # NOSONAR(S7503)
-        seen.append([c.name for c in kwargs["columns"]])
+        seen.append([c.name for c in kwargs["fields"]])
         return await real(**kwargs)
 
     monkeypatch.setattr(mr, "ensure_samples_fresh", recording)

@@ -153,12 +153,12 @@ class TestInspectSampling:
         assert dims == [{"name": "label"}]
 
     def test_composite_members_are_sample_measures(self) -> None:
-        formulas = [m["formula"] for m in _build_sample_query_args(dataset=order_lines(), num_rows=3)["measures"]]
+        formulas = [m["expression"] for m in _build_sample_query_args(dataset=order_lines(), num_rows=3)["metrics"]]
         assert any("(order_id)" in f for f in formulas)
         assert any("(line_no)" in f for f in formulas)
 
     def test_sole_primary_key_is_not_a_sample_measure(self) -> None:
-        formulas = [m["formula"] for m in _build_sample_query_args(dataset=orders_dataset(), num_rows=3)["measures"]]
+        formulas = [m["expression"] for m in _build_sample_query_args(dataset=orders_dataset(), num_rows=3)["metrics"]]
         assert not any("(id)" in f for f in formulas)
 
     def test_composite_member_sample_cache_is_checked(self) -> None:
@@ -236,6 +236,6 @@ class TestProbingAndProfiling:
             out = await render_dataset_inspection(
                 dataset=model, storage=engine.storage, engine=engine, format="json",
             )
-            rendered[model.name] = {c["name"]: c["sampled"] for c in json.loads(out)["columns"]}
+            rendered[model.name] = {c["name"]: c["sampled"] for c in json.loads(out)["fields"]}
         assert all(rendered["order_lines"][n] is not None for n in COMPOSITE_MEMBERS)
         assert rendered["orders"]["id"] is None

@@ -216,7 +216,7 @@ class TestMCPModelToolsDataSourceArg:
 
         # Helpers should have called engine.execute at least once on the
         # ``users`` model, and *every* such call must carry data_source="db_a".
-        users_calls = [c for c in captured if c["source_model"] == "users"]
+        users_calls = [c for c in captured if c["population"] == "users"]
         assert users_calls, (
             "expected model inspect helpers to run at least one ``users`` "
             f"query; got: {captured!r}"

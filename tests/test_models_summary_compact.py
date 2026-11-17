@@ -201,8 +201,8 @@ async def test_compact_json_shape(yaml_storage: YAMLStorage) -> None:
     })
     data = json.loads(result)
     assert data["datasource_name"] == "mydb"
-    assert data["model_count"] == 3
-    orders = next(m for m in data["models"] if m["name"] == "orders")
+    assert data["dataset_count"] == 3
+    orders = next(m for m in data["datasets"] if m["name"] == "orders")
     assert set(orders.keys()) == {
         "name", "description", "column_count", "measure_names", "joins_to",
     }
@@ -222,7 +222,7 @@ async def test_compact_json_no_columns_or_formulas(
         "datasource_name": "mydb", "compact": True, "format": "json",
     })
     data = json.loads(result)
-    orders = next(m for m in data["models"] if m["name"] == "orders")
+    orders = next(m for m in data["datasets"] if m["name"] == "orders")
     assert "columns" not in orders
     assert "measures" not in orders
 
@@ -259,7 +259,7 @@ async def test_verbose_json_keeps_full_column_and_measure_payloads(
         "datasource_name": "mydb", "compact": False, "format": "json",
     })
     data = json.loads(result)
-    orders = next(m for m in data["models"] if m["name"] == "orders")
+    orders = next(m for m in data["datasets"] if m["name"] == "orders")
     assert "columns" in orders
     assert orders["columns"][0]["name"] == "id"
     assert "type" in orders["columns"][0]

@@ -85,7 +85,7 @@ class TestMcpTool:
             arguments={"items": ["orders.status"], "data_source": "mydb", "format": "json"},
         )
         payload = json.loads(_text(blocks))
-        assert payload["root_model"] == "orders"
+        assert payload["population"] == "orders"
         assert payload["reachable"] is True
 
     async def test_no_root_renders_coverage(self, storage) -> None:
@@ -95,7 +95,7 @@ class TestMcpTool:
             arguments={"items": ["customers.name", "tickets.subject"], "format": "json"},
         )
         payload = json.loads(_text(blocks))
-        assert payload["root_model"] is None
+        assert payload["population"] is None
         assert payload["reachable"] is False
         assert payload["coverage"]
 
@@ -143,7 +143,7 @@ class TestRestEndpoint:
         body = resp.json()
         # only orders determines both columns along to-one paths
         # (customers→products is unreachable to-one), so orders is the root.
-        assert body["root_model"] == "orders"
+        assert body["population"] == "orders"
         assert body["data_source"] == "mydb"
 
     def test_returns_item_paths(self, storage) -> None:
@@ -197,7 +197,7 @@ class TestCliHandler:
         )
         _run_recommend_population(args)
         payload = json.loads(capsys.readouterr().out)
-        assert payload["root_model"] == "orders"
+        assert payload["population"] == "orders"
 
 
 class TestCliParserWiring:
@@ -213,7 +213,7 @@ class TestCliParserWiring:
         main()
         payload = json.loads(capsys.readouterr().out)
         # orders determines both columns to-one.
-        assert payload["root_model"] == "orders"
+        assert payload["population"] == "orders"
 
 
 class TestSlayerClient:
@@ -265,7 +265,7 @@ class TestUnrelatedFlagSurfaces:
             name="recommend_population", arguments={"items": UNRELATED_ITEMS, "format": "json"},
         )
         payload = json.loads(_text(blocks))
-        assert payload["root_model"] == "customers"
+        assert payload["population"] == "customers"
         assert _flags(payload) == UNRELATED_FLAGS
 
     async def test_mcp_markdown(self, storage) -> None:
@@ -325,7 +325,7 @@ class TestRootHintSurfaces:
             arguments={"items": ["customers.name"], "root_hint": "orders", "format": "json"},
         )
         payload = json.loads(_text(blocks))
-        assert payload["root_model"] == "orders"
+        assert payload["population"] == "orders"
 
     async def test_mcp_bad_hint_friendly_error(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
@@ -343,7 +343,7 @@ class TestRootHintSurfaces:
             json={"items": ["customers.name"], "root_hint": "orders"},
         )
         assert resp.status_code == 200
-        assert resp.json()["root_model"] == "orders"
+        assert resp.json()["population"] == "orders"
 
     def test_rest_bad_hint_400(self, storage) -> None:
         client = TestClient(create_app(storage=storage))
@@ -363,7 +363,7 @@ class TestRootHintSurfaces:
         )
         _run_recommend_population(args)
         payload = json.loads(capsys.readouterr().out)
-        assert payload["root_model"] == "orders"
+        assert payload["population"] == "orders"
 
     def test_cli_bad_hint_nonzero_exit(self, storage, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
         monkeypatch.setattr(sys, "argv", [
@@ -387,7 +387,7 @@ class TestRootHintSurfaces:
         ])
         main()
         payload = json.loads(capsys.readouterr().out)
-        assert payload["root_model"] == "orders"  # the hint wins
+        assert payload["population"] == "orders"  # the hint wins
 
     # -- SlayerClient (local engine) ------------------------------------
     def test_client_local_feasible_hint_honored(self, storage) -> None:

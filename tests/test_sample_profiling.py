@@ -260,7 +260,7 @@ async def test_inspect_model_profiles_numeric_columns_with_one_query(env, monkey
         dataset=model, storage=storage, engine=engine, format="json", sections=["fields"],
     )
     assert len(_numeric_batches(log)) == 1
-    rendered = {c["name"]: c["sampled"] for c in json.loads(out)["columns"]}
+    rendered = {c["name"]: c["sampled"] for c in json.loads(out)["fields"]}
     for name in ("amount", "qty", "ordered_at"):
         assert rendered[name] == (await _stored(storage, column=name)).sampled
     assert rendered["ordered_at"] == "2024-01-01 .. 2024-04-01"
@@ -553,7 +553,7 @@ async def test_inspect_service_model_makes_one_owner_call(env, monkeypatch: pyte
     real = dataset_render.ensure_samples_fresh
 
     async def spy(**kwargs):
-        calls.append([c.name for c in kwargs["columns"]])
+        calls.append([c.name for c in kwargs["fields"]])
         return await real(**kwargs)
 
     monkeypatch.setattr(dataset_render, "ensure_samples_fresh", spy)

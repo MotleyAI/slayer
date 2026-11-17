@@ -59,7 +59,7 @@ class TestDropAddressesOneEdge:
     async def test_report_names_the_edge_and_carries_its_exact_reference(self, drifted: Live) -> None:
         entry = await _orders_entry(drifted)
         assert entry.remove.relationships == ["billing_address"]
-        assert entry.remove.model_dump(mode="json")["join_edges"] == [
+        assert entry.remove.model_dump(mode="json")["relationship_edges"] == [
             {"target_model": "addresses", "name": "billing_address", "join_pairs": [["billing_address_id", "id"]]},
         ]
         assert "join:billing_address" in {r.target for r in entry.reasons}

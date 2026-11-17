@@ -77,8 +77,8 @@ class TestCollectionSurfaceListsReverseNeighbors:
                 reference=None, entity_type="dataset", format="json")
             data = json.loads(out)
             ds = next(x for x in data["datasources"] if x["data_source"] == "ds")
-            customers = next(m for m in ds["models"] if m["name"] == "customers")
-            assert "orders" in customers["joins_to"]
+            customers = next(m for m in ds["datasets"] if m["name"] == "customers")
+            assert "orders" in customers["relationships_to"]
 
 
 def _edge_finding(findings: list[RelationshipSafetyFinding]) -> RelationshipSafetyFinding:

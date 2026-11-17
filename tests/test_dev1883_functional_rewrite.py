@@ -74,7 +74,7 @@ class TestDimensionsRewrite:
         dump = q.model_dump()
         assert not dump["dimensions"]
         assert [
-            (td["dimension"], td["granularity"])
+            (td["field"], td["granularity"])
             for td in dump["time_dimensions"]
         ] == [("created_at", "month")]
 

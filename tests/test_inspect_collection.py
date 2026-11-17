@@ -244,7 +244,7 @@ class TestModelCollectionCompactJson:
         )
         data = json.loads(out)
         mydb = next(d for d in data["datasources"] if d["data_source"] == "mydb")
-        assert mydb["model_count"] == 3
+        assert mydb["dataset_count"] == 3
         orders = next(m for m in mydb["models"] if m["name"] == "orders")
         assert orders["column_count"] == 3
         assert orders["joins_to"] == ["customers"]
@@ -365,7 +365,7 @@ class TestModelCollectionEdges:
             )
             entry = json.loads(out)["datasources"][0]
             assert entry["datasource_name"] == "emptyds"
-            assert entry["model_count"] == 1
+            assert entry["dataset_count"] == 1
             assert [m["name"] for m in entry["models"]] == ["time_spine"]
 
 
@@ -811,7 +811,7 @@ class TestInvalidConfigTolerance:
                 if d["data_source"] == "zzz_broken"
             )
             assert "error" in bad
-            assert bad["models"] == []
+            assert bad["datasets"] == []
 
     async def test_datasource_json_error_entry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

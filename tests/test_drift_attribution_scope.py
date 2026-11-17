@@ -136,7 +136,7 @@ class _Spies:
         return {str(c.kwargs["client"].datasource.database) for c in self.listing.call_args_list}
 
     def trialled(self) -> list[str]:
-        return [c.kwargs["model"].name for c in self.trial.call_args_list]
+        return [c.kwargs["dataset"].name for c in self.trial.call_args_list]
 
     def probed_tables(self) -> set[str]:
         return {c.kwargs["table"] for c in self.probe.call_args_list}

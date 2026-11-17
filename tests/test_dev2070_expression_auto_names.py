@@ -241,14 +241,14 @@ def _rows(resp, *, root: str, dim: str, key: str) -> list:
 
 @pytest.mark.parametrize(("query", "dim", "key", "values"), _REFERENCED)
 async def test_derived_key_in_filter(engine, query, dim, key, values) -> None:
-    root, top = query["source_model"], max(values.values())
+    root, top = query["population"], max(values.values())
     resp = await engine.execute(SlayerQuery.model_validate({**query, "filter": [f"{key} >= {top}"]}))
     assert _rows(resp, root=root, dim=dim, key=key) == [(k, v) for k, v in values.items() if v == top]
 
 
 @pytest.mark.parametrize(("query", "dim", "key", "values"), _REFERENCED)
 async def test_derived_key_in_order(engine, query, dim, key, values) -> None:
-    root = query["source_model"]
+    root = query["population"]
     for direction, reverse in (("asc", False), ("desc", True)):
         resp = await engine.execute(SlayerQuery.model_validate(
             {**query, "order": [{"field": key, "direction": direction}]},

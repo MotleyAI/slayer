@@ -41,11 +41,11 @@ async def _inspect(dataset: SlayerDataset, **kwargs) -> str:
 class TestInspectShowsEdgeNames:
     async def test_json_join_rows_carry_names(self) -> None:
         payload = json.loads(await _inspect(_orders(), format="json"))
-        assert sorted(j["name"] for j in payload["joins"]) == EDGE_NAMES
+        assert sorted(j["name"] for j in payload["relationships"]) == EDGE_NAMES
 
     async def test_incoming_hops_carry_names(self) -> None:
         payload = json.loads(await _inspect(addresses_dataset(), format="json"))
-        assert sorted(j["name"] for j in payload["joins"]) == EDGE_NAMES
+        assert sorted(j["name"] for j in payload["relationships"]) == EDGE_NAMES
 
     async def test_markdown_join_table_has_a_name_cell(self) -> None:
         md = await _inspect(_orders(), format="markdown")
@@ -56,12 +56,12 @@ class TestInspectShowsEdgeNames:
         assert sorted(payload["joins_names"]) == EDGE_NAMES
 
     def test_skeleton_lists_edge_references(self) -> None:
-        assert dataset_skeleton_fields(dataset=_orders())["joins_to"] == EDGE_NAMES
+        assert dataset_skeleton_fields(dataset=_orders())["relationships_to"] == EDGE_NAMES
 
 
 def _summary_joins(*models: SlayerDataset) -> dict[str, list[str]]:
     out = json.loads(render_datasets_summary(datasource_name=DS, datasets=list(models), fmt="json", compact=True))
-    return {m["name"]: m["joins_to"] for m in out["models"]}
+    return {m["name"]: m["relationships_to"] for m in out["datasets"]}
 
 
 class TestModelsSummaryListsAddressableTokens:

@@ -272,7 +272,7 @@ def _monthly_dataset() -> SlayerDataset:
 
 _MONTHLY_MODEL_TABLE = {
     "name": "monthly",
-    "fields": [("month_ts", "TIMESTAMP"), ("rev", "DOUBLE")],
+    "columns": [("month_ts", "TIMESTAMP"), ("rev", "DOUBLE")],
     "rows": [("2025-01-01", 100.0), ("2025-02-01", 200.0),
              ("2025-03-01", 300.0), ("2025-04-01", 400.0)],
 }

@@ -103,7 +103,7 @@ class TestDatasourcesRefreshSamples:
             ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--dataset", "nope", "--format", "json"],
         )
         assert result.returncode == 1
-        assert json.loads(result.stdout)["unresolved_models"] == [f"{SHOP_DS}.nope"]
+        assert json.loads(result.stdout)["unresolved_datasets"] == [f"{SHOP_DS}.nope"]
 
     def test_never_seeds_help_memories(self, default_shop: str) -> None:
         result = run_cli_in_process(["datasources", "refresh-samples", "--data-source", SHOP_DS])

@@ -188,7 +188,7 @@ class TestGatewayServesEveryFeature:
 
         twin = await _twin(datasource=ds, build=build, base=tmp_path, run=run)
         assert twin.attempts == []
-        types = {c["name"]: c["type"] for c in twin.default["columns"]}
+        types = {c["name"]: c["datatype"] for c in twin.default["fields"]}
         assert (types["quantity"], types["amount"]) == ("INT", "DOUBLE")
         assert twin.gateway == twin.default
 

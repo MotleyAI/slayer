@@ -133,7 +133,7 @@ class TestParityWithMaterialisedAggregate:
         """Every population cell, NULL included, equals the materialised row (or the empty value)."""
         vm = await materialise(vm_engine, name="vm", payload=_local(case["grain"]))
         resp = await vm_engine.execute(q({**case["payload"], "to_many_handling": mode}))
-        root = case["payload"]["source_model"]
+        root = case["payload"]["population"]
         s = cells(resp, case["dim"], f"{root}.s")
         n = cells(resp, case["dim"], f"{root}.n")
         assert_parity(s, vm["s"], empty=None)

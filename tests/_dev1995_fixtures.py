@@ -101,7 +101,7 @@ async def materialise(engine: SlayerQueryEngine, *, name: str,
     """Save ``payload`` as a query-backed model; return ``{measure: {grain value: value}}``."""
     model = await engine.create_dataset_from_query(q(payload), name)
     grain = model.fields[0].name
-    measures = [m["name"] for m in payload["measures"]]
+    measures = [m["name"] for m in payload["metrics"]]
     resp = await engine.execute(q({
         "population": name, "dimensions": [grain, *measures]}))
     return {m: cells(resp, f"{name}.{grain}", f"{name}.{m}") for m in measures}

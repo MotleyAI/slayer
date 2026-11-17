@@ -348,7 +348,7 @@ class TestDriftAndRefinement:
                 client.close()
                 engine_factory.invalidate_engine(ds)
             assert changed is True
-            assert doc["columns"][0]["type"] == "INT"
+            assert doc["fields"][0]["datatype"] == "INT"
 
     def test_detection_profiles_renamed_base_keys(self):
         assert _detection_skip_reason(

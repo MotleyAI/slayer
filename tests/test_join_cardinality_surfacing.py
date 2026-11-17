@@ -64,7 +64,7 @@ class TestModelRender:
                 dataset=model, storage=storage, engine=None, format="json"
             )
             payload = json.loads(out)
-            join = payload["joins"][0]
+            join = payload["relationships"][0]
             assert join["cardinality"] == "many_to_one"
 
     async def test_json_columns_carry_unique(self) -> None:
@@ -80,7 +80,7 @@ class TestModelRender:
                 dataset=model, storage=storage, engine=None, format="json"
             )
             payload = json.loads(out)
-            email = next(c for c in payload["columns"] if c["name"] == "email")
+            email = next(c for c in payload["fields"] if c["name"] == "email")
             assert email["unique"] is True
 
     async def test_markdown_shows_cardinality(self) -> None:

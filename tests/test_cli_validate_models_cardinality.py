@@ -203,7 +203,7 @@ def test_json_with_cardinality(workspace: Path, capsys) -> None:
     _run_validate_datasets(_args(store, cardinality=True, format="json"))
     data = json.loads(capsys.readouterr().out)
     assert isinstance(data["drift"], list)
-    finding = next(f for f in data["cardinality"]["findings"] if f["model"] == "orders")
+    finding = next(f for f in data["cardinality"]["findings"] if f["dataset"] == "orders")
     assert finding["detected"] == "many_to_one"
 
 
@@ -223,7 +223,7 @@ def test_json_includes_join_safety_key(workspace: Path, capsys) -> None:
     store = _setup(workspace)
     _run_validate_datasets(_args(store, format="json"))
     data = json.loads(capsys.readouterr().out)
-    (finding,) = data["join_safety"]
+    (finding,) = data["relationship_safety"]
     assert finding["forward_provably_to_one"] is True
     assert finding["severity"] == "info"
     assert "broadcast" not in finding["message"].lower()
@@ -243,7 +243,7 @@ def test_json_join_safety_reports_unproven_join(workspace: Path, capsys) -> None
     )))
     _run_validate_datasets(_args(store, format="json"))
     data = json.loads(capsys.readouterr().out)
-    (finding,) = [f for f in data["join_safety"] if f["model"] == "risky"]
+    (finding,) = [f for f in data["relationship_safety"] if f["dataset"] == "risky"]
     assert finding["data_source"] == "ds"
     assert finding["target_model"] == "customers"
     assert "unproven" in finding["message"]
@@ -264,7 +264,7 @@ def test_json_serialises_drift_entries(workspace: Path, capsys) -> None:
     assert "edit_dataset" in tools
     assert "delete_dataset" in tools
     edit = next(e for e in data["drift"] if e["tool"] == "edit_dataset")
-    assert "ghost_o" in edit["remove"]["columns"] or "ghost_c" in edit["remove"]["columns"]
+    assert "ghost_o" in edit["remove"]["fields"] or "ghost_c" in edit["remove"]["fields"]
     assert isinstance(edit["reasons"], list)
 
 
@@ -277,7 +277,7 @@ def test_model_scopes_both_sections(workspace: Path, capsys) -> None:
     store = _setup(workspace, drift_orders=True, drift_customers=True)
     _run_validate_datasets(_args(store, model="orders", cardinality=True, format="json"))
     data = json.loads(capsys.readouterr().out)
-    assert {e["model_name"] for e in data["drift"]} == {"orders"}
+    assert {e["dataset_name"] for e in data["drift"]} == {"orders"}
     assert {f["model"] for f in data["cardinality"]["findings"]} == {"orders"}
 
 
@@ -361,7 +361,7 @@ def test_contradicts_hard_still_exits_zero(workspace: Path, capsys) -> None:
 
     _run_validate_datasets(_args(store, cardinality=True, format="json"))
     data = json.loads(capsys.readouterr().out)
-    finding = next(f for f in data["cardinality"]["findings"] if f["model"] == "orders")
+    finding = next(f for f in data["cardinality"]["findings"] if f["dataset"] == "orders")
     assert finding["verdict"] == "contradicts_hard"
 
 

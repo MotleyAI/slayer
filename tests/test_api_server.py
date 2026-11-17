@@ -98,7 +98,7 @@ class TestModels:
         assert resp.status_code == 200
         body = resp.json()
         assert body["name"] == "orders"
-        assert len(body["columns"]) == 2
+        assert len(body["fields"]) == 2
 
     def test_list_after_create(self, client: TestClient) -> None:
         client.post("/datasets", json={"name": "a", "sql_table": "t", "data_source": "test"})
@@ -158,7 +158,7 @@ class TestModels:
         client.post("/datasets", json=model)
         resp = client.get("/datasets/orders")
         data = resp.json()
-        col_names = [c["name"] for c in data["columns"]]
+        col_names = [c["name"] for c in data["fields"]]
         assert col_names == ["id", "revenue"]
 
     def test_all_named_measures_returned_from_get(self, client: TestClient) -> None:
@@ -178,7 +178,7 @@ class TestModels:
         client.post("/datasets", json=model)
         resp = client.get("/datasets/orders")
         data = resp.json()
-        names = [m["name"] for m in data["measures"]]
+        names = [m["name"] for m in data["metrics"]]
         assert names == ["aov", "revenue"]
 
 
@@ -381,7 +381,7 @@ class TestQueryBackedModelsAPI:
         assert get_resp.status_code == 200
         body = get_resp.json()
         assert "source_queries" in body
-        assert body["source_queries"][0]["source_model"] == "upstream"
+        assert body["source_queries"][0]["population"] == "upstream"
 
     def test_post_models_rejects_user_columns_on_query_backed(
         self, client: TestClient, storage: YAMLStorage

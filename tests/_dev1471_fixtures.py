@@ -71,7 +71,7 @@ def orders_table_spec(rows: list[tuple], *, extra_columns: Iterable[tuple[str, s
         ("region", "TEXT"), ("created_at", "TIMESTAMP"), ("shipped_at", "TIMESTAMP"),
     ]
     columns.extend(extra_columns)
-    return {"name": "orders", "fields": columns, "rows": rows}
+    return {"name": "orders", "columns": columns, "rows": rows}
 
 
 # One order per month, Jan–Apr 2025 (id, customer_id, amount, region, created_at, shipped_at).
@@ -125,12 +125,12 @@ def region_chain_tables(
 ) -> list[dict]:
     return [
         {"name": "regions",
-         "fields": [("id", "INT"), ("name", "TEXT"), ("last_activity_at", "TIMESTAMP")],
+         "columns": [("id", "INT"), ("name", "TEXT"), ("last_activity_at", "TIMESTAMP")],
          "rows": regions},
         {"name": "customers",
-         "fields": [("id", "INT"), ("region_id", "INT")], "rows": customers},
+         "columns": [("id", "INT"), ("region_id", "INT")], "rows": customers},
         {"name": "orders",
-         "fields": [("id", "INT"), ("customer_id", "INT")], "rows": orders},
+         "columns": [("id", "INT"), ("customer_id", "INT")], "rows": orders},
     ]
 
 

@@ -389,7 +389,7 @@ class TestHttpBodyShape:
         body = cap.last_body
         assert body is not None
         # Each measure landed as a dict, not a bare string.
-        for m in body["measures"]:
+        for m in body["metrics"]:
             assert isinstance(m, dict)
             assert m.get("formula") == "sum(amount)"
 
@@ -449,7 +449,7 @@ class TestHttpBodyShape:
         )
         body = cap.last_body
         assert body is not None
-        assert body["source_model"] == "orders"
+        assert body["population"] == "orders"
         assert body["dry_run"] is True
         assert body["explain"] is True
 

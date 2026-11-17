@@ -175,20 +175,20 @@ class TestReported:
         nc = DatasetMetric(name="nc", expression="max(contractors.tags)")
         async with _env(contractors(), orders(metrics=(nc,))) as env:
             broken = _by_key(await env.reingest())
-        _assert_list_type_break(broken[("orders", "measure", "nc")])
+        _assert_list_type_break(broken[("orders", "metric", "nc")])
 
     async def test_a_namesake_in_another_datasource(self) -> None:
         async with _env(contractors()) as env:
             await env.storage.save_datasource(env.ds.model_copy(update={"name": "other"}))
             await env.storage.save_dataset(contractors().model_copy(update={"data_source": "other"}))
             broken = _by_key(await env.reingest())
-        _assert_list_type_break(broken[("contractors", "measure", "nt")])
+        _assert_list_type_break(broken[("contractors", "metric", "nt")])
 
     async def test_attributed_to_the_column_that_breaks_it(self) -> None:
         mixed = DatasetMetric(name="mixed", expression="count(langs) + max(tools)")
         async with _env(skills(metrics=(mixed,))) as env:
             broken = _by_key(await env.reingest())
-        assert broken[("skills", "measure", "mixed")].field == "skills.tools", broken
+        assert broken[("skills", "metric", "mixed")].field == "skills.tools", broken
 
     async def test_the_retype_is_saved_although_dependants_break(self) -> None:
         async with _env(contractors()) as env:
@@ -209,7 +209,7 @@ class TestNotReported:
         _refuse_planning(monkeypatch, "first_tag")
         async with _env(contractors(columns=(FIRST_TAG,))) as env:
             broken = _by_key(await env.reingest())
-        assert broken[("contractors", "column", "first_tag")].checked is False, broken
+        assert broken[("contractors", "field", "first_tag")].checked is False, broken
 
     async def test_a_dependant_that_still_works(self) -> None:
         n_tagged = DatasetMetric(name="n_tagged", expression="count(tags)")
@@ -283,7 +283,7 @@ class TestUnchecked:
         audited = DatasetMetric(name="audited", expression="max(tags)")
         async with _env(contractors(metrics=(audited,))) as env:
             broken = _by_key(await env.reingest())
-        entry = broken[("contractors", "measure", "audited")]
+        entry = broken[("contractors", "metric", "audited")]
         assert (entry.checked, entry.field, entry.error_type) == (False, TAGS, None), entry
         assert entry.reason, entry
         assert "planner offline" in entry.reason, entry
