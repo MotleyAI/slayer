@@ -11,7 +11,7 @@ from slayer.api.server import QueryRequest, create_app
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.database.client import SlayerSQLClient
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -285,11 +285,11 @@ class TestQuery:
         assert resp.status_code == 400
 
     def test_query_missing_datasource(self, client: TestClient, storage: YAMLStorage) -> None:
-        run_sync(storage.save_model(SlayerModel(
+        run_sync(storage.save_dataset(SlayerDataset(
             name="orders",
             sql_table="t",
             data_source="missing_ds",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
         )))
         resp = client.post("/query", json={"source_model": "orders", "measures": [{"formula": "sum(revenue)"}]})
         assert resp.status_code == 400
@@ -301,7 +301,7 @@ class TestQuery:
         drift contract must not be swallowed by the generic 400 handler."""
         async def _raise_drift(self, *args, **kwargs):
             raise SchemaDriftError(
-                models=["orders"], to_delete=[], original=RuntimeError("boom"),
+                datasets=["orders"], to_delete=[], original=RuntimeError("boom"),
             )
 
         monkeypatch.setattr(SlayerQueryEngine, "execute", _raise_drift)
@@ -314,35 +314,35 @@ class TestQuery:
     def test_request_measures_payload_reaches_slayer_query(self) -> None:
         """v2 `measures` key must be declared on QueryRequest so FastAPI keeps it."""
         req = QueryRequest.model_validate(
-            {"source_model": "orders", "measures": [{"formula": "count(*)"}]}
+            {"population": "orders", "metrics": [{"formula": "count(*)"}]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
-        assert slayer_query.measures is not None
-        assert len(slayer_query.measures) == 1
-        assert slayer_query.measures[0].formula == "count(*)"
+        assert slayer_query.metrics is not None
+        assert len(slayer_query.metrics) == 1
+        assert slayer_query.metrics[0].expression == "count(*)"
 
     def test_request_accepts_bare_string_measures_and_dimensions(self) -> None:
         """Bare strings in ``measures`` / ``dimensions`` (matching ``SlayerQuery``'s
         coercion and the docs / example READMEs) must pass FastAPI validation
         and lift to ``{"formula": ...}`` / ``{"name": ...}`` downstream."""
         req = QueryRequest.model_validate(
-            {"source_model": "orders", "measures": ["count(*)"], "dimensions": ["status"]}
+            {"population": "orders", "metrics": ["count(*)"], "dimensions": ["status"]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
-        assert slayer_query.measures is not None
-        assert slayer_query.measures[0].formula == "count(*)"
+        assert slayer_query.metrics is not None
+        assert slayer_query.metrics[0].expression == "count(*)"
         assert slayer_query.dimensions is not None
         assert slayer_query.dimensions[0].name == "status"
 
     def test_request_legacy_fields_payload_migrates(self) -> None:
         """Legacy v1 `fields` key flows through `extra='allow'` and SlayerQuery's v1→v2 migration."""
         req = QueryRequest.model_validate(
-            {"source_model": "orders", "fields": [{"formula": "count(*)"}]}
+            {"population": "orders", "fields": [{"formula": "count(*)"}]}
         )
         slayer_query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
-        assert slayer_query.measures is not None
-        assert len(slayer_query.measures) == 1
-        assert slayer_query.measures[0].formula == "count(*)"
+        assert slayer_query.metrics is not None
+        assert len(slayer_query.metrics) == 1
+        assert slayer_query.metrics[0].expression == "count(*)"
 
 
 class TestQueryBackedModelsAPI:
@@ -360,9 +360,9 @@ class TestQueryBackedModelsAPI:
             ))
         )
         run_sync(
-            storage.save_model(SlayerModel(
+            storage.save_dataset(SlayerDataset(
                 name="upstream", sql_table="t", data_source="ds",
-                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
             ))
         )
         resp = client.post("/models", json={
@@ -392,9 +392,9 @@ class TestQueryBackedModelsAPI:
             ))
         )
         run_sync(
-            storage.save_model(SlayerModel(
+            storage.save_dataset(SlayerDataset(
                 name="upstream", sql_table="t", data_source="ds",
-                columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+                fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
             ))
         )
         resp = client.post("/models", json={
@@ -736,9 +736,9 @@ class TestOpenAPI400Documentation:
         run_sync(storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         ))
-        run_sync(storage.save_model(SlayerModel(
+        run_sync(storage.save_dataset(SlayerDataset(
             name="upstream", sql_table="t", data_source="ds",
-            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         )))
         # Save a query-backed model whose stage does NOT have dry_run set.
         setup_resp = client.post("/models", json={

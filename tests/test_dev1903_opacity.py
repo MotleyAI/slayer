@@ -11,11 +11,11 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.keys import AggregateKey, TransformKey
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.plan import plan_query
 
 from tests._dev1840_fixtures import bundle, dev1840_models, make_exec_engine
-from tests._dev1841_fixtures import ModelMeasure
+from tests._dev1841_fixtures import DatasetMetric
 from tests._dev1900_fixtures import unparseable_derived_models
 from tests._dev1919_fixtures import (
     HEADLINE,
@@ -49,10 +49,10 @@ CASES = [
 ]
 
 
-def _north_models() -> List[SlayerModel]:
+def _north_models() -> List[SlayerDataset]:
     models = dev1840_models()
-    models[0].columns.append(Column(
-        name="north_amount", type=DataType.DOUBLE, sql="amount",
+    models[0].fields.append(DatasetField(
+        name="north_amount", datatype=DataType.DOUBLE, sql="amount",
         filter="customers.regions.name = 'North'"))
     return models
 
@@ -77,7 +77,7 @@ async def unparse_engine(request):
 
 def _q(formula: str, mode=None):
     return mode_q(mode, dimensions=["status"],
-                  measures=[ModelMeasure(formula=formula, name="w")])
+                  measures=[DatasetMetric(expression=formula, name="w")])
 
 
 def _plan(formula: str, models=None, mode=None):
@@ -87,7 +87,7 @@ def _plan(formula: str, models=None, mode=None):
 def _host_rooted_wrapping(planned, agg: str) -> list:
     return [
         a for a in planned.regroup_attach_plans
-        if a.attach_phase == "combined" and a.producer_root_model is None
+        if a.attach_phase == "combined" and a.producer_root_dataset is None
         and any(isinstance(s.original_key, AggregateKey) and s.original_key.agg == agg
                 for s in a.substitutions)
     ]
@@ -110,7 +110,7 @@ class TestCrossingAttachedInputInline:
 
     def test_cross_model_input_attaches_at_its_home(self):
         [row] = [a for a in _plan(KWARG).regroup_attach_plans if a.attach_phase == "row"]
-        assert row.producer_root_model == "customers"
+        assert row.producer_root_dataset == "customers"
 
     @pytest.mark.parametrize("formula,_agg,_kind,expected", CASES)
     async def test_values(self, orders_engine, formula, _agg, _kind, expected):

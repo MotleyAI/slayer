@@ -15,7 +15,7 @@ from typing import AsyncIterator, List
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -48,54 +48,54 @@ ASSOC_CREDIT_BY_STATUS = {"ok": 600.0, "new": 400.0}
 CREDIT_WITH_NEW_ORDER = 400.0
 
 
-def regions_model() -> SlayerModel:
-    return SlayerModel(
+def regions_model() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", sql="region_pk", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="region_pk", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
 
 
-def customers_model(*, rename_pk: bool = True, pk_sql: str = "customer_pk") -> SlayerModel:
+def customers_model(*, rename_pk: bool = True, pk_sql: str = "customer_pk") -> SlayerDataset:
     """``rename_pk=False`` spells the PK by its physical name (``customer_pk``)."""
-    pk = (Column(name="id", sql=pk_sql, type=DataType.INT, primary_key=True)
+    pk = (DatasetField(name="id", sql=pk_sql, datatype=DataType.INT, primary_key=True)
           if rename_pk else
-          Column(name="customer_pk", type=DataType.INT, primary_key=True))
-    return SlayerModel(
+          DatasetField(name="customer_pk", datatype=DataType.INT, primary_key=True))
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
+        fields=[
             pk,
-            Column(name="name", type=DataType.TEXT),
-            Column(name="region_id", sql="region_fk", type=DataType.INT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="credit", type=DataType.DOUBLE),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="region_id", sql="region_fk", datatype=DataType.INT),
+            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="credit", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
 
 
-def orders_model(*, rename_fk: bool = True, target_key: str = "id") -> SlayerModel:
+def orders_model(*, rename_fk: bool = True, target_key: str = "id") -> SlayerDataset:
     """``rename_fk=False`` spells the FK by its physical name (``cust_fk``)."""
-    fk = (Column(name="customer_id", sql="cust_fk", type=DataType.INT)
-          if rename_fk else Column(name="cust_fk", type=DataType.INT))
-    return SlayerModel(
+    fk = (DatasetField(name="customer_id", sql="cust_fk", datatype=DataType.INT)
+          if rename_fk else DatasetField(name="cust_fk", datatype=DataType.INT))
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", sql="order_pk", type=DataType.INT, primary_key=True),
+        fields=[
+            DatasetField(name="id", sql="order_pk", datatype=DataType.INT, primary_key=True),
             fk,
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
         ],
-        joins=[ModelJoin(target_model="customers",
+        relationships=[DatasetRelationship(to="customers",
                          join_pairs=[[fk.name, target_key]])],
     )
 
 
 def renamed_graph(
     *, rename_fk: bool = True, rename_pk: bool = True, pk_sql: str = "customer_pk",
-) -> List[SlayerModel]:
+) -> List[SlayerDataset]:
     """``orders`` first (the default query root)."""
     return [
         orders_model(rename_fk=rename_fk,
@@ -138,7 +138,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: List[SlayerModel],
+    request, *, models: List[SlayerDataset],
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture."""
     dialect = request.param

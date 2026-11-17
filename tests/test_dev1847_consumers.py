@@ -19,7 +19,7 @@ from tests._dev1847_fixtures import (
     DEGENERATE_SUM_BY_REGION,
     INNER_CR,
     ROWPHASE_P_AVG_BY_REGION,
-    ModelMeasure,
+    DatasetMetric,
     broadcast_warnings,
     make_exec_engine,
     reagg,
@@ -45,7 +45,7 @@ class TestTransformOverReaggregated:
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
             measures=[reagg("avg", INNER_CR, name="acr"),
-                      ModelMeasure(formula=f"rank(avg({INNER_CR}), direction='desc')", name="rnk")]))
+                      DatasetMetric(expression=f"rank(avg({INNER_CR}), direction='desc')", name="rnk")]))
         by = {k[0]: v for k, v in region_key(resp).items()}
         # South has the largest per-region average -> rank 1 (descending).
         assert int(by["South"]["sales.rnk"]) == 1
@@ -61,7 +61,7 @@ class TestArithmeticAndOrderConsumers:
         value inside an arithmetic composite."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=f"avg({INNER_CR}) / 2", name="half")]))
+            measures=[DatasetMetric(expression=f"avg({INNER_CR}) / 2", name="half")]))
         vals = {k[0]: v["sales.half"] for k, v in region_key(resp).items()}
         assert float(vals["North"]) == pytest.approx(
             AVG_CITY_TOTAL_BY_REGION["North"] / 2)
@@ -73,7 +73,7 @@ class TestArithmeticAndOrderConsumers:
         when not selected — rows come back in its descending order."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot")],
+            measures=[DatasetMetric(expression="sum(amount)", name="tot")],
             order=[{"column": f"avg({INNER_CR})", "direction": "desc"}]))
         order = [r["sales.region"] for r in resp.data]
         # South(70) > East(60) > North(45) > Gap(10); Void(NULL) placement free.
@@ -129,7 +129,7 @@ class TestCompositeSparseOperand:
         constituent contributes NULL to its cell without removing it."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=f"avg({COMPOSITE})", name="comp")]))
+            measures=[DatasetMetric(expression=f"avg({COMPOSITE})", name="comp")]))
         vals = {k[0]: v["sales.comp"] for k, v in region_key(resp).items()}
         for region, expected in COMPOSITE_AVG_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(expected)
@@ -140,8 +140,8 @@ class TestCompositeSparseOperand:
         total+total is twice the degenerate region sum."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula=f"sum({INNER_CR} + {INNER_CR})", name="d2")]))
+            measures=[DatasetMetric(
+                expression=f"sum({INNER_CR} + {INNER_CR})", name="d2")]))
         vals = {k[0]: v["sales.d2"] for k, v in region_key(resp).items()}
         for region, total in DEGENERATE_SUM_BY_REGION.items():
             assert float(vals[region]) == pytest.approx(2 * total)
@@ -152,8 +152,8 @@ class TestCompositeSparseOperand:
         the row-weighted wrong value would be 4, not 2)."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula=(f"sum(iif({INNER_CR} > 25 and {INNER_CR} < 90, "
+            measures=[DatasetMetric(
+                expression=(f"sum(iif({INNER_CR} > 25 and {INNER_CR} < 90, "
                          f"1, 0))"), name="mid")]))
         vals = {k[0]: v["sales.mid"] for k, v in region_key(resp).items()}
         assert {r: int(vals[r]) for r in ("North", "South", "East")} == {
@@ -165,7 +165,7 @@ class TestCompositeSparseOperand:
         at the combined grain today and pins the carrier's cell set."""
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula=COMPOSITE, name="comp")]))
+            measures=[DatasetMetric(expression=COMPOSITE, name="comp")]))
         by = rows_by(resp, "sales.region", "sales.city")
         assert ("South", "Alpha") in by
         assert by[("South", "Alpha")]["sales.comp"] is None
@@ -177,7 +177,7 @@ class TestFirstLastDispatch:
         the last transform (needs a time dimension), never a re-aggregation."""
         query = sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=f"last({INNER_CR})", name="L")])
+            measures=[DatasetMetric(expression=f"last({INNER_CR})", name="L")])
         with pytest.raises(ValueError, match="(?i)time"):
             await exec_engine.execute(query)
 
@@ -191,7 +191,7 @@ class TestComputedDimensionConsumer:
                   "name": "rlevel"}
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", rlevel],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
+            measures=[DatasetMetric(expression="sum(amount)", name="tot")]))
         by = rows_by(resp, "sales.region", "sales.rlevel")
         expected = {
             region: "high" if avg is not None and avg > 50 else "low"

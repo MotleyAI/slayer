@@ -9,9 +9,9 @@ from datetime import date, datetime
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.errors import QueryTypeError, TimeDimensionColumnError
+from slayer.core.errors import QueryTypeError, TimeDimensionFieldError
 from slayer.core.keys import (
-    ColumnKey,
+    FieldKey,
     LiteralKey,
     ScalarCallKey,
     ValueKey,
@@ -21,9 +21,9 @@ from slayer.core.keys import (
 )
 from slayer.core.models import DatasourceConfig
 from slayer.core.query import SlayerQuery, TimeDimension
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
-from slayer.engine.key_metadata import dimension_key_metadata, measure_key_type
+from slayer.engine.key_metadata import dimension_key_metadata, metric_key_type
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -32,18 +32,18 @@ from tests._dev1737_fixtures import customers_model, orders_model
 
 ORDERS = orders_model()
 CUSTOMERS = customers_model()
-BUNDLE = ResolvedSourceBundle(dialect="postgres", source_model=ORDERS, referenced_models=[CUSTOMERS])
+BUNDLE = ResolvedSourceBundle(dialect="postgres", population=ORDERS, referenced_datasets=[CUSTOMERS])
 
 
 def _bind(text: str) -> ValueKey:
-    return bind_expr(parse_expr(text), scope=ModelScope(source_model=ORDERS), bundle=BUNDLE, allow_measures=True).value_key
+    return bind_expr(parse_expr(text), scope=DatasetScope(population=ORDERS), bundle=BUNDLE, allow_metrics=True).value_key
 
 
 def _column_type(key: ValueKey):
-    assert isinstance(key, ColumnKey), key
+    assert isinstance(key, FieldKey), key
     model = CUSTOMERS if key.path else ORDERS
-    col = model.get_column(key.leaf)
-    return col.type if col is not None else None
+    col = model.get_field(key.leaf)
+    return col.datatype if col is not None else None
 
 
 @pytest.fixture
@@ -51,8 +51,8 @@ async def engine():
     with tempfile.TemporaryDirectory() as tmp:
         storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=os.path.join(tmp, "x.db")))
-        await storage.save_model(orders_model())
-        await storage.save_model(customers_model())
+        await storage.save_dataset(orders_model())
+        await storage.save_dataset(customers_model())
         yield SlayerQueryEngine(storage=storage)
 
 
@@ -116,7 +116,7 @@ class TestTemporalType:
         ("'2024-01-01'", None),
     ])
     def test_bottom_up(self, text: str, expected) -> None:
-        assert temporal_type(_bind(text), column_type=_column_type) == expected
+        assert temporal_type(_bind(text), field_type=_column_type) == expected
 
 
 class TestTypedDateLiterals:
@@ -310,35 +310,35 @@ class TestArityEndToEnd:
 class TestStageOperands:
     async def test_stage_dimension_column(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
-            "name": "s1", "source_model": "orders", "dimensions": ["created_at", "status"],
-            "measures": [{"formula": "count(*)", "name": "n"}],
+            "name": "s1", "population": "orders", "dimensions": ["created_at", "status"],
+            "metrics": [{"formula": "count(*)", "name": "n"}],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "s1", "dimensions": [{"expression": "date_part('year', created_at)", "name": "y"}],
-            "measures": [{"formula": "sum(n)", "name": "n_total"}],
+            "population": "s1", "dimensions": [{"expression": "date_part('year', created_at)", "name": "y"}],
+            "metrics": [{"formula": "sum(n)", "name": "n_total"}],
         })
         await engine.execute([s1, outer], dry_run=True)
 
     async def test_stage_measure_column(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
-            "name": "s1", "source_model": "orders", "dimensions": ["status"],
-            "measures": [{"formula": "max(created_at)", "name": "last_at"}],
+            "name": "s1", "population": "orders", "dimensions": ["status"],
+            "metrics": [{"formula": "max(created_at)", "name": "last_at"}],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "s1", "dimensions": ["status"],
-            "filters": ["date_diff('day', last_at, now()) > 0"],
-            "measures": [{"formula": "count(*)", "name": "n"}],
+            "population": "s1", "dimensions": ["status"],
+            "filter": ["date_diff('day', last_at, now()) > 0"],
+            "metrics": [{"formula": "count(*)", "name": "n"}],
         })
         await engine.execute([s1, outer], dry_run=True)
 
     async def test_stage_text_column_rejected(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
-            "name": "s1", "source_model": "orders", "dimensions": ["status"],
-            "measures": [{"formula": "count(*)", "name": "n"}],
+            "name": "s1", "population": "orders", "dimensions": ["status"],
+            "metrics": [{"formula": "count(*)", "name": "n"}],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "s1", "filters": ["date_part('year', status) = 1"],
-            "measures": [{"formula": "sum(n)", "name": "n_total"}],
+            "population": "s1", "filter": ["date_part('year', status) = 1"],
+            "metrics": [{"formula": "sum(n)", "name": "n_total"}],
         })
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute([s1, outer], dry_run=True)
@@ -361,7 +361,7 @@ class TestResultTypes:
         ("date_add(customers.signup_date, 1, 'year')", DataType.DATE),
     ])
     def test_dimension_metadata(self, text: str, expected: DataType) -> None:
-        dim_type, _fmt, _desc = dimension_key_metadata(model=ORDERS, key=_bind(text), bundle=BUNDLE)
+        dim_type, _fmt, _desc = dimension_key_metadata(dataset=ORDERS, key=_bind(text), bundle=BUNDLE)
         assert dim_type == expected
 
     @pytest.mark.parametrize("text,expected", [
@@ -375,10 +375,10 @@ class TestResultTypes:
         ("min(coalesce(shipped_at, created_at))", DataType.TIMESTAMP),
     ])
     def test_measure_type(self, text: str, expected: DataType) -> None:
-        assert measure_key_type(model=ORDERS, key=_bind(text)) == expected
+        assert metric_key_type(dataset=ORDERS, key=_bind(text)) == expected
 
     async def test_query_backed_model_column_types(self, engine: SlayerQueryEngine) -> None:
-        model = await engine.create_model_from_query(
+        model = await engine.create_dataset_from_query(
             query={
                 "source_model": "orders",
                 "dimensions": [
@@ -393,7 +393,7 @@ class TestResultTypes:
             },
             name="dated", save=False,
         )
-        types = {c.name: c.type for c in model.columns}
+        types = {c.name: c.datatype for c in model.fields}
         assert types["m"] == DataType.INT
         assert types["due"] == DataType.DATE
         assert types["due_at"] == DataType.TIMESTAMP
@@ -401,7 +401,7 @@ class TestResultTypes:
         assert types["next_due"] == DataType.DATE
 
     async def test_joined_and_stage_backed_result_types(self, engine: SlayerQueryEngine) -> None:
-        model = await engine.create_model_from_query(
+        model = await engine.create_dataset_from_query(
             query=[
                 {
                     "name": "s1", "source_model": "orders", "dimensions": ["status", "created_at"],
@@ -419,14 +419,14 @@ class TestResultTypes:
             ],
             name="staged", save=False,
         )
-        types = {c.name: c.type for c in model.columns}
+        types = {c.name: c.datatype for c in model.fields}
         assert types["y"] == DataType.INT
         assert types["due"] == DataType.DATE
         assert types["lag_days"] == DataType.INT
         assert types["next_at"] == DataType.TIMESTAMP
 
     async def test_stage_passthrough_keeps_types(self, engine: SlayerQueryEngine) -> None:
-        model = await engine.create_model_from_query(
+        model = await engine.create_dataset_from_query(
             query=[
                 {
                     "name": "s1", "source_model": "orders", "dimensions": ["status", "created_at"],
@@ -439,12 +439,12 @@ class TestResultTypes:
             ],
             name="passthrough", save=False,
         )
-        types = {c.name: c.type for c in model.columns}
+        types = {c.name: c.datatype for c in model.fields}
         assert types["created_at"] == DataType.TIMESTAMP
         assert types["o"] == DataType.DATE
 
     async def test_stage_measure_over_temporal_expression(self, engine: SlayerQueryEngine) -> None:
-        model = await engine.create_model_from_query(
+        model = await engine.create_dataset_from_query(
             query=[
                 {
                     "name": "s1", "source_model": "orders", "dimensions": ["status", "order_date"],
@@ -460,51 +460,51 @@ class TestResultTypes:
             ],
             name="stage_expr", save=False,
         )
-        types = {c.name: c.type for c in model.columns}
+        types = {c.name: c.datatype for c in model.fields}
         assert types["next_day"] == DataType.DATE
         assert types["first_day"] == DataType.DATE
 
     async def test_passthrough_bucket_rebucket_names_granularity(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
-            "name": "s1", "source_model": "orders",
-            "time_dimensions": [TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
-            "measures": [{"formula": "count(*)", "name": "n"}],
+            "name": "s1", "population": "orders",
+            "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
+            "metrics": [{"formula": "count(*)", "name": "n"}],
         })
         s2 = SlayerQuery.model_validate({
-            "name": "s2", "source_model": "s1", "dimensions": ["created_at"],
-            "measures": [{"formula": "sum(n)", "name": "total"}],
+            "name": "s2", "population": "s1", "dimensions": ["created_at"],
+            "metrics": [{"formula": "sum(n)", "name": "total"}],
         })
         s3 = SlayerQuery.model_validate({
-            "source_model": "s2",
-            "time_dimensions": [TimeDimension(dimension="created_at", granularity=TimeGranularity.DAY)],
-            "measures": [{"formula": "sum(total)", "name": "t"}],
+            "population": "s2",
+            "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.DAY)],
+            "metrics": [{"formula": "sum(total)", "name": "t"}],
         })
-        with pytest.raises(TimeDimensionColumnError, match="already bucketed at 'month'"):
+        with pytest.raises(TimeDimensionFieldError, match="already bucketed at 'month'"):
             await engine.execute([s1, s2, s3], dry_run=True)
 
     async def test_date_add_stage_column_is_a_time_axis(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
-            "name": "s1", "source_model": "orders",
+            "name": "s1", "population": "orders",
             "dimensions": [{"expression": "date_add(order_date, 1, 'month')", "name": "due"}],
-            "measures": [{"formula": "count(*)", "name": "n"}],
+            "metrics": [{"formula": "count(*)", "name": "n"}],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "s1",
-            "time_dimensions": [TimeDimension(dimension="due", granularity=TimeGranularity.MONTH)],
-            "measures": [{"formula": "sum(n)", "name": "n_total"}],
+            "population": "s1",
+            "time_dimensions": [TimeDimension(field="due", granularity=TimeGranularity.MONTH)],
+            "metrics": [{"formula": "sum(n)", "name": "n_total"}],
         })
         await engine.execute([s1, outer], dry_run=True)
 
     async def test_date_part_stage_column_is_not_a_time_axis(self, engine) -> None:
         s1 = SlayerQuery.model_validate({
-            "name": "s1", "source_model": "orders",
+            "name": "s1", "population": "orders",
             "dimensions": [{"expression": "date_part('month', created_at)", "name": "m"}],
-            "measures": [{"formula": "count(*)", "name": "n"}],
+            "metrics": [{"formula": "count(*)", "name": "n"}],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "s1",
-            "time_dimensions": [TimeDimension(dimension="m", granularity=TimeGranularity.MONTH)],
-            "measures": [{"formula": "sum(n)", "name": "n_total"}],
+            "population": "s1",
+            "time_dimensions": [TimeDimension(field="m", granularity=TimeGranularity.MONTH)],
+            "metrics": [{"formula": "sum(n)", "name": "n_total"}],
         })
-        with pytest.raises(TimeDimensionColumnError, match="INT"):
+        with pytest.raises(TimeDimensionFieldError, match="INT"):
             await engine.execute([s1, outer], dry_run=True)

@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, LiteralKey, ValueKey
-from slayer.core.models import Aggregation, SlayerModel
+from slayer.core.keys import AggregateKey, ArithmeticKey, FieldKey, LiteralKey, ValueKey
+from slayer.core.models import Aggregation, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine import plan
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -175,9 +175,9 @@ class TestWindow:
 
     async def test_cross_model_time_column_condition(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "customers",
+            "population": "customers",
             "time_dimensions": [{"dimension": "orders.created_at", "granularity": "month"}],
-            "measures": [{"formula": "rows(orders.amount, window='2m') FILTER (WHERE orders.created_at >= '2024-02-01')",
+            "metrics": [{"formula": "rows(orders.amount, window='2m') FILTER (WHERE orders.created_at >= '2024-02-01')",
                           "name": "v"}],
         }))
         got = {str(r["customers.orders.created_at"])[:7]: num(r["customers.v"]) for r in resp.data}
@@ -237,7 +237,7 @@ class TestProducerIsolation:
 
     def test_different_conditions_never_share_a_producer(self) -> None:
         orders, *rest = dev2101_models()
-        bundle = ResolvedSourceBundle(dialect="sqlite", source_model=orders, referenced_models=rest)
+        bundle = ResolvedSourceBundle(dialect="sqlite", population=orders, referenced_datasets=rest)
         planned = plan.plan_query(query=q(dimensions=["region"], measures=[
             m(ROWS_PAID, "paid"), m("rows(amount) FILTER (WHERE status = 'Pending')", "pending"),
         ]), bundle=bundle)
@@ -248,8 +248,8 @@ class TestProducerIsolation:
 class TestCrossModelAndStage:
     async def test_cross_model_source(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "customers", "dimensions": ["name"],
-            "measures": [{"formula": "rows(orders.amount) FILTER (WHERE orders.status = 'paid')", "name": "v"}],
+            "population": "customers", "dimensions": ["name"],
+            "metrics": [{"formula": "rows(orders.amount) FILTER (WHERE orders.status = 'paid')", "name": "v"}],
         }))
         assert {k: num(v) for k, v in by_key(resp, "name", model="customers").items()} == {"A": 2, "B": 1, "C": None}
         assert not resp.warnings
@@ -265,15 +265,15 @@ class TestCrossModelAndStage:
 
     async def test_non_final_stage(self, engine: SlayerQueryEngine) -> None:
         stage = q(name="s", dimensions=["region"], measures=[m(ROWS_PAID, "pr")])
-        final = SlayerQuery.model_validate({"source_model": "s", "measures": [{"formula": "sum(pr)", "name": "v"}]})
+        final = SlayerQuery.model_validate({"population": "s", "metrics": [{"formula": "sum(pr)", "name": "v"}]})
         resp = await engine.execute([stage, final])
         assert num(single(resp, model="s")) == 3
 
 
-def _override_models() -> list[SlayerModel]:
+def _override_models() -> list[SlayerDataset]:
     """``count`` redeclared with a formula (non-built-in); ``sum`` redeclared without one (built-in)."""
     orders, *rest = dev2101_models()
-    extra = [Aggregation(name="count", formula="COUNT(*)"), Aggregation(name="sum")]
+    extra = [Aggregation(name="count", expression="COUNT(*)"), Aggregation(name="sum")]
     return [orders.model_copy(update={"aggregations": [*orders.aggregations, *extra]}), *rest]
 
 
@@ -296,7 +296,7 @@ class TestBuiltinNamedOverride:
 
     def test_only_the_formula_override_takes_a_producer(self) -> None:
         orders, *rest = _override_models()
-        bundle = ResolvedSourceBundle(dialect="sqlite", source_model=orders, referenced_models=rest)
+        bundle = ResolvedSourceBundle(dialect="sqlite", population=orders, referenced_datasets=rest)
         planned = plan.plan_query(query=q(dimensions=["region"], measures=[
             m(f"count(amount) FILTER (WHERE {PAID})", "c"), m(f"sum(amount) FILTER (WHERE {PAID})", "s"),
         ]), bundle=bundle)
@@ -332,17 +332,17 @@ class TestEmission:
 
 
 def _paid_condition() -> ValueKey:
-    return ArithmeticKey(op="=", operands=(ColumnKey(leaf="status"), LiteralKey(value="paid")))
+    return ArithmeticKey(op="=", operands=(FieldKey(leaf="status"), LiteralKey(value="paid")))
 
 
 class TestRendererFailsClosed:
     def test_filtered_custom_key_never_renders_inline(self) -> None:
-        key = AggregateKey(source=ColumnKey(leaf="amount"), agg="rows", filter=_paid_condition(), builtin=False)
+        key = AggregateKey(source=FieldKey(leaf="amount"), agg="rows", filter=_paid_condition(), builtin=False)
         gen = SQLGenerator(dialect="postgres")
         orders = orders_model()
-        bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[customers_model()])
+        bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[customers_model()])
         with pytest.raises(RuntimeError, match="(?i)filter"):
             gen._build_agg_render_spec_from_planned(
-                slot=None, key=key, source_model=orders, source_relation="orders", full_alias="orders.v",
+                slot=None, key=key, source_dataset=orders, source_relation="orders", full_alias="orders.v",
                 bundle=bundle,
             )

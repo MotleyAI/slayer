@@ -53,16 +53,16 @@ def main():
     for model in models:
         if model.name == "orders":
             model.default_time_dimension = "created_at"
-        run_sync(storage.save_model(model))
+        run_sync(storage.save_dataset(model))
         has_rollup = " (with rollup)" if model.sql else ""
-        print(f"  {model.name}: {len(model.columns)} columns, {len(model.measures)} named formulas{has_rollup}")
+        print(f"  {model.name}: {len(model.fields)} columns, {len(model.metrics)} named formulas{has_rollup}")
 
     # 4. Run queries
 
     print("\n=== Query 1: Order count by status ===")
     result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
-        measures=[COUNT_MEASURE],
+        population="orders",
+        metrics=[COUNT_MEASURE],
         dimensions=["status"],
     ))
     for row in result.data:
@@ -70,8 +70,8 @@ def main():
 
     print("\n=== Query 2: Revenue by product category (rollup join) ===")
     result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
-        measures=[COUNT_MEASURE, QUANTITY_SUM_MEASURE],
+        population="orders",
+        metrics=[COUNT_MEASURE, QUANTITY_SUM_MEASURE],
         dimensions=["products.category"],
         order=[{"column": "quantity_sum", "direction": "desc"}],
     ))
@@ -80,8 +80,8 @@ def main():
 
     print("\n=== Query 3: Orders by customer region (transitive rollup) ===")
     result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
-        measures=[COUNT_MEASURE],
+        population="orders",
+        metrics=[COUNT_MEASURE],
         dimensions=["customers.regions.name"],
     ))
     for row in result.data:
@@ -89,17 +89,17 @@ def main():
 
     print("\n=== Query 4: Completed orders only (filter) ===")
     result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
-        measures=[COUNT_MEASURE, QUANTITY_SUM_MEASURE],
-        filters=["status = 'completed'"],
+        population="orders",
+        metrics=[COUNT_MEASURE, QUANTITY_SUM_MEASURE],
+        filter=["status = 'completed'"],
     ))
     row = result.data[0]
     print(f"  Completed: {row['orders._count']} orders, {row['orders.quantity_sum']} units")
 
     print("\n=== Query 5: Top 3 customers by order count (rollup + order + limit) ===")
     result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
-        measures=[COUNT_MEASURE],
+        population="orders",
+        metrics=[COUNT_MEASURE],
         dimensions=["customers.name"],
         order=[{"column": "count", "direction": "desc"}],
         limit=3,
@@ -109,9 +109,9 @@ def main():
 
     print("\n=== Query 6: Monthly orders with average quantity ===")
     result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-        measures=[
+        metrics=[
             COUNT_MEASURE,
             QUANTITY_SUM_MEASURE,
             {"formula": "sum(quantity) / count(*)", "name": "avg_qty"},
@@ -124,9 +124,9 @@ def main():
 
     print("\n=== Query 7: Monthly orders with cumulative sum ===")
     result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-        measures=[
+        metrics=[
             COUNT_MEASURE,
             {"formula": "cumsum(count(*))", "name": "cumulative"},
         ],
@@ -138,9 +138,9 @@ def main():
 
     print("\n=== Query 8: Monthly orders with month-over-month change ===")
     result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-        measures=[
+        metrics=[
             COUNT_MEASURE,
             {"formula": "time_shift(count(*), -1)", "name": "prev_month"},
             {"formula": "change(count(*))", "name": "mom_change"},
@@ -155,9 +155,9 @@ def main():
 
     print("\n=== Query 9: Customer ranking by order count ===")
     result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
+        population="orders",
         dimensions=["customers.name"],
-        measures=[COUNT_MEASURE, {"formula": "rank(count(*), direction='desc')", "name": "rk"}],
+        metrics=[COUNT_MEASURE, {"formula": "rank(count(*), direction='desc')", "name": "rk"}],
         order=[{"column": "count", "direction": "desc"}],
     ))
     for row in result.data:
@@ -165,9 +165,9 @@ def main():
 
     print("\n=== Query 10: Aggregations + arithmetic in one measures list ===")
     result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
+        population="orders",
         dimensions=["products.category"],
-        measures=[
+        metrics=[
             COUNT_MEASURE,
             QUANTITY_SUM_MEASURE,
             {"formula": "sum(quantity) / count(*)", "name": "avg_qty"},
@@ -179,9 +179,9 @@ def main():
 
     print("\n=== Query 11: cumsum + change as transforms ===")
     result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-        measures=[
+        metrics=[
             COUNT_MEASURE,
             {"formula": "cumsum(count(*))", "name": "running_total"},
             {"formula": "change(count(*))", "name": "mom_change"},
@@ -195,9 +195,9 @@ def main():
 
     print("\n=== Query 12: last() — most recent month's value broadcast ===")
     result = engine.execute_sync(query=SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-        measures=[
+        metrics=[
             COUNT_MEASURE,
             {"formula": "last(count(*))", "name": "latest_month"},
         ],

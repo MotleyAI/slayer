@@ -35,7 +35,7 @@ if _HAS_PG:
     postgresql = factories.postgresql("postgresql_proc")
 
 _REVERSE_QUERY = SlayerQuery(
-    source_model="customers", dimensions=["name", "orders.status"])
+    population="customers", dimensions=["name", "orders.status"])
 _KEYS = ("customers.name", "customers.orders.status")
 
 
@@ -68,7 +68,7 @@ async def test_reverse_hop_duckdb() -> None:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="duckdb", database=db_path))
         for model in chain_models():
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
         resp = await engine.execute(_REVERSE_QUERY)
         assert rows_set(resp, *_KEYS) == CHAIN_REVERSE_DIMS_LEFT

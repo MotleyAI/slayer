@@ -108,7 +108,7 @@ def test_tpcds_document_extensions_stored_as_objects(tmp_path: Path) -> None:
     expected = _document("tpcds_semantic_model.yaml")["nonportable_extensions"]
     assert [e["vendor_name"] for e in expected] == ["SALESFORCE", "DBT"]
     assert all(isinstance(e["data"], dict) for e in expected)
-    for model in result.models:
+    for model in result.datasets:
         assert (model.meta or {})["osi_semantic_model"]["nonportable_extensions"] == expected, model.name
 
 

@@ -22,7 +22,7 @@ from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER_STATUS,
     AMOUNT_TOTAL,
     GOLD_SPEND_BY_REGION,
-    ModelMeasure,
+    DatasetMetric,
     SPEND_BY_REGION,
     SPEND_BY_TIER,
     SPEND_TOTAL,
@@ -38,8 +38,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 #: spend over the distinct customers reaching each segment label.
 SPEND_BY_LABEL = {"Alpha": 160.0, "Beta": 150.0, None: 40.0}
 
@@ -161,7 +161,7 @@ class TestProducerShapes:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.regions.name"],
-            measures=[ModelMeasure(formula="sum(customers.gold_spend)", name="gs")],
+            measures=[DatasetMetric(expression="sum(customers.gold_spend)", name="gs")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.customers.regions.name")
@@ -174,7 +174,7 @@ class TestProducerShapes:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"], measures=[M],
-            order=[OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
         )
         resp = await engine.execute(query)
         tiers = [r["orders.customers.tier"] for r in resp.data]
@@ -202,8 +202,8 @@ class TestProducerShapes:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend) / sum(amount)", name="ratio",
+            measures=[DatasetMetric(
+                expression="sum(customers.spend) / sum(amount)", name="ratio",
             )],
         )
         resp = await engine.execute(query)

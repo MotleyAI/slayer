@@ -29,8 +29,8 @@ from __future__ import annotations
 import os
 import tempfile
 
-from slayer.core.errors import UnresolvableOrderColumnError
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
+from slayer.core.errors import UnresolvableOrderFieldError
+from slayer.core.query import FieldRef, OrderItem, SlayerQuery
 from tests._dev1747_fixtures import (
     GROUP_A_AMOUNT,
     GROUP_B_AMOUNT,
@@ -75,10 +75,10 @@ async def _execute(query: SlayerQuery):
 
 def _grouped(direction: str, column: str = "cust_region") -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=_MEASURE,
-        order=[OrderItem(column=ColumnRef(name=column), direction=direction)],
+        population="orders",
+        dimensions=[FieldRef(name="status")],
+        metrics=_MEASURE,
+        order=[OrderItem(field=FieldRef(name=column), direction=direction)],
     )
 
 
@@ -86,10 +86,10 @@ def _ungrouped(direction: str, column: str = "cust_region") -> SlayerQuery:
     """Raw rows — ``distinct_dimension_values=False`` means no GROUP BY, so the
     row IS the grain and a bare reference to the sort key is legal."""
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
+        population="orders",
+        dimensions=[FieldRef(name="status")],
         distinct_dimension_values=False,
-        order=[OrderItem(column=ColumnRef(name=column), direction=direction)],
+        order=[OrderItem(field=FieldRef(name=column), direction=direction)],
     )
 
 
@@ -139,7 +139,7 @@ class TestUngroupedDerivedCrossing:
     async def test_ungrouped_derived_crossing_no_longer_rejects(self) -> None:
         try:
             sql = await _sql(_ungrouped("asc"))
-        except UnresolvableOrderColumnError as exc:  # pragma: no cover
+        except UnresolvableOrderFieldError as exc:  # pragma: no cover
             raise AssertionError(
                 f"ungrouped derived crossing still rejects: {exc}"
             ) from exc
@@ -172,11 +172,11 @@ class TestUngroupedDerivedCrossing:
         emitted sort terms must agree."""
         derived_sql = await _sql(_ungrouped("asc"))
         bare_sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
+            population="orders",
+            dimensions=[FieldRef(name="status")],
             distinct_dimension_values=False,
             order=[OrderItem(
-                column=ColumnRef(name="name", model="customers.regions"),
+                field=FieldRef(name="name", dataset="customers.regions"),
                 direction="asc",
             )],
         ))
@@ -255,10 +255,10 @@ class TestDerivedOfDerivedSortKey:
         apart again without this failing."""
         hidden_sql = await _sql(_ungrouped("asc", column="amount_x4"))
         projected_sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status"), ColumnRef(name="amount_x4")],
+            population="orders",
+            dimensions=[FieldRef(name="status"), FieldRef(name="amount_x4")],
             distinct_dimension_values=False,
-            order=[OrderItem(column=ColumnRef(name="amount_x4"), direction="asc")],
+            order=[OrderItem(field=FieldRef(name="amount_x4"), direction="asc")],
         ))
         # The projected query sorts by the ALIAS, so compare the sort term
         # against the projected SELECT expression for the same column.

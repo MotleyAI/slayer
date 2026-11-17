@@ -8,7 +8,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import RefinementConflictError
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 from slayer.core.query import SlayerQuery
 from slayer.engine.population.inference import spine_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -228,8 +228,8 @@ async def test_the_root_wins_over_an_edge_named_like_it(backend: str) -> None:
 async def test_a_column_sql_root_qualifier_keeps_an_edge_named_like_the_root(backend: str) -> None:
     async with orders_engine(backend, edge_name="orders") as eng:
         model = orders_model(edge_name="orders")
-        extra = Column(name="cust_name", type=DataType.TEXT, sql="orders.orders.name")
-        await eng.storage.save_model(model.model_copy(update={"columns": [*model.columns, extra]}), _validate=False)
+        extra = DatasetField(name="cust_name", datatype=DataType.TEXT, sql="orders.orders.name")
+        await eng.storage.save_dataset(model.model_copy(update={"fields": [*model.fields, extra]}), _validate=False)
         resp = await eng.execute(_orders(dimensions=["cust_name"], measures=["count(*)"]))
         assert canonical_rows(resp) == [("ann", "2"), ("bob", "2")]
 
@@ -254,7 +254,7 @@ async def test_a_root_qualified_spine_filter(engine: SlayerQueryEngine) -> None:
 ], ids=["bare", "measure", "dimension", "filter"])
 async def test_a_spine_rooted_reference_anchors_its_datasource(body: dict[str, Any]) -> None:
     storage = await make_inference_storage()
-    spine_rooted = SlayerQuery.model_validate({"source_model": "time_spine", **body})
+    spine_rooted = SlayerQuery.model_validate({"population": "time_spine", **body})
     assert await spine_datasource(queries=[spine_rooted], storage=storage, data_source=None) == DS_FAN
 
 
@@ -284,7 +284,7 @@ def _tds(*entries: Any, extensions: Any = None) -> SlayerQuery:
 @pytest.mark.parametrize("extensions", [None, [{"source_name": "orders"}]], ids=["model", "extension"])
 def test_a_root_qualified_duplicate_dedupes(extensions: Any) -> None:
     query = _tds("date_trunc('month', created_at)", "date_trunc('month', orders.created_at)", extensions=extensions)
-    assert [(td.dimension, str(td.granularity)) for td in query.time_dimensions or []] == [("created_at", "month")]
+    assert [(td.field, str(td.granularity)) for td in query.time_dimensions or []] == [("created_at", "month")]
 
 
 def test_a_root_qualified_duplicate_with_another_range_conflicts() -> None:
@@ -360,7 +360,7 @@ async def test_a_root_qualified_restatement_with_another_label_conflicts(refine:
 
 
 async def test_a_root_qualified_unnamed_formula_is_the_saved_formula(refine: SlayerQueryEngine) -> None:
-    await refine.create_model_from_query(query={"source_model": "orders", "measures": ["sum(amount)"]}, name="total")
+    await refine.create_dataset_from_query(query={"source_model": "orders", "measures": ["sum(amount)"]}, name="total")
     plain = await refine.execute("total")
     refined = await refine.execute("total", refine={"measures": ["sum(orders.amount)"]})
     assert refined.sql == plain.sql
@@ -368,7 +368,7 @@ async def test_a_root_qualified_unnamed_formula_is_the_saved_formula(refine: Sla
 
 
 async def test_refinement_literals_are_never_conflated(refine: SlayerQueryEngine) -> None:
-    await refine.create_model_from_query(
+    await refine.create_dataset_from_query(
         query={"source_model": "orders", "measures": ["sum(iif(status = 'paid', amount, 0))"]}, name="paid_total",
     )
     resp = await refine.execute("paid_total", refine={"measures": ["sum(iif(status = 'orders.paid', amount, 0))"]})

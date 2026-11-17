@@ -31,7 +31,7 @@ from slayer.sql.scope_check import assert_scope_closed
 from tests._dev1836_fixtures import (
     AMOUNT_BY_BAND,
     AMOUNT_BY_CHANNEL,
-    ModelMeasure,
+    DatasetMetric,
     POP_TOTAL,
     SPEND_BAND,
     SPEND_BY_BAND,
@@ -50,8 +50,8 @@ async def exec_backend(request: pytest.FixtureRequest) -> AsyncIterator[tuple[st
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 
 #: A local aggregation-derived (row attach) dimension: channel totals band.
 LOCAL_BAND = {
@@ -66,7 +66,7 @@ def _bundle() -> ResolvedSourceBundle:
     models = dev1836_models()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=list(models[1:]),
+        population=models[0], referenced_datasets=list(models[1:]),
     )
 
 
@@ -234,12 +234,12 @@ class TestIntermediateHopDimensions:
         tier aggregates the distinct regions its customers reach."""
         _, engine = exec_backend
         kw = {"dimensions": ["customers.tier"],
-              "measures": [M, ModelMeasure(formula="sum(customers.regions.pop)", name="pop")]}
+              "measures": [M, DatasetMetric(expression="sum(customers.regions.pop)", name="pop")]}
         default = await engine.execute(q(**kw))
         assoc = await engine.execute(q(**kw, to_many_handling="associate"))
         assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))
         (w,) = [w for w in default.warnings or [] if w.kind == "associated"]
-        assert "pop" in w.measure
+        assert "pop" in w.metric
 
     async def test_intermediate_hop_dim_executes_and_broadcasts(self, exec_backend):
         """customers.tier lies on an intermediate hop of the pop aggregate's
@@ -249,7 +249,7 @@ class TestIntermediateHopDimensions:
         dialect, engine = exec_backend
         query = q(
             dimensions=["customers.tier"],
-            measures=[M, ModelMeasure(formula="sum(customers.regions.pop)",
+            measures=[M, DatasetMetric(expression="sum(customers.regions.pop)",
                                       name="pop")],
             to_many_handling="broadcast",
         )
@@ -260,7 +260,7 @@ class TestIntermediateHopDimensions:
         for row in resp.data:
             assert float(row["orders.pop"]) == pytest.approx(POP_TOTAL)
         (w,) = broadcast_warnings(resp)
-        assert "pop" in w.measure
+        assert "pop" in w.metric
         await _dry_scope_closed(engine, query, dialect)
 
 

@@ -93,8 +93,8 @@ class TestColumnAggregates:
 
     async def test_measure_formats(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(orders_q(measures=[m("sum(flag)", "s"), m("avg(flag)", "a")]))
-        assert resp.attributes.measures["orders.s"].format == NumberFormat(type=NumberFormatType.INTEGER)
-        assert resp.attributes.measures["orders.a"].format == NumberFormat(type=NumberFormatType.PERCENT)
+        assert resp.attributes.metrics["orders.s"].format == NumberFormat(type=NumberFormatType.INTEGER)
+        assert resp.attributes.metrics["orders.a"].format == NumberFormat(type=NumberFormatType.PERCENT)
 
 
 class TestExpressionSources:
@@ -145,7 +145,7 @@ class TestExpressionSources:
         assert row["orders.s"] == 3
         assert not isinstance(row["orders.s"], bool)
         assert as_bool(row["orders.mx"]) is True
-        assert resp.attributes.measures["orders.s"].format == NumberFormat(type=NumberFormatType.INTEGER)
+        assert resp.attributes.metrics["orders.s"].format == NumberFormat(type=NumberFormatType.INTEGER)
 
     async def test_connective(self, engine) -> None:
         resp = await engine.execute(orders_q(measures=[m("sum(flag and amount > 15)", "a"), m("sum(not flag)", "n")]))
@@ -179,7 +179,7 @@ class TestPostAggregationFilters:
 class TestComposition:
     async def test_cross_model_sum(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "customers", "dimensions": ["name"], "measures": [m("sum(orders.flag)")],
+            "population": "customers", "dimensions": ["name"], "metrics": [m("sum(orders.flag)")],
         }))
         values = by_dim(resp, "name", model="customers")
         assert values == CROSS_MODEL_FLAG_SUM_BY_NAME
@@ -239,7 +239,7 @@ class TestGates:
     async def test_avg_allowed_by_default_after_validation(self) -> None:
         """Scenario: a BOOLEAN column without allowed_aggregations validates and serves avg."""
         models = [orders_model(), customers_model()]
-        flag = models[0].get_column("flag")
+        flag = models[0].get_field("flag")
         assert flag is not None
         assert flag.allowed_aggregations is None
         async with seeded_exec_engine(dialect="sqlite", seed=seed_sqlite, models=models, validate=True) as (engine, _):

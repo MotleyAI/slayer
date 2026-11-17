@@ -6,7 +6,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.sql.dialects.clickhouse import ClickhouseDialect
 
@@ -120,15 +120,15 @@ def test_clickhouse_build_date_trunc_week_sunday_shift() -> None:
 
 async def test_clickhouse_orders_by_the_projection_not_its_dotted_alias() -> None:
     """ClickHouse resolves the dotted alias ``orders.created_at`` to the source column, not the bucket."""
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="created_at", type=DataType.TIMESTAMP)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                 DatasetField(name="created_at", datatype=DataType.TIMESTAMP)],
     )
     query = SlayerQuery(
-        source_model="orders",
-        time_dimensions=[TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
-        measures=[ModelMeasure(formula="count(*)")],
+        population="orders",
+        time_dimensions=[TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
+        metrics=[DatasetMetric(expression="count(*)")],
     )
     sql = await _engine_generate(query=query, model=model, dialect="clickhouse")
     assert sql[sql.rindex("ORDER BY"):].split("\n", 1)[1].strip() == "dateTrunc('MONTH', orders.created_at) ASC"

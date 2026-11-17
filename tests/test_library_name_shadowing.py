@@ -29,7 +29,7 @@ def _query(*measures: dict, source: str = "t", **body: object) -> dict:
 class TestStoredShadow:
     async def test_reverse_in_every_spelling(self) -> None:
         async with stored_engine(models=[t_doc(aggregations=[agg("reverse")])]) as engine:
-            assert await engine.storage.get_model("t", data_source=DS) is not None
+            assert await engine.storage.get_dataset("t", data_source=DS) is not None
             resp = await engine.execute(_query(
                 measure("reverse(a)", "f"), measure("t.reverse(a)", "m")))
         row = resp.data[0]
@@ -37,7 +37,7 @@ class TestStoredShadow:
 
     async def test_a_list_function_name(self) -> None:
         async with stored_engine(models=[t_doc(aggregations=[agg("contains")])]) as engine:
-            assert await engine.storage.get_model("t", data_source=DS) is not None
+            assert await engine.storage.get_dataset("t", data_source=DS) is not None
             resp = await engine.execute(_query(measure("contains(a)")))
         assert float(value(resp)) == SUM_A
 
@@ -114,7 +114,7 @@ class TestCaseResolution:
     async def test_an_ambiguous_case_insensitive_match(self) -> None:
         aggs = [agg("Reverse"), agg("REVERSE", "MAX({value})")]
         async with stored_engine(models=[t_doc(aggregations=aggs)]) as engine:
-            assert await engine.storage.get_model("t", data_source=DS) is not None
+            assert await engine.storage.get_dataset("t", data_source=DS) is not None
             query = _query(measure("reverse(a)"))
             with pytest.raises(SlayerError) as info:
                 await engine.execute(query)
@@ -172,13 +172,13 @@ class TestStillReserved:
     @pytest.mark.parametrize("name", ["cumsum", "lag", "time_shift"])
     def test_a_transform_name(self, name: str) -> None:
         with pytest.raises(pydantic.ValidationError, match="transform"):
-            Aggregation(name=name, formula="SUM({value})")
+            Aggregation(name=name, expression="SUM({value})")
 
     @pytest.mark.parametrize("name", ["extract", "doy", "ISO_WEEK"])
     def test_a_date_syntax_name(self, name: str) -> None:
         with pytest.raises(pydantic.ValidationError, match="date"):
-            Aggregation(name=name, formula="SUM({value})")
+            Aggregation(name=name, expression="SUM({value})")
 
     @pytest.mark.parametrize("name", ["round", "reverse", "strpos", "contains", "Left"])
     def test_a_function_name_is_accepted(self, name: str) -> None:
-        assert Aggregation(name=name, formula="SUM({value})").name == name
+        assert Aggregation(name=name, expression="SUM({value})").name == name

@@ -9,13 +9,13 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import DateOperandTypeError, ScalarOperandTypeError
 from slayer.core.keys import value_type
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
-from slayer.core.scope import ModelScope, StageColumn, StageSchema
+from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.core.syntax import parse_expr
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.binding import bind_expr
-from slayer.engine.key_metadata import scope_column_type
+from slayer.engine.key_metadata import scope_field_type
 from slayer.engine.plan import plan_stages
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -53,37 +53,37 @@ COMPATIBLE: dict[str, tuple[str, str, DataType]] = {
 TEXT_AS_NUMBER = {"greatest", "least"}
 
 
-def models_with_unknown(*, data_source: str = "test") -> list[SlayerModel]:
+def models_with_unknown(*, data_source: str = "test") -> list[SlayerDataset]:
     orders, *rest = idiom_models(data_source=data_source)
-    orders = orders.model_copy(update={"columns": [
-        *orders.columns, Column(name="opaque", sql="amount * 2", type=DataType.UNKNOWN),
+    orders = orders.model_copy(update={"fields": [
+        *orders.fields, DatasetField(name="opaque", sql="amount * 2", datatype=DataType.UNKNOWN),
     ]})
     return [orders, *rest]
 
 
 def _bundle(dialect: str) -> ResolvedSourceBundle:
     orders, *rest = models_with_unknown()
-    return ResolvedSourceBundle(dialect=dialect, source_model=orders, referenced_models=rest)
+    return ResolvedSourceBundle(dialect=dialect, population=orders, referenced_datasets=rest)
 
 
 def inferred_type(item: dict[str, Any], *, dialect: str) -> DataType | None:
     """The declared type of the one dimension or measure ``x`` in ``item``."""
-    query = SlayerQuery.model_validate({"source_model": "orders", **item})
+    query = SlayerQuery.model_validate({"population": "orders", **item})
     prebound = bind_query_inputs(query=query, bundle=_bundle(dialect))
-    (declared,) = [dm for dm in prebound.declared_measures if dm.public_name == "x"]
-    return declared.type
+    (declared,) = [dm for dm in prebound.declared_metrics if dm.public_name == "x"]
+    return declared.datatype
 
 
 def stage_type(item: dict[str, Any], *, dialect: str) -> DataType | None:
     """The type a later stage's schema reports for ``x``."""
-    first = SlayerQuery.model_validate({"name": "s1", "source_model": "orders", **item})
-    second = SlayerQuery.model_validate({"source_model": "s1", "dimensions": ["x"]})
+    first = SlayerQuery.model_validate({"name": "s1", "population": "orders", **item})
+    second = SlayerQuery.model_validate({"population": "s1", "dimensions": ["x"]})
     planned = plan_stages(queries=[first, second], bundle=_bundle(dialect))
     (column,) = [
         c for p in planned if p.stage_schema is not None and p.stage_schema.relation_name == "s1"
-        for c in p.stage_schema.columns if c.name == "x"
+        for c in p.stage_schema.fields if c.name == "x"
     ]
-    return column.type
+    return column.datatype
 
 
 def as_dimension(expression: str) -> dict[str, Any]:
@@ -237,9 +237,9 @@ class TestValueType:
     @staticmethod
     def _value_type(expression: str) -> DataType | None:
         bundle = _bundle("postgres")
-        scope = ModelScope(source_model=bundle.source_model)
+        scope = DatasetScope(population=bundle.population)
         key = bind_expr(parse_expr(expression), scope=scope, bundle=bundle).value_key
-        return value_type(key, column_type=scope_column_type(scope=scope, bundle=bundle))
+        return value_type(key, field_type=scope_field_type(scope=scope, bundle=bundle))
 
     @pytest.mark.parametrize(("expression", "joined"), [
         ("coalesce(amount, 0.5)", DataType.DOUBLE),
@@ -257,9 +257,9 @@ class TestValueType:
         ("coalesce(u, n)", DataType.INT), ("iif(n > 1, u, 'x')", DataType.TEXT), ("greatest(u, n)", DataType.INT),
     ])
     def test_untyped_stage_column_is_absorbed(self, expression: str, joined: DataType) -> None:
-        schema = StageSchema(relation_name="s1", columns=[
-            StageColumn(name="u", sql_alias="u"), StageColumn(name="n", sql_alias="n", type=DataType.INT),
+        schema = StageSchema(relation_name="s1", fields=[
+            StageField(name="u", sql_alias="u"), StageField(name="n", sql_alias="n", datatype=DataType.INT),
         ])
         bundle = ResolvedSourceBundle(dialect="postgres")
         key = bind_expr(parse_expr(expression), scope=schema, bundle=bundle).value_key
-        assert value_type(key, column_type=scope_column_type(scope=schema, bundle=bundle)) is joined
+        assert value_type(key, field_type=scope_field_type(scope=schema, bundle=bundle)) is joined

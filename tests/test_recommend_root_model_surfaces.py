@@ -17,11 +17,11 @@ from fastapi.testclient import TestClient
 from mcp.types import TextContent
 
 from slayer.api.server import create_app
-from slayer.cli import _run_recommend_root_model, main
+from slayer.cli import _run_recommend_population, main
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType, JoinType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.core.recommend import RootModelRecommendation
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.recommend import PopulationRecommendation
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -30,32 +30,32 @@ async def _seed(s: YAMLStorage) -> None:
     await s.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="x"))
 
     def col(n, t=DataType.TEXT, pk=False):
-        return Column(name=n, sql=n, type=t, primary_key=pk)
+        return DatasetField(name=n, sql=n, datatype=t, primary_key=pk)
 
-    await s.save_model(SlayerModel(
+    await s.save_dataset(SlayerDataset(
         name="orders", data_source="mydb", sql_table="orders",
-        columns=[
+        fields=[
             col("id", DataType.INT, pk=True), col("status"),
-            Column(name="customer_id", type=DataType.INT, hidden=True),
-            Column(name="product_id", type=DataType.INT, hidden=True),
+            DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
+            DatasetField(name="product_id", datatype=DataType.INT, hidden=True),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]], join_type=JoinType.LEFT),
-            ModelJoin(target_model="products", join_pairs=[["product_id", "id"]], join_type=JoinType.LEFT),
+        relationships=[
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]], join_type=JoinType.LEFT),
+            DatasetRelationship(to="products", join_pairs=[["product_id", "id"]], join_type=JoinType.LEFT),
         ],
     ))
-    await s.save_model(SlayerModel(
+    await s.save_dataset(SlayerDataset(
         name="customers", data_source="mydb", sql_table="customers",
-        columns=[col("id", DataType.INT, pk=True), col("name")],
+        fields=[col("id", DataType.INT, pk=True), col("name")],
     ))
-    await s.save_model(SlayerModel(
+    await s.save_dataset(SlayerDataset(
         name="products", data_source="mydb", sql_table="products",
-        columns=[col("id", DataType.INT, pk=True), col("category")],
+        fields=[col("id", DataType.INT, pk=True), col("category")],
     ))
     # Disconnected model for the no-root rendering path.
-    await s.save_model(SlayerModel(
+    await s.save_dataset(SlayerDataset(
         name="tickets", data_source="mydb", sql_table="tickets",
-        columns=[col("id", DataType.INT, pk=True), col("subject")],
+        fields=[col("id", DataType.INT, pk=True), col("subject")],
     ))
 
 
@@ -114,11 +114,11 @@ class TestMcpTool:
             s = YAMLStorage(base_dir=tmpdir)
             for ds in ("a", "b"):
                 await s.save_datasource(DatasourceConfig(name=ds, type="postgres", host="x"))
-                await s.save_model(SlayerModel(
+                await s.save_dataset(SlayerDataset(
                     name="orders", data_source=ds, sql_table="orders",
-                    columns=[
-                        Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                        Column(name="status", sql="status", type=DataType.TEXT),
+                    fields=[
+                        DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                        DatasetField(name="status", sql="status", datatype=DataType.TEXT),
                     ],
                 ))
             mcp = create_mcp_server(storage=s)
@@ -185,7 +185,7 @@ class TestCliHandler:
             items=["customers.name", "products.category"],
             data_source=None, format="text",
         )
-        _run_recommend_root_model(args)
+        _run_recommend_population(args)
         out = capsys.readouterr().out
         assert "orders" in out
 
@@ -195,7 +195,7 @@ class TestCliHandler:
             storage=storage.base_dir,
             items=["orders.status"], data_source="mydb", format="json",
         )
-        _run_recommend_root_model(args)
+        _run_recommend_population(args)
         payload = json.loads(capsys.readouterr().out)
         assert payload["root_model"] == "orders"
 
@@ -220,16 +220,16 @@ class TestSlayerClient:
     def test_local_engine_sync(self, storage) -> None:
 
         client = SlayerClient(storage=storage)
-        rec = client.recommend_root_model_sync(["customers.name", "products.category"])
-        assert isinstance(rec, RootModelRecommendation)
-        assert rec.root_model == "orders"  # to-one determiner of both
+        rec = client.recommend_population_sync(["customers.name", "products.category"])
+        assert isinstance(rec, PopulationRecommendation)
+        assert rec.population == "orders"  # to-one determiner of both
 
     async def test_local_engine_async(self, storage) -> None:
 
         client = SlayerClient(storage=storage)
-        rec = await client.recommend_root_model(["customers.name", "products.category"])
-        assert isinstance(rec, RootModelRecommendation)
-        assert rec.root_model == "orders"  # to-one determiner of both
+        rec = await client.recommend_population(["customers.name", "products.category"])
+        assert isinstance(rec, PopulationRecommendation)
+        assert rec.population == "orders"  # to-one determiner of both
 
 
 UNRELATED_ITEMS = ["customers.name", "count(tickets.id)"]
@@ -283,7 +283,7 @@ class TestUnrelatedFlagSurfaces:
         args = argparse.Namespace(
             storage=storage.base_dir, items=UNRELATED_ITEMS, data_source=None, format=fmt,
         )
-        _run_recommend_root_model(args)
+        _run_recommend_population(args)
         out = capsys.readouterr().out
         if fmt == "json":
             assert _flags(json.loads(out)) == UNRELATED_FLAGS
@@ -291,7 +291,7 @@ class TestUnrelatedFlagSurfaces:
             assert _flagged_in_text(out)
 
     async def test_client_local(self, storage) -> None:
-        rec = await SlayerClient(storage=storage).recommend_root_model(UNRELATED_ITEMS)
+        rec = await SlayerClient(storage=storage).recommend_population(UNRELATED_ITEMS)
         assert {ip.input_item: ip.unrelated for ip in rec.item_paths} == UNRELATED_FLAGS
 
     async def test_client_remote_parses_the_flag(self) -> None:
@@ -308,7 +308,7 @@ class TestUnrelatedFlagSurfaces:
             }
 
         client._request = fake_request  # type: ignore[assignment]
-        rec = await client.recommend_root_model(UNRELATED_ITEMS)
+        rec = await client.recommend_population(UNRELATED_ITEMS)
         assert {ip.input_item: ip.unrelated for ip in rec.item_paths} == UNRELATED_FLAGS
 
 
@@ -361,7 +361,7 @@ class TestRootHintSurfaces:
             items=["customers.name"], data_source=None,
             format="json", root_hint="orders",
         )
-        _run_recommend_root_model(args)
+        _run_recommend_population(args)
         payload = json.loads(capsys.readouterr().out)
         assert payload["root_model"] == "orders"
 
@@ -393,15 +393,15 @@ class TestRootHintSurfaces:
     def test_client_local_feasible_hint_honored(self, storage) -> None:
 
         client = SlayerClient(storage=storage)
-        rec = client.recommend_root_model_sync(["customers.name"], root_hint="orders")
-        assert rec.root_model == "orders"
+        rec = client.recommend_population_sync(["customers.name"], root_hint="orders")
+        assert rec.population == "orders"
 
     async def test_client_local_bad_hint_raises(self, storage) -> None:
 
 
         client = SlayerClient(storage=storage)
         with pytest.raises(ValueError):
-            await client.recommend_root_model(["orders.status"], root_hint="nope")
+            await client.recommend_population(["orders.status"], root_hint="nope")
 
     # -- SlayerClient (remote HTTP) sends root_hint only when set -------
     async def test_client_remote_sends_root_hint_only_when_set(self) -> None:
@@ -419,8 +419,8 @@ class TestRootHintSurfaces:
 
         client._request = fake_request  # type: ignore[assignment]
 
-        await client.recommend_root_model(["customers.name"], root_hint="orders")
-        await client.recommend_root_model(["customers.name"])
+        await client.recommend_population(["customers.name"], root_hint="orders")
+        await client.recommend_population(["customers.name"])
 
         assert captured[0].get("root_hint") == "orders"
         assert "root_hint" not in captured[1]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.profiling import ensure_samples_fresh
 from tests._dev2120_fixtures import contractors_engine, contractors_model
@@ -25,13 +25,13 @@ def _record(*, engine, monkeypatch: pytest.MonkeyPatch) -> list[SlayerQuery]:
     return log
 
 
-async def _profile(engine: SlayerQueryEngine, name: str, monkeypatch: pytest.MonkeyPatch, *, model: SlayerModel | None = None):
-    stored = await engine.storage.get_model((model or contractors_model()).name, data_source="test")
+async def _profile(engine: SlayerQueryEngine, name: str, monkeypatch: pytest.MonkeyPatch, *, model: SlayerDataset | None = None):
+    stored = await engine.storage.get_dataset((model or contractors_model()).name, data_source="test")
     assert stored is not None
-    column = stored.get_column(name)
+    column = stored.get_field(name)
     assert column is not None
     log = _record(engine=engine, monkeypatch=monkeypatch)
-    outcome = await ensure_samples_fresh(model=stored, columns=[column], engine=engine, storage=engine.storage)
+    outcome = await ensure_samples_fresh(dataset=stored, fields=[column], engine=engine, storage=engine.storage)
     (profiled,) = outcome.columns
     return profiled, outcome, log
 
@@ -66,9 +66,9 @@ GRIDS = ("CREATE TABLE grids (id INTEGER, grid INTEGER[][])", "INSERT INTO grids
 
 class TestOpaqueElements:
     async def test_never_profiled(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        grids = SlayerModel(name="grids", sql_table="grids", data_source="test", columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="grid", type=DataType.ARRAY, element_type=DataType.UNKNOWN)])
+        grids = SlayerDataset(name="grids", sql_table="grids", data_source="test", fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="grid", datatype=DataType.ARRAY, element_type=DataType.UNKNOWN)])
         async with contractors_engine(models=[contractors_model(), grids], extra=GRIDS) as e:
             grid, _, log = await _profile(e, "grid", monkeypatch, model=grids)
         assert log == []

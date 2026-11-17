@@ -16,18 +16,18 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    SlayerModel,
+    SlayerDataset,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import (
     ApplyDriftResult,
     DeleteReason,
-    EditModelDelete,
+    EditDatasetDelete,
     RemoveSpec,
     ToDeleteEntry,
-    WholeModelDelete,
+    WholeDatasetDelete,
 )
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -64,28 +64,28 @@ async def _setup(workspace: Path) -> tuple[SlayerQueryEngine, str]:
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(
-                    name="customer_id", sql="customer_id", type=DataType.DOUBLE
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(
+                    name="customer_id", sql="customer_id", datatype=DataType.DOUBLE
                 ),
             ],
         )
@@ -102,28 +102,28 @@ class TestApplyDriftDeletes:
     async def test_applies_edit_model_delete(self, workspace: Path) -> None:
         engine, _ = await _setup(workspace)
         deletes: list[ToDeleteEntry] = [
-            EditModelDelete(
-                model_name="orders",
+            EditDatasetDelete(
+                dataset_name="orders",
                 data_source="ds",
-                remove=RemoveSpec(columns=["status"]),
+                remove=RemoveSpec(fields=["status"]),
                 reasons=[DeleteReason(target="column:status", reason="dropped")],
             )
         ]
         result = await engine.apply_drift_deletes(deletes)
         assert isinstance(result, ApplyDriftResult)
         assert len(result.applied) == 1
-        assert result.applied[0].model_name == "orders"
+        assert result.applied[0].dataset_name == "orders"
         assert result.errors == []
         # Persisted model now lacks 'status'
-        loaded = await engine.storage.get_model("orders", data_source="ds")
+        loaded = await engine.storage.get_dataset("orders", data_source="ds")
         assert loaded is not None
-        assert not any(c.name == "status" for c in loaded.columns)
+        assert not any(c.name == "status" for c in loaded.fields)
 
     async def test_applies_whole_model_delete(self, workspace: Path) -> None:
         engine, _ = await _setup(workspace)
         deletes: list[ToDeleteEntry] = [
-            WholeModelDelete(
-                model_name="orders",
+            WholeDatasetDelete(
+                dataset_name="orders",
                 data_source="ds",
                 reasons=[DeleteReason(target="model:orders", reason="missing")],
             )
@@ -132,20 +132,20 @@ class TestApplyDriftDeletes:
         assert len(result.applied) == 1
         assert result.applied[0].tool == "delete_model"
         # Persisted model gone
-        assert await engine.storage.get_model("orders", data_source="ds") is None
+        assert await engine.storage.get_dataset("orders", data_source="ds") is None
 
     async def test_arbitrary_input_order(self, workspace: Path) -> None:
         engine, _ = await _setup(workspace)
         deletes = [
-            EditModelDelete(
-                model_name="orders",
+            EditDatasetDelete(
+                dataset_name="orders",
                 data_source="ds",
-                remove=RemoveSpec(columns=["status"]),
+                remove=RemoveSpec(fields=["status"]),
             ),
-            EditModelDelete(
-                model_name="customers",
+            EditDatasetDelete(
+                dataset_name="customers",
                 data_source="ds",
-                remove=RemoveSpec(columns=["region"]),
+                remove=RemoveSpec(fields=["region"]),
             ),
         ]
         result = await engine.apply_drift_deletes(deletes)
@@ -155,29 +155,29 @@ class TestApplyDriftDeletes:
     async def test_per_entry_failure_captured(self, workspace: Path) -> None:
         engine, _ = await _setup(workspace)
         # Inject a save failure on the orders edit.
-        original_save = engine.storage.save_model
+        original_save = engine.storage.save_dataset
 
-        async def flaky(model: SlayerModel) -> None:
+        async def flaky(model: SlayerDataset) -> None:
             if model.name == "orders":
                 raise RuntimeError("disk full")
             return await original_save(model)
 
-        with patch.object(engine.storage, "save_model", autospec=True, side_effect=flaky):
+        with patch.object(engine.storage, "save_dataset", autospec=True, side_effect=flaky):
             deletes = [
-                EditModelDelete(
-                    model_name="orders",
+                EditDatasetDelete(
+                    dataset_name="orders",
                     data_source="ds",
-                    remove=RemoveSpec(columns=["status"]),
+                    remove=RemoveSpec(fields=["status"]),
                 ),
-                EditModelDelete(
-                    model_name="customers",
+                EditDatasetDelete(
+                    dataset_name="customers",
                     data_source="ds",
-                    remove=RemoveSpec(columns=["region"]),
+                    remove=RemoveSpec(fields=["region"]),
                 ),
             ]
             result = await engine.apply_drift_deletes(deletes)
-        assert any(e.model_name == "orders" for e in result.errors)
-        assert any(a.model_name == "customers" for a in result.applied)
+        assert any(e.dataset_name == "orders" for e in result.errors)
+        assert any(a.dataset_name == "customers" for a in result.applied)
 
     async def test_residual_populated_from_post_apply_validate(
         self, workspace: Path
@@ -193,15 +193,15 @@ class TestApplyDriftDeletes:
         # itself). Arrange: pre-drop "status" persisted column to make
         # apply meaningful.
         deletes = [
-            EditModelDelete(
-                model_name="orders",
+            EditDatasetDelete(
+                dataset_name="orders",
                 data_source="ds",
-                remove=RemoveSpec(columns=["status"]),
+                remove=RemoveSpec(fields=["status"]),
             ),
         ]
         result = await engine.apply_drift_deletes(deletes)
         # Residual should include customers.region drop discovered post-apply.
-        residual_models = {e.model_name for e in result.residual}
+        residual_models = {e.dataset_name for e in result.residual}
         assert "customers" in residual_models
 
 
@@ -281,9 +281,9 @@ class TestForceCleanCLI:
             engine = SlayerQueryEngine(
                 storage=YAMLStorage(base_dir=str(cli_workspace / "storage"))
             )
-            return await engine.storage.get_model("customers", data_source="ds")
+            return await engine.storage.get_dataset("customers", data_source="ds")
 
         loaded = run_sync(_check())
         assert loaded is not None
         # The region column is still persisted (apply was aborted).
-        assert any(c.name == "region" for c in loaded.columns)
+        assert any(c.name == "region" for c in loaded.fields)

@@ -19,7 +19,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey
+from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.ranked_planner import resolve_ranking_time_key
 from slayer.sql.naming import canonical_aggregate_alias
@@ -43,18 +43,18 @@ HOST_HOP = "unproven join hop to line_items from orders"
 MODES = ["broadcast", "error", "associate"]
 
 # Host-coordinate aggregate keys — the alias every refusal must name (D6).
-AMOUNT = ColumnKey(path=(), leaf="amount")
+AMOUNT = FieldKey(path=(), leaf="amount")
 AMOUNT_LAST = AggregateKey(source=AMOUNT, agg="last")
 AMOUNT_FIRST = AggregateKey(source=AMOUNT, agg="first")
 AMOUNT_LAST_30D = AggregateKey(source=AMOUNT, agg="last", kwargs=(("window", "30d"),))
 AMOUNT_LAST_LI_TS = AggregateKey(
     source=AMOUNT, agg="last",
-    args=(ColumnSqlKey(path=(), model="orders", column_name="li_ts"),),
+    args=(FieldSqlKey(path=(), dataset="orders", field_name="li_ts"),),
 )
 AMOUNT_LAST_LI_CREATED = AggregateKey(
-    source=AMOUNT, agg="last", args=(ColumnKey(path=("line_items",), leaf="created_at"),),
+    source=AMOUNT, agg="last", args=(FieldKey(path=("line_items",), leaf="created_at"),),
 )
-LI_QTY_LAST = AggregateKey(source=ColumnKey(path=("line_items",), leaf="qty"), agg="last")
+LI_QTY_LAST = AggregateKey(source=FieldKey(path=("line_items",), leaf="qty"), agg="last")
 
 
 def _alias_of(msg: str) -> str:
@@ -72,7 +72,7 @@ async def _refused(
     msg = str(ei.value)
     for fragment in fragments:
         assert fragment in msg, f"{fragment!r} missing from: {msg}"
-    assert _alias_of(msg) == canonical_aggregate_alias(agg_key, profile="stage_formula"), msg
+    assert _alias_of(msg) == canonical_aggregate_alias(agg_key, profile="stage_expression"), msg
     return msg
 
 
@@ -125,7 +125,7 @@ class TestFixture:
         with warnings.catch_warnings(record=True) as rec:
             warnings.simplefilter("always")
             for model in reversed(models):  # targets first, so each hop is loaded
-                await storage.save_model(model)
+                await storage.save_dataset(model)
         arity = [str(w.message) for w in rec if w.category is UserWarning]
         expected = {("li_ts", "line_items"), ("li_flag_ts", "line_items"), ("sh_ts", "shipments")}
         assert len(arity) == len(expected), arity
@@ -278,17 +278,17 @@ class TestSafeKeysExecute:
 def _resolve(default: Optional[str]):
     models = dev1945_models(orders_default=default)
     return resolve_ranking_time_key(
-        key=AMOUNT_LAST, root_model=models[0], bundle=dev1945_bundle(models),
+        key=AMOUNT_LAST, root_dataset=models[0], bundle=dev1945_bundle(models),
     )
 
 
 class TestResolver:
     @pytest.mark.parametrize("default", ["li_ts", "li_flag_ts", "cust_signup"])
     def test_expanding_default_is_typed(self, default: str) -> None:
-        assert _resolve(default) == ColumnSqlKey(path=(), model="orders", column_name=default)
+        assert _resolve(default) == FieldSqlKey(path=(), dataset="orders", field_name=default)
 
     def test_plain_default_stays_a_column_key(self) -> None:
-        assert _resolve("created_at") == ColumnKey(path=(), leaf="created_at")
+        assert _resolve("created_at") == FieldKey(path=(), leaf="created_at")
 
     def test_no_target_path_parameter(self) -> None:
         assert "target_path" not in inspect.signature(resolve_ranking_time_key).parameters

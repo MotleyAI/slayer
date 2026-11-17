@@ -14,7 +14,7 @@ from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Aggregation, AggregationParam, Column, DatasourceConfig, ModelMeasure, SlayerModel,
+    Aggregation, AggregationParam, DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.database.client import SlayerSQLClient
@@ -37,24 +37,24 @@ _LABEL = "MAX(CASE WHEN {value} > 0 THEN '{n}' END)"
 
 def _agg(formula: str, *, name: str = "agg", **defaults: str) -> Aggregation:
     return Aggregation(
-        name=name, formula=formula,
+        name=name, expression=formula,
         params=[AggregationParam(name=k, sql=v) for k, v in defaults.items()],
     )
 
 
-def _orders(*aggs: Aggregation) -> SlayerModel:
-    return SlayerModel(
+def _orders(*aggs: Aggregation) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
         aggregations=list(aggs),
     )
 
 
 def _q(formula: str) -> SlayerQuery:
-    return SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula, name="m")])
+    return SlayerQuery(population="orders", metrics=[DatasetMetric(expression=formula, name="m")])
 
 
 def _mode_b_string(text: str) -> str:
@@ -86,13 +86,13 @@ def _seed(db_path: str) -> None:
         conn.executemany("INSERT INTO orders VALUES (?, ?)", rows)
 
 
-async def _save(model: SlayerModel, *, dialect: str = "sqlite") -> None:
+async def _save(model: SlayerDataset, *, dialect: str = "sqlite") -> None:
     with tempfile.TemporaryDirectory() as tmp:
         storage = YAMLStorage(base_dir=tmp)
         await storage.save_datasource(DatasourceConfig(
             name="test", type=dialect, database=os.path.join(tmp, "x.db")))
-        await storage.save_model(model)
-        await storage.save_model(model)
+        await storage.save_dataset(model)
+        await storage.save_dataset(model)
 
 
 def _names_placeholder(*, err: BaseException, name: str, formula: str) -> None:

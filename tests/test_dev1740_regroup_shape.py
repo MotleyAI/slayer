@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.query import DatasetMetric, SlayerQuery
 
 from tests._dev1740_fixtures import cm_cte_bodies, gen
 
@@ -31,7 +31,7 @@ class TestFilterRoutingAcrossStageBoundary:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["band == 1", "status == 'ok'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="band_total")],
+            measures=[DatasetMetric(expression="sum(amount)", name="band_total")],
         ))
         cte = cm_cte_bodies(sql)
         # The base-row predicate reaches the partition CTE (DEV-1739 rule)...
@@ -47,7 +47,7 @@ class TestOneStagePerDistinctPartitionSet:
                 "AND sum(amount, partition_by=region) > 10000 THEN 1 ELSE 0 END")
         sql = await gen(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert _count_isolated_ctes(sql) == 2
 
@@ -58,6 +58,6 @@ class TestOneStagePerDistinctPartitionSet:
                 "THEN sum(amount, partition_by=city) ELSE 0 END")
         sql = await gen(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert _count_isolated_ctes(sql) == 1

@@ -18,7 +18,7 @@ def test_reexport_is_same_class() -> None:
 
 def test_render_report_and_tally() -> None:
     result = ConversionResult(
-        models=[],
+        datasets=[],
         unconverted_metrics=[
             ConversionWarning(
                 metric_name="m1",
@@ -29,7 +29,7 @@ def test_render_report_and_tally() -> None:
         ],
         warnings=[
             ConversionWarning(
-                model_name="mdl",
+                dataset_name="mdl",
                 message="dropped a thing",
                 category="shape",
                 severity="dropped",

@@ -32,12 +32,12 @@ DISPATCH_RANKED = "ranked"        # first/last — needs the ranked-subquery sta
 DISPATCH_STAT = "stat"            # stddev/var/corr/covar — dialect UDF split
 DISPATCH_DIALECT_HOOK = "dialect_hook"  # percentile/median/approx-distinct
 DISPATCH_DISTINCT = "distinct"    # COUNT(DISTINCT ...)
-DISPATCH_FORMULA = "formula"      # {value}/{param} template substitution
+DISPATCH_EXPRESSION = "expression"     # {value}/{param} template substitution
 
 # Closed set of dispatch names (mirrors the DISPATCH_* constants above). An
 # entry built with a value outside this set fails at import, not at render.
 DispatchKind = Literal[
-    "simple", "ranked", "stat", "dialect_hook", "distinct", "formula",
+    "simple", "ranked", "stat", "dialect_hook", "distinct", "expression",
 ]
 
 
@@ -72,7 +72,7 @@ AGG_REGISTRY: Dict[str, AggEntry] = {
         _entry(name="last", dispatch=DISPATCH_RANKED),
         _entry(name="median", dispatch=DISPATCH_DIALECT_HOOK),
         _entry(name="percentile", dispatch=DISPATCH_DIALECT_HOOK),
-        _entry(name="weighted_avg", dispatch=DISPATCH_FORMULA),
+        _entry(name="weighted_avg", dispatch=DISPATCH_EXPRESSION),
         _entry(name="stddev_samp", dispatch=DISPATCH_STAT),
         _entry(name="stddev_pop", dispatch=DISPATCH_STAT),
         _entry(name="var_samp", dispatch=DISPATCH_STAT),
@@ -103,7 +103,7 @@ def resolve_agg_entry(name: str) -> AggEntry:
     """Return the registry entry for a BUILT-IN aggregation.
 
     Raises ``ValueError`` for anything else. Custom model-level aggregations
-    are deliberately not registered: they carry their own ``formula`` and take
+    are deliberately not registered: they carry their own ``expression`` and take
     the template path, so callers check :func:`is_builtin_agg` first.
     """
     entry = AGG_REGISTRY.get(name)
@@ -149,7 +149,7 @@ def apply_aggregate(
 
 
 class AggregateSpec(BaseModel):
-    """A fully resolved aggregate; ``value`` ``None`` is the row itself (``COUNT(*)``), ``formula`` the template."""
+    """A fully resolved aggregate; ``value`` ``None`` is the row itself (``COUNT(*)``), ``expression`` the template."""
 
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
@@ -159,7 +159,7 @@ class AggregateSpec(BaseModel):
     bindings: Dict[str, Expression] = {}
     input_type: Optional[DataType] = None
     element_type: Optional[DataType] = None
-    formula: Optional[str] = None
+    expression: Optional[str] = None
 
 
 def percentile_literal(p: Expression) -> Expression:
@@ -206,9 +206,9 @@ def _read_value(spec: AggregateSpec) -> Expression:
     return aggregate_input(value=spec.value.copy(), aggregation=spec.aggregation, input_type=spec.input_type)
 
 
-def _formula_aggregate(spec: AggregateSpec, *, dialect: SqlDialect) -> Expression:
+def _expression_aggregate(spec: AggregateSpec, *, dialect: SqlDialect) -> Expression:
     agg_name = spec.aggregation
-    if spec.formula is None:
+    if spec.expression is None:
         raise ValueError(
             f"Aggregation '{agg_name}' has no formula. "
             f"Custom aggregations must define a formula."
@@ -216,7 +216,7 @@ def _formula_aggregate(spec: AggregateSpec, *, dialect: SqlDialect) -> Expressio
     if VALUE_PLACEHOLDER in spec.bindings:
         raise SqlTemplateError(reserved_value_param_message(agg_name))
     try:
-        template = sql_template(text=spec.formula, dialect=dialect.sqlglot_name)
+        template = sql_template(text=spec.expression, dialect=dialect.sqlglot_name)
     except SqlTemplateError as e:
         raise SqlTemplateError(f"Aggregation '{agg_name}': {e}") from e
     bindings = {
@@ -233,8 +233,8 @@ def _formula_aggregate(spec: AggregateSpec, *, dialect: SqlDialect) -> Expressio
 def render_aggregate(spec: AggregateSpec, *, dialect: SqlDialect) -> Expression:
     """The one aggregate dispatch: ``spec`` as ``dialect``'s aggregate SQL."""
     agg_name = spec.aggregation
-    if not is_builtin_agg(agg_name) or spec.formula:
-        return _formula_aggregate(spec, dialect=dialect)
+    if not is_builtin_agg(agg_name) or spec.expression:
+        return _expression_aggregate(spec, dialect=dialect)
     entry = resolve_agg_entry(agg_name)
     if entry.dispatch == DISPATCH_STAT:
         if is_stat_agg2(agg_name):

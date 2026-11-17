@@ -12,7 +12,7 @@ from slayer.engine.elaborate import elaborate_query
 from slayer.ir.terms import Aggregate
 
 from tests._dev1832_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     SlayerQuery,
     bundle,
     gen,
@@ -33,10 +33,10 @@ def _home_path(formula: str, *, dimensions: list[str] | None = None) -> tuple:
     elab = elaborate_query(
         query=orders_q(
             dimensions=dimensions or [],
-            measures=[ModelMeasure(formula=formula, name="m")]),
+            measures=[DatasetMetric(expression=formula, name="m")]),
         bundle=bundle(dev1931_models()))
     assert elab.prebound is not None
-    root = elab.prebound.declared_measures[-1].bound.value_key
+    root = elab.prebound.declared_metrics[-1].bound.value_key
     assert isinstance(root, AggregateKey), root
     term = elab.terms[root]
     assert isinstance(term, Aggregate), term
@@ -91,7 +91,7 @@ class TestDefinitionDefaultExecution:
     @staticmethod
     async def _value(engine, formula: str) -> float:
         resp = await engine.execute(
-            orders_q(measures=[ModelMeasure(formula=formula, name="w")]))
+            orders_q(measures=[DatasetMetric(expression=formula, name="w")]))
         return float(resp.data[0]["orders.w"])
 
     async def test_root_local_direct_default_matches_explicit(self, engine):
@@ -136,7 +136,7 @@ class TestDefinitionDefaultExecution:
         async def cells(formula):
             resp = await engine.execute(orders_q(
                 time_dimensions=month_td(),
-                measures=[ModelMeasure(formula=formula, name="w")]))
+                measures=[DatasetMetric(expression=formula, name="w")]))
             return {tuple(v for k, v in sorted(r.items()) if k != "orders.w"):
                     r["orders.w"] for r in resp.data}
         explicit = await cells(
@@ -154,8 +154,8 @@ class TestFanningDefinitionDefaultFailsClosed:
         assert _home_path("wfan_widen(customers.regions.pop)") == ("customers",)
 
     async def test_fanning_default_fails_closed(self):
-        q = orders_q(measures=[ModelMeasure(
-            formula="wfan_widen(customers.regions.pop)", name="m")])
+        q = orders_q(measures=[DatasetMetric(
+            expression="wfan_widen(customers.regions.pop)", name="m")])
         models = dev1931_models()
         with pytest.raises(ValueError, match="(?i)unproven join hop|fanning") as ei:
             await gen(query=q, models=models)
@@ -167,24 +167,24 @@ class TestUnresolvableDefaultFailsClosed:
     closed — never a silent ``()`` and never a silent re-anchor at the root."""
 
     async def test_qualifier_unreachable_from_owner_and_root(self):
-        q = orders_q(measures=[ModelMeasure(
-            formula="wsum_nowhere(customers.spend)", name="m")])
+        q = orders_q(measures=[DatasetMetric(
+            expression="wsum_nowhere(customers.spend)", name="m")])
         models = dev1931_models()
         with pytest.raises(ValueError):
             await gen(query=q, models=models)
 
     async def test_partially_resolvable_owner_reference(self):
         # regions.plans.fee: regions resolves from the owner, plans is missing on it.
-        q = orders_q(measures=[ModelMeasure(
-            formula="wsum_partial(customers.spend)", name="m")])
+        q = orders_q(measures=[DatasetMetric(
+            expression="wsum_partial(customers.spend)", name="m")])
         models = dev1931_models()
         with pytest.raises(ValueError):
             await gen(query=q, models=models)
 
     async def test_ambiguous_owner_hop_never_reanchors_at_root(self):
         # ag is ambiguous from owner o but clean from root r — must not re-anchor at r.
-        q = SlayerQuery(source_model="r", measures=[ModelMeasure(
-            formula="wscore(o.val)", name="m")])
+        q = SlayerQuery(population="r", metrics=[DatasetMetric(
+            expression="wscore(o.val)", name="m")])
         models = ambiguous_owner_models()
         with pytest.raises(ValueError):
             await gen(query=q, models=models)

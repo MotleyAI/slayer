@@ -21,11 +21,11 @@ OTHER_VALUES = {"label": "Revenue", "type": "INT", "description": "All revenue",
 
 
 def saved(*measures: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "orders", "measures": list(measures)})
+    return SlayerQuery.model_validate({"population": "orders", "metrics": list(measures)})
 
 
 def merge(base: SlayerQuery, *measures: Any) -> SlayerQuery:
-    return refine_query(saved=base, refinement=QueryRefinement.model_validate({"measures": list(measures)}))
+    return refine_query(saved=base, refinement=QueryRefinement.model_validate({"metrics": list(measures)}))
 
 
 def conflict(base: SlayerQuery, *measures: Any) -> str:
@@ -79,11 +79,11 @@ class TestRestatementConflicts:
 class TestNotARestatement:
     def test_other_name_appends(self) -> None:
         merged = merge(saved(REVENUE), {"formula": "revenue", "name": "r2"})
-        assert [(m.name, m.formula) for m in merged.measures or []] == [("revenue", "sum(amount)"), ("r2", "revenue")]
+        assert [(m.name, m.expression) for m in merged.metrics or []] == [("revenue", "sum(amount)"), ("r2", "revenue")]
 
     def test_bare_name_of_no_saved_entry_appends(self) -> None:
         merged = merge(saved(REVENUE), "amount_total")
-        assert [(m.name, m.formula) for m in merged.measures or []] == [("revenue", "sum(amount)"), (None, "amount_total")]
+        assert [(m.name, m.expression) for m in merged.metrics or []] == [("revenue", "sum(amount)"), (None, "amount_total")]
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

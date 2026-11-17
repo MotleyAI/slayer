@@ -3,7 +3,7 @@
 These tests pin the contract of :class:`slayer.inspect.service.InspectService`
 (the shared core behind the MCP ``inspect`` tool + REST/CLI/SlayerClient
 surfaces) and the ``include_hidden`` refactor of
-:func:`slayer.search.render.collect_model_entity_pairs`.
+:func:`slayer.search.render.collect_dataset_entity_pairs`.
 
 Design (settled in the spec interview + two Codex review passes):
 
@@ -49,27 +49,27 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.storage.yaml_storage import YAMLStorage
 
 # The module under test does not exist yet — importing it is the first
 # right-reason failure for this TDD suite.
-from slayer.inspect.model_render import (  # noqa: E402
-    model_skeleton_fields,
-    render_model_skeleton,
+from slayer.inspect.dataset_render import (  # noqa: E402
+    dataset_skeleton_fields,
+    render_dataset_skeleton,
 )
 from slayer.inspect.service import InspectService  # noqa: E402
 from slayer.storage.sqlite_conn import transaction
 
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.inspect import model_render as mr
+from slayer.inspect import dataset_render as mr
 from slayer.inspect import service as service_mod
-from slayer.search.render import collect_model_entity_pairs
+from slayer.search.render import collect_dataset_entity_pairs
 from slayer.search.service import SearchService
 
 
@@ -88,50 +88,50 @@ async def _seed_basic(storage: YAMLStorage) -> None:
             description="Primary analytics warehouse.",
         )
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers",
         sql_table="customers",
         data_source="mydb",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(
-                name="region", sql="region", type=DataType.TEXT,
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(
+                name="region", sql="region", datatype=DataType.TEXT,
                 description="Customer billing region.",
             ),
         ],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="mydb",
         description="One row per placed order.",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(
-                name="amount", sql="amount", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(
+                name="amount", sql="amount", datatype=DataType.DOUBLE,
                 description="Order total in USD.",
             ),
-            Column(name="customer_id", sql="customer_id", type=DataType.INT),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
             # Collides by name with the aggregation below.
-            Column(
-                name="big", sql="amount", type=DataType.DOUBLE,
+            DatasetField(
+                name="big", sql="amount", datatype=DataType.DOUBLE,
                 description="Order amount, aliased.",
             ),
         ],
-        measures=[
-            ModelMeasure(
-                name="aov", formula="sum(amount) / count(*)",
+        metrics=[
+            DatasetMetric(
+                name="aov", expression="sum(amount) / count(*)",
                 description="Average order value.",
             ),
         ],
         aggregations=[
             Aggregation(
-                name="big", formula="MAX({col})",
+                name="big", expression="MAX({col})",
                 description="A custom aggregation named 'big'.",
             ),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[("customer_id", "id")]),
+        relationships=[
+            DatasetRelationship(to="customers", join_pairs=[("customer_id", "id")]),
         ],
     ))
     await storage.set_datasource_priority(["mydb"])
@@ -331,14 +331,14 @@ class TestCollision:
         self, storage: YAMLStorage
     ) -> None:
         # Two aggregations share a name → entity_type cannot make it unique.
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="dupes",
             sql_table="dupes",
             data_source="mydb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
             aggregations=[
-                Aggregation(name="dup", formula="MAX({col})"),
-                Aggregation(name="dup", formula="MIN({col})"),
+                Aggregation(name="dup", expression="MAX({col})"),
+                Aggregation(name="dup", expression="MIN({col})"),
             ],
         ))
         svc = InspectService(storage=storage)
@@ -356,13 +356,13 @@ class TestCollision:
         self, storage: YAMLStorage
     ) -> None:
         # A measure and an aggregation share the name 'same'.
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="ma",
             sql_table="ma",
             data_source="mydb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
-            measures=[ModelMeasure(name="same", formula="sum(id)")],
-            aggregations=[Aggregation(name="same", formula="MAX({col})")],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            metrics=[DatasetMetric(name="same", expression="sum(id)")],
+            aggregations=[Aggregation(name="same", expression="MAX({col})")],
         ))
         svc = InspectService(storage=storage)
         as_measure = await svc.inspect(
@@ -408,12 +408,12 @@ class TestEntityTypeMismatch:
         # A model literally named like the leaf must NOT be
         # returned for `inspect("mydb.orders.amount", "model")` — the dotted
         # leaf is a kind mismatch, not a bare-name fallback.
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="amount",  # collides with orders.amount leaf name
             sql_table="amount",
             data_source="mydb",
             description="UNRELATED model named amount.",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
         ))
         svc = InspectService(storage=storage)
         out = await svc.inspect(
@@ -465,14 +465,14 @@ class TestNotFound:
 
 class TestHiddenRendered:
     async def test_hidden_column_renders(self, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="withsecret",
             sql_table="withsecret",
             data_source="mydb",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(
-                    name="secret", sql="secret", type=DataType.TEXT,
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(
+                    name="secret", sql="secret", datatype=DataType.TEXT,
                     description="Hidden but inspectable.", hidden=True,
                 ),
             ],
@@ -486,13 +486,13 @@ class TestHiddenRendered:
         assert "Hidden but inspectable." in out
 
     async def test_hidden_model_renders(self, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="hiddenmodel",
             sql_table="hiddenmodel",
             data_source="mydb",
             hidden=True,
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
             ],
         ))
         svc = InspectService(storage=storage)
@@ -513,11 +513,11 @@ class TestDatasourceModelCollision:
         await storage.save_datasource(
             DatasourceConfig(name="shared", type="sqlite", database=":memory:")
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="shared",
             sql_table="shared",
             data_source="mydb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
         ))
 
     async def test_datasource_interpretation(self, storage: YAMLStorage) -> None:
@@ -806,13 +806,13 @@ class TestModelSamplesWithEngine:
             await st.save_datasource(
                 DatasourceConfig(name="live", type="sqlite", database=db_path)
             )
-            await st.save_model(SlayerModel(
+            await st.save_dataset(SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="live",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                fields=[
+                    DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
                 ],
             ))
             engine = SlayerQueryEngine(storage=st)
@@ -830,38 +830,38 @@ class TestModelSamplesWithEngine:
 
 
 class TestCollectModelEntityPairsIncludeHidden:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _model(self) -> SlayerDataset:
+        return SlayerDataset(
             name="m",
             sql_table="m",
             data_source="mydb",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="visible", sql="visible", type=DataType.TEXT),
-                Column(name="secret", sql="secret", type=DataType.TEXT, hidden=True),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="visible", sql="visible", datatype=DataType.TEXT),
+                DatasetField(name="secret", sql="secret", datatype=DataType.TEXT, hidden=True),
             ],
         )
 
     def test_default_excludes_hidden_columns(self) -> None:
-        pairs = collect_model_entity_pairs(model=self._model())
+        pairs = collect_dataset_entity_pairs(dataset=self._model())
         ids = {p.canonical_id for p in pairs}
         assert "mydb.m.visible" in ids
         assert "mydb.m.secret" not in ids
 
     def test_include_hidden_adds_hidden_columns(self) -> None:
-        pairs = collect_model_entity_pairs(model=self._model(), include_hidden=True)
+        pairs = collect_dataset_entity_pairs(dataset=self._model(), include_hidden=True)
         ids = {p.canonical_id for p in pairs}
         assert "mydb.m.secret" in ids
 
     def test_default_returns_empty_for_hidden_model(self) -> None:
         hidden = self._model()
         hidden.hidden = True
-        assert collect_model_entity_pairs(model=hidden) == []
+        assert collect_dataset_entity_pairs(dataset=hidden) == []
 
     def test_include_hidden_emits_for_hidden_model(self) -> None:
         hidden = self._model()
         hidden.hidden = True
-        pairs = collect_model_entity_pairs(model=hidden, include_hidden=True)
+        pairs = collect_dataset_entity_pairs(dataset=hidden, include_hidden=True)
         ids = {p.canonical_id for p in pairs}
         assert "mydb.m" in ids
         assert "mydb.m.secret" in ids
@@ -874,14 +874,14 @@ class TestHiddenStaysOutOfSearch:
     async def test_hidden_column_absent_from_search_results(
         self, storage: YAMLStorage
     ) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="leaky",
             sql_table="leaky",
             data_source="mydb",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(
-                    name="topsecret", sql="topsecret", type=DataType.TEXT,
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(
+                    name="topsecret", sql="topsecret", datatype=DataType.TEXT,
                     hidden=True,
                 ),
             ],
@@ -897,33 +897,33 @@ class TestHiddenStaysOutOfSearch:
 # ---------------------------------------------------------------------------
 
 
-def _orders_like_model() -> SlayerModel:
+def _orders_like_model() -> SlayerDataset:
     """A standalone (no-storage) ``orders`` model mirroring the seed fixture —
     columns id/amount/customer_id/big, one named measure, one aggregation, one
     join. Used to unit-test the pure skeleton helpers."""
-    return SlayerModel(
+    return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="mydb",
         description="One row per placed order.",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="customer_id", sql="customer_id", type=DataType.INT),
-            Column(name="big", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
+            DatasetField(name="big", sql="amount", datatype=DataType.DOUBLE),
         ],
-        measures=[ModelMeasure(name="aov", formula="sum(amount) / count(*)")],
-        aggregations=[Aggregation(name="big", formula="MAX({col})")],
-        joins=[ModelJoin(target_model="customers", join_pairs=[("customer_id", "id")])],
+        metrics=[DatasetMetric(name="aov", expression="sum(amount) / count(*)")],
+        aggregations=[Aggregation(name="big", expression="MAX({col})")],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[("customer_id", "id")])],
     )
 
 
 class TestModelSkeletonHelpers:
-    """Pure helpers in ``slayer.inspect.model_render`` — no DB, no engine."""
+    """Pure helpers in ``slayer.inspect.dataset_render`` — no DB, no engine."""
 
     def test_render_model_skeleton_is_heading_less(self) -> None:
 
-        md = render_model_skeleton(model=_orders_like_model())
+        md = render_dataset_skeleton(dataset=_orders_like_model())
         # The caller prepends the `#`/`##` heading — the helper body must not.
         assert not any(line.startswith("#") for line in md.splitlines())
         assert "One row per placed order." in md
@@ -935,14 +935,14 @@ class TestModelSkeletonHelpers:
 
     def test_render_model_skeleton_empty_sections_render_none(self) -> None:
 
-        bare = SlayerModel(
+        bare = SlayerDataset(
             name="customers", sql_table="customers", data_source="mydb",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
             ],
         )
-        md = render_model_skeleton(model=bare)
+        md = render_dataset_skeleton(dataset=bare)
         lines = md.splitlines()
         # No description set → no description line; body starts at `Columns:`.
         assert lines[0] == "Columns: id, region"
@@ -957,13 +957,13 @@ class TestModelSkeletonHelpers:
 
     def test_render_model_skeleton_hidden_only_columns_render_none(self) -> None:
 
-        m = SlayerModel(
+        m = SlayerDataset(
             name="m", sql_table="m", data_source="mydb",
-            columns=[
-                Column(name="secret", sql="secret", type=DataType.TEXT, hidden=True),
+            fields=[
+                DatasetField(name="secret", sql="secret", datatype=DataType.TEXT, hidden=True),
             ],
         )
-        md = render_model_skeleton(model=m)
+        md = render_dataset_skeleton(dataset=m)
         assert "Columns: _(none)_" in md
         assert "secret" not in md
 
@@ -973,24 +973,24 @@ class TestModelSkeletonHelpers:
 
         # SlayerModel rejects unnamed measures at validation, so model_copy is
         # used to reach the defensive ``m.name is not None`` filter path.
-        base = SlayerModel(
+        base = SlayerDataset(
             name="m", sql_table="m", data_source="mydb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
-            measures=[ModelMeasure(name="tmp", formula="sum(id)")],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            metrics=[DatasetMetric(name="tmp", expression="sum(id)")],
         )
-        m = base.model_copy(update={"measures": [ModelMeasure(formula="max(id)")]})
-        md = render_model_skeleton(model=m)
+        m = base.model_copy(update={"metrics": [DatasetMetric(expression="max(id)")]})
+        md = render_dataset_skeleton(dataset=m)
         assert "Measures: _(none)_" in md
 
     def test_render_model_skeleton_truncates_description(self) -> None:
 
-        md = render_model_skeleton(model=_orders_like_model(), max_chars=4)
+        md = render_dataset_skeleton(dataset=_orders_like_model(), max_chars=4)
         assert "One row per placed order." not in md
         assert "Columns: " in md
 
     def test_model_skeleton_fields_shape(self) -> None:
 
-        fields = model_skeleton_fields(model=_orders_like_model())
+        fields = dataset_skeleton_fields(dataset=_orders_like_model())
         assert fields["name"] == "orders"
         assert fields["canonical_id"] == "mydb.orders"
         assert fields["description"] == "One row per placed order."
@@ -1001,56 +1001,56 @@ class TestModelSkeletonHelpers:
 
     def test_model_skeleton_fields_excludes_hidden_columns(self) -> None:
 
-        m = SlayerModel(
+        m = SlayerDataset(
             name="m", sql_table="m", data_source="mydb",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="visible", sql="visible", type=DataType.TEXT),
-                Column(name="secret", sql="secret", type=DataType.TEXT, hidden=True),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="visible", sql="visible", datatype=DataType.TEXT),
+                DatasetField(name="secret", sql="secret", datatype=DataType.TEXT, hidden=True),
             ],
         )
-        assert model_skeleton_fields(model=m)["column_names"] == ["id", "visible"]
+        assert dataset_skeleton_fields(dataset=m)["column_names"] == ["id", "visible"]
 
     def test_model_skeleton_fields_excludes_unnamed_measures(self) -> None:
 
         # model_copy bypasses the SlayerModel "every measure must be named"
         # validator so we can prove the defensive filter in the helper.
-        base = SlayerModel(
+        base = SlayerDataset(
             name="m", sql_table="m", data_source="mydb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
-            measures=[ModelMeasure(name="named", formula="sum(id)")],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
+            metrics=[DatasetMetric(name="named", expression="sum(id)")],
         )
-        m = base.model_copy(update={"measures": [
-            ModelMeasure(name="named", formula="sum(id)"),
-            ModelMeasure(formula="max(id)"),  # unnamed
+        m = base.model_copy(update={"metrics": [
+            DatasetMetric(name="named", expression="sum(id)"),
+            DatasetMetric(expression="max(id)"),  # unnamed
         ]})
-        assert model_skeleton_fields(model=m)["measure_names"] == ["named"]
+        assert dataset_skeleton_fields(dataset=m)["measure_names"] == ["named"]
 
     def test_model_skeleton_fields_joins_sorted_deduped(self) -> None:
 
-        m = SlayerModel(
+        m = SlayerDataset(
             name="m", sql_table="m", data_source="mydb",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="z_id", sql="z_id", type=DataType.INT),
-                Column(name="a_id", sql="a_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="z_id", sql="z_id", datatype=DataType.INT),
+                DatasetField(name="a_id", sql="a_id", datatype=DataType.INT),
             ],
-            joins=[
-                ModelJoin(target_model="zebra", join_pairs=[("z_id", "id")]),
-                ModelJoin(target_model="apple", join_pairs=[("a_id", "id")]),
+            relationships=[
+                DatasetRelationship(to="zebra", join_pairs=[("z_id", "id")]),
+                DatasetRelationship(to="apple", join_pairs=[("a_id", "id")]),
             ],
         )
-        assert model_skeleton_fields(model=m)["joins_to"] == ["apple", "zebra"]
+        assert dataset_skeleton_fields(dataset=m)["joins_to"] == ["apple", "zebra"]
 
     def test_canonical_id_has_no_leading_dot_without_data_source(self) -> None:
 
         # model_copy bypasses validators so we can simulate a not-yet-refined
         # (empty data_source) model and prove the guard.
         m = _orders_like_model().model_copy(update={"data_source": ""})
-        assert model_skeleton_fields(model=m)["canonical_id"] == "orders"
+        assert dataset_skeleton_fields(dataset=m)["canonical_id"] == "orders"
 
     def test_model_render_module_does_not_import_slayer_mcp(self) -> None:
-        # The skeleton helpers live in slayer.inspect.model_render, which
+        # The skeleton helpers live in slayer.inspect.dataset_render, which
         # mcp/server.py imports — so the reverse would be a circular import.
         src = pathlib.Path(mr.__file__).read_text()
         tree = ast.parse(src)
@@ -1172,10 +1172,10 @@ class TestDatasourceCompactFalseSkeletons:
         assert orders["joins_to"] == ["customers"]
 
     async def test_hidden_model_excluded(self, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="hiddends", sql_table="hiddends", data_source="mydb",
             hidden=True,
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
         ))
         svc = InspectService(storage=storage)
         out = await svc.inspect(
@@ -1195,10 +1195,10 @@ class TestDatasourceCompactFalseSkeletons:
             name="emptyds", type="sqlite", database=":memory:",
             description="Empty one.",
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="onlyhidden", sql_table="onlyhidden", data_source="emptyds",
             hidden=True,
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
         ))
         svc = InspectService(storage=storage)
         outj = await svc.inspect(
@@ -1426,9 +1426,9 @@ class TestAmbiguousModelName:
         await storage.save_datasource(DatasourceConfig(
             name="otherdb", type="sqlite", database=":memory:",
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="otherdb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
         ))
         await storage.set_datasource_priority([])
 
@@ -1476,13 +1476,13 @@ class TestAmbiguousModelName:
         await storage.save_datasource(DatasourceConfig(
             name="otherdb", type="sqlite", database=":memory:",
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="shared", sql_table="shared", data_source="mydb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="shared", sql_table="shared", data_source="otherdb",
-            columns=[Column(name="id", sql="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
         ))
         await storage.set_datasource_priority([])  # no model-leg winner
         svc = InspectService(storage=storage)

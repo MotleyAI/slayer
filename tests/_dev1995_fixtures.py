@@ -99,8 +99,8 @@ def cells(resp, dim: str, measure: str) -> Dict[Any, Any]:
 async def materialise(engine: SlayerQueryEngine, *, name: str,
                       payload: Dict[str, Any]) -> Dict[str, Dict[Any, Any]]:
     """Save ``payload`` as a query-backed model; return ``{measure: {grain value: value}}``."""
-    model = await engine.create_model_from_query(q(payload), name)
-    grain = model.columns[0].name
+    model = await engine.create_dataset_from_query(q(payload), name)
+    grain = model.fields[0].name
     measures = [m["name"] for m in payload["measures"]]
     resp = await engine.execute(q({
         "source_model": name, "dimensions": [grain, *measures]}))

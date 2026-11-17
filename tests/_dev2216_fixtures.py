@@ -15,14 +15,14 @@ from typing import Any
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -51,37 +51,37 @@ DUP_COUNT_BY_STATUS = {"completed": 3, "pending": 1}
 FILTERED_SPEND_BY_STATUS = {"completed": 40.0, "pending": 20.0}
 
 
-def customers_model(*, keyed: bool = False, unique: bool = False) -> SlayerModel:
+def customers_model(*, keyed: bool = False, unique: bool = False) -> SlayerDataset:
     """``keyed`` declares ``id`` the primary key; ``unique`` declares it a standalone unique column."""
-    return SlayerModel(
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=keyed, unique=unique),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=keyed, unique=unique),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
         ],
         aggregations=[
-            Aggregation(name="wsum", formula="SUM({value} * {weight})",
+            Aggregation(name="wsum", expression="SUM({value} * {weight})",
                         params=[AggregationParam(name="weight", sql="spend")]),
         ],
     )
 
 
-def orders_model(*, cardinality: JoinCardinality | None = None) -> SlayerModel:
-    return SlayerModel(
+def orders_model(*, cardinality: RelationshipCardinality | None = None) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
                          cardinality=cardinality)],
     )
 
 
-def ossie_models(*, keyed: bool = False, unique: bool = False) -> list[SlayerModel]:
+def ossie_models(*, keyed: bool = False, unique: bool = False) -> list[SlayerDataset]:
     return [orders_model(), customers_model(keyed=keyed, unique=unique)]
 
 
@@ -115,7 +115,7 @@ def seed_with(dialect: str, stmts: Sequence[str]):
 @asynccontextmanager
 async def ossie_engine(
     dialect: str, *, request: pytest.FixtureRequest | None = None,
-    models: list[SlayerModel] | None = None, duplicate: bool = False,
+    models: list[SlayerDataset] | None = None, duplicate: bool = False,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """An engine over the Ossie data on ``dialect`` (``postgres`` needs ``request`` for ``postgresql_proc``)."""
     models = models if models is not None else ossie_models()
@@ -127,7 +127,7 @@ async def ossie_engine(
             storage = YAMLStorage(base_dir=str(request.getfixturevalue("tmp_path") / "store"))
             async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
                 for model in models:
-                    await storage.save_model(model, _validate=False)
+                    await storage.save_dataset(model, _validate=False)
                 yield engine
         return
     if dialect == "duckdb":
@@ -140,8 +140,8 @@ def query(**kw: Any) -> SlayerQuery:
     return SlayerQuery.model_validate(kw)
 
 
-def measure(formula: str, name: str) -> ModelMeasure:
-    return ModelMeasure(formula=formula, name=name)
+def measure(formula: str, name: str) -> DatasetMetric:
+    return DatasetMetric(expression=formula, name=name)
 
 
 def cells(resp: SlayerResponse, dim: str, value: str) -> dict:

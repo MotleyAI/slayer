@@ -13,21 +13,21 @@ from slayer.core.errors import (
     IllegalScopeReferenceError,
     IllegalWindowInFilterError,
     UnknownReferenceError,
-    UnresolvableDimensionJoinError,
+    UnresolvableDimensionRelationshipError,
 )
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     LiteralKey,
     Phase,
     ScalarCallKey,
     StarKey,
     TransformKey,
 )
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.scope import ModelScope, StageColumn, StageSchema
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.scope import DatasetScope, StageField, StageSchema
 from slayer.engine.binding import (
     bind_expr,
     bind_filter,
@@ -41,62 +41,62 @@ from slayer.core.syntax import Ref, parse_expr
 # ---------------------------------------------------------------------------
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="prod",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(
                 name="revenue_2",
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
                 sql="amount * 2",
             ),
         ],
-        joins=[
-            ModelJoin(
-                target_model="customers",
+        relationships=[
+            DatasetRelationship(
+                to="customers",
                 join_pairs=[["customer_id", "id"]],
             ),
         ],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         data_source="prod",
         sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="name", type=DataType.TEXT),
-            Column(
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(
                 name="revenue_doubled",
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
                 sql="revenue * 2",
             ),
         ],
-        joins=[
-            ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
         ],
     )
 
 
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions",
         data_source="prod",
         sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
 
@@ -104,13 +104,13 @@ def _regions() -> SlayerModel:
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=_orders(),
-        referenced_models=[_customers(), _regions()],
+        population=_orders(),
+        referenced_datasets=[_customers(), _regions()],
     )
 
 
-def _scope() -> ModelScope:
-    return ModelScope(source_model=_orders())
+def _scope() -> DatasetScope:
+    return DatasetScope(population=_orders())
 
 
 # ---------------------------------------------------------------------------
@@ -123,20 +123,20 @@ class TestRowRefs:
         bound = bind_expr(
             parse_expr("amount"), scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnKey(path=(), leaf="amount")
+        assert bound.value_key == FieldKey(path=(), leaf="amount")
 
     def test_dotted_one_hop(self):
         bound = bind_expr(
             parse_expr("customers.name"), scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnKey(path=("customers",), leaf="name")
+        assert bound.value_key == FieldKey(path=("customers",), leaf="name")
 
     def test_dotted_multi_hop(self):
         bound = bind_expr(
             parse_expr("customers.regions.name"),
             scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnKey(
+        assert bound.value_key == FieldKey(
             path=("customers", "regions"), leaf="name",
         )
 
@@ -144,8 +144,8 @@ class TestRowRefs:
         bound = bind_expr(
             parse_expr("revenue_2"), scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnSqlKey(
-            path=(), model="orders", column_name="revenue_2",
+        assert bound.value_key == FieldSqlKey(
+            path=(), dataset="orders", field_name="revenue_2",
         )
 
     def test_cross_model_derived_column_carries_path(self):
@@ -154,10 +154,10 @@ class TestRowRefs:
             parse_expr("customers.revenue_doubled"),
             scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnSqlKey(
+        assert bound.value_key == FieldSqlKey(
             path=("customers",),
-            model="customers",
-            column_name="revenue_doubled",
+            dataset="customers",
+            field_name="revenue_doubled",
         )
 
     def test_unknown_ref_raises(self):
@@ -174,7 +174,7 @@ class TestRowRefs:
         # DEV-1856: an unreachable short form is route-aware-rejected (was UnknownReferenceError).
         expr = parse_expr("warehouses.id")
         scope, bundle = _scope(), _bundle()
-        with pytest.raises(UnresolvableDimensionJoinError):
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             bind_expr(expr, scope=scope, bundle=bundle)
 
 
@@ -189,7 +189,7 @@ class TestSelfPrefixStripping:
         bound = bind_expr(
             parse_expr("orders.status"), scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnKey(path=(), leaf="status")
+        assert bound.value_key == FieldKey(path=(), leaf="status")
 
     def test_self_prefix_with_join_continues(self):
         # orders.customers.name → strip orders, then walk customers.
@@ -197,7 +197,7 @@ class TestSelfPrefixStripping:
             parse_expr("orders.customers.name"),
             scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnKey(
+        assert bound.value_key == FieldKey(
             path=("customers",), leaf="name",
         )
 
@@ -213,7 +213,7 @@ class TestAggregations:
             parse_expr("sum(amount)"), scope=_scope(), bundle=_bundle(),
         )
         assert bound.value_key == AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"), agg="sum",
+            source=FieldKey(path=(), leaf="amount"), agg="sum",
         )
 
     def test_star_count(self):
@@ -230,7 +230,7 @@ class TestAggregations:
             scope=_scope(), bundle=_bundle(),
         )
         assert bound.value_key == AggregateKey(
-            source=ColumnKey(path=("customers",), leaf="revenue"),
+            source=FieldKey(path=("customers",), leaf="revenue"),
             agg="sum",
         )
 
@@ -244,7 +244,7 @@ class TestAggregations:
         assert key.agg == "weighted_avg"
         # Kwargs canonicalised; weight=ColumnKey(...).
         assert dict(key.kwargs) == {
-            "weight": ColumnKey(path=(), leaf="customer_id"),
+            "weight": FieldKey(path=(), leaf="customer_id"),
         }
 
     def test_aggregation_phase_is_aggregate(self):
@@ -286,7 +286,7 @@ class TestComposite:
         key = bound.value_key
         assert isinstance(key, ArithmeticKey)
         assert key.op == "+"
-        assert key.operands[0] == ColumnKey(path=(), leaf="amount")
+        assert key.operands[0] == FieldKey(path=(), leaf="amount")
         assert key.operands[1] == LiteralKey(value=Decimal(1))
 
     def test_arithmetic_phase_max(self):
@@ -334,7 +334,7 @@ class TestComposite:
         assert isinstance(wrapped, ScalarCallKey)
         assert wrapped.name == "nullif"
         assert wrapped.args[0] == AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"), agg="max",
+            source=FieldKey(path=(), leaf="amount"), agg="max",
         )
         # An aggregate anywhere inside the scalar call makes the whole
         # expression aggregate-phase.
@@ -352,10 +352,10 @@ class TestComposite:
         wrapped, outside = key.operands
         assert isinstance(wrapped, ScalarCallKey)
         assert wrapped.args[0] == AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"), agg="sum",
+            source=FieldKey(path=(), leaf="amount"), agg="sum",
         )
         assert outside == AggregateKey(
-            source=ColumnKey(path=(), leaf="amount"), agg="avg",
+            source=FieldKey(path=(), leaf="amount"), agg="avg",
         )
 
 
@@ -372,7 +372,7 @@ class TestIllegalScopeRefs:
         bound = bind_expr(
             parse_expr("amount"), scope=_scope(), bundle=_bundle(),
         )
-        assert bound.value_key == ColumnKey(path=(), leaf="amount")
+        assert bound.value_key == FieldKey(path=(), leaf="amount")
 
 
 # ---------------------------------------------------------------------------
@@ -383,20 +383,20 @@ class TestIllegalScopeRefs:
 def _stage_schema_with_flat_names() -> StageSchema:
     return StageSchema(
         relation_name="stage1",
-        columns=[
-            StageColumn(
+        fields=[
+            StageField(
                 name="status", sql_alias="status", public_alias="status",
-                type=DataType.TEXT,
+                datatype=DataType.TEXT,
             ),
-            StageColumn(
+            StageField(
                 name="robot_details__modelseriesval",
                 sql_alias="robot_details__modelseriesval",
                 public_alias="robot_details.modelseriesval",
-                type=DataType.TEXT,
+                datatype=DataType.TEXT,
             ),
-            StageColumn(
+            StageField(
                 name="rev", sql_alias="rev", public_alias="rev",
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
             ),
         ],
     )
@@ -410,7 +410,7 @@ class TestStageSchemaScope:
         bound = bind_expr(
             parse_expr("status"), scope=scope, bundle=_bundle(),
         )
-        assert bound.value_key == ColumnKey(path=(), leaf="status")
+        assert bound.value_key == FieldKey(path=(), leaf="status")
 
     def test_dotted_ref_in_stage_schema_rejected(self):
         # DEV-1449: downstream stages see a flat schema — dotted refs
@@ -429,7 +429,7 @@ class TestStageSchemaScope:
         # column name via the Ref constructor.
         bound = bind_expr(Ref(name="robot_details__modelseriesval"),
                           scope=scope, bundle=_bundle())
-        assert bound.value_key == ColumnKey(
+        assert bound.value_key == FieldKey(
             path=(), leaf="robot_details__modelseriesval",
         )
 
@@ -482,7 +482,7 @@ class TestFilterBinder:
         )
         refs = set(bound.referenced_keys)
         assert any(
-            isinstance(k, ColumnKey) and k.leaf == "status" for k in refs
+            isinstance(k, FieldKey) and k.leaf == "status" for k in refs
         )
         assert any(isinstance(k, AggregateKey) for k in refs)
 
@@ -514,19 +514,19 @@ class TestWindowInFilter:
         # that column raises IllegalWindowInFilterError (DEV-1369: no
         # auto-promotion).
         model = _orders().model_copy(update={
-            "columns": list(_orders().columns) + [
-                Column(
+            "columns": list(_orders().fields) + [
+                DatasetField(
                     name="rolling_rank",
-                    type=DataType.INT,
+                    datatype=DataType.INT,
                     sql="RANK() OVER (PARTITION BY status ORDER BY amount)",
                 ),
             ],
         })
-        scope = ModelScope(source_model=model)
+        scope = DatasetScope(population=model)
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=model,
-            referenced_models=[_customers(), _regions()],
+            population=model,
+            referenced_datasets=[_customers(), _regions()],
         )
         expr = parse_expr("rolling_rank > 1")
         with pytest.raises(IllegalWindowInFilterError):
@@ -538,7 +538,7 @@ class TestNestedAggregateParamDimAliasMap:
         # dim_alias_map must thread into a nested aggregate param's partition_by.
         parsed = parse_expr(
             "weighted_avg(amount, weight=count(id, partition_by=my_dim))")
-        computed = ColumnKey(leaf="status")
+        computed = FieldKey(leaf="status")
         outer = bind_expr(
             parsed=parsed, scope=_scope(), bundle=_bundle(),
             dimension_alias_map={"my_dim": computed},

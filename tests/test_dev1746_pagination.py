@@ -11,8 +11,8 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.models import ModelMeasure
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
+from slayer.core.models import DatasetMetric
+from slayer.core.query import FieldRef, OrderItem, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 
@@ -47,10 +47,10 @@ def _plain_query(
 ) -> SlayerQuery:
     """Single-model aggregate — no isolation CTE, no hidden slot."""
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="sum(amount)", name="revenue")],
-        order=[OrderItem.model_validate({"column": "sum(amount)", "direction": "desc"})] if ordered else [],
+        population="orders",
+        dimensions=[FieldRef(name="status")],
+        metrics=[DatasetMetric(expression="sum(amount)", name="revenue")],
+        order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})] if ordered else [],
         limit=limit,
         offset=offset,
     )
@@ -61,10 +61,10 @@ def _outer_trim_query(
 ) -> SlayerQuery:
     """Ordering by a non-projected aggregate produces the outer-trim wrapper shape."""
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(formula="count(*)", name="n")],
-        order=[OrderItem.model_validate({"column": "sum(amount)", "direction": "desc"})] if ordered else [],
+        population="orders",
+        dimensions=[FieldRef(name="status")],
+        metrics=[DatasetMetric(expression="count(*)", name="n")],
+        order=[OrderItem.model_validate({"field": "sum(amount)", "direction": "desc"})] if ordered else [],
         limit=limit,
         offset=offset,
     )
@@ -75,11 +75,11 @@ def _combined_query(
 ) -> SlayerQuery:
     """Cross-model measure — the combined-SELECT path that appends raw text."""
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="customers.tier")],
-        measures=[ModelMeasure(formula="sum(customers.spend)", name="spend")],
+        population="orders",
+        dimensions=[FieldRef(name="customers.tier")],
+        metrics=[DatasetMetric(expression="sum(customers.spend)", name="spend")],
         order=(
-            [OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})]
+            [OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})]
             if ordered else []
         ),
         limit=limit,

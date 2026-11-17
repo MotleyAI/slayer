@@ -20,7 +20,7 @@ Spec rules pinned by ``tests/test_search_render.py``:
 * Hidden columns / hidden models are skipped at the *call site*; these
   helpers expect their input to already be filtered. The model renderer
   itself also filters hidden columns out of its CSV (see
-  ``render_model_text``'s ``visible_columns`` filter), so a hidden
+  ``render_dataset_text``'s ``visible_columns`` filter), so a hidden
   column will never appear in the indexed text of any entity.
 """
 
@@ -32,10 +32,10 @@ from pydantic import BaseModel
 
 from slayer.core.models import (
     Aggregation,
-    Column,
-    ModelMeasure,
-    SlayerModel,
-    column_type_text,
+    DatasetField,
+    DatasetMetric,
+    SlayerDataset,
+    field_type_text,
 )
 from slayer.memories.models import Memory
 
@@ -46,7 +46,7 @@ class RenderedEntity(BaseModel):
     every caller needs (corpus build, embedding refresh, named-entity
     surfacing). Single source of truth for "what counts as an indexable
     entity" — filter rules (hidden model -> empty list, hidden column
-    skipped, unnamed measure skipped) live in ``collect_model_entity_pairs``
+    skipped, unnamed measure skipped) live in ``collect_dataset_entity_pairs``
     and ``render_datasource_pair`` only.
 
     DEV-1549: ``description`` carries the entity's structured description
@@ -61,7 +61,7 @@ class RenderedEntity(BaseModel):
 
 
 def _named_children_csv(items: list[tuple[str, str]]) -> str:
-    """Render ``[("a", "column"), ("b", "column")]`` as ``"a (column), b (column)"``."""
+    """Render ``[("a", "field"), ("b", "field")]`` as ``"a (field), b (field)"``."""
     return ", ".join(f"{name} ({kind})" for name, kind in items)
 
 
@@ -73,7 +73,7 @@ def _named_children_csv(items: list[tuple[str, str]]) -> str:
 def render_datasource_text(
     *,
     name: str,
-    models: list[SlayerModel],
+    datasets: list[SlayerDataset],
     description: str | None = None,
 ) -> str:
     """Datasource doc: name + own description (when set) + named-child
@@ -90,11 +90,11 @@ def render_datasource_text(
     lines: list[str] = [f"Datasource: {name}"]
     if description:
         lines.append(f"Description: {description}")
-    visible = [m for m in models if not m.hidden]
+    visible = [m for m in datasets if not m.hidden]
     if visible:
         lines.append(
             "Models: " + _named_children_csv(
-                [(m.name, "model") for m in visible]
+                [(m.name, "dataset") for m in visible]
             )
         )
     return "\n".join(lines)
@@ -103,7 +103,7 @@ def render_datasource_text(
 def render_datasource_pair(
     *,
     name: str,
-    models: list[SlayerModel],
+    datasets: list[SlayerDataset],
     description: str | None = None,
 ) -> RenderedEntity:
     """Unified dispatch (DEV-1513) for the datasource doc. Used by both
@@ -119,7 +119,7 @@ def render_datasource_pair(
         canonical_id=name,
         kind="datasource",
         text=render_datasource_text(
-            name=name, models=models, description=description,
+            name=name, datasets=datasets, description=description,
         ),
         description=description,
     )
@@ -130,64 +130,64 @@ def render_datasource_pair(
 # ---------------------------------------------------------------------------
 
 
-def render_model_text(*, model: SlayerModel) -> str:
+def render_dataset_text(*, dataset: SlayerDataset) -> str:
     """Model doc: own metadata, non-named children in full, named children
     by name + kind only."""
     lines: list[str] = [
-        f"Model: {model.data_source}.{model.name}",
+        f"Model: {dataset.data_source}.{dataset.name}",
     ]
-    if model.description:
-        lines.append(f"Description: {model.description}")
-    if model.sql_table:
-        lines.append(f"sql_table: {model.sql_table}")
-    if model.sql:
+    if dataset.description:
+        lines.append(f"Description: {dataset.description}")
+    if dataset.sql_table:
+        lines.append(f"sql_table: {dataset.sql_table}")
+    if dataset.sql:
         # Non-named child: the SQL block in full.
-        lines.append(f"SQL block: {model.sql}")
-    if model.source_queries:
+        lines.append(f"SQL block: {dataset.sql}")
+    if dataset.source_queries:
         # Non-named child: stage names so a search for the stage name
         # surfaces the parent.
         stage_names = [
-            getattr(s, "name", None) or "" for s in model.source_queries
+            getattr(s, "name", None) or "" for s in dataset.source_queries
         ]
         lines.append(
             "Backing query stages: "
             + ", ".join(n for n in stage_names if n)
         )
-    if model.default_time_dimension:
-        lines.append(f"default_time_dimension: {model.default_time_dimension}")
-    if model.filters:
+    if dataset.default_time_dimension:
+        lines.append(f"default_time_dimension: {dataset.default_time_dimension}")
+    if dataset.filters:
         # Non-named children: include each filter expression in full.
-        lines.append("Filters: " + "; ".join(model.filters))
-    visible_columns = [c for c in model.columns if not c.hidden]
+        lines.append("Filters: " + "; ".join(dataset.filters))
+    visible_columns = [c for c in dataset.fields if not c.hidden]
     if visible_columns:
         lines.append(
             "Columns: " + _named_children_csv(
-                [(c.name, "column") for c in visible_columns]
+                [(c.name, "field") for c in visible_columns]
             )
         )
-    if model.measures:
+    if dataset.metrics:
         lines.append(
             "Measures: " + _named_children_csv(
-                [(m.name or "", "measure") for m in model.measures if m.name]
+                [(m.name or "", "metric") for m in dataset.metrics if m.name]
             )
         )
-    if model.aggregations:
+    if dataset.aggregations:
         lines.append(
             "Aggregations: " + _named_children_csv(
-                [(a.name, "aggregation") for a in model.aggregations]
+                [(a.name, "aggregation") for a in dataset.aggregations]
             )
         )
-    if model.joins:
+    if dataset.relationships:
         # Named-child mentions (target model name + kind).
         lines.append(
             "Joins: " + _named_children_csv(
-                [(j.target_model, "model") for j in model.joins]
+                [(j.to, "dataset") for j in dataset.relationships]
             )
         )
         # Non-named-child: the join_pairs in full.
-        for j in model.joins:
+        for j in dataset.relationships:
             pairs = "; ".join(f"{src}={tgt}" for src, tgt in j.join_pairs)
-            lines.append(f"Join pairs to {j.target_model}: {pairs}")
+            lines.append(f"Join pairs to {j.to}: {pairs}")
     return "\n".join(lines)
 
 
@@ -196,38 +196,38 @@ def render_model_text(*, model: SlayerModel) -> str:
 # ---------------------------------------------------------------------------
 
 
-def render_column_text(*, model: SlayerModel, column: Column) -> str:
+def render_field_text(*, dataset: SlayerDataset, field: DatasetField) -> str:
     """Column doc: parent qualifier + per-field metadata + cached sample."""
     lines: list[str] = [
-        f"Column: {model.data_source}.{model.name}.{column.name}",
-        f"Type: {column_type_text(column)}",
+        f"Column: {dataset.data_source}.{dataset.name}.{field.name}",
+        f"Type: {field_type_text(field)}",
     ]
-    if column.description:
-        lines.append(f"Description: {column.description}")
-    if column.label:
-        lines.append(f"Label: {column.label}")
-    if column.format:
-        lines.append(f"Format: {column.format}")
-    if column.allowed_aggregations:
-        lines.append("Allowed aggregations: " + ", ".join(column.allowed_aggregations))
-    if column.sql:
-        lines.append(f"SQL: {column.sql}")
-    if column.filter:
-        lines.append(f"Filter: {column.filter}")
+    if field.description:
+        lines.append(f"Description: {field.description}")
+    if field.label:
+        lines.append(f"Label: {field.label}")
+    if field.format:
+        lines.append(f"Format: {field.format}")
+    if field.allowed_aggregations:
+        lines.append("Allowed aggregations: " + ", ".join(field.allowed_aggregations))
+    if field.sql:
+        lines.append(f"SQL: {field.sql}")
+    if field.filter:
+        lines.append(f"Filter: {field.filter}")
     # DEV-1516: prefer the structured ``sampled_values`` list (full top-50)
     # over the 20-truncated ``sampled`` text. ``is None`` gates the fallback
     # so an authoritative empty list (``[]``) does not re-surface a stale
     # ``sampled`` text; an empty list simply skips the line (avoids a bare
     # ``Sample values: `` trailer in the indexed text).
-    if column.sampled_values is not None:
-        if column.sampled_values:
+    if field.sampled_values is not None:
+        if field.sampled_values:
             # JSON-encode the list to preserve values that contain commas
             # (e.g. ``"R$ 1,000–3,000"``) — comma-joining would re-introduce
             # the exact ambiguity that the structured ``sampled_values`` field
             # was meant to solve.
             lines.append(
                 "Sample values: "
-                + json.dumps(column.sampled_values, ensure_ascii=False)
+                + json.dumps(field.sampled_values, ensure_ascii=False)
             )
             # Overflow signal: render true cardinality on a follow-up line
             # only when STRICTLY greater than the values we returned. Equal
@@ -236,16 +236,16 @@ def render_column_text(*, model: SlayerModel, column: Column) -> str:
             # ``"... (N distinct)"`` suffix in ``sampled`` text does not get
             # duplicated by an extra line.
             if (
-                column.distinct_count is not None
-                and column.distinct_count > len(column.sampled_values)
+                field.distinct_count is not None
+                and field.distinct_count > len(field.sampled_values)
             ):
-                lines.append(f"Distinct count: {column.distinct_count}")
-    elif column.sampled:
+                lines.append(f"Distinct count: {field.distinct_count}")
+    elif field.sampled:
         # Fallback for numeric/temporal columns (``sampled`` is a min/max
         # range, not a list) and pre-DEV-1480 legacy data where the
         # structured field was never populated.
-        lines.append(f"Sample values: {column.sampled}")
-    if column.primary_key:
+        lines.append(f"Sample values: {field.sampled}")
+    if field.primary_key:
         lines.append("Primary key: yes")
     return "\n".join(lines)
 
@@ -255,16 +255,16 @@ def render_column_text(*, model: SlayerModel, column: Column) -> str:
 # ---------------------------------------------------------------------------
 
 
-def render_measure_text(*, model: SlayerModel, measure: ModelMeasure) -> str:
-    name = measure.name or ""
+def render_metric_text(*, dataset: SlayerDataset, metric: DatasetMetric) -> str:
+    name = metric.name or ""
     lines: list[str] = [
-        f"Measure: {model.data_source}.{model.name}.{name}",
-        f"Formula: {measure.formula}",
+        f"Measure: {dataset.data_source}.{dataset.name}.{name}",
+        f"Formula: {metric.expression}",
     ]
-    if measure.description:
-        lines.append(f"Description: {measure.description}")
-    if measure.label:
-        lines.append(f"Label: {measure.label}")
+    if metric.description:
+        lines.append(f"Description: {metric.description}")
+    if metric.label:
+        lines.append(f"Label: {metric.label}")
     return "\n".join(lines)
 
 
@@ -273,12 +273,12 @@ def render_measure_text(*, model: SlayerModel, measure: ModelMeasure) -> str:
 # ---------------------------------------------------------------------------
 
 
-def render_aggregation_text(*, model: SlayerModel, aggregation: Aggregation) -> str:
+def render_aggregation_text(*, dataset: SlayerDataset, aggregation: Aggregation) -> str:
     lines: list[str] = [
-        f"Aggregation: {model.data_source}.{model.name}.{aggregation.name}",
+        f"Aggregation: {dataset.data_source}.{dataset.name}.{aggregation.name}",
     ]
-    if aggregation.formula:
-        lines.append(f"Formula: {aggregation.formula}")
+    if aggregation.expression:
+        lines.append(f"Formula: {aggregation.expression}")
     if aggregation.description:
         lines.append(f"Description: {aggregation.description}")
     if aggregation.params:
@@ -352,8 +352,8 @@ def render_memory_text_for_embedding(*, memory: Memory) -> str:
 # ---------------------------------------------------------------------------
 
 
-def collect_model_entity_pairs(
-    *, model: SlayerModel, include_hidden: bool = False
+def collect_dataset_entity_pairs(
+    *, dataset: SlayerDataset, include_hidden: bool = False
 ) -> list[RenderedEntity]:
     """Walk a model's subtree (model + columns + named measures
     + custom aggregations) into the unified ``RenderedEntity`` shape.
@@ -376,38 +376,38 @@ def collect_model_entity_pairs(
     helpers are still the single source of truth for *what* each kind's
     text looks like; this helper is the single source of truth for
     *which* entities exist and at which canonical id."""
-    if model.hidden and not include_hidden:
+    if dataset.hidden and not include_hidden:
         return []
-    qualifier = f"{model.data_source}.{model.name}"
+    qualifier = f"{dataset.data_source}.{dataset.name}"
     out: list[RenderedEntity] = [RenderedEntity(
         canonical_id=qualifier,
-        kind="model",
-        text=render_model_text(model=model),
-        description=model.description,
+        kind="dataset",
+        text=render_dataset_text(dataset=dataset),
+        description=dataset.description,
     )]
-    for column in model.columns:
+    for column in dataset.fields:
         if column.hidden and not include_hidden:
             continue
         out.append(RenderedEntity(
             canonical_id=f"{qualifier}.{column.name}",
-            kind="column",
-            text=render_column_text(model=model, column=column),
+            kind="field",
+            text=render_field_text(dataset=dataset, field=column),
             description=column.description,
         ))
-    for measure in model.measures:
+    for measure in dataset.metrics:
         if measure.name is None:
             continue
         out.append(RenderedEntity(
             canonical_id=f"{qualifier}.{measure.name}",
-            kind="measure",
-            text=render_measure_text(model=model, measure=measure),
+            kind="metric",
+            text=render_metric_text(dataset=dataset, metric=measure),
             description=measure.description,
         ))
-    for aggregation in model.aggregations:
+    for aggregation in dataset.aggregations:
         out.append(RenderedEntity(
             canonical_id=f"{qualifier}.{aggregation.name}",
             kind="aggregation",
-            text=render_aggregation_text(model=model, aggregation=aggregation),
+            text=render_aggregation_text(dataset=dataset, aggregation=aggregation),
             description=aggregation.description,
         ))
     return out

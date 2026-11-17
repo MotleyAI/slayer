@@ -59,7 +59,7 @@ A drop on `M.X` cascades through:
 1. **Derived columns on M.** Any `Column.sql` on `M` that references `X`
    (via sqlglot AST walk) is dropped, transitively across chains of
    derived columns.
-2. **Measures on M.** Any `ModelMeasure.formula` on `M` referencing `X`
+2. **Measures on M.** Any `ModelMeasure.expression` on `M` referencing `X`
    or any other dropped measure on `M` is dropped.
 3. **Joins.** Any join on `M` with `X` as a local FK column drops; any
    join from `K` whose `target_model == M` and `foreign_column == X`

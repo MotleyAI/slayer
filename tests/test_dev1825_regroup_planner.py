@@ -12,10 +12,10 @@ import re
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.keys import AggregateKey, ColumnKey
+from slayer.core.keys import AggregateKey, FieldKey
 from slayer.core.keys import Grain
-from slayer.core.models import Column
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.models import DatasetField
+from slayer.core.query import DatasetMetric, SlayerQuery
 from slayer.engine.compile.regroup import (
     REGROUP_LEAF_PREFIX,
     RegroupPlaceholderRegistry,
@@ -35,8 +35,8 @@ def _q(**kw) -> SlayerQuery:
 async def _gen_with_reserved_column(query: SlayerQuery) -> str:
     """``gen`` over an ``orders`` carrying a stored ``__regroup__x`` column."""
     base, *rest = dev1740_models()
-    model = base.model_copy(update={"columns": [
-        *base.columns, Column(name="__regroup__x", sql="amount", type=DataType.DOUBLE),
+    model = base.model_copy(update={"fields": [
+        *base.fields, DatasetField(name="__regroup__x", sql="amount", datatype=DataType.DOUBLE),
     ]})
     return await _engine_generate(
         query=query, model=model, extra_models=rest, dialect="duckdb", validate=False,
@@ -60,14 +60,14 @@ def _consumer_body(sql: str) -> str:
 # --------------------------------------------------------------------------- #
 class TestPlaceholderRegistry:
     def _keys(self):
-        source = ColumnKey(path=(), leaf="amount")
+        source = FieldKey(path=(), leaf="amount")
         plain = AggregateKey(
             source=source, agg="sum",
-            partition_keys=Grain.of({ColumnKey(path=(), leaf="city")}),
+            partition_keys=Grain.of({FieldKey(path=(), leaf="city")}),
         )
         other = AggregateKey(
             source=source, agg="sum",
-            partition_keys=Grain.of({ColumnKey(path=(), leaf="region")}),
+            partition_keys=Grain.of({FieldKey(path=(), leaf="region")}),
         )
         return plain, other
 
@@ -106,7 +106,7 @@ class TestMultiOutputProducer:
                 "AND count(amount, partition_by=city) > 1 THEN 1 ELSE 0 END")
         sql = await gen(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert _count_isolated_ctes(sql) == 1
 
@@ -118,7 +118,7 @@ class TestMultiOutputProducer:
                 {"expression": "CASE WHEN count(amount, partition_by=city) > 1 "
                                "THEN 1 ELSE 0 END", "name": "band_n"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert _count_isolated_ctes(sql) == 1
 
@@ -131,7 +131,7 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["not (band == 1)"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert "5000" not in cm_cte_bodies(sql)
 
@@ -140,7 +140,7 @@ class TestFilterClassifier:
         one-string form renders identically to the separate-filters form."""
         base_kwargs = dict(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         anded = await gen(_q(
             filters=["band == 1 and status == 'ok'"], **base_kwargs,
@@ -156,7 +156,7 @@ class TestFilterClassifier:
         query = _q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["band == 1 or status == 'ok'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         sql = await gen(query)
         assert "status" in sql
@@ -165,7 +165,7 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["coalesce(city, 'x') != 'Lyon'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert "Lyon" in cm_cte_bodies(sql)
 
@@ -176,7 +176,7 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["status == 'ok'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert "status" in cm_cte_bodies(sql)
         assert "status" in _consumer_body(sql)
@@ -187,7 +187,7 @@ class TestFilterClassifier:
         sql = await gen(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["sum(amount) > 0"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert "> 0" not in cm_cte_bodies(sql)
         assert "HAVING" in _consumer_body(sql).upper()
@@ -207,7 +207,7 @@ class TestDiscoveryGuards:
                 {"expression": "CASE WHEN sum(customers.spend, partition_by=city) "
                                "> 100 THEN 1 ELSE 0 END", "name": "band"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
             to_many_handling="broadcast",
         )
         with pytest.raises(ValueError, match=r"attributable from customers"):
@@ -216,7 +216,7 @@ class TestDiscoveryGuards:
     async def test_reserved_prefix_column_rejected_when_regroup_active(self) -> None:
         q = _q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         with pytest.raises(ValueError, match=r"__regroup__"):
             await _gen_with_reserved_column(q)
@@ -224,7 +224,7 @@ class TestDiscoveryGuards:
     async def test_reserved_prefix_column_fine_without_regroup(self) -> None:
         q = _q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         sql = await _gen_with_reserved_column(q)
         assert "SELECT" in sql

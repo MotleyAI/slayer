@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from slayer.api.server import QueryRequest, create_app
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
@@ -108,7 +108,7 @@ class TestStoredQuerySurface:
     async def test_stored_query_document_accepts_string_entry(self, storage: StorageBackend) -> None:
         """A query-backed model whose stored document carries the string form
         loads and runs identically to the explicit form."""
-        model = SlayerModel.model_validate({
+        model = SlayerDataset.model_validate({
             "name": "monthly_rev", "data_source": "test",
             "source_queries": [{
                 "source_model": "orders",
@@ -116,7 +116,7 @@ class TestStoredQuerySurface:
                 "measures": [{"formula": "sum(amount)"}],
             }],
         })
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
         resp = await engine.execute("monthly_rev")
         assert {
@@ -138,9 +138,9 @@ class TestRestSurface:
 
     def test_query_request_annotation_accepts_strings(self) -> None:
         req = QueryRequest.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "time_dimensions": ["date_trunc('month', created_at)"],
-            "measures": [{"formula": "sum(amount)"}],
+            "metrics": [{"formula": "sum(amount)"}],
         })
         query = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert query.time_dimensions == [

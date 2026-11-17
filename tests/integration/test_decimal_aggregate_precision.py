@@ -5,7 +5,7 @@ from decimal import Decimal
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, ModelJoin
+from slayer.core.models import DatasourceConfig, DatasetRelationship
 from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -29,16 +29,16 @@ async def decimal_engine(tmp_path):
     engine = SlayerQueryEngine(storage=storage)
     models = await ingestion.ingest_datasource_async(datasource, client=engine.client_for(datasource))
     model = next(model for model in models if model.name == "orders")
-    amount = model.get_column("amount")
+    amount = model.get_field("amount")
     assert amount is not None
-    assert amount.type is DataType.DOUBLE
+    assert amount.datatype is DataType.DOUBLE
     assert amount.db_type == "DECIMAL(18,2)"
 
     await storage.save_datasource(datasource)
-    customers = model.model_copy(update={"name": "customers", "joins": []})
-    model.joins = [ModelJoin(target_model="customers", join_pairs=[["id", "id"]])]
-    await storage.save_model(model)
-    await storage.save_model(customers)
+    customers = model.model_copy(update={"name": "customers", "relationships": []})
+    model.relationships = [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]
+    await storage.save_dataset(model)
+    await storage.save_dataset(customers)
     return engine
 
 

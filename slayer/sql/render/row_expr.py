@@ -8,7 +8,7 @@ expression source without an import cycle; ``value_expr`` re-imports them.
 
 :func:`render_row_expression` renders an aggregation-free row-level tree
 (an ``AggregateKey.source`` expression), resolving column-like leaves through
-a caller-supplied ``resolve_column`` callback — the one seam that differs
+a caller-supplied ``resolve_field`` callback — the one seam that differs
 between the ScopeFrame and the generator's spec-builder call sites.
 """
 
@@ -31,10 +31,10 @@ from slayer.core.keys import (
     ArithmeticKey,
     ArrayLiteralKey,
     CastKey,
-    ColumnElementFn,
-    ColumnKey,
-    ColumnSqlKey,
-    ColumnTypeFn,
+    FieldElementFn,
+    FieldKey,
+    FieldSqlKey,
+    FieldTypeFn,
     InKey,
     ListSetKey,
     LiteralKey,
@@ -391,29 +391,29 @@ def in_domain(name: str, args: List[Expression], *, dialect: SqlDialect) -> List
 
 
 def _shared_element(
-    key: ScalarCallKey, *, column_type: ColumnTypeFn, column_element: ColumnElementFn,
+    key: ScalarCallKey, *, field_type: FieldTypeFn, field_element: FieldElementFn,
 ) -> Optional[DataType]:
     """The one element type of ``contains_any`` / ``contains_all``'s two lists, or ``length``'s list, when known."""
     if key.name not in LIST_ONLY_FUNCTIONS and key.name != "length":
         return None
-    types = {list_element_type(a, column_type=column_type, column_element=column_element) for a in key.args} - {None}
+    types = {list_element_type(a, field_type=field_type, field_element=field_element) for a in key.args} - {None}
     return types.pop() if len(types) == 1 else None
 
 
 def render_scalar_key(
-    *, key: ScalarCallKey, args: List[Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
-    part: Callable[[Any], Expression], column_element: Optional[ColumnElementFn] = None,
+    *, key: ScalarCallKey, args: List[Expression], dialect: SqlDialect, field_type: FieldTypeFn,
+    part: Callable[[Any], Expression], field_element: Optional[FieldElementFn] = None,
 ) -> Expression:
     """A non-date scalar key: ``mod`` by its operand types, else ``render_scalar_call``."""
     if key.name == "mod":
-        return render_modulo(key=key, operands=args, dialect=dialect, column_type=column_type)
-    if is_list_fn(key.name) and is_list_call(key, column_type=column_type):
-        numbers = numbers_read_list(key, column_type=column_type)
+        return render_modulo(key=key, operands=args, dialect=dialect, field_type=field_type)
+    if is_list_fn(key.name) and is_list_call(key, field_type=field_type):
+        numbers = numbers_read_list(key, field_type=field_type)
         if numbers is not None:
             each = DataType.TEXT if numbers.try_ else DataType.DOUBLE
             return dialect.rewrite_target_ast(
                 dialect.build_list_call(key.name, (args[0], part(numbers.source)), each=each))
-        element = _shared_element(key, column_type=column_type, column_element=column_element or _no_element)
+        element = _shared_element(key, field_type=field_type, field_element=field_element or _no_element)
         return dialect.rewrite_target_ast(dialect.build_list_call(key.name, tuple(args), element=element))
     return render_scalar_call(name=key.name, args=args, dialect=dialect)
 
@@ -427,13 +427,13 @@ def render_array_literal(*, key: ArrayLiteralKey, dialect: SqlDialect) -> Expres
 
 
 def render_list_set(
-    *, key: ListSetKey, part: Callable[[Any], Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
-    column_element: Optional[ColumnElementFn],
+    *, key: ListSetKey, part: Callable[[Any], Expression], dialect: SqlDialect, field_type: FieldTypeFn,
+    field_element: Optional[FieldElementFn],
 ) -> Expression:
     """The element set through the dialect; ``[]``'s is itself, typed by the list it meets."""
     if isinstance(key.source, ArrayLiteralKey) and not key.source.values:
         return dialect.empty_list()
-    element = list_element_type(key.source, column_type=column_type, column_element=column_element or _no_element)
+    element = list_element_type(key.source, field_type=field_type, field_element=field_element or _no_element)
     return dialect.build_list_set(part(key.source), element)
 
 
@@ -453,14 +453,14 @@ DATE_FUNCTIONS = frozenset({*DATE_OPERAND_ARGS, *CLOCK_FUNCTIONS})
 
 
 def render_date_call(
-    *, key: ScalarCallKey, args: List[Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
+    *, key: ScalarCallKey, args: List[Expression], dialect: SqlDialect, field_type: FieldTypeFn,
 ) -> Expression:
     """Render a date-function call through the dialect's typed hooks; ``args`` are the rendered arguments."""
     if key.name == "now":
         return dialect.build_current_timestamp()
     if key.name == "current_date":
         return dialect.build_current_date()
-    types = {pos: _operand_type(key, pos, column_type=column_type) for pos in DATE_OPERAND_ARGS[key.name]}
+    types = {pos: _operand_type(key, pos, field_type=field_type) for pos in DATE_OPERAND_ARGS[key.name]}
     if key.name == "date_part":
         return dialect.build_date_part(part=DatePart(unit_word(key.args[0])), expr=args[1], operand=types[1])
     if key.name == "date_diff":
@@ -485,8 +485,8 @@ def render_date_call(
     )
 
 
-def _operand_type(key: ScalarCallKey, pos: int, *, column_type: ColumnTypeFn) -> DataType:
-    dt = temporal_type(key.args[pos], column_type=column_type)
+def _operand_type(key: ScalarCallKey, pos: int, *, field_type: FieldTypeFn) -> DataType:
+    dt = temporal_type(key.args[pos], field_type=field_type)
     if dt is None:
         # The checker rejects these at bind; reaching render is a wiring bug.
         raise RuntimeError(f"{key.name}() operand {pos} has no DATE/TIMESTAMP type at render.")
@@ -504,24 +504,24 @@ def int_value(value: Expression) -> Expression:
 
 
 def numeric_parts(
-    *, key: Any, parts: List[Expression], column_type: ColumnTypeFn,
+    *, key: Any, parts: List[Expression], field_type: FieldTypeFn,
 ) -> List[Expression]:
     """``key``'s rendered children with each boolean in a numeric position read as its integer."""
-    positions = numeric_boolean_positions(key, column_type=column_type)
+    positions = numeric_boolean_positions(key, field_type=field_type)
     return [int_value(p) if i in positions else p for i, p in enumerate(parts)]
 
 
 def iif_case_chain(
-    *, key: ScalarCallKey, part: Callable[[Any], Expression], column_type: ColumnTypeFn,
+    *, key: ScalarCallKey, part: Callable[[Any], Expression], field_type: FieldTypeFn,
 ) -> exp.Case:
     """Render an ``iif`` chain as one multi-WHEN CASE, flattening nested ``iif``
     in the otherwise position; ``part`` renders each argument. A boolean branch of a
     numeric chain reads as its integer."""
-    mixed = bool(numeric_boolean_positions(key, column_type=column_type))
+    mixed = bool(numeric_boolean_positions(key, field_type=field_type))
 
     def value(arg: Any) -> Expression:
         rendered = part(arg)
-        return int_value(rendered) if mixed and boolean_valued(arg, column_type=column_type) else rendered
+        return int_value(rendered) if mixed and boolean_valued(arg, field_type=field_type) else rendered
 
     ifs: List[exp.If] = []
     node: Any = key
@@ -535,7 +535,7 @@ def iif_case_chain(
     return exp.Case(ifs=ifs, default=value(node))
 
 
-def render_in_predicate(*, key: InKey, column: Expression, dialect: SqlDialect) -> Expression:
+def render_in_predicate(*, key: InKey, field: Expression, dialect: SqlDialect) -> Expression:
     """``column [NOT] IN (…)`` over ``key``'s literals."""
     # Backstop for the bind-time rule: a NULL member breaks IN, and ``NOT IN`` with one matches no rows.
     if any(v.value is None for v in key.values):
@@ -544,7 +544,7 @@ def render_in_predicate(*, key: InKey, column: Expression, dialect: SqlDialect) 
             "matches no rows. Test for null separately with IS NULL / "
             "IS NOT NULL.",
         )
-    node = exp.In(this=column, expressions=[_literal(v.value, dialect=dialect) for v in key.values])
+    node = exp.In(this=field, expressions=[_literal(v.value, dialect=dialect) for v in key.values])
     return exp.Not(this=node) if key.negated else node
 
 
@@ -552,14 +552,14 @@ def render_row_expression(
     *,
     key: Any,
     dialect: SqlDialect,
-    resolve_column: Callable[[Any], Expression],
-    column_type: ColumnTypeFn,
-    column_element: Optional[ColumnElementFn] = None,
+    resolve_field: Callable[[Any], Expression],
+    field_type: FieldTypeFn,
+    field_element: Optional[FieldElementFn] = None,
 ) -> Expression:
     """Render an aggregation-free row-level ``ValueKey`` tree (an
     ``AggregateKey``'s expression source) to sqlglot AST.
 
-    Column-like leaves resolve through ``resolve_column``; composites reuse the
+    Column-like leaves resolve through ``resolve_field``; composites reuse the
     shared composers so the expression renders exactly like the same tree in
     any other row-level position.
     """
@@ -568,39 +568,39 @@ def render_row_expression(
         # true scalars render as literals.
         if isinstance(a, _FrozenKey):
             return render_row_expression(
-                key=a, dialect=dialect, resolve_column=resolve_column, column_type=column_type,
-                column_element=column_element,
+                key=a, dialect=dialect, resolve_field=resolve_field, field_type=field_type,
+                field_element=field_element,
             )
         return _literal(a, dialect=dialect)
 
-    if isinstance(key, (ColumnKey, ColumnSqlKey)):
-        return resolve_column(key)
+    if isinstance(key, (FieldKey, FieldSqlKey)):
+        return resolve_field(key)
     if isinstance(key, LiteralKey):
         return _literal(key.value, dialect=dialect)
     if isinstance(key, ArithmeticKey):
-        return _row_arithmetic(key=key, part=_part, dialect=dialect, column_type=column_type)
+        return _row_arithmetic(key=key, part=_part, dialect=dialect, field_type=field_type)
     if isinstance(key, TimeTruncKey):
         return dialect.build_bucket(col_expr=_part(key.source), granularity=key.granularity)
     if isinstance(key, ScalarCallKey):
-        return _row_scalar_call(key=key, part=_part, dialect=dialect, column_type=column_type,
-                                column_element=column_element)
+        return _row_scalar_call(key=key, part=_part, dialect=dialect, field_type=field_type,
+                                field_element=field_element)
     if isinstance(key, InKey):
-        (column,) = numeric_parts(key=key, parts=[_part(key.column)], column_type=column_type)
-        return render_in_predicate(key=key, column=column, dialect=dialect)
+        (column,) = numeric_parts(key=key, parts=[_part(key.field)], field_type=field_type)
+        return render_in_predicate(key=key, field=column, dialect=dialect)
     if isinstance(key, CastKey):
         return render_cast(key=key, part=_part, dialect=dialect)
     if isinstance(key, ArrayLiteralKey):
         return render_array_literal(key=key, dialect=dialect)
     if isinstance(key, ListSetKey):
-        return render_list_set(key=key, part=_part, dialect=dialect, column_type=column_type,
-                               column_element=column_element)
+        return render_list_set(key=key, part=_part, dialect=dialect, field_type=field_type,
+                               field_element=field_element)
     raise NotImplementedError(
         f"Row-level expression cannot contain {type(key).__name__}.",
     )
 
 
 def _row_arithmetic(
-    *, key: ArithmeticKey, part: Callable[[Any], Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
+    *, key: ArithmeticKey, part: Callable[[Any], Expression], dialect: SqlDialect, field_type: FieldTypeFn,
 ) -> Expression:
     comparison = temporal_comparison(key)
     if comparison is not None:
@@ -609,29 +609,29 @@ def _row_arithmetic(
     rendered = list_keyed(key.operands, [part(o) for o in key.operands], dialect=dialect)
     if key.op in NULL_SAFE_COMPARISON_OPS:
         return render_null_safe(op=key.op, operands=rendered, dialect=dialect)
-    operands = numeric_parts(key=key, parts=rendered, column_type=column_type)
+    operands = numeric_parts(key=key, parts=rendered, field_type=field_type)
     if key.op == "%":
-        return render_modulo(key=key, operands=operands, dialect=dialect, column_type=column_type)
+        return render_modulo(key=key, operands=operands, dialect=dialect, field_type=field_type)
     return render_arithmetic(op=key.op.lower(), operands=operands)
 
 
 def render_modulo(
-    *, key: ArithmeticKey | ScalarCallKey, operands: List[Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
+    *, key: ArithmeticKey | ScalarCallKey, operands: List[Expression], dialect: SqlDialect, field_type: FieldTypeFn,
 ) -> Expression:
     """``%`` / ``mod`` through the dialect, which knows whether its native ``%`` takes non-integers."""
     children = key.operands if isinstance(key, ArithmeticKey) else key.args
-    integer = all(integer_valued(c, column_type=column_type) for c in children)
+    integer = all(integer_valued(c, field_type=field_type) for c in children)
     return dialect.build_modulo(operands[0], operands[1], integer)
 
 
 def _row_scalar_call(
-    *, key: ScalarCallKey, part: Callable[[Any], Expression], dialect: SqlDialect, column_type: ColumnTypeFn,
-    column_element: Optional[ColumnElementFn],
+    *, key: ScalarCallKey, part: Callable[[Any], Expression], dialect: SqlDialect, field_type: FieldTypeFn,
+    field_element: Optional[FieldElementFn],
 ) -> Expression:
     if key.name == "iif":
-        return iif_case_chain(key=key, part=part, column_type=column_type)
-    args = numeric_parts(key=key, parts=[part(a) for a in key.args], column_type=column_type)
+        return iif_case_chain(key=key, part=part, field_type=field_type)
+    args = numeric_parts(key=key, parts=[part(a) for a in key.args], field_type=field_type)
     if key.name in DATE_FUNCTIONS:
-        return render_date_call(key=key, args=args, dialect=dialect, column_type=column_type)
-    return render_scalar_key(key=key, args=args, dialect=dialect, column_type=column_type, part=part,
-                             column_element=column_element)
+        return render_date_call(key=key, args=args, dialect=dialect, field_type=field_type)
+    return render_scalar_key(key=key, args=args, dialect=dialect, field_type=field_type, part=part,
+                             field_element=field_element)

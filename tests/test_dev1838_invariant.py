@@ -18,15 +18,15 @@ from slayer.engine.plan import plan_query
 
 from tests._dev1838_fixtures import (
     BAND,
-    ColumnRef,
-    ModelMeasure,
+    FieldRef,
+    DatasetMetric,
     OrderItem,
     dev1838_models,
     month_td,
     q,
 )
 
-M = ModelMeasure(formula="sum(amount)", name="m")
+M = DatasetMetric(expression="sum(amount)", name="m")
 
 
 class _LegacyCrossModelPlan(Protocol):
@@ -40,7 +40,7 @@ def _bundle() -> ResolvedSourceBundle:
     models = dev1838_models()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=list(models[1:]),
+        population=models[0], referenced_datasets=list(models[1:]),
     )
 
 
@@ -57,23 +57,23 @@ def _walk_cmas(planned: PlannedQuery, out: list[_LegacyCrossModelPlan]) -> None:
 
 SHAPES = {
     "cross_model_sum": q(dimensions=["status"], measures=[
-        M, ModelMeasure(formula="sum(customers.spend)", name="cm")]),
+        M, DatasetMetric(expression="sum(customers.spend)", name="cm")]),
     "cross_model_last": q(dimensions=["status"], measures=[
-        ModelMeasure(formula="last(customers.spend)", name="sl")],
+        DatasetMetric(expression="last(customers.spend)", name="sl")],
         to_many_handling="broadcast"),
     "filtered_local": q(dimensions=["status"], measures=[
-        M, ModelMeasure(formula="sum(gold_amount)", name="g")]),
+        M, DatasetMetric(expression="sum(gold_amount)", name="g")]),
     "crossing_arg": q(dimensions=["status"], measures=[
-        M, ModelMeasure(formula="wscaled_sum(amount)", name="w")]),
+        M, DatasetMetric(expression="wscaled_sum(amount)", name="w")]),
     "host_grain_wrap": q(dimensions=["status"], measures=[M],
                          order=[OrderItem(
-                             column=ColumnRef(name="tier", model="customers"),
+                             field=FieldRef(name="tier", dataset="customers"),
                              direction="asc")]),
     "windowed": q(dimensions=["region"], time_dimensions=month_td(),
-                  measures=[ModelMeasure(formula="sum(amount, window='90d')",
+                  measures=[DatasetMetric(expression="sum(amount, window='90d')",
                                          name="w")]),
     "band_cross_model": q(dimensions=["status", BAND], measures=[
-        M, ModelMeasure(formula="sum(customers.spend)", name="cm")]),
+        M, DatasetMetric(expression="sum(customers.spend)", name="cm")]),
 }
 
 

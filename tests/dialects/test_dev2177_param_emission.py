@@ -50,7 +50,7 @@ async def test_parameter_takes_the_integer(dialect: str, formula: str) -> None:
 
 @pytest.mark.parametrize("dialect", SQLGLOT_NAMES)
 async def test_builtin_named_override_placeholders_take_the_integer(dialect: str) -> None:
-    override = Aggregation(name="weighted_avg", formula="SUM({value} * {weight}) * 1.0 / SUM({weight})",
+    override = Aggregation(name="weighted_avg", expression="SUM({value} * {weight}) * 1.0 / SUM({weight})",
                            params=[AggregationParam(name="weight", sql="1")])
     tree = await _statement(dialect, "weighted_avg(amount, weight=flag)", aggregations=[override])
     bare = [c.sql(dialect=dialect) for c in _flag_reads(tree) if not _int_cast(c.parent)]
@@ -59,7 +59,7 @@ async def test_builtin_named_override_placeholders_take_the_integer(dialect: str
 
 @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "sqlite", "tsql", "bigquery"])
 async def test_custom_aggregation_placeholder_stays_boolean(dialect: str) -> None:
-    custom = Aggregation(name="true_amount", formula="SUM(CASE WHEN {flag} THEN {value} END)",
+    custom = Aggregation(name="true_amount", expression="SUM(CASE WHEN {flag} THEN {value} END)",
                          params=[AggregationParam(name="flag", sql="TRUE")])
     tree = await _statement(dialect, "true_amount(amount, flag=flag)", aggregations=[custom])
     cast = [c.sql(dialect=dialect) for c in _flag_reads(tree) if _int_cast(c.parent)]

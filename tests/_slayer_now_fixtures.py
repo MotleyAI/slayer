@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Optional
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -34,13 +34,13 @@ EV = TableSpec(
 )
 
 
-def ev_model() -> SlayerModel:
-    return SlayerModel(
+def ev_model() -> SlayerDataset:
+    return SlayerDataset(
         name="ev", sql_table="ev", data_source="test", default_time_dimension="ts",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="ts", type=DataType.TIMESTAMP),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="ts", datatype=DataType.TIMESTAMP),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
     )
 
@@ -83,5 +83,5 @@ async def seeded_storage(base_dir: str) -> YAMLStorage:
     seed_backend("sqlite", db_path, [EV])
     storage = YAMLStorage(base_dir=os.path.join(base_dir, "store"))
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db_path))
-    await storage.save_model(ev_model())
+    await storage.save_dataset(ev_model())
     return storage

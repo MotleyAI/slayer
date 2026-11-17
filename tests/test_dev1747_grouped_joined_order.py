@@ -42,7 +42,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery
+from slayer.core.query import FieldRef, OrderItem, SlayerQuery
 from tests._dev1747_fixtures import (
     GROUP_A_AMOUNT,
     GROUP_B_AMOUNT,
@@ -83,11 +83,11 @@ def _wrap_functions(sql: str, column: str, *, dialect: str = "postgres") -> list
 def _grouped_order_query(*, model: str, name: str, direction: str) -> SlayerQuery:
     """Grouped by ``orders.status``, ordered by an UNPROJECTED joined column."""
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
-        measures=_MEASURE,
+        population="orders",
+        dimensions=[FieldRef(name="status")],
+        metrics=_MEASURE,
         order=[OrderItem(
-            column=ColumnRef(name=name, model=model), direction=direction,
+            field=FieldRef(name=name, dataset=model), direction=direction,
         )],
     )
 
@@ -202,11 +202,11 @@ class TestDirectionAwareWrap:
         an unconditional ``MAX`` since DEV-1703 Phase 1. Both shapes must agree
         or the two order paths mean different things by ``ASC``."""
         sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=_MEASURE,
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=_MEASURE,
             order=[OrderItem(
-                column=ColumnRef(name="created_at"), direction="asc",
+                field=FieldRef(name="created_at"), direction="asc",
             )],
         ))
         assert _wrap_functions(sql, "created_at") == ["MIN"], (
@@ -222,12 +222,12 @@ class TestDirectionAwareWrap:
         Asserted per COLUMN: a statement-wide "contains MIN and MAX" would also
         pass if both wraps landed on the same column, which is the bug."""
         sql = await _sql(SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="status")],
-            measures=_MEASURE,
+            population="orders",
+            dimensions=[FieldRef(name="status")],
+            metrics=_MEASURE,
             order=[
-                OrderItem(column=ColumnRef(name="created_at"), direction="asc"),
-                OrderItem(column=ColumnRef(name="amount"), direction="desc"),
+                OrderItem(field=FieldRef(name="created_at"), direction="asc"),
+                OrderItem(field=FieldRef(name="amount"), direction="desc"),
             ],
         ))
         assert _wrap_functions(sql, "created_at") == ["MIN"], f"\n{sql}"

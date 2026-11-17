@@ -23,7 +23,7 @@ from collections.abc import Iterator
 import pytest
 
 from slayer.core.errors import MemoryNotFoundError
-from slayer.core.models import ModelMeasure, SlayerModel
+from slayer.core.models import DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
@@ -45,8 +45,8 @@ def storage(request: pytest.FixtureRequest) -> Iterator[StorageBackend]:
 @pytest.fixture
 def sample_query() -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="count(*)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="count(*)")],
     )
 
 
@@ -84,7 +84,7 @@ class TestMemoryCRUD:
             query=sample_query,
         )
         assert isinstance(memory.query, SlayerQuery)
-        assert memory.query.source_model == "orders"
+        assert memory.query.population == "orders"
 
     async def test_get_returns_saved_memory(
         self, storage: StorageBackend
@@ -110,10 +110,10 @@ class TestMemoryCRUD:
         )
         loaded = await storage.get_memory(saved.id)
         assert isinstance(loaded.query, SlayerQuery)
-        assert loaded.query.source_model == "orders"
-        assert loaded.query.measures is not None
-        assert len(loaded.query.measures) == 1
-        assert loaded.query.measures[0].formula == "count(*)"
+        assert loaded.query.population == "orders"
+        assert loaded.query.metrics is not None
+        assert len(loaded.query.metrics) == 1
+        assert loaded.query.metrics[0].expression == "count(*)"
 
     async def test_get_missing_raises(self, storage: StorageBackend) -> None:
         with pytest.raises(MemoryNotFoundError):
@@ -473,12 +473,12 @@ class TestModelDataSourceFormat:
 
     def test_data_source_rejects_leading_whitespace(self) -> None:
         with pytest.raises(ValueError, match="leading/trailing whitespace"):
-            SlayerModel(name="m", sql_table="t", data_source=" prod")
+            SlayerDataset(name="m", sql_table="t", data_source=" prod")
 
     def test_data_source_rejects_trailing_whitespace(self) -> None:
         with pytest.raises(ValueError, match="leading/trailing whitespace"):
-            SlayerModel(name="m", sql_table="t", data_source="prod ")
+            SlayerDataset(name="m", sql_table="t", data_source="prod ")
 
     def test_data_source_rejects_nul(self) -> None:
         with pytest.raises(ValueError, match="NUL"):
-            SlayerModel(name="m", sql_table="t", data_source="prod\x00")
+            SlayerDataset(name="m", sql_table="t", data_source="prod\x00")

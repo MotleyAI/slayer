@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import UnresolvableDimensionJoinError
+from slayer.core.errors import UnresolvableDimensionRelationshipError
 from slayer.core.keys import AggregateKey
-from slayer.core.models import ModelMeasure
+from slayer.core.models import DatasetMetric
 from slayer.core.query import SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.terms import Aggregate
@@ -26,7 +26,7 @@ from tests._dev1908_fixtures import (
     CANCEL_FORWARD_POP,
     DOUBLE_CANCEL,
     EVENTS_CANCEL,
-    ColumnRef,
+    FieldRef,
     ORACLE_LITERALS,
     SECOND_ORDER,
     SELF,
@@ -56,10 +56,10 @@ def _home_path(formula: str, *, dimensions: list[str] | None = None) -> tuple:
     """`home_path` of a measure's outer aggregate over the DEV-1908 graph."""
     elab = elaborate_query(
         query=orders_q(dimensions=dimensions or [],
-                       measures=[ModelMeasure(formula=formula, name="m")]),
+                       measures=[DatasetMetric(expression=formula, name="m")]),
         bundle=bundle1908())
     assert elab.prebound is not None
-    root = elab.prebound.declared_measures[-1].bound.value_key
+    root = elab.prebound.declared_metrics[-1].bound.value_key
     assert isinstance(root, AggregateKey), root
     term = elab.terms[root]
     assert isinstance(term, Aggregate), term
@@ -69,8 +69,8 @@ def _home_path(formula: str, *, dimensions: list[str] | None = None) -> tuple:
 async def _gen(formula: str, *, source_model="orders", **kw) -> str:
     models = dev1908_models()
     return await _engine_generate(
-        query=SlayerQuery(source_model=source_model,
-                          measures=[ModelMeasure(formula=formula, name="w")], **kw),
+        query=SlayerQuery(population=source_model,
+                          metrics=[DatasetMetric(expression=formula, name="w")], **kw),
         model=models[0], extra_models=models[1:], dialect="sqlite", validate=False)
 
 
@@ -119,7 +119,7 @@ async def engine(request):
 
 async def _value(engine, formula: str) -> float:
     resp = await engine.execute(
-        orders_q(measures=[ModelMeasure(formula=formula, name="w")]))
+        orders_q(measures=[DatasetMetric(expression=formula, name="w")]))
     return float(resp.data[0]["orders.w"])
 
 
@@ -199,8 +199,8 @@ async def test_ship_region_extension_edge_name_spelling_survives(dialect):
     async def run(formula: str) -> tuple[float, str]:
         async with seeded_exec_engine(
             dialect=dialect, seed=seed, models=dev1908_models()) as (e, _db):
-            query = SlayerQuery(source_model="orders", extensions=[ship_region_extension()],
-                                measures=[ModelMeasure(formula=formula, name="w")])
+            query = SlayerQuery(population="orders", extensions=[ship_region_extension()],
+                                metrics=[DatasetMetric(expression=formula, name="w")])
             resp = await e.execute(query)
             dry = await e.execute(query, dry_run=True)
             assert dry.sql is not None
@@ -226,10 +226,10 @@ class TestKernelExpressionDefaults:
         base = "wsum_region_pop_expr(customers.regions.countries.gdp)"
         default = _cells(await engine.execute(orders_q(
             dimensions=["status"], to_many_handling="associate",
-            measures=[ModelMeasure(formula=base, name="w")])))
+            measures=[DatasetMetric(expression=base, name="w")])))
         explicit = _cells(await engine.execute(orders_q(
             dimensions=["status"], to_many_handling="associate",
-            measures=[ModelMeasure(formula=f"{base[:-1]}, weight=customers.regions.pop)",
+            measures=[DatasetMetric(expression=f"{base[:-1]}, weight=customers.regions.pop)",
                                    name="w")])))
         assert default == explicit
         assert {k[0]: float(v) for k, v in default.items()} == ASSOC_EXPR
@@ -238,11 +238,11 @@ class TestKernelExpressionDefaults:
         base = "wsum_cust_spend2_expr(customers.regions.countries.gdp)"
         default = _cells(await engine.execute(orders_q(
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(formula=f"{base[:-1]}, window='1y')", name="w")])))
+            measures=[DatasetMetric(expression=f"{base[:-1]}, window='1y')", name="w")])))
         explicit = _cells(await engine.execute(orders_q(
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(
-                formula=f"{base[:-1]}, window='1y', weight=customers.spend)", name="w")])))
+            measures=[DatasetMetric(
+                expression=f"{base[:-1]}, window='1y', weight=customers.spend)", name="w")])))
         assert default == explicit
         months = {month_key(k[0]): float(v) for k, v in default.items()
                   if k[0] is not None}
@@ -262,9 +262,9 @@ class TestStageQueryUnaffected:
         """A later stage aggregating a stage's output resolves no definition
         default (a stage has no model host) — executes exactly as before."""
         stage1 = orders_q(name="stage1", dimensions=["status"],
-                          measures=[ModelMeasure(formula="sum(amount)", name="amount_sum")])
-        root = SlayerQuery(source_model="stage1", dimensions=[ColumnRef(name="status")],
-                           measures=[ModelMeasure(formula="max(amount_sum)", name="mx")])
+                          measures=[DatasetMetric(expression="sum(amount)", name="amount_sum")])
+        root = SlayerQuery(population="stage1", dimensions=[FieldRef(name="status")],
+                           metrics=[DatasetMetric(expression="max(amount_sum)", name="mx")])
         resp = await engine.execute([stage1, root])
         vals = sorted(float(next(v for k, v in r.items() if "mx" in k))
                       for r in resp.data)
@@ -295,11 +295,11 @@ class TestFailClosed:
     async def test_cancel_then_miss_fails_closed(self):
         # D3: `regions` cancels, then `plans` misses (not a hop from regions) —
         # never re-anchored at the root.
-        with pytest.raises(UnresolvableDimensionJoinError):
+        with pytest.raises(UnresolvableDimensionRelationshipError):
             await _gen("wsum_cancel_miss(customers.regions.countries.gdp)")
 
     async def test_second_order_nowhere_default_raises_unresolvable(self):
-        with pytest.raises(UnresolvableDimensionJoinError, match="(?i)nowhere"):
+        with pytest.raises(UnresolvableDimensionRelationshipError, match="(?i)nowhere"):
             await _gen("wnowhere(sum(amount, partition_by=status))")
 
     async def test_query_typed_revisit_raises_circular_join(self):

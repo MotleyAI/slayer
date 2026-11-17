@@ -20,13 +20,13 @@ import pytest
 from slayer.core.errors import (
     AggregationNotAllowedError,
     AmbiguousReferenceError,
-    CanonicalAliasShadowsColumnError,
-    DuplicateMeasureNameError,
+    CanonicalAliasShadowsFieldError,
+    DuplicateMetricNameError,
     IllegalScopeReferenceError,
     IllegalWindowInFilterError,
-    MeasureCycleError,
-    MeasureNameCollidesWithColumnError,
-    MeasureRecursionLimitError,
+    MetricCycleError,
+    MetricNameCollidesWithFieldError,
+    MetricRecursionLimitError,
     SlayerError,
     UnknownFunctionError,
     UnknownReferenceError,
@@ -44,9 +44,9 @@ class TestInheritance:
         UnknownReferenceError, AmbiguousReferenceError,
         IllegalScopeReferenceError, IllegalWindowInFilterError,
         AggregationNotAllowedError, UnknownFunctionError,
-        MeasureRecursionLimitError, MeasureCycleError,
-        DuplicateMeasureNameError, MeasureNameCollidesWithColumnError,
-        CanonicalAliasShadowsColumnError,
+        MetricRecursionLimitError, MetricCycleError,
+        DuplicateMetricNameError, MetricNameCollidesWithFieldError,
+        CanonicalAliasShadowsFieldError,
     ])
     def test_subclasses_slayer_error(self, cls):
         assert issubclass(cls, SlayerError)
@@ -193,7 +193,7 @@ class TestIllegalWindowInFilterError:
 class TestAggregationNotAllowedError:
     def test_type_bucket_violation(self):
         e = AggregationNotAllowedError(
-            column="status",
+            field="status",
             agg="sum",
             reason="aggregation 'sum' is numeric-only; column 'status' is TEXT.",
         )
@@ -205,7 +205,7 @@ class TestAggregationNotAllowedError:
 
     def test_pk_restriction(self):
         e = AggregationNotAllowedError(
-            column="orders.id",
+            field="orders.id",
             agg="sum",
             reason="primary-key columns are restricted to count / count_distinct.",
         )
@@ -242,7 +242,7 @@ class TestUnknownFunctionError:
 
 class TestMeasureRecursionLimitError:
     def test_renders_chain(self):
-        e = MeasureRecursionLimitError(chain=["a", "b", "c", "d"], limit=32)
+        e = MetricRecursionLimitError(chain=["a", "b", "c", "d"], limit=32)
         s = str(e)
         assert "MeasureRecursionLimitError" in s
         assert "limit=32" in s
@@ -251,7 +251,7 @@ class TestMeasureRecursionLimitError:
 
 class TestMeasureCycleError:
     def test_renders_cycle(self):
-        e = MeasureCycleError(chain=["a", "b", "a"])
+        e = MetricCycleError(chain=["a", "b", "a"])
         assert str(e) == (
             "MeasureCycleError: Cyclic reference in named-measure expansion.\n"
             "  chain: a → b → a"
@@ -265,7 +265,7 @@ class TestMeasureCycleError:
 
 class TestDuplicateMeasureNameError:
     def test_renders_occurrences(self):
-        e = DuplicateMeasureNameError(
+        e = DuplicateMetricNameError(
             name="rev",
             occurrences=["measures[0]", "measures[3]"],
         )
@@ -278,7 +278,7 @@ class TestDuplicateMeasureNameError:
 
 class TestMeasureNameCollidesWithColumnError:
     def test_basic(self):
-        e = MeasureNameCollidesWithColumnError(name="status", model="orders")
+        e = MetricNameCollidesWithFieldError(name="status", dataset="orders")
         assert str(e) == (
             "MeasureNameCollidesWithColumnError: The declared measure name "
             "matches a source column on model 'orders'.\n"
@@ -288,10 +288,10 @@ class TestMeasureNameCollidesWithColumnError:
 
 class TestCanonicalAliasShadowsColumnError:
     def test_basic(self):
-        e = CanonicalAliasShadowsColumnError(
-            formula="count(status)",
+        e = CanonicalAliasShadowsFieldError(
+            expression="count(status)",
             canonical="status_count",
-            model="orders",
+            dataset="orders",
         )
         assert str(e) == (
             "CanonicalAliasShadowsColumnError: The canonical alias 'status_count' "

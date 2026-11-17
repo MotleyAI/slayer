@@ -16,26 +16,26 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.facade.catalog import FacadeCatalog, build_catalog
 from slayer.flight.translator import QueryResult, TranslationError, translate
 
 
 def _catalog() -> FacadeCatalog:
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders",
         data_source="jaffle",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="delivered_at", type=DataType.DATE),
-            Column(name="is_paid", type=DataType.BOOLEAN),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="delivered_at", datatype=DataType.DATE),
+            DatasetField(name="is_paid", datatype=DataType.BOOLEAN),
         ],
     )
-    return build_catalog(models_by_datasource={"jaffle": [orders]})
+    return build_catalog(datasets_by_datasource={"jaffle": [orders]})
 
 
 # --- Gate: Flight rejects CAST(<col> AS <type>) projections ---------

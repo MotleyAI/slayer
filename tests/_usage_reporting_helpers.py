@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from slayer import usage_reporting
-from slayer.core.models import Aggregation, Column, DatasourceConfig, SlayerModel
+from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.enums import DataType
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -278,9 +278,9 @@ def build_storage(base_dir: Path) -> str:
     async def build() -> YAMLStorage:
         storage = await build_refine_storage(str(base_dir))
         model = orders_model().model_copy(update={
-            "aggregations": [Aggregation(name="dsum", formula="SUM({value})")],
+            "aggregations": [Aggregation(name="dsum", expression="SUM({value})")],
         })
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         return storage
 
     asyncio.run(build())
@@ -296,14 +296,14 @@ def build_sentinel_storage(base_dir: Path) -> str:
         await storage.save_datasource(DatasourceConfig(
             name=f"{SENT}_ds", type="sqlite", database=str(db_path), description=HOSTILE,
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name=f"{SENT}_model", data_source=f"{SENT}_ds", sql_table=f"{SENT}_table",
             description=HOSTILE,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name=f"{SENT}_col", type=DataType.DOUBLE, description=HOSTILE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name=f"{SENT}_col", datatype=DataType.DOUBLE, description=HOSTILE),
             ],
-            aggregations=[Aggregation(name=f"{SENT}_agg", formula="SUM({value})")],
+            aggregations=[Aggregation(name=f"{SENT}_agg", expression="SUM({value})")],
         ))
 
     with transaction(str(db_path)) as con:
@@ -319,9 +319,9 @@ def save_models(storage_dir: str, *, count: int) -> None:
     async def build() -> None:
         storage = YAMLStorage(base_dir=storage_dir)
         for i in range(count):
-            await storage.save_model(SlayerModel(
+            await storage.save_dataset(SlayerDataset(
                 name=f"extra_{i}", data_source="test", sql_table="orders",
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
             ))
 
     asyncio.run(build())

@@ -47,7 +47,7 @@ async def engine() -> AsyncGenerator[SlayerQueryEngine]:
 
 
 def _q(**kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "orders", **kw})
+    return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
 def _typed(exc: BaseException) -> UnrecognizedStrictValueError:
@@ -85,7 +85,7 @@ class TestPythonConversion:
     @pytest.mark.parametrize("version", FRESH_VERSIONS)
     def test_current_or_malformed_version_is_fresh(self, version: Any) -> None:
         with recorded() as caught:
-            query = SlayerQuery.model_validate({"version": version, "source_model": "orders", "strict": True})
+            query = SlayerQuery.model_validate({"version": version, "population": "orders", "strict": True})
         assert query.to_many_handling == "error"
         assert len(deprecations(caught)) == 1
 
@@ -111,13 +111,13 @@ class TestStoredMigration:
     ])
     def test_pre_v4_migrates_silently(self, value: Any, expected: str | None) -> None:
         with recorded() as caught:
-            query = SlayerQuery.model_validate({"version": 3, "source_model": "orders", "strict": value})
+            query = SlayerQuery.model_validate({"version": 3, "population": "orders", "strict": value})
         assert query.to_many_handling == expected
         assert deprecations(caught) == []
 
     def test_unrecognized_stored_token_is_a_typed_error(self) -> None:
         with pytest.raises(ValueError) as ei:
-            SlayerQuery.model_validate({"version": 3, "source_model": "orders", "strict": "maybe"})
+            SlayerQuery.model_validate({"version": 3, "population": "orders", "strict": "maybe"})
         _typed(ei.value)
 
     def test_migration_step_raises_the_typed_error(self) -> None:

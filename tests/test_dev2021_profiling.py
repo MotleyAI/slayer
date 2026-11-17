@@ -12,7 +12,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import AggregationNotAllowedError
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.profiling import ensure_samples_fresh
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -43,19 +43,19 @@ def _seed(db_path: str) -> None:
         cur.executemany("INSERT INTO t VALUES (?, ?, ?, ?, ?, ?)", _ROWS)
 
 
-def _model(*, arrays: bool) -> SlayerModel:
+def _model(*, arrays: bool) -> SlayerDataset:
     columns = [
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="amount", type=DataType.DOUBLE),
-        Column(name="double_amount", sql="amount * 2", type=DataType.DOUBLE),
-        Column(name="qty", sql="quantity", type=DataType.INT),
-        Column(name="order_total", sql='"Order Total"', type=DataType.DOUBLE),
-        Column(name="ordered_at", type=DataType.DATE),
-        Column(name="ordered_ts", type=DataType.TIMESTAMP),
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="amount", datatype=DataType.DOUBLE),
+        DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.DOUBLE),
+        DatasetField(name="qty", sql="quantity", datatype=DataType.INT),
+        DatasetField(name="order_total", sql='"Order Total"', datatype=DataType.DOUBLE),
+        DatasetField(name="ordered_at", datatype=DataType.DATE),
+        DatasetField(name="ordered_ts", datatype=DataType.TIMESTAMP),
     ]
     if arrays:
-        columns.append(Column(name="tags", type=DataType.ARRAY, element_type=DataType.INT))
-    return SlayerModel(name="t", sql_table="t", data_source="test", columns=columns)
+        columns.append(DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.INT))
+    return SlayerDataset(name="t", sql_table="t", data_source="test", fields=columns)
 
 
 _EXPECTED = {
@@ -95,11 +95,11 @@ def _record(*, engine: SlayerQueryEngine, monkeypatch: pytest.MonkeyPatch) -> li
 
 
 async def _profile(run: _Run, monkeypatch: pytest.MonkeyPatch) -> tuple[dict[str, str | None], list[SlayerQuery]]:
-    model = await run.engine.storage.get_model("t", data_source="test")
+    model = await run.engine.storage.get_dataset("t", data_source="test")
     assert model is not None
-    targets = [c for c in model.columns if c.name != "id"]
+    targets = [c for c in model.fields if c.name != "id"]
     log = _record(engine=run.engine, monkeypatch=monkeypatch)
-    outcome = await ensure_samples_fresh(model=model, columns=targets, engine=run.engine, storage=run.engine.storage,
+    outcome = await ensure_samples_fresh(dataset=model, fields=targets, engine=run.engine, storage=run.engine.storage,
                                          force=True)
     assert outcome.errors == []
     return {c.name: c.sampled for c in outcome.columns}, log
@@ -119,13 +119,13 @@ async def test_profiling_sends_no_extension(run: _Run, monkeypatch: pytest.Monke
     assert [q for q in log if q.extensions] == []
 
 
-def _restricted_model() -> SlayerModel:
+def _restricted_model() -> SlayerDataset:
     """``_model`` with most range columns' ``allowed_aggregations`` excluding ``min`` / ``max``."""
     whitelist = {"amount": ["sum"], "double_amount": ["sum"], "qty": ["sum"], "ordered_at": ["count"]}
     model = _model(arrays=False)
-    return model.model_copy(update={"columns": [
+    return model.model_copy(update={"fields": [
         c.model_copy(update={"allowed_aggregations": whitelist[c.name]}) if c.name in whitelist else c
-        for c in model.columns]})
+        for c in model.fields]})
 
 
 @pytest.mark.parametrize("dialect", ["sqlite", "duckdb"])
@@ -133,6 +133,6 @@ async def test_a_column_whitelist_does_not_stop_its_range(dialect: str, monkeypa
     async with seeded_exec_engine(dialect=dialect, seed=_seed, models=[_restricted_model()]) as (engine, _db):
         sampled, _ = await _profile(_Run(engine=engine, dialect=dialect), monkeypatch)
         assert {k: sampled[k] for k in _EXPECTED} == _EXPECTED
-        authored = SlayerQuery.model_validate({"source_model": "t", "measures": ["min(amount)"]})
+        authored = SlayerQuery.model_validate({"population": "t", "metrics": ["min(amount)"]})
         with pytest.raises(AggregationNotAllowedError):
             await engine.execute(query=authored)

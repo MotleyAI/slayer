@@ -26,7 +26,7 @@ import pytest
 from sqlalchemy.exc import OperationalError
 import yaml
 
-from slayer.cli import _refine_one_model_for_cli, _run_storage
+from slayer.cli import _refine_one_dataset_for_cli, _run_storage
 from slayer.core.enums import DataType
 from slayer.core.errors import StoredDocumentLoadError
 from slayer.core.models import DatasourceConfig
@@ -35,8 +35,8 @@ from slayer.database import engine_factory
 from slayer.database.client import DatabaseUnavailable, SlayerSQLClient
 from slayer.storage import migrations as mig
 from slayer.live_schema.type_refinement import (
-    has_refineable_columns,
-    has_sqlite_widenable_columns,
+    has_refineable_fields,
+    has_sqlite_widenable_fields,
     refine_dict_with_live_schema,
 )
 from slayer.storage.yaml_storage import YAMLStorage
@@ -299,10 +299,10 @@ class TestRefineDictWithLiveSchema:
 
 class TestYamlStorageRefinementOnLoad:
     async def test_first_load_refines_int_columns(self, storage_with_v4_model: V4Store) -> None:
-        loaded = await storage_with_v4_model["storage"].get_model("items", data_source="live")
+        loaded = await storage_with_v4_model["storage"].get_dataset("items", data_source="live")
         assert loaded is not None
         # Map name -> type for ergonomic assertions.
-        types = {c.name: c.type for c in loaded.columns}
+        types = {c.name: c.datatype for c in loaded.fields}
         assert types["id"] == DataType.INT
         assert types["qty"] == DataType.INT
         assert types["amount"] == DataType.DOUBLE
@@ -313,7 +313,7 @@ class TestYamlStorageRefinementOnLoad:
     async def test_first_load_writes_back_v5_with_refined_types(
         self, storage_with_v4_model: V4Store
     ) -> None:
-        await storage_with_v4_model["storage"].get_model("items", data_source="live")
+        await storage_with_v4_model["storage"].get_dataset("items", data_source="live")
         # Re-read raw YAML; the storage layer writes back at CURRENT_VERSIONS,
         # whatever that currently is. Pre-DEV-1480 this was hard-coded to 6;
         # post-bump it's whatever migrations.py declares.
@@ -332,7 +332,7 @@ class TestYamlStorageRefinementOnLoad:
         migrator chain returns early (version >= current) and the storage
         backend's refinement-helper invocation gate doesn't trigger."""
         # First load: triggers refinement.
-        await storage_with_v4_model["storage"].get_model("items", data_source="live")
+        await storage_with_v4_model["storage"].get_dataset("items", data_source="live")
 
         # Now spy on _live_schema_for_datasource — it must NOT be called the
         # second time around, because the model on disk is now v5 with refined
@@ -341,7 +341,7 @@ class TestYamlStorageRefinementOnLoad:
             "slayer.live_schema.schema_drift._live_schema_for_datasource",
             wraps=_unreachable,
         ) as spy:
-            await storage_with_v4_model["storage"].get_model("items", data_source="live")
+            await storage_with_v4_model["storage"].get_dataset("items", data_source="live")
             spy.assert_not_called()
 
     async def test_missing_datasource_entry_raises_on_v4_load(
@@ -371,7 +371,7 @@ class TestYamlStorageRefinementOnLoad:
             )
         storage = YAMLStorage(base_dir=base)
         with pytest.raises(ValueError, match="datasource 'live' is unavailable"):
-            await storage.get_model("items", data_source="live")
+            await storage.get_dataset("items", data_source="live")
 
     async def test_unreachable_datasource_propagates_through_get_model(
         self, sqlite_with_int_double_text, monkeypatch: pytest.MonkeyPatch
@@ -422,7 +422,7 @@ class TestYamlStorageRefinementOnLoad:
         monkeypatch.setattr(engine_factory, "get_engine", _boom)
         try:
             with pytest.raises(StoredDocumentLoadError) as ei:
-                await engine.storage.get_model("items", data_source="live")
+                await engine.storage.get_dataset("items", data_source="live")
         finally:
             await engine.aclose()
             engine.close()
@@ -681,8 +681,8 @@ class TestHasRefineableColumnsSqliteIntBranch:
         # INT base columns are *widenable* (best-effort), not *refineable*
         # (mandatory DS); this asymmetry keeps non-SQLite legacy INT-only
         # dicts loadable when the datasource entry is gone.
-        assert has_sqlite_widenable_columns(d) is True
-        assert has_refineable_columns(d) is False
+        assert has_sqlite_widenable_fields(d) is True
+        assert has_refineable_fields(d) is False
 
     def test_double_base_column_is_refineable_not_widenable(self) -> None:
         d = {
@@ -693,8 +693,8 @@ class TestHasRefineableColumnsSqliteIntBranch:
                 {"name": "amount", "sql": "amount", "type": "DOUBLE"},
             ],
         }
-        assert has_refineable_columns(d) is True
-        assert has_sqlite_widenable_columns(d) is False
+        assert has_refineable_fields(d) is True
+        assert has_sqlite_widenable_fields(d) is False
 
     async def test_sqlite_legacy_dict_with_int_loads_when_datasource_missing(
         self, tmp_path: Path, caplog
@@ -733,11 +733,11 @@ class TestHasRefineableColumnsSqliteIntBranch:
         # log warning), NOT hard-fail like a DOUBLE-base-column dict would.
         storage = YAMLStorage(base_dir=base)
         with caplog.at_level(logging.WARNING, logger="slayer.storage.base"):
-            loaded = await storage.get_model("items", data_source="live")
+            loaded = await storage.get_dataset("items", data_source="live")
         assert loaded is not None
-        col = next(c for c in loaded.columns if c.name == "qty")
+        col = next(c for c in loaded.fields if c.name == "qty")
         # Persisted INT preserved as the safe default.
-        assert col.type is DataType.INT
+        assert col.datatype is DataType.INT
         # Warning emitted naming the model + datasource.
         msgs = [r.getMessage() for r in caplog.records]
         assert any("items" in m and "live" in m for m in msgs), msgs
@@ -768,7 +768,7 @@ class TestHasRefineableColumnsSqliteIntBranch:
             )
         storage = YAMLStorage(base_dir=base)
         with pytest.raises(ValueError, match="datasource 'live' is unavailable"):
-            await storage.get_model("items", data_source="live")
+            await storage.get_dataset("items", data_source="live")
 
     async def test_post_refinement_schema_migrates_without_datasource(
         self, tmp_path: Path
@@ -788,10 +788,10 @@ class TestHasRefineableColumnsSqliteIntBranch:
                 },
                 f,
             )
-        loaded = await YAMLStorage(base_dir=base).get_model("items", data_source="live")
+        loaded = await YAMLStorage(base_dir=base).get_dataset("items", data_source="live")
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert loaded.columns[0].type is DataType.DOUBLE
+        assert loaded.fields[0].datatype is DataType.DOUBLE
 
 
 class TestV7SqliteModelNotAutoRepairedOnLoad:
@@ -849,10 +849,10 @@ class TestV7SqliteModelNotAutoRepairedOnLoad:
                 "probe must not run on already-current-version dict load"
             ),
         ):
-            loaded = await storage.get_model("items", data_source="live")
+            loaded = await storage.get_dataset("items", data_source="live")
         # Type stays INT because the probe never ran.
-        col = next(c for c in loaded.columns if c.name == "qty")
-        assert col.type is DataType.INT
+        col = next(c for c in loaded.fields if c.name == "qty")
+        assert col.datatype is DataType.INT
 
 
 # ---------------------------------------------------------------------------
@@ -924,8 +924,8 @@ class TestCliMigrateTypes:
         storage = YAMLStorage(base_dir=base)
         engine = SlayerQueryEngine(storage=storage)
         with pytest.raises(ValueError, match="datasource 'live' is unavailable"):
-            await _refine_one_model_for_cli(
-                inner=storage, engine=engine, ds_name="live", model_name="items", dry_run=True,
+            await _refine_one_dataset_for_cli(
+                inner=storage, engine=engine, ds_name="live", dataset_name="items", dry_run=True,
             )
 
     async def test_missing_datasource_silent_for_text_only_model(self, tmp_path) -> None:  # NOSONAR(S7503) — pytest-asyncio test body; sync run via _run_storage
@@ -948,8 +948,8 @@ class TestCliMigrateTypes:
         storage = YAMLStorage(base_dir=base)
         engine = SlayerQueryEngine(storage=storage)
         # No raise — returns False because nothing needed refinement.
-        result = await _refine_one_model_for_cli(
-            inner=storage, engine=engine, ds_name="live", model_name="events", dry_run=True,
+        result = await _refine_one_dataset_for_cli(
+            inner=storage, engine=engine, ds_name="live", dataset_name="events", dry_run=True,
         )
         assert result is False
 
@@ -987,8 +987,8 @@ class TestCliMigrateTypes:
             )
         storage = YAMLStorage(base_dir=base)
         engine = SlayerQueryEngine(storage=storage)
-        result = engine.run_sync(_refine_one_model_for_cli(
-            inner=storage, engine=engine, ds_name="live", model_name="items", dry_run=True,
+        result = engine.run_sync(_refine_one_dataset_for_cli(
+            inner=storage, engine=engine, ds_name="live", dataset_name="items", dry_run=True,
         ))
         engine.close()
         assert result is True
@@ -1021,8 +1021,8 @@ class TestCliMigrateTypes:
             )
         storage = YAMLStorage(base_dir=base)
         engine = SlayerQueryEngine(storage=storage)
-        result = engine.run_sync(_refine_one_model_for_cli(
-            inner=storage, engine=engine, ds_name="live", model_name="items", dry_run=True,
+        result = engine.run_sync(_refine_one_dataset_for_cli(
+            inner=storage, engine=engine, ds_name="live", dataset_name="items", dry_run=True,
         ))
         engine.close()
         assert result is False

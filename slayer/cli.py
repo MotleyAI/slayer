@@ -22,7 +22,7 @@ from slayer import usage_reporting
 from slayer.async_utils import run_sync
 from slayer.core.deprecation import deprecations_on_one_line
 from slayer.core.errors import SlayerError
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.format import encode_json
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.time_points import host_clock
@@ -36,27 +36,27 @@ from slayer.demo import (
     DEMO_NAME,
     build_jaffle_shop,
     ensure_demo_datasource,
-    ingest_demo_models,
+    ingest_demo_datasets,
     resolve_demo_db_path,
 )
-from slayer.engine.cardinality.inference import CardinalityVerdict, JoinCardinalityReport
+from slayer.engine.cardinality.inference import CardinalityVerdict, RelationshipCardinalityReport
 from slayer.live_schema import ingestion as engine_ingestion
 from slayer.live_schema.ingestion import (
     _empty_ingest_message,
     _print_ingest_addition,
     _print_ingest_drift_and_errors,
 )
-from slayer.engine.cardinality.join_safety import JoinSafetyFinding, audit_join_safety
+from slayer.engine.cardinality.relationship_safety import RelationshipSafetyFinding, audit_relationship_safety
 from slayer.flight.cli import add_flight_serve_subparser, run_flight_serve
 from slayer.engine.profiling import (
     refresh_all_table_backed_sampled,
-    refresh_table_backed_model_sampled,
+    refresh_table_backed_dataset_sampled,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema.schema_drift import (
     REPORT_ONLY_FINDINGS,
     DriftReportEntry,
-    EditModelDelete,
+    EditDatasetDelete,
     NarrowedAccessFinding,
     RetypeFinding,
 )
@@ -75,8 +75,8 @@ from slayer.storage import migrations as _mig
 from slayer.storage.base import StorageBackend, default_storage_path, resolve_storage
 from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.live_schema.type_refinement import (
-    has_refineable_columns,
-    has_sqlite_widenable_columns,
+    has_refineable_fields,
+    has_sqlite_widenable_fields,
     refine_dict_with_live_schema,
 )
 from slayer.usage_reporting import control as usage_reporting_control
@@ -119,12 +119,12 @@ def _server_flags(args) -> _ServerFlags:
 class RefreshSamplesResult(BaseModel):
     """Result envelope for ``slayer datasources refresh-samples``. ``errors``
     accumulates per-column profile / persist failures (best-effort);
-    ``unresolved_models`` lists any user-specified ``--model`` names
+    ``unresolved_datasets`` lists any user-specified ``--model`` names
     that didn't resolve in the requested scope — those are reported as
     a hard error so typos fail fast."""
 
     errors: list[str] = Field(default_factory=list)
-    unresolved_models: list[str] = Field(default_factory=list)
+    unresolved_datasets: list[str] = Field(default_factory=list)
 
 
 def _add_storage_arg(parser):
@@ -1163,7 +1163,7 @@ examples:
         required=True,
         dest="entity_type",
         choices=[
-            "datasource", "model", "column", "measure", "aggregation",
+            "datasource", "dataset", "field", "metric", "aggregation",
             "memory",
         ],
         help="Required. The entity kind to inspect.",
@@ -1361,9 +1361,9 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) 
                 "--format json cannot be combined with --force-clean "
                 "(the apply flow is interactive and prints progress)"
             )
-        _run_validate_models(args)
+        _run_validate_datasets(args)
     elif args.command == "recommend-root-model":
-        _run_recommend_root_model(args)
+        _run_recommend_population(args)
     elif args.command == "import-dbt":
         _run_import_dbt(args)
     elif args.command == "import-cube":
@@ -1373,7 +1373,7 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> None:  # NOSONAR(S3776) 
     elif args.command == "export-osi":
         _run_export_osi(args)
     elif args.command == "models":
-        _run_models(args)
+        _run_datasets(args)
     elif args.command == "datasources":
         _run_datasources(args)
     elif args.command == "memory":
@@ -1435,7 +1435,7 @@ async def _refresh_samples_async(*, args, engine: SlayerQueryEngine) -> "Refresh
     names of any user-specified models that didn't resolve."""
     storage = engine.storage
     errors: list[str] = []
-    unresolved_models: list[str] = []
+    unresolved_datasets: list[str] = []
     data_source = args.data_source
     models = args.models
     if data_source is None:
@@ -1445,12 +1445,12 @@ async def _refresh_samples_async(*, args, engine: SlayerQueryEngine) -> "Refresh
     for ds in datasources:
         if models:
             for model_name in models:
-                m = await storage.get_model(model_name, data_source=ds)
+                m = await storage.get_dataset(model_name, data_source=ds)
                 if m is None:
-                    unresolved_models.append(f"{ds}.{model_name}")
+                    unresolved_datasets.append(f"{ds}.{model_name}")
                     continue
-                errs = await refresh_table_backed_model_sampled(
-                    model=m, engine=engine, storage=storage,
+                errs = await refresh_table_backed_dataset_sampled(
+                    dataset=m, engine=engine, storage=storage,
                 )
                 errors.extend(errs)
         else:
@@ -1459,7 +1459,7 @@ async def _refresh_samples_async(*, args, engine: SlayerQueryEngine) -> "Refresh
                     engine=engine, storage=storage, data_source=ds,
                 )
             )
-    return RefreshSamplesResult(errors=errors, unresolved_models=unresolved_models)
+    return RefreshSamplesResult(errors=errors, unresolved_datasets=unresolved_datasets)
 
 
 def _datasources_refresh_samples(storage, args) -> None:
@@ -1469,15 +1469,15 @@ def _datasources_refresh_samples(storage, args) -> None:
     result = engine.run_sync(_refresh_samples_async(args=args, engine=engine))
     if args.format == "json":
         print(result.model_dump_json(indent=2))
-        if result.unresolved_models:
+        if result.unresolved_datasets:
             sys.exit(1)
         return
-    if result.unresolved_models:
+    if result.unresolved_datasets:
         print(
             "Sample-value refresh: requested model(s) not found in scope:",
             file=sys.stderr,
         )
-        for m in result.unresolved_models:
+        for m in result.unresolved_datasets:
             print(f"  - {m}", file=sys.stderr)
         sys.exit(1)
     if result.errors:
@@ -1577,18 +1577,18 @@ async def _migrate_types_workflow(args, *, engine: SlayerQueryEngine, inner: Sto
     """Refine every in-scope model through the engine's clients; the number refined."""
     data_source_filter = getattr(args, "data_source", None)
     refined_total = 0
-    for ds_name, model_name in await inner._list_all_model_identities():
+    for ds_name, model_name in await inner._list_all_dataset_identities():
         if data_source_filter and ds_name != data_source_filter:
             continue
-        if await _refine_one_model_for_cli(
-            inner=inner, engine=engine, ds_name=ds_name, model_name=model_name, dry_run=dry_run,
+        if await _refine_one_dataset_for_cli(
+            inner=inner, engine=engine, ds_name=ds_name, dataset_name=model_name, dry_run=dry_run,
         ):
             refined_total += 1
     return refined_total
 
 
 async def _resolve_datasource_for_cli_refinement(
-    *, inner, ds_name: str, model_name: str, needs_double: bool,
+    *, inner, ds_name: str, dataset_name: str, needs_double: bool,
 ) -> Any | None:
     """Resolve the datasource for ``slayer storage migrate-types``.
 
@@ -1602,12 +1602,12 @@ async def _resolve_datasource_for_cli_refinement(
         return ds
     if needs_double:
         raise ValueError(
-            f"Cannot refine model {ds_name!r}.{model_name!r}: datasource "
+            f"Cannot refine model {ds_name!r}.{dataset_name!r}: datasource "
             f"{ds_name!r} is unavailable for type refinement. Restore the "
             f"datasource entry or remove the stale model file."
         )
     print(
-        f"skipped {ds_name}.{model_name}: datasource {ds_name!r} unavailable "
+        f"skipped {ds_name}.{dataset_name}: datasource {ds_name!r} unavailable "
         f"for SQLite affinity probe (INT columns untouched). Restore the "
         f"datasource and re-run.",
         file=sys.stderr,
@@ -1616,12 +1616,12 @@ async def _resolve_datasource_for_cli_refinement(
 
 
 def _print_refinement_diff(
-    *, ds_name: str, model_name: str, upgraded: dict, types_before: dict[str, str],
+    *, ds_name: str, dataset_name: str, upgraded: dict, types_before: dict[str, str],
 ) -> None:
     """Print before→after diffs for columns whose type changed during
     refinement. Migration-only aliases are excluded because ``types_before``
     is captured AFTER migration."""
-    print(f"refined {ds_name}.{model_name}:")
+    print(f"refined {ds_name}.{dataset_name}:")
     for col in upgraded.get("columns", []) or []:
         name = col.get("name") or "?"
         before = types_before.get(name, None)
@@ -1630,8 +1630,8 @@ def _print_refinement_diff(
             print(f"  - {name}: {before or '?'} → {after}")
 
 
-async def _refine_one_model_for_cli(
-    *, inner: StorageBackend, engine: SlayerQueryEngine, ds_name: str, model_name: str, dry_run: bool,
+async def _refine_one_dataset_for_cli(
+    *, inner: StorageBackend, engine: SlayerQueryEngine, ds_name: str, dataset_name: str, dry_run: bool,
 ) -> bool:
     """Per-model refinement loop body for ``slayer storage migrate-types``.
 
@@ -1648,7 +1648,7 @@ async def _refine_one_model_for_cli(
     refineable or widenable columns (text-only, query-backed, sql-mode,
     already-narrowed) skip silently and don't require a live datasource.
     """
-    raw = await inner._load_raw_model_dict(name=model_name, data_source=ds_name)
+    raw = await inner._load_raw_dataset_dict(name=dataset_name, data_source=ds_name)
     if raw is None:
         return False
     upgraded = _mig.migrate("SlayerModel", _mig.stamp_stored(copy.deepcopy(raw)))
@@ -1660,12 +1660,12 @@ async def _refine_one_model_for_cli(
         for c in upgraded.get("columns", []) or []
         if isinstance(c, dict)
     }
-    needs_double = has_refineable_columns(upgraded)
-    needs_sqlite_int = has_sqlite_widenable_columns(upgraded)
+    needs_double = has_refineable_fields(upgraded)
+    needs_sqlite_int = has_sqlite_widenable_fields(upgraded)
     if not (needs_double or needs_sqlite_int):
         return False
     ds = await _resolve_datasource_for_cli_refinement(
-        inner=inner, ds_name=ds_name, model_name=model_name,
+        inner=inner, ds_name=ds_name, dataset_name=dataset_name,
         needs_double=needs_double,
     )
     if ds is None:
@@ -1673,13 +1673,13 @@ async def _refine_one_model_for_cli(
     if not await refine_dict_with_live_schema(upgraded, ds, engine.client_for(ds)):
         return False
     _print_refinement_diff(
-        ds_name=ds_name, model_name=model_name,
+        ds_name=ds_name, dataset_name=dataset_name,
         upgraded=upgraded, types_before=types_before_refinement,
     )
     if not dry_run:
-        model = SlayerModel.model_validate(upgraded)
+        model = SlayerDataset.model_validate(upgraded)
         # Save-time validation loads peers, which may still need refining through the engine.
-        await engine.storage.save_model(model)
+        await engine.storage.save_dataset(model)
     return True
 
 
@@ -1792,7 +1792,7 @@ def _run_query(args):  # NOSONAR S3776 — argparse-driven dispatch; one straigh
         print(header)
         print(separator)
         for row in result.data:
-            print(" | ".join(result._format_value(column=c, value=row.get(c, "")) for c in result.columns))
+            print(" | ".join(result._format_value(field=c, value=row.get(c, "")) for c in result.columns))
         if not args.explain:
             print(f"\n{result.row_count} row(s)")
 
@@ -1809,7 +1809,7 @@ def _prepare_demo(args, storage, *, stream=None):
         ds, models, db_built = ensure_demo_datasource(
             storage,
             storage_path=storage_path,
-            ingest_models=True,
+            ingest_datasets=True,
             assume_yes=True,
             stream=out,
         )
@@ -1923,8 +1923,8 @@ _REMOVE_SECTIONS = (
 )
 
 
-def _format_edit_entry_lines(entry: EditModelDelete) -> list[str]:
-    lines = [f"EDIT MODEL: {entry.model_name} (datasource: {entry.data_source})"]
+def _format_edit_entry_lines(entry: EditDatasetDelete) -> list[str]:
+    lines = [f"EDIT MODEL: {entry.dataset_name} (datasource: {entry.data_source})"]
     for attr, label in _REMOVE_SECTIONS:
         values = getattr(entry.remove, attr)
         if values:
@@ -1934,7 +1934,7 @@ def _format_edit_entry_lines(entry: EditModelDelete) -> list[str]:
     return lines
 
 
-def _format_validate_models_output(entries: Sequence[DriftReportEntry]) -> str:
+def _format_validate_datasets_output(entries: Sequence[DriftReportEntry]) -> str:
     """Render a List[ToDeleteEntry] as human-readable text for CLI output."""
     if not entries:
         return "No drift detected."
@@ -1942,16 +1942,16 @@ def _format_validate_models_output(entries: Sequence[DriftReportEntry]) -> str:
     for entry in entries:
         if isinstance(entry, NarrowedAccessFinding):
             lines.append(
-                f"NARROWED ACCESS: {entry.model_name} (datasource: {entry.data_source}) "
+                f"NARROWED ACCESS: {entry.dataset_name} (datasource: {entry.data_source}) "
                 f"reads {', '.join(entry.narrowed_by)}"
             )
             continue
         if isinstance(entry, RetypeFinding):
             lines.append(f"RE-TYPE: {entry.summary}")
             continue
-        if entry.tool == "delete_model":
+        if entry.tool == "delete_dataset":
             lines.append(
-                f"DELETE MODEL: {entry.model_name} (datasource: {entry.data_source})"
+                f"DELETE MODEL: {entry.dataset_name} (datasource: {entry.data_source})"
             )
         else:
             lines.extend(_format_edit_entry_lines(entry))
@@ -1960,7 +1960,7 @@ def _format_validate_models_output(entries: Sequence[DriftReportEntry]) -> str:
     return "\n".join(lines)
 
 
-def _format_cardinality_report_text(report: JoinCardinalityReport, *, indent: str = "") -> str:
+def _format_cardinality_report_text(report: RelationshipCardinalityReport, *, indent: str = "") -> str:
     if not report.findings:
         return f"{indent}No joins found."
     lines: list[str] = []
@@ -1968,7 +1968,7 @@ def _format_cardinality_report_text(report: JoinCardinalityReport, *, indent: st
         detected = f.detected.value if f.detected else "-"
         stored = f.stored.value if f.stored else "-"
         lines.append(
-            f"{indent}{f.model} -> {f.target_model}: detected={detected} "
+            f"{indent}{f.dataset} -> {f.to}: detected={detected} "
             f"stored={stored} verdict={f.verdict.value}"
         )
         for c in f.unique_contradictions:
@@ -2000,7 +2000,7 @@ def _resolve_validate_scope(args: argparse.Namespace, storage: StorageBackend) -
     model = getattr(args, "model", None)
     if not model:
         return
-    identities = run_sync(storage._list_all_model_identities())
+    identities = run_sync(storage._list_all_dataset_identities())
     # Models are keyed by (data_source, name), so an unscoped run matches the
     # name in every datasource that has one.
     if not any(
@@ -2017,7 +2017,7 @@ async def _validate_each_datasource(
 ) -> list[tuple[str, list[DriftReportEntry] | BaseException]]:
     """Validate every datasource concurrently, pairing each result with its name."""
     results = await asyncio.gather(
-        *(engine.validate_models(data_source=name) for name in ds_names),
+        *(engine.validate_datasets(data_source=name) for name in ds_names),
         return_exceptions=True,
     )
     return list(zip(ds_names, results))
@@ -2049,13 +2049,13 @@ async def _collect_drift(
             failures.append((ds_name, result))
         else:
             entries.extend(result)
-    return _filter_entries_by_model(entries, getattr(args, "model", None)), failures
+    return _filter_entries_by_dataset(entries, getattr(args, "model", None)), failures
 
 
-def _filter_entries_by_model(entries: list[_DriftEntryT], model: str | None) -> list[_DriftEntryT]:
-    if not model:
+def _filter_entries_by_dataset(entries: list[_DriftEntryT], dataset: str | None) -> list[_DriftEntryT]:
+    if not dataset:
         return entries
-    return [e for e in entries if e.model_name == model]
+    return [e for e in entries if e.dataset_name == dataset]
 
 
 async def _collect_cardinality_report(args: argparse.Namespace, engine: SlayerQueryEngine):
@@ -2064,37 +2064,37 @@ async def _collect_cardinality_report(args: argparse.Namespace, engine: SlayerQu
     if not (persist or getattr(args, "cardinality", False)):
         return None
     try:
-        return await engine.detect_join_cardinality(
+        return await engine.detect_relationship_cardinality(
             data_source=args.datasource,
-            model=getattr(args, "model", None),
+            dataset=getattr(args, "model", None),
             persist=persist,
         )
     except Exception as exc:
         _fail(f"validate-models: cardinality profiling failed: {exc}")
 
 
-async def _collect_all_models(args: argparse.Namespace, storage: StorageBackend) -> list:
+async def _collect_all_datasets(args: argparse.Namespace, storage: StorageBackend) -> list:
     """Every model in the requested datasource scope (for join-safety audit)."""
     ds_names = [args.datasource] if args.datasource else await storage.list_datasources()
     failures = DocumentLoadFailures()
-    return [m for ds in ds_names for m in failures.skip(await storage.load_models(data_source=ds))]
+    return [m for ds in ds_names for m in failures.skip(await storage.load_datasets(data_source=ds))]
 
 
-async def _collect_join_safety_findings(args: argparse.Namespace, storage: StorageBackend) -> list[JoinSafetyFinding]:
+async def _collect_relationship_safety_findings(args: argparse.Namespace, storage: StorageBackend) -> list[RelationshipSafetyFinding]:
     """Joins whose arity is neither declared m:1/1:1 nor structurally proven —
     metrics crossing them broadcast."""
-    findings = audit_join_safety(models=await _collect_all_models(args=args, storage=storage))
+    findings = audit_relationship_safety(datasets=await _collect_all_datasets(args=args, storage=storage))
     if getattr(args, "model", None):
-        findings = [f for f in findings if f.model == args.model]
+        findings = [f for f in findings if f.dataset == args.model]
     return findings
 
 
-def _print_join_safety_section(findings: list[JoinSafetyFinding]) -> None:
+def _print_relationship_safety_section(findings: list[RelationshipSafetyFinding]) -> None:
     if not findings:
         return
     print("\nJoin safety")
     for f in findings:
-        print(f"  [{f.data_source}] {f.model} → {f.target_model}: {f.message}")
+        print(f"  [{f.data_source}] {f.dataset} → {f.to}: {f.message}")
 
 
 def _exit_on_scan_failures(report) -> None:
@@ -2112,17 +2112,17 @@ def _exit_on_scan_failures(report) -> None:
         sys.exit(1)
 
 
-def _print_validate_json(*, entries, report, join_safety) -> None:
+def _print_validate_json(*, entries, report, relationship_safety) -> None:
     print(json.dumps({
         "drift": [e.model_dump(mode="json") for e in entries],
-        "join_safety": [f.model_dump(mode="json") for f in join_safety],
+        "join_safety": [f.model_dump(mode="json") for f in relationship_safety],
         "cardinality": report.model_dump(mode="json") if report else None,
     }, indent=2))
 
 
 def _print_drift_section(entries, *, headed: bool) -> None:
     """Headers only appear when a cardinality section follows."""
-    body = _format_validate_models_output(entries)
+    body = _format_validate_datasets_output(entries)
     print("Schema drift\n" + _indent_block(body) if headed else body)
 
 
@@ -2147,29 +2147,29 @@ async def _apply_force_clean(
     if result.errors:
         print(f"Errors ({len(result.errors)}):")
         for err in result.errors:
-            print(f"  - {err.tool} {err.model_name}: {err.error}")
+            print(f"  - {err.tool} {err.dataset_name}: {err.error}")
     # apply_drift_deletes re-validates whole datasources, so scope the residual
     # the same way the report was scoped — out-of-scope drift is not ours.
-    residual = _filter_entries_by_model(
+    residual = _filter_entries_by_dataset(
         result.residual, getattr(args, "model", None)
     )
     if residual:
         print("\nResidual drift after apply:")
-        print(_format_validate_models_output(residual))
+        print(_format_validate_datasets_output(residual))
         sys.exit(1)
     if result.errors:
         sys.exit(1)
     print("\n✓ no remaining drift")
 
 
-def _run_validate_models(args):
+def _run_validate_datasets(args):
     storage = _resolve_storage(args)
     _resolve_validate_scope(args, storage)
     engine = SlayerQueryEngine(storage=storage)
-    engine.run_sync(_validate_models_workflow(args, engine))
+    engine.run_sync(_validate_datasets_workflow(args, engine))
 
 
-async def _validate_models_workflow(args, engine: SlayerQueryEngine) -> None:
+async def _validate_datasets_workflow(args, engine: SlayerQueryEngine) -> None:
     """Drift, join safety, the optional clean and cardinality profiling, all in one event loop."""
     storage = engine.storage
     entries, failures = await _collect_drift(args, engine, storage)
@@ -2184,22 +2184,22 @@ async def _validate_models_workflow(args, engine: SlayerQueryEngine) -> None:
         # fail — profiling a set we could not fully validate would mislead.
         # Join safety is skipped: auditing a partially-loaded model set lies.
         if as_json:
-            _print_validate_json(entries=entries, report=None, join_safety=[])
+            _print_validate_json(entries=entries, report=None, relationship_safety=[])
         else:
             _print_drift_section(entries, headed=False)
         for ds_name, exc in failures:
             print(f"Datasource '{ds_name}' failed validation: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    join_safety = await _collect_join_safety_findings(args, storage)
+    join_safety = await _collect_relationship_safety_findings(args, storage)
     if as_json:
         report = await _collect_cardinality_report(args, engine)
-        _print_validate_json(entries=entries, report=report, join_safety=join_safety)
+        _print_validate_json(entries=entries, report=report, relationship_safety=join_safety)
         _exit_on_scan_failures(report)
         return
 
     _print_drift_section(entries, headed=wants_cardinality)
-    _print_join_safety_section(join_safety)
+    _print_relationship_safety_section(join_safety)
     # Clean first: profiling a model we are about to repair is wasted work.
     deletes = [e for e in entries if not isinstance(e, REPORT_ONLY_FINDINGS)]
     if bool(getattr(args, "force_clean", False)) and deletes:
@@ -2210,10 +2210,10 @@ async def _validate_models_workflow(args, engine: SlayerQueryEngine) -> None:
     _exit_on_scan_failures(report)
 
 
-def _run_recommend_root_model(args):
+def _run_recommend_population(args):
     storage = _resolve_storage(args)
     engine = SlayerQueryEngine(storage=storage)
-    rec = engine.recommend_root_model_sync(
+    rec = engine.recommend_population_sync(
         args.items, data_source=args.data_source,
         root_hint=getattr(args, "root_hint", None),
     )
@@ -2233,7 +2233,7 @@ async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
     include_hidden = bool(args.include_hidden_models)
     project = parse_dbt_project(
         args.dbt_project_path,
-        include_regular_models=include_hidden,
+        include_regular_datasets=include_hidden,
     )
 
     if not project.semantic_models and not (include_hidden and project.regular_models):
@@ -2250,7 +2250,7 @@ async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
     converter = DbtToSlayerConverter(
         project=project,
         data_source=args.datasource,
-        include_hidden_models=include_hidden,
+        include_hidden_datasets=include_hidden,
         target_dialect=ds.type if ds is not None else None,
         offline_reason=offline_reason,
     )
@@ -2260,14 +2260,14 @@ async def _import_dbt_workflow(args, engine: SlayerQueryEngine) -> None:
         result = converter.convert()
     except UndecidableIdentifierCaseError as exc:
         _fail(str(exc))
-    hidden_count = await _save_imported_dbt_models(storage=storage, models=result.models)
+    hidden_count = await _save_imported_dbt_datasets(storage=storage, datasets=result.datasets)
 
     # Grouped, category-keyed conversion report + a severity tally.
     if result.unconverted_metrics or result.warnings:
         print("\nConversion report:")
         print(result.render_report())
 
-    visible_count = len(result.models) - hidden_count
+    visible_count = len(result.datasets) - hidden_count
     unconverted, dropped = result.tally()
     print(
         f"\nDone: {visible_count} models, {hidden_count} hidden, "
@@ -2286,17 +2286,17 @@ async def _import_datasource(storage: StorageBackend, name: str) -> tuple[Dataso
     return ds, None
 
 
-async def _save_imported_dbt_models(*, storage: StorageBackend, models: list[SlayerModel]) -> int:
+async def _save_imported_dbt_datasets(*, storage: StorageBackend, datasets: list[SlayerDataset]) -> int:
     """Save and report each imported model; returns the hidden count."""
     hidden_count = 0
-    for model in models:
-        await storage.save_model(model)
+    for model in datasets:
+        await storage.save_dataset(model)
         suffix = " [hidden]" if model.hidden else ""
         if model.hidden:
             hidden_count += 1
         print(
             f"Imported model: {model.name}{suffix} "
-            f"({len(model.columns)} columns, {len(model.measures)} measures)"
+            f"({len(model.fields)} columns, {len(model.metrics)} measures)"
         )
     return hidden_count
 
@@ -2326,9 +2326,9 @@ async def _import_cube_workflow(args, engine: SlayerQueryEngine) -> None:
     except UndecidableIdentifierCaseError as exc:
         _fail(str(exc))
     saved = 0
-    for model in result.models:
+    for model in result.datasets:
         try:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
             saved += 1
         except Exception as exc:  # noqa: BLE001 — one bad model shouldn't abort the import
             result.report.add(CubeConversionIssue(
@@ -2339,21 +2339,21 @@ async def _import_cube_workflow(args, engine: SlayerQueryEngine) -> None:
     _print_cube_import_summary(result, include_hidden=args.include_hidden)
     report_path = _write_cube_report(result, args)
     print(
-        f"\nDone: {saved} of {result.report.model_count} models saved "
+        f"\nDone: {saved} of {result.report.dataset_count} models saved "
         f"({result.report.hidden_count} hidden, {result.report.view_count} views), "
         f"{len(result.report.issues)} report issues. Report: {report_path}"
     )
 
 
 def _print_cube_import_summary(result: CubeConversionResult, *, include_hidden: bool) -> None:
-    for model in result.models:
+    for model in result.datasets:
         if model.hidden and not include_hidden:
             continue
         suffix = " [hidden]" if model.hidden else ""
         kind = " (view)" if (model.meta or {}).get("cube_kind") == "view" else ""
         print(
             f"Imported model: {model.name}{kind}{suffix} "
-            f"({len(model.columns)} columns, {len(model.measures)} measures)"
+            f"({len(model.fields)} columns, {len(model.metrics)} measures)"
         )
     for severity in ("error", "warning", "info"):
         for issue in result.report.by_severity(severity):
@@ -2380,7 +2380,7 @@ def _run_import_osi(args):
 def _run_export_osi(args):
     engine = SlayerQueryEngine(storage=_resolve_storage(args))
     try:
-        result = engine.run_sync(export_osi(engine=engine, datasource=args.datasource, models=args.models,
+        result = engine.run_sync(export_osi(engine=engine, datasource=args.datasource, datasets=args.models,
                                             extensions=not args.no_extensions))
     except OsiExportError as exc:
         _fail(str(exc))
@@ -2402,17 +2402,17 @@ async def _restore_query_backed(engine: SlayerQueryEngine, result: OsiConversion
     pending = {model.name: model for model in result.query_backed}
     while pending:
         ready = [m for m in pending.values()
-                 if not {q.source_model for q in m.source_queries or [] if isinstance(q.source_model, str)} & set(pending)
+                 if not {q.population for q in m.source_queries or [] if isinstance(q.population, str)} & set(pending)
                  or len(pending) == 1]
         for model in ready or list(pending.values()):
             del pending[model.name]
             try:
-                await engine.save_model(model)
+                await engine.save_dataset(model)
             except Exception as exc:  # noqa: BLE001 — per-model isolation; reported
                 result.warnings.append(ConversionWarning(
-                    model_name=model.name, category="extension", severity="info",
+                    dataset_name=model.name, category="extension", severity="info",
                     message=f"Query-backed model {model.name!r} does not restore ({exc}); kept as a sql-mode "
-                            f"model over its source.",
+                            f"dataset over its source.",
                     suggestion="Import every model its saved queries read.",
                 ))
 
@@ -2447,11 +2447,11 @@ async def _import_osi_workflow(args, engine: SlayerQueryEngine) -> None:
     except OsiConversionError as exc:
         _fail(str(exc))
 
-    for model in result.models:
-        await storage.save_model(model)
+    for model in result.datasets:
+        await storage.save_dataset(model)
         print(
             f"Imported model: {model.name} "
-            f"({len(model.columns)} columns, {len(model.measures)} measures)"
+            f"({len(model.fields)} columns, {len(model.metrics)} measures)"
         )
     await _restore_query_backed(engine, result)
 
@@ -2461,19 +2461,19 @@ async def _import_osi_workflow(args, engine: SlayerQueryEngine) -> None:
 
     unconverted, dropped = result.tally()
     print(
-        f"\nDone: {len(result.models)} models, "
+        f"\nDone: {len(result.datasets)} models, "
         f"{unconverted} unconverted, {dropped} dropped"
     )
 
 
-def _models_list(storage: StorageBackend, args) -> None:
-    names = run_sync(storage.list_models())
-    usage_reporting.observe_model_count(len(names))
-    builtins = [m for ds in run_sync(storage.list_datasources()) for m in run_sync(storage.builtin_models(ds))]
+def _datasets_list(storage: StorageBackend, args) -> None:
+    names = run_sync(storage.list_datasets())
+    usage_reporting.observe_dataset_count(len(names))
+    builtins = [m for ds in run_sync(storage.list_datasources()) for m in run_sync(storage.builtin_datasets(ds))]
     if not names and not builtins:
         print("No models found.")
         return
-    models = {m.name: m for m in DocumentLoadFailures().skip(run_sync(storage.load_models()))}
+    models = {m.name: m for m in DocumentLoadFailures().skip(run_sync(storage.load_datasets()))}
     for name in names:
         model = models.get(name)
         if model is None or model.hidden:
@@ -2484,37 +2484,37 @@ def _models_list(storage: StorageBackend, args) -> None:
         print(f"{model.name}  — {model.description}")
 
 
-def _models_show(storage: StorageBackend, args) -> None:
-    model = run_sync(storage.get_model_or_builtin(args.name))
+def _datasets_show(storage: StorageBackend, args) -> None:
+    model = run_sync(storage.get_dataset_or_builtin(args.name))
     if model is None:
         _fail(f"Model '{args.name}' not found.")
     data = model.model_dump(mode="json", exclude_none=True)
     print(yaml.dump(data, sort_keys=False, default_flow_style=False).rstrip())
 
 
-def _models_create(storage, args) -> None:
+def _datasets_create(storage, args) -> None:
     with open(args.file) as f:
         data = yaml.safe_load(f)
-    model = SlayerModel.model_validate(data)
+    model = SlayerDataset.model_validate(data)
     # Route through engine.save_model so query-backed models get cache
     # populated (and user-supplied cache fields are rejected).
     engine = SlayerQueryEngine(storage=storage)
-    engine.run_sync(engine.save_model(model))
+    engine.run_sync(engine.save_dataset(model))
     print(f"Created model '{model.name}'.")
 
 
-def _models_delete(storage: StorageBackend, args) -> None:
-    if not run_sync(storage.delete_model(args.name)):
+def _datasets_delete(storage: StorageBackend, args) -> None:
+    if not run_sync(storage.delete_dataset(args.name)):
         _fail(f"Model '{args.name}' not found.")
     print(f"Deleted model '{args.name}'.")
 
 
-_MODELS_COMMANDS = {"list": _models_list, "show": _models_show, "create": _models_create, "delete": _models_delete}
+_DATASETS_COMMANDS = {"list": _datasets_list, "show": _datasets_show, "create": _datasets_create, "delete": _datasets_delete}
 
 
-def _run_models(args):
+def _run_datasets(args):
     storage = _resolve_storage(args)
-    handler = _MODELS_COMMANDS.get(args.models_command)
+    handler = _DATASETS_COMMANDS.get(args.models_command)
     if handler is None:
         _fail("usage: slayer models {list,show,create,delete}")
     handler(storage, args)
@@ -2661,13 +2661,13 @@ def _confirm(prompt: str, *, assume_yes: bool) -> bool:
     return answer in ("y", "yes")
 
 
-def _persist_ingested_models(models: list[SlayerModel], storage: StorageBackend, *, assume_yes: bool) -> None:
+def _persist_ingested_datasets(datasets: list[SlayerDataset], storage: StorageBackend, *, assume_yes: bool) -> None:
     """Persist freshly-ingested models (``datasources create --ingest``), after a collision-confirmation prompt."""
-    if not models:
+    if not datasets:
         print("No models were generated.")
         return
 
-    colliding = [m.name for m in models if run_sync(storage.get_model(m.name)) is not None]
+    colliding = [m.name for m in datasets if run_sync(storage.get_dataset(m.name)) is not None]
     if colliding and not _confirm(
         f"Models already exist and will be overwritten: {', '.join(colliding)}. Continue?",
         assume_yes=assume_yes,
@@ -2675,13 +2675,13 @@ def _persist_ingested_models(models: list[SlayerModel], storage: StorageBackend,
         print("Aborted before writing models.", file=sys.stderr)
         sys.exit(1)
 
-    for model in models:
+    for model in datasets:
         try:
-            run_sync(storage.save_model(model))
+            run_sync(storage.save_dataset(model))
         except ValueError as e:
             print(f"Skipped {model.name}: {e}")
             continue
-        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
+        print(f"Ingested: {model.name} ({len(model.fields)} columns, {len(model.metrics)} measures)")
 
 
 def _run_datasources_create(args, storage):
@@ -2761,7 +2761,7 @@ def _create_ingest_and_report(*, args, ds, storage, schema_list, all_schemas):
     except Exception as e:
         _fail(f"Ingestion failed: {e}")
 
-    _persist_ingested_models(report.models, storage, assume_yes=args.yes)
+    _persist_ingested_datasets(report.datasets, storage, assume_yes=args.yes)
 
     if report.schema_description and not ds.description:
         ds = ds.model_copy(update={"description": report.schema_description})
@@ -2836,11 +2836,11 @@ def _run_datasources_create_demo(args, storage):  # NOSONAR S3776 — linear dem
         return
 
     try:
-        models = ingest_demo_models(storage=storage, datasource=ds)
+        models = ingest_demo_datasets(storage=storage, datasource=ds)
     except Exception as e:
         _fail(f"Ingestion failed: {e}")
     for model in models:
-        print(f"Ingested: {model.name} ({len(model.columns)} columns, {len(model.measures)} measures)")
+        print(f"Ingested: {model.name} ({len(model.fields)} columns, {len(model.metrics)} measures)")
 
 
 def _load_query_arg(value):

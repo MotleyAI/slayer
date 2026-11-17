@@ -11,8 +11,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pytest
 
-from slayer.core.enums import JoinCardinality, TimeGranularity
-from slayer.core.models import SlayerModel
+from slayer.core.enums import RelationshipCardinality, TimeGranularity
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 
 from tests._dev1840_fixtures import (
@@ -68,20 +68,20 @@ _CUST_REGION: Dict[int, Optional[str]] = {
     c[_C_ID]: _REGION_NAME.get(c[_C_REGION]) for c in _CUSTOMERS_ROWS}
 
 
-def keyless_declared_models() -> List[SlayerModel]:
+def keyless_declared_models() -> List[SlayerDataset]:
     """customers without a unique key, the orders → customers hop declared
     many-to-one: association cannot dedup, the parameter's key stays provable."""
     models = dev1840_models()
     cust = next(m for m in models if m.name == "customers")
-    cust.columns = [
+    cust.fields = [
         (c.model_copy(update={"primary_key": False}) if c.name == "id" else c)
-        for c in cust.columns
+        for c in cust.fields
     ]
     orders = models[0]
-    orders.joins = [
-        (j.model_copy(update={"cardinality": JoinCardinality.MANY_TO_ONE})
-         if j.target_model == "customers" else j)
-        for j in orders.joins
+    orders.relationships = [
+        (j.model_copy(update={"cardinality": RelationshipCardinality.MANY_TO_ONE})
+         if j.to == "customers" else j)
+        for j in orders.relationships
     ]
     return models
 
@@ -95,7 +95,7 @@ def mode_q(mode: Optional[str], **kw) -> SlayerQuery:
 
 
 def ordered_month_td() -> List[TimeDimension]:
-    return [TimeDimension(dimension="ordered_at",
+    return [TimeDimension(field="ordered_at",
                           granularity=TimeGranularity.MONTH)]
 
 

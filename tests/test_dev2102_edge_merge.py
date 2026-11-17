@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousJoinPathError, CircularJoinPathError, QueryExtensionError, SlayerError
-from slayer.core.join_edges import EdgeMerge
-from slayer.core.models import ModelJoin
+from slayer.core.errors import AmbiguousRelationshipPathError, CircularRelationshipPathError, QueryExtensionError, SlayerError
+from slayer.core.relationship_edges import EdgeMerge
+from slayer.core.models import DatasetRelationship
 from slayer.engine.query_engine import SlayerQueryEngine
 
 from tests._dev2102_fixtures import (
@@ -63,7 +63,7 @@ class TestStoredEdgeReuse:
     async def test_a_differing_unnamed_join_stays_parallel_and_fails_closed(self, dialect) -> None:
         query = q(**_tier_amounts(extensions=[ext("orders", joins=[join("customers", [["referrer_id", "id"]])])]))
         async with shop(dialect) as engine:
-            with pytest.raises(AmbiguousJoinPathError):
+            with pytest.raises(AmbiguousRelationshipPathError):
                 await engine.execute(query)
 
     async def test_a_reversed_declaration_is_the_stored_edge(self, dialect) -> None:
@@ -199,12 +199,12 @@ class TestConflicts:
         assert "'a'" in message, message
 
     def test_several_edges_sharing_the_declared_name_are_ambiguous(self) -> None:
-        home = ModelJoin(target_model="regions", name="home", join_pairs=REGION_PAIRS)
-        back = ModelJoin(target_model="customers", name="home", join_pairs=[["id", "region_id"]])
-        merge = EdgeMerge(models={"customers": customers(home), "regions": regions().model_copy(
+        home = DatasetRelationship(to="regions", name="home", join_pairs=REGION_PAIRS)
+        back = DatasetRelationship(to="customers", name="home", join_pairs=[["id", "region_id"]])
+        merge = EdgeMerge(datasets={"customers": customers(home), "regions": regions().model_copy(
             update={"joins": [back]})})
         with pytest.raises(QueryExtensionError, match="matches 2 edges"):
-            merge.add(declaring="customers", join=home)
+            merge.add(declaring="customers", relationship=home)
 
     async def test_two_names_for_one_new_relationship_are_an_error(self, dialect) -> None:
         query = q(source_model="customers", dimensions=["name"], extensions=[
@@ -253,15 +253,15 @@ class TestNewEdges:
             ext("regions", joins=[join("customers", [["manager_id", "id"]], name="manager")]),
         ])
         stored = with_models(
-            customers(ModelJoin(target_model="regions", name="home_region", join_pairs=REGION_PAIRS)),
+            customers(DatasetRelationship(to="regions", name="home_region", join_pairs=REGION_PAIRS)),
             regions().model_copy(update={"joins": [
-                ModelJoin(target_model="customers", name="manager", join_pairs=[["manager_id", "id"]])]}),
+                DatasetRelationship(to="customers", name="manager", join_pairs=[["manager_id", "id"]])]}),
         )
         async with shop(dialect) as engine:
-            with pytest.raises(CircularJoinPathError):
+            with pytest.raises(CircularRelationshipPathError):
                 await engine.execute(local)
         async with shop(dialect, stored) as engine:
-            with pytest.raises(CircularJoinPathError):
+            with pytest.raises(CircularRelationshipPathError):
                 await engine.execute(plain)
 
     async def test_a_query_written_join_to_a_stage_wins_over_a_same_named_stored_edge(self, dialect) -> None:

@@ -10,9 +10,9 @@ import sqlglot
 from pytest_postgresql import factories
 from sqlglot import exp
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import SlayerError
-from slayer.core.models import Aggregation, DatasourceConfig, ModelJoin
+from slayer.core.models import Aggregation, DatasourceConfig, DatasetRelationship
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._osi_export_fixtures import (
     BASIC_MEASURES, DATASOURCE, PG_DDL, col, customers, measure, orders, orders_columns, to_customers, visits,
@@ -65,7 +65,7 @@ async def test_cross_model_ratio_is_model_scoped(env) -> None:
 
 
 async def test_ambiguous_route_measure_is_slayer_only(env) -> None:
-    second = ModelJoin(target_model="customers", join_pairs=[["region_code", "id"]], name="referrer",
+    second = DatasetRelationship(to="customers", join_pairs=[["region_code", "id"]], name="referrer",
                        cardinality=None)
     model = orders(columns=[*orders_columns(), col("region_code", DataType.INT, "quantity")],
                    joins=[to_customers(name="buyer"), second],
@@ -153,7 +153,7 @@ async def test_approximate_distinct_count_is_dialect_only(env) -> None:
 
 async def test_custom_aggregation_inlined(env) -> None:
     model = orders(measures=[measure("trimmed", "trimmed_sum(amount)")])
-    model.aggregations = [Aggregation(name="trimmed_sum", formula="SUM(CASE WHEN {value} < 15 THEN {value} END)")]
+    model.aggregations = [Aggregation(name="trimmed_sum", expression="SUM(CASE WHEN {value} < 15 THEN {value} END)")]
     result = await export_models(env, customers(), model)
     assert same_sql(_sql(metric(dataset(result.document, "orders"), "trimmed")),
                     "SUM(CASE WHEN amount < 15 THEN amount END)")
@@ -179,8 +179,8 @@ async def test_relocated_metric_name_unique_under_case_folding(env) -> None:
 
 
 async def test_relationship_and_metric_names_unique_document_wide(env) -> None:
-    to_cust = ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                        cardinality=JoinCardinality.MANY_TO_ONE)
+    to_cust = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+                        cardinality=RelationshipCardinality.MANY_TO_ONE)
     ratio = measure("aov_per_customer", "sum(amount) / count_distinct(customers.id)")
     result = await export_models(env, customers(), orders(measures=[*BASIC_MEASURES, ratio]),
                                  visits(joins=[to_cust]))
@@ -194,7 +194,7 @@ async def test_case_ambiguous_identifier_is_quoted(env) -> None:
     columns = [*orders_columns(), col("Status", DataType.TEXT, '"LegalType"')]
     await save(env, customers())
     # Unvalidated save: a grandfathered ``status``/``Status`` collision a validated save would refuse.
-    await YAMLStorage(base_dir=str(env.store)).save_model(
+    await YAMLStorage(base_dir=str(env.store)).save_dataset(
         orders(columns=columns, measures=[measure("n_types", "count_distinct(Status)")]), _validate=False)
     result = await export(env)
     tree = sqlglot.parse_one(_sql(metric(dataset(result.document, "orders"), "n_types")), read="snowflake")
@@ -226,7 +226,7 @@ async def test_dialect_only_field_expression(tmp_path: Path) -> None:
                                                    database="none"))
     model = orders(columns=[*orders_columns(), col("month_label", DataType.TEXT, "to_char(ordered_on, 'YYYY-MM')")],
                    joins=[], measures=BASIC_MEASURES)
-    await storage.save_model(model, _validate=False)
+    await storage.save_dataset(model, _validate=False)
     label = field(dataset((await export(pg)).document, "orders"), "month_label")
     assert label is not None
     assert "sql" not in label["expression"]

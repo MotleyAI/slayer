@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 
@@ -26,12 +26,12 @@ async def storage(mydb_orders_storage: StorageBackend) -> StorageBackend:
     # DEV-1428: cascade tests additionally need a second model
     # (``orders_archive``) so they can pin that the dotted-namespace
     # rule excludes substring-prefix matches.
-    await mydb_orders_storage.save_model(
-        SlayerModel(
+    await mydb_orders_storage.save_dataset(
+        SlayerDataset(
             name="orders_archive",
             sql_table="orders_archive",
             data_source="mydb",
-            columns=[Column(name="id", sql="id", primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", primary_key=True)],
         )
     )
     return mydb_orders_storage
@@ -45,7 +45,7 @@ class TestDeleteModelCascade:
             learning="x",
             entities=["mydb.orders", "mydb.orders.amount", "mydb.orders_archive"],
         )
-        await storage.delete_model("orders", data_source="mydb")
+        await storage.delete_dataset("orders", data_source="mydb")
         loaded = await storage.get_memory(a.id)
         # mydb.orders + mydb.orders.amount are stripped; mydb.orders_archive
         # is NOT (substring-prefix is forbidden by the dotted-namespace rule).
@@ -60,7 +60,7 @@ class TestDeleteModelCascade:
             learning="rule about orders only",
             entities=["mydb.orders.amount"],
         )
-        await storage.delete_model("orders", data_source="mydb")
+        await storage.delete_dataset("orders", data_source="mydb")
         loaded = await storage.get_memory(m.id)
         assert loaded.learning == "rule about orders only"
         assert loaded.entities == []
@@ -114,10 +114,10 @@ class TestEditModelRemoveCascade:
             entities=["mydb.orders", "mydb.orders.amount", "mydb.orders.id"],
         )
         engine = SlayerQueryEngine(storage=storage)
-        await engine.edit_model_remove(
-            model_name="orders",
+        await engine.edit_dataset_remove(
+            dataset_name="orders",
             data_source="mydb",
-            remove_columns=["amount"],
+            remove_fields=["amount"],
         )
         loaded = await storage.get_memory(a.id)
         assert "mydb.orders.amount" not in loaded.entities
@@ -145,7 +145,7 @@ class TestEmbeddingRefreshNotFired:
             "slayer.search.retrievers.embeddings."
             "EmbeddingRetriever.upsert_memory",
         ) as mock_refresh:
-            await storage.delete_model("orders", data_source="mydb")
+            await storage.delete_dataset("orders", data_source="mydb")
             assert mock_refresh.call_count == 0
 
     async def test_cascade_does_not_call_embed_batch(
@@ -166,7 +166,7 @@ class TestEmbeddingRefreshNotFired:
         with patch(
             "slayer.search.retrievers.embeddings.embed_batch",
         ) as mock_embed:
-            await storage.delete_model("orders", data_source="mydb")
+            await storage.delete_dataset("orders", data_source="mydb")
             assert mock_embed.call_count == 0
 
 

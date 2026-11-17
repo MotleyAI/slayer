@@ -45,7 +45,7 @@ ErrorToken = Literal[
     "other", "exit", "interrupted", "cancelled", "timeout", "connection", "file_not_found",
     "permission", "os_error", "import_error", "not_implemented", "key_error", "type_error",
     "value_error", "json_error", "validation_error", "db_operational", "db_programming",
-    "db_error", "slayer_error", "query_type", "ambiguous_model", "entity_resolution",
+    "db_error", "slayer_error", "query_type", "ambiguous_dataset", "entity_resolution",
     "memory_not_found", "schema_drift", "unknown_reference", "population_inference",
     "missing_driver", "translation", "tool_error", "http_4xx", "http_5xx",
 ]
@@ -83,7 +83,7 @@ DialectToken = Literal[
 ]
 
 DatasourceBucket = Literal["0", "1", "2-5", "6+"]
-ModelCountBucket = Literal["0", "1-10", "11-50", "51-200", "200+"]
+DatasetCountBucket = Literal["0", "1-10", "11-50", "51-200", "200+"]
 QueryCountBucket = Literal["0", "1", "2-5", "6-20", "21+"]
 StorageToken = Literal["yaml", "sqlite", "other"]
 
@@ -198,7 +198,7 @@ class Context(_Strict):
     """Histograms over processes."""
 
     storage: dict[StorageToken, Count] = Field(default_factory=dict)
-    model_count: dict[ModelCountBucket, Count] = Field(default_factory=dict)
+    dataset_count: dict[DatasetCountBucket, Count] = Field(default_factory=dict)
     demo: Count = 0
 
 
@@ -291,7 +291,7 @@ def merge(batches: list[Batch]) -> Batch:
         for dialect, buckets in batch.dialects.datasources.items():
             _add(dialects.datasources.setdefault(dialect, {}), buckets)
         _add(context.storage, batch.context.storage)
-        _add(context.model_count, batch.context.model_count)
+        _add(context.dataset_count, batch.context.dataset_count)
         context.demo += batch.context.demo
         for client in batch.mcp_clients:
             key = (client.client, client.major)

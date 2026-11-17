@@ -14,12 +14,12 @@ from slayer.core.errors import (
     UnknownReferenceError,
     UnreachableDefinitionError,
     UnrelatedDatasetError,
-    UnresolvableDimensionJoinError,
-    UnsafeJoinInputError,
+    UnresolvableDimensionRelationshipError,
+    UnsafeRelationshipInputError,
 )
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.enums import DataType
-from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
+from slayer.core.policy import FieldFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.access_filtered import AccessFilteredStorage
@@ -85,7 +85,7 @@ class TestResolution:
     async def test_grand_total_ratio(self, engine) -> None:
         resp = await engine.execute(ratio_query())
         customers = await engine.execute(query(measures=[m("count(*)", "n")]))
-        events = await engine.execute(SlayerQuery.model_validate({"source_model": "events", "measures": [m("count(*)", "n")]}))
+        events = await engine.execute(SlayerQuery.model_validate({"population": "events", "metrics": [m("count(*)", "n")]}))
         expected = only_row(events, "n")[0] / only_row(customers, "n")[0]
         assert only_row(resp, "events_per_customer") == (pytest.approx(5 / 3),)
         assert only_row(resp, "events_per_customer")[0] == pytest.approx(expected)
@@ -93,7 +93,7 @@ class TestResolution:
     async def test_path_continues_past_the_product_hop(self, engine) -> None:
         resp = await engine.execute(query(measures=[m("count(events.users.id)", "n")]))
         direct = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "events", "measures": [m("count(users.id)", "n")],
+            "population": "events", "metrics": [m("count(users.id)", "n")],
         }))
         assert only_row(resp, "n") == only_row(direct, "n")
 
@@ -113,11 +113,11 @@ class TestResolution:
         assert only_row(resp, "ne") == (3.0,)
 
     async def test_stored_stage_of_a_query_backed_model(self, engine: SlayerQueryEngine) -> None:
-        await engine.save_model(SlayerModel(name="per_city", data_source="test", source_queries=[query(
+        await engine.save_dataset(SlayerDataset(name="per_city", data_source="test", source_queries=[query(
             dimensions=["city"], measures=[m("count(*)", "n"), m("count(events.id)", "ne")],
         )]))
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "per_city", "dimensions": ["city"], "measures": [m("max(ne)", "ne_max")],
+            "population": "per_city", "dimensions": ["city"], "metrics": [m("max(ne)", "ne_max")],
         }))
         assert rows(resp, "ne_max") == {"A": (5.0,), "B": (5.0,)}
 
@@ -145,17 +145,17 @@ class TestResolution:
 class TestExistingResolutionUnchanged:
     async def test_join_path_reference(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "users", "dimensions": ["name"], "measures": [m("count(events.id)", "n")],
+            "population": "users", "dimensions": ["name"], "metrics": [m("count(events.id)", "n")],
         }))
         assert rows(resp, "n", by="name") == {"u1": (2.0,), "u2": (2.0,), "u3": (1.0,)}
         assert unrelated_warnings(resp) == []
 
     async def test_short_form_route(self, engine) -> None:
         short = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "events", "dimensions": ["orgs.name"], "measures": [m("count(*)", "n")],
+            "population": "events", "dimensions": ["orgs.name"], "metrics": [m("count(*)", "n")],
         }))
         full = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "events", "dimensions": ["users.orgs.name"], "measures": [m("count(*)", "n")],
+            "population": "events", "dimensions": ["users.orgs.name"], "metrics": [m("count(*)", "n")],
         }))
         assert rows(short, "n", by="name") == rows(full, "n", by="name") == {"o1": (4.0,), "o2": (1.0,)}
         assert unrelated_warnings(short) == []
@@ -169,7 +169,7 @@ class TestExistingResolutionUnchanged:
 class TestNamesThatAreNotReachableDatasets:
     async def test_unknown_name(self, engine) -> None:
         q = query(measures=[m("count(evnts.id)", "n")])
-        with pytest.raises(UnresolvableDimensionJoinError) as exc:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
             await engine.execute(q)
         assert "evnts.id" in str(exc.value)
         assert "no route to target" in str(exc.value)
@@ -182,12 +182,12 @@ class TestNamesThatAreNotReachableDatasets:
 
     async def test_model_of_another_datasource(self, engine: SlayerQueryEngine) -> None:
         await engine.storage.save_datasource(DatasourceConfig(name="other", type="sqlite", database=":memory:"))
-        await engine.storage.save_model(SlayerModel(
+        await engine.storage.save_dataset(SlayerDataset(
             name="widgets", sql_table="widgets", data_source="other",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
         ))
         q = query(measures=[m("count(widgets.id)", "n")])
-        with pytest.raises(UnresolvableDimensionJoinError) as exc:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
             await engine.execute(q)
         assert "no route to target" in str(exc.value)
 
@@ -199,9 +199,9 @@ class TestNamesThatAreNotReachableDatasets:
             hidden_q = query(measures=[m("count(events.id)", "n")])
             unknown_q = query(measures=[m("count(evnts.id)", "n")])
             try:
-                with pytest.raises(UnresolvableDimensionJoinError) as hidden_exc:
+                with pytest.raises(UnresolvableDimensionRelationshipError) as hidden_exc:
                     await scoped.execute(hidden_q)
-                with pytest.raises(UnresolvableDimensionJoinError) as unknown_exc:
+                with pytest.raises(UnresolvableDimensionRelationshipError) as unknown_exc:
                     await scoped.execute(unknown_q)
             finally:
                 scoped.close()
@@ -212,7 +212,7 @@ class TestNamesThatAreNotReachableDatasets:
 async def test_row_level_security_scopes_the_unrelated_dataset(backend) -> None:
     async with main_engine(backend) as eng:
         scoped = SlayerQueryEngine(
-            storage=eng.storage, policy=SessionPolicy(ruleset=ColumnFilterRuleset(column="tenant", value="t1")),
+            storage=eng.storage, policy=SessionPolicy(ruleset=FieldFilterRuleset(field="tenant", value="t1")),
         )
         try:
             resp = await scoped.execute(ratio_query())
@@ -223,23 +223,23 @@ async def test_row_level_security_scopes_the_unrelated_dataset(backend) -> None:
 
 class TestStoredDefinitionsRefuse:
     async def test_saved_measure(self, engine: SlayerQueryEngine) -> None:
-        await engine.save_model(customers_model(measures=[ModelMeasure(name="ev", formula="count(events.id)")]))
+        await engine.save_dataset(customers_model(measures=[DatasetMetric(name="ev", expression="count(events.id)")]))
         q = query(measures=["ev"])
-        with pytest.raises(UnresolvableDimensionJoinError) as exc:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
             await engine.execute(q)
         assert "no route to target" in str(exc.value)
 
     @pytest.mark.parametrize("definition", ["column", "filter"])
     async def test_column_sql_and_model_filter(self, engine: SlayerQueryEngine, definition: str) -> None:
         if definition == "column":
-            model = customers_model(columns=[Column(name="ev_amount", type=DataType.DOUBLE, sql="events.amount")])
+            model = customers_model(columns=[DatasetField(name="ev_amount", datatype=DataType.DOUBLE, sql="events.amount")])
             use, named = query(measures=[m("sum(ev_amount)", "x")]), "ev_amount"
         else:
             model = customers_model(filters=["events.amount > 1"])
             use, named = query(measures=[m("count(*)", "x")]), "events.amount > 1"
         with pytest.raises(SlayerError) as saved:
-            await engine.save_model(model)
-        await engine.storage.save_model(model, _validate=False)
+            await engine.save_dataset(model)
+        await engine.storage.save_dataset(model, _validate=False)
         with pytest.raises(SlayerError) as used:
             await engine.execute(use)
         assert type(used.value) is type(saved.value)
@@ -249,41 +249,41 @@ class TestStoredDefinitionsRefuse:
 
     @pytest.mark.parametrize("sql", ['"events".amount', '"events"."amount"'])
     async def test_quoted_qualifier(self, engine: SlayerQueryEngine, sql: str) -> None:
-        model = customers_model(columns=[Column(name="ev_amount", type=DataType.DOUBLE, sql=sql)])
-        await engine.storage.save_model(model, _validate=False)
+        model = customers_model(columns=[DatasetField(name="ev_amount", datatype=DataType.DOUBLE, sql=sql)])
+        await engine.storage.save_dataset(model, _validate=False)
         q = query(measures=[m("sum(ev_amount)", "x")])
         with pytest.raises(SlayerError, match="no join path reaches 'events'"):
             await engine.execute(q)
 
     @pytest.mark.parametrize(("source", "formula"), [("per_city", "max(n)"), ("orgs", "max(per_city.n)")])
     async def test_stage_base_definition(self, engine: SlayerQueryEngine, source: str, formula: str) -> None:
-        await engine.storage.save_model(SlayerModel(
+        await engine.storage.save_dataset(SlayerDataset(
             name="logs", sql_table="orgs", data_source="test",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="name", type=DataType.TEXT)],
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT)],
         ))
-        stale = customers_model(columns=[Column(name="lx", type=DataType.TEXT, sql="logs.name")])
-        await engine.storage.save_model(stale, _validate=False)
-        await engine.storage.save_model(SlayerModel(name="per_city", data_source="test", source_queries=[
+        stale = customers_model(columns=[DatasetField(name="lx", datatype=DataType.TEXT, sql="logs.name")])
+        await engine.storage.save_dataset(stale, _validate=False)
+        await engine.storage.save_dataset(SlayerDataset(name="per_city", data_source="test", source_queries=[
             query(dimensions=["city"], measures=[m("count(lx)", "n")]),
         ]), _validate=False)
-        q = SlayerQuery.model_validate({"source_model": source, "measures": [m(formula, "x")]})
+        q = SlayerQuery.model_validate({"population": source, "metrics": [m(formula, "x")]})
         with pytest.raises(UnreachableDefinitionError, match="no join path reaches 'logs' from 'customers'"):
             await engine.execute(q)
 
     async def test_unspliceable_unrelated_query_backed_model(self, engine: SlayerQueryEngine) -> None:
-        await engine.storage.save_model(SlayerModel(name="per_city", data_source="test", source_queries=[
+        await engine.storage.save_dataset(SlayerDataset(name="per_city", data_source="test", source_queries=[
             query(dimensions=["city"], measures=[m("count(nope)", "n")]),
         ]), _validate=False)
-        q = SlayerQuery.model_validate({"source_model": "orgs", "measures": [m("max(per_city.n)", "x")]})
+        q = SlayerQuery.model_validate({"population": "orgs", "metrics": [m("max(per_city.n)", "x")]})
         with pytest.raises(UnknownReferenceError, match="'nope'"):
             await engine.execute(q)
 
     async def test_edge_named_like_an_unspliceable_model(self, engine: SlayerQueryEngine) -> None:
-        await engine.storage.save_model(SlayerModel(name="per_city", data_source="test", source_queries=[
+        await engine.storage.save_dataset(SlayerDataset(name="per_city", data_source="test", source_queries=[
             query(dimensions=["city"], measures=[m("count(nope)", "n")]),
         ]), _validate=False)
-        edge = ModelJoin(target_model="orgs", join_pairs=[["id", "id"]], name="per_city")
-        await engine.storage.save_model(customers_model(joins=[edge]), _validate=False)
+        edge = DatasetRelationship(to="orgs", join_pairs=[["id", "id"]], name="per_city")
+        await engine.storage.save_dataset(customers_model(joins=[edge]), _validate=False)
         resp = await engine.execute(query(measures=[m("count(per_city.id)", "n")]))
         assert only_row(resp, "n") == (2.0,)
         assert unrelated_warnings(resp) == []
@@ -298,7 +298,7 @@ class TestAggregates:
         resp = await engine.execute(grouped_query(to_many_handling="broadcast"))
         assert rows(resp, "n_customers", "n_events") == {"A": (2.0, 5.0), "B": (1.0, 5.0)}
         (w,) = broadcast_warnings(resp)
-        assert "n_events" in w.measure
+        assert "n_events" in w.metric
         assert "city" in " ".join(d.dimension for d in w.dimensions)
 
     @pytest.mark.parametrize("mode", [None, "associate"])
@@ -411,15 +411,15 @@ class TestRowLevelRefusal:
 
     async def test_mixed_operands_inside_one_aggregation(self, engine) -> None:
         q = query(measures=[m("sum(events.amount * customers.id)", "x")])
-        with pytest.raises(UnsafeJoinInputError):
+        with pytest.raises(UnsafeRelationshipInputError):
             await engine.execute(q)
 
     def test_empty_join_pairs_name_the_aggregate_remedy(self) -> None:
         with pytest.raises(pydantic.ValidationError) as exc:
             SlayerQuery.model_validate({
-                "source_model": "customers",
-                "extensions": [{"source_name": "customers", "joins": [{"target_model": "events", "join_pairs": []}]}],
-                "measures": ["count(*)"],
+                "population": "customers",
+                "extensions": [{"source_name": "customers", "relationships": [{"to": "events", "join_pairs": []}]}],
+                "metrics": ["count(*)"],
             })
         msg = str(exc.value)
         assert "join_pairs" in msg
@@ -479,7 +479,7 @@ class TestWarnings:
         (w,) = unrelated_warnings(resp)
         assert w.dataset == "events"
         assert w.population == "customers"
-        assert any("events_per_customer" in name for name in w.measures)
+        assert any("events_per_customer" in name for name in w.metrics)
         assert warnings_of(resp, "broadcast") == []
         assert any("unrelated" in str(c.message).lower() and "events" in str(c.message) for c in caught)
 
@@ -511,7 +511,7 @@ class TestWarnings:
         assert len(entries) == 2
         assert {w.dataset for w in entries} == {"events"}
         assert len({w.location for w in entries}) == 2
-        measure_sets = sorted(sorted(w.measures) for w in entries)
+        measure_sets = sorted(sorted(w.metrics) for w in entries)
         assert any(len(names) == 2 for names in measure_sets)
         assert any(len(names) == 1 and "outer" in names[0] for names in measure_sets)
 

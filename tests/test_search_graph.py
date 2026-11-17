@@ -23,11 +23,11 @@ import pytest_asyncio
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.search.graph import (
     _validate_cypher,
@@ -60,28 +60,28 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
             DatasourceConfig(name="analytics", type="sqlite", database=":memory:")
         )
 
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="shop",
                 description="Order transactions",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                    Column(
+                fields=[
+                    DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(
                         name="amount",
                         sql="amount",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                         label="Order amount",
                         description="Net order value in USD",
                     ),
-                    Column(name="status", sql="status", type=DataType.TEXT),
-                    Column(name="customer_id", type=DataType.INT, hidden=True),
+                    DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                    DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
                 ],
-                measures=[
-                    ModelMeasure(
+                metrics=[
+                    DatasetMetric(
                         name="total_revenue",
-                        formula="sum(amount)",
+                        expression="sum(amount)",
                         label="Total revenue",
                         description="Sum of order amounts",
                     )
@@ -89,42 +89,42 @@ async def rich_storage() -> AsyncIterator[YAMLStorage]:
                 aggregations=[
                     Aggregation(
                         name="weighted_avg",
-                        formula="SUM({col} * weight) / SUM(weight)",
+                        expression="SUM({col} * weight) / SUM(weight)",
                     )
                 ],
-                joins=[
-                    ModelJoin(
-                        target_model="customers",
+                relationships=[
+                    DatasetRelationship(
+                        to="customers",
                         join_pairs=[["customer_id", "id"]],
                     )
                 ],
             )
         )
 
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="customers",
                 sql_table="customers",
                 data_source="shop",
                 description="Customer master data",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                    Column(name="email", sql="email", type=DataType.TEXT),
-                    Column(name="region", sql="region", type=DataType.TEXT),
+                fields=[
+                    DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="email", sql="email", datatype=DataType.TEXT),
+                    DatasetField(name="region", sql="region", datatype=DataType.TEXT),
                 ],
             )
         )
 
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="events",
                 sql_table="events",
                 data_source="analytics",
                 description="Clickstream events",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                    Column(
-                        name="event_type", sql="event_type", type=DataType.TEXT
+                fields=[
+                    DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(
+                        name="event_type", sql="event_type", datatype=DataType.TEXT
                     ),
                 ],
             )
@@ -161,14 +161,14 @@ async def shop_only_storage() -> AsyncIterator[YAMLStorage]:
         await storage.save_datasource(
             DatasourceConfig(name="shop", type="sqlite", database=":memory:")
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="shop",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="amount", type=DataType.DOUBLE),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="amount", datatype=DataType.DOUBLE),
                 ],
             )
         )
@@ -218,7 +218,7 @@ async def test_yaml_storage_fingerprint_changes_after_delete(
     shop_only_storage: YAMLStorage,
 ) -> None:
     fp_before = await shop_only_storage.graph_fingerprint()
-    await shop_only_storage.delete_model("orders", data_source="shop")
+    await shop_only_storage.delete_dataset("orders", data_source="shop")
     fp_after = await shop_only_storage.graph_fingerprint()
     assert fp_after != fp_before
 
@@ -248,12 +248,12 @@ async def test_sqlite_storage_fingerprint_changes_after_write() -> None:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="m",
                 sql_table="m",
                 data_source="ds",
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
             )
         )
         fp_before = await storage.graph_fingerprint()
@@ -403,9 +403,9 @@ async def descriptions_storage() -> AsyncIterator[YAMLStorage]:
             database=":memory:",
             description="warehouse_reconciliation_alpha unique term",
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="warehouse",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
         ))
         await storage.save_memory(
             learning="orders body",
@@ -455,14 +455,14 @@ async def test_aggregation_description_property(
     # aggregation ``weighted_avg`` that has no description; create a
     # second, described aggregation on the same model to exercise the
     # description column.
-    orders = await rich_storage.get_model("orders", data_source="shop")
+    orders = await rich_storage.get_dataset("orders", data_source="shop")
     assert orders is not None
     orders.aggregations.append(Aggregation(
         name="distinctive_agg",
-        formula="SUM({col})",
+        expression="SUM({col})",
         description="aggregation_token_omega unique description term",
     ))
-    await rich_storage.save_model(orders)
+    await rich_storage.save_dataset(orders)
     clear_cache()  # invalidate the prior graph build
 
     ids = await get_filtered_ids(
@@ -529,13 +529,13 @@ async def test_mentions_memory_to_measure(rich_storage: YAMLStorage) -> None:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="ds",
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-                measures=[ModelMeasure(name="rev", formula="sum(id)")],
+                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                metrics=[DatasetMetric(name="rev", expression="sum(id)")],
             )
         )
         await storage.save_memory(
@@ -692,14 +692,14 @@ async def test_hidden_column_excluded_from_graph() -> None:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="ds",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="internal_flag", type=DataType.TEXT, hidden=True),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="internal_flag", datatype=DataType.TEXT, hidden=True),
                 ],
             )
         )
@@ -719,21 +719,21 @@ async def test_hidden_model_excluded_from_graph() -> None:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=":memory:")
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="visible",
                 sql_table="visible",
                 data_source="ds",
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
             )
         )
-        await storage.save_model(
-            SlayerModel(
+        await storage.save_dataset(
+            SlayerDataset(
                 name="hidden_model",
                 sql_table="hidden_table",
                 data_source="ds",
                 hidden=True,
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
             )
         )
         clear_cache()
@@ -795,12 +795,12 @@ async def test_two_storage_paths_use_independent_caches() -> None:
             await s.save_datasource(
                 DatasourceConfig(name=ds_name, type="sqlite", database=":memory:")
             )
-            await s.save_model(
-                SlayerModel(
+            await s.save_dataset(
+                SlayerDataset(
                     name="m",
                     sql_table="m",
                     data_source=ds_name,
-                    columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                    fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
                 )
             )
         clear_cache()

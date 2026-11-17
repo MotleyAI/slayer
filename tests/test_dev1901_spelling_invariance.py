@@ -13,8 +13,8 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.errors import AggregationNotAllowedError
-from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, SqlFragmentKey
-from slayer.core.models import ModelMeasure
+from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey, SqlFragmentKey
+from slayer.core.models import DatasetMetric
 from slayer.core.query import SlayerQuery
 from slayer.engine.compile.stages import _first_unattributable_arg_leaf
 from slayer.engine.population.home import home_path_for
@@ -23,14 +23,14 @@ from slayer.sql.generator import SQLGenerator
 from tests._dev1901_fixtures import bundle1901, dev1901_models
 from tests._engine_helpers import _engine_generate
 
-AMOUNT = ColumnKey(path=(), leaf="amount")
-SPEND = ColumnKey(path=("customers",), leaf="spend")
+AMOUNT = FieldKey(path=(), leaf="amount")
+SPEND = FieldKey(path=("customers",), leaf="spend")
 COLUMNS = [
-    ColumnKey(path=(), leaf="store_no"),
+    FieldKey(path=(), leaf="store_no"),
     SPEND,
-    ColumnSqlKey(path=(), model="orders", column_name="cust_spend"),
-    ColumnKey(path=("customers", "regions"), leaf="pop"),
-    ColumnKey(path=("customers", "regions", "region_events"), leaf="value"),
+    FieldSqlKey(path=(), dataset="orders", field_name="cust_spend"),
+    FieldKey(path=("customers", "regions"), leaf="pop"),
+    FieldKey(path=("customers", "regions", "region_events"), leaf="value"),
 ]
 SOURCES = [AMOUNT, SPEND]
 
@@ -43,24 +43,24 @@ def _pair(source, col) -> Tuple[AggregateKey, AggregateKey]:
 
 def _home(agg: AggregateKey) -> tuple:
     bundle = bundle1901()
-    assert bundle.source_model is not None
+    assert bundle.population is not None
     return home_path_for(
-        agg=agg, host_model=bundle.source_model, models_by_name=bundle.models_by_name,
+        agg=agg, host_dataset=bundle.population, datasets_by_name=bundle.datasets_by_name,
         bundle=bundle, dim_keys=[], td_keys=[], active_bucket=None)
 
 
 def _unsafe(agg: AggregateKey) -> bool:
     bundle = bundle1901()
-    orders = bundle.source_model
+    orders = bundle.population
     assert orders is not None
     return bool(_first_unattributable_arg_leaf(
-        agg=agg, target_path=_home(agg), root_model=orders,
-        models_by_name=bundle.models_by_name, bundle=bundle,
-        host_model=orders, host_name="orders"))
+        agg=agg, target_path=_home(agg), root_dataset=orders,
+        datasets_by_name=bundle.datasets_by_name, bundle=bundle,
+        host_dataset=orders, host_name="orders"))
 
 
 @pytest.mark.parametrize("source", SOURCES, ids=["local", "customers"])
-@pytest.mark.parametrize("col", COLUMNS, ids=lambda c: getattr(c, "leaf", None) or c.column_name)
+@pytest.mark.parametrize("col", COLUMNS, ids=lambda c: getattr(c, "leaf", None) or c.field_name)
 class TestKeyLevelVerdicts:
     def test_home(self, source, col) -> None:
         plain, frag = _pair(source, col)
@@ -73,11 +73,11 @@ class TestKeyLevelVerdicts:
     def test_dependency_closure(self, source, col) -> None:
         plain, frag = _pair(source, col)
         bundle = bundle1901()
-        orders = bundle.source_model
+        orders = bundle.population
         assert aggregate_input_closure(
-            key=frag, anchor_model=orders, anchor_relation="orders", bundle=bundle,
+            key=frag, anchor_dataset=orders, anchor_relation="orders", bundle=bundle,
         ) == aggregate_input_closure(
-            key=plain, anchor_model=orders, anchor_relation="orders", bundle=bundle)
+            key=plain, anchor_dataset=orders, anchor_relation="orders", bundle=bundle)
 
 
 def test_the_fanning_leaf_is_unsafe_in_both_spellings() -> None:
@@ -89,19 +89,19 @@ def test_the_fanning_leaf_is_unsafe_in_both_spellings() -> None:
 def test_cross_model_kwarg_gate() -> None:
     """A kwarg on another branch than a cross-model source is refused in both spellings."""
     customers = next(m for m in dev1901_models() if m.name == "customers")
-    stores_rent = ColumnKey(path=("stores",), leaf="rent")
+    stores_rent = FieldKey(path=("stores",), leaf="rent")
     gen = SQLGenerator(dialect="postgres")
     for key in _pair(SPEND, stores_rent):
         with pytest.raises(AggregationNotAllowedError):
             gen._build_agg_render_spec_from_planned(
-                slot=None, key=key, source_model=customers,
+                slot=None, key=key, source_dataset=customers,
                 source_relation="customers", full_alias="customers.spend_wsum")
 
 
 async def _sql(formula: str) -> str:
     models = dev1901_models()
     return await _engine_generate(
-        query=SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula, name="w")]),
+        query=SlayerQuery(population="orders", metrics=[DatasetMetric(expression=formula, name="w")]),
         model=models[0], extra_models=models[1:], dialect="duckdb", validate=False)
 
 

@@ -218,13 +218,13 @@ class TestFanningAndToOneDimensions:
 class TestListColumnsInTheCatalog:
     def test_no_custom_aggregation_metric_over_a_list(self) -> None:
         model = contractors_model(data_source=DS).model_copy(
-            update={"aggregations": [Aggregation(name="my_agg", formula="SUM({value})")]})
-        catalog = build_catalog(models_by_datasource={DS: [model]})
+            update={"aggregations": [Aggregation(name="my_agg", expression="SUM({value})")]})
+        catalog = build_catalog(datasets_by_datasource={DS: [model]})
         (table,) = [t for s in catalog.schemas for t in s.tables if t.name == "contractors"]
         names = {m.name for m in table.metrics}
-        list_columns = {c.name for c in model.columns if c.type is DataType.ARRAY}
+        list_columns = {c.name for c in model.fields if c.datatype is DataType.ARRAY}
         assert not {f"{c}_my_agg" for c in list_columns} & names
-        assert {f"{c.name}_my_agg" for c in model.columns if c.type is not DataType.ARRAY} <= names
+        assert {f"{c.name}_my_agg" for c in model.fields if c.datatype is not DataType.ARRAY} <= names
 
     def test_list_column_is_advertised_as_text(self, servers: Servers) -> None:
         advertised = {(t, c): d for t, c, d in _pg_information_schema(servers)}

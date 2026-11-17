@@ -11,15 +11,15 @@ from typing import AsyncIterator, List
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality, JoinType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality, JoinType
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._dev1840_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     dev1840_models,
     plans_model,
 )
@@ -113,114 +113,114 @@ EVENTLESS_COALESCE_LT40 = 170.0
 # --------------------------------------------------------------------------- #
 # Model variants.
 # --------------------------------------------------------------------------- #
-def two_spellings_models() -> List[SlayerModel]:
+def two_spellings_models() -> List[SlayerDataset]:
     """DEV-1840 graph with the single ``customers -> orders`` edge NAMED
     ``purchases`` (1:N). ``purchases.status`` (edge name) and ``orders.channel``
     (target model) then name one physical edge two ways."""
     models = dev1840_models(declare_reverse=True)
     cust = next(m for m in models if m.name == "customers")
-    for join in cust.joins:
-        if join.target_model == "orders":
+    for join in cust.relationships:
+        if join.to == "orders":
             join.name = "purchases"
     return models
 
 
-def unproven_plans_models() -> List[SlayerModel]:
+def unproven_plans_models() -> List[SlayerDataset]:
     """DEV-1900 graph with the ``customers -> plans`` hop unproven (plans.code not
     a PK), so a ``customers.plans.level`` filter must restrict by semi-join."""
     models = dev1900_models()
     return [plans_model(strong=False) if m.name == "plans" else m for m in models]
 
 
-def disconnected_model_models() -> List[SlayerModel]:
+def disconnected_model_models() -> List[SlayerDataset]:
     """DEV-1900 graph plus a standalone ``promos`` model with no join path from any
     root — a genuinely unreachable filter reference (``promos.discount``) is
     refused at resolution with a typed error in every mode (D12)."""
     models = dev1900_models()
-    models.append(SlayerModel(
+    models.append(SlayerDataset(
         name="promos", data_source="test", sql_table="promos",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="discount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="discount", datatype=DataType.DOUBLE),
         ]))
     return models
 
 
 def event_less_models(
     *, inner_events: bool = False, derived_events: bool = False,
-) -> List[SlayerModel]:
+) -> List[SlayerDataset]:
     """A self-contained ``customers -> regions -> region_events`` graph. The
     fanning ``regions -> region_events`` hop is LEFT by default; ``inner_events``
     declares it INNER, so an event-less region contributes no product row;
     ``derived_events`` adds one derived event column per Mode-A fragment shape."""
-    events_join = ModelJoin(
-        target_model="region_events", join_pairs=[["id", "region_id"]],
-        cardinality=JoinCardinality.ONE_TO_MANY,
+    events_join = DatasetRelationship(
+        to="region_events", join_pairs=[["id", "region_id"]],
+        cardinality=RelationshipCardinality.ONE_TO_MANY,
         join_type=JoinType.INNER if inner_events else JoinType.LEFT,
     )
-    regions = SlayerModel(
+    regions = SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="pop", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="pop", datatype=DataType.DOUBLE),
         ],
-        joins=[events_join],
+        relationships=[events_join],
     )
     event_columns = [
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="region_id", type=DataType.INT),
-        Column(name="value", type=DataType.DOUBLE),
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="region_id", datatype=DataType.INT),
+        DatasetField(name="value", datatype=DataType.DOUBLE),
     ]
-    event_joins: List[ModelJoin] = []
-    extra_models: List[SlayerModel] = []
+    event_joins: List[DatasetRelationship] = []
+    extra_models: List[SlayerDataset] = []
     if derived_events:
         # A to-one LEFT hop for a Column.filter to cross: the filter's OR leg
         # holds when event_kinds is absent, so the masked value stays non-NULL.
-        event_columns.append(Column(name="kind_id", type=DataType.INT))
+        event_columns.append(DatasetField(name="kind_id", datatype=DataType.INT))
         event_joins.append(
-            ModelJoin(target_model="event_kinds", join_pairs=[["kind_id", "id"]]))
-        extra_models.append(SlayerModel(
+            DatasetRelationship(to="event_kinds", join_pairs=[["kind_id", "id"]]))
+        extra_models.append(SlayerDataset(
             name="event_kinds", data_source="test", sql_table="event_kinds",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="label", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="label", datatype=DataType.TEXT),
             ],
         ))
-        event_columns.append(Column(
-            name="value_if_kind", type=DataType.DOUBLE, sql="value",
+        event_columns.append(DatasetField(
+            name="value_if_kind", datatype=DataType.DOUBLE, sql="value",
             filter="event_kinds.label = 'x' OR value >= 0"))
     if derived_events:
         event_columns += [
-            Column(name="value_bare", type=DataType.DOUBLE, sql="value"),
-            Column(name="value_x2", type=DataType.DOUBLE, sql="value * 2"),
-            Column(name="value_x2_x2", type=DataType.DOUBLE, sql="value_x2 * 2"),
-            Column(name="value_or_zero", type=DataType.DOUBLE,
+            DatasetField(name="value_bare", datatype=DataType.DOUBLE, sql="value"),
+            DatasetField(name="value_x2", datatype=DataType.DOUBLE, sql="value * 2"),
+            DatasetField(name="value_x2_x2", datatype=DataType.DOUBLE, sql="value_x2 * 2"),
+            DatasetField(name="value_or_zero", datatype=DataType.DOUBLE,
                    sql="COALESCE(value, 0)"),
-            Column(name="value_or_zero_x2", type=DataType.DOUBLE,
+            DatasetField(name="value_or_zero_x2", datatype=DataType.DOUBLE,
                    sql="value_or_zero * 2"),
-            Column(name="one", type=DataType.INT, sql="1"),
-            Column(name="in_empty", type=DataType.BOOLEAN, sql="value IN ()"),
-            Column(name="col_in_list", type=DataType.BOOLEAN,
+            DatasetField(name="one", datatype=DataType.INT, sql="1"),
+            DatasetField(name="in_empty", datatype=DataType.BOOLEAN, sql="value IN ()"),
+            DatasetField(name="col_in_list", datatype=DataType.BOOLEAN,
                    sql="value IN (30, 50)"),
-            Column(name="lit_in_list", type=DataType.BOOLEAN,
+            DatasetField(name="lit_in_list", datatype=DataType.BOOLEAN,
                    sql="1 IN (value, 1)"),
-            Column(name="lit_between", type=DataType.BOOLEAN,
+            DatasetField(name="lit_between", datatype=DataType.BOOLEAN,
                    sql="1 BETWEEN value AND 0"),
         ]
-    region_events = SlayerModel(
+    region_events = SlayerDataset(
         name="region_events", data_source="test", sql_table="region_events",
-        columns=event_columns, joins=event_joins,
+        fields=event_columns, relationships=event_joins,
     )
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
     return [customers, regions, region_events, *extra_models]
 
@@ -265,12 +265,12 @@ def _seed_eventless_duckdb(db_path: str) -> None:
 
 
 async def _engine_for(*, dialect: str, db_path: str,
-                      models: List[SlayerModel]) -> SlayerQueryEngine:
+                      models: List[SlayerDataset]) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=os.path.join(os.path.dirname(db_path), "store"))
     await storage.save_datasource(
         DatasourceConfig(name="test", type=dialect, database=db_path))
     for model in models:
-        await storage.save_model(model, _validate=False)
+        await storage.save_dataset(model, _validate=False)
     return SlayerQueryEngine(storage=storage)
 
 
@@ -294,7 +294,7 @@ async def make_eventless_engine(
 
 
 __all__ = [
-    "SlayerQuery", "ModelMeasure", "SlayerModel",
+    "SlayerQuery", "DatasetMetric", "SlayerDataset",
     "cust_q", "orders_q", "rows_by", "pushed_filter_infos",
     "dev1900_models", "make_exec_engine",
     "two_spellings_models", "unproven_plans_models", "event_less_models",

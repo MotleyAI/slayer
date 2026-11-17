@@ -27,7 +27,7 @@ from slayer.core.errors import (
     BroadcastGrainWarning,
     SlayerError,
 )
-from slayer.core.models import Column, DataType
+from slayer.core.models import DatasetField, DataType
 from slayer.core.query import TimeDimension
 from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -37,7 +37,7 @@ from tests._dev1892_fixtures import assert_ref_free
 from tests._engine_helpers import _join_aliases
 from tests._dev1900_fixtures import (
     AMOUNT_SUM,
-    ModelMeasure,
+    DatasetMetric,
     POP_FILTER_ASSOC_BY_STATUS,
     POP_FILTER_COUNT_BY_TIER,
     POP_FILTER_DERIVED_ASSOC,
@@ -65,13 +65,13 @@ MODES = ["broadcast", "associate", "error"]
 OK = "orders.status = 'ok'"
 OR_MIX = "tier = 'bronze' or orders.status = 'ok'"
 
-SPEND = ModelMeasure(formula="sum(spend)", name="sp")
-PARTITIONED = ModelMeasure(formula="sum(spend, partition_by=tier)", name="pt")
-COUNT = ModelMeasure(formula="count(*)", name="n")
-WINDOWED = ModelMeasure(formula="sum(spend, window='1y')", name="w")
-LAST = ModelMeasure(formula="last(spend, customers.signup_at)", name="l")
-NESTED = ModelMeasure(formula="avg(sum(spend, partition_by=tier))", name="ac")
-ORDERS_AMOUNT = ModelMeasure(formula="sum(orders.amount)", name="oa")
+SPEND = DatasetMetric(expression="sum(spend)", name="sp")
+PARTITIONED = DatasetMetric(expression="sum(spend, partition_by=tier)", name="pt")
+COUNT = DatasetMetric(expression="count(*)", name="n")
+WINDOWED = DatasetMetric(expression="sum(spend, window='1y')", name="w")
+LAST = DatasetMetric(expression="last(spend, customers.signup_at)", name="l")
+NESTED = DatasetMetric(expression="avg(sum(spend, partition_by=tier))", name="ac")
+ORDERS_AMOUNT = DatasetMetric(expression="sum(orders.amount)", name="oa")
 
 #: Python-warning carriers the semi-join push must never emit.
 _SLAYER_WARNS = (
@@ -80,13 +80,13 @@ _SLAYER_WARNS = (
 
 def _orders_month_td():
     return [TimeDimension(
-        dimension="orders.ordered_at",
+        field="orders.ordered_at",
         granularity=TimeGranularity.MONTH)]
 
 
 def _signup_month_td():
     return [TimeDimension(
-        dimension="signup_at",
+        field="signup_at",
         granularity=TimeGranularity.MONTH)]
 
 
@@ -111,7 +111,7 @@ async def _dry(engine, query, dialect: str) -> str:
 
 def _pop_infos(resp) -> list:
     """The population-push entries: a semi_join_pushed entry naming no aggregate."""
-    return [i for i in pushed_filter_infos(resp) if i.measure is None]
+    return [i for i in pushed_filter_infos(resp) if i.metric is None]
 
 
 def _bundle1900() -> ResolvedSourceBundle:
@@ -119,7 +119,7 @@ def _bundle1900() -> ResolvedSourceBundle:
     src = next(x for x in m if x.name == "customers")
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=src, referenced_models=[x for x in m if x.name != "customers"])
+        population=src, referenced_datasets=[x for x in m if x.name != "customers"])
 
 
 class TestDateRangeMaskAccounting:
@@ -179,12 +179,12 @@ class TestWindowedDerivedFanningAxisFailsClosed:
     def _bundle(self) -> ResolvedSourceBundle:
         m = dev1900_models()
         cust = next(x for x in m if x.name == "customers")
-        cust.columns.append(Column(
-            name="bad_date", type=DataType.DATE,
+        cust.fields.append(DatasetField(
+            name="bad_date", datatype=DataType.DATE,
             sql="CAST(regions.region_events.value AS DATE)"))
         return ResolvedSourceBundle(
             dialect="postgres",
-            source_model=cust, referenced_models=[x for x in m if x.name != "customers"])
+            population=cust, referenced_datasets=[x for x in m if x.name != "customers"])
 
     @pytest.mark.parametrize("mode", MODES)
     def test_pathless_derived_window_axis_raises(self, mode):
@@ -207,11 +207,11 @@ class TestMultiMeasureProducerNamesEveryMeasure:
         resp = await engine.execute(cust_q(
             dimensions=["tier"],
             measures=[
-                ModelMeasure(formula="sum(spend, partition_by=tier)", name="ptsum"),
-                ModelMeasure(formula="max(spend, partition_by=tier)", name="ptmax"),
+                DatasetMetric(expression="sum(spend, partition_by=tier)", name="ptsum"),
+                DatasetMetric(expression="max(spend, partition_by=tier)", name="ptmax"),
             ],
             filters=[OK]))
-        named = {i.measure for i in pushed_filter_infos(resp)}
+        named = {i.metric for i in pushed_filter_infos(resp)}
         assert {"ptsum", "ptmax"} <= named
 
 
@@ -288,7 +288,7 @@ class TestProducersInheritDisposition:
         assert set(by) == {(t,) for t in POP_FILTER_PARTITIONED_BY_TIER}
         for tier, spend in POP_FILTER_PARTITIONED_BY_TIER.items():
             assert float(by[(tier,)]["customers.pt"]) == pytest.approx(spend), tier
-        measures = {i.measure for i in pushed_filter_infos(resp)}
+        measures = {i.metric for i in pushed_filter_infos(resp)}
         assert None in measures, measures
         assert "pt" in measures, measures
         sql = await _dry(engine, q, dialect)
@@ -320,7 +320,7 @@ class TestProducersInheritDisposition:
         assert set(by_month) == set(POP_FILTER_WINDOWED_BY_MONTH)
         for month, spend in POP_FILTER_WINDOWED_BY_MONTH.items():
             assert float(by_month[month]) == pytest.approx(spend), month
-        measures = {i.measure for i in pushed_filter_infos(resp)}
+        measures = {i.metric for i in pushed_filter_infos(resp)}
         assert None in measures, measures
         assert "w" in measures, measures
         sql = await _dry(engine, q, dialect)

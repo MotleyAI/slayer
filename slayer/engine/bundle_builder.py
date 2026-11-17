@@ -6,14 +6,14 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, cast
 
-from slayer.core.errors import AmbiguousReferenceError, ModelNotFoundError, QueryBackedCycleError
-from slayer.core.join_walker import incident_model_names
+from slayer.core.errors import AmbiguousReferenceError, DatasetNotFoundError, QueryBackedCycleError
+from slayer.core.relationship_walker import incident_dataset_names
 from slayer.core.names import match_name
-from slayer.core.models import SlayerModel
-from slayer.core.query import SlayerQuery, SourceSpec, extension_model_names
+from slayer.core.models import SlayerDataset
+from slayer.core.query import SlayerQuery, SourceSpec, extension_dataset_names
 from slayer.core.scope import StageDisplay
-from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine, is_spine_spelling, query_host, spine_model
-from slayer.engine.column_dependency import definition_heads
+from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine, is_spine_spelling, query_host, spine_dataset
+from slayer.engine.field_dependency import definition_heads
 from slayer.engine.cardinality.unrelated import first_hop_names
 from slayer.engine.extensions import respelled_stages
 from slayer.ir.source_bundle import (
@@ -29,14 +29,14 @@ from slayer.storage.document_loading import DocumentLoadFailures
 logger = logging.getLogger(__name__)
 
 
-async def _referenced_models(
-    *, query: SlayerQuery, source_model: SlayerModel, named_queries: Dict[str, SlayerQuery],
+async def _referenced_datasets(
+    *, query: SlayerQuery, source_dataset: SlayerDataset, named_queries: Dict[str, SlayerQuery],
     storage: "StorageBackend", data_source: Optional[str], chain: Tuple[str, ...], spine_clash: bool,
     failures: DocumentLoadFailures,
-) -> Tuple[List[SlayerModel], Dict[str, SlayerModel]]:
+) -> Tuple[List[SlayerDataset], Dict[str, SlayerDataset]]:
     """The root's join component plus query-written targets (the spine unless a stored model clashes with it), and the stored query-backed models among them."""
-    component = await _collect_referenced_models(
-        source_model=source_model, named_queries=named_queries, storage=storage, data_source=data_source,
+    component = await _collect_referenced_datasets(
+        source_dataset=source_dataset, named_queries=named_queries, storage=storage, data_source=data_source,
         failures=failures,
     )
     known = {m.name for m in component}
@@ -45,11 +45,11 @@ async def _referenced_models(
         sibling_names=set(named_queries), storage=storage, data_source=data_source, failures=failures,
     ))
     referenced, query_backed = await _split_query_backed(
-        models=[m for m in component if not is_spine(m)], storage=storage, data_source=data_source, chain=chain,
+        datasets=[m for m in component if not is_spine(m)], storage=storage, data_source=data_source, chain=chain,
         failures=failures,
     )
     if not spine_clash and data_source is not None:
-        referenced.append(source_model if is_spine(source_model) else spine_model(data_source=data_source))
+        referenced.append(source_dataset if is_spine(source_dataset) else spine_dataset(data_source=data_source))
     return referenced, query_backed
 
 
@@ -79,12 +79,12 @@ async def build_resolved_source_bundle(
     failures = failures or DocumentLoadFailures()
     named_queries = named_queries or {}
     stage_displays = stage_displays or {}
-    storage = cast("StorageBackend", _ModelReadCache(storage))
+    storage = cast("StorageBackend", _DatasetReadCache(storage))
     for q in [*named_queries.values(), query]:
-        _reject_chain_source(spec=q.source_model, chain=splice_chain)
+        _reject_chain_source(spec=q.population, chain=splice_chain)
 
     source_model = await _resolve_source_spec(
-        follow_sibling_chain(spec=query.source_model, named_queries=named_queries),
+        follow_sibling_chain(spec=query.population, named_queries=named_queries),
         storage=storage, data_source=data_source,
     )
 
@@ -93,17 +93,17 @@ async def build_resolved_source_bundle(
     walk_ds = source_model.data_source or data_source or None
     await _check_spine_spellings(storage=storage, spellings=respelled_spine, data_source=walk_ds)
     spine_clash = walk_ds is not None and (
-        await storage.get_model(TIME_SPINE_MODEL, data_source=walk_ds)
+        await storage.get_dataset(TIME_SPINE_DATASET, data_source=walk_ds)
     ) is not None
     peer_names, peer_edge_names = await _datasource_names(storage=storage, data_source=walk_ds, failures=failures)
-    query, named_queries = respelled_stages(query, named_queries, models=[*peer_names, TIME_SPINE_MODEL])
-    referenced_models, query_backed = await _referenced_models(
-        query=query, source_model=source_model, named_queries=named_queries,
+    query, named_queries = respelled_stages(query, named_queries, datasets=[*peer_names, TIME_SPINE_DATASET])
+    referenced_models, query_backed = await _referenced_datasets(
+        query=query, source_dataset=source_model, named_queries=named_queries,
         storage=storage, data_source=walk_ds, chain=splice_chain, spine_clash=spine_clash, failures=failures,
     )
     source_model = query_host(source_model, query=query)
 
-    stage_source_models = await _stage_source_models(
+    stage_source_models = await _stage_source_datasets(
         named_queries=named_queries, storage=storage, data_source=walk_ds or data_source,
     )
     query_variables = merge_query_variables(
@@ -111,18 +111,18 @@ async def build_resolved_source_bundle(
         stage=query.variables,
         outer=outer_variables,
         # A query-backed root's own defaults layer its spliced stages, not the root.
-        model_defaults=None if source_model.source_queries else source_model.query_variables,
+        dataset_defaults=None if source_model.source_queries else source_model.query_variables,
     )
 
     ds = await storage.get_datasource(source_model.data_source) if source_model.data_source else None
     return ResolvedSourceBundle(
         dialect=dialect_for_ds_type(ds.type if ds else None).sqlglot_name,
         datasource_type=ds.type if ds else None,
-        source_model=source_model,
-        referenced_models=referenced_models,
+        population=source_model,
+        referenced_datasets=referenced_models,
         named_queries=dict(named_queries),
         query=query,
-        stage_source_models=stage_source_models,
+        stage_source_datasets=stage_source_models,
         query_variables=query_variables,
         datasource_hint=data_source,
         stage_displays=dict(stage_displays),
@@ -132,7 +132,7 @@ async def build_resolved_source_bundle(
         now=datetime.now() if now is None else now,
         granularities=ds.granularity_definitions if ds else {},
         spine_clash=spine_clash,
-        datasource_model_names=peer_names,
+        datasource_dataset_names=peer_names,
         datasource_edge_names=peer_edge_names,
     )
 
@@ -144,13 +144,13 @@ async def _check_spine_spellings(
     if not spellings or data_source is None:
         return
     variants = sorted(
-        n for ds, n in await storage._list_all_model_identities()
-        if ds == data_source and n != TIME_SPINE_MODEL and is_spine_spelling(n)
+        n for ds, n in await storage._list_all_dataset_identities()
+        if ds == data_source and n != TIME_SPINE_DATASET and is_spine_spelling(n)
     )
     if variants:
         raise AmbiguousReferenceError(
-            min(spellings), [TIME_SPINE_MODEL, *variants],
-            suggestion=f"Spell the built-in spine {TIME_SPINE_MODEL!r} or the stored model exactly.",
+            min(spellings), [TIME_SPINE_DATASET, *variants],
+            suggestion=f"Spell the built-in spine {TIME_SPINE_DATASET!r} or the stored model exactly.",
         )
 
 
@@ -158,25 +158,25 @@ async def _datasource_names(
     *, storage: "StorageBackend", data_source: Optional[str], failures: DocumentLoadFailures,
 ) -> "Tuple[frozenset[str], frozenset[str]]":
     """The model names and stored edge names of ``data_source``."""
-    peers = failures.skip(await storage.load_models(data_source=data_source)) if data_source is not None else []
-    return frozenset(m.name for m in peers), frozenset(j.name for m in peers for j in m.joins if j.name)
+    peers = failures.skip(await storage.load_datasets(data_source=data_source)) if data_source is not None else []
+    return frozenset(m.name for m in peers), frozenset(j.name for m in peers for j in m.relationships if j.name)
 
 
-async def _stage_source_models(
+async def _stage_source_datasets(
     *,
     named_queries: Dict[str, SlayerQuery],
     storage: "StorageBackend",
     data_source: Optional[str],
-) -> Dict[str, SlayerModel]:
+) -> Dict[str, SlayerDataset]:
     """Each non-sibling-sourced stage's OWN concrete model, so heterogeneous DAGs
     bind against the right host; a query-backed source becomes a spliced sibling instead."""
     sibling_names = set(named_queries)
-    out: Dict[str, SlayerModel] = {}
+    out: Dict[str, SlayerDataset] = {}
     for nm, nq in named_queries.items():
-        if source_name_if_sibling(spec=nq.source_model, sibling_names=sibling_names) is not None:
+        if source_name_if_sibling(spec=nq.population, sibling_names=sibling_names) is not None:
             continue  # sibling-sourced: planner resolves via upstream StageSchema
         # MUST resolve; a failure is a genuine error (a skip would fall back to the root source).
-        resolved = await _resolve_source_spec(nq.source_model, storage=storage, data_source=data_source)
+        resolved = await _resolve_source_spec(nq.population, storage=storage, data_source=data_source)
         if not resolved.source_queries:
             out[nm] = query_host(resolved, query=nq)
     return out
@@ -184,7 +184,7 @@ async def _stage_source_models(
 
 def _written_targets(query: SlayerQuery) -> List[str]:
     """The models ``query`` names: its extensions' models, then its references' first hops."""
-    return list(dict.fromkeys([*extension_model_names(query), *sorted(first_hop_names(query))]))
+    return list(dict.fromkeys([*extension_dataset_names(query), *sorted(first_hop_names(query))]))
 
 
 async def _query_written_targets(
@@ -195,7 +195,7 @@ async def _query_written_targets(
     storage: "StorageBackend",
     data_source: Optional[str],
     failures: DocumentLoadFailures,
-) -> List[SlayerModel]:
+) -> List[SlayerDataset]:
     """The components of models the queries name — as join targets or first hops — but the
     join-graph walk did not reach (an extension over a sibling carries its own joins)."""
     names = [n for q in queries for n in _written_targets(q) if n not in sibling_names]
@@ -211,18 +211,18 @@ async def _named_components(
     storage: "StorageBackend",
     data_source: Optional[str],
     failures: DocumentLoadFailures,
-) -> List[SlayerModel]:
+) -> List[SlayerDataset]:
     """The components of the ``names`` models not yet ``known`` (absent names skipped)."""
-    out: List[SlayerModel] = []
+    out: List[SlayerDataset] = []
     for name in names:
         if name in known:
             continue
-        model = await _frontier_model(name=name, all_models={}, storage=storage, ds=data_source)
+        model = await _frontier_dataset(name=name, all_datasets={}, storage=storage, ds=data_source)
         if model is None:
             continue
         fresh = [
-            m for m in await _collect_referenced_models(
-                source_model=model, named_queries={}, storage=storage, data_source=data_source,
+            m for m in await _collect_referenced_datasets(
+                source_dataset=model, named_queries={}, storage=storage, data_source=data_source,
                 failures=failures,
             )
             if m.name not in known
@@ -240,19 +240,19 @@ def _reject_chain_source(*, spec: SourceSpec | None, chain: Tuple[str, ...]) -> 
 
 async def _split_query_backed(
     *,
-    models: List[SlayerModel],
+    datasets: List[SlayerDataset],
     storage: "StorageBackend",
     data_source: Optional[str],
     chain: Tuple[str, ...],
     failures: DocumentLoadFailures,
-) -> "Tuple[List[SlayerModel], Dict[str, SlayerModel]]":
-    """Split ``models`` into referenced models and query-backed placeholders, closing
+) -> "Tuple[List[SlayerDataset], Dict[str, SlayerDataset]]":
+    """Split ``datasets`` into referenced models and query-backed placeholders, closing
     over each placeholder's stage bases and each model's definition-named models (and
     their components). Placeholders keep their stored form, including declared joins; on-chain
     names are never loaded."""
-    referenced: Dict[str, SlayerModel] = {}
-    query_backed: Dict[str, SlayerModel] = {}
-    pending = list(models)
+    referenced: Dict[str, SlayerDataset] = {}
+    query_backed: Dict[str, SlayerDataset] = {}
+    pending = list(datasets)
     while pending:
         model = pending.pop(0)
         if model.name in referenced or model.name in query_backed:
@@ -267,7 +267,7 @@ async def _split_query_backed(
             continue
         query_backed[model.name] = model
         pending.extend(await _stage_base_components(
-            model=model, skip=[*chain, *query_backed], known={*referenced, *query_backed},
+            dataset=model, skip=[*chain, *query_backed], known={*referenced, *query_backed},
             storage=storage, data_source=data_source, failures=failures,
         ))
     return list(referenced.values()), query_backed
@@ -275,19 +275,19 @@ async def _split_query_backed(
 
 async def _stage_base_components(
     *,
-    model: SlayerModel,
+    dataset: SlayerDataset,
     skip: List[str],
     known: "set[str]",
     storage: "StorageBackend",
     data_source: Optional[str],
     failures: DocumentLoadFailures,
-) -> List[SlayerModel]:
-    """The components of ``model``'s stage bases, bar bases named in ``skip`` or resolving into ``known``."""
-    out: List[SlayerModel] = []
-    own_stages: list[SlayerQuery] = model.source_queries or []
+) -> List[SlayerDataset]:
+    """The components of ``dataset``'s stage bases, bar bases named in ``skip`` or resolving into ``known``."""
+    out: List[SlayerDataset] = []
+    own_stages: list[SlayerQuery] = dataset.source_queries or []
     private = {q.name: q for q in own_stages if q.name}
     for stage in own_stages:
-        spec = follow_sibling_chain(spec=stage.source_model, named_queries=private)
+        spec = follow_sibling_chain(spec=stage.population, named_queries=private)
         if spec is None or spec in skip:
             continue
         try:
@@ -296,29 +296,29 @@ async def _stage_base_components(
             logger.debug("query-backed stage base %r unresolved: %s", spec, exc)
             continue
         if base.name not in known:
-            out.extend(await _collect_referenced_models(
-                source_model=base, named_queries={}, storage=storage, data_source=data_source,
+            out.extend(await _collect_referenced_datasets(
+                source_dataset=base, named_queries={}, storage=storage, data_source=data_source,
                 failures=failures,
             ))
     out.extend(await _query_written_targets(
-        queries=list(model.source_queries or []), known={*known, *skip, *(m.name for m in out)},
+        queries=list(dataset.source_queries or []), known={*known, *skip, *(m.name for m in out)},
         sibling_names=set(private), storage=storage, data_source=data_source, failures=failures,
     ))
     return out
 
 
-async def _preseed_sibling_models(
+async def _preseed_sibling_datasets(
     *,
-    source_model: SlayerModel,
+    source_dataset: SlayerDataset,
     named_queries: Dict[str, SlayerQuery],
     storage: "StorageBackend",
     data_source: Optional[str],
-) -> Dict[str, SlayerModel]:
+) -> Dict[str, SlayerDataset]:
     """Models held concretely: host + each sibling's stored base. Best-effort — a sibling whose base is absent is
     skipped."""
-    preseeded: Dict[str, SlayerModel] = {source_model.name: source_model}
+    preseeded: Dict[str, SlayerDataset] = {source_dataset.name: source_dataset}
     for sib in named_queries.values():
-        spec = follow_sibling_chain(spec=sib.source_model, named_queries=named_queries)
+        spec = follow_sibling_chain(spec=sib.population, named_queries=named_queries)
         try:
             sib_model = await _resolve_source_spec(
                 spec, storage=storage, data_source=data_source
@@ -332,30 +332,30 @@ async def _preseed_sibling_models(
 
 async def _load_datasource_peers(
     *,
-    preseeded: Dict[str, SlayerModel],
+    preseeded: Dict[str, SlayerDataset],
     ds: Optional[str],
     storage: "StorageBackend",
     failures: DocumentLoadFailures,
-) -> Dict[str, SlayerModel]:
+) -> Dict[str, SlayerDataset]:
     """Preseeded plus every loadable datasource peer, so reverse edges (a peer
     declaring a join *into* a frontier model) are discoverable."""
-    peers = failures.skip(await storage.load_models(data_source=ds)) if ds is not None else []
+    peers = failures.skip(await storage.load_datasets(data_source=ds)) if ds is not None else []
     return {**preseeded, **{m.name: m for m in peers if m.name not in preseeded}}
 
 
-async def _frontier_model(
+async def _frontier_dataset(
     *,
     name: str,
-    all_models: Dict[str, SlayerModel],
+    all_datasets: Dict[str, SlayerDataset],
     storage: "StorageBackend",
     ds: Optional[str],
-) -> Optional[SlayerModel]:
+) -> Optional[SlayerDataset]:
     """The named model, loading it on demand; absent targets resolve to None."""
-    model = all_models.get(name)
+    model = all_datasets.get(name)
     if model is not None:
         return model
     try:
-        return await storage.get_model(name, data_source=ds)
+        return await storage.get_dataset(name, data_source=ds)
     except Exception as exc:  # best-effort; absent target is fine
         logger.debug("join-target lookup failed for %r: %s", name, exc)
         return None
@@ -364,13 +364,13 @@ async def _frontier_model(
 async def _bfs_connected_component(
     *,
     seeds: List[str],
-    all_models: Dict[str, SlayerModel],
-    universe: Dict[str, SlayerModel],
+    all_datasets: Dict[str, SlayerDataset],
+    universe: Dict[str, SlayerDataset],
     storage: "StorageBackend",
     ds: Optional[str],
-) -> Dict[str, SlayerModel]:
+) -> Dict[str, SlayerDataset]:
     """Walk joins in both directions from the seeds; absent targets skipped."""
-    collected: Dict[str, SlayerModel] = {}
+    collected: Dict[str, SlayerDataset] = {}
     visited: set[str] = set()
     frontier: List[str] = list(seeds)
     while frontier:
@@ -378,41 +378,41 @@ async def _bfs_connected_component(
         if name in visited:
             continue
         visited.add(name)
-        model = await _frontier_model(
-            name=name, all_models=all_models, storage=storage, ds=ds,
+        model = await _frontier_dataset(
+            name=name, all_datasets=all_datasets, storage=storage, ds=ds,
         )
         if model is None:
             continue
         collected.setdefault(name, model)
         frontier.extend(
-            n for n in incident_model_names(model=model, models_by_name={**universe, name: model})
+            n for n in incident_dataset_names(dataset=model, datasets_by_name={**universe, name: model})
             if n not in visited
         )
-        frontier.extend(_case_ambiguous_targets(model=model, universe=universe))
+        frontier.extend(_case_ambiguous_targets(dataset=model, universe=universe))
     return collected
 
 
-def _case_ambiguous_targets(*, model: SlayerModel, universe: Dict[str, SlayerModel]) -> List[str]:
-    """The models a join target of ``model`` equals only case-insensitively, when several: a hop through it then
+def _case_ambiguous_targets(*, dataset: SlayerDataset, universe: Dict[str, SlayerDataset]) -> List[str]:
+    """The models a join target of ``dataset`` equals only case-insensitively, when several: a hop through it then
     fails as ambiguous instead of unknown."""
     out: List[str] = []
-    for join in model.joins:
-        if join.target_model in universe:
+    for join in dataset.relationships:
+        if join.to in universe:
             continue
-        folded = join.target_model.casefold()
+        folded = join.to.casefold()
         hits = [n for n in universe if n.casefold() == folded]
         out.extend(hits if len(hits) > 1 else [])
     return out
 
 
-async def _collect_referenced_models(
+async def _collect_referenced_datasets(
     *,
-    source_model: SlayerModel,
+    source_dataset: SlayerDataset,
     named_queries: Dict[str, SlayerQuery],
     storage: "StorageBackend",
     data_source: Optional[str],
     failures: DocumentLoadFailures,
-) -> List[SlayerModel]:
+) -> List[SlayerDataset]:
     """Transitive join-graph walk (BFS) over the bidirectional edge set,
     best-effort.
 
@@ -422,22 +422,22 @@ async def _collect_referenced_models(
     so the closure is the datasource's connected component. The source model
     is returned first.
     """
-    preseeded = await _preseed_sibling_models(
-        source_model=source_model, named_queries=named_queries,
+    preseeded = await _preseed_sibling_datasets(
+        source_dataset=source_dataset, named_queries=named_queries,
         storage=storage, data_source=data_source,
     )
-    ds = data_source or source_model.data_source
+    ds = data_source or source_dataset.data_source
     all_models = await _load_datasource_peers(
         preseeded=preseeded, ds=ds, storage=storage, failures=failures,
     )
-    universe = {**all_models, TIME_SPINE_MODEL: source_model} if is_spine(source_model) else all_models
+    universe = {**all_models, TIME_SPINE_DATASET: source_dataset} if is_spine(source_dataset) else all_models
     collected = await _bfs_connected_component(
         # The spine reaches every dataset (a query-backed one's axis is known only once spliced).
-        seeds=list(all_models if is_spine(source_model) else preseeded),
-        all_models=all_models, universe=universe, storage=storage, ds=ds,
+        seeds=list(all_models if is_spine(source_dataset) else preseeded),
+        all_datasets=all_models, universe=universe, storage=storage, ds=ds,
     )
-    ordered = [source_model]
-    ordered.extend(m for n, m in collected.items() if n != source_model.name)
+    ordered = [source_dataset]
+    ordered.extend(m for n, m in collected.items() if n != source_dataset.name)
     return ordered
 
 
@@ -446,49 +446,49 @@ async def _resolve_source_spec(
     *,
     storage: "StorageBackend",
     data_source: Optional[str],
-) -> SlayerModel:
-    """Resolve a ``source_model`` name to its stored ``SlayerModel`` (read-only)."""
-    if spec == TIME_SPINE_MODEL and data_source is not None:
-        return spine_model(data_source=data_source)
+) -> SlayerDataset:
+    """Resolve a ``source_dataset`` name to its stored ``SlayerModel`` (read-only)."""
+    if spec == TIME_SPINE_DATASET and data_source is not None:
+        return spine_dataset(data_source=data_source)
     if spec is None:
         raise ValueError("A query without source_model has no stored source to resolve.")
-    model = await stored_model(storage, name=spec, data_source=data_source)
+    model = await stored_dataset(storage, name=spec, data_source=data_source)
     if model is None:
-        raise ModelNotFoundError(spec)
+        raise DatasetNotFoundError(spec)
     return model
 
 
-async def stored_model(
+async def stored_dataset(
     storage: "StorageBackend", *, name: str, data_source: Optional[str],
-) -> Optional[SlayerModel]:
+) -> Optional[SlayerDataset]:
     """The stored model ``name`` reaches (``slayer.core.names.match_name``)."""
-    model = await storage.get_model(name, data_source=data_source)
+    model = await storage.get_dataset(name, data_source=data_source)
     if model is not None:
         return model
-    found = match_name(name=name, declared=await storage.list_models(data_source=data_source), quoted=False)
-    return None if found is None else await storage.get_model(found, data_source=data_source)
+    found = match_name(name=name, declared=await storage.list_datasets(data_source=data_source), quoted=False)
+    return None if found is None else await storage.get_dataset(found, data_source=data_source)
 
 
-class _ModelReadCache:
-    """Read-through ``get_model`` cache scoped to one bundle build (delegates the rest)."""
+class _DatasetReadCache:
+    """Read-through ``get_dataset`` cache scoped to one bundle build (delegates the rest)."""
 
     def __init__(self, inner: "StorageBackend") -> None:
         self._inner = inner
-        self._models: Dict[tuple, Optional[SlayerModel]] = {}
+        self._models: Dict[tuple, Optional[SlayerDataset]] = {}
 
     def __getattr__(self, name: str):
         return getattr(self._inner, name)
 
-    async def load_models(self, **kwargs: Any) -> Any:
-        """The inner backend's ``load_models``, reading through this cache."""
-        return await StorageBackend.load_models(cast(StorageBackend, self), **kwargs)
+    async def load_datasets(self, **kwargs: Any) -> Any:
+        """The inner backend's ``load_datasets``, reading through this cache."""
+        return await StorageBackend.load_datasets(cast(StorageBackend, self), **kwargs)
 
-    async def get_model(
+    async def get_dataset(
         self, name: str, data_source: Optional[str] = None
-    ) -> Optional[SlayerModel]:
+    ) -> Optional[SlayerDataset]:
         key = (name, data_source)
         if key not in self._models:
-            model = await self._inner.get_model(name, data_source=data_source)
+            model = await self._inner.get_dataset(name, data_source=data_source)
             self._models[key] = model
             if model is not None:
                 # a hint-less read also answers the concrete-datasource key

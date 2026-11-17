@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
 
@@ -61,11 +61,11 @@ class TestSearchLenientValidation:
         await storage.save_datasource(
             DatasourceConfig(name="otherdb", type="sqlite", database=":memory:"),
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="catalog",
             sql_table="catalog",
             data_source="otherdb",
-            columns=[Column(name="id", sql="id", primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", primary_key=True)],
         ))
         svc = SearchService(storage=storage)
         resp = await svc.search(

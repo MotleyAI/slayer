@@ -10,7 +10,7 @@ import re
 import pytest
 
 from tests._dev1832_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     dev1832_models,
     TimeDimension,
     TimeGranularity,
@@ -65,7 +65,7 @@ async def filtered_engine(request):
 
 
 def _dr_td() -> list:
-    return [TimeDimension(dimension="ordered_at",
+    return [TimeDimension(field="ordered_at",
                           granularity=TimeGranularity.MONTH,
                           date_range=["2024-02-01", "2024-03-31"])]
 
@@ -73,7 +73,7 @@ def _dr_td() -> list:
 def _q(formula: str, *, date_range: bool = False, **kw):
     kw.setdefault("dimensions", ["region"])
     return monthly_q(time_dimensions=_dr_td() if date_range else month_td(),
-                     measures=[ModelMeasure(formula=formula, name="t")], **kw)
+                     measures=[DatasetMetric(expression=formula, name="t")], **kw)
 
 
 def _cells(resp, name: str = "monthly.t") -> dict:
@@ -189,8 +189,8 @@ class TestSharedShiftedRelation:
     def _two_offsets(self):
         return monthly_q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula=f"time_shift({SHARE}, -1)", name="t1"),
-                      ModelMeasure(formula=f"time_shift({SHARE}, -2)", name="t2")])
+            measures=[DatasetMetric(expression=f"time_shift({SHARE}, -1)", name="t1"),
+                      DatasetMetric(expression=f"time_shift({SHARE}, -2)", name="t2")])
 
     async def test_two_offsets_values(self, exec_engine) -> None:
         resp = await exec_engine.execute(self._two_offsets())

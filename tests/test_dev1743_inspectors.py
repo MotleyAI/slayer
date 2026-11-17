@@ -16,11 +16,11 @@ without conflating the two.
 from __future__ import annotations
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 
-from slayer.engine.column_dependency import _column_dependencies
+from slayer.engine.field_dependency import _field_dependencies
 from slayer.live_schema.schema_drift import (
-    EditModelDelete,
+    EditDatasetDelete,
     RemoveSpec,
     compute_datasource_drops,
 )
@@ -48,32 +48,32 @@ def test_schema_drift_resolves_dunder_direct_join_target() -> None:
     """
     models = dunder_target_models()  # raises TODAY — the fail-first signal
     orders = next(m for m in models if m.name == "orders")
-    orders.columns.append(
-        Column(name="cr_label", sql="customer__region.label", type=DataType.TEXT)
+    orders.fields.append(
+        DatasetField(name="cr_label", sql="customer__region.label", datatype=DataType.TEXT)
     )
 
     # Seed the base diff: drop the ``label`` column on ``customer__region``.
     sql_table_diffs = {
         "customer__region": (
-            EditModelDelete(
-                model_name="customer__region",
+            EditDatasetDelete(
+                dataset_name="customer__region",
                 data_source=DS,
-                remove=RemoveSpec(columns=["label"]),
+                remove=RemoveSpec(fields=["label"]),
             ),
             {"label"},
         )
     }
 
     result = compute_datasource_drops(
-        models=models, sql_table_diffs=sql_table_diffs, sql_diffs={}
+        datasets=models, sql_table_diffs=sql_table_diffs, sql_diffs={}
     )
 
-    orders_edit = next((e for e in result if e.model_name == "orders"), None)
-    assert isinstance(orders_edit, EditModelDelete), (
+    orders_edit = next((e for e in result if e.dataset_name == "orders"), None)
+    assert isinstance(orders_edit, EditDatasetDelete), (
         "derived column referencing the __-named direct target did not cascade "
         "(the alias resolver mis-split customer__region instead of exact-matching)"
     )
-    assert "cr_label" in orders_edit.remove.columns, orders_edit.remove.columns
+    assert "cr_label" in orders_edit.remove.fields, orders_edit.remove.fields
 
 
 # ---------------------------------------------------------------------------
@@ -99,16 +99,16 @@ def test_column_dependency_reports_dotted_chain_dependency() -> None:
     by_name = {m.name: m for m in models}
 
     regions = by_name["regions"]
-    regions.columns.append(
-        Column(name="label", sql="upper(name)", type=DataType.TEXT)
+    regions.fields.append(
+        DatasetField(name="label", sql="upper(name)", datatype=DataType.TEXT)
     )
     orders = by_name["orders"]
-    orders.columns.append(
-        Column(name="region_label", sql="customers.regions.label", type=DataType.TEXT)
+    orders.fields.append(
+        DatasetField(name="region_label", sql="customers.regions.label", datatype=DataType.TEXT)
     )
 
-    deps = _column_dependencies(
-        column=orders.get_column("region_label"), host=orders, reachable=by_name
+    deps = _field_dependencies(
+        field=orders.get_field("region_label"), host=orders, reachable=by_name
     )
     assert ("regions", "label") in deps, (
         f"dotted chain customers.regions.label did not resolve to (regions, label); "

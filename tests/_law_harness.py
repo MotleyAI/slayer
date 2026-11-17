@@ -36,7 +36,7 @@ from tests._dev1837_fixtures import (
     DIM_FAMILY_DIMS,
     TD_TRANSFORM_OPS,
     TRANSFORM_FORMULAS,
-    ModelMeasure,
+    DatasetMetric,
     SlayerQuery,
     dim_key,
     month_key,
@@ -348,7 +348,7 @@ def build_query(
     kwargs: dict[str, Any] = {"dimensions": LAW_DIM_FAMILY_DIMS[shape.dim_family]}
     if not dims_only:
         kwargs["measures"] = [
-            ModelMeasure(formula=MEASURE_POOL[k], name=f"m_{k}")
+            DatasetMetric(expression=MEASURE_POOL[k], name=f"m_{k}")
             for k in shape.measure_keys if k != drop
         ]
     if shape.with_month:
@@ -446,7 +446,7 @@ __all__ = [
     "MEASURE_POOL", "MEASURE_REQUIRED_FAMILY", "N_DUCKDB",
     "N_PAIRS", "N_SHAPES", "OPERANDS", "OPERAND_GRAIN", "OPS",
     "PAIRS_BY_GRAIN", "SHAPES", "CoherencePair", "DeferralSite", "LawShape",
-    "ModelMeasure",
+    "DatasetMetric",
     "build_query", "canon", "execute_shape", "keyed_rows", "law_assert",
     "law_dim_key", "law_params", "make_law_engine", "month_key", "month_td",
     "pair_params", "q", "raw_rows", "sample_pairs", "sample_shapes",

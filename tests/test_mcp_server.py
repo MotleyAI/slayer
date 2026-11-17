@@ -19,18 +19,18 @@ from slayer.core.query import SlayerQuery
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.live_schema.ingestion import _is_id_column
+from slayer.live_schema.ingestion import _is_id_field
 from slayer.database.client import DatabaseUnavailable, ResultColumnType, SlayerSQLClient
 from slayer.storage.sqlite_conn import transaction
-from slayer.inspect.model_render import (
+from slayer.inspect.dataset_render import (
     _choose_sample_agg,
-    render_model_inspection,
+    render_dataset_inspection,
 )
 from slayer.mcp.server import (
     _build_sample_query_args,
@@ -41,7 +41,7 @@ from slayer.mcp.server import (
     _md_code_span,
     _render_inspect_footer,
     _resolve_inspect_sections,
-    _strip_model_prefix,
+    _strip_dataset_prefix,
     _truncate_description,
     create_mcp_server,
 )
@@ -125,24 +125,24 @@ class TestModelsSummary:
         """Only models whose ``data_source`` matches the arg appear in the output."""
         await storage.save_datasource(DatasourceConfig(name="ds_a", type="postgres", host="h"))
         await storage.save_datasource(DatasourceConfig(name="ds_b", type="postgres", host="h"))
-        await storage.save_model(SlayerModel(name="orders_a", sql_table="t", data_source="ds_a"))
-        await storage.save_model(SlayerModel(name="orders_b", sql_table="t", data_source="ds_b"))
+        await storage.save_dataset(SlayerDataset(name="orders_a", sql_table="t", data_source="ds_a"))
+        await storage.save_dataset(SlayerDataset(name="orders_b", sql_table="t", data_source="ds_b"))
         result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "ds_a"})
         assert "orders_a" in result
         assert "orders_b" not in result
 
     async def test_markdown_structure(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders",
             sql_table="t",
             data_source="mydb",
             description="Orders fact table.",
-            columns=[Column(name="status", type=DataType.TEXT, description="Order state"),
-Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE),
-                     Column(name="customer_id", type=DataType.INT, hidden=True),
+            fields=[DatasetField(name="status", datatype=DataType.TEXT, description="Order state"),
+DatasetField(name="revenue", sql="amount", description="USD", datatype=DataType.DOUBLE),
+                     DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
             ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         ))
         # compact=False: compact-by-default drops the per-column table under test.
         result = await _call(mcp_server, name="models_summary", arguments={
@@ -160,15 +160,15 @@ Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE),
 
     async def test_hidden_models_excluded(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
-        await storage.save_model(SlayerModel(name="visible", sql_table="t", data_source="mydb"))
-        await storage.save_model(SlayerModel(name="hidden_m", sql_table="t", data_source="mydb", hidden=True))
+        await storage.save_dataset(SlayerDataset(name="visible", sql_table="t", data_source="mydb"))
+        await storage.save_dataset(SlayerDataset(name="hidden_m", sql_table="t", data_source="mydb", hidden=True))
         result = await _call(mcp_server, name="models_summary", arguments={"datasource_name": "mydb"})
         assert "visible" in result
         assert "hidden_m" not in result
 
     async def test_joins_none_marker(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
-        await storage.save_model(SlayerModel(name="solo", sql_table="t", data_source="mydb"))
+        await storage.save_dataset(SlayerDataset(name="solo", sql_table="t", data_source="mydb"))
         result = await _call(mcp_server, name="models_summary", arguments={
             "datasource_name": "mydb", "compact": False,
         })
@@ -179,11 +179,11 @@ Column(name="revenue", sql="amount", description="USD", type=DataType.DOUBLE),
     ) -> None:
         """v2 columns table always shows the type column, even without descriptions."""
         await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="m", sql_table="t", data_source="mydb",
-            columns=[
-                Column(name="x", type=DataType.TEXT),
-                Column(name="y", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="x", datatype=DataType.TEXT),
+                DatasetField(name="y", datatype=DataType.DOUBLE),
             ],
         ))
         result = await _call(mcp_server, name="models_summary", arguments={
@@ -201,19 +201,19 @@ class TestInspectModel:
 
     async def test_markdown_structure(self, mcp_server, storage: YAMLStorage) -> None:
         """Every expected section header appears and the response is no longer JSON."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="test",
             sql_table="public.t",
             data_source="test",
             description="A test model used in unit tests.",
-            columns=[
-                Column(name="status", type=DataType.TEXT, label="Status", description="Order state"),
-                Column(name="id", type=DataType.DOUBLE, primary_key=True),
-Column(name="revenue", sql="amount", label="Revenue", description="USD total", type=DataType.DOUBLE),
-                Column(name="customer_id", type=DataType.INT, hidden=True),
+            fields=[
+                DatasetField(name="status", datatype=DataType.TEXT, label="Status", description="Order state"),
+                DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True),
+DatasetField(name="revenue", sql="amount", label="Revenue", description="USD total", datatype=DataType.DOUBLE),
+                DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
             ],
             filters=["deleted_at IS NULL"],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         ))
         result = await _call(mcp_server, name="inspect", arguments={"entity_type": "model", "reference": "test", "compact": False, "show_sql": True})
 
@@ -237,11 +237,11 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
 
     async def test_custom_sql_section_only_when_sql_is_set(self, mcp_server, storage: YAMLStorage) -> None:
         """## SQL fenced block appears only when model.sql is populated."""
-        await storage.save_model(SlayerModel(name="plain", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="plain", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="inspect", arguments={"entity_type": "model", "reference": "plain", "compact": False})
         assert "## SQL" not in result
 
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="querybacked", sql="SELECT 1 AS x", data_source="test",
         ))
         result = await _call(mcp_server, name="inspect", arguments={"entity_type": "model", "reference": "querybacked", "compact": False, "show_sql": True})
@@ -251,15 +251,15 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
 
     async def test_measure_filter_and_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
         """Measure.filter and custom Aggregation entries both surface."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="t", sql_table="t", data_source="test",
-            columns=[Column(
+            fields=[DatasetField(
                 name="completed_rev", sql="amount",
                 filter="status = 'completed'",
-                allowed_aggregations=["sum", "avg"], type=DataType.DOUBLE)],
+                allowed_aggregations=["sum", "avg"], datatype=DataType.DOUBLE)],
             aggregations=[Aggregation(
                 name="wavg",
-                formula="SUM({sql} * {weight}) / NULLIF(SUM({weight}), 0)",
+                expression="SUM({sql} * {weight}) / NULLIF(SUM({weight}), 0)",
                 description="Weighted average",
             )],
         ))
@@ -272,15 +272,15 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
 
     async def test_joins_table_rendered(self, mcp_server, storage: YAMLStorage) -> None:
         """Joins table renders direct joins without kind labels."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="order_items", sql_table="order_items", data_source="test",
-            columns=[
-                Column(name="order_id", type=DataType.INT, hidden=True),
-                Column(name="product_id", type=DataType.INT, hidden=True),
+            fields=[
+                DatasetField(name="order_id", datatype=DataType.INT, hidden=True),
+                DatasetField(name="product_id", datatype=DataType.INT, hidden=True),
             ],
-            joins=[
-                ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]]),
-                ModelJoin(target_model="products", join_pairs=[["product_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="orders", join_pairs=[["order_id", "id"]]),
+                DatasetRelationship(to="products", join_pairs=[["product_id", "id"]]),
             ],
         ))
         result = await _call(mcp_server, name="inspect", arguments={"entity_type": "model", "reference": "order_items", "compact": False})
@@ -292,9 +292,9 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
 
     async def test_inspect_renders_meta_on_columns(self, mcp_server, storage: YAMLStorage) -> None:
         """Column.meta surfaces in both markdown and JSON model inspect output."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="m", sql_table="t", data_source="test",
-            columns=[Column(name="amount", type=DataType.DOUBLE, meta={"kb_id": 7})],
+            fields=[DatasetField(name="amount", datatype=DataType.DOUBLE, meta={"kb_id": 7})],
         ))
         md = await _call(mcp_server, name="inspect", arguments={
             "entity_type": "model", "reference": "m", "compact": False, "sections": ["columns"],
@@ -309,11 +309,11 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
 
     async def test_inspect_renders_meta_on_measures(self, mcp_server, storage: YAMLStorage) -> None:
         """ModelMeasure.meta surfaces in both markdown and JSON model inspect output."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="m", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", type=DataType.DOUBLE)],
-            measures=[ModelMeasure(
-                name="aov", formula="sum(revenue) / count(*)",
+            fields=[DatasetField(name="revenue", datatype=DataType.DOUBLE)],
+            metrics=[DatasetMetric(
+                name="aov", expression="sum(revenue) / count(*)",
                 meta={"kb_id": "abc-123"},
             )],
         ))
@@ -330,11 +330,11 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
 
     async def test_inspect_renders_meta_on_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
         """Aggregation.meta surfaces in both markdown and JSON model inspect output."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="m", sql_table="t", data_source="test",
             aggregations=[Aggregation(
                 name="trimmed_mean",
-                formula="AVG(CASE WHEN {expr} BETWEEN {low} AND {high} THEN {expr} END)",
+                expression="AVG(CASE WHEN {expr} BETWEEN {low} AND {high} THEN {expr} END)",
                 meta={"owner": "analytics"},
             )],
         ))
@@ -351,7 +351,7 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
 
     async def test_inspect_renders_meta_on_model_header(self, mcp_server, storage: YAMLStorage) -> None:
         """SlayerModel.meta surfaces in the markdown header and the JSON payload."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="m", sql_table="t", data_source="test",
             meta={"source": "CRM"},
         ))
@@ -369,11 +369,11 @@ Column(name="revenue", sql="amount", label="Revenue", description="USD total", t
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
         """No entity with meta ⇒ the meta column is pruned from every table."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="m", sql_table="t", data_source="test",
-            columns=[Column(name="amount", type=DataType.DOUBLE)],
-            measures=[ModelMeasure(name="aov", formula="sum(amount)")],
-            aggregations=[Aggregation(name="my_agg", formula="SUM({expr})")],
+            fields=[DatasetField(name="amount", datatype=DataType.DOUBLE)],
+            metrics=[DatasetMetric(name="aov", expression="sum(amount)")],
+            aggregations=[Aggregation(name="my_agg", expression="SUM({expr})")],
         ))
         md = await _call(mcp_server, name="inspect", arguments={
             "entity_type": "model", "reference": "m", "compact": False, "sections": ["columns", "measures", "aggregations"],
@@ -418,24 +418,24 @@ class TestMdCodeSpan:
 
     async def test_measure_type_column_in_schema(self, mcp_server, storage: YAMLStorage) -> None:
         """Inferred types drive the sample-query aggregations in _build_sample_query_args."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="typed",
             sql_table="t",
             data_source="test",
-            columns=[Column(name="status", type=DataType.TEXT),
+            fields=[DatasetField(name="status", datatype=DataType.TEXT),
 
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="label", sql="label", type=DataType.DOUBLE),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="label", sql="label", datatype=DataType.DOUBLE),
             ],
         )
         # Without types, label falls back to avg (no dim to trigger the heuristic).
-        args_no_types = _build_sample_query_args(model=model, num_rows=3)
+        args_no_types = _build_sample_query_args(dataset=model, num_rows=3)
         formulas = [f["formula"] for f in args_no_types["measures"]]
         assert "avg(label)" in formulas
 
         args_with_types = _build_sample_query_args(
-            model=model, num_rows=3,
-            measure_types={"amount": ResultColumnType(type=DataType.DOUBLE), "label": ResultColumnType(type=DataType.TEXT)},
+            dataset=model, num_rows=3,
+            metric_types={"amount": ResultColumnType(type=DataType.DOUBLE), "label": ResultColumnType(type=DataType.TEXT)},
         )
         formulas = [f["formula"] for f in args_with_types["measures"]]
         assert "avg(amount)" in formulas
@@ -448,23 +448,23 @@ class TestInspectModelQueryBacked:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="upstream", sql_table="t", data_source="test",
-            columns=[
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="region", sql="region", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
             ],
         ))
         # engine.save_model warms the cache (columns + SQL); read paths don't.
         engine = SlayerQueryEngine(storage=storage)
-        await engine.save_model(SlayerModel(
+        await engine.save_dataset(SlayerDataset(
             name="qb",
             data_source="test",
             source_queries=[SlayerQuery(
-                source_model="upstream",
-                measures=[{"formula": "sum(amount)"}],
+                population="upstream",
+                metrics=[{"formula": "sum(amount)"}],
                 dimensions=["region"],
-                filters=["amount > {threshold}"],
+                filter=["amount > {threshold}"],
                 dry_run=True,
             )],
             query_variables={"threshold": 100},
@@ -500,17 +500,17 @@ class TestInspectModelQueryBacked:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="upstream", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="qb_missing_default",
             data_source="test",
             source_queries=[SlayerQuery(
-                source_model="upstream",
-                measures=[{"formula": "sum(amount)"}],
-                filters=["amount > {threshold}"],
+                population="upstream",
+                metrics=[{"formula": "sum(amount)"}],
+                filter=["amount > {threshold}"],
                 dry_run=True,
             )],
             # No query_variables → 'threshold' is required
@@ -524,9 +524,9 @@ class TestInspectModelQueryBacked:
     async def test_table_backed_model_has_no_backing_query(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="plain", sql_table="t", data_source="test",
-            columns=[Column(name="x", sql="x", type=DataType.TEXT)],
+            fields=[DatasetField(name="x", sql="x", datatype=DataType.TEXT)],
         ))
         result = await _call(mcp_server, name="inspect", arguments={
             "entity_type": "model", "reference": "plain", "compact": False, "format": "json",
@@ -549,12 +549,12 @@ class TestInspectModelQueryBacked:
 class TestInspectModelJsonFormat:
     async def test_json_format_includes_sample_data(self, mcp_server, storage: YAMLStorage) -> None:
         """Model inspect with format='json' must include sample_data and sample_data_error keys."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="jtest",
             sql_table="t",
             data_source="test",
-            columns=[Column(name="x"),
-Column(name="m", sql="val", type=DataType.DOUBLE)
+            fields=[DatasetField(name="x"),
+DatasetField(name="m", sql="val", datatype=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect", arguments={
@@ -576,12 +576,12 @@ class TestInspectModelShowSQL:
     """show_sql parameter must control visibility of all SQL in model inspect output."""
     async def test_hides_sql_by_default_markdown(self, mcp_server, storage: YAMLStorage) -> None:
         """Without show_sql, markdown output has no ## SQL section and no sql column."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="sqlt",
             sql="SELECT id, val FROM raw_table",
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-Column(name="val", sql="val", type=DataType.DOUBLE)
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+DatasetField(name="val", sql="val", datatype=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect", arguments={
@@ -594,12 +594,12 @@ Column(name="val", sql="val", type=DataType.DOUBLE)
 
     async def test_shows_sql_when_requested_markdown(self, mcp_server, storage: YAMLStorage) -> None:
         """With show_sql=True, markdown output includes ## SQL section and sql columns."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="sqlshow",
             sql="SELECT id, val FROM raw_table",
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-Column(name="val", sql="val", type=DataType.DOUBLE)
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+DatasetField(name="val", sql="val", datatype=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect", arguments={
@@ -610,13 +610,13 @@ Column(name="val", sql="val", type=DataType.DOUBLE)
 
     async def test_hides_sql_by_default_json(self, mcp_server, storage: YAMLStorage) -> None:
         """JSON format without show_sql excludes sql keys from dimensions and measures."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="jsqlt",
             sql="SELECT id, val FROM raw_table",
             sql_table=None,
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-Column(name="val", sql="val", filter="val > 0", type=DataType.DOUBLE)
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+DatasetField(name="val", sql="val", filter="val > 0", datatype=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect", arguments={
@@ -633,13 +633,13 @@ Column(name="val", sql="val", filter="val > 0", type=DataType.DOUBLE)
 
     async def test_shows_sql_when_requested_json(self, mcp_server, storage: YAMLStorage) -> None:
         """JSON format with show_sql=True includes sql keys everywhere."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="jsqlshow",
             sql="SELECT id, val FROM raw_table",
             sql_table=None,
             data_source="test",
-            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-Column(name="val", sql="val", filter="val > 0", type=DataType.DOUBLE)
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+DatasetField(name="val", sql="val", filter="val > 0", datatype=DataType.DOUBLE)
             ],
         ))
         result = await _call(mcp_server, name="inspect", arguments={
@@ -657,30 +657,30 @@ class TestInspectModelSectionGating:
     """``sections`` parameter on the model inspect — markdown rendering."""
     async def _save_rich_model(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="rich", sql_table="t", data_source="test",
             description="A rich model used to exercise model inspect section gating.",
-            columns=[
-                Column(name="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", type=DataType.TEXT, description="Order state"),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="customer_id", type=DataType.INT, hidden=True),
-                Column(name="product_id", type=DataType.INT, hidden=True),
+            fields=[
+                DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", datatype=DataType.TEXT, description="Order state"),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
+                DatasetField(name="product_id", datatype=DataType.INT, hidden=True),
             ],
-            measures=[
-                ModelMeasure(name="aov", formula="sum(amount) / count(*)", description="Average order value"),
-                ModelMeasure(name="rev", formula="sum(amount)"),
+            metrics=[
+                DatasetMetric(name="aov", expression="sum(amount) / count(*)", description="Average order value"),
+                DatasetMetric(name="rev", expression="sum(amount)"),
             ],
             aggregations=[
                 Aggregation(
                     name="wavg",
-                    formula="SUM({sql} * {weight}) / NULLIF(SUM({weight}), 0)",
+                    expression="SUM({sql} * {weight}) / NULLIF(SUM({weight}), 0)",
                     description="Weighted average",
                 ),
             ],
-            joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-                ModelJoin(target_model="products", join_pairs=[["product_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+                DatasetRelationship(to="products", join_pairs=[["product_id", "id"]]),
             ],
         ))
 
@@ -726,9 +726,9 @@ class TestInspectModelSectionGating:
     async def test_omitted_sections_with_no_entities_render_nothing(self, mcp_server, storage: YAMLStorage) -> None:
         """A names-only section with no entities does not emit a heading."""
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="bare", sql_table="t", data_source="test",
-            columns=[Column(name="id", type=DataType.DOUBLE, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True)],
         ))
         result = await _call(
             mcp_server, name="inspect",
@@ -897,13 +897,13 @@ class TestInspectModelDescriptionsMaxChars:
     """``descriptions_max_chars`` parameter — truncation behaviour."""
     async def _save_with_long_descriptions(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="m", sql_table="t", data_source="test",
             description="A" * 100,
-            columns=[Column(name="status", type=DataType.TEXT, description="B" * 100)],
-            measures=[ModelMeasure(name="rev", formula="count(*)", description="C" * 100)],
+            fields=[DatasetField(name="status", datatype=DataType.TEXT, description="B" * 100)],
+            metrics=[DatasetMetric(name="rev", expression="count(*)", description="C" * 100)],
             aggregations=[Aggregation(
-                name="wavg", formula="SUM({x})", description="D" * 100,
+                name="wavg", expression="SUM({x})", description="D" * 100,
             )],
         ))
 
@@ -932,10 +932,10 @@ class TestInspectModelDescriptionsMaxChars:
 
     async def test_short_descriptions_unchanged(self, mcp_server, storage: YAMLStorage) -> None:
         """Descriptions shorter than max_chars are not modified."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="short", sql_table="t", data_source="test",
             description="hi",
-            columns=[Column(name="x", type=DataType.TEXT, description="ok")],
+            fields=[DatasetField(name="x", datatype=DataType.TEXT, description="ok")],
         ))
         result = await _call(
             mcp_server, name="inspect",
@@ -969,11 +969,11 @@ class TestInspectModelAggregationsShowSql:
     """show_sql gating on the aggregations section."""
     async def _save_with_aggs(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="m", sql_table="t", data_source="test",
             aggregations=[Aggregation(
                 name="wavg",
-                formula="SUM({sql} * {weight}) / NULLIF(SUM({weight}), 0)",
+                expression="SUM({sql} * {weight}) / NULLIF(SUM({weight}), 0)",
                 params=[AggregationParam(name="weight", sql="quantity")],
                 description="Weighted avg",
             )],
@@ -1021,21 +1021,21 @@ class TestInspectModelJsonGating:
     """JSON parity for section gating, descriptions, and observability arrays."""
     async def _save_rich(self, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="rich", sql_table="t", data_source="test",
             description="X" * 50,
-            columns=[
-                Column(name="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="customer_id", type=DataType.INT, hidden=True),
+            fields=[
+                DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
             ],
-            measures=[ModelMeasure(name="aov", formula="count(*)")],
+            metrics=[DatasetMetric(name="aov", expression="count(*)")],
             aggregations=[Aggregation(
                 name="wavg",
-                formula="SUM({a})",
+                expression="SUM({a})",
                 params=[AggregationParam(name="a", sql="amount")],
             )],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         ))
 
     async def test_json_columns_only_uses_names_keys(self, mcp_server, storage: YAMLStorage) -> None:
@@ -1235,94 +1235,94 @@ class TestInspectModelHelpers:
 
 class TestBuildSampleQueryArgs:
     def test_avg_when_allowed(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", sql_table="t", data_source="ds",
-            columns=[
-                Column(name="status", type=DataType.TEXT),
-                Column(name="region", type=DataType.TEXT),
-                Column(name="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="rev", sql="amt", type=DataType.DOUBLE),
-                Column(name="qty", sql="quantity", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="region", datatype=DataType.TEXT),
+                DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="rev", sql="amt", datatype=DataType.DOUBLE),
+                DatasetField(name="qty", sql="quantity", datatype=DataType.DOUBLE),
             ],
         )
-        args = _build_sample_query_args(model=model, num_rows=7)
+        args = _build_sample_query_args(dataset=model, num_rows=7)
         assert [f["formula"] for f in args["measures"]] == ["count(*)", "avg(rev)", "avg(qty)"]
         assert [d["name"] for d in args["dimensions"]] == ["status", "region"]
         assert args["limit"] == 7
         assert args["source_model"] == "t"
 
     def test_fallback_to_first_allowed_when_avg_not_permitted(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", sql_table="t", data_source="ds",
-            columns=[Column(name="rev", sql="amt", allowed_aggregations=["sum", "max"], type=DataType.DOUBLE)],
+            fields=[DatasetField(name="rev", sql="amt", allowed_aggregations=["sum", "max"], datatype=DataType.DOUBLE)],
         )
-        args = _build_sample_query_args(model=model, num_rows=3)
+        args = _build_sample_query_args(dataset=model, num_rows=3)
         assert [f["formula"] for f in args["measures"]] == ["count(*)", "sum(rev)"]
 
     def test_prefers_safe_agg_over_first_allowed(self) -> None:
         """A non-safe first aggregation is skipped for the first safe zero-arg one."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", sql_table="t", data_source="ds",
-            columns=[Column(name="rev", sql="amt", allowed_aggregations=["last", "first", "min", "max"], type=DataType.DOUBLE)],
+            fields=[DatasetField(name="rev", sql="amt", allowed_aggregations=["last", "first", "min", "max"], datatype=DataType.DOUBLE)],
         )
-        args = _build_sample_query_args(model=model, num_rows=3)
+        args = _build_sample_query_args(dataset=model, num_rows=3)
         assert [f["formula"] for f in args["measures"]] == ["count(*)", "min(rev)"]
 
     def test_falls_back_to_first_allowed_when_no_safe_agg(self) -> None:
         """No safe aggregation ⇒ fall back to the first allowed entry."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", sql_table="t", data_source="ds",
-            columns=[Column(name="rev", sql="amt", allowed_aggregations=["last", "first"], type=DataType.DOUBLE)],
+            fields=[DatasetField(name="rev", sql="amt", allowed_aggregations=["last", "first"], datatype=DataType.DOUBLE)],
         )
-        args = _build_sample_query_args(model=model, num_rows=3)
+        args = _build_sample_query_args(dataset=model, num_rows=3)
         assert [f["formula"] for f in args["measures"]] == ["count(*)", "last(rev)"]
 
     def test_skip_when_allowed_is_empty(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", sql_table="t", data_source="ds",
-            columns=[Column(name="rev", sql="amt", allowed_aggregations=[], type=DataType.DOUBLE)],
+            fields=[DatasetField(name="rev", sql="amt", allowed_aggregations=[], datatype=DataType.DOUBLE)],
         )
-        args = _build_sample_query_args(model=model, num_rows=3)
+        args = _build_sample_query_args(dataset=model, num_rows=3)
         assert [f["formula"] for f in args["measures"]] == ["count(*)"]
 
     def test_dims_cap_at_two_and_exclude_pk_and_hidden(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", sql_table="t", data_source="ds",
-            columns=[
-                Column(name="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="hidden_d", type=DataType.TEXT, hidden=True),
-                Column(name="a", type=DataType.TEXT),
-                Column(name="b", type=DataType.TEXT),
-                Column(name="c", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="hidden_d", datatype=DataType.TEXT, hidden=True),
+                DatasetField(name="a", datatype=DataType.TEXT),
+                DatasetField(name="b", datatype=DataType.TEXT),
+                DatasetField(name="c", datatype=DataType.TEXT),
             ],
         )
-        args = _build_sample_query_args(model=model, num_rows=3)
+        args = _build_sample_query_args(dataset=model, num_rows=3)
         assert [d["name"] for d in args["dimensions"]] == ["a", "b"]
 
     def test_hidden_column_skipped(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", sql_table="t", data_source="ds",
-            columns=[
-                Column(name="rev", sql="amt", hidden=True, type=DataType.DOUBLE),
-                Column(name="qty", sql="quantity", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="rev", sql="amt", hidden=True, datatype=DataType.DOUBLE),
+                DatasetField(name="qty", sql="quantity", datatype=DataType.DOUBLE),
             ],
         )
-        args = _build_sample_query_args(model=model, num_rows=3)
+        args = _build_sample_query_args(dataset=model, num_rows=3)
         assert [f["formula"] for f in args["measures"]] == ["count(*)", "avg(qty)"]
 
     def test_count_distinct_fallback_for_non_numeric_columns(self) -> None:
         """Non-numeric columns not used as dims get count_distinct; numeric get avg."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="order_items", sql_table="order_items", data_source="ds",
-            columns=[
-                Column(name="id", type=DataType.TEXT, primary_key=True),
-                Column(name="sku", sql="sku", type=DataType.TEXT),
-                Column(name="is_flagged", sql="is_flagged", type=DataType.BOOLEAN),
-                Column(name="extra_string", sql="extra_string", type=DataType.TEXT),
-                Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.TEXT, primary_key=True),
+                DatasetField(name="sku", sql="sku", datatype=DataType.TEXT),
+                DatasetField(name="is_flagged", sql="is_flagged", datatype=DataType.BOOLEAN),
+                DatasetField(name="extra_string", sql="extra_string", datatype=DataType.TEXT),
+                DatasetField(name="quantity", sql="quantity", datatype=DataType.DOUBLE),
             ],
         )
-        args = _build_sample_query_args(model=model, num_rows=3)
+        args = _build_sample_query_args(dataset=model, num_rows=3)
         assert [d["name"] for d in args["dimensions"]] == ["sku", "is_flagged"]
         assert [f["formula"] for f in args["measures"]] == [
             "count(*)", "count_distinct(extra_string)", "avg(quantity)",
@@ -1331,21 +1331,21 @@ class TestBuildSampleQueryArgs:
     def test_opaque_column_excluded_from_data_profile(self) -> None:
         """An opaque (UNKNOWN) column has no equality operator, so it's skipped as
         both measure and dimension (else count_distinct/min/max sinks the profile)."""
-        opaque = Column(name="loc", type=DataType.UNKNOWN, db_type="point")
-        assert _choose_sample_agg(opaque, measure_types={}) is None
+        opaque = DatasetField(name="loc", datatype=DataType.UNKNOWN, db_type="point")
+        assert _choose_sample_agg(opaque, metric_types={}) is None
         # ...even when the driver reports a categorical-looking cursor type.
-        assert _choose_sample_agg(opaque, measure_types={"loc": ResultColumnType(type=DataType.TEXT)}) is None
+        assert _choose_sample_agg(opaque, metric_types={"loc": ResultColumnType(type=DataType.TEXT)}) is None
 
-        model = SlayerModel(
+        model = SlayerDataset(
             name="places", sql_table="places", data_source="ds",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="city", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="city", datatype=DataType.TEXT),
                 opaque,
-                Column(name="area", type=DataType.DOUBLE),
+                DatasetField(name="area", datatype=DataType.DOUBLE),
             ],
         )
-        args = _build_sample_query_args(model=model, num_rows=3)
+        args = _build_sample_query_args(dataset=model, num_rows=3)
         assert [f["formula"] for f in args["measures"]] == ["count(*)", "avg(area)"]
         assert [d["name"] for d in args["dimensions"]] == ["city"]
 
@@ -1362,10 +1362,10 @@ class TestMarkdownHelpers:
         assert _escape_md_cell("line1\r\nline2") == "line1 line2"
 
     def test_table_empty(self) -> None:
-        assert _markdown_table(rows=[], columns=["x"]) == "_(none)_"
+        assert _markdown_table(rows=[], fields=["x"]) == "_(none)_"
 
     def test_table_renders(self) -> None:
-        out = _markdown_table(rows=[{"x": 1, "y": "hi"}, {"x": 2, "y": None}], columns=["x", "y"])
+        out = _markdown_table(rows=[{"x": 1, "y": "hi"}, {"x": 2, "y": None}], fields=["x", "y"])
         assert out.splitlines() == [
             "| x | y |",
             "| --- | --- |",
@@ -1380,7 +1380,7 @@ class TestMarkdownHelpers:
                 {"name": "a", "label": None, "desc": "foo"},
                 {"name": "b", "label": "", "desc": "bar"},
             ],
-            columns=["name", "label", "desc"],
+            fields=["name", "label", "desc"],
         )
         assert "label" not in out
         assert out.splitlines() == [
@@ -1398,7 +1398,7 @@ class TestMarkdownHelpers:
                 {"name": "y", "desc": ""},
                 {"name": "z", "desc": None},
             ],
-            columns=["name", "desc"],
+            fields=["name", "desc"],
         )
         assert out == "`x`, `y`, `z`"
 
@@ -1409,22 +1409,22 @@ class TestMarkdownHelpers:
                 {"name": "no`ticks", "desc": None},
                 {"name": "plain", "desc": None},
             ],
-            columns=["name", "desc"],
+            fields=["name", "desc"],
         )
         assert out == "``no`ticks``, `plain`"
 
     def test_table_all_columns_pruned_returns_none_marker(self) -> None:
         out = _markdown_table(
             rows=[{"a": None, "b": ""}, {"a": "", "b": None}],
-            columns=["a", "b"],
+            fields=["a", "b"],
         )
         assert out == "_(none)_"
 
     def test_strip_model_prefix(self) -> None:
-        cols, data = _strip_model_prefix(
-            columns=["orders.count", "orders.revenue_avg", "other.field"],
+        cols, data = _strip_dataset_prefix(
+            fields=["orders.count", "orders.revenue_avg", "other.field"],
             data=[{"orders.count": 5, "orders.revenue_avg": 12.5, "other.field": "x"}],
-            model_name="orders",
+            dataset_name="orders",
         )
         assert cols == ["count", "revenue_avg", "other.field"]
         assert data == [{"count": 5, "revenue_avg": 12.5, "other.field": "x"}]
@@ -1446,7 +1446,7 @@ class TestCreateModel:
         })
         assert "orders" in result
         assert "created" in result
-        assert await storage.get_model("orders") is not None
+        assert await storage.get_dataset("orders") is not None
 
     async def test_create_with_allowed_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
         """``allowed_aggregations`` lives on a Column in v2, not a measure formula."""
@@ -1460,8 +1460,8 @@ class TestCreateModel:
             ],
         })
         assert "created" in result
-        model = await storage.get_model("orders")
-        assert model.columns[0].allowed_aggregations == ["sum", "avg"]
+        model = await storage.get_dataset("orders")
+        assert model.fields[0].allowed_aggregations == ["sum", "avg"]
 
     async def test_create_with_measure_meta_dict(self, mcp_server, storage: YAMLStorage) -> None:
         # Pins measures as List[Dict[str, Any]]: a narrower type would reject this
@@ -1479,11 +1479,11 @@ class TestCreateModel:
             ],
         })
         assert "created" in result
-        model = await storage.get_model("orders")
-        assert model.measures[0].meta == {"kb_id": "abc-123", "tags": ["finance", "kpi"]}
+        model = await storage.get_dataset("orders")
+        assert model.metrics[0].meta == {"kb_id": "abc-123", "tags": ["finance", "kpi"]}
 
     async def test_create_reports_replaced(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="create_model", arguments={"name": "orders", "sql_table": "t2", "data_source": "test"})
         assert "replaced" in result
 
@@ -1508,9 +1508,9 @@ class TestCreateModel:
 
     async def test_create_from_query_ignores_empty_placeholders(self, mcp_server, storage: YAMLStorage) -> None:
         """Empty lists/strings should not trigger the mixed-parameter error."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="test_ds",
-            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
@@ -1523,9 +1523,9 @@ class TestCreateModel:
 
     async def test_create_from_query_routes_to_engine(self, mcp_server, storage: YAMLStorage) -> None:
         # The datasource error proves routing to the query path.
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="test_ds",
-            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
@@ -1542,9 +1542,9 @@ class TestCreateModel:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="create_model", arguments={
             "name": "summary",
@@ -1554,10 +1554,10 @@ class TestCreateModel:
             },
         })
         assert "Error" not in result, result
-        persisted = await storage.get_model("summary")
+        persisted = await storage.get_dataset("summary")
         assert persisted is not None
         assert "amount" in (await _dry_run_sql(storage, "summary")).lower()
-        assert persisted.columns, "MCP create_model(query=...) must populate columns"
+        assert persisted.fields, "MCP create_model(query=...) must populate columns"
 
 
 class TestEditModel:
@@ -1566,9 +1566,9 @@ class TestEditModel:
 
     async def test_upsert_new_column(self, mcp_server, storage: YAMLStorage) -> None:
         """Upserting a new column adds it to ``columns``."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1577,13 +1577,13 @@ class TestEditModel:
         parsed = json.loads(result)
         assert parsed["success"] is True
         assert any("created column 'total'" in c for c in parsed["changes"])
-        model = await storage.get_model("orders")
-        assert len(model.columns) == 2
+        model = await storage.get_dataset("orders")
+        assert len(model.fields) == 2
 
     async def test_upsert_column_with_allowed_aggregations(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1591,14 +1591,14 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        model = await storage.get_model("orders")
-        total = next(c for c in model.columns if c.name == "total")
+        model = await storage.get_dataset("orders")
+        total = next(c for c in model.fields if c.name == "total")
         assert total.allowed_aggregations == ["sum", "avg"]
 
     async def test_upsert_list_column_with_element_type(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1606,16 +1606,16 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True, result
-        stored = await storage.get_model("orders")
+        stored = await storage.get_dataset("orders")
         assert stored is not None
-        tags = next(c for c in stored.columns if c.name == "tags")
-        assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
+        tags = next(c for c in stored.fields if c.name == "tags")
+        assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
 
     async def test_upsert_existing_column(self, mcp_server, storage: YAMLStorage) -> None:
         """Upserting an existing column updates it instead of erroring."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", description="old", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="revenue", sql="amount", description="old", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1624,15 +1624,15 @@ class TestEditModel:
         parsed = json.loads(result)
         assert parsed["success"] is True
         assert any("updated column 'revenue'" in c for c in parsed["changes"])
-        model = await storage.get_model("orders")
-        assert len(model.columns) == 1
-        assert model.columns[0].sql == "price"
+        model = await storage.get_dataset("orders")
+        assert len(model.fields) == 1
+        assert model.fields[0].sql == "price"
 
     async def test_upsert_existing_column_partial_update(self, mcp_server, storage: YAMLStorage) -> None:
         """Partial upsert: only specified fields change, others are preserved."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", description="Total revenue", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="revenue", sql="amount", description="Total revenue", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1640,7 +1640,7 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        c = (await storage.get_model("orders")).columns[0]
+        c = (await storage.get_dataset("orders")).fields[0]
         assert c.description == "Updated description"
         assert c.sql == "amount"  # unchanged
 
@@ -1648,9 +1648,9 @@ class TestEditModel:
 
     async def test_upsert_new_measure_formula(self, mcp_server, storage: YAMLStorage) -> None:
         """Upserting a new model-level ModelMeasure adds it to ``measures``."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1659,16 +1659,16 @@ class TestEditModel:
         parsed = json.loads(result)
         assert parsed["success"] is True
         assert any("created measure 'aov'" in c for c in parsed["changes"])
-        model = await storage.get_model("orders")
-        assert len(model.measures) == 1
-        assert model.measures[0].formula == "sum(revenue) / count(*)"
+        model = await storage.get_dataset("orders")
+        assert len(model.metrics) == 1
+        assert model.metrics[0].expression == "sum(revenue) / count(*)"
 
     async def test_upsert_existing_measure_formula(self, mcp_server, storage: YAMLStorage) -> None:
 
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
-            measures=[ModelMeasure(name="aov", formula="sum(revenue) / count(*)")],
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
+            metrics=[DatasetMetric(name="aov", expression="sum(revenue) / count(*)")],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1676,14 +1676,14 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        model = await storage.get_model("orders")
-        assert model.measures[0].formula == "avg(revenue)"
+        model = await storage.get_dataset("orders")
+        assert model.metrics[0].expression == "avg(revenue)"
 
     async def test_upsert_multiple_mixed_create_update(self, mcp_server, storage: YAMLStorage) -> None:
         """One new + one existing column in the same call."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1696,11 +1696,11 @@ class TestEditModel:
         assert parsed["success"] is True
         assert any("updated column 'revenue'" in c for c in parsed["changes"])
         assert any("created column 'profit'" in c for c in parsed["changes"])
-        model = await storage.get_model("orders")
-        assert len(model.columns) == 2
+        model = await storage.get_dataset("orders")
+        assert len(model.fields) == 2
 
     async def test_invalid_column_type_on_upsert(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "columns": [{"name": "bad", "type": "invalid_type"}],
@@ -1710,21 +1710,21 @@ class TestEditModel:
     # --- Aggregation upserts ---
 
     async def test_upsert_new_aggregation(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "aggregations": [{"name": "my_agg", "formula": "SUM({value})"}],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        model = await storage.get_model("orders")
+        model = await storage.get_dataset("orders")
         assert len(model.aggregations) == 1
         assert model.aggregations[0].name == "my_agg"
 
     async def test_upsert_existing_aggregation(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            aggregations=[Aggregation(name="my_agg", formula="SUM({value})")],
+            aggregations=[Aggregation(name="my_agg", expression="SUM({value})")],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1732,13 +1732,13 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        model = await storage.get_model("orders")
-        assert model.aggregations[0].formula == "AVG({value})"
+        model = await storage.get_dataset("orders")
+        assert model.aggregations[0].expression == "AVG({value})"
 
     async def test_remove_aggregation(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            aggregations=[Aggregation(name="my_agg", formula="SUM({value})")],
+            aggregations=[Aggregation(name="my_agg", expression="SUM({value})")],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1746,14 +1746,14 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        assert len((await storage.get_model("orders")).aggregations) == 0
+        assert len((await storage.get_dataset("orders")).aggregations) == 0
 
     # --- Join upserts ---
 
     async def test_upsert_new_join(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="customer_id", type=DataType.INT, hidden=True)],
+            fields=[DatasetField(name="customer_id", datatype=DataType.INT, hidden=True)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1761,18 +1761,18 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        model = await storage.get_model("orders")
-        assert len(model.joins) == 1
-        assert model.joins[0].target_model == "customers"
+        model = await storage.get_dataset("orders")
+        assert len(model.relationships) == 1
+        assert model.relationships[0].to == "customers"
 
     async def test_upsert_existing_join(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[
-                Column(name="customer_id", type=DataType.INT, hidden=True),
-                Column(name="buyer_id", type=DataType.INT, hidden=True),
+            fields=[
+                DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
+                DatasetField(name="buyer_id", datatype=DataType.INT, hidden=True),
             ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1780,15 +1780,15 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        model = await storage.get_model("orders")
-        assert len(model.joins) == 1
-        assert model.joins[0].join_pairs == [["buyer_id", "id"]]
+        model = await storage.get_dataset("orders")
+        assert len(model.relationships) == 1
+        assert model.relationships[0].join_pairs == [["buyer_id", "id"]]
 
     async def test_remove_join(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="customer_id", type=DataType.INT, hidden=True)],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            fields=[DatasetField(name="customer_id", datatype=DataType.INT, hidden=True)],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1796,22 +1796,22 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        assert len((await storage.get_model("orders")).joins) == 0
+        assert len((await storage.get_dataset("orders")).relationships) == 0
 
     # --- Filter management ---
 
     async def test_add_filter(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "add_filters": ["deleted_at IS NULL"],
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        assert "deleted_at IS NULL" in (await storage.get_model("orders")).filters
+        assert "deleted_at IS NULL" in (await storage.get_dataset("orders")).filters
 
     async def test_add_duplicate_filter_skipped(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
             filters=["deleted_at IS NULL"],
         ))
@@ -1823,7 +1823,7 @@ class TestEditModel:
         assert "No changes" in result
 
     async def test_remove_filter(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
             filters=["deleted_at IS NULL"],
         ))
@@ -1833,10 +1833,10 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        assert len((await storage.get_model("orders")).filters) == 0
+        assert len((await storage.get_dataset("orders")).filters) == 0
 
     async def test_remove_filter_not_found(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "remove_filters": ["nonexistent"],
@@ -1846,41 +1846,41 @@ class TestEditModel:
     # --- Scalar metadata ---
 
     async def test_update_description(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "description": "Updated",
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        assert (await storage.get_model("orders")).description == "Updated"
+        assert (await storage.get_dataset("orders")).description == "Updated"
 
     async def test_set_sql_table(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "sql_table": "public.orders",
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        assert (await storage.get_model("orders")).sql_table == "public.orders"
+        assert (await storage.get_dataset("orders")).sql_table == "public.orders"
 
     async def test_set_hidden(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "hidden": True,
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        assert (await storage.get_model("orders")).hidden is True
+        assert (await storage.get_dataset("orders")).hidden is True
 
     # --- Multiple changes ---
 
     async def test_multiple_changes(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1893,17 +1893,17 @@ class TestEditModel:
         parsed = json.loads(result)
         assert parsed["success"] is True
         assert len(parsed["changes"]) == 3
-        model = await storage.get_model("orders")
+        model = await storage.get_dataset("orders")
         assert model.description == "Orders table"
-        assert any(c.name == "status" for c in model.columns)
-        assert any(c.name == "total" for c in model.columns)
+        assert any(c.name == "status" for c in model.fields)
+        assert any(c.name == "total" for c in model.fields)
 
     # --- Typed remove ---
 
     async def test_remove_column_typed(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE), Column(name="total", sql="x", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE), DatasetField(name="total", sql="x", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1911,11 +1911,11 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        model = await storage.get_model("orders")
-        assert len(model.columns) == 1
+        model = await storage.get_dataset("orders")
+        assert len(model.fields) == 1
 
     async def test_remove_column_not_found(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "remove": {"columns": ["nonexistent"]},
@@ -1923,7 +1923,7 @@ class TestEditModel:
         assert "not found" in result
 
     async def test_remove_invalid_key(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "remove": {"invalid": ["x"]},
@@ -1932,9 +1932,9 @@ class TestEditModel:
 
     async def test_remove_then_recreate_same_call(self, mcp_server, storage: YAMLStorage) -> None:
         """Remove a column then upsert one with the same name in the same call."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="status", sql="old_col", type=DataType.TEXT)],
+            fields=[DatasetField(name="status", sql="old_col", datatype=DataType.TEXT)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1943,7 +1943,7 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        c = (await storage.get_model("orders")).columns[0]
+        c = (await storage.get_dataset("orders")).fields[0]
         assert c.sql == "new_col"
 
     # --- Error cases ---
@@ -1956,13 +1956,13 @@ class TestEditModel:
         assert "not found" in result
 
     async def test_no_changes(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_model", arguments={"model_name": "orders"})
         assert "No changes" in result
 
     async def test_cross_field_validation_error(self, mcp_server, storage: YAMLStorage) -> None:
         """allowed_aggregations referencing a non-existent aggregation should fail."""
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "columns": [{"name": "rev", "sql": "amount", "type": "number", "allowed_aggregations": ["nonexistent_agg"]}],
@@ -1979,13 +1979,13 @@ class TestEditModel:
             name="test", type="sqlite", database=":memory:"
         ))
         # Separate upstream so the backing query has a non-cyclic source.
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders_source", sql_table="orders_t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -1996,13 +1996,13 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        reloaded = await storage.get_model("orders")
+        reloaded = await storage.get_dataset("orders")
         assert reloaded is not None
         assert reloaded.source_queries is not None
         assert len(reloaded.source_queries) == 1
-        assert reloaded.source_queries[0].source_model == "orders_source"
+        assert reloaded.source_queries[0].population == "orders_source"
         assert not reloaded.sql_table
-        assert reloaded.columns
+        assert reloaded.fields
         assert "amount" in (await _dry_run_sql(storage, "orders")).lower()
 
     async def test_edit_query_variables_on_query_backed_model(
@@ -2011,17 +2011,17 @@ class TestEditModel:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="upstream", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="qb",
             data_source="test",
             source_queries=[SlayerQuery(
-                source_model="upstream",
-                measures=[{"formula": "sum(amount)"}],
-                filters=["amount > {threshold}"],
+                population="upstream",
+                metrics=[{"formula": "sum(amount)"}],
+                filter=["amount > {threshold}"],
                 dry_run=True,
             )],
             query_variables={"threshold": 100},
@@ -2034,13 +2034,13 @@ class TestEditModel:
         parsed = json.loads(result)
         assert parsed["success"] is True
         assert any("query_variables" in c for c in parsed["changes"])
-        reloaded = await storage.get_model("qb")
+        reloaded = await storage.get_dataset("qb")
         assert reloaded.query_variables == {"threshold": 500}
 
     async def test_edit_rejects_simultaneous_source_modes(
         self, mcp_server, storage: YAMLStorage
     ) -> None:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test"
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
@@ -2056,9 +2056,9 @@ class TestEditModel:
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
         """New measure with meta via edit_model survives the storage round-trip."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -2068,17 +2068,17 @@ class TestEditModel:
             }],
         })
         assert json.loads(result)["success"] is True
-        model = await storage.get_model("orders")
-        assert model.measures[0].meta == {"kb_id": 1}
+        model = await storage.get_dataset("orders")
+        assert model.metrics[0].meta == {"kb_id": 1}
 
     async def test_edit_persists_measure_meta_update_path(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
         """Adding meta to an existing measure via edit_model survives the round-trip."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
-            measures=[ModelMeasure(name="aov", formula="sum(revenue) / count(*)")],
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
+            metrics=[DatasetMetric(name="aov", expression="sum(revenue) / count(*)")],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -2088,14 +2088,14 @@ class TestEditModel:
             }],
         })
         assert json.loads(result)["success"] is True
-        model = await storage.get_model("orders")
-        assert model.measures[0].meta == {"kb_id": 1}
+        model = await storage.get_dataset("orders")
+        assert model.metrics[0].meta == {"kb_id": 1}
 
     async def test_edit_persists_aggregation_meta_create_path(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
         """New aggregation with meta+formula via edit_model survives the round-trip."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
@@ -2107,36 +2107,36 @@ class TestEditModel:
             }],
         })
         assert json.loads(result)["success"] is True
-        model = await storage.get_model("orders")
+        model = await storage.get_dataset("orders")
         assert model.aggregations[0].meta == {"owner": "x"}
-        assert model.aggregations[0].formula == "SUM({expr})"
+        assert model.aggregations[0].expression == "SUM({expr})"
 
     async def test_edit_persists_aggregation_meta_update_path(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
         """Adding meta to an existing aggregation survives the round-trip."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            aggregations=[Aggregation(name="my_agg", formula="SUM({expr})")],
+            aggregations=[Aggregation(name="my_agg", expression="SUM({expr})")],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
             "aggregations": [{"name": "my_agg", "meta": {"owner": "x"}}],
         })
         assert json.loads(result)["success"] is True
-        model = await storage.get_model("orders")
+        model = await storage.get_dataset("orders")
         assert model.aggregations[0].meta == {"owner": "x"}
-        assert model.aggregations[0].formula == "SUM({expr})"  # preserved (partial update)
+        assert model.aggregations[0].expression == "SUM({expr})"  # preserved (partial update)
 
     async def test_edit_measure_meta_replaced_not_merged(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
         """Updating meta replaces the whole dict (no deep merge)."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
-            measures=[ModelMeasure(
-                name="aov", formula="sum(revenue) / count(*)",
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
+            metrics=[DatasetMetric(
+                name="aov", expression="sum(revenue) / count(*)",
                 meta={"a": 1},
             )],
         ))
@@ -2145,18 +2145,18 @@ class TestEditModel:
             "measures": [{"name": "aov", "meta": {"b": 2}}],
         })
         assert json.loads(result)["success"] is True
-        model = await storage.get_model("orders")
-        assert model.measures[0].meta == {"b": 2}
+        model = await storage.get_dataset("orders")
+        assert model.metrics[0].meta == {"b": 2}
 
     async def test_edit_omitting_meta_key_preserves_existing_meta(
         self, mcp_server, storage: YAMLStorage,
     ) -> None:
         """Omitting the meta key preserves existing meta (flat-merge upsert)."""
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[Column(name="revenue", sql="amount", type=DataType.DOUBLE)],
-            measures=[ModelMeasure(
-                name="aov", formula="sum(revenue) / count(*)",
+            fields=[DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE)],
+            metrics=[DatasetMetric(
+                name="aov", expression="sum(revenue) / count(*)",
                 meta={"kb_id": 9},
             )],
         ))
@@ -2165,9 +2165,9 @@ class TestEditModel:
             "measures": [{"name": "aov", "description": "Average order value"}],
         })
         assert json.loads(result)["success"] is True
-        model = await storage.get_model("orders")
-        assert model.measures[0].description == "Average order value"
-        assert model.measures[0].meta == {"kb_id": 9}
+        model = await storage.get_dataset("orders")
+        assert model.metrics[0].description == "Average order value"
+        assert model.metrics[0].meta == {"kb_id": 9}
 
 
 class TestEditModelDatasourceMoveSafety:
@@ -2180,14 +2180,14 @@ class TestEditModelDatasourceMoveSafety:
             await storage.save_datasource(DatasourceConfig(
                 name=n, type="sqlite", database=":memory:"
             ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders_a", data_source="db_a",
-            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)],
             description="source",
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders_b", data_source="db_b",
-            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)],
             description="target",
         ))
 
@@ -2202,8 +2202,8 @@ class TestEditModelDatasourceMoveSafety:
         )
 
         # Both models still in their original places, untouched.
-        src = await storage.get_model("orders", data_source="db_a")
-        tgt = await storage.get_model("orders", data_source="db_b")
+        src = await storage.get_dataset("orders", data_source="db_a")
+        tgt = await storage.get_dataset("orders", data_source="db_b")
         assert src is not None
         assert src.description == "source"
         assert tgt is not None
@@ -2219,24 +2219,24 @@ class TestEditModelDatasourceMoveSafety:
                 name=n, type="sqlite", database=":memory:"
             ))
         # Upstream in db_a ⇒ qb's backing query resolves to db_a.
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="db_a",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         ))
         engine = SlayerQueryEngine(storage=storage)
-        await engine.save_model(SlayerModel(
+        await engine.save_dataset(SlayerDataset(
             name="qb",
             data_source="db_a",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
             })],
         ))
-        assert await storage.get_model("qb", data_source="db_a") is not None
-        assert await storage.get_model("qb", data_source="db_b") is None
+        assert await storage.get_dataset("qb", data_source="db_a") is not None
+        assert await storage.get_dataset("qb", data_source="db_b") is None
 
         # Move db_a -> db_b, but the query still resolves to db_a, so the model
         # should land back at db_a and never be deleted outright.
@@ -2246,8 +2246,8 @@ class TestEditModelDatasourceMoveSafety:
             "new_data_source": "db_b",
         })
         del result
-        landed_a = await storage.get_model("qb", data_source="db_a")
-        landed_b = await storage.get_model("qb", data_source="db_b")
+        landed_a = await storage.get_dataset("qb", data_source="db_a")
+        landed_b = await storage.get_dataset("qb", data_source="db_b")
         assert landed_a is not None or landed_b is not None, (
             "edit_model deleted the model entirely after a no-op move "
             "of a query-backed entity"
@@ -2260,22 +2260,22 @@ class TestEditModelDatasourceMoveSafety:
             await storage.save_datasource(DatasourceConfig(
                 name=n, type="sqlite", database=":memory:"
             ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders_a", data_source="db_a",
-            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)],
             description="source",
         ))
 
         # Force the save under the new datasource to fail; the source row must survive.
         # The engine's storage view writes through the store's ``_save_model_impl``.
-        original_save = storage._save_model_impl
+        original_save = storage._save_dataset_impl
 
         async def _failing_save(model):
             if model.data_source == "db_b":
                 raise RuntimeError("simulated storage failure on new key")
             return await original_save(model)
 
-        monkeypatch.setattr(storage, "_save_model_impl", _failing_save)
+        monkeypatch.setattr(storage, "_save_dataset_impl", _failing_save)
 
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "orders",
@@ -2288,7 +2288,7 @@ class TestEditModelDatasourceMoveSafety:
             or "simulated" in result.lower()
         ), f"expected save-failure to surface, got: {result}"
 
-        src = await storage.get_model("orders", data_source="db_a")
+        src = await storage.get_dataset("orders", data_source="db_a")
         assert src is not None
         assert src.data_source == "db_a"
         assert src.description == "source"
@@ -2305,29 +2305,29 @@ class TestEditModelMultiStageRename:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="t", data_source="test",
-            columns=[
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="region", sql="region", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
             ],
         ))
         # Build initial source_queries via the engine save path so the cache
         # reflects the initial state.
         engine = SlayerQueryEngine(storage=storage)
-        await engine.save_model(SlayerModel(
+        await engine.save_dataset(SlayerDataset(
             name="qb",
             data_source="test",
             source_queries=[
                 SlayerQuery(
                     name="raw",
-                    source_model="orders",
+                    population="orders",
                     dimensions=["region"],
-                    measures=inner_measures,
+                    metrics=inner_measures,
                 ),
                 SlayerQuery(
-                    source_model="raw",
-                    measures=outer_measures,
+                    population="raw",
+                    metrics=outer_measures,
                 ),
             ],
         ))
@@ -2342,10 +2342,10 @@ class TestEditModelMultiStageRename:
             outer_measures=[{"formula": "sum(old)"}],
         )
         # Sanity: initial cache reflects 'old'.
-        before = await storage.get_model("qb")
+        before = await storage.get_dataset("qb")
         assert before is not None
         assert "old" in await _dry_run_sql(storage, "qb")
-        assert "old_sum" in [c.name for c in before.columns]
+        assert "old_sum" in [c.name for c in before.fields]
 
         # Edit: rename inner-stage measure to 'new' (and update outer to match).
         result = await _call(mcp_server, name="edit_model", arguments={
@@ -2366,9 +2366,9 @@ class TestEditModelMultiStageRename:
         parsed = json.loads(result)
         assert parsed["success"] is True, result
 
-        after = await storage.get_model("qb")
+        after = await storage.get_dataset("qb")
         assert after is not None
-        col_names = [c.name for c in after.columns]
+        col_names = [c.name for c in after.fields]
         assert "new_sum" in col_names, (
             f"cache must reflect renamed inner measure, got: {col_names}"
         )
@@ -2397,9 +2397,9 @@ class TestEditModelMultiStageRename:
             ],
             outer_measures=[{"formula": "sum(rev)"}],
         )
-        before = await storage.get_model("qb")
+        before = await storage.get_dataset("qb")
         assert before is not None
-        before_cols = [c.name for c in before.columns]
+        before_cols = [c.name for c in before.fields]
         assert "rev_sum" in before_cols
         # Inner-stage `n` is not directly emitted on the outer model (the
         # outer only takes rev:sum), but it must appear in the SQL
@@ -2434,7 +2434,7 @@ class TestEditModelMultiStageRename:
         parsed = json.loads(result)
         assert parsed["success"] is True, result
 
-        after = await storage.get_model("qb")
+        after = await storage.get_dataset("qb")
         assert after is not None
         after_sql = await _dry_run_sql(storage, "qb")
         # Stale `n` must be gone from the inner wrap.
@@ -2449,7 +2449,7 @@ class TestEditModelMultiStageRename:
             f"new 'avg_amount' alias must appear in the SQL:\n{after_sql}"
         )
         # Cached outer columns reflect the new outer measures.
-        after_cols = [c.name for c in after.columns]
+        after_cols = [c.name for c in after.fields]
         assert "rev_sum" in after_cols
         assert "avg_amount_avg" in after_cols, (
             f"outer column for avg_amount:avg missing: {after_cols}"
@@ -2464,22 +2464,22 @@ class TestEditModelColumnsRejected:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="upstream", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="qb",
             data_source="test",
             source_queries=[SlayerQuery(
-                source_model="upstream",
-                measures=[{"formula": "sum(amount)"}],
+                population="upstream",
+                metrics=[{"formula": "sum(amount)"}],
                 dry_run=True,
             )],
         ))
         # Snapshot the model state before the bad edit.
-        before = await storage.get_model("qb")
-        before_columns = list(before.columns)
+        before = await storage.get_dataset("qb")
+        before_columns = list(before.fields)
 
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "qb",
@@ -2493,8 +2493,8 @@ class TestEditModelColumnsRejected:
             or "must not be supplied" in result
         ), f"expected explicit rejection, got: {result}"
         # Stored model is unchanged.
-        after = await storage.get_model("qb")
-        assert [c.name for c in after.columns] == [c.name for c in before_columns]
+        after = await storage.get_dataset("qb")
+        assert [c.name for c in after.fields] == [c.name for c in before_columns]
 
 
 class TestInspectModelRequiredVariables:
@@ -2505,19 +2505,19 @@ class TestInspectModelRequiredVariables:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="upstream", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         ))
         # Stage has its own variables={"x": 1}, so {x} placeholder is NOT
         # required from outside.
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="qb_stage_default",
             data_source="test",
             source_queries=[SlayerQuery(
-                source_model="upstream",
-                measures=[{"formula": "sum(amount)"}],
-                filters=["amount > {x}"],
+                population="upstream",
+                metrics=[{"formula": "sum(amount)"}],
+                filter=["amount > {x}"],
                 variables={"x": 1},
                 dry_run=True,
             )],
@@ -2538,16 +2538,16 @@ class TestRunByNamePlanFlagsMCP:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="upstream", sql_table="t", data_source="test",
-            columns=[Column(name="amount", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="qb_dr",
             data_source="test",
             source_queries=[SlayerQuery.model_validate({
-                "source_model": "upstream",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "upstream",
+                "metrics": [{"formula": "sum(amount)"}],
             })],
         ))
         execute_calls = 0
@@ -2574,11 +2574,11 @@ class TestQueryAcceptsInlineSourceModel:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
             ],
         ))
 
@@ -2648,12 +2648,12 @@ class TestQueryListMultiStage:
         await storage.save_datasource(DatasourceConfig(
             name="test", type="sqlite", database=":memory:"
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="test",
-            columns=[
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
             ],
         ))
 
@@ -2794,7 +2794,7 @@ class TestDatasources:
         assert "ds" in result
         loaded = await storage.get_datasource("ds")
         assert loaded.description == "From the dataset"
-        assert await storage.get_model("t", data_source="ds") is not None
+        assert await storage.get_dataset("t", data_source="ds") is not None
 
     async def test_list_with_malformed_datasource(self, mcp_server, storage: YAMLStorage) -> None:
         # A valid datasource alongside a malformed one
@@ -2840,10 +2840,10 @@ class TestDatasources:
 
 class TestDeleteTools:
     async def test_delete_model(self, mcp_server, storage: YAMLStorage) -> None:
-        await storage.save_model(SlayerModel(name="orders", sql_table="t", data_source="test"))
+        await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="delete_model", arguments={"name": "orders"})
         assert "deleted" in result
-        assert await storage.get_model("orders") is None
+        assert await storage.get_dataset("orders") is None
 
     async def test_delete_model_not_found(self, mcp_server) -> None:
         result = await _call(mcp_server, name="delete_model", arguments={"name": "nope"})
@@ -2863,15 +2863,15 @@ class TestDeleteTools:
 
 class TestIngestionIdSkipping:
     def test_id_columns_skip_sum_avg(self) -> None:
-        assert _is_id_column("id") is True
-        assert _is_id_column("user_id") is True
-        assert _is_id_column("customer_key") is True
-        assert _is_id_column("role_fk") is True
-        assert _is_id_column("primary_pk") is True
-        assert _is_id_column("amount") is False
-        assert _is_id_column("quantity") is False
-        assert _is_id_column("price") is False
-        assert _is_id_column("width") is False
+        assert _is_id_field("id") is True
+        assert _is_id_field("user_id") is True
+        assert _is_id_field("customer_key") is True
+        assert _is_id_field("role_fk") is True
+        assert _is_id_field("primary_pk") is True
+        assert _is_id_field("amount") is False
+        assert _is_id_field("quantity") is False
+        assert _is_id_field("price") is False
+        assert _is_id_field("width") is False
 
 
 class TestFriendlyErrors:
@@ -2896,18 +2896,18 @@ class TestFriendlyErrors:
 
 class TestFormatTable:
     def test_empty(self) -> None:
-        assert _format_table(data=[], columns=[]) == "No results."
+        assert _format_table(data=[], fields=[]) == "No results."
 
     def test_basic(self) -> None:
         data = [{"a": 1, "b": "x"}, {"a": 2, "b": "y"}]
-        result = _format_table(data=data, columns=["a", "b"])
+        result = _format_table(data=data, fields=["a", "b"])
         assert "a | b" in result
         assert "1 | x" in result
         assert "2 | y" in result
 
     def test_truncation(self) -> None:
         data = [{"x": i} for i in range(100)]
-        result = _format_table(data=data, columns=["x"], max_rows=10)
+        result = _format_table(data=data, fields=["x"], max_rows=10)
         assert "100 total rows" in result
         assert "showing first 10" in result
 
@@ -2923,14 +2923,14 @@ class TestDataProfileRetryScope:
     """The count-only retry fires only for a grouping/dedup failure; other failures
     keep their own cause. Fakes key off ``query.dimensions`` to target the full profile."""
     @staticmethod
-    def _model() -> SlayerModel:
-        return SlayerModel(
+    def _model() -> SlayerDataset:
+        return SlayerDataset(
             name="profile_scope",
             sql_table="t",
             data_source="test",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="status", datatype=DataType.TEXT),
             ],
         )
 
@@ -2943,8 +2943,8 @@ class TestDataProfileRetryScope:
             return "| _count |\n|---|\n| 7 |"
 
     async def _render(self, storage, engine) -> dict:
-        out = await render_model_inspection(
-            model=self._model(), storage=storage, engine=engine,
+        out = await render_dataset_inspection(
+            dataset=self._model(), storage=storage, engine=engine,
             format="json", sections=["samples"],
         )
         return json.loads(out)
@@ -3049,7 +3049,7 @@ class TestSaveTimeSqlValidationMcp:
             "columns": [{"name": "id", "sql": "id", "type": "number"}],
         })
         assert "created" in result
-        assert await storage.get_model("good_model", data_source="livedb") is not None
+        assert await storage.get_dataset("good_model", data_source="livedb") is not None
 
     async def test_create_sql_mode_invalid_rejected(
         self, mcp_server, storage: YAMLStorage, tmp_path
@@ -3064,7 +3064,7 @@ class TestSaveTimeSqlValidationMcp:
         })
         assert "created" not in result
         assert "bad_model" in result
-        assert await storage.get_model("bad_model", data_source="livedb") is None
+        assert await storage.get_dataset("bad_model", data_source="livedb") is None
 
     async def test_edit_sql_to_invalid_rejected_and_original_intact(
         self, mcp_server, storage: YAMLStorage, tmp_path
@@ -3072,16 +3072,16 @@ class TestSaveTimeSqlValidationMcp:
         db = str(tmp_path / "live.db")
         _seed_live_db(db)
         await _register_live_ds(storage, db)
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="m", sql="SELECT id FROM orders", data_source="livedb",
-            columns=[Column(name="id", sql="id", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "m", "data_source": "livedb",
             "sql": "SELECT nope FROM ghosts",
         })
         assert "error" in result.lower()
-        model = await storage.get_model("m", data_source="livedb")
+        model = await storage.get_dataset("m", data_source="livedb")
         assert model.sql == "SELECT id FROM orders"
 
     async def test_edit_sql_to_valid_succeeds(
@@ -3090,16 +3090,16 @@ class TestSaveTimeSqlValidationMcp:
         db = str(tmp_path / "live.db")
         _seed_live_db(db)
         await _register_live_ds(storage, db)
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="m", sql="SELECT id FROM orders", data_source="livedb",
-            columns=[Column(name="id", sql="id", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE)],
         ))
         result = await _call(mcp_server, name="edit_model", arguments={
             "model_name": "m", "data_source": "livedb",
             "sql": "SELECT amount FROM orders",
         })
         assert '"success": true' in result
-        model = await storage.get_model("m", data_source="livedb")
+        model = await storage.get_dataset("m", data_source="livedb")
         assert model.sql == "SELECT amount FROM orders"
 
 
@@ -3117,16 +3117,16 @@ class TestDatabaseFailuresAreToolErrors:
         await storage.save_datasource(DatasourceConfig(
             name="down", type="postgres", host="127.0.0.1", port=free_port(), database="x", username="u", password="p",
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="shop",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="broken", sql="no_such_fn(amount)", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="broken", sql="no_such_fn(amount)", datatype=DataType.DOUBLE),
             ],
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="remote", sql_table="remote", data_source="down",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
         ))
         return storage
 
@@ -3151,9 +3151,9 @@ class TestDatabaseFailuresAreToolErrors:
         self._assert_database_tool_error(await self._call_tool(db_storage, "validate_models", {"data_source": "down"}))
 
     async def test_validate_models_rejected_sql_is_a_finding(self, db_storage: YAMLStorage) -> None:
-        await db_storage.save_model(SlayerModel(
+        await db_storage.save_dataset(SlayerDataset(
             name="bad", sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders", data_source="shop",
-            columns=[Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)],
+            fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)],
         ))
         result = await self._call_tool(db_storage, "validate_models", {"data_source": "shop"})
         assert not result.isError

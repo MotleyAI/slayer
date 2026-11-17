@@ -20,7 +20,7 @@ from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1835_fixtures import (
     BAND35,
-    ModelMeasure,
+    DatasetMetric,
     dev1835_models,
     month_td,
     q,
@@ -45,35 +45,35 @@ def _cases() -> dict:
         "mig/bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, window='90d')", name="w"),
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="sum(amount, window='90d')", name="w"),
             ],
         ),
         "mig/bare_rk": q(
             dimensions=["region"],
             measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="last(amount)", name="l"),
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="last(amount)", name="l"),
             ],
         ),
         "lift/band_x_wm": q(
             dimensions=["region", BAND], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, window='1y')", name="w"),
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="sum(amount, window='1y')", name="w"),
             ],
         ),
         "lift/cumsum_over_bare_wm": q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="cumsum(sum(amount, window='90d'))", name="x"),
+                DatasetMetric(expression="cumsum(sum(amount, window='90d'))", name="x"),
             ],
         ),
         "dedup/dual_role": q(
             dimensions=["region", RBAND],
             measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
             ],
         ),
     }

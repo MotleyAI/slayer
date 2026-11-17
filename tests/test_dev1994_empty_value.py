@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 from pydantic import ValidationError
 
-from slayer.core.keys import AggregateKey, ColumnKey
+from slayer.core.keys import AggregateKey, FieldKey
 from slayer.core.models import Aggregation
 from slayer.ir.planned import RegroupSubstitution
 from tests._dev1994_fixtures import (
@@ -44,7 +44,7 @@ from tests._dev1994_fixtures import (
 from slayer.engine.query_engine import SlayerResponse
 
 MONTH_TD = [{"dimension": "signup_date", "granularity": "month"}]
-COUNT_OVERRIDE = Aggregation(name="count", formula="COUNT({value})")
+COUNT_OVERRIDE = Aggregation(name="count", expression="COUNT({value})")
 COUNT_DECLARED = Aggregation(name="count")
 
 
@@ -251,7 +251,7 @@ class TestOverrides:
         assert _ints(by(resp.data, resp.columns, key="name", value="c")) == ORDERS_BY_CUSTOMER
 
     async def test_custom_aggregation_stays_null(self, dialect) -> None:
-        my_count = Aggregation(name="my_count", formula="COUNT({value})")
+        my_count = Aggregation(name="my_count", expression="COUNT({value})")
         models = [regions_model(), customers_model(), orders_model(aggregations=[my_count])]
         resp = await _run(dialect, models=models, source_model="customers", dimensions=["name"],
                           measures=[m("my_count(orders.amount)", "c")])
@@ -302,8 +302,8 @@ class TestNegatedJoinedFilter:
 # --------------------------------------------------------------------------- #
 # IR: every synthesiser decides the empty value.
 # --------------------------------------------------------------------------- #
-_KEY = AggregateKey(source=ColumnKey(path=("orders",), leaf="id"), agg="count")
-_PLACEHOLDER = ColumnKey(path=(), leaf="__regroup__0__id_count")
+_KEY = AggregateKey(source=FieldKey(path=("orders",), leaf="id"), agg="count")
+_PLACEHOLDER = FieldKey(path=(), leaf="__regroup__0__id_count")
 
 
 class TestRegroupSubstitutionIR:

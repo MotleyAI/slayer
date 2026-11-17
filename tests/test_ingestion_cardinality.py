@@ -9,11 +9,11 @@ from typing import Any, cast
 import pytest
 import sqlalchemy as sa
 
-from slayer.core.enums import JoinCardinality
+from slayer.core.enums import RelationshipCardinality
 from slayer.core.models import DatasourceConfig
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import (
-    _generate_joins,
+    _generate_relationships,
     _is_cross_schema_fk,
     ingest_datasource_idempotent,
 )
@@ -25,7 +25,7 @@ from slayer.sql.dialects.reflection import ReflectedForeignKey, TableLocation
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import disposable_engine
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 
 
 async def _ingest(*, datasource: DatasourceConfig, **kwargs: Any) -> IdempotentIngestResult:
@@ -135,8 +135,8 @@ async def _setup(workspace: Path) -> tuple[YAMLStorage, DatasourceConfig, str]:
     return storage, ds, db_path
 
 
-def _join_to(model: SlayerModel, target: str):
-    return [j for j in model.joins if j.target_model == target]
+def _join_to(model: SlayerDataset, target: str):
+    return [j for j in model.relationships if j.to == target]
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +149,7 @@ class TestCompositeFk:
         self, workspace: Path
     ) -> None:
         storage, _, _ = await _setup(workspace)
-        mem = await storage.get_model("memberships", data_source="ds")
+        mem = await storage.get_dataset("memberships", data_source="ds")
         assert mem is not None
         org_joins = _join_to(mem, "org_units")
         # Exactly ONE join, carrying BOTH key pairs — not two single-col joins.
@@ -171,13 +171,13 @@ class TestCompositeFk:
                 "org_units",
                 "memberships",
             }
-            joins = await _generate_joins(
+            joins = await _generate_relationships(
                 client=client,
                 source_table="memberships",
                 schema=None,
                 table_set=table_set,
             )
-            org_joins = [j for j in joins if j.target_model == "org_units"]
+            org_joins = [j for j in joins if j.to == "org_units"]
             assert len(org_joins) == 1
             assert {tuple(p) for p in org_joins[0].join_pairs} == {
                 ("org_id", "org_id"),
@@ -251,26 +251,26 @@ class _CountsDefaultSchema(DelegatingSqlClient):
 class TestStructuralCardinality:
     async def test_fk_join_defaults_many_to_one(self, workspace: Path) -> None:
         storage, _, _ = await _setup(workspace)
-        orders = await storage.get_model("orders", data_source="ds")
+        orders = await storage.get_dataset("orders", data_source="ds")
         assert orders is not None
         j = _join_to(orders, "customers")[0]
-        assert j.cardinality is JoinCardinality.MANY_TO_ONE
+        assert j.cardinality is RelationshipCardinality.MANY_TO_ONE
 
     async def test_pk_source_fk_join_is_one_to_one(self, workspace: Path) -> None:
         storage, _, _ = await _setup(workspace)
-        profiles = await storage.get_model("user_profiles", data_source="ds")
+        profiles = await storage.get_dataset("user_profiles", data_source="ds")
         assert profiles is not None
         j = _join_to(profiles, "customers")[0]
         # user_profiles.customer_id is the PK (source unique) and customers.id is
         # the PK (target unique) => one_to_one.
-        assert j.cardinality is JoinCardinality.ONE_TO_ONE
+        assert j.cardinality is RelationshipCardinality.ONE_TO_ONE
 
     async def test_composite_fk_join_many_to_one(self, workspace: Path) -> None:
         storage, _, _ = await _setup(workspace)
-        mem = await storage.get_model("memberships", data_source="ds")
+        mem = await storage.get_dataset("memberships", data_source="ds")
         assert mem is not None
         j = _join_to(mem, "org_units")[0]
-        assert j.cardinality is JoinCardinality.MANY_TO_ONE
+        assert j.cardinality is RelationshipCardinality.MANY_TO_ONE
 
     async def test_non_pk_unique_source_fk_is_one_to_one(
         self, workspace: Path
@@ -278,10 +278,10 @@ class TestStructuralCardinality:
         # accounts.customer_id is a non-PK UNIQUE column referencing the
         # customers PK => both sides unique => one_to_one.
         storage, _, _ = await _setup(workspace)
-        accounts = await storage.get_model("accounts", data_source="ds")
+        accounts = await storage.get_dataset("accounts", data_source="ds")
         assert accounts is not None
         j = _join_to(accounts, "customers")[0]
-        assert j.cardinality is JoinCardinality.ONE_TO_ONE
+        assert j.cardinality is RelationshipCardinality.ONE_TO_ONE
 
 
 # ---------------------------------------------------------------------------
@@ -292,25 +292,25 @@ class TestStructuralCardinality:
 class TestColumnUnique:
     async def test_unique_constraint_sets_unique_flag(self, workspace: Path) -> None:
         storage, _, _ = await _setup(workspace)
-        customers = await storage.get_model("customers", data_source="ds")
+        customers = await storage.get_dataset("customers", data_source="ds")
         assert customers is not None
-        email = next(c for c in customers.columns if c.name == "email")
+        email = next(c for c in customers.fields if c.name == "email")
         assert email.unique is True
 
     async def test_non_unique_column_stays_false(self, workspace: Path) -> None:
         storage, _, _ = await _setup(workspace)
-        customers = await storage.get_model("customers", data_source="ds")
+        customers = await storage.get_dataset("customers", data_source="ds")
         assert customers is not None
-        region = next(c for c in customers.columns if c.name == "region")
+        region = next(c for c in customers.fields if c.name == "region")
         assert region.unique is False
 
     async def test_pk_column_marked_primary_key_not_redundant_unique(
         self, workspace: Path
     ) -> None:
         storage, _, _ = await _setup(workspace)
-        customers = await storage.get_model("customers", data_source="ds")
+        customers = await storage.get_dataset("customers", data_source="ds")
         assert customers is not None
-        id_col = next(c for c in customers.columns if c.name == "id")
+        id_col = next(c for c in customers.fields if c.name == "id")
         assert id_col.primary_key is True
         # primary_key is the canonical marker — unique is NOT redundantly stamped.
         assert id_col.unique is False
@@ -453,7 +453,7 @@ class TestCrossSchemaFk:
 
     async def test_cross_schema_fk_excluded_from_generated_joins(self) -> None:
         """End-to-end: the wrong same-named table is not joined to."""
-        joins = await _generate_joins(
+        joins = await _generate_relationships(
             client=cast(SqlClient, _CrossSchemaFkClient()), source_table="orders", schema="public",
             table_set={"orders", "customers"},
         )

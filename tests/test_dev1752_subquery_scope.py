@@ -27,9 +27,9 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery
-from slayer.sql.column_expansion import collect_root_scope_joined_paths
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import FieldRef, SlayerQuery
+from slayer.sql.field_expansion import collect_root_scope_joined_paths
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
@@ -173,10 +173,10 @@ class TestJoinDiscoveryRootOnly:
         host = _orders()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=host, referenced_models=[host, _customers(), _regions()],
+            population=host, referenced_datasets=[host, _customers(), _regions()],
         )
         paths = collect_root_scope_joined_paths(
-            parsed=parsed, source_model=host,
+            parsed=parsed, source_dataset=host,
             source_relation=host.name, bundle=bundle,
         )
         assert paths == [], paths
@@ -192,10 +192,10 @@ class TestJoinDiscoveryRootOnly:
         host = _orders()
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=host, referenced_models=[host, _customers(), _regions()],
+            population=host, referenced_datasets=[host, _customers(), _regions()],
         )
         paths = collect_root_scope_joined_paths(
-            parsed=parsed, source_model=host,
+            parsed=parsed, source_dataset=host,
             source_relation=host.name, bundle=bundle,
         )
         assert paths == [], paths
@@ -243,17 +243,17 @@ async def _engine_with_filter(base_dir: str, db_path: str, *, model_filter: str)
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=db_path),
     )
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
         ],
         filters=[model_filter],
     )
-    await storage.save_model(orders)
+    await storage.save_dataset(orders)
     return SlayerQueryEngine(storage=storage)
 
 
@@ -276,7 +276,7 @@ class TestExecution:
                 model_filter="amount IN (SELECT amount FROM other_tbl)",
             )
             resp = await engine.execute(
-                SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="id")]),
+                SlayerQuery(population="orders", dimensions=[FieldRef(name="id")]),
             )
             assert _ids(resp) == {1, 3}, resp.data
 
@@ -300,7 +300,7 @@ class TestExecution:
                 ),
             )
             query = SlayerQuery(
-                source_model="orders", dimensions=[ColumnRef(name="id")],
+                population="orders", dimensions=[FieldRef(name="id")],
             )
             resp = await engine.execute(query)
             assert _ids(resp) == {1, 3}, resp.data

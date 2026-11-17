@@ -468,7 +468,7 @@ Multiple partition columns: `partition_by=[region, channel]`. Cross-model dotted
 
 The rank family's `partition_by=` may name a computed dimension, as an aggregation's can (one that itself wraps an aggregation is for now accepted only in filters and order). Each key must be a member of the transform's operand grain — the union of its inner aggregates' grains (an ungrained inner contributes the query's dimensions) — so `rank(sum(revenue, partition_by=[city, region]), partition_by=product, direction='desc')` is an error naming the remedy.
 
-> **Note:** SLayer's formula grammar rejects raw `OVER (...)` SQL in `ModelMeasure.formula` and filter strings. Use the rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) for ranking instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it on a `Column.sql` (e.g., `{"name": "rn", "sql": "row_number() over (order by mass desc)", "type": "NUMBER"}`) and filter on the column — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
+> **Note:** SLayer's formula grammar rejects raw `OVER (...)` SQL in `ModelMeasure.expression` and filter strings. Use the rank-family transforms (`rank`, `percent_rank`, `dense_rank`, `ntile`) for ranking instead of `row_number() over (...) <= N`. If you need a non-standard window expression, define it on a `Column.sql` (e.g., `{"name": "rn", "sql": "row_number() over (order by mass desc)", "type": "NUMBER"}`) and filter on the column — SLayer auto-promotes the predicate to a post-aggregation outer `WHERE`.
 
 ### First and Last Functions
 
@@ -496,7 +496,7 @@ Not to be confused with the [`first`/`last` aggregation types](models.md#the-fir
 
 ## Scalar Math Functions
 
-In Mode-A SQL (`Column.sql`, `Aggregation.formula`) any database function passes through. In Mode-B formulas and query fields, scalar functions come from the closed [portable function library](references.md#the-portable-function-library), each translated per backend; a name outside it (`initcap`, `random`) is rejected. The math functions:
+In Mode-A SQL (`Column.sql`, `Aggregation.expression`) any database function passes through. In Mode-B formulas and query fields, scalar functions come from the closed [portable function library](references.md#the-portable-function-library), each translated per backend; a name outside it (`initcap`, `random`) is rejected. The math functions:
 
 | Function | Args | Behaviour |
 |----------|------|-----------|
@@ -516,7 +516,7 @@ In Mode-A SQL (`Column.sql`, `Aggregation.formula`) any database function passes
 
 Query and measure formulas also take `div`, `pi`, `sin` … `atan2` and `cbrt` from the [portable function library](references.md#the-portable-function-library).
 
-Any scalar function can wrap aggregates as the **top-level** form of a query measure or `ModelMeasure.formula` (`ln(sum(x))`, `coalesce(sum(a), 0)`, `greatest(sum(a), 1)`):
+Any scalar function can wrap aggregates as the **top-level** form of a query measure or `ModelMeasure.expression` (`ln(sum(x))`, `coalesce(sum(a), 0)`, `greatest(sum(a), 1)`):
 
 ```python
 {"formula": "round(sum(revenue), 2)"}        # round an aggregate

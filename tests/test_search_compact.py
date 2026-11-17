@@ -35,10 +35,10 @@ from tests.search_helpers import seed_warehouse_models
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.profiling import ProfileOutcome
@@ -269,8 +269,8 @@ async def test_example_query_hit_compact_preserves_query(
     storage: StorageBackend, service: SearchService,
 ) -> None:
     sample = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="sum(amount_paid)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="sum(amount_paid)")],
     )
     mem_id = await _save_memory_returning_id(
         storage,
@@ -293,8 +293,8 @@ async def test_example_query_hit_verbose_preserves_query(
     storage: StorageBackend, service: SearchService,
 ) -> None:
     sample = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="sum(amount_paid)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="sum(amount_paid)")],
     )
     mem_id = await _save_memory_returning_id(
         storage,
@@ -336,11 +336,11 @@ async def test_entity_hit_compact_description_none_when_entity_has_none(
     storage: StorageBackend, service: SearchService,
 ) -> None:
     """A column without a description gets SearchHit.description = None."""
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="bare", sql_table="bare", data_source="warehouse",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="raw_amount", type=DataType.DOUBLE),  # no description
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="raw_amount", datatype=DataType.DOUBLE),  # no description
         ],
     ))
     resp = await service.search(question="raw_amount", compact=True)
@@ -600,11 +600,11 @@ async def test_compact_with_datasource_pre_filter(
     await storage.save_datasource(
         DatasourceConfig(name="other_ds", type="sqlite", database=":memory:")
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="other_table", sql_table="t", data_source="other_ds",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount_paid", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount_paid", datatype=DataType.DOUBLE,
                    description="other ds amount_paid"),
         ],
     ))

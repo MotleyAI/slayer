@@ -29,16 +29,16 @@ from typing import AsyncIterator, List, Optional
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import FieldRef, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -62,66 +62,66 @@ from tests._dev1841_fixtures import associated_warnings, pushed_filter_infos
 _REGION_EVENTS_ROWS = [(1, 1, 50.0), (2, 1, 50.0), (3, 2, 30.0)]
 
 
-def region_events_model() -> SlayerModel:
-    return SlayerModel(
+def region_events_model() -> SlayerDataset:
+    return SlayerDataset(
         name="region_events", data_source="test", sql_table="region_events",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="value", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="value", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def _regions(models: List[SlayerModel]) -> SlayerModel:
+def _regions(models: List[SlayerDataset]) -> SlayerDataset:
     return next(m for m in models if m.name == "regions")
 
 
-def _customers(models: List[SlayerModel]) -> SlayerModel:
+def _customers(models: List[SlayerDataset]) -> SlayerDataset:
     return next(m for m in models if m.name == "customers")
 
 
-def dev1900_models() -> List[SlayerModel]:
+def dev1900_models() -> List[SlayerDataset]:
     """DEV-1840 graph + region_events, the fanning derived columns, and the
     customer aggregations that name them. Host first (orders)."""
     models = dev1840_models()
     regions = _regions(models)
-    regions.joins.append(ModelJoin(
-        target_model="region_events", join_pairs=[["id", "region_id"]],
-        cardinality=JoinCardinality.ONE_TO_MANY,
+    regions.relationships.append(DatasetRelationship(
+        to="region_events", join_pairs=[["id", "region_id"]],
+        cardinality=RelationshipCardinality.ONE_TO_MANY,
     ))
-    regions.columns.append(
-        Column(name="bad_pop", type=DataType.DOUBLE, sql="pop + region_events.value"))
-    regions.columns.append(
-        Column(name="bad_pop2", type=DataType.DOUBLE, sql="bad_pop * 2"))
-    regions.columns.append(
-        Column(name="derived_pop", type=DataType.DOUBLE, sql="pop * 2"))
+    regions.fields.append(
+        DatasetField(name="bad_pop", datatype=DataType.DOUBLE, sql="pop + region_events.value"))
+    regions.fields.append(
+        DatasetField(name="bad_pop2", datatype=DataType.DOUBLE, sql="bad_pop * 2"))
+    regions.fields.append(
+        DatasetField(name="derived_pop", datatype=DataType.DOUBLE, sql="pop * 2"))
     # A region-owned aggregation whose weight defaults to the BARE owner-local
     # derived column bad_pop (which crosses the fanning hop) — the bare-default
     # counterpart to customers' dotted wsumx.
     regions.aggregations.append(Aggregation(
-        name="wbadbare", formula="SUM({value} * {weight})",
+        name="wbadbare", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="bad_pop")]))
 
     cust = _customers(models)
     cust.aggregations.append(Aggregation(
-        name="wsumx", formula="SUM({value} * {weight})",
+        name="wsumx", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="regions.bad_pop")]))
     cust.aggregations.append(Aggregation(
-        name="wsumy", formula="SUM({value} * {weight})",
+        name="wsumy", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="regions.bad_pop * 1")]))
     cust.aggregations.append(Aggregation(
-        name="wgood", formula="SUM({value} * {weight})",
+        name="wgood", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="regions.derived_pop")]))
-    cust.columns.append(Column(
-        name="bad_pop_spend", type=DataType.DOUBLE, sql="spend",
+    cust.fields.append(DatasetField(
+        name="bad_pop_spend", datatype=DataType.DOUBLE, sql="spend",
         filter="regions.bad_pop > 0"))
 
     models.append(region_events_model())
     return models
 
 
-def home_path_models() -> List[SlayerModel]:
+def home_path_models() -> List[SlayerDataset]:
     """A region-owned aggregation (``wsum_cust_spend``) whose weight defaults to
     ``customers.spend``. With a source ``customers.regions.pop``, the shallower
     ``customers`` home determines both inputs (``pop`` to-one, ``spend`` local)
@@ -130,34 +130,34 @@ def home_path_models() -> List[SlayerModel]:
     is the reference the default must match."""
     models = dev1900_models()
     _regions(models).aggregations.append(Aggregation(
-        name="wsum_cust_spend", formula="SUM({value} * {weight})",
+        name="wsum_cust_spend", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="customers.spend")]))
     return models
 
 
-def unparseable_derived_models() -> List[SlayerModel]:
+def unparseable_derived_models() -> List[SlayerDataset]:
     """Pathological derived columns on regions: ``unparseable`` (no dialect
     parses it → closure is tri-state None, never empty) and ``cyc`` (self-
     referential → the closure's cycle guard raises). ``wunparse`` names the
     unparseable one as a weight, so an aggregate over it must fail closed."""
     models = dev1900_models()
     regions = _regions(models)
-    regions.columns.append(
-        Column(name="unparseable", type=DataType.DOUBLE, sql=")((( bad"))
-    regions.columns.append(
-        Column(name="cyc", type=DataType.DOUBLE, sql="cyc + 1"))
+    regions.fields.append(
+        DatasetField(name="unparseable", datatype=DataType.DOUBLE, sql=")((( bad"))
+    regions.fields.append(
+        DatasetField(name="cyc", datatype=DataType.DOUBLE, sql="cyc + 1"))
     customers = _customers(models)
     customers.aggregations.append(Aggregation(
-        name="wunparse", formula="SUM({value} * {weight})",
+        name="wunparse", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="regions.unparseable")]))
     # An unparseable EXPRESSION default: expr_refs is (None,), so no single
     # column can be named — the input closure is None but the diagnostic returns
     # None (the check_input_dependencies_analyzable unnameable arm).
     customers.aggregations.append(Aggregation(
-        name="wexpr_unparse", formula="SUM({value} * {weight})",
+        name="wexpr_unparse", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql=")((( bad")]))
-    customers.columns.append(Column(
-        name="flagged_spend", type=DataType.DOUBLE, sql="spend",
+    customers.fields.append(DatasetField(
+        name="flagged_spend", datatype=DataType.DOUBLE, sql="spend",
         filter="regions.unparseable > 0"))
     return models
 
@@ -217,7 +217,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerModel]] = None,
+    request, *, models: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture; each test module
     wraps this in ``@pytest.fixture``."""
@@ -247,13 +247,13 @@ def cust_q(**kw) -> SlayerQuery:
 # The fanning derived dimension, its cross-model / local metrics, and the two
 # re-aggregation shapes, spelled once.
 BAD_POP = "customers.regions.bad_pop"
-AMOUNT_SUM = ModelMeasure(formula="sum(amount)", name="amt")
-SPEND_SUM = ModelMeasure(formula="sum(customers.spend)", name="csp")
-REAGG_GOOD = ModelMeasure(
-    formula="weighted_avg(sum(amount, partition_by=customers.regions.id), "
+AMOUNT_SUM = DatasetMetric(expression="sum(amount)", name="amt")
+SPEND_SUM = DatasetMetric(expression="sum(customers.spend)", name="csp")
+REAGG_GOOD = DatasetMetric(
+    expression="weighted_avg(sum(amount, partition_by=customers.regions.id), "
             "weight=customers.regions.derived_pop)", name="ra")
-REAGG_BAD = ModelMeasure(
-    formula="weighted_avg(sum(amount, partition_by=customers.regions.id), "
+REAGG_BAD = DatasetMetric(
+    expression="weighted_avg(sum(amount, partition_by=customers.regions.id), "
             "weight=customers.regions.bad_pop)", name="ra")
 
 
@@ -341,8 +341,8 @@ POP_FILTER_OUT_OF_SCOPE_TIERS = {"bronze", "gold", "silver"}
 POP_FILTER_ASSOC_BY_STATUS = {"new": 100.0, "ok": 150.0}
 
 __all__ = [
-    "Aggregation", "AggregationParam", "Column", "ColumnRef", "DataType",
-    "ModelJoin", "ModelMeasure", "SlayerModel", "SlayerQuery", "JoinCardinality",
+    "Aggregation", "AggregationParam", "DatasetField", "FieldRef", "DataType",
+    "DatasetRelationship", "DatasetMetric", "SlayerDataset", "SlayerQuery", "RelationshipCardinality",
     "dev1840_models", "dev1900_models", "region_events_model",
     "home_path_models", "unparseable_derived_models",
     "make_exec_engine", "orders_q", "cust_q",

@@ -30,12 +30,12 @@ from slayer.core.keys import (
     check_scalar_arity,
 )
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import FieldRef, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 from slayer.sql.render.value_expr import render_arithmetic, render_scalar_call
@@ -263,15 +263,15 @@ async def _engine(base_dir: str, *, dialect: str = "sqlite") -> SlayerQueryEngin
     await storage.save_datasource(
         DatasourceConfig(name="prod", type=dialect, database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders", sql_table="orders", data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="disc", type=DataType.DOUBLE),
-                Column(name="qty", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="disc", datatype=DataType.DOUBLE),
+                DatasetField(name="qty", datatype=DataType.DOUBLE),
             ],
         )
     )
@@ -294,10 +294,10 @@ class TestEndToEndBinding:
         for predicate, needle in cases:
             resp = await engine.execute(
                 SlayerQuery(
-                    source_model="orders",
-                    dimensions=[ColumnRef(name="status")],
-                    measures=[ModelMeasure(formula="count(*)", name="n")],
-                    filters=[predicate],
+                    population="orders",
+                    dimensions=[FieldRef(name="status")],
+                    metrics=[DatasetMetric(expression="count(*)", name="n")],
+                    filter=[predicate],
                 ),
                 dry_run=True,
             )
@@ -308,9 +308,9 @@ class TestEndToEndBinding:
         (20+4)%3 = 0; id=1: (10+2)%3 = 0; id=3: (30+1)%3 = 1; id=4 amount NULL."""
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="count(*)", name="n")],
-                filters=["mod(amount + qty, 3) == 0"],
+                population="orders",
+                metrics=[DatasetMetric(expression="count(*)", name="n")],
+                filter=["mod(amount + qty, 3) == 0"],
             )
         )
         assert resp.data[0]["orders.n"] == 2
@@ -327,9 +327,9 @@ class TestEndToEndBinding:
         self, engine, predicate, func,
     ) -> None:
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="count(*)", name="n")],
-            filters=[predicate],
+            population="orders",
+            metrics=[DatasetMetric(expression="count(*)", name="n")],
+            filter=[predicate],
         )
         with pytest.raises(ValueError, match=func):
             await engine.execute(query, dry_run=True)
@@ -343,9 +343,9 @@ class TestGreatestLeastNullSemanticsSqlite:
     async def _values(self, engine, formula):
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="id")],
-                measures=[ModelMeasure(formula=formula, name="g")],
+                population="orders",
+                dimensions=[FieldRef(name="id")],
+                metrics=[DatasetMetric(expression=formula, name="g")],
             )
         )
         return {int(r["orders.id"]): r["orders.g"] for r in resp.data}

@@ -298,14 +298,14 @@ def _rows_as_dicts(result: Any) -> list[dict[str, Any]]:
     return [dict(zip(keys, row)) for row in result.fetchall()]
 
 
-def sql_model_trial_query(sql: str, *, dialect: SqlDialect) -> exp.Select:
+def sql_dataset_trial_query(sql: str, *, dialect: SqlDialect) -> exp.Select:
     """The zero-row trial of read-only model ``sql``; anything else raises."""
     inner = parse_query(sql=sql, target_dialect=dialect)
     return exp.select("*").from_(inner.subquery("_sd_validate")).where(
         exp.EQ(this=exp.Literal.number(1), expression=exp.Literal.number(0)))
 
 
-def classify_model_sql(sql: str, *, dialect: str | None = None) -> str:
+def classify_dataset_sql(sql: str, *, dialect: str | None = None) -> str:
     """'unparseable', 'modifying' (anything not a proven read-only query), or
     'read_only'. Parses like the generator (prequote + parse_one), so SQL it
     rejects is non-functional there too — rejected with no DB round-trip."""

@@ -5,20 +5,20 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from tests._dev1737_fixtures import BACKENDS, TableSpec, exec_engine
 from tests._engine_helpers import _engine_generate
 
 
-def _ev_model() -> SlayerModel:
-    return SlayerModel(
+def _ev_model() -> SlayerDataset:
+    return SlayerDataset(
         name="ev", sql_table="ev", data_source="test", default_time_dimension="ts",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="ts", type=DataType.TIMESTAMP),
-            Column(name="d", type=DataType.DATE),
-            Column(name="v", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="ts", datatype=DataType.TIMESTAMP),
+            DatasetField(name="d", datatype=DataType.DATE),
+            DatasetField(name="v", datatype=DataType.DOUBLE),
         ],
     )
 
@@ -29,7 +29,7 @@ def _ev(rows: list[tuple]) -> TableSpec:
 
 async def _run(backend: str, rows: list[tuple], query: dict, *, width: int) -> dict[str, object]:
     async with exec_engine(backend, tables=[_ev(rows)], models=[_ev_model()]) as engine:
-        resp = await engine.execute(SlayerQuery.model_validate({"source_model": "ev", **query}))
+        resp = await engine.execute(SlayerQuery.model_validate({"population": "ev", **query}))
     dim = next(k for k in resp.columns if k not in ("ev.v_sum", "ev.x"))
     return {str(r[dim])[:width]: r["ev.x"] for r in resp.data}
 
@@ -119,10 +119,10 @@ async def test_consecutive_periods_over_date_column(
 async def test_bigquery_bucket_comparisons_are_datetimes(dim: str, formula: str, comparison: str) -> None:
     # BigQuery compares none of DATE / DATETIME / TIMESTAMP with another; buckets meet as DATETIME.
     model = _ev_model()
-    model.columns.append(Column(name="d_expr", sql="DATE(ts)", type=DataType.DATE))
+    model.fields.append(DatasetField(name="d_expr", sql="DATE(ts)", datatype=DataType.DATE))
     sql = await _engine_generate(query=SlayerQuery.model_validate({
-        "source_model": "ev",
+        "population": "ev",
         "time_dimensions": [{"dimension": dim, "granularity": "month"}],
-        "measures": [{"formula": formula, "name": "x"}],
+        "metrics": [{"formula": formula, "name": "x"}],
     }), model=model, dialect="bigquery", validate=False)
     assert comparison.format(dim=dim) in sql

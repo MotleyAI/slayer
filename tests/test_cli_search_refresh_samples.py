@@ -85,9 +85,9 @@ class TestDatasourcesRefreshSamples:
         )
         assert result.returncode == 0, result.stderr
         assert "Sample-value refresh completed successfully." in result.stdout
-        orders = run_sync(YAMLStorage(base_dir=default_shop).get_model("orders", data_source=SHOP_DS))
+        orders = run_sync(YAMLStorage(base_dir=default_shop).get_dataset("orders", data_source=SHOP_DS))
         assert orders is not None
-        status = orders.get_column("status")
+        status = orders.get_field("status")
         assert status is not None
         assert status.sampled is not None
 

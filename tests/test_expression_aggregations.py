@@ -19,7 +19,7 @@ from slayer.core.format import NumberFormatType
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     Grain,
     reroot_value_key,
     substitute_value_keys,
@@ -27,17 +27,17 @@ from slayer.core.keys import (
 )
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.core.syntax import AggCall, canonical_measure_text, parse_expr
+from slayer.core.syntax import AggCall, canonical_metric_text, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -49,67 +49,67 @@ from tests._engine_helpers import _norm
 # ===========================================================================
 
 
-def _orders(**overrides) -> SlayerModel:
+def _orders(**overrides) -> SlayerDataset:
     fields = dict(
         name="orders",
         data_source="test",
         sql_table="orders",
         default_time_dimension="created_at",
         columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="cost", type=DataType.DOUBLE),
-            Column(name="price", type=DataType.DOUBLE),
-            Column(name="tax", type=DataType.DOUBLE),
-            Column(
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="cost", datatype=DataType.DOUBLE),
+            DatasetField(name="price", datatype=DataType.DOUBLE),
+            DatasetField(name="tax", datatype=DataType.DOUBLE),
+            DatasetField(
                 name="quantity",
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
                 allowed_aggregations=["min", "max"],
             ),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="email", type=DataType.TEXT),
-            Column(name="net", sql="amount - tax", type=DataType.DOUBLE),
-            Column(
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="email", datatype=DataType.TEXT),
+            DatasetField(name="net", sql="amount - tax", datatype=DataType.DOUBLE),
+            DatasetField(
                 name="ok_amount",
                 sql="amount",
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
                 filter="status = 'ok'",
             ),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
         ],
         joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
         ],
-        aggregations=[Aggregation(name="my_agg", formula="AVG({value})")],
+        aggregations=[Aggregation(name="my_agg", expression="AVG({value})")],
     )
     fields.update(overrides)
-    return SlayerModel(**fields)
+    return SlayerDataset(**fields)
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         data_source="test",
         sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="discount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="discount", datatype=DataType.DOUBLE),
         ],
     )
 
 
-async def _dry(query, *, model: SlayerModel | None = None):
+async def _dry(query, *, model: SlayerDataset | None = None):
     model = model or _orders()
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(
             DatasourceConfig(name=model.data_source, type="postgres")
         )
-        await storage.save_model(model)
-        await storage.save_model(_customers())
+        await storage.save_dataset(model)
+        await storage.save_dataset(_customers())
         engine = SlayerQueryEngine(storage=storage)
         return await engine.execute(query, dry_run=True)
 
@@ -134,10 +134,10 @@ class TestExpressionParse:
     def test_expression_source_canonical_text_functional(self) -> None:
         # An expression source renders functionally, so its canonical text
         # can't collide with the distinct parse tree ``amount - sum(cost)``.
-        expr_agg = canonical_measure_text(parse_expr("sum(amount - cost)"))
+        expr_agg = canonical_metric_text(parse_expr("sum(amount - cost)"))
         assert expr_agg == "sum(amount - cost)"
-        assert expr_agg != canonical_measure_text(parse_expr("amount - sum(cost)"))
-        assert canonical_measure_text(parse_expr("sum(amount)")) == "sum(amount)"
+        assert expr_agg != canonical_metric_text(parse_expr("amount - sum(cost)"))
+        assert canonical_metric_text(parse_expr("sum(amount)")) == "sum(amount)"
 
     def test_scalar_call_source(self) -> None:
         node = parse_expr("count_distinct(upper(email))")
@@ -155,13 +155,13 @@ class TestExpressionParse:
 
     def test_kwargs_compose_with_expression(self) -> None:
         orders = _orders()
-        bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=[_customers()])
+        bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=[_customers()])
         key = bind_expr(
-            parse_expr("sum(amount - cost, partition_by=region)"), scope=ModelScope(source_model=orders), bundle=bundle,
+            parse_expr("sum(amount - cost, partition_by=region)"), scope=DatasetScope(population=orders), bundle=bundle,
         ).value_key
         assert isinstance(key, AggregateKey)
         assert isinstance(key.source, ArithmeticKey)
-        assert key.partition_keys == Grain.of([ColumnKey(path=(), leaf="region")])
+        assert key.partition_keys == Grain.of([FieldKey(path=(), leaf="region")])
 
 
 # ===========================================================================
@@ -217,7 +217,7 @@ class TestExpressionSql:
             _q(
                 measures=["sum(amount - cost)"],
                 dimensions=["status"],
-                order=[OrderItem(column="sum(amount - cost)", direction="desc")],
+                order=[OrderItem(field="sum(amount - cost)", direction="desc")],
             )
         )
         assert "ORDER BY" in resp.sql.upper()
@@ -230,7 +230,7 @@ class TestExpressionSql:
                 dimensions=["status"],
                 time_dimensions=[
                     TimeDimension(
-                        dimension="created_at", granularity=TimeGranularity.MONTH
+                        field="created_at", granularity=TimeGranularity.MONTH
                     )
                 ],
             )
@@ -240,14 +240,14 @@ class TestExpressionSql:
     async def test_stage_scope_expression(self) -> None:
         stage1 = SlayerQuery(
             name="stage1",
-            source_model="orders",
+            population="orders",
             dimensions=["status"],
-            measures=[{"formula": "sum(amount - cost)"}],
+            metrics=[{"formula": "sum(amount - cost)"}],
         )
         root = SlayerQuery.model_validate({
-            "source_model": "stage1",
+            "population": "stage1",
             "dimensions": ["status"],
-            "measures": [{"formula": "max(amount_cost_sum)"}],
+            "metrics": [{"formula": "max(amount_cost_sum)"}],
         })
         model = _orders()
         with tempfile.TemporaryDirectory() as d:
@@ -255,8 +255,8 @@ class TestExpressionSql:
             await storage.save_datasource(
                 DatasourceConfig(name="test", type="postgres")
             )
-            await storage.save_model(model)
-            await storage.save_model(_customers())
+            await storage.save_dataset(model)
+            await storage.save_dataset(_customers())
             engine = SlayerQueryEngine(storage=storage)
             resp = await engine.execute([stage1, root], dry_run=True)
         assert "amount_cost_sum" in resp.sql
@@ -274,7 +274,7 @@ class TestExpressionSql:
                         "name": "profitable",
                     },
                 ],
-                measures=[ModelMeasure(formula="sum(amount)", name="t")],
+                measures=[DatasetMetric(expression="sum(amount)", name="t")],
             )
         )
         assert re.search(r"SUM\s*\(.*?amount.*?-.*?cost.*?\)", _norm(resp.sql)), resp.sql
@@ -290,7 +290,7 @@ class TestExpressionSql:
                     "name": "profitable",
                 },
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            measures=[DatasetMetric(expression="sum(amount)", name="t")],
         )
         with pytest.raises(ValueError, match="partition_by"):
             await _dry(q)
@@ -355,7 +355,7 @@ class TestExpressionNaming:
                 ]
             )
         )
-        attrs = resp.attributes.measures
+        attrs = resp.attributes.metrics
         # Both are preserving-unformatted, so neither gets an entry.
         assert "orders.amount_cost_sum" not in attrs
         assert "orders.amount_sum" not in attrs
@@ -381,8 +381,8 @@ def _expr_agg_key(path: tuple = ()) -> AggregateKey:
         source=ArithmeticKey(
             op="-",
             operands=(
-                ColumnKey(path=path, leaf="amount"),
-                ColumnKey(path=path, leaf="cost"),
+                FieldKey(path=path, leaf="amount"),
+                FieldKey(path=path, leaf="cost"),
             ),
         ),
         agg="sum",
@@ -392,27 +392,27 @@ def _expr_agg_key(path: tuple = ()) -> AggregateKey:
 class TestExpressionKeyTraversal:
     def test_walk_reaches_expression_operands(self) -> None:
         seen = list(walk_value_keys(_expr_agg_key()))
-        assert ColumnKey(leaf="amount") in seen
-        assert ColumnKey(leaf="cost") in seen
+        assert FieldKey(leaf="amount") in seen
+        assert FieldKey(leaf="cost") in seen
 
     def test_reroot_rewrites_expression_operands(self) -> None:
         rerooted = reroot_value_key(
             _expr_agg_key(path=("customers",)), target_path=("customers",)
         )
         column_keys = [
-            k for k in walk_value_keys(rerooted) if isinstance(k, ColumnKey)
+            k for k in walk_value_keys(rerooted) if isinstance(k, FieldKey)
         ]
         assert column_keys
         assert all(k.path == () for k in column_keys)
 
     def test_substitute_replaces_expression_operand(self) -> None:
-        replacement = ColumnKey(leaf="net")
+        replacement = FieldKey(leaf="net")
         out = substitute_value_keys(
-            _expr_agg_key(), {ColumnKey(leaf="amount"): replacement}
+            _expr_agg_key(), {FieldKey(leaf="amount"): replacement}
         )
         seen = list(walk_value_keys(out))
         assert replacement in seen
-        assert ColumnKey(leaf="amount") not in seen
+        assert FieldKey(leaf="amount") not in seen
 
 
 # ===========================================================================

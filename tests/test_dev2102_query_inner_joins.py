@@ -8,9 +8,9 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import JoinCardinality, JoinType
-from slayer.core.errors import AmbiguousJoinPathError, SlayerError
-from slayer.core.models import ModelJoin, SlayerModel
+from slayer.core.enums import RelationshipCardinality, JoinType
+from slayer.core.errors import AmbiguousRelationshipPathError, SlayerError
+from slayer.core.models import DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -99,7 +99,7 @@ class TestRootAndStoredEdges:
         assert _tables(dry.sql, "customers") == 1, dry.sql
 
     async def test_a_reused_stored_inner_edge_still_adds_its_restriction(self, dialect) -> None:
-        stored_inner = customers(ModelJoin(target_model="vip_list", join_pairs=VIP_PAIRS, join_type=JoinType.INNER))
+        stored_inner = customers(DatasetRelationship(to="vip_list", join_pairs=VIP_PAIRS, join_type=JoinType.INNER))
         async with shop(dialect, with_models(stored_inner)) as engine:
             untraversed = await engine.execute(q(source_model="customers", dimensions=["name"]))
             declared = await engine.execute(q(source_model="customers", extensions=[_vip()], dimensions=["name"]))
@@ -107,7 +107,7 @@ class TestRootAndStoredEdges:
         assert values(declared, "customers.name") == VIP_CUSTOMERS
 
     async def test_a_stored_inner_edge_restricts_when_traversed_under_a_left_declaration(self, dialect) -> None:
-        stored_inner = customers(ModelJoin(target_model="vip_list", join_pairs=VIP_PAIRS, join_type=JoinType.INNER))
+        stored_inner = customers(DatasetRelationship(to="vip_list", join_pairs=VIP_PAIRS, join_type=JoinType.INNER))
         async with shop(dialect, with_models(stored_inner)) as engine:
             resp = await engine.execute(q(
                 source_model="customers", extensions=[_vip("left")], dimensions=["name", "vip_list.note"]))
@@ -161,9 +161,9 @@ class TestPaths:
         assert values(resp, "customers.name") == BIG_SPENDERS
 
     async def test_inner_to_a_query_backed_model_on_a_flattened_key(self, dialect) -> None:
-        qb = SlayerModel(name="big_spenders_qb", data_source=DS, source_queries=[SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["customers.id"],
-            "measures": [{"formula": "sum(amount)", "name": "spent"}], "filters": ["spent > 25"]})])
+        qb = SlayerDataset(name="big_spenders_qb", data_source=DS, source_queries=[SlayerQuery.model_validate({
+            "population": "orders", "dimensions": ["customers.id"],
+            "metrics": [{"formula": "sum(amount)", "name": "spent"}], "filter": ["spent > 25"]})])
         root = q(source_model="customers", extensions=[ext("customers", joins=[
             join("big_spenders_qb", [["id", "customers__id"]], join_type="inner")])], dimensions=["name"])
         async with shop(dialect, with_models(qb)) as engine:
@@ -198,7 +198,7 @@ class TestReferenceBinding:
         return got
 
     async def test_adjacent_model_with_a_second_indirect_route(self, dialect) -> None:
-        models = with_models(addresses(ModelJoin(target_model="customers", join_pairs=CUSTOMER_PAIRS)))
+        models = with_models(addresses(DatasetRelationship(to="customers", join_pairs=CUSTOMER_PAIRS)))
         async with shop(dialect, models) as engine:
             got = await self._assert_as_written(
                 engine, root="orders", m="customers", target="vip_list", pairs=VIP_PAIRS, key="customer_id",
@@ -209,10 +209,10 @@ class TestReferenceBinding:
         async with shop(dialect) as engine:
             got = await self._assert_as_written(
                 engine, root="orders", m="addresses", target="regions", pairs=REGION_PAIRS, key="id", dims=["id"])
-            assert got is AmbiguousJoinPathError
+            assert got is AmbiguousRelationshipPathError
             declared = q(source_model="orders", dimensions=["id"], extensions=[
                 ext("addresses", joins=[join("regions", REGION_PAIRS, join_type="inner")])])
-            with pytest.raises(AmbiguousJoinPathError) as info:
+            with pytest.raises(AmbiguousRelationshipPathError) as info:
                 await engine.execute(declared)
         message = str(info.value).lower()
         assert "inner" in message, message
@@ -221,19 +221,19 @@ class TestReferenceBinding:
 
     async def test_one_safe_and_one_fanning_parallel_edge(self, dialect) -> None:
         models = with_models(
-            customers(ModelJoin(target_model="addresses", name="home_address", join_pairs=[["home_address_id", "id"]],
-                                cardinality=JoinCardinality.MANY_TO_ONE)),
-            addresses(ModelJoin(target_model="customers", join_pairs=CUSTOMER_PAIRS,
-                                cardinality=JoinCardinality.MANY_TO_ONE)),
+            customers(DatasetRelationship(to="addresses", name="home_address", join_pairs=[["home_address_id", "id"]],
+                                cardinality=RelationshipCardinality.MANY_TO_ONE)),
+            addresses(DatasetRelationship(to="customers", join_pairs=CUSTOMER_PAIRS,
+                                cardinality=RelationshipCardinality.MANY_TO_ONE)),
         )
         async with shop(dialect, models) as engine:
             got = await self._assert_as_written(
                 engine, root="customers", m="addresses", target="regions", pairs=REGION_PAIRS, key="id",
                 dims=["name"])
-            assert got is AmbiguousJoinPathError
+            assert got is AmbiguousRelationshipPathError
             declared = q(source_model="customers", dimensions=["name"], extensions=[
                 ext("addresses", joins=[join("regions", REGION_PAIRS, join_type="inner")])])
-            with pytest.raises(AmbiguousJoinPathError) as info:
+            with pytest.raises(AmbiguousRelationshipPathError) as info:
                 await engine.execute(declared)
         message = str(info.value).lower()
         assert "inner" in message, message

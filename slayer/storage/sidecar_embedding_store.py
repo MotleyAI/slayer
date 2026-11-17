@@ -29,7 +29,7 @@ from sqlglot import exp
 from slayer.embeddings.models import Embedding
 from slayer.storage.sqlite_conn import transaction
 
-_COLUMNS = ("canonical_id", "embedding_model_name", "entity_kind", "content_hash", "embedding", "created_at")
+_FIELDS = ("canonical_id", "embedding_model_name", "entity_kind", "content_hash", "embedding", "created_at")
 
 
 class SidecarEmbeddingStore:
@@ -137,7 +137,7 @@ class SidecarEmbeddingStore:
             for start in range(0, len(canonical_ids), self._GET_MANY_CHUNK_SIZE):
                 chunk = canonical_ids[start : start + self._GET_MANY_CHUNK_SIZE]
                 select = (
-                    exp.select(*_COLUMNS).from_("embeddings")
+                    exp.select(*_FIELDS).from_("embeddings")
                     .where(exp.column("embedding_model_name").eq(exp.Placeholder()))
                     .where(exp.column("canonical_id").isin(*(exp.Placeholder() for _ in chunk)))
                 )
@@ -211,7 +211,7 @@ class SidecarEmbeddingStore:
         )
         return {raw[0]: self._row_from_db(raw) for raw in raws}
 
-    async def list_for_model(
+    async def list_for_dataset(
         self, *, embedding_model_name: str,
     ) -> list[Embedding]:
         raws = await asyncio.to_thread(
@@ -270,7 +270,7 @@ class SidecarEmbeddingsMixin:
     async def list_embeddings(
         self, *, embedding_model_name: str,
     ) -> list[Embedding]:
-        return await self._embeddings_store.list_for_model(
+        return await self._embeddings_store.list_for_dataset(
             embedding_model_name=embedding_model_name,
         )
 

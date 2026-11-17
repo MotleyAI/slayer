@@ -36,10 +36,10 @@ class TypeProbe(str):
         """The probe statement's text."""
         return str.__str__(self)
 
-    def census_sql(self, columns: Sequence[str], *, dialect: SqlDialect) -> str | None:
-        """The dialect's storage census of ``columns`` over a sample of the probed rows; ``None`` when its cursor
+    def census_sql(self, fields: Sequence[str], *, dialect: SqlDialect) -> str | None:
+        """The dialect's storage census of ``fields`` over a sample of the probed rows; ``None`` when its cursor
         types them."""
-        select = dialect.result_census_select(columns)
+        select = dialect.result_census_select(fields)
         if select is None or self._sample is None or self._render is None:
             return None
         return self._render(exp.select(*select).from_(self._sample.subquery("_types")))

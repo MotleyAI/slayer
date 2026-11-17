@@ -4,7 +4,7 @@ Unit tests for ``slayer.engine.reference_closure``: a fragment's / key's
 dependency closure is its own join path plus every path the definition of any
 derived column it names crosses, recursively — root-relative prefixes, tri-state
 ``None`` when a definition cannot be analysed, a raised cycle guard on a
-self-referential definition. Plus ``ResolvedSourceBundle.models_by_name`` — the
+self-referential definition. Plus ``ResolvedSourceBundle.datasets_by_name`` — the
 host-inclusive, source-first model map every walker consumes.
 """
 
@@ -13,10 +13,10 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.keys import ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey
-from slayer.core.models import SlayerModel
+from slayer.core.keys import FieldKey, FieldSqlKey, StarKey, TimeTruncKey
+from slayer.core.models import SlayerDataset
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.sql.column_expansion import ColumnCycleError
+from slayer.sql.field_expansion import DatasetFieldCycleError
 
 from slayer.engine.reference_closure import fragment_closure, key_closure
 from slayer.engine.compile.stages import _PushBlocked, _ref_sql_dependency_paths
@@ -30,11 +30,11 @@ CROSS = ("regions", "region_events")
 def _bundle(models):
     by = {m.name: m for m in models}
     referenced = [by[n] for n in ("customers", "regions", "region_events", "stores", "plans")]
-    return by, ResolvedSourceBundle(dialect="postgres", source_model=by["orders"], referenced_models=referenced)
+    return by, ResolvedSourceBundle(dialect="postgres", population=by["orders"], referenced_datasets=referenced)
 
 
-def _regions_sqlkey(column_name: str) -> ColumnSqlKey:
-    return ColumnSqlKey(path=("regions",), model="regions", column_name=column_name)
+def _regions_sqlkey(column_name: str) -> FieldSqlKey:
+    return FieldSqlKey(path=("regions",), dataset="regions", field_name=column_name)
 
 
 class TestFragmentClosure:
@@ -45,7 +45,7 @@ class TestFragmentClosure:
         self.regions = self.by["regions"]
 
     def _frag(self, sql, *, owner_path=(), anchor_relation="regions"):
-        return fragment_closure(sql=sql, model=self.regions, owner_path=owner_path,
+        return fragment_closure(sql=sql, dataset=self.regions, owner_path=owner_path,
                                 anchor_relation=anchor_relation, bundle=self.bundle)
 
     def test_structural_crossing(self):
@@ -84,7 +84,7 @@ class TestKeyClosure:
         self.customers = self.by["customers"]
 
     def _key(self, key):
-        return key_closure(key=key, anchor_model=self.customers,
+        return key_closure(key=key, anchor_dataset=self.customers,
                            anchor_relation="customers", bundle=self.bundle)
 
     def test_derived_key_descends_into_crossing(self):
@@ -102,7 +102,7 @@ class TestKeyClosure:
         assert self._key(_regions_sqlkey("derived_pop")) == (("regions",),)
 
     def test_plain_column_key_is_its_path(self):
-        assert self._key(ColumnKey(path=("regions",), leaf="pop")) == (("regions",),)
+        assert self._key(FieldKey(path=("regions",), leaf="pop")) == (("regions",),)
 
     def test_star_key_does_not_descend(self):
         got = self._key(StarKey(path=("regions",)))
@@ -112,7 +112,7 @@ class TestKeyClosure:
 
     def test_a_string_is_never_sql(self):
         by, bundle = _bundle(dev1900_models())
-        got = key_closure(key="region_events.value", anchor_model=by["regions"],
+        got = key_closure(key="region_events.value", anchor_dataset=by["regions"],
                           anchor_relation="regions", bundle=bundle)
         assert got == ()
 
@@ -129,7 +129,7 @@ class TestKeyClosurePathologies:
         self.customers = self.by["customers"]
 
     def _key(self, key):
-        return key_closure(key=key, anchor_model=self.customers,
+        return key_closure(key=key, anchor_dataset=self.customers,
                            anchor_relation="customers", bundle=self.bundle)
 
     def test_unparseable_definition_is_tristate_none(self):
@@ -137,7 +137,7 @@ class TestKeyClosurePathologies:
 
     def test_cyclic_definition_raises(self):
         key = _regions_sqlkey("cyc")
-        with pytest.raises(ColumnCycleError):
+        with pytest.raises(DatasetFieldCycleError):
             self._key(key)
 
 
@@ -151,8 +151,8 @@ class TestPushPlanHonoursUnanalyzable:
 
     def _deps(self, key):
         return _ref_sql_dependency_paths(
-            key, host_model=self.by["orders"],
-            models_by_name=self.by, bundle=self.bundle,
+            key, host_dataset=self.by["orders"],
+            datasets_by_name=self.by, bundle=self.bundle,
         )
 
     def test_unanalyzable_fragment_blocks_the_push(self):
@@ -170,7 +170,7 @@ class TestPushPlanHonoursUnanalyzable:
 class TestModelsByName:
     def test_host_inclusive_and_source_first(self):
         by, bundle = _bundle(dev1900_models())
-        mbn = bundle.models_by_name
+        mbn = bundle.datasets_by_name
         assert set(mbn) == {"orders", "customers", "regions", "region_events",
                             "stores", "plans"}
         assert next(iter(mbn)) == "orders"
@@ -181,13 +181,13 @@ class TestModelsByName:
         NOT replace the source — the source is inserted first and wins."""
         by = {m.name: m for m in dev1900_models()}
         source_orders = by["orders"]
-        shadow_orders = SlayerModel(name="orders", data_source="test", sql_table="orders")
+        shadow_orders = SlayerDataset(name="orders", data_source="test", sql_table="orders")
         assert shadow_orders is not source_orders
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=source_orders,
-            referenced_models=[shadow_orders, by["customers"]])
-        mbn = bundle.models_by_name
+            population=source_orders,
+            referenced_datasets=[shadow_orders, by["customers"]])
+        mbn = bundle.datasets_by_name
         assert list(mbn) == ["orders", "customers"]
         assert mbn["orders"] is source_orders
 
@@ -198,8 +198,8 @@ class TestModelsByName:
         by = {m.name: m for m in dev1900_models()}
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=by["regions"], referenced_models=[by["region_events"]])
-        assert "regions" in bundle.models_by_name
+            population=by["regions"], referenced_datasets=[by["region_events"]])
+        assert "regions" in bundle.datasets_by_name
 
     def test_rerooted_keeps_the_former_source_in_the_universe(self):
         """Re-rooting at a producer root must not shrink the map: the former
@@ -207,14 +207,14 @@ class TestModelsByName:
         by = {m.name: m for m in dev1900_models()}
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=by["orders"], referenced_models=[by["customers"]])
+            population=by["orders"], referenced_datasets=[by["customers"]])
         rerooted = bundle.rerooted(by["customers"])
-        assert rerooted.source_model is by["customers"]
-        assert set(rerooted.models_by_name) == {"orders", "customers"}
+        assert rerooted.population is by["customers"]
+        assert set(rerooted.datasets_by_name) == {"orders", "customers"}
         # Already-listed source: no duplicate entry.
         listed = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=by["orders"],
-            referenced_models=[by["orders"], by["customers"]])
-        assert [m.name for m in listed.rerooted(by["customers"]).referenced_models] == [
+            population=by["orders"],
+            referenced_datasets=[by["orders"], by["customers"]])
+        assert [m.name for m in listed.rerooted(by["customers"]).referenced_datasets] == [
             "orders", "customers"]

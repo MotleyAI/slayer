@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 from slayer.core.query import SlayerQuery, extract_placeholder_names
 from slayer.core.syntax import (
     AggCall, BoundVariable, Cmp, Literal, Ref, bind_variables, parse_bound_expr, parse_expr, variable_names,
@@ -97,7 +97,7 @@ class TestPlaceholders:
         assert variable_names(text) == names
 
     def test_query_does_not_require_a_commented_placeholder(self) -> None:
-        query = SlayerQuery.model_validate({"source_model": "orders", "filters": ["status = 'paid' -- r = {region}"]})
+        query = SlayerQuery.model_validate({"population": "orders", "filter": ["status = 'paid' -- r = {region}"]})
         assert extract_placeholder_names(query) == set()
 
     def test_placeholder_outside_the_comment_still_binds(self) -> None:
@@ -138,7 +138,7 @@ class TestExecution:
 
     async def test_markers_in_a_quoted_identifier_name_the_column(self) -> None:
         orders = orders_model()
-        orders.columns.append(Column(name="x--y", sql="amount", type=DataType.DOUBLE))
+        orders.fields.append(DatasetField(name="x--y", sql="amount", datatype=DataType.DOUBLE))
         models = [orders, customers_model()]
         quoted = await emit(q(measures=[m('sum("x--y")')]), dialect="postgres", models=models)
         plain = await emit(q(measures=[m("sum(amount)")]), dialect="postgres", models=models)

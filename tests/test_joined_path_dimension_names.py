@@ -15,7 +15,7 @@ import pytest
 from sqlglot import exp
 
 from slayer.core.errors import NameCollisionError
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine import query_engine as query_engine_module
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -99,7 +99,7 @@ QUERY_BACKED_OUTER = {"source_model": "cr", "dimensions": ["region_id", "revenue
 
 
 async def _save_query_backed_cr(engine: SlayerQueryEngine) -> None:
-    await engine.save_model(SlayerModel.model_validate({
+    await engine.save_dataset(SlayerDataset.model_validate({
         "name": "cr",
         "source_queries": [{"source_model": "orders", "dimensions": [REGION_ID], "measures": [REVENUE]}],
     }))
@@ -108,15 +108,15 @@ async def _save_query_backed_cr(engine: SlayerQueryEngine) -> None:
 class TestNamedJoinedPathSingleQuery:
     async def test_named_one_hop_keys_by_name(self, exec_engine: SlayerQueryEngine) -> None:
         customers = customers_model()
-        customers.columns = [
+        customers.fields = [
             c.model_copy(update={"label": "Region"}) if c.name == "region_id" else c
-            for c in customers.columns
+            for c in customers.fields
         ]
-        await exec_engine.save_model(customers)
+        await exec_engine.save_dataset(customers)
         resp = await exec_engine.execute(SINGLE_NAMED_ONE_HOP)
         assert resp.columns == ["orders.region_id", "orders.revenue"]
         assert _rows(resp, "orders.region_id", "orders.revenue") == [(1, 160.0), (2, 50.0)]
-        attribute_keys = set(resp.attributes.dimensions) | set(resp.attributes.measures)
+        attribute_keys = set(resp.attributes.dimensions) | set(resp.attributes.metrics)
         assert attribute_keys <= set(resp.columns)
         assert resp.attributes.dimensions["orders.region_id"].label == "Region"
 
@@ -263,7 +263,7 @@ async def test_stage_column_names(exec_engine, dimension, flat, public) -> None:
         p.stage_schema for p in rendered.planned_list
         if p.stage_schema is not None and p.stage_schema.display_name == "cr"
     )
-    by_public = {c.public_alias: c for c in schema.columns}
+    by_public = {c.public_alias: c for c in schema.fields}
     column = by_public[public]
     assert column.name == column.sql_alias == flat
 
@@ -285,9 +285,9 @@ async def test_query_backed_mismatch_names_the_model(exec_engine, monkeypatch: p
         return build_flat_rename_wrapper(**{**kwargs, "expected_columns": ["bogus"]})
 
     monkeypatch.setattr(query_engine_module, "build_flat_rename_wrapper", _mismatching)
-    model = SlayerModel.model_validate({
+    model = SlayerDataset.model_validate({
         "name": "cr",
         "source_queries": [{"source_model": "orders", "dimensions": [REGION_ID], "measures": [REVENUE]}],
     })
     with pytest.raises(ValueError, match="stage 'cr'"):
-        await exec_engine._expand_query_backed_model(model=model)
+        await exec_engine._expand_query_backed_dataset(dataset=model)

@@ -10,12 +10,12 @@ rather than only by an executed-value diff.
 
 from __future__ import annotations
 
-from slayer.core.keys import AggregateKey, ColumnKey, TransformKey
+from slayer.core.keys import AggregateKey, FieldKey, TransformKey
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 
 from tests._dev1750_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     SlayerQuery,
     customers_model,
     line_items_model,
@@ -28,16 +28,16 @@ from tests._dev1750_fixtures import (
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=orders_model(),
-        referenced_models=[customers_model(), regions_model(), line_items_model()],
+        population=orders_model(),
+        referenced_datasets=[customers_model(), regions_model(), line_items_model()],
     )
 
 
 def _plan(formula: str, *, name: str = "prev"):
     return plan_query(
         query=SlayerQuery(
-            source_model="orders", time_dimensions=month_td(),
-            measures=[ModelMeasure(formula=formula, name=name)],
+            population="orders", time_dimensions=month_td(),
+            metrics=[DatasetMetric(expression=formula, name=name)],
         ),
         bundle=_bundle(),
     )
@@ -86,13 +86,13 @@ class TestGuardOwnership:
         out_slot = next(s for s in _all_slots(planned) if s.id in layer.slot_ids)
         assert isinstance(out_slot.key, TransformKey), out_slot.key
         inner = out_slot.key.input
-        assert isinstance(inner, ColumnKey), inner
+        assert isinstance(inner, FieldKey), inner
         assert inner.leaf.startswith("__regroup__"), inner
         attach = next(
             a for a in planned.regroup_attach_plans
             if any(sub.placeholder == inner for sub in a.substitutions)
         )
-        assert attach.producer_root_model is None  # rooted at the host
+        assert attach.producer_root_dataset is None  # rooted at the host
 
     def test_c_target_grain_inner_is_a_regroup_attach(self) -> None:
         """(c) ``time_shift(sum(customers.spend))`` — DEV-1836 migrates the
@@ -107,7 +107,7 @@ class TestGuardOwnership:
         out_slot = next(s for s in _all_slots(planned) if s.id in layer.slot_ids)
         assert isinstance(out_slot.key, TransformKey), out_slot.key
         inner = out_slot.key.input
-        assert isinstance(inner, ColumnKey), inner
+        assert isinstance(inner, FieldKey), inner
         assert inner.leaf.startswith("__regroup__"), inner
 
     def test_a_local_inner_stays_inline(self) -> None:
@@ -116,10 +116,10 @@ class TestGuardOwnership:
         an inline ``_base`` aggregate, and it renders)."""
         planned = plan_query(
             query=SlayerQuery(
-                source_model="orders", time_dimensions=month_td(),
-                measures=[
-                    ModelMeasure(formula="sum(customers.spend)", name="cm"),
-                    ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+                population="orders", time_dimensions=month_td(),
+                metrics=[
+                    DatasetMetric(expression="sum(customers.spend)", name="cm"),
+                    DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
                 ],
             ),
             bundle=_bundle(),

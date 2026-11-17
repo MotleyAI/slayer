@@ -28,11 +28,11 @@ from sqlglot.expressions.core import Expr, Expression
 
 from slayer.core.errors import ForcedFilterError
 from slayer.core.policy import (
-    ColumnFilterRuleset,
-    JoinFilterRule,
-    JoinFilterRuleset,
+    FieldFilterRuleset,
+    RelationshipFilterRule,
+    RelationshipFilterRuleset,
     SessionPolicy,
-    _validate_join_rule_anchor,
+    _validate_relationship_rule_anchor,
 )
 from slayer.sql.dialects import SqlDialect
 from slayer.sql.physical_tables import physical_tables
@@ -65,7 +65,7 @@ class ScopedTable(BaseModel):
 
 # True (column present), False (table confirmed to lack it), or None (presence
 # cannot be confirmed -> fail closed).
-HasColumn = Callable[[ScopedTable, str], Optional[bool]]
+HasField = Callable[[ScopedTable, str], Optional[bool]]
 
 
 def _scoped_table(table: exp.Table) -> ScopedTable:
@@ -77,10 +77,10 @@ def _scoped_table(table: exp.Table) -> ScopedTable:
 
 
 def _build_predicate(
-    column: str, value, *, table: Optional[str] = None
+    field: str, value, *, table: Optional[str] = None
 ) -> Expression:
     """``column = value`` / ``column IN (...)``, optionally qualified by ``table``."""
-    col = exp.column(column, table=table) if table else exp.column(column)
+    col = exp.column(field, table=table) if table else exp.column(field)
     if isinstance(value, tuple):
         return exp.In(this=col, expressions=[exp.convert(v) for v in value])
     return exp.EQ(this=col, expression=exp.convert(value))
@@ -124,27 +124,27 @@ def _wrap_table(table: exp.Table, predicates: list) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _apply_column_ruleset(
-    ast: Expression, ruleset: ColumnFilterRuleset, has_column: HasColumn
+def _apply_field_ruleset(
+    ast: Expression, ruleset: FieldFilterRuleset, has_field: HasField
 ) -> None:
-    predicate = _build_predicate(ruleset.column, ruleset.value)
+    predicate = _build_predicate(ruleset.field, ruleset.value)
     for table in physical_tables(ast):
         scoped = _scoped_table(table)
-        present = has_column(scoped, ruleset.column)
+        present = has_field(scoped, ruleset.field)
         if present is None:
             raise ForcedFilterError(
-                f"Forced filter on column '{ruleset.column}': could not confirm "
+                f"Forced filter on column '{ruleset.field}': could not confirm "
                 f"the column on table '{scoped.name}'; failing closed.",
                 table=scoped.name,
-                column=ruleset.column,
+                field=ruleset.field,
             )
         if present is False:
             if ruleset.on_unapplicable == "block":
                 raise ForcedFilterError(
-                    f"Forced filter requires column '{ruleset.column}' on table "
+                    f"Forced filter requires column '{ruleset.field}' on table "
                     f"'{scoped.name}', which does not have it.",
                     table=scoped.name,
-                    column=ruleset.column,
+                    field=ruleset.field,
                 )
             continue  # "pass": leave this table unfiltered
         _wrap_table(table, [predicate])
@@ -155,19 +155,19 @@ def _apply_column_ruleset(
 # ---------------------------------------------------------------------------
 
 
-def _validated_hops(rule: JoinFilterRule, *, ruleset: JoinFilterRuleset) -> tuple:
+def _validated_hops(rule: RelationshipFilterRule, *, ruleset: RelationshipFilterRuleset) -> tuple:
     """The rule's target-first hops, re-validated at the SQL boundary (fail closed)."""
     try:
         # Same helper construction uses, so a model_copy bypassing the ruleset
         # validator fails closed here rather than emitting a mis-scoped filter.
-        return _validate_join_rule_anchor(rule, ruleset.table)
+        return _validate_relationship_rule_anchor(rule, ruleset.table)
     except ValueError as exc:
         raise ForcedFilterError(
             f"Forced filter join path for '{rule.target_table}' is invalid "
             "(non-chaining, target not an endpoint, does not reach the anchor, "
             "or the anchor appears more than once); failing closed.",
             table=rule.target_table,
-            column=ruleset.column,
+            field=ruleset.field,
         ) from exc
 
 
@@ -188,12 +188,12 @@ def _hop_chain(hops: tuple, projection: Expression, *, global_joins: bool) -> ex
     return inner
 
 
-def _tenant_predicate(hops: tuple, ruleset: JoinFilterRuleset) -> Expression:
+def _tenant_predicate(hops: tuple, ruleset: RelationshipFilterRuleset) -> Expression:
     """The tenant predicate, on the terminal hop — the anchor."""
-    return _build_predicate(ruleset.column, ruleset.value, table=_hop_alias(len(hops) - 1))
+    return _build_predicate(ruleset.field, ruleset.value, table=_hop_alias(len(hops) - 1))
 
 
-def _build_exists(rule: JoinFilterRule, *, ruleset: JoinFilterRuleset) -> exp.Exists:
+def _build_exists(rule: RelationshipFilterRule, *, ruleset: RelationshipFilterRuleset) -> exp.Exists:
     """Correlated ``EXISTS``: hop 0 correlates back to the wrapper's ``_rls_src``."""
     hops = _validated_hops(rule, ruleset=ruleset)
     correlation = exp.EQ(
@@ -205,7 +205,7 @@ def _build_exists(rule: JoinFilterRule, *, ruleset: JoinFilterRuleset) -> exp.Ex
 
 
 def _build_in(
-    rule: JoinFilterRule, *, ruleset: JoinFilterRuleset, sql_dialect: SqlDialect
+    rule: RelationshipFilterRule, *, ruleset: RelationshipFilterRuleset, sql_dialect: SqlDialect
 ) -> exp.In:
     """Non-correlated ``_rls_src.<from0> IN (SELECT <to0> …)``; the NOT NULL guard keeps
     it equal to the ``EXISTS`` form whatever the session's NULL-in-``IN`` semantics."""
@@ -223,7 +223,7 @@ def _build_in(
 
 
 def _wrap_table_join_rules(
-    table: exp.Table, rules: list, *, ruleset: JoinFilterRuleset, sql_dialect: SqlDialect
+    table: exp.Table, rules: list, *, ruleset: RelationshipFilterRuleset, sql_dialect: SqlDialect
 ) -> None:
     """Replace ``table`` in place with one AND-combined semi-join per targeting rule."""
     alias = table.alias_or_name
@@ -245,16 +245,16 @@ def _wrap_table_join_rules(
 
 
 def _apply_join_ruleset(
-    ast: Expression, ruleset: JoinFilterRuleset, *, sql_dialect: SqlDialect
+    ast: Expression, ruleset: RelationshipFilterRuleset, *, sql_dialect: SqlDialect
 ) -> None:
     """Structurally scope every physical table; never probes column presence."""
     for table in physical_tables(ast):
         scoped = _scoped_table(table)
         if _target_matches(scoped, ruleset.table):
-            _wrap_table(table, [_build_predicate(ruleset.column, ruleset.value)])
+            _wrap_table(table, [_build_predicate(ruleset.field, ruleset.value)])
             continue
         targeting = [
-            r for r in ruleset.joins if _target_matches(scoped, r.target_table)
+            r for r in ruleset.relationships if _target_matches(scoped, r.target_table)
         ]
         if targeting:
             _wrap_table_join_rules(table, targeting, ruleset=ruleset, sql_dialect=sql_dialect)
@@ -269,13 +269,13 @@ def _apply_join_ruleset(
         )
 
 
-def policy_column_checks(statement: Expr, *, policy: SessionPolicy) -> list[tuple[ScopedTable, str]]:
-    """The ``(table, column)`` presence facts ``apply_session_policy`` will ask ``has_column`` for."""
+def policy_field_checks(statement: Expr, *, policy: SessionPolicy) -> list[tuple[ScopedTable, str]]:
+    """The ``(table, column)`` presence facts ``apply_session_policy`` will ask ``has_field`` for."""
     ruleset = policy.ruleset
-    if not isinstance(ruleset, ColumnFilterRuleset) or not isinstance(statement, _ALLOWED_ROOTS):
+    if not isinstance(ruleset, FieldFilterRuleset) or not isinstance(statement, _ALLOWED_ROOTS):
         return []  # the rewrite refuses a non-query statement itself
     checks = (_scoped_table(table) for table in physical_tables(statement))
-    return list(dict.fromkeys((scoped, ruleset.column) for scoped in checks))
+    return list(dict.fromkeys((scoped, ruleset.field) for scoped in checks))
 
 
 def apply_session_policy(
@@ -283,11 +283,11 @@ def apply_session_policy(
     *,
     sql_dialect: SqlDialect,
     policy: SessionPolicy,
-    has_column: HasColumn,
+    has_field: HasField,
 ) -> exp.Query:
     """A copy of ``statement`` with every physical-table ref wrapped per the policy's ``ruleset``.
 
-    ``has_column`` returns ``True``/``False``/``None`` (cannot confirm) and is consulted
+    ``has_field`` returns ``True``/``False``/``None`` (cannot confirm) and is consulted
     only for a ``ColumnFilterRuleset``. Raises :class:`ForcedFilterError` on any
     fail-closed condition.
     """
@@ -299,8 +299,8 @@ def apply_session_policy(
         )
 
     ast = statement.copy()
-    if isinstance(ruleset, ColumnFilterRuleset):
-        _apply_column_ruleset(ast, ruleset, has_column)
+    if isinstance(ruleset, FieldFilterRuleset):
+        _apply_field_ruleset(ast, ruleset, has_field)
     else:  # JoinFilterRuleset
         _apply_join_ruleset(ast, ruleset, sql_dialect=sql_dialect)
     return ast

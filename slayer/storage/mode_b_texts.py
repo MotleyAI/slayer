@@ -13,10 +13,10 @@ from slayer.storage.rank_direction_migration import rewrite_query_fields
 TextRewrite = Callable[[str], str]
 
 
-def rewrite_model_doc(data: dict, fn: TextRewrite) -> dict:
+def rewrite_dataset_doc(data: dict, fn: TextRewrite) -> dict:
     out = dict(data)
     if isinstance(out.get("measures"), list):
-        out["measures"] = [_formula(m, fn) for m in out["measures"]]
+        out["measures"] = [_expression(m, fn) for m in out["measures"]]
     if isinstance(out.get("source_queries"), list):
         out["source_queries"] = [rewrite_query_doc(q, fn) if isinstance(q, dict) else q for q in out["source_queries"]]
     return out
@@ -26,7 +26,7 @@ def rewrite_query_doc(data: dict, fn: TextRewrite) -> dict:
     out = rewrite_query_fields(dict(data), fn)
     source = out.get("source_model")
     if isinstance(source, dict):
-        out["source_model"] = rewrite_model_doc(source, fn)
+        out["source_model"] = rewrite_dataset_doc(source, fn)
     return out
 
 
@@ -36,10 +36,10 @@ def rewrite_memory_doc(data: dict, fn: TextRewrite) -> dict:
     return {**data, "query": rewrite_query_doc(data["query"], fn)}
 
 
-def _formula(measure: Any, fn: TextRewrite) -> Any:
-    if isinstance(measure, dict) and isinstance(measure.get("formula"), str):
-        return {**measure, "formula": fn(measure["formula"])}
-    return measure
+def _expression(metric: Any, fn: TextRewrite) -> Any:
+    if isinstance(metric, dict) and isinstance(metric.get("formula"), str):
+        return {**metric, "formula": fn(metric["formula"])}
+    return metric
 
 
 def canonical_spellings(text: str, *, found: dict[str, LegacySpan] | None = None) -> str:

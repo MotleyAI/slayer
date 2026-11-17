@@ -18,10 +18,10 @@ from sqlglot import exp
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1847_fixtures import (
-    Column,
-    ColumnRef,
+    DatasetField,
+    FieldRef,
     DataType,
-    ModelMeasure,
+    DatasetMetric,
     SlayerQuery,
     corders_model,
     customers_model,
@@ -45,18 +45,18 @@ def _derived_ref_models():
     DERIVED column — across the corders→customers join."""
     sales, regions, customers, corders = (
         sales_model(), regions_model(), customers_model(), corders_model())
-    customers.columns.append(
-        Column(name="rid1", type=DataType.DOUBLE, sql="region_id * 1"))
-    corders.columns.append(
-        Column(name="cust_rid", type=DataType.DOUBLE, sql="customers.rid1"))
+    customers.fields.append(
+        DatasetField(name="rid1", datatype=DataType.DOUBLE, sql="region_id * 1"))
+    corders.fields.append(
+        DatasetField(name="cust_rid", datatype=DataType.DOUBLE, sql="customers.rid1"))
     return [corders, customers, regions, sales]
 
 
 class TestJoinEmittedOnce:
     async def test_cross_model_constituent_producer_emitted_once(self):
         sql = await gen(SlayerQuery(
-            source_model="customers", dimensions=[ColumnRef(name="region_id")],
-            measures=[ModelMeasure(formula=_CROSS_MIXED, name="xm")]))
+            population="customers", dimensions=[FieldRef(name="region_id")],
+            metrics=[DatasetMetric(expression=_CROSS_MIXED, name="xm")]))
         producers = [n for n in re.findall(r"(_cm_\w+) AS \(", sql)
                      if "amount" in n]
         assert len(producers) == 1, sql
@@ -71,9 +71,9 @@ class TestJoinEmittedOnce:
         models = _derived_ref_models()
         sql = await _engine_generate(
             query=SlayerQuery(
-                source_model="corders",
-                measures=[ModelMeasure(
-                    formula="sum(amount * avg(cust_rid, partition_by=customer_id))",
+                population="corders",
+                metrics=[DatasetMetric(
+                    expression="sum(amount * avg(cust_rid, partition_by=customer_id))",
                     name="m")]),
             model=models[0], extra_models=models[1:],
             dialect="postgres", validate=False)

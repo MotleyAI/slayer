@@ -12,14 +12,14 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from slayer.core.query import ColumnRef, ComputedDimension, SlayerQuery
+from slayer.core.query import FieldRef, ComputedDimension, SlayerQuery
 
 
 def _dims(dimensions):
     return SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": dimensions,
-        "measures": [{"formula": "sum(amount)"}],
+        "metrics": [{"formula": "sum(amount)"}],
     }).dimensions
 
 
@@ -53,13 +53,13 @@ class TestWidenedString:
 class TestBareIdentifierPathUnchanged:
     def test_bare_identifier_stays_columnref(self) -> None:
         (dim,) = _dims(["region"])
-        assert isinstance(dim, ColumnRef)
+        assert isinstance(dim, FieldRef)
         assert dim.name == "region"
 
     def test_dotted_path_stays_columnref(self) -> None:
         (dim,) = _dims(["customers.tier"])
-        assert isinstance(dim, ColumnRef)
-        assert dim.model == "customers"
+        assert isinstance(dim, FieldRef)
+        assert dim.dataset == "customers"
         assert dim.name == "tier"
 
     def test_order_of_mixed_dims_preserved(self) -> None:

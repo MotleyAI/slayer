@@ -38,14 +38,14 @@ import pytest
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import (
     ArithmeticKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     LiteralKey,
     ScalarCallKey,
 )
 from slayer.core.keys import TimeTruncKey
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, ModelMeasure, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.query import FieldRef, DatasetMetric, SlayerQuery, TimeDimension
 from slayer.core.time_bounds import is_frame_bound, is_temporal_literal, strip_frame_bounds
 from slayer.engine.plan import plan_query
 from slayer.sql.scope_check import assert_scope_closed
@@ -63,10 +63,10 @@ import slayer.engine.bundle_builder
 # Key-tree fixtures for the pure-helper tests
 # --------------------------------------------------------------------------- #
 
-CREATED_AT = ColumnKey(path=(), leaf="created_at")
-SHIP_DATE = ColumnKey(path=(), leaf="ship_date")
-DELIVERY_AT = ColumnKey(path=(), leaf="delivery_at")
-STATUS = ColumnKey(path=(), leaf="status")
+CREATED_AT = FieldKey(path=(), leaf="created_at")
+SHIP_DATE = FieldKey(path=(), leaf="ship_date")
+DELIVERY_AT = FieldKey(path=(), leaf="delivery_at")
+STATUS = FieldKey(path=(), leaf="status")
 
 # The two query time dimensions' raw columns — the strippable set (§2.2).
 TIME_COLS = frozenset({CREATED_AT, SHIP_DATE})
@@ -88,7 +88,7 @@ STATUS_PAID = _cmp("==", STATUS, _lit("paid"))
 
 
 def _strip(key):
-    return strip_frame_bounds(key=key, time_columns=TIME_COLS)
+    return strip_frame_bounds(key=key, time_fields=TIME_COLS)
 
 
 # --------------------------------------------------------------------------- #
@@ -131,9 +131,9 @@ class TestFrameBoundRecognition:
         ``ColumnSqlKey``; ``_build_date_range_filter`` binds its
         date-range bound column through the same path that produces
         ``TimeTruncKey.source``, so identity matching covers it for free."""
-        derived = ColumnSqlKey(path=(), model="orders", column_name="event_at")
+        derived = FieldSqlKey(path=(), dataset="orders", field_name="event_at")
         key = _cmp(">=", derived, _lit("2024-06-01"))
-        assert strip_frame_bounds(key=key, time_columns=frozenset({derived})) is None
+        assert strip_frame_bounds(key=key, time_fields=frozenset({derived})) is None
 
     @pytest.mark.parametrize("op", ["==", "!=", "is", "is not", "in", "not in"])
     async def test_non_relational_ops_are_kept(self, op: str) -> None:
@@ -166,8 +166,8 @@ class TestFrameBoundRecognition:
         """The public predicate and the rewriter must not drift."""
         bound = _cmp(">=", CREATED_AT, _lit("2024-06-01"))
         other = _cmp(">=", DELIVERY_AT, _lit("2024-06-01"))
-        assert is_frame_bound(key=bound, time_columns=TIME_COLS) is True
-        assert is_frame_bound(key=other, time_columns=TIME_COLS) is False
+        assert is_frame_bound(key=bound, time_fields=TIME_COLS) is True
+        assert is_frame_bound(key=other, time_fields=TIME_COLS) is False
 
     @pytest.mark.parametrize("arity", [1, 3])
     async def test_malformed_comparison_arity_is_kept(self, arity: int) -> None:
@@ -178,13 +178,13 @@ class TestFrameBoundRecognition:
             [CREATED_AT] + [_lit("2024-06-01")] * (arity - 1),
         )
         key = ArithmeticKey(op=">=", operands=operands)
-        assert is_frame_bound(key=key, time_columns=TIME_COLS) is False
+        assert is_frame_bound(key=key, time_fields=TIME_COLS) is False
         assert _strip(key) is key
 
     async def test_empty_time_column_set_strips_nothing(self) -> None:
         """A query with no time dimensions has no frame to bound."""
         key = _cmp(">=", CREATED_AT, _lit("2024-06-01"))
-        assert strip_frame_bounds(key=key, time_columns=frozenset()) is key
+        assert strip_frame_bounds(key=key, time_fields=frozenset()) is key
 
 
 # --------------------------------------------------------------------------- #
@@ -272,7 +272,7 @@ class TestFrameBoundComposition:
         assert _strip(key) is None
 
     async def test_two_survivors_rebuild_an_and_preserving_order(self) -> None:
-        region = _cmp("==", ColumnKey(path=("customers",), leaf="tier"), _lit("gold"))
+        region = _cmp("==", FieldKey(path=("customers",), leaf="tier"), _lit("gold"))
         key = _and(STATUS_PAID, _cmp(">=", CREATED_AT, _lit("2024-06-01")), region)
         assert _strip(key) == _and(STATUS_PAID, region)
 
@@ -309,7 +309,7 @@ class TestFrameBoundComposition:
         """``ArithmeticKey`` carries only ``op``/``operands`` today, so a rebuild
         is lossless. This guards a future field being added without the
         rewriter learning to carry it."""
-        region = _cmp("==", ColumnKey(path=("customers",), leaf="tier"), _lit("gold"))
+        region = _cmp("==", FieldKey(path=("customers",), leaf="tier"), _lit("gold"))
         key = _and(STATUS_PAID, _cmp(">=", CREATED_AT, _lit("2024-06-01")), region)
         rebuilt = _strip(key)
         hand = ArithmeticKey(op="and", operands=(STATUS_PAID, region))
@@ -320,59 +320,59 @@ class TestFrameBoundComposition:
 # --------------------------------------------------------------------------- #
 # Models for the SQL-shape tests
 # --------------------------------------------------------------------------- #
-def _orders(**kw) -> SlayerModel:
+def _orders(**kw) -> SlayerDataset:
     base = dict(
         name="orders",
         sql_table="orders",
         data_source="test",
         columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="ship_date", sql="ship_date", type=DataType.TIMESTAMP),
-            Column(name="delivery_at", sql="delivery_at", type=DataType.TIMESTAMP),
-            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="ship_date", sql="ship_date", datatype=DataType.TIMESTAMP),
+            DatasetField(name="delivery_at", sql="delivery_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
         ],
     )
     base.update(kw)
-    return SlayerModel(**base)
+    return SlayerDataset(**base)
 
 
-def _customers(**kw) -> SlayerModel:
+def _customers(**kw) -> SlayerDataset:
     base = dict(
         name="customers",
         sql_table="customers",
         data_source="test",
         columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="tier", sql="tier", type=DataType.TEXT),
-            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
-            Column(name="signup_at", sql="signup_at", type=DataType.TIMESTAMP),
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="tier", sql="tier", datatype=DataType.TEXT),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
+            DatasetField(name="signup_at", sql="signup_at", datatype=DataType.TIMESTAMP),
         ],
     )
     base.update(kw)
-    return SlayerModel(**base)
+    return SlayerDataset(**base)
 
 
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
         ],
     )
 
 
-def _joined_orders() -> SlayerModel:
+def _joined_orders() -> SlayerDataset:
     return _orders(
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        joins=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
 _MONTHLY_CREATED_AT = TimeDimension(
-    dimension="created_at", granularity=TimeGranularity.MONTH,
+    field="created_at", granularity=TimeGranularity.MONTH,
 )
 
 
@@ -380,20 +380,20 @@ def _windowed_query(**kw) -> SlayerQuery:
     base = dict(
         source_model="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        measures=[ModelMeasure(formula="sum(revenue, window='90d')", name="rev_90d")],
+        measures=[DatasetMetric(expression="sum(revenue, window='90d')", name="rev_90d")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)
 
 
-async def _wm_sql(query: SlayerQuery, model: SlayerModel, **kw) -> str:
+async def _wm_sql(query: SlayerQuery, model: SlayerDataset, **kw) -> str:
     # DEV-1835: windowed producers now render under uniform ``_cm_`` naming.
     sql = await _engine_generate(query=query, model=model, validate=False, **kw)
     assert "_cm_" in sql, sql
     return sql
 
 
-async def _plan(query: SlayerQuery, model: SlayerModel, *, extra_models=None):
+async def _plan(query: SlayerQuery, model: SlayerDataset, *, extra_models=None):
     """Plan ``query`` against ``model`` and return the ``PlannedQuery``.
 
     Used by the column-set tests, which assert on planner state rather than
@@ -404,9 +404,9 @@ async def _plan(query: SlayerQuery, model: SlayerModel, *, extra_models=None):
         await storage.save_datasource(
             DatasourceConfig(name="test", type="sqlite", database=":memory:"),
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         for extra in extra_models or []:
-            await storage.save_model(extra)
+            await storage.save_dataset(extra)
         bundle = await slayer.engine.bundle_builder.build_resolved_source_bundle(query=query, storage=storage)
         return plan_query(query=query, bundle=bundle)
 
@@ -580,7 +580,7 @@ class TestWindowedSrcFrameBounds:
             time_dimensions=[
                 _MONTHLY_CREATED_AT,
                 TimeDimension(
-                    dimension="ship_date",
+                    field="ship_date",
                     granularity=TimeGranularity.DAY,
                 ),
             ],
@@ -632,7 +632,7 @@ class TestWindowedSrcFrameBounds:
             time_dimensions=[
                 _MONTHLY_CREATED_AT,
                 TimeDimension(
-                    dimension="customers.signup_at",
+                    field="customers.signup_at",
                     granularity=TimeGranularity.DAY,
                 ),
             ],
@@ -653,13 +653,13 @@ class TestWindowedSrcFrameBounds:
         regions because the residual needs it — and only the bound disappears.
         """
         customers = _customers(
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+            joins=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
         )
         query = _windowed_query(
             time_dimensions=[
                 _MONTHLY_CREATED_AT,
                 TimeDimension(
-                    dimension="customers.signup_at",
+                    field="customers.signup_at",
                     granularity=TimeGranularity.DAY,
                 ),
             ],
@@ -686,7 +686,7 @@ class TestWindowedSrcFrameBounds:
     async def test_multi_hop_residual_keeps_its_full_join_chain(self) -> None:
         """Codex F4: a residual crossing two hops keeps every hop."""
         customers = _customers(
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+            joins=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
         )
         query = _windowed_query(
             filters=["created_at >= '2024-06-01' and customers.regions.name = 'North'"],
@@ -707,8 +707,8 @@ class TestWindowedSrcFrameBounds:
     async def test_two_windowed_measures_share_the_residual(self) -> None:
         query = _windowed_query(
             measures=[
-                ModelMeasure(formula="sum(revenue, window='90d')", name="rev_90d"),
-                ModelMeasure(formula="avg(revenue, window='30d')", name="rev_30d"),
+                DatasetMetric(expression="sum(revenue, window='90d')", name="rev_90d"),
+                DatasetMetric(expression="avg(revenue, window='30d')", name="rev_30d"),
             ],
             filters=["created_at >= '2024-06-01' and status = 'paid'"],
         )
@@ -736,7 +736,7 @@ class TestWindowedSrcFrameBounds:
         assertions so the test is not merely a SQL-validity check that would
         pass without any stripping."""
         query = _windowed_query(
-            dimensions=[ColumnRef(name="status")],
+            dimensions=[FieldRef(name="status")],
             filters=["created_at >= '2024-06-01' and status = 'paid'"],
         )
         sql = await _wm_sql(query, _orders())
@@ -773,7 +773,7 @@ class TestWindowedSrcFrameBounds:
         query = _windowed_query(
             time_dimensions=[
                 TimeDimension(
-                    dimension="created_at",
+                    field="created_at",
                     granularity=TimeGranularity.MONTH,
                     date_range=["2024-06-01", "2024-12-31"],
                 ),
@@ -793,7 +793,7 @@ class TestWindowedSrcFrameBounds:
 # The strippable column set, at the planner level
 # --------------------------------------------------------------------------- #
 class TestFrameBoundColumnSet:
-    """``PlannedQuery.frame_bound_columns`` is the single authoritative set,
+    """``PlannedQuery.frame_bound_fields`` is the single authoritative set,
     computed once in the planner and read by BOTH the windowed ``_src`` path and
     the generator's shifted-CTE path (so the two cannot drift)."""
 
@@ -803,7 +803,7 @@ class TestFrameBoundColumnSet:
                 time_dimensions=[
                     _MONTHLY_CREATED_AT,
                     TimeDimension(
-                        dimension="ship_date",
+                        field="ship_date",
                         granularity=TimeGranularity.DAY,
                     ),
                 ],
@@ -811,8 +811,8 @@ class TestFrameBoundColumnSet:
             ),
             _orders(),
         )
-        assert set(plan.frame_bound_columns) == {CREATED_AT, SHIP_DATE}, (
-            plan.frame_bound_columns
+        assert set(plan.frame_bound_fields) == {CREATED_AT, SHIP_DATE}, (
+            plan.frame_bound_fields
         )
 
     async def test_only_non_hidden_time_dimensions_are_strippable(self) -> None:
@@ -830,7 +830,7 @@ class TestFrameBoundColumnSet:
                 time_dimensions=[
                     _MONTHLY_CREATED_AT,
                     TimeDimension(
-                        dimension="ship_date",
+                        field="ship_date",
                         granularity=TimeGranularity.DAY,
                     ),
                 ],
@@ -844,8 +844,8 @@ class TestFrameBoundColumnSet:
             for s in plan.row_slots
             if isinstance(s.key, TimeTruncKey) and not s.hidden
         }
-        assert set(plan.frame_bound_columns) == visible, (
-            plan.frame_bound_columns, visible,
+        assert set(plan.frame_bound_fields) == visible, (
+            plan.frame_bound_fields, visible,
         )
         # A hidden slot's column never leaks into the set.
         hidden_cols = {
@@ -853,9 +853,9 @@ class TestFrameBoundColumnSet:
             for s in plan.row_slots
             if isinstance(s.key, TimeTruncKey) and s.hidden
         }
-        assert not (set(plan.frame_bound_columns) & hidden_cols), plan.frame_bound_columns
+        assert not (set(plan.frame_bound_fields) & hidden_cols), plan.frame_bound_fields
         # …nor does a plain row column that merely happens to be temporal.
-        assert DELIVERY_AT not in set(plan.frame_bound_columns), plan.frame_bound_columns
+        assert DELIVERY_AT not in set(plan.frame_bound_fields), plan.frame_bound_fields
 
 
 # --------------------------------------------------------------------------- #
@@ -865,13 +865,13 @@ def _shift_query(**kw) -> SlayerQuery:
     base = dict(
         source_model="orders",
         time_dimensions=[_MONTHLY_CREATED_AT],
-        measures=[ModelMeasure(formula="time_shift(sum(revenue), -1, 'month')", name="prev")],
+        measures=[DatasetMetric(expression="time_shift(sum(revenue), -1, 'month')", name="prev")],
     )
     base.update(kw)
     return SlayerQuery.model_validate(base)
 
 
-async def _shifted_body(query: SlayerQuery, model: SlayerModel, **kw) -> str:
+async def _shifted_body(query: SlayerQuery, model: SlayerDataset, **kw) -> str:
     sql = await _engine_generate(query=query, model=model, validate=False, **kw)
     return _extract_cte_body(sql, r"shifted_\w+")
 
@@ -921,7 +921,7 @@ class TestTimeShiftFrameBounds:
             _shift_query(
                 time_dimensions=[
                     TimeDimension(
-                        dimension="created_at",
+                        field="created_at",
                         granularity=TimeGranularity.MONTH,
                         date_range=["2024-06-01", "2024-12-31"],
                     ),

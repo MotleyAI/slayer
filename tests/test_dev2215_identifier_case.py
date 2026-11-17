@@ -16,9 +16,9 @@ from slayer.core.errors import (
     SlayerError,
     UnknownReferenceError,
 )
-from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.names import match_path
-from slayer.core.query import ColumnRef, ComputedDimension, QueryRefinement, SlayerQuery, refine_query
+from slayer.core.query import FieldRef, ComputedDimension, QueryRefinement, SlayerQuery, refine_query
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.facade.catalog import build_catalog
 from slayer.facade.translator import QueryResult, translate
@@ -222,34 +222,34 @@ class TestCanonicalKeys:
 # --------------------------------------------------------------------------- #
 # Saves never introduce a case collision
 # --------------------------------------------------------------------------- #
-def _with_measure(model: SlayerModel, name: str) -> SlayerModel:
-    return model.model_copy(update={"measures": [*model.measures, ModelMeasure(name=name, formula="sum(amount)")]})
+def _with_measure(model: SlayerDataset, name: str) -> SlayerDataset:
+    return model.model_copy(update={"metrics": [*model.metrics, DatasetMetric(name=name, expression="sum(amount)")]})
 
 
 class TestSaveCollisions:
     async def test_a_new_column_measure_collision_is_refused(self, storage: StorageBackend) -> None:
-        await storage.save_model(orders_model())
+        await storage.save_dataset(orders_model())
         model = _with_measure(orders_model(), "Amount")
         with pytest.raises(SlayerError) as err:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert "amount" in str(err.value)
         assert "Amount" in str(err.value)
 
     async def test_a_new_aggregation_collision_is_refused(self, storage: StorageBackend) -> None:
-        model = orders_model(aggregations=[Aggregation(name="Share", formula="AVG({value})")])
+        model = orders_model(aggregations=[Aggregation(name="Share", expression="AVG({value})")])
         with pytest.raises(SlayerError) as err:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert "Share" in str(err.value)
         assert "share" in str(err.value)
 
     async def test_a_new_join_name_collision_is_refused(self, storage: StorageBackend) -> None:
-        await storage.save_model(dev2215_models()[1])
+        await storage.save_dataset(dev2215_models()[1])
         model = orders_model().model_copy(update={"joins": [
-            ModelJoin(target_model="customers", name="buyer", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="customers", name="Buyer", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", name="buyer", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="customers", name="Buyer", join_pairs=[["customer_id", "id"]]),
         ]})
         with pytest.raises(SlayerError) as err:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert "buyer" in str(err.value)
         assert "Buyer" in str(err.value)
 
@@ -262,40 +262,40 @@ class TestSaveCollisions:
     ], ids=["stage-names", "result-names"])
     async def test_a_saved_query_collision_is_refused(self, storage: StorageBackend,
                                                       source_queries: list[dict[str, Any]]) -> None:
-        await storage.save_model(orders_model())
-        model = SlayerModel.model_validate({"name": "saved", "data_source": "test", "source_queries": source_queries})
+        await storage.save_dataset(orders_model())
+        model = SlayerDataset.model_validate({"name": "saved", "data_source": "test", "source_queries": source_queries})
         with pytest.raises(SlayerError):
-            await storage.save_model(model)
+            await storage.save_dataset(model)
 
     async def test_model_names_in_a_datasource(self, storage: StorageBackend) -> None:
-        await storage.save_model(orders_model())
+        await storage.save_dataset(orders_model())
         model = orders_model().model_copy(update={"name": "Orders"})
         with pytest.raises(SlayerError) as err:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert "orders" in str(err.value)
         assert "Orders" in str(err.value)
 
     async def test_a_grandfathered_collision_keeps_working(self, storage: StorageBackend) -> None:
-        await storage.save_model(ledger_model(), _validate=False)
+        await storage.save_dataset(ledger_model(), _validate=False)
         with recorded_warnings() as caught:
-            await storage.save_model(ledger_model())
-            await storage.save_model(ledger_model().model_copy(update={"description": "edited"}))
+            await storage.save_dataset(ledger_model())
+            await storage.save_dataset(ledger_model().model_copy(update={"description": "edited"}))
         assert len(messages(caught, "Revenue", "revenue")) >= 2
 
     async def test_removing_and_reintroducing_a_collision(self, storage: StorageBackend) -> None:
-        await storage.save_model(ledger_model(), _validate=False)
-        without = ledger_model().model_copy(update={"columns": [c for c in ledger_model().columns if c.name != "revenue"]})
-        await storage.save_model(without)
+        await storage.save_dataset(ledger_model(), _validate=False)
+        without = ledger_model().model_copy(update={"columns": [c for c in ledger_model().fields if c.name != "revenue"]})
+        await storage.save_dataset(without)
         model = ledger_model()
         with pytest.raises(SlayerError) as err:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert "Revenue" in str(err.value)
         assert "revenue" in str(err.value)
 
     async def test_a_grandfathered_collision_warns_on_load(self, storage: StorageBackend) -> None:
-        await storage.save_model(ledger_model(), _validate=False)
+        await storage.save_dataset(ledger_model(), _validate=False)
         with recorded_warnings() as caught:
-            await storage.get_model("ledger", data_source="test")
+            await storage.get_dataset("ledger", data_source="test")
         assert messages(caught, "Revenue", "revenue")
 
     async def test_a_query_reading_the_model_returns_the_warning(self, engine: SlayerQueryEngine) -> None:
@@ -303,7 +303,7 @@ class TestSaveCollisions:
         assert warnings_mentioning(resp, "Revenue", "revenue")
 
     async def test_a_facade_query_reading_the_model_returns_the_warning(self, engine: SlayerQueryEngine) -> None:
-        catalog = build_catalog(models_by_datasource={"test": dev2215_models()})
+        catalog = build_catalog(datasets_by_datasource={"test": dev2215_models()})
         result = translate("SELECT id FROM ledger", catalog)
         assert isinstance(result, QueryResult)
         assert warnings_mentioning(await engine.execute(result.query), "Revenue", "revenue")
@@ -336,7 +336,7 @@ async def test_result_names_colliding_by_case_are_refused_on_every_dialect(diale
 
 
 async def test_a_stored_query_with_colliding_names_keeps_running() -> None:
-    saved = SlayerModel.model_validate({"name": "saved", "data_source": "test", "source_queries": [
+    saved = SlayerDataset.model_validate({"name": "saved", "data_source": "test", "source_queries": [
         {"source_model": "orders", "measures": [{"formula": "sum(amount)", "name": "Total"},
                                                 {"formula": "count(*)", "name": "total"}]}]})
     async with dev2215_engine("sqlite", models=[*dev2215_models(), saved]) as eng:
@@ -379,7 +379,7 @@ def test_an_explicitly_named_reference_stays_computed() -> None:
 def test_a_refinement_dedupes_a_quoted_and_a_plain_reference() -> None:
     saved = q(dimensions=['"orders".status'], measures=[m("count(*)", "n")])
     refined = refine_query(saved=saved, refinement=QueryRefinement.model_validate({"dimensions": ["status"]}))
-    assert [d.full_name for d in refined.dimensions or [] if isinstance(d, ColumnRef)] == ["orders.status"]
+    assert [d.full_name for d in refined.dimensions or [] if isinstance(d, FieldRef)] == ["orders.status"]
 
 
 def test_a_quoted_dimension_takes_its_column_name() -> None:
@@ -390,10 +390,10 @@ def test_a_quoted_dimension_takes_its_column_name() -> None:
 
 
 def test_model_lookups_fold() -> None:
-    model = SlayerModel(name="x", sql_table="orders", data_source="test",
-                        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
-                        measures=[ModelMeasure(name="Total", formula="count(*)")])
-    column, measure = model.get_column("ID"), model.get_measure("total")
+    model = SlayerDataset(name="x", sql_table="orders", data_source="test",
+                        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
+                        metrics=[DatasetMetric(name="Total", expression="count(*)")])
+    column, measure = model.get_field("ID"), model.get_metric("total")
     assert column is not None
     assert column.name == "id"
     assert measure is not None

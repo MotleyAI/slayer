@@ -10,44 +10,44 @@ mirroring how the generator drives it via ``bundle.get_referenced_model``.
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import ColumnCycleError
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.sql.column_expansion import expand_derived_refs_sync
+from slayer.core.errors import DatasetFieldCycleError
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.sql.field_expansion import expand_derived_refs_sync
 
 
 def _norm(sql: str) -> str:
     return " ".join(sql.split())
 
 
-def _model_a() -> SlayerModel:
-    return SlayerModel(
+def _model_a() -> SlayerDataset:
+    return SlayerDataset(
         name="A",
         data_source="ds",
         sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="bar", sql="bar", type=DataType.DOUBLE),
-            Column(name="b_id", sql="b_id", type=DataType.INT),
-            Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="bar", sql="bar", datatype=DataType.DOUBLE),
+            DatasetField(name="b_id", sql="b_id", datatype=DataType.INT),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
             # Local derived chain: c2 references sibling derived c1.
-            Column(name="c1", sql="raw_a + 1", type=DataType.DOUBLE),
-            Column(name="c2", sql="A.c1 * 2", type=DataType.DOUBLE),
+            DatasetField(name="c1", sql="raw_a + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="c2", sql="A.c1 * 2", datatype=DataType.DOUBLE),
             # Cross-model derived ref into B's derived column.
-            Column(name="ratio", sql="A.bar / B.foo_normalized", type=DataType.DOUBLE),
+            DatasetField(name="ratio", sql="A.bar / B.foo_normalized", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
+        relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]])],
     )
 
 
-def _model_b() -> SlayerModel:
-    return SlayerModel(
+def _model_b() -> SlayerDataset:
+    return SlayerDataset(
         name="B",
         data_source="ds",
         sql_table="B",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="foo_raw", sql="foo_raw", type=DataType.DOUBLE),
-            Column(name="foo_normalized", sql="foo_raw / 100.0", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="foo_raw", sql="foo_raw", datatype=DataType.DOUBLE),
+            DatasetField(name="foo_normalized", sql="foo_raw / 100.0", datatype=DataType.DOUBLE),
         ],
     )
 
@@ -57,8 +57,8 @@ def _model_b() -> SlayerModel:
 def test_bare_base_column_returns_name() -> None:
     a = _model_a()
     out = expand_derived_refs_sync(
-        sql=None, model=a, alias_path="A",
-        models_by_name={"A": a}, dialect="sqlite",
+        sql=None, dataset=a, alias_path="A",
+        datasets_by_name={"A": a}, dialect="sqlite",
     )
     assert out is None
 
@@ -68,8 +68,8 @@ def test_local_derived_chain_inlines_sibling() -> None:
     qualifies the bare ``raw_a`` to the host alias."""
     a = _model_a()
     out = expand_derived_refs_sync(
-        sql="A.c1 * 2", model=a, alias_path="A",
-        models_by_name={"A": a}, dialect="sqlite",
+        sql="A.c1 * 2", dataset=a, alias_path="A",
+        datasets_by_name={"A": a}, dialect="sqlite",
     )
     assert _norm(out) == "(A.raw_a + 1) * 2"
 
@@ -79,8 +79,8 @@ def test_cross_table_derived_ref_inlines_joined_derived() -> None:
     (qualified to the single-hop alias ``B``)."""
     a, b = _model_a(), _model_b()
     out = expand_derived_refs_sync(
-        sql="A.bar / B.foo_normalized", model=a, alias_path="A",
-        models_by_name={"A": a, "B": b}, dialect="sqlite",
+        sql="A.bar / B.foo_normalized", dataset=a, alias_path="A",
+        datasets_by_name={"A": a, "B": b}, dialect="sqlite",
     )
     assert _norm(out) == "A.bar / (B.foo_raw / 100.0)"
 
@@ -88,27 +88,27 @@ def test_cross_table_derived_ref_inlines_joined_derived() -> None:
 def test_bare_local_ref_qualifies_to_alias() -> None:
     a = _model_a()
     out = expand_derived_refs_sync(
-        sql="raw_a + 1", model=a, alias_path="A",
-        models_by_name={"A": a}, dialect="sqlite",
+        sql="raw_a + 1", dataset=a, alias_path="A",
+        datasets_by_name={"A": a}, dialect="sqlite",
     )
     assert _norm(out) == "A.raw_a + 1"
 
 
 def test_cycle_raises_column_cycle_error() -> None:
-    cyclic = SlayerModel(
+    cyclic = SlayerDataset(
         name="C",
         data_source="ds",
         sql_table="C",
-        columns=[
-            Column(name="x", sql="x", type=DataType.DOUBLE),
-            Column(name="c1", sql="c2 + 1", type=DataType.DOUBLE),
-            Column(name="c2", sql="c1 - 1", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="x", sql="x", datatype=DataType.DOUBLE),
+            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.DOUBLE),
         ],
     )
-    with pytest.raises(ColumnCycleError):
+    with pytest.raises(DatasetFieldCycleError):
         expand_derived_refs_sync(
-            sql="c1", model=cyclic, alias_path="C",
-            models_by_name={"C": cyclic}, dialect="sqlite",
+            sql="c1", dataset=cyclic, alias_path="C",
+            datasets_by_name={"C": cyclic}, dialect="sqlite",
         )
 
 
@@ -117,8 +117,8 @@ def test_unknown_alias_left_untouched() -> None:
     (likely a CTE / subquery alias the user wired up)."""
     a = _model_a()
     out = expand_derived_refs_sync(
-        sql="cte_x.value + A.bar", model=a, alias_path="A",
-        models_by_name={"A": a}, dialect="sqlite",
+        sql="cte_x.value + A.bar", dataset=a, alias_path="A",
+        datasets_by_name={"A": a}, dialect="sqlite",
     )
     # cte_x.value untouched; A.bar stays qualified to the host alias.
     assert "cte_x.value" in _norm(out)
@@ -131,8 +131,8 @@ def test_dev1752_subquery_inner_ref_not_qualified() -> None:
     own FROM) is left bare even though ``bar`` is also a model column."""
     a = _model_a()
     out = expand_derived_refs_sync(
-        sql="bar IN (SELECT bar FROM other_tbl)", model=a, alias_path="A",
-        models_by_name={"A": a}, dialect="sqlite",
+        sql="bar IN (SELECT bar FROM other_tbl)", dataset=a, alias_path="A",
+        datasets_by_name={"A": a}, dialect="sqlite",
     )
     assert _norm(out) == "A.bar IN (SELECT bar FROM other_tbl)"
 
@@ -145,8 +145,8 @@ def test_dev1752_root_inlines_while_subquery_local_untouched() -> None:
     the fix over-gating root inlining, not the bug itself."""
     a = _model_a()
     out = expand_derived_refs_sync(
-        sql="c1 IN (SELECT c1 FROM other_tbl)", model=a, alias_path="A",
-        models_by_name={"A": a}, dialect="sqlite",
+        sql="c1 IN (SELECT c1 FROM other_tbl)", dataset=a, alias_path="A",
+        datasets_by_name={"A": a}, dialect="sqlite",
     )
     assert _norm(out) == "(A.raw_a + 1) IN (SELECT c1 FROM other_tbl)"
 
@@ -158,8 +158,8 @@ def test_dev1752_nonroot_explicit_ref_not_requalified() -> None:
     coincidentally unchanged when alias == model name."""
     a = _model_a()
     out = expand_derived_refs_sync(
-        sql="bar IN (SELECT A.bar FROM other_tbl)", model=a, alias_path="A_host",
-        models_by_name={"A": a}, dialect="sqlite",
+        sql="bar IN (SELECT A.bar FROM other_tbl)", dataset=a, alias_path="A_host",
+        datasets_by_name={"A": a}, dialect="sqlite",
     )
     # Outer bare bar -> host alias; inner A.bar stays A.bar (NOT A_host.bar).
     assert _norm(out) == "A_host.bar IN (SELECT A.bar FROM other_tbl)"
@@ -171,8 +171,8 @@ def test_dev1752_set_operation_branches_leave_inner_bare() -> None:
     a = _model_a()
     out = expand_derived_refs_sync(
         sql="bar IN (SELECT bar FROM t1 UNION SELECT bar FROM t2)",
-        model=a, alias_path="A",
-        models_by_name={"A": a}, dialect="sqlite",
+        dataset=a, alias_path="A",
+        datasets_by_name={"A": a}, dialect="sqlite",
     )
     assert _norm(out) == "A.bar IN (SELECT bar FROM t1 UNION SELECT bar FROM t2)"
 
@@ -183,8 +183,8 @@ def test_dev1752_cte_body_leaves_inner_bare() -> None:
     a = _model_a()
     out = expand_derived_refs_sync(
         sql="bar IN (WITH c AS (SELECT bar FROM t) SELECT bar FROM c)",
-        model=a, alias_path="A",
-        models_by_name={"A": a}, dialect="sqlite",
+        dataset=a, alias_path="A",
+        datasets_by_name={"A": a}, dialect="sqlite",
     )
     assert _norm(out) == (
         "A.bar IN (WITH c AS (SELECT bar FROM t) SELECT bar FROM c)"

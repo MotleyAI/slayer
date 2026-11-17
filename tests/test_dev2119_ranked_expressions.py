@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import ParameterGrainError, UnsafeJoinInputError
-from slayer.core.models import Aggregation, AggregationParam, Column, ModelJoin, SlayerModel
+from slayer.core.errors import ParameterGrainError, UnsafeRelationshipInputError
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._dev2119_fixtures import BACKENDS, EFF, by_bucket, by_dims, dev2119_models, engine_for, m, num, q, td
@@ -16,21 +16,21 @@ AVG_A = 7 / 3
 AVG_B = 14 / 3
 
 
-def _models() -> list[SlayerModel]:
+def _models() -> list[SlayerDataset]:
     """The dev2119 models plus a ``wsum`` custom aggregation and an ``order_facts`` host reaching ``accounts``."""
     models = dev2119_models()
     orders = next(x for x in models if x.name == "orders")
     orders.aggregations.append(Aggregation(
-        name="wsum", formula="SUM({value} * {weight})", params=[AggregationParam(name="weight", sql="quantity")],
+        name="wsum", expression="SUM({value} * {weight})", params=[AggregationParam(name="weight", sql="quantity")],
     ))
-    models.append(SlayerModel(
+    models.append(SlayerDataset(
         name="order_facts", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="accounts", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="accounts", join_pairs=[["customer_id", "id"]])],
     ))
     return models
 
@@ -86,8 +86,8 @@ class TestDefaultRankingKey:
 class TestExpressionRankingKey:
     async def test_coalesced_ranking_key(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "balances", "dimensions": ["customer_id"],
-            "measures": [{"formula": "last(balance, coalesce(updated_at, created_at))", "name": "v"}],
+            "population": "balances", "dimensions": ["customer_id"],
+            "metrics": [{"formula": "last(balance, coalesce(updated_at, created_at))", "name": "v"}],
         }))
         assert by_dims(resp, ["balances.customer_id"], "balances.v") == {(1,): 150.0, (2,): 70.0}
 
@@ -101,21 +101,21 @@ class TestExpressionRankingKey:
 
     async def test_fanning_leaf_local_producer(self, sqlite_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "accounts",
-            "measures": [{"formula": "last(spend, coalesce(orders.created_at, signup_ts))", "name": "v"}],
+            "population": "accounts",
+            "metrics": [{"formula": "last(spend, coalesce(orders.created_at, signup_ts))", "name": "v"}],
         })
-        with pytest.raises(UnsafeJoinInputError) as ei:
+        with pytest.raises(UnsafeRelationshipInputError) as ei:
             await sqlite_engine.execute(query)
         assert "created_at" in str(ei.value)
         assert "orders" in str(ei.value)
 
     async def test_fanning_leaf_target_rooted_producer(self, sqlite_engine: SlayerQueryEngine) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "order_facts",
-            "measures": [{"formula": "last(accounts.spend, coalesce(accounts.orders.created_at, accounts.signup_ts))",
+            "population": "order_facts",
+            "metrics": [{"formula": "last(accounts.spend, coalesce(accounts.orders.created_at, accounts.signup_ts))",
                           "name": "v"}],
         })
-        with pytest.raises(UnsafeJoinInputError) as ei:
+        with pytest.raises(UnsafeRelationshipInputError) as ei:
             await sqlite_engine.execute(query)
         assert "created_at" in str(ei.value)
         assert "orders" in str(ei.value)

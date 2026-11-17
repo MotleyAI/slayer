@@ -14,7 +14,7 @@ The leak (before this fix):
    flatten ``tbl.dimensions + tbl.metrics`` into a single rowset.
 3. Metabase reads the flat view, caches the dotted "columns", and emits
    ``SELECT "customers.row_count" FROM orders``-style fingerprint queries
-   that lead to dotted ``SlayerQuery.measures[*].name`` Pydantic rejection.
+   that lead to dotted ``SlayerQuery.metrics[*].name`` Pydantic rejection.
 
 Fix: keep ``tbl.metrics`` / ``tbl.dimensions`` raw, but filter cross-model
 entries (``"." in name``) at the flat-view rendering step. The translator's
@@ -28,10 +28,10 @@ from __future__ import annotations
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.facade.catalog import (
     FacadeCatalog,
@@ -56,18 +56,18 @@ from slayer.facade.info_schema import _serve_columns
 def _model(
     *,
     name: str,
-    columns: list[Column],
-    joins: list[ModelJoin] | None = None,
-    measures: list[ModelMeasure] | None = None,
+    columns: list[DatasetField],
+    joins: list[DatasetRelationship] | None = None,
+    measures: list[DatasetMetric] | None = None,
     aggregations: list[Aggregation] | None = None,
-) -> SlayerModel:
-    return SlayerModel(
+) -> SlayerDataset:
+    return SlayerDataset(
         name=name,
         data_source="jaffle",
         sql_table=name,
-        columns=columns,
-        joins=joins or [],
-        measures=measures or [],
+        fields=columns,
+        relationships=joins or [],
+        metrics=measures or [],
         aggregations=aggregations or [],
     )
 
@@ -84,22 +84,22 @@ def _orders_customers_catalog() -> FacadeCatalog:
     orders = _model(
         name="orders",
         columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="total", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="total", datatype=DataType.DOUBLE),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        joins=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
     customers = _model(
         name="customers",
         columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="email", type=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="email", datatype=DataType.TEXT),
         ],
     )
-    return build_catalog(models_by_datasource={"jaffle": [orders, customers]})
+    return build_catalog(datasets_by_datasource={"jaffle": [orders, customers]})
 
 
 # --- local_metrics / local_dimensions helpers --------------------------------
@@ -146,12 +146,12 @@ def test_local_metrics_excludes_same_model_custom_aggregation_metrics() -> None:
     fan-out — same rule as builtin column×agg."""
     orders = _model(
         name="orders",
-        columns=[Column(name="amount", type=DataType.DOUBLE)],
+        columns=[DatasetField(name="amount", datatype=DataType.DOUBLE)],
         aggregations=[
-            Aggregation(name="my_count", formula="COUNT(DISTINCT {value})"),
+            Aggregation(name="my_count", expression="COUNT(DISTINCT {value})"),
         ],
     )
-    cat = build_catalog(models_by_datasource={"jaffle": [orders]})
+    cat = build_catalog(datasets_by_datasource={"jaffle": [orders]})
     table = _find_table(cat, table="orders")
     locals_ = local_metrics(table)
     names = {m.name for m in locals_}
@@ -164,16 +164,16 @@ def test_local_metrics_keeps_saved_model_measures() -> None:
     view so BI tools can project / aggregate against it by name."""
     orders = _model(
         name="orders",
-        columns=[Column(name="revenue", type=DataType.DOUBLE)],
+        columns=[DatasetField(name="revenue", datatype=DataType.DOUBLE)],
         measures=[
-            ModelMeasure(
+            DatasetMetric(
                 name="aov",
-                formula="sum(revenue) / count(*)",
-                type=DataType.DOUBLE,
+                expression="sum(revenue) / count(*)",
+                datatype=DataType.DOUBLE,
             ),
         ],
     )
-    cat = build_catalog(models_by_datasource={"jaffle": [orders]})
+    cat = build_catalog(datasets_by_datasource={"jaffle": [orders]})
     table = _find_table(cat, table="orders")
     locals_ = local_metrics(table)
     names = {m.name for m in locals_}
@@ -198,26 +198,26 @@ def test_local_dimensions_excludes_multi_hop_entries() -> None:
     dot and must be filtered out."""
     orders = _model(
         name="orders",
-        columns=[Column(name="customer_id", type=DataType.INT)],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        columns=[DatasetField(name="customer_id", datatype=DataType.INT)],
+        joins=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
     customers = _model(
         name="customers",
         columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        joins=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
     regions = _model(
         name="regions",
         columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
     cat = build_catalog(
-        models_by_datasource={"jaffle": [orders, customers, regions]},
+        datasets_by_datasource={"jaffle": [orders, customers, regions]},
     )
     table = _find_table(cat, table="orders")
     raw_names = {d.name for d in table.dimensions}
@@ -321,26 +321,26 @@ def test_pg_description_attnum_within_local_range() -> None:
     orders = _model(
         name="orders",
         columns=[
-            Column(
-                name="id", type=DataType.INT, primary_key=True,
+            DatasetField(
+                name="id", datatype=DataType.INT, primary_key=True,
                 description="order pk",
             ),
-            Column(name="customer_id", type=DataType.INT, description="fk"),
-            Column(name="total", type=DataType.DOUBLE, description="ord total"),
+            DatasetField(name="customer_id", datatype=DataType.INT, description="fk"),
+            DatasetField(name="total", datatype=DataType.DOUBLE, description="ord total"),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        joins=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
     customers = _model(
         name="customers",
         columns=[
-            Column(
-                name="id", type=DataType.INT, primary_key=True,
+            DatasetField(
+                name="id", datatype=DataType.INT, primary_key=True,
                 description="cust pk",
             ),
-            Column(name="name", type=DataType.TEXT, description="cust name"),
+            DatasetField(name="name", datatype=DataType.TEXT, description="cust name"),
         ],
     )
-    cat = build_catalog(models_by_datasource={"jaffle": [orders, customers]})
+    cat = build_catalog(datasets_by_datasource={"jaffle": [orders, customers]})
 
     rel = _build_pg_description(cat)
     for sch in cat.schemas:
@@ -400,27 +400,27 @@ def test_graph_fingerprint_changes_when_cross_model_metric_changes() -> None:
     orders = _model(
         name="orders",
         columns=[
-            Column(name="customer_id", type=DataType.INT),
+            DatasetField(name="customer_id", datatype=DataType.INT),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        joins=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
-    def _customers_with_revenue_type(revenue_type: DataType) -> SlayerModel:
+    def _customers_with_revenue_type(revenue_type: DataType) -> SlayerDataset:
         return _model(
             name="customers",
             columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="revenue", type=revenue_type),
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="revenue", datatype=revenue_type),
             ],
         )
 
     cat_a = build_catalog(
-        models_by_datasource={
+        datasets_by_datasource={
             "jaffle": [orders, _customers_with_revenue_type(DataType.DOUBLE)],
         }
     )
     cat_b = build_catalog(
-        models_by_datasource={
+        datasets_by_datasource={
             "jaffle": [orders, _customers_with_revenue_type(DataType.INT)],
         }
     )

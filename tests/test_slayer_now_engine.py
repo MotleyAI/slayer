@@ -57,7 +57,7 @@ async def test_unset_or_blank_keeps_host_clock(monkeypatch: pytest.MonkeyPatch, 
     before = date.today()
     async with now_engine() as engine:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "ev", "measures": COUNT, "filters": ["ts = 'today'"],
+            "population": "ev", "metrics": COUNT, "filter": ["ts = 'today'"],
         }), dry_run=True)
     assert resp.sql is not None
     assert any(
@@ -133,7 +133,7 @@ def _spine_months(resp) -> set[str]:
 async def test_time_spine_default_upper_bound_uses_pin(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_NOW", PIN)
     query = SlayerQuery.model_validate({
-        "measures": [{"formula": "count(ev.id)", "name": "n"}],
+        "metrics": [{"formula": "count(ev.id)", "name": "n"}],
         "time_dimensions": [{"dimension": "time_spine.timestamp", "granularity": "month", "date_range": ["2025-05-01", None]}],
     })
     async with now_engine() as engine:

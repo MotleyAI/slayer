@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -34,10 +34,10 @@ async def sqlite_engine():
         yield e
 
 
-def _mode_a_model() -> SlayerModel:
+def _mode_a_model() -> SlayerDataset:
     base = lib_model()
-    return base.model_copy(update={"columns": [
-        *base.columns, Column(name="is_ada", sql="word LIKE 'ada%'", type=DataType.BOOLEAN),
+    return base.model_copy(update={"fields": [
+        *base.fields, DatasetField(name="is_ada", sql="word LIKE 'ada%'", datatype=DataType.BOOLEAN),
     ]})
 
 
@@ -47,9 +47,9 @@ def _nocase_seed(db_path: str) -> None:
         con.executemany("INSERT INTO people VALUES (?, ?)", [(1, "ada"), (2, "Ada"), (3, "bob")])
 
 
-def _people_model() -> SlayerModel:
-    return SlayerModel(name="people", sql_table="people", data_source="test", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True), Column(name="name", type=DataType.TEXT),
+def _people_model() -> SlayerDataset:
+    return SlayerDataset(name="people", sql_table="people", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT),
     ])
 
 
@@ -60,7 +60,7 @@ class TestCaseSensitivity:
     async def test_sqlite_like_ignores_a_nocase_column(self) -> None:
         async with seeded_exec_engine(dialect="sqlite", seed=_nocase_seed, models=[_people_model()]) as (engine, _):
             resp = await engine.execute(SlayerQuery.model_validate({
-                "source_model": "people", "dimensions": ["id"], "filters": ["name LIKE 'ada%'"]}))
+                "population": "people", "dimensions": ["id"], "filter": ["name LIKE 'ada%'"]}))
             assert {int(r["people.id"]) for r in resp.data} == {1}
 
     async def test_ilike_is_case_insensitive(self, engine: SlayerQueryEngine) -> None:

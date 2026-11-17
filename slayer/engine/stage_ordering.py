@@ -11,8 +11,8 @@ from __future__ import annotations
 from typing import AbstractSet, Any, Dict, List, Optional, Set, Tuple
 
 from slayer.core.names import match_name
-from slayer.core.models import ModelJoin
-from slayer.core.query import ModelExtension, SlayerQuery, SourceSpec, extension_model_names
+from slayer.core.models import DatasetRelationship
+from slayer.core.query import DatasetExtension, SlayerQuery, SourceSpec, extension_dataset_names
 from slayer.core.scope import StageDisplay
 
 #: Minted identity prefixes; model names never carry them (``__slayer_`` is reserved).
@@ -22,17 +22,17 @@ SPLICED_STAGE_PREFIX = "__slayer_qb__"
 
 def stage_sibling_reads(*, query: SlayerQuery, siblings: AbstractSet[str]) -> Set[str]:
     """Sibling names in ``siblings`` that ``query`` references; purely structural, never raises."""
-    spec = query.source_model
+    spec = query.population
     names = [spec] if spec is not None else []
-    found = (match_name(name=n, declared=siblings, quoted=False) for n in (*names, *extension_model_names(query)))
+    found = (match_name(name=n, declared=siblings, quoted=False) for n in (*names, *extension_dataset_names(query)))
     return {f for f in found if f is not None}
 
 
-def stage_identity(*, name: str, model: Optional[str] = None) -> str:
-    """The minted identity of stage ``name`` (of stored query-backed ``model``, if spliced)."""
-    if model is None:
+def stage_identity(*, name: str, dataset: Optional[str] = None) -> str:
+    """The minted identity of stage ``name`` (of stored query-backed ``dataset``, if spliced)."""
+    if dataset is None:
         return f"{USER_STAGE_PREFIX}{name}"
-    return f"{SPLICED_STAGE_PREFIX}{model}__{name}"
+    return f"{SPLICED_STAGE_PREFIX}{dataset}__{name}"
 
 
 def _respelled(name: str, rename: Dict[str, str]) -> str:
@@ -40,8 +40,8 @@ def _respelled(name: str, rename: Dict[str, str]) -> str:
     return name if found is None else rename[found]
 
 
-def _respell_joins(joins: List[ModelJoin], rename: Dict[str, str]) -> List[ModelJoin]:
-    return [j.model_copy(update={"target_model": _respelled(j.target_model, rename)}) for j in joins]
+def _respell_relationships(relationships: List[DatasetRelationship], rename: Dict[str, str]) -> List[DatasetRelationship]:
+    return [j.model_copy(update={"to": _respelled(j.to, rename)}) for j in relationships]
 
 
 def _respell_spec(spec: SourceSpec | None, rename: Dict[str, str]) -> SourceSpec | None:
@@ -49,37 +49,37 @@ def _respell_spec(spec: SourceSpec | None, rename: Dict[str, str]) -> SourceSpec
     return _respelled(spec, rename) if spec is not None else None
 
 
-def _respell_extension(extension: ModelExtension, rename: Dict[str, str]) -> ModelExtension:
+def _respell_extension(extension: DatasetExtension, rename: Dict[str, str]) -> DatasetExtension:
     update: Dict[str, Any] = {}
     if _respelled(extension.source_name, rename) != extension.source_name:
         update["source_name"] = _respelled(extension.source_name, rename)
-    if any(_respelled(j.target_model, rename) != j.target_model for j in extension.joins or []):
-        update["joins"] = _respell_joins(list(extension.joins or []), rename)
+    if any(_respelled(j.to, rename) != j.to for j in extension.relationships or []):
+        update["joins"] = _respell_relationships(list(extension.relationships or []), rename)
     return extension.model_copy(update=update) if update else extension
 
 
 def localize_stages(
-    queries: List[SlayerQuery], *, model: Optional[str] = None,
+    queries: List[SlayerQuery], *, dataset: Optional[str] = None,
 ) -> "Tuple[List[SlayerQuery], Dict[str, StageDisplay]]":
     """Give every named non-root stage a minted identity and respell the references the
     list itself writes (sources, extended models, extension join targets); stored
-    definitions are untouched. Under ``model`` (a spliced stored query-backed model)
+    definitions are untouched. Under ``dataset`` (a spliced stored query-backed model)
     the final stage takes the model's name. Returns the stages and ``{identity: display}``."""
     if not queries:
         return [], {}
     rest, root = queries[:-1], queries[-1]
-    rename = {q.name: stage_identity(name=q.name, model=model) for q in rest if q.name}
-    displays = {ident: StageDisplay(name=name, model=model) for name, ident in rename.items()}
+    rename = {q.name: stage_identity(name=q.name, dataset=dataset) for q in rest if q.name}
+    displays = {ident: StageDisplay(name=name, dataset=dataset) for name, ident in rename.items()}
     out: List[SlayerQuery] = []
     for q in queries:
-        update: Dict[str, Any] = {"source_model": _respell_spec(q.source_model, rename)}
+        update: Dict[str, Any] = {"source_model": _respell_spec(q.population, rename)}
         if q.extensions:
             update["extensions"] = [_respell_extension(e, rename) for e in q.extensions]
         if q is not root and q.name:
             update["name"] = rename[q.name]
-        elif model is not None:
-            update["name"] = model
-            displays[model] = StageDisplay(name=model, model=model)
+        elif dataset is not None:
+            update["name"] = dataset
+            displays[dataset] = StageDisplay(name=dataset, dataset=dataset)
         out.append(q.model_copy(update=update))
     return out, displays
 

@@ -38,7 +38,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 
@@ -112,40 +112,40 @@ def seed_dev1746_sqlite(db_path: str) -> None:
         )
 
 
-def dev1746_models() -> List[SlayerModel]:
+def dev1746_models() -> List[SlayerDataset]:
     """SQLite-shaped ``orders -> customers -> regions`` models for the corpus.
 
     Returned host-first; ``[0]`` is the host and the rest are ``extra_models``.
     """
-    regions = SlayerModel(
+    regions = SlayerDataset(
         name="regions", sql_table="regions", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="population", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="population", datatype=DataType.DOUBLE),
         ],
     )
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
     return [orders, customers, regions]
 

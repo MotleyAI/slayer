@@ -12,8 +12,8 @@ from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 
 from slayer.api.server import QueryRequest, create_app
-from slayer.core.models import ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ModelExtension, QueryRefinement, SlayerQuery
+from slayer.core.models import DatasetRelationship, DatasetMetric, SlayerDataset
+from slayer.core.query import DatasetExtension, QueryRefinement, SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -67,23 +67,23 @@ def mcp_server(tmp_path):
 class TestTyped:
     def test_extensions_validate_into_typed_objects(self) -> None:
         q = _query(source_model="orders", extensions=[CUSTOMERS_EXT, ORDERS_EXT])
-        assert q.source_model == "orders"
-        assert [type(e) for e in q.extensions or []] == [ModelExtension, ModelExtension]
+        assert q.population == "orders"
+        assert [type(e) for e in q.extensions or []] == [DatasetExtension, DatasetExtension]
         first = (q.extensions or [])[0]
         assert first.source_name == "customers"
-        assert isinstance((first.measures or [])[0], ModelMeasure)
-        assert isinstance((first.joins or [])[0], ModelJoin)
+        assert isinstance((first.metrics or [])[0], DatasetMetric)
+        assert isinstance((first.relationships or [])[0], DatasetRelationship)
 
     def test_extensions_default_to_none(self) -> None:
-        assert SlayerQuery(source_model="orders").extensions is None
+        assert SlayerQuery(population="orders").extensions is None
 
     def test_extensions_on_a_rootless_query(self) -> None:
         q = _query(extensions=[CUSTOMERS_EXT], dimensions=["customers.regions.name"])
-        assert q.source_model is None
+        assert q.population is None
         assert (q.extensions or [])[0].source_name == "customers"
 
     def test_source_model_name_ignores_extensions(self) -> None:
-        assert _query(source_model="orders", extensions=[CUSTOMERS_EXT]).source_model_name == "orders"
+        assert _query(source_model="orders", extensions=[CUSTOMERS_EXT]).population_name == "orders"
 
 
 class TestRejected:
@@ -108,7 +108,7 @@ class TestRejected:
 
     def test_a_model_s_stage_with_a_duplicate_is_rejected_too(self) -> None:
         with pytest.raises(ValidationError) as info:
-            SlayerModel.model_validate({"name": "qb", "source_queries": [{
+            SlayerDataset.model_validate({"name": "qb", "source_queries": [{
                 "source_model": "orders", "measures": ONE_MEASURE,
                 "extensions": [{"source_name": "customers"}, {"source_name": "customers"}]}]})
         _assert_rejected_naming(info.value, "customers")
@@ -149,15 +149,15 @@ class TestSchema:
 
 class TestRestAndMcp:
     def test_rest_body_types_extensions_and_feeds_the_query(self) -> None:
-        req = QueryRequest.model_validate({"source_model": "orders", "extensions": [ORDERS_EXT], "measures": ["count(*)"]})
-        assert isinstance((req.extensions or [])[0], ModelExtension)
+        req = QueryRequest.model_validate({"population": "orders", "extensions": [ORDERS_EXT], "metrics": ["count(*)"]})
+        assert isinstance((req.extensions or [])[0], DatasetExtension)
         q = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
         assert q.extensions == req.extensions
 
     @pytest.mark.parametrize("version", [9, 10, 11, 12])
     def test_rest_body_migrates_a_versioned_legacy_root_extension(self, version: int) -> None:
-        req = QueryRequest.model_validate({"version": version, "source_model": ORDERS_EXT, "measures": ["count(*)"]})
-        assert req.source_model == "orders"
+        req = QueryRequest.model_validate({"version": version, "population": ORDERS_EXT, "metrics": ["count(*)"]})
+        assert req.population == "orders"
         assert [e.source_name for e in req.extensions or []] == ["orders"]
 
     @pytest.mark.parametrize("extensions", [
@@ -182,7 +182,7 @@ class TestRoundTrip:
         q = _query(source_model="orders", extensions=[CUSTOMERS_EXT, ORDERS_EXT], measures=["count(*)"])
         again = SlayerQuery.model_validate(q.model_dump(mode=mode))
         assert again == q
-        assert all(isinstance(e, ModelExtension) for e in again.extensions or [])
+        assert all(isinstance(e, DatasetExtension) for e in again.extensions or [])
 
     def test_exclude_none_dump_is_what_the_author_wrote(self) -> None:
         q = _query(source_model="orders", extensions=[MEASURES_ONLY])
@@ -191,4 +191,4 @@ class TestRoundTrip:
         assert dumped["extensions"] == [MEASURES_ONLY]
 
     def test_no_extensions_key_when_unset(self) -> None:
-        assert "extensions" not in SlayerQuery(source_model="orders").model_dump(exclude_none=True)
+        assert "extensions" not in SlayerQuery(population="orders").model_dump(exclude_none=True)

@@ -14,7 +14,7 @@ from sqlglot import exp
 
 import slayer.engine.query_engine as query_engine_module
 from slayer.core.format import NumberFormatType
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import SQLGLOT_NAMES, get_dialect
@@ -173,7 +173,7 @@ class TestOneFlatWith:
             storage = YAMLStorage(base_dir=tmp)
             await storage.save_datasource(DatasourceConfig(name="test", type=_ds_type(dialect)))
             for model in dev1966_models():
-                await storage.save_model(model, _validate=False)
+                await storage.save_dataset(model, _validate=False)
             resp = await SlayerQueryEngine(storage=storage).execute(
                 _CONSUMERS[consumer], dry_run=True)
         assert resp.sql is not None
@@ -213,7 +213,7 @@ class TestMetadata:
         assert got.attributes == ref.attributes
         status_meta = got.attributes.dimensions["monthly.status"]
         assert status_meta.label == STATUS_LABEL
-        t_meta = got.attributes.measures["monthly.t"]
+        t_meta = got.attributes.metrics["monthly.t"]
         assert t_meta.format is not None
         assert t_meta.format.type == NumberFormatType.CURRENCY
 
@@ -252,14 +252,14 @@ _LAYERS = [
 
 
 def _v_models(*, source: Optional[str], inner: Optional[str], outer: Optional[str],
-              stage: Optional[str], dims: List[str]) -> List[SlayerModel]:
-    v_inner = SlayerModel(
+              stage: Optional[str], dims: List[str]) -> List[SlayerDataset]:
+    v_inner = SlayerDataset(
         name="v_inner", data_source="test",
         source_queries=[query(
             source_model="orders_v", dimensions=dims, filters=["amount >= {th}"],
             measures=[m("sum(amount)", "rev")], variables={"th": stage} if stage else {})],
         query_variables={"th": inner} if inner else {})
-    v_outer = SlayerModel(
+    v_outer = SlayerDataset(
         name="v_outer", data_source="test",
         source_queries=[query(source_model="v_inner", dimensions=dims, measures=[m("sum(rev)", "tot")])],
         query_variables={"th": outer} if outer else {})
@@ -336,7 +336,7 @@ class TestSplicedWarnings:
             resp = await engine.execute(q)
         assert rows_by(resp.data, key="bcast_qb.status", value="bcast_qb.t") == AMOUNT_BY_STATUS
         (w,) = [w for w in resp.warnings if w.kind == "broadcast"]
-        assert w.measure == "cs"
+        assert w.metric == "cs"
         assert "bstage" in w.location, w.location
         assert "bcast_qb" in w.location, w.location
         assert INTERNAL not in w.location
@@ -354,5 +354,5 @@ class TestSplicedWarnings:
             ref = await engine.execute(spliced)
         assert sorted_rows(got.data) == sorted_rows(ref.data)
         assert [w.model_dump() for w in got.warnings] == [w.model_dump() for w in ref.warnings]
-        assert {w.measure for w in got.warnings if w.kind == "broadcast"} == {"cm", "rm"}
+        assert {w.metric for w in got.warnings if w.kind == "broadcast"} == {"cm", "rm"}
 

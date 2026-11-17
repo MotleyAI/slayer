@@ -27,7 +27,7 @@ import slayer.live_schema.ingestion as ingestion_mod
 from slayer.async_utils import run_sync
 from slayer.cli import _run_datasources_create
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.live_schema.ingestion import (
     IngestionScanReport,
     IntrospectedColumn,
@@ -37,9 +37,9 @@ from slayer.live_schema.ingestion import (
     _safe_get_table_comment,
     _sqlite_probe_integer_columns,
     ingest_datasource_idempotent,
-    introspect_table_to_model,
+    introspect_table_to_dataset,
 )
-from slayer.live_schema.schema_drift import IdempotentIngestResult, ModelAddition
+from slayer.live_schema.schema_drift import IdempotentIngestResult, DatasetAddition
 from slayer.live_schema.schema_scope import SchemaRef
 from slayer.mcp.server import _render_ingest_result
 from slayer.database.client import DelegatingSqlClient, SlayerSQLClient
@@ -208,7 +208,7 @@ async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient, None]
         client.close()
 
 
-async def _ingest(ds: DatasourceConfig) -> list[SlayerModel]:
+async def _ingest(ds: DatasourceConfig) -> list[SlayerDataset]:
     async with _client(ds) as client:
         return await ingestion_mod.ingest_datasource_async(ds, client=client)
 
@@ -245,12 +245,12 @@ def _commented_duckdb(path: Path) -> None:
     conn.close()
 
 
-def _model_by_name(models: list[SlayerModel], name: str) -> SlayerModel:
+def _model_by_name(models: list[SlayerDataset], name: str) -> SlayerDataset:
     return next(m for m in models if m.name == name)
 
 
-def _col(model: SlayerModel, name: str) -> Column:
-    return next(c for c in model.columns if c.name == name)
+def _col(model: SlayerDataset, name: str) -> DatasetField:
+    return next(c for c in model.fields if c.name == name)
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +288,7 @@ class TestInspectorPathComments:
             pk=["id"],
             table_comment="Orders table",
         )
-        model = await introspect_table_to_model(
+        model = await introspect_table_to_dataset(
             client=_inspector_client(inspector),
             table_name="orders",
             ref=None,
@@ -304,7 +304,7 @@ class TestInspectorPathComments:
             [{"name": "id", "type": sa.INTEGER(), "comment": "   "}],
             table_comment="  ",
         )
-        model = await introspect_table_to_model(
+        model = await introspect_table_to_dataset(
             client=_inspector_client(inspector),
             table_name="t",
             ref=None,
@@ -317,7 +317,7 @@ class TestInspectorPathComments:
         inspector = _mock_inspector(
             [{"name": "_count", "type": sa.INTEGER(), "comment": "collides"}],
         )
-        model = await introspect_table_to_model(
+        model = await introspect_table_to_dataset(
             client=_inspector_client(inspector),
             table_name="t",
             ref=None,
@@ -353,7 +353,7 @@ class TestSqliteProbePreservesComments:
         cols = [IntrospectedColumn(name="a", type=DataType.INT, comment="kept")]
         async with _client(DatasourceConfig(name="mem", type="duckdb", database=":memory:")) as client:
             with patch("slayer.database.sqlite_introspect.probe_sqlite_integer_column") as probe:
-                out = await _sqlite_probe_integer_columns(client=client, sql_table="t", columns=cols)
+                out = await _sqlite_probe_integer_columns(client=client, sql_table="t", fields=cols)
         probe.assert_not_called()
         assert out[0].comment == "kept"
 
@@ -362,7 +362,7 @@ class TestSqliteProbePreservesComments:
             await client.execute("CREATE TABLE t (a INTEGER)")
             await client.execute("INSERT INTO t VALUES (1.5)")
             cols = [IntrospectedColumn(name="a", type=DataType.INT, comment="probed")]
-            out = await _sqlite_probe_integer_columns(client=client, sql_table="t", columns=cols)
+            out = await _sqlite_probe_integer_columns(client=client, sql_table="t", fields=cols)
             assert out[0].type is DataType.DOUBLE
             assert out[0].comment == "probed"
 
@@ -460,7 +460,7 @@ class TestColumnCommentsFallback:
 
 class TestDuckDBEndToEnd:
     @pytest.fixture
-    async def duckdb_models(self, tmp_path: Path) -> list[SlayerModel]:
+    async def duckdb_models(self, tmp_path: Path) -> list[SlayerDataset]:
         db_path = tmp_path / "commented.duckdb"
         _commented_duckdb(db_path)
         ds = DatasourceConfig(name="ds", type="duckdb", database=str(db_path))
@@ -495,8 +495,8 @@ async def _duckdb_idempotent_setup(tmp_path: Path) -> tuple[YAMLStorage, Datasou
     return storage, ds
 
 
-def _addition_for(name: str, additions: list[ModelAddition]) -> ModelAddition | None:
-    return next((a for a in additions if a.model_name == name), None)
+def _addition_for(name: str, additions: list[DatasetAddition]) -> DatasetAddition | None:
+    return next((a for a in additions if a.dataset_name == name), None)
 
 
 class TestIdempotentDescriptionFill:
@@ -506,33 +506,33 @@ class TestIdempotentDescriptionFill:
         addition = _addition_for("orders", result.additions)
         assert addition is not None
         assert addition.created
-        assert "amount" in addition.described_columns
-        assert addition.model_described is True
-        loaded = await storage.get_model("orders", data_source="ds")
+        assert "amount" in addition.described_fields
+        assert addition.dataset_described is True
+        loaded = await storage.get_dataset("orders", data_source="ds")
         assert loaded.description == "All orders"
         assert _col(loaded, "amount").description == "Order amount in USD"
 
     async def test_fill_if_empty_and_preserve_user_text(self, tmp_path: Path) -> None:
         storage, ds = await _duckdb_idempotent_setup(tmp_path)
         await _idempotent(datasource=ds, storage=storage)
-        loaded = await storage.get_model("orders", data_source="ds")
+        loaded = await storage.get_dataset("orders", data_source="ds")
         loaded.description = None
-        for c in loaded.columns:
+        for c in loaded.fields:
             if c.name == "amount":
                 c.description = None
             if c.name == "status":
                 c.description = "hand-authored"
-        await storage.save_model(loaded)
+        await storage.save_dataset(loaded)
 
         result = await _idempotent(datasource=ds, storage=storage)
         addition = _addition_for("orders", result.additions)
         assert addition is not None
         assert not addition.created
-        assert addition.described_columns == ["amount"]
-        assert addition.model_described is True
-        assert addition.new_columns == []
+        assert addition.described_fields == ["amount"]
+        assert addition.dataset_described is True
+        assert addition.new_fields == []
 
-        loaded2 = await storage.get_model("orders", data_source="ds")
+        loaded2 = await storage.get_dataset("orders", data_source="ds")
         assert loaded2.description == "All orders"
         assert _col(loaded2, "amount").description == "Order amount in USD"
         assert _col(loaded2, "status").description == "hand-authored"
@@ -542,8 +542,8 @@ class TestIdempotentDescriptionFill:
         await _idempotent(datasource=ds, storage=storage)
         result = await _idempotent(datasource=ds, storage=storage)
         for addition in result.additions:
-            assert addition.described_columns == []
-            assert addition.model_described is False
+            assert addition.described_fields == []
+            assert addition.dataset_described is False
 
     async def test_new_commented_column_arrives_with_description(
         self, tmp_path: Path
@@ -558,33 +558,33 @@ class TestIdempotentDescriptionFill:
         result = await _idempotent(datasource=ds, storage=storage)
         addition = _addition_for("orders", result.additions)
         assert addition is not None
-        assert "discount" in addition.new_columns
+        assert "discount" in addition.new_fields
         # New columns carry their description implicitly — not double-counted.
-        assert "discount" not in addition.described_columns
-        loaded = await storage.get_model("orders", data_source="ds")
+        assert "discount" not in addition.described_fields
+        loaded = await storage.get_dataset("orders", data_source="ds")
         assert _col(loaded, "discount").description == "Discount applied"
 
 
 class TestAdditiveMergeDescriptions:
-    def _persisted(self, description=None, col_description=None) -> SlayerModel:
-        return SlayerModel(
+    def _persisted(self, description=None, col_description=None) -> SlayerDataset:
+        return SlayerDataset(
             name="t",
             sql_table="t",
             data_source="ds",
             description=description,
-            columns=[
-                Column(name="a", sql="a", type=DataType.INT, description=col_description)
+            fields=[
+                DatasetField(name="a", sql="a", datatype=DataType.INT, description=col_description)
             ],
         )
 
-    def _fresh(self) -> SlayerModel:
-        return SlayerModel(
+    def _fresh(self) -> SlayerDataset:
+        return SlayerDataset(
             name="t",
             sql_table="t",
             data_source="ds",
             description="fresh model desc",
-            columns=[
-                Column(name="a", sql="a", type=DataType.INT, description="fresh col desc")
+            fields=[
+                DatasetField(name="a", sql="a", datatype=DataType.INT, description="fresh col desc")
             ],
         )
 
@@ -592,20 +592,20 @@ class TestAdditiveMergeDescriptions:
         outcome = _additive_merge_existing(
             persisted=self._persisted(), fresh=self._fresh()
         )
-        assert outcome.described_columns == ["a"]
-        assert outcome.model_described is True
+        assert outcome.described_fields == ["a"]
+        assert outcome.dataset_described is True
         assert outcome.merged.description == "fresh model desc"
         assert _col(outcome.merged, "a").description == "fresh col desc"
-        assert outcome.new_columns == []
-        assert outcome.widened_columns == []
+        assert outcome.new_fields == []
+        assert outcome.widened_fields == []
 
     def test_existing_descriptions_untouched(self) -> None:
         outcome = _additive_merge_existing(
             persisted=self._persisted(description="mine", col_description="my col"),
             fresh=self._fresh(),
         )
-        assert outcome.described_columns == []
-        assert outcome.model_described is False
+        assert outcome.described_fields == []
+        assert outcome.dataset_described is False
         assert outcome.merged.description == "mine"
         assert _col(outcome.merged, "a").description == "my col"
 
@@ -691,7 +691,7 @@ class TestIngestDatasourceReport:
         ds = DatasourceConfig(name="ds", type="duckdb", database=str(db_path))
         out = await _report(ds)
         assert isinstance(out, IngestionScanReport)
-        assert {m.name for m in out.models} == {"customers", "orders"}
+        assert {m.name for m in out.datasets} == {"customers", "orders"}
         assert out.schema_description is None
 
     async def test_wrapper_returns_plain_model_list(self, tmp_path: Path) -> None:
@@ -700,7 +700,7 @@ class TestIngestDatasourceReport:
         ds = DatasourceConfig(name="ds", type="duckdb", database=str(db_path))
         models = await _ingest(ds)
         assert isinstance(models, list)
-        assert all(isinstance(m, SlayerModel) for m in models)
+        assert all(isinstance(m, SlayerDataset) for m in models)
 
     async def test_fetch_skipped_when_description_set(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -813,7 +813,7 @@ class TestIdempotentDatasourceDescription:
         result = await _idempotent(datasource=ds, storage=storage)
         assert result.datasource_described is False
         assert any(
-            e.model_name == "" and "datasource" in e.error.lower()
+            e.dataset_name == "" and "datasource" in e.error.lower()
             for e in result.errors
         )
         # Model ingestion itself still succeeded.
@@ -827,19 +827,19 @@ class TestIdempotentDatasourceDescription:
 
 class TestReportShape:
     def test_model_addition_defaults(self) -> None:
-        addition = ModelAddition(model_name="m", data_source="ds")
-        assert addition.described_columns == []
-        assert addition.model_described is False
+        addition = DatasetAddition(dataset_name="m", data_source="ds")
+        assert addition.described_fields == []
+        assert addition.dataset_described is False
 
     def test_result_default(self) -> None:
         assert IdempotentIngestResult().datasource_described is False
 
     def test_print_updated_with_descriptions(self) -> None:
-        addition = ModelAddition(
-            model_name="orders",
+        addition = DatasetAddition(
+            dataset_name="orders",
             data_source="ds",
-            described_columns=["amount", "status"],
-            model_described=True,
+            described_fields=["amount", "status"],
+            dataset_described=True,
         )
         buf = io.StringIO()
         _print_ingest_addition(addition, file=buf)
@@ -848,28 +848,28 @@ class TestReportShape:
         assert "+model description" in out
 
     def test_print_created_with_descriptions(self) -> None:
-        addition = ModelAddition(
-            model_name="orders",
+        addition = DatasetAddition(
+            dataset_name="orders",
             data_source="ds",
             created=True,
-            new_columns=["a", "b", "c"],
-            described_columns=["a", "b"],
+            new_fields=["a", "b", "c"],
+            described_fields=["a", "b"],
         )
         buf = io.StringIO()
         _print_ingest_addition(addition, file=buf)
         assert "Created: orders (3 columns, 2 described)" in buf.getvalue()
 
     def test_print_created_without_descriptions_unchanged(self) -> None:
-        addition = ModelAddition(
-            model_name="orders", data_source="ds", created=True, new_columns=["a"]
+        addition = DatasetAddition(
+            dataset_name="orders", data_source="ds", created=True, new_fields=["a"]
         )
         buf = io.StringIO()
         _print_ingest_addition(addition, file=buf)
         assert "Created: orders (1 columns)" in buf.getvalue()
 
     def test_description_only_update_is_printed(self) -> None:
-        addition = ModelAddition(
-            model_name="orders", data_source="ds", described_columns=["amount"]
+        addition = DatasetAddition(
+            dataset_name="orders", data_source="ds", described_fields=["amount"]
         )
         buf = io.StringIO()
         _print_ingest_addition(addition, file=buf)
@@ -879,9 +879,9 @@ class TestReportShape:
 class TestMcpIngestRender:
     async def test_description_only_update_rendered(self) -> None:
         result = IdempotentIngestResult(
-            additions=[ModelAddition(
-                model_name="orders", data_source="ds",
-                described_columns=["amount"], model_described=True,
+            additions=[DatasetAddition(
+                dataset_name="orders", data_source="ds",
+                described_fields=["amount"], dataset_described=True,
             )],
         )
         ds = DatasourceConfig(name="ds", type="sqlite", database=":memory:")
@@ -927,7 +927,7 @@ class TestCliDatasourcesCreateIngest:
         _run_datasources_create(self._args(db_path), storage)
         loaded = run_sync(storage.get_datasource("ds"))
         assert loaded.description == "Imported dataset description"
-        assert run_sync(storage.get_model("t", data_source="ds")) is not None
+        assert run_sync(storage.get_dataset("t", data_source="ds")) is not None
 
     def test_user_description_wins(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -986,16 +986,16 @@ class TestBigQueryDriverContract:
         inspector.get_pk_constraint.return_value = {"constrained_columns": []}
         inspector.get_table_comment.return_value = real_comment
 
-        model = await introspect_table_to_model(
+        model = await introspect_table_to_dataset(
             client=_inspector_client(inspector, ds_type="bigquery", backend="bigquery"),
             table_name="orders",
             ref=SchemaRef(name="dset", requested="dset"),
             data_source="bq",
         )
         assert model.description == "All orders"
-        cols = {c.name: c for c in model.columns}
+        cols = {c.name: c for c in model.fields}
         assert cols["id"].description == "row id"
-        assert cols["id"].type is DataType.INT
+        assert cols["id"].datatype is DataType.INT
         assert cols["amount"].description == "order amount"
-        assert cols["amount"].type is DataType.DOUBLE
+        assert cols["amount"].datatype is DataType.DOUBLE
         assert cols["status"].description is None

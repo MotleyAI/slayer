@@ -1,7 +1,7 @@
 """The one materialisation-staging pass (DEV-1800 D3).
 
 Assigns every ``ValueSlot`` in a plan exactly one ``Stage`` (which relation in
-the emitted pipeline it materialises in), a ``needs_column`` flag (must it be
+the emitted pipeline it materialises in), a ``needs_field`` flag (must it be
 projected as a column for a later stage / consumer), and — for a transform —
 its ``series`` regime. Producer bodies are staged by their own compilation,
 so this pass never recurses into them; it reads the
@@ -18,8 +18,8 @@ from typing import Dict, List, Optional, Set, Tuple
 from slayer.core.errors import MaterialisationStageError
 from slayer.core.keys import (
     SLOT_COMPOSITE_KINDS,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     AggregateKey,
     LiteralKey,
     TimeTruncKey,
@@ -134,7 +134,7 @@ class _SlotStager:
             return self._aggregate_stage(key)
         if is_placeholder(key):
             return self._placeholder_stage(key)
-        if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey, LiteralKey)):
+        if isinstance(key, (FieldKey, FieldSqlKey, TimeTruncKey, LiteralKey)):
             return Stage(kind=StageKind.BASE)
         if isinstance(key, TransformKey):
             return Stage(kind=StageKind.DERIVED, level=1 + self._max_transform_level(key))
@@ -190,7 +190,7 @@ def stage_slots(
     projection: List[SlotId],
     grain: Optional[List[SlotId]],
 ) -> Tuple[List[ValueSlot], List[ValueSlot], List[ValueSlot]]:
-    """Return the three slot lists with ``stage`` / ``needs_column`` / ``series``
+    """Return the three slot lists with ``stage`` / ``needs_field`` / ``series``
     assigned. Producer bodies are staged separately; this pass classifies only
     this plan's own slots."""
     all_slots = [*row_slots, *aggregate_slots, *combined_expression_slots]
@@ -204,7 +204,7 @@ def stage_slots(
     )
     stages = {s.id: stager.stage_of(s) for s in all_slots}
 
-    needs_column = _compute_needs_column(
+    needs_column = _compute_needs_field(
         all_slots=all_slots, by_key=by_key, by_id=by_id, stages=stages,
         masks=masks, order=order, projection=projection,
         attach_plans=regroup_attach_plans,
@@ -212,9 +212,9 @@ def stage_slots(
     )
 
     return (
-        _assign(row_slots, stages=stages, needs_column=needs_column, to_original=to_original),
-        _assign(aggregate_slots, stages=stages, needs_column=needs_column, to_original=to_original),
-        _assign(combined_expression_slots, stages=stages, needs_column=needs_column,
+        _assign(row_slots, stages=stages, needs_field=needs_column, to_original=to_original),
+        _assign(aggregate_slots, stages=stages, needs_field=needs_column, to_original=to_original),
+        _assign(combined_expression_slots, stages=stages, needs_field=needs_column,
                 to_original=to_original),
     )
 
@@ -223,7 +223,7 @@ def _assign(
     slots: List[ValueSlot],
     *,
     stages: Dict[SlotId, Stage],
-    needs_column: Set[SlotId],
+    needs_field: Set[SlotId],
     to_original: Dict[ValueKey, ValueKey],
 ) -> List[ValueSlot]:
     out: List[ValueSlot] = []
@@ -234,7 +234,7 @@ def _assign(
         )
         out.append(s.model_copy(update={
             "stage": stages[s.id],
-            "needs_column": s.id in needs_column,
+            "needs_field": s.id in needs_field,
             "series": series,
         }))
     return out
@@ -280,7 +280,7 @@ def _later_stage_reads(
     return needs
 
 
-def _measure_mask_deps(
+def _metric_mask_deps(
     masks: List[MaskEntry],
     *,
     by_id: Dict[SlotId, ValueSlot],
@@ -291,7 +291,7 @@ def _measure_mask_deps(
     WHERE — its column deps are referenced directly, never projected."""
     needs: Set[SlotId] = set()
     for mask in masks:
-        if mask.typing is not MaskTyping.MEASURE:
+        if mask.typing is not MaskTyping.METRIC:
             continue
         slot = by_id.get(mask.slot_id)
         if slot is None:
@@ -334,7 +334,7 @@ def _grouped_order_targets(
     return needs
 
 
-def _compute_needs_column(
+def _compute_needs_field(
     *,
     all_slots: List[ValueSlot],
     by_key: Dict[ValueKey, ValueSlot],
@@ -349,7 +349,7 @@ def _compute_needs_column(
     """Slot ids that must be projected as a column of their own relation (D4)."""
     needs: Set[SlotId] = set(projection)
     needs |= _later_stage_reads(all_slots, by_key=by_key, stages=stages)
-    needs |= _measure_mask_deps(masks, by_id=by_id, by_key=by_key)
+    needs |= _metric_mask_deps(masks, by_id=by_id, by_key=by_key)
     needs |= _attach_join_keys(attach_plans, by_key=by_key)
     # Raw rows: row-column order targets resolve inline via split emission.
     if grain is not None:

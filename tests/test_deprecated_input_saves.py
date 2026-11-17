@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
 from slayer.client.slayer_client import SlayerClient
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.access_filtered import AccessFilteredStorage
@@ -82,9 +82,9 @@ class TestEngineSave:
         engine = SlayerQueryEngine(storage=store.storage)
         try:
             with recorded():
-                model = SlayerModel.model_validate({"name": "saved", "source_queries": stages})
+                model = SlayerDataset.model_validate({"name": "saved", "source_queries": stages})
             notes: list = []
-            await engine.save_model(model, warnings_out=notes)
+            await engine.save_dataset(model, warnings_out=notes)
         finally:
             engine.close()
         assert len(deprecated_in(notes)) == expected
@@ -94,9 +94,9 @@ class TestEngineSave:
         engine = SlayerQueryEngine(storage=AccessFilteredStorage(store.storage, tags={"fin"}, bypass=False))
         try:
             with recorded():
-                model = SlayerModel.model_validate({"name": "saved", "source_queries": [strict(PUB_COUNT)]})
+                model = SlayerDataset.model_validate({"name": "saved", "source_queries": [strict(PUB_COUNT)]})
             notes: list = []
-            await engine.save_model(model, warnings_out=notes)
+            await engine.save_dataset(model, warnings_out=notes)
         finally:
             engine.close()
         assert len(deprecated_in(notes)) == 1
@@ -107,7 +107,7 @@ class TestEngineSave:
         notes: list = []
         try:
             with recorded():
-                await engine.create_model_from_query(query=strict(PUB_COUNT), name="saved", warnings_out=notes)
+                await engine.create_dataset_from_query(query=strict(PUB_COUNT), name="saved", warnings_out=notes)
         finally:
             engine.close()
         assert len(deprecated_in(notes)) == 1

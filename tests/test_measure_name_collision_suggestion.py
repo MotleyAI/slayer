@@ -8,32 +8,32 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import MeasureNameCollidesWithColumnError
-from slayer.core.models import Column, SlayerModel
+from slayer.core.errors import MetricNameCollidesWithFieldError
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
-from slayer.engine.compile.projection import free_measure_name
+from slayer.engine.compile.projection import free_metric_name
 
 from tests._engine_helpers import _engine_generate
 
 _COLLIDING = {"formula": "sum(credit)", "name": "credit"}
 
 
-def _customers(*extra_columns: str) -> SlayerModel:
-    return SlayerModel(
+def _customers(*extra_columns: str) -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="credit", type=DataType.INT),
-            *(Column(name=c, type=DataType.INT) for c in extra_columns),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="credit", datatype=DataType.INT),
+            *(DatasetField(name=c, datatype=DataType.INT) for c in extra_columns),
         ],
     )
 
 
 async def _suggestion(measures: list[Any], *extra_columns: str) -> str:
-    query = SlayerQuery.model_validate({"source_model": "customers", "measures": measures})
+    query = SlayerQuery.model_validate({"population": "customers", "metrics": measures})
     model = _customers(*extra_columns)
-    with pytest.raises(MeasureNameCollidesWithColumnError) as ei:
+    with pytest.raises(MetricNameCollidesWithFieldError) as ei:
         await _engine_generate(query=query, model=model, dialect="duckdb", validate=False)
     exc = ei.value
     assert exc.suggestion
@@ -71,11 +71,11 @@ async def test_candidates_skip_source_columns() -> None:
     pytest.param(None, {"credit_2"}, "credit_3", id="hidden-name-taken"),
 ])
 def test_free_measure_name(canonical: str | None, taken: set[str], expected: str) -> None:
-    assert free_measure_name(declared="credit", canonical=canonical, taken=frozenset(taken)) == expected
+    assert free_metric_name(declared="credit", canonical=canonical, taken=frozenset(taken)) == expected
 
 
 def test_suggestion_kwarg_is_optional_and_rendered() -> None:
-    assert MeasureNameCollidesWithColumnError(name="credit", model="customers").suggestion is None
-    exc = MeasureNameCollidesWithColumnError(name="credit", model="customers", suggestion="rename it to 'credit_sum'")
+    assert MetricNameCollidesWithFieldError(name="credit", dataset="customers").suggestion is None
+    exc = MetricNameCollidesWithFieldError(name="credit", dataset="customers", suggestion="rename it to 'credit_sum'")
     assert exc.suggestion == "rename it to 'credit_sum'"
     assert str(exc).splitlines()[-1] == "  suggestion: rename it to 'credit_sum'"

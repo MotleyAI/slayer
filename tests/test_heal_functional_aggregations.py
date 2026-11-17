@@ -10,7 +10,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError, UnknownFunctionError
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.core.syntax import AggCall, Cmp, Literal, Ref, parse_expr
@@ -60,8 +60,8 @@ class TestUnknownFunction:
 
     def test_construction_time_custom_filter_deferred(self) -> None:
         query = SlayerQuery.model_validate(
-            {"source_model": "orders", "measures": ["count(*)"], "filters": ["my_agg(amount) > 0"]})
-        assert query.filters == ["my_agg(amount) > 0"]
+            {"population": "orders", "metrics": ["count(*)"], "filter": ["my_agg(amount) > 0"]})
+        assert query.filter == ["my_agg(amount) > 0"]
 
 
 class TestCountDistinctParse:
@@ -124,9 +124,9 @@ class TestCountDistinctExecuted:
 
     async def test_mode_a_distinct_unchanged(self) -> None:
         orders = orders_model()
-        orders.columns.append(Column(name="n_customers", sql="COUNT(DISTINCT customer_id)", type=DataType.INT))
+        orders.fields.append(DatasetField(name="n_customers", sql="COUNT(DISTINCT customer_id)", datatype=DataType.INT))
         sql = await _engine_generate(
-            query=SlayerQuery.model_validate({"source_model": "orders", "measures": ["max(n_customers)"]}),
+            query=SlayerQuery.model_validate({"population": "orders", "metrics": ["max(n_customers)"]}),
             model=orders, extra_models=[customers_model(), order_items_model(), products_model()],
         )
         assert "COUNT(DISTINCT" in sql.upper()

@@ -17,7 +17,7 @@ import pytest
 
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from slayer.core.enums import TimeGranularity as TG
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests import _dev1471_fixtures as D71
 from tests import _dev1915_fixtures as F
@@ -34,7 +34,7 @@ def _approx(d):
 
 
 def _m(formula, name):
-    return ModelMeasure(formula=formula, name=name)
+    return DatasetMetric(expression=formula, name=name)
 
 
 # --------------------------------------------------------------------------- #
@@ -234,7 +234,7 @@ async def test_order_only_windowed_max(exec_backend: tuple[str, SlayerQueryEngin
         time_dimensions=F.month_td(),
         measures=[_m("sum(amount)", "s")],
         order=[OrderItem.model_validate(
-            {"column": "max(amount, window='90d')", "direction": "desc"})],
+            {"field": "max(amount, window='90d')", "direction": "desc"})],
     ))
     order = [F.month_key(r["orders.created_at"]) for r in resp.data]
     assert order == F.ORDER_MAX_DESC_MONTHS
@@ -259,13 +259,13 @@ async def test_cardinality_neutrality(exec_backend: tuple[str, SlayerQueryEngine
 # --------------------------------------------------------------------------- #
 # Inner stage rows + query shared with the DEV-1471 stage-axis tests
 # (``D71.MONTHLY_ROWS`` / ``D71.MONTHLY_INNER``).
-def _monthly_model() -> SlayerModel:
-    return SlayerModel(
+def _monthly_model() -> SlayerDataset:
+    return SlayerDataset(
         name="monthly", sql_table="monthly", data_source="ds",
         default_time_dimension="month_ts",
-        columns=[
-            Column(name="month_ts", sql="month_ts", type=D71.DataType.TIMESTAMP),
-            Column(name="rev", sql="rev", type=D71.DataType.DOUBLE),
+        fields=[
+            DatasetField(name="month_ts", sql="month_ts", datatype=D71.DataType.TIMESTAMP),
+            DatasetField(name="rev", sql="rev", datatype=D71.DataType.DOUBLE),
         ],
     )
 
@@ -289,14 +289,14 @@ _TWO_STAGE_ORACLE = {
 async def test_two_stage_windowed_over_stage_axis(backend, agg, oracle):
     windowed = [{"formula": f"{agg}(rev, window='60d')", "name": "win"}]
     stage_outer = SlayerQuery.model_validate({
-        "source_model": "s1",
-        "time_dimensions": [TimeDimension(dimension="created_at", granularity=TG.MONTH)],
-        "measures": windowed,
+        "population": "s1",
+        "time_dimensions": [TimeDimension(field="created_at", granularity=TG.MONTH)],
+        "metrics": windowed,
     })
     model_query = SlayerQuery.model_validate({
-        "source_model": "monthly",
-        "time_dimensions": [TimeDimension(dimension="month_ts", granularity=TG.MONTH)],
-        "measures": windowed,
+        "population": "monthly",
+        "time_dimensions": [TimeDimension(field="month_ts", granularity=TG.MONTH)],
+        "metrics": windowed,
     })
     with tempfile.TemporaryDirectory() as tmp:
         stage_engine = await D71.make_engine(
@@ -324,8 +324,8 @@ async def test_two_stage_windowed_over_stage_axis(backend, agg, oracle):
 async def test_windowed_corr_other_across_fanning_hop_fails_closed(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     query = SlayerQuery(
-        source_model="customers", time_dimensions=F.month_td("signup_at"),
-        measures=[_m("corr(spend, other=orders.amount, window='1y')", "m")],
+        population="customers", time_dimensions=F.month_td("signup_at"),
+        metrics=[_m("corr(spend, other=orders.amount, window='1y')", "m")],
     )
     with pytest.raises(ValueError, match="unproven join hop"):
         await engine.execute(query)
@@ -334,8 +334,8 @@ async def test_windowed_corr_other_across_fanning_hop_fails_closed(exec_backend:
 async def test_windowed_last_ranking_across_fanning_hop_fails_closed(exec_backend: tuple[str, SlayerQueryEngine]) -> None:
     _, engine = exec_backend
     query = SlayerQuery(
-        source_model="customers", time_dimensions=F.month_td("signup_at"),
-        measures=[_m("last(spend, orders.created_at, window='1y')", "m")],
+        population="customers", time_dimensions=F.month_td("signup_at"),
+        metrics=[_m("last(spend, orders.created_at, window='1y')", "m")],
     )
     with pytest.raises(ValueError, match="unproven join hop"):
         await engine.execute(query)

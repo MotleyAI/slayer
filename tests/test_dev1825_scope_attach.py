@@ -1,4 +1,4 @@
-"""DEV-1825 — ``ScopeFrame.attached_columns`` fail-closed anchor (Codex F4).
+"""DEV-1825 — ``ScopeFrame.attached_fields`` fail-closed anchor (Codex F4).
 
 A reserved-leaf placeholder resolves by EXACT registry membership first; a
 non-prefixed column is unaffected by the registry; a prefixed leaf that misses
@@ -11,20 +11,20 @@ import pytest
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.keys import ColumnKey
-from slayer.core.models import Column, SlayerModel
+from slayer.core.keys import FieldKey
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.dialects import get_dialect
 from slayer.sql.naming import AliasAllocator
 from slayer.sql.scope import ScopeFrame
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
     )
 
@@ -32,16 +32,16 @@ def _orders() -> SlayerModel:
 def _scope(*, attached=None) -> ScopeFrame:
     host = _orders()
     alloc = AliasAllocator()
-    bundle = ResolvedSourceBundle(dialect="postgres", source_model=host, referenced_models=[host])
+    bundle = ResolvedSourceBundle(dialect="postgres", population=host, referenced_datasets=[host])
     return ScopeFrame(
         scope_id=alloc.next_scope_id(host.name),
-        root_model=host, root_relation=host.name,
+        root_dataset=host, root_relation=host.name,
         bundle=bundle, dialect=get_dialect("postgres"), allocator=alloc,
-        attached_columns=attached or {},
+        attached_fields=attached or {},
     )
 
 
-PLACEHOLDER = ColumnKey(path=(), leaf="__regroup__0__amount_sum_partition_by_city")
+PLACEHOLDER = FieldKey(path=(), leaf="__regroup__0__amount_sum_partition_by_city")
 
 
 class TestAttachedColumnAnchor:
@@ -53,14 +53,14 @@ class TestAttachedColumnAnchor:
 
     def test_ordinary_column_unaffected_by_nonempty_registry(self) -> None:
         scope = _scope(attached={PLACEHOLDER: exp.column("x", table="_cm_x")})
-        out = scope.resolve(ColumnKey(path=(), leaf="amount"))
+        out = scope.resolve(FieldKey(path=(), leaf="amount"))
         sql = out.sql(dialect="postgres")
         assert "amount" in sql
         assert "__regroup__" not in sql
 
     def test_unregistered_prefixed_leaf_raises(self) -> None:
         scope = _scope(attached={PLACEHOLDER: exp.column("x", table="_cm_x")})
-        missing = ColumnKey(path=(), leaf="__regroup__9__not_registered")
+        missing = FieldKey(path=(), leaf="__regroup__9__not_registered")
         with pytest.raises(ValueError, match=r"__regroup__"):
             scope.resolve(missing)
 
@@ -70,6 +70,6 @@ class TestAttachedColumnAnchor:
         # an ordinary column, never fail-closed. The prefix is fenced at plan
         # time only when a regroup is planned; here nothing is attached.
         scope = _scope()
-        ref = ColumnKey(path=(), leaf="__regroup__legacy_col")
+        ref = FieldKey(path=(), leaf="__regroup__legacy_col")
         out = scope.resolve(ref)
         assert "__regroup__legacy_col" in out.sql(dialect="postgres")

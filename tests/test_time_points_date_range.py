@@ -88,7 +88,7 @@ class TestBounds:
 class TestStages:
     async def test_multi_stage_model_accepts_one_sided_range(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "daily", "measures": [{"formula": "sum(rev)", "name": "r"}],
+            "population": "daily", "metrics": [{"formula": "sum(rev)", "name": "r"}],
             "time_dimensions": [{"dimension": "ts", "granularity": "year", "date_range": ["2026-01-01", None]}],
         }))
         assert sum(r["daily.r"] for r in resp.data) == pytest.approx(
@@ -97,12 +97,12 @@ class TestStages:
 
     async def test_stage_range_with_period_bounds(self, engine) -> None:
         inner = {
-            "name": "m", "source_model": "ev",
+            "name": "m", "population": "ev",
             "time_dimensions": [{"dimension": "ts", "granularity": "month"}],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
         }
         outer = {
-            "source_model": "m", "measures": [{"formula": "sum(rev)", "name": "r"}],
+            "population": "m", "metrics": [{"formula": "sum(rev)", "name": "r"}],
             "time_dimensions": [{"dimension": "ts", "granularity": "month", "date_range": ["2025-02", "2025-03"]}],
         }
         resp = await engine.execute([SlayerQuery.model_validate(inner), SlayerQuery.model_validate(outer)])
@@ -114,12 +114,12 @@ class TestStages:
 
     async def test_stage_range_on_coarser_rebucketing(self, engine) -> None:
         inner = {
-            "name": "m", "source_model": "ev",
+            "name": "m", "population": "ev",
             "time_dimensions": [{"dimension": "ts", "granularity": "month"}],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
         }
         outer = {
-            "source_model": "m", "measures": [{"formula": "sum(rev)", "name": "r"}],
+            "population": "m", "metrics": [{"formula": "sum(rev)", "name": "r"}],
             "time_dimensions": [{"dimension": "ts", "granularity": "year", "date_range": "2025-Q1"}],
         }
         resp = await engine.execute([SlayerQuery.model_validate(inner), SlayerQuery.model_validate(outer)])
@@ -136,7 +136,7 @@ class TestConstruction:
         [], ["2024-01-01", "2024-02-01", "2024-03-01"], [None, None],
     ])
     def test_malformed_shapes_rejected(self, date_range) -> None:
-        payload = {"source_model": "ev", "time_dimensions": [_td(date_range)]}
+        payload = {"population": "ev", "time_dimensions": [_td(date_range)]}
         with pytest.raises(pydantic.ValidationError) as ei:
             SlayerQuery.model_validate(payload)
         msg = str(ei.value)
@@ -145,7 +145,7 @@ class TestConstruction:
 
     @pytest.mark.parametrize("date_range", ["2025/01/01", ["2025-13", "2025-Q1"]])
     def test_unparseable_bound_lists_forms(self, date_range) -> None:
-        payload = {"source_model": "ev", "time_dimensions": [_td(date_range)]}
+        payload = {"population": "ev", "time_dimensions": [_td(date_range)]}
         with pytest.raises(pydantic.ValidationError) as ei:
             SlayerQuery.model_validate(payload)
         msg = str(ei.value)

@@ -18,7 +18,7 @@ from slayer.core.errors import BroadcastGrainWarning, SlayerError
 from slayer.core.query import OrderItem
 
 from tests._dev1836_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     SPEND_BY_TIER,
     SPEND_TOTAL,
     broadcast_warnings,
@@ -34,8 +34,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 
 
 class TestBroadcastMetadata:
@@ -47,12 +47,12 @@ class TestBroadcastMetadata:
                 to_many_handling="broadcast", dimensions=["status"], measures=[M, CM],
             ))
         (w,) = broadcast_warnings(resp)
-        assert "cm" in w.measure
+        assert "cm" in w.metric
         dims = {d.dimension for d in w.dimensions}
         assert any("status" in d for d in dims), dims
         assert all(d.reason for d in w.dimensions)
         # The local measure never warns.
-        assert "m" != w.measure
+        assert "m" != w.metric
         hits = [c for c in caught
                 if issubclass(c.category, BroadcastGrainWarning)]
         assert len(hits) == 1
@@ -77,7 +77,7 @@ class TestBroadcastMetadata:
             to_many_handling="broadcast",
             dimensions=["status"], measures=[M, CM],
             filters=["sum(customers.spend) > 0"],
-            order=[OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
         ))
         assert len(broadcast_warnings(resp)) == 1
 
@@ -88,7 +88,7 @@ class TestBroadcastMetadata:
             dimensions=["status"],
             measures=[
                 CM,
-                ModelMeasure(formula="sum(customers.regions.pop)", name="pop"),
+                DatasetMetric(expression="sum(customers.regions.pop)", name="pop"),
             ],
         ))
         assert len(broadcast_warnings(resp)) == 2
@@ -103,7 +103,7 @@ class TestBroadcastMetadata:
             filters=["sum(customers.spend) > 0"],
         ))
         (w,) = broadcast_warnings(resp)
-        assert "spend" in w.measure
+        assert "spend" in w.metric
 
     async def test_attributable_grain_never_warns(self, exec_backend):
         _, engine = exec_backend
@@ -117,8 +117,8 @@ class TestBroadcastMetadata:
         control = await engine.execute(q(dimensions=["status"], measures=[M]))
         resp = await engine.execute(q(
             dimensions=["status"],
-            measures=[M, ModelMeasure(
-                formula="sum(customers.spend, partition_by=[])", name="total",
+            measures=[M, DatasetMetric(
+                expression="sum(customers.spend, partition_by=[])", name="total",
             )],
         ))
         assert broadcast_warnings(resp) == []
@@ -148,7 +148,7 @@ class TestBroadcastMetadata:
         via_reverse = await engine.execute(q(
             to_many_handling="broadcast",
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula="sum(customers.regions.pop)",
+            measures=[DatasetMetric(expression="sum(customers.regions.pop)",
                                    name="pop")],
         ))
         (w_rev,) = broadcast_warnings(via_reverse)
@@ -219,8 +219,8 @@ class TestStrictMode:
         _, engine = exec_backend
         resp = await engine.execute(q(
             to_many_handling="error", dimensions=["status"],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, partition_by=[])", name="total",
+            measures=[DatasetMetric(
+                expression="sum(customers.spend, partition_by=[])", name="total",
             )],
         ))
         for row in resp.data:

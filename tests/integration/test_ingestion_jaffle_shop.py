@@ -22,7 +22,7 @@ import duckdb
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormatType
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.demo.jaffle_shop import (
     create_schema,
     generate_data,
@@ -65,7 +65,7 @@ def jaffle_duckdb_path(tmp_path_factory: pytest.TempPathFactory) -> str:
     return str(db_path)
 
 
-async def _ingest(ds: DatasourceConfig) -> list[SlayerModel]:
+async def _ingest(ds: DatasourceConfig) -> list[SlayerDataset]:
     client = SlayerSQLClient(datasource=ds)
     try:
         return await ingestion.ingest_datasource_async(ds, client=client)
@@ -75,7 +75,7 @@ async def _ingest(ds: DatasourceConfig) -> list[SlayerModel]:
 
 
 @pytest.fixture(scope="module")
-def jaffle_models(jaffle_duckdb_path: str) -> dict[str, SlayerModel]:
+def jaffle_models(jaffle_duckdb_path: str) -> dict[str, SlayerDataset]:
     """Ingest the Jaffle Shop DuckDB and return models keyed by name."""
     ds = DatasourceConfig(
         name="jaffle_test",
@@ -171,21 +171,21 @@ _EXPECTED_JOINS: dict[str, set] = {
 }
 
 
-def test_all_jaffle_models_produced(jaffle_models: dict[str, SlayerModel]) -> None:
+def test_all_jaffle_models_produced(jaffle_models: dict[str, SlayerDataset]) -> None:
     assert set(jaffle_models.keys()) == set(_EXPECTED_COLUMNS.keys())
 
 
 @pytest.mark.parametrize("model_name", sorted(_EXPECTED_COLUMNS.keys()))
-def test_jaffle_model_columns_v2_shape(jaffle_models: dict[str, SlayerModel], model_name: str) -> None:
-    model: SlayerModel = jaffle_models[model_name]
+def test_jaffle_model_columns_v2_shape(jaffle_models: dict[str, SlayerDataset], model_name: str) -> None:
+    model: SlayerDataset = jaffle_models[model_name]
     expected = _EXPECTED_COLUMNS[model_name]
 
-    by_name = {c.name: c for c in model.columns}
+    by_name = {c.name: c for c in model.fields}
     assert set(by_name.keys()) == set(expected.keys())
 
     for col_name, (data_type, is_pk, fmt_type) in expected.items():
         col = by_name[col_name]
-        assert col.type == data_type, f"{model_name}.{col_name}: type"
+        assert col.datatype == data_type, f"{model_name}.{col_name}: type"
         assert col.primary_key == is_pk, f"{model_name}.{col_name}: primary_key"
         if fmt_type is None:
             assert col.format is None, f"{model_name}.{col_name}: format should be None"
@@ -194,42 +194,42 @@ def test_jaffle_model_columns_v2_shape(jaffle_models: dict[str, SlayerModel], mo
             assert col.format.type == fmt_type, f"{model_name}.{col_name}: format.type"
 
 
-def test_jaffle_models_have_empty_measures_library(jaffle_models: dict[str, SlayerModel]) -> None:
+def test_jaffle_models_have_empty_measures_library(jaffle_models: dict[str, SlayerDataset]) -> None:
     """Auto-ingestion never populates the named-measures formula library."""
     for name, model in jaffle_models.items():
-        assert model.measures == [], f"{name} should have measures == []"
+        assert model.metrics == [], f"{name} should have measures == []"
 
 
-def test_jaffle_no_dotted_column_names(jaffle_models: dict[str, SlayerModel]) -> None:
+def test_jaffle_no_dotted_column_names(jaffle_models: dict[str, SlayerDataset]) -> None:
     """Joined columns live on the target model and must not leak into the source."""
     for name, model in jaffle_models.items():
-        for col in model.columns:
+        for col in model.fields:
             assert "." not in col.name, (
                 f"{name}.{col.name}: ingestion should never emit dotted column names"
             )
 
 
 @pytest.mark.parametrize("model_name", sorted(_EXPECTED_JOINS.keys()))
-def test_jaffle_model_joins(jaffle_models: dict[str, SlayerModel], model_name: str) -> None:
+def test_jaffle_model_joins(jaffle_models: dict[str, SlayerDataset], model_name: str) -> None:
     model = jaffle_models[model_name]
     expected = _EXPECTED_JOINS[model_name]
 
     actual: set = set()
-    for j in model.joins:
+    for j in model.relationships:
         # Each join in auto-ingestion has exactly one column pair (direct FKs only).
-        assert len(j.join_pairs) == 1, f"{model_name} → {j.target_model}: expected one pair"
+        assert len(j.join_pairs) == 1, f"{model_name} → {j.to}: expected one pair"
         src_col, tgt_col = j.join_pairs[0]
-        actual.add((j.target_model, src_col, tgt_col))
+        actual.add((j.to, src_col, tgt_col))
 
     assert actual == expected
 
 
-async def test_jaffle_yaml_round_trip_omits_v1_keys(jaffle_models: dict[str, SlayerModel]) -> None:
+async def test_jaffle_yaml_round_trip_omits_v1_keys(jaffle_models: dict[str, SlayerDataset]) -> None:
     """Saving an ingested model to YAML must produce current-schema shape with no v1 keys."""
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=tmpdir)
         for model in jaffle_models.values():
-            await storage.save_model(model)
+            await storage.save_dataset(model)
 
         for model_name, model in jaffle_models.items():
             # v4: files are nested under models/<data_source>/<name>.yaml.

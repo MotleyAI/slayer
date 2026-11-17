@@ -45,7 +45,7 @@ def _seed(storage_dir: str) -> None:
     import asyncio
 
     from slayer.core.enums import DataType
-    from slayer.core.models import Column, DatasourceConfig, SlayerModel
+    from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
     from slayer.storage.yaml_storage import YAMLStorage
 
     storage = YAMLStorage(base_dir=storage_dir)
@@ -57,18 +57,18 @@ def _seed(storage_dir: str) -> None:
             )
         )
         loop.run_until_complete(
-            storage.save_model(
-                SlayerModel(
+            storage.save_dataset(
+                SlayerDataset(
                     name="orders",
                     sql_table="orders",
                     data_source="mydb",
-                    columns=[
-                        Column(
+                    fields=[
+                        DatasetField(
                             name="id", sql="id",
-                            type=DataType.DOUBLE, primary_key=True,
+                            datatype=DataType.DOUBLE, primary_key=True,
                         ),
-                        Column(
-                            name="amount", sql="amount", type=DataType.DOUBLE,
+                        DatasetField(
+                            name="amount", sql="amount", datatype=DataType.DOUBLE,
                         ),
                     ],
                 )

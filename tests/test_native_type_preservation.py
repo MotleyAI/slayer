@@ -6,15 +6,15 @@ import pytest
 from pytest_postgresql import factories
 
 from slayer.core.enums import DataType
-from slayer.core.keys import AggregateKey, ColumnKey
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.keys import AggregateKey, FieldKey
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.live_schema import ingestion
 from slayer.sql.dialects.reflection import (
     is_exact_numeric_db_type,
     unwrap_clickhouse_wrapper_str,
 )
-from slayer.engine.key_metadata import measure_key_preserves_native_type
+from slayer.engine.key_metadata import metric_key_preserves_native_type
 from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects import get_dialect
 from slayer.storage.sqlite_conn import transaction
@@ -102,7 +102,7 @@ class TestSqliteKeepsInferredCast:
             await client.aclose()
             client.close()
         model = next(m for m in models if m.name == "orders")
-        amount = model.get_column("amount")
+        amount = model.get_field("amount")
         assert amount is not None
         assert amount.db_type is not None
         assert "DECIMAL" in amount.db_type
@@ -110,7 +110,7 @@ class TestSqliteKeepsInferredCast:
         query = {"source_model": "orders", "measures": ["sum(amount)"]}
         storage = YAMLStorage(base_dir=str(tmp_path / "models"))
         async with owned_query_engine(storage=storage, datasources=[datasource]) as engine:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
             result = await engine.execute(query=query)
             sql = (await engine.execute(query=query, dry_run=True)).sql
 
@@ -121,15 +121,15 @@ class TestSqliteKeepsInferredCast:
 
 
 def _model_with_amount(db_type):
-    return SlayerModel(
+    return SlayerDataset(
         name="orders",
         data_source="ds",
         sql_table="orders",
-        columns=[Column(name="amount", type=DataType.DOUBLE, db_type=db_type)],
+        fields=[DatasetField(name="amount", datatype=DataType.DOUBLE, db_type=db_type)],
     )
 
 
-_SUM_AMOUNT = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
+_SUM_AMOUNT = AggregateKey(source=FieldKey(leaf="amount"), agg="sum")
 
 
 class TestMeasureKeyPreservesNativeType:
@@ -139,7 +139,7 @@ class TestMeasureKeyPreservesNativeType:
     )
     def test_exact_numeric_db_type_preserves(self, db_type):
         model = _model_with_amount(db_type)
-        assert measure_key_preserves_native_type(model=model, key=_SUM_AMOUNT) is True
+        assert metric_key_preserves_native_type(dataset=model, key=_SUM_AMOUNT) is True
 
     @pytest.mark.parametrize(
         "db_type",
@@ -147,18 +147,18 @@ class TestMeasureKeyPreservesNativeType:
     )
     def test_other_db_types_do_not_preserve(self, db_type):
         model = _model_with_amount(db_type)
-        assert measure_key_preserves_native_type(model=model, key=_SUM_AMOUNT) is False
+        assert metric_key_preserves_native_type(dataset=model, key=_SUM_AMOUNT) is False
 
 
-def _wide_model(data_source: str = "ds") -> SlayerModel:
-    return SlayerModel(name="t", sql_table="t", data_source=data_source, columns=[
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="amount", type=DataType.INT, db_type="NUMERIC(38,0)"),
-        Column(name="wide", sql="amount * 10", type=DataType.INT, db_type="NUMERIC(38,0)"),
+def _wide_model(data_source: str = "ds") -> SlayerDataset:
+    return SlayerDataset(name="t", sql_table="t", data_source=data_source, fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="amount", datatype=DataType.INT, db_type="NUMERIC(38,0)"),
+        DatasetField(name="wide", sql="amount * 10", datatype=DataType.INT, db_type="NUMERIC(38,0)"),
     ])
 
 
-_WIDE_QUERY = SlayerQuery.model_validate({"source_model": "t", "dimensions": ["wide"]})
+_WIDE_QUERY = SlayerQuery.model_validate({"population": "t", "dimensions": ["wide"]})
 
 
 class TestDerivedColumnPreservesNativeType:
@@ -180,7 +180,7 @@ class TestDerivedColumnPreservesNativeType:
         assert "CAST(t.amount * 10 AS INTEGER)" in sql, sql
 
     async def test_filter_on_a_wide_exact_integer_keeps_its_value(self, tmp_path, postgresql_proc):
-        query = SlayerQuery.model_validate({"source_model": "t", "dimensions": ["wide"], "filters": ["wide > 0"]})
+        query = SlayerQuery.model_validate({"population": "t", "dimensions": ["wide"], "filter": ["wide > 0"]})
         with pg_database(postgresql_proc, statements=[
             "CREATE TABLE t (id INTEGER PRIMARY KEY, amount NUMERIC(38,0))",
             "INSERT INTO t VALUES (1, 10000000000000000000)",
@@ -191,11 +191,11 @@ class TestDerivedColumnPreservesNativeType:
         assert result.data == [{"t.wide": Decimal("100000000000000000000")}]
 
     async def test_a_declared_type_other_than_the_physical_one_still_casts(self):
-        model = SlayerModel(name="t", sql_table="t", data_source="ds", columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE, db_type="NUMERIC(18,2)"),
-            Column(name="whole", sql="amount / 3", type=DataType.INT, db_type="NUMERIC(18,2)"),
+        model = SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE, db_type="NUMERIC(18,2)"),
+            DatasetField(name="whole", sql="amount / 3", datatype=DataType.INT, db_type="NUMERIC(18,2)"),
         ])
-        query = SlayerQuery.model_validate({"source_model": "t", "dimensions": ["whole"]})
+        query = SlayerQuery.model_validate({"population": "t", "dimensions": ["whole"]})
         sql = await _engine_generate(query=query, model=model, dialect="postgres")
         assert "CAST(t.amount / 3 AS BIGINT)" in sql, sql

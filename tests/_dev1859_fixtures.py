@@ -13,7 +13,7 @@ from collections import defaultdict
 from statistics import mean
 from typing import Dict, List, Optional
 
-from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
 
 from tests._dev1840_fixtures import (
     _CUSTOMERS_ROWS as _DEV1840_CUSTOMERS,
@@ -31,12 +31,12 @@ from tests._dev1847_fixtures import (
 # Models — the sales graph with a ``wsum`` = SUM(value * weight) custom agg.
 # --------------------------------------------------------------------------- #
 _WSUM = Aggregation(
-    name="wsum", formula="SUM({value} * {weight})",
+    name="wsum", expression="SUM({value} * {weight})",
     params=[AggregationParam(name="weight", sql="amount")],
 )
 
 
-def sales_wsum_models() -> List[SlayerModel]:
+def sales_wsum_models() -> List[SlayerDataset]:
     """``dev1847_models()`` with ``wsum`` appended to the sales model (weight
     defaults to the ``amount`` column; every leg-C use passes it explicitly)."""
     models = dev1847_models()
@@ -44,11 +44,11 @@ def sales_wsum_models() -> List[SlayerModel]:
     return models
 
 
-def customers_wsum_models() -> List[SlayerModel]:
+def customers_wsum_models() -> List[SlayerDataset]:
     """The associate graph with ``wsum`` on customers (weight default ``spend``)."""
     models = dev1840_models()
     next(m for m in models if m.name == "customers").aggregations.append(
-        Aggregation(name="wsum", formula="SUM({value} * {weight})",
+        Aggregation(name="wsum", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="spend")]),
     )
     return models
@@ -268,7 +268,7 @@ def cross_model_param_by_status() -> Dict[str, Optional[float]]:
 
 
 __all__ = [
-    "Aggregation", "AggregationParam", "Column", "DataType", "SlayerModel",
+    "Aggregation", "AggregationParam", "DatasetField", "DataType", "SlayerDataset",
     "sales_wsum_models", "customers_wsum_models",
     "region_amount_totals", "region_spend_totals",
     "distinct_customers_by_status", "amount_totals_by_status",

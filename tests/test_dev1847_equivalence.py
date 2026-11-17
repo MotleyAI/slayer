@@ -11,9 +11,9 @@ import pytest
 
 from tests._dev1847_fixtures import (
     INNER_CR,
-    ColumnRef,
-    ModelMeasure,
-    SlayerModel,
+    FieldRef,
+    DatasetMetric,
+    SlayerDataset,
     SlayerQuery,
     dev1847_models,
     gen,
@@ -26,20 +26,20 @@ from slayer.engine.query_engine import SlayerResponse
 OUTER_AGGS = ["avg", "count", "min", "max", "median"]
 
 
-def _sq_model(outer: str) -> SlayerModel:
+def _sq_model(outer: str) -> SlayerDataset:
     """Two-stage encoding of ``<outer>(sum(amount, partition_by=[city,region]))``
     grouped by region."""
-    return SlayerModel(
+    return SlayerDataset(
         name=f"sq_{outer}", data_source="test",
         source_queries=[
             SlayerQuery(
-                name=f"s1_{outer}", source_model="sales",
-                dimensions=[ColumnRef(name="region"), ColumnRef(name="city")],
-                measures=[ModelMeasure(formula="sum(amount)", name="ct")]),
+                name=f"s1_{outer}", population="sales",
+                dimensions=[FieldRef(name="region"), FieldRef(name="city")],
+                metrics=[DatasetMetric(expression="sum(amount)", name="ct")]),
             SlayerQuery(
-                source_model=f"s1_{outer}",
-                dimensions=[ColumnRef(name="region")],
-                measures=[ModelMeasure(formula=f"{outer}(ct)", name="v")]),
+                population=f"s1_{outer}",
+                dimensions=[FieldRef(name="region")],
+                metrics=[DatasetMetric(expression=f"{outer}(ct)", name="v")]),
         ])
 
 

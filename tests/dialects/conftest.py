@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.generator import SQLGenerator
 
@@ -31,7 +31,7 @@ def _norm(s: str) -> str:
 async def _generate(
     generator: SQLGenerator,
     query: SlayerQuery,
-    model: SlayerModel,
+    model: SlayerDataset,
 ) -> str:
     """Helper: run ``query`` against ``model`` on the typed engine pipeline
     and return the SQL emitted for ``generator``'s dialect.
@@ -47,17 +47,17 @@ async def _generate(
 
 
 @pytest.fixture
-def orders_model() -> SlayerModel:
-    return SlayerModel(
+def orders_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="test",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
-            Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="quantity", sql="quantity", datatype=DataType.DOUBLE),
         ],
     )

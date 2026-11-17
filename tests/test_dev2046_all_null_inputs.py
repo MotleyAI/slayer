@@ -10,7 +10,7 @@ from typing import Callable, Dict, List
 
 import pytest
 
-from slayer.core.models import ModelMeasure
+from slayer.core.models import DatasetMetric
 from slayer.core.query import SlayerQuery
 
 from tests._dev2046_fixtures import m, make_exec_engine, month_td, orders_q
@@ -29,7 +29,7 @@ async def engine(request):
         yield e
 
 
-def _measures(source: str, *, suffix: str = "") -> List[ModelMeasure]:
+def _measures(source: str, *, suffix: str = "") -> List[DatasetMetric]:
     """Every aggregation in ``EMPTY`` over ``source`` plus the boolean ``sum`` / ``max``, named by aggregation."""
     measures = [m(f"{agg}({source}{suffix})", agg) for agg in EMPTY]
     return measures + [m(f"sum({source} > 15{suffix})", "bsum"), m(f"max({source} > 15{suffix})", "bmax")]
@@ -52,7 +52,7 @@ LOCATIONS: Dict[str, Callable[[], object]] = {
         {"source_model": "s1", "dimensions": ["region"], "measures": _measures("x"), "filters": WEST},
     ],
     "association": lambda: SlayerQuery.model_validate({
-        "source_model": "orders", "dimensions": ["region"], "measures": _measures("customers.score"),
+        "population": "orders", "dimensions": ["region"], "metrics": _measures("customers.score"),
         "to_many_handling": "associate",
     }),
 }

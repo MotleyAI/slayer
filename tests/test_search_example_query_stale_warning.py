@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.models import ModelMeasure
+from slayer.core.models import DatasetMetric
 from slayer.core.query import SlayerQuery
 from slayer.search.service import SearchService
 from slayer.storage.base import StorageBackend
@@ -27,8 +27,8 @@ class TestExampleQueryStaleWarning:
         # Save a memory carrying a query referencing the existing column,
         # then remove the referenced column so the query is now stale.
         attached = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(amount)")],
         )
         seed = await storage.save_memory(
             learning="paid revenue",
@@ -37,12 +37,12 @@ class TestExampleQueryStaleWarning:
         )
         # Drop the referenced column, leaving the memory's Memory.query
         # dangling.
-        existing = await storage.get_model("orders", data_source="mydb")
+        existing = await storage.get_dataset("orders", data_source="mydb")
         assert existing is not None
         updated = existing.model_copy(
-            update={"columns": [c for c in existing.columns if c.name != "amount"]}
+            update={"fields": [c for c in existing.fields if c.name != "amount"]}
         )
-        await storage.save_model(updated)
+        await storage.save_dataset(updated)
 
         svc = SearchService(storage=storage)
         resp = await svc.search(question="paid revenue", max_results=20)
@@ -57,9 +57,9 @@ class TestExampleQueryStaleWarning:
         )
         # And its attached query must be unchanged (we don't rewrite).
         eq = next(e for e in example_queries if e.id == str(seed.id))
-        assert eq.query.source_model == "orders"
-        assert eq.query.measures is not None
-        assert eq.query.measures[0].formula == "sum(amount)"
+        assert eq.query.population == "orders"
+        assert eq.query.metrics is not None
+        assert eq.query.metrics[0].expression == "sum(amount)"
         # And a warning naming the memory must be present.
         memory_warnings = [
             w for w in resp.warnings if "memory:" in w and "stale" in w.lower()

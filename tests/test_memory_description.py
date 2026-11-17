@@ -26,7 +26,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.memories.models import Memory
 from slayer.memories.service import MemoryService
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -114,13 +114,13 @@ async def _seed_orders(storage: StorageBackend) -> None:
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="sqlite", database=":memory:")
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="mydb",
-        columns=[
-            Column(name="id", sql="id", primary_key=True),
-            Column(name="amount", sql="amount"),
+        fields=[
+            DatasetField(name="id", sql="id", primary_key=True),
+            DatasetField(name="amount", sql="amount"),
         ],
     ))
 

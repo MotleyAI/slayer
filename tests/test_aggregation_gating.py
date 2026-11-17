@@ -9,46 +9,46 @@ against string columns, silently passing PK/type/whitelist violations through.
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, Column, ModelJoin, SlayerModel
+from slayer.core.models import Aggregation, DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 
 from tests._engine_helpers import _engine_generate
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
-def _customers_model(extra_columns=None, extra_aggregations=None) -> SlayerModel:
+def _customers_model(extra_columns=None, extra_aggregations=None) -> SlayerDataset:
     columns = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="name", sql="name", type=DataType.TEXT),
+        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+        DatasetField(name="name", sql="name", datatype=DataType.TEXT),
     ]
     if extra_columns:
         columns.extend(extra_columns)
-    return SlayerModel(
+    return SlayerDataset(
         name="customers",
         sql_table="public.customers",
         data_source="test",
-        columns=columns,
+        fields=columns,
         aggregations=extra_aggregations or [],
     )
 
 
 async def _generate_sql(
     *,
-    orders: SlayerModel,
-    customers: SlayerModel,
+    orders: SlayerDataset,
+    customers: SlayerDataset,
     measures: list,
     dialect: str = "postgres",
 ) -> str:
@@ -56,27 +56,27 @@ async def _generate_sql(
     helper and return the SQL string. Mirrors the original local helper but
     reuses the centralised storage/datasource/dry-run/assert-valid pipeline
     (CodeRabbit PR #153 nitpick on this file)."""
-    query = SlayerQuery(source_model=orders.name, measures=measures)
+    query = SlayerQuery(population=orders.name, metrics=measures)
     return await _engine_generate(
         query=query, model=orders, extra_models=[customers], dialect=dialect,
     )
 
 
-def _orders_with_status() -> SlayerModel:
+def _orders_with_status() -> SlayerDataset:
     """Orders model carrying a local TEXT column (``status``) and a numeric
     ``rating`` column — for the DEV-1576 §3 error-split tests."""
-    return SlayerModel(
+    return SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="rating", sql="rating", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="rating", sql="rating", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
@@ -128,10 +128,10 @@ class TestCrossModelGating:
         """
         customers = _customers_model(
             extra_columns=[
-                Column(
+                DatasetField(
                     name="rating",
                     sql="rating",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                     allowed_aggregations=["avg"],
                 ),
             ]
@@ -148,10 +148,10 @@ class TestCrossModelGating:
         """A whitelist match works."""
         customers = _customers_model(
             extra_columns=[
-                Column(
+                DatasetField(
                     name="rating",
                     sql="rating",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                     allowed_aggregations=["avg"],
                 ),
             ]
@@ -182,7 +182,7 @@ class TestCrossModelGating:
             extra_aggregations=[
                 Aggregation(
                     name="name_concat",
-                    formula="STRING_AGG({value}, ',')",
+                    expression="STRING_AGG({value}, ',')",
                 ),
             ]
         )
@@ -201,19 +201,19 @@ class TestStatAggregationEligibility:
     """
 
     @pytest.fixture
-    def numeric_orders(self) -> SlayerModel:
-        return SlayerModel(
+    def numeric_orders(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="quantity", sql="quantity", type=DataType.DOUBLE),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="quantity", sql="quantity", datatype=DataType.DOUBLE),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
             ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         )
 
     # Postgres preserves canonical names (no VAR_SAMP→VARIANCE rewrite —
@@ -229,7 +229,7 @@ class TestStatAggregationEligibility:
         ],
     )
     async def test_numeric_column_accepts_stat_agg(
-        self, agg: str, fn: str, numeric_orders: SlayerModel,
+        self, agg: str, fn: str, numeric_orders: SlayerDataset,
     ) -> None:
         sql = await _generate_sql(
             orders=numeric_orders,
@@ -254,7 +254,7 @@ class TestStatAggregationEligibility:
         self,
         agg: str,
         sql_fn: str,
-        numeric_orders: SlayerModel,
+        numeric_orders: SlayerDataset,
     ) -> None:
         sql = await _generate_sql(
             orders=numeric_orders,
@@ -272,7 +272,7 @@ class TestStatAggregationEligibility:
         ["stddev_samp", "stddev_pop", "var_samp", "var_pop"],
     )
     async def test_string_column_rejects_stat_agg(
-        self, agg: str, numeric_orders: SlayerModel,
+        self, agg: str, numeric_orders: SlayerDataset,
     ) -> None:
         customers = _customers_model()
         with pytest.raises(ValueError, match="not applicable|string|numeric"):
@@ -287,7 +287,7 @@ class TestStatAggregationEligibility:
         ["stddev_samp", "stddev_pop", "var_samp", "var_pop"],
     )
     async def test_pk_column_rejects_stat_agg(
-        self, agg: str, numeric_orders: SlayerModel,
+        self, agg: str, numeric_orders: SlayerDataset,
     ) -> None:
         # PK columns are restricted to count/count_distinct regardless of type.
         customers = _customers_model()
@@ -300,7 +300,7 @@ class TestStatAggregationEligibility:
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_string_column_rejects_two_arg_stat(
-        self, agg: str, numeric_orders: SlayerModel,
+        self, agg: str, numeric_orders: SlayerDataset,
     ) -> None:
         """A string LHS must be rejected for the 2-arg stats too — closes the
         coverage gap CodeRabbit flagged: the unary-stat parametrization
@@ -319,7 +319,7 @@ class TestStatAggregationEligibility:
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_pk_column_rejects_two_arg_stat(
-        self, agg: str, numeric_orders: SlayerModel,
+        self, agg: str, numeric_orders: SlayerDataset,
     ) -> None:
         customers = _customers_model()
         with pytest.raises(ValueError, match="primary[- ]key|count"):
@@ -333,7 +333,7 @@ class TestStatAggregationEligibility:
 
     @pytest.mark.parametrize("agg", ["corr", "covar_samp", "covar_pop"])
     async def test_two_arg_stat_missing_other_raises(
-        self, agg: str, numeric_orders: SlayerModel,
+        self, agg: str, numeric_orders: SlayerDataset,
     ) -> None:
         # Missing required `other=` parameter must raise with a clear message
         # naming the parameter, mirroring weighted_avg's missing-`weight=`
@@ -358,10 +358,10 @@ class TestCrossModelColumnFilter:
         """
         customers = _customers_model(
             extra_columns=[
-                Column(
+                DatasetField(
                     name="completed_rev",
                     sql="amount",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                     filter="status = 'completed'",
                 ),
             ]
@@ -455,23 +455,23 @@ class TestDev1576UnknownVsDisallowed:
         # A custom aggregation known model-wide but absent from a column's
         # allowed_aggregations whitelist → 'not allowed for column', NOT
         # 'Unknown function'.
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(
                     name="rating",
                     sql="rating",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                     allowed_aggregations=["avg"],
                 ),
             ],
-            aggregations=[Aggregation(name="myagg", formula="SUM({value}) * 2")],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            aggregations=[Aggregation(name="myagg", expression="SUM({value}) * 2")],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         )
         customers = _customers_model()
         with pytest.raises(ValueError) as exc:
@@ -486,17 +486,17 @@ class TestDev1576UnknownVsDisallowed:
     async def test_custom_agg_allowed_when_no_whitelist(self) -> None:
         # Guard: the unknown-name check must not break a legitimate custom
         # aggregation on a column with no whitelist.
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
-            aggregations=[Aggregation(name="myagg", formula="SUM({value}) * 2")],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            aggregations=[Aggregation(name="myagg", expression="SUM({value}) * 2")],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         )
         sql = await _generate_sql(
             orders=orders,
@@ -525,10 +525,10 @@ class TestDev1576UnknownVsDisallowed:
         # migrated filters onto the typed parser): an aliased aggregation in a
         # HAVING predicate heals just like a measure.
         query = SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["status"],
-            "measures": [{"formula": "sum(amount)", "name": "total"}],
-            "filters": [f"{raw}(amount) > 5"],
+            "metrics": [{"formula": "sum(amount)", "name": "total"}],
+            "filter": [f"{raw}(amount) > 5"],
         })
         sql = await _engine_generate(
             query=query, model=_orders_with_status(),
@@ -596,25 +596,25 @@ class TestDev1576UnknownNamePrecedence:
     """DEV-1576 §3 — the unknown-name guard fires BEFORE the PK / whitelist /
     type gates, and the suggestion list reflects model-wide custom aggs."""
 
-    def _orders_pk_whitelist_custom(self) -> SlayerModel:
-        return SlayerModel(
+    def _orders_pk_whitelist_custom(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(
                     name="rating",
                     sql="rating",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                     allowed_aggregations=["avg"],
                 ),
             ],
-            aggregations=[Aggregation(name="myagg", formula="SUM({value}) * 2")],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            aggregations=[Aggregation(name="myagg", expression="SUM({value}) * 2")],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         )
 
     @pytest.mark.parametrize("column", ["rating", "id", "status"])
@@ -662,19 +662,19 @@ class TestDev1576CustomAggPrecedence:
     alias healing — the heal must not silently shadow it."""
 
     async def test_custom_agg_named_like_alias_takes_precedence(self) -> None:
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="test",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
             aggregations=[
-                Aggregation(name="countd", formula="COUNT(DISTINCT {value}) + 1"),
+                Aggregation(name="countd", expression="COUNT(DISTINCT {value}) + 1"),
             ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         )
         sql = await _generate_sql(
             orders=orders,

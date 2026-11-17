@@ -18,9 +18,9 @@ from slayer.core.keys import (
     ArithmeticKey,
     ArrayLiteralKey,
     CastKey,
-    ColumnKey,
-    ColumnSqlKey,
-    ColumnTypeFn,
+    FieldKey,
+    FieldSqlKey,
+    FieldTypeFn,
     InKey,
     ListSetKey,
     LiteralKey,
@@ -35,7 +35,7 @@ from slayer.core.keys import (
     aggregation_source_type,
     source_anchor_path,
 )
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 from slayer.sql.dialects.base import SqlDialect
 from slayer.sql.dialects.reflection import info_schema_type, is_exact_numeric_db_type
 from slayer.sql.render.aggregates import (
@@ -101,12 +101,12 @@ def _wrap_cast_for_type(
     return exp.Cast(this=expr, to=target)
 
 
-def keeps_native_type(*, col: Column | None, dialect: SqlDialect) -> bool:
+def keeps_native_type(*, col: DatasetField | None, dialect: SqlDialect) -> bool:
     """Whether derived ``col`` skips its cast: an exact-numeric ``db_type`` the dialect stores exactly,
     with the type that ``db_type`` implies (a different declared type is an explicit override)."""
     return (
         col is not None and dialect.exact_decimal_native and is_exact_numeric_db_type(col.db_type)
-        and info_schema_type(col.db_type or "")[0] == col.type
+        and info_schema_type(col.db_type or "")[0] == col.datatype
     )
 
 
@@ -129,7 +129,7 @@ def _ranked_value_cast_type(dt: Optional[DataType]) -> Optional[DataType]:
 class FilterFacilities(BaseModel):
     """What WHERE / HAVING rendering needs. ``agg_builder`` (the HAVING seam) emits the
     aggregate as an expression, not its alias — Postgres rejects aliases in HAVING;
-    ``cast_column_sql`` casts derived leaves; ``paren_comparison_operands`` over-parenthesises."""
+    ``cast_field_sql`` casts derived leaves; ``paren_comparison_operands`` over-parenthesises."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -138,7 +138,7 @@ class FilterFacilities(BaseModel):
     agg_builder: Optional[
         Callable[[AggregateKey, Optional[Any], str], Expression]
     ] = None
-    cast_column_sql: bool = False
+    cast_field_sql: bool = False
     paren_comparison_operands: bool = True
 
 
@@ -184,7 +184,7 @@ class RenderContext(BaseModel):
     composites: Optional[CompositeFacilities] = None
     aliases: Optional[AliasFacilities] = None
     #: Declared column types for date-function operands; defaults to ``scope.column_type``.
-    column_type: Optional[ColumnTypeFn] = None
+    field_type: Optional[FieldTypeFn] = None
     #: Grouped SELECT: each dimension's key → its GROUP BY expression.
     dimension_values: Optional[Dict[Any, Expression]] = None
 
@@ -246,7 +246,7 @@ def _render_via_alias(key: ValueKey, ctx: RenderContext) -> Expression:
 
 
 _ALIAS_SLOTTED_KINDS: Tuple[type, ...] = (
-    ColumnKey, ColumnSqlKey, TimeTruncKey, AggregateKey, TransformKey,
+    FieldKey, FieldSqlKey, TimeTruncKey, AggregateKey, TransformKey,
 )
 
 
@@ -348,10 +348,10 @@ def _render_builtin_aggregate(  # NOSONAR(S3776) — sequential fail-closed guar
         inner = _require_scope(ctx, key).resolve(
             key.source, consumer=ctx.consumer,
         )
-    column_type = ctx.column_type or _require_scope(ctx, key).column_type
+    column_type = ctx.field_type or _require_scope(ctx, key).field_type
     return apply_aggregate(
         entry=entry, value=inner, dialect=ctx.dialect,
-        input_type=aggregation_source_type(key.source, column_type=column_type),
+        input_type=aggregation_source_type(key.source, field_type=column_type),
     )
 
 
@@ -368,16 +368,16 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if ctx.dimension_values is not None and key in ctx.dimension_values:
         return ctx.dimension_values[key].copy()
 
-    if isinstance(key, (ColumnKey, SqlFragmentKey)):
+    if isinstance(key, (FieldKey, SqlFragmentKey)):
         return _require_scope(ctx, key).resolve(key, consumer=ctx.consumer)
 
-    if isinstance(key, ColumnSqlKey):
+    if isinstance(key, FieldSqlKey):
         scope = _require_scope(ctx, key)
         resolved = scope.resolve(key, consumer=ctx.consumer)
         # Filter-side CAST for a DERIVED leaf (temporal suppressed); target-scope never casts.
-        if ctx.filters is not None and ctx.filters.cast_column_sql:
-            if not keeps_native_type(col=scope.column(key), dialect=ctx.dialect):
-                resolved = _wrap_cast_for_type(resolved, _filter_cast_type(scope.column_type(key)), dialect=ctx.dialect)
+        if ctx.filters is not None and ctx.filters.cast_field_sql:
+            if not keeps_native_type(col=scope.field(key), dialect=ctx.dialect):
+                resolved = _wrap_cast_for_type(resolved, _filter_cast_type(scope.field_type(key)), dialect=ctx.dialect)
         return resolved
 
     if isinstance(key, StarKey):
@@ -402,7 +402,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, TimeTruncKey):
         source = (
             _require_scope(ctx, key).resolve(key.source, consumer=ctx.consumer)
-            if isinstance(key.source, (ColumnKey, ColumnSqlKey))
+            if isinstance(key.source, (FieldKey, FieldSqlKey))
             else render_value_key(key=key.source, ctx=ctx)
         )
         # The dialect owns the per-backend wire form; a literal DATE_TRUNC would name a function SQLite lacks.
@@ -422,7 +422,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         if key.op in NULL_SAFE_COMPARISON_OPS:
             return render_null_safe(op=key.op, operands=rendered, dialect=ctx.dialect)
         op = key.op.lower()
-        operands = numeric_parts(key=key, parts=rendered, column_type=_known_column_types(ctx))
+        operands = numeric_parts(key=key, parts=rendered, field_type=_known_field_types(ctx))
         if (
             ctx.filters is not None
             and ctx.filters.paren_comparison_operands
@@ -430,7 +430,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         ):
             operands = [_paren_if_binary(o) for o in operands]
         if op == "%":
-            return render_modulo(key=key, operands=operands, dialect=ctx.dialect, column_type=_known_column_types(ctx))
+            return render_modulo(key=key, operands=operands, dialect=ctx.dialect, field_type=_known_field_types(ctx))
         return render_arithmetic(op=op, operands=operands)
 
     if isinstance(key, ScalarCallKey):
@@ -438,7 +438,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
             return _render_iif_case(key=key, ctx=ctx)
         # ANY key routes as a key (the tail raise owns unsupported kinds); only
         # true scalars render as literals.
-        args = numeric_parts(key=key, column_type=_known_column_types(ctx), parts=[
+        args = numeric_parts(key=key, field_type=_known_field_types(ctx), parts=[
             render_value_key(key=a, ctx=ctx)
             if isinstance(a, _FrozenKey)
             else _literal(a, dialect=ctx.dialect)
@@ -446,17 +446,17 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         ])
         if key.name in DATE_FUNCTIONS:
             return render_date_call(
-                key=key, args=args, dialect=ctx.dialect, column_type=_column_types(ctx, key),
+                key=key, args=args, dialect=ctx.dialect, field_type=_field_types(ctx, key),
             )
-        return render_scalar_key(key=key, args=args, dialect=ctx.dialect, column_type=_known_column_types(ctx),
+        return render_scalar_key(key=key, args=args, dialect=ctx.dialect, field_type=_known_field_types(ctx),
                                  part=lambda a: render_value_key(key=a, ctx=ctx),
-                                 column_element=ctx.scope.column_element if ctx.scope is not None else None)
+                                 field_element=ctx.scope.field_element if ctx.scope is not None else None)
 
     if isinstance(key, InKey):
         (column,) = numeric_parts(
-            key=key, parts=[render_value_key(key=key.column, ctx=ctx)], column_type=_known_column_types(ctx),
+            key=key, parts=[render_value_key(key=key.field, ctx=ctx)], field_type=_known_field_types(ctx),
         )
-        return render_in_predicate(key=key, column=column, dialect=ctx.dialect)
+        return render_in_predicate(key=key, field=column, dialect=ctx.dialect)
 
     if isinstance(key, CastKey):
         return render_cast(
@@ -467,8 +467,8 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
     if isinstance(key, ListSetKey):
         return render_list_set(
             key=key, part=lambda k: render_value_key(key=k, ctx=ctx), dialect=ctx.dialect,
-            column_type=_known_column_types(ctx),
-            column_element=ctx.scope.column_element if ctx.scope is not None else None,
+            field_type=_known_field_types(ctx),
+            field_element=ctx.scope.field_element if ctx.scope is not None else None,
         )
 
     if isinstance(key, AggregateKey):
@@ -504,23 +504,23 @@ def _render_iif_case(*, key: ScalarCallKey, ctx: "RenderContext") -> exp.Case:
             if isinstance(a, _FrozenKey) else _literal(a, dialect=ctx.dialect)
         )
 
-    return iif_case_chain(key=key, part=_part, column_type=_known_column_types(ctx))
+    return iif_case_chain(key=key, part=_part, field_type=_known_field_types(ctx))
 
 
-def _known_column_types(ctx: RenderContext) -> ColumnTypeFn:
+def _known_field_types(ctx: RenderContext) -> FieldTypeFn:
     """Declared column types where the context knows them; otherwise every column is untyped."""
-    if ctx.column_type is not None:
-        return ctx.column_type
+    if ctx.field_type is not None:
+        return ctx.field_type
     if ctx.scope is not None:
-        return ctx.scope.column_type
+        return ctx.scope.field_type
     return lambda _key: None
 
 
-def _column_types(ctx: RenderContext, key: ScalarCallKey) -> ColumnTypeFn:
-    if ctx.column_type is not None:
-        return ctx.column_type
+def _field_types(ctx: RenderContext, key: ScalarCallKey) -> FieldTypeFn:
+    if ctx.field_type is not None:
+        return ctx.field_type
     if ctx.scope is not None:
-        return ctx.scope.column_type
+        return ctx.scope.field_type
     raise RenderContextMissingFacilityError(
         key_kind=type(key).__name__, facility="column_type",
         detail=f"{key.name}() needs its operands' declared types",

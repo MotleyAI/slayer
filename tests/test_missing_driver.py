@@ -16,7 +16,7 @@ from sqlalchemy.exc import NoSuchModuleError
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import MissingDriverError, SlayerError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.database import client as client_module
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
@@ -374,10 +374,10 @@ def test_unrelated_import_error_in_build_hook_propagates_unchanged(monkeypatch: 
 async def test_rest_query_reports_install_hint(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(_structured("postgres"))
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders", data_source="postgres_ds", sql_table="orders",
-            columns=[Column(name="id", type=DataType.INT)],
+            fields=[DatasetField(name="id", datatype=DataType.INT)],
         ),
         _validate=False,
     )

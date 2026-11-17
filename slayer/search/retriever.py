@@ -6,7 +6,7 @@ A ``Retriever`` is one ranking channel. The orchestrator (see
 calls each one's :meth:`Retriever.retrieve` in parallel, and fuses the
 returned rankings via RRF. Concrete retrievers also own their own
 persistence — write-side hooks (``upsert_memory``,
-``refresh_model_subtree``, ``refresh_datasource``, plus the three
+``refresh_dataset_subtree``, ``refresh_datasource``, plus the three
 ``delete_*`` futures) default to no-op on the ABC; the embedding
 retriever overrides the create/refresh ones to maintain its sidecar
 table. The ``delete_*`` hooks default to no-op for every shipping
@@ -29,7 +29,7 @@ from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, Field
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.memories.models import Memory
 from slayer.search.index import Corpus
 
@@ -86,14 +86,14 @@ class Retriever(ABC):
     async def upsert_memory(self, memory: Memory) -> list[str]:  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         return []
 
-    async def refresh_model_subtree(self, model: SlayerModel) -> list[str]:  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
+    async def refresh_dataset_subtree(self, dataset: SlayerDataset) -> list[str]:  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         return []
 
     async def refresh_datasource(  # NOSONAR(S7503) — async signature required by Retriever ABC; subclasses override with truly-async hooks
         self,
         *,
         name: str,
-        models: list[SlayerModel],
+        datasets: list[SlayerDataset],
         description: str | None = None,
     ) -> list[str]:
         return []
@@ -111,7 +111,7 @@ class Retriever(ABC):
     async def delete_memory(self, memory_id: str) -> None:  # NOSONAR(S7503) — async signature required by Retriever ABC; future persistent retrievers will override with truly-async hooks
         return None
 
-    async def delete_model(  # NOSONAR(S7503) — async signature required by Retriever ABC; future persistent retrievers will override with truly-async hooks
+    async def delete_dataset(  # NOSONAR(S7503) — async signature required by Retriever ABC; future persistent retrievers will override with truly-async hooks
         self, *, data_source: str, name: str,
     ) -> None:
         return None

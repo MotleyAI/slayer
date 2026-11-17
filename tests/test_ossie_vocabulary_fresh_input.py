@@ -215,8 +215,8 @@ class TestQueryForms:
 
     def test_two_extension_entries_with_one_old_key_warn_once(self) -> None:
         raw = {**QUERY, "extensions": [
-            {"source_name": "orders", "measures": [{"name": "a", "expression": "count(*)"}]},
-            {"source_name": "customers", "measures": [{"name": "b", "expression": "count(*)"}]},
+            {"source_name": "orders", "metrics": [{"name": "a", "expression": "count(*)"}]},
+            {"source_name": "customers", "metrics": [{"name": "b", "expression": "count(*)"}]},
         ]}
         with recorded() as caught:
             query = SlayerQuery.model_validate(raw)

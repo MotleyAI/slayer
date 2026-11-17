@@ -16,7 +16,7 @@ from typing import Any
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import NormalizationWarning, ResponseTruncationWarning
 from slayer.engine.query_engine import (
@@ -51,23 +51,23 @@ async def _seed_storage(workspace: Path) -> YAMLStorage:
     db = _make_db(workspace)
     storage = YAMLStorage(base_dir=str(workspace / "store"))
     await storage.save_datasource(DatasourceConfig(name="lite", type="sqlite", database=str(db)))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="nums", data_source="lite", sql_table="nums",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="v", sql="v", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="v", sql="v", datatype=DataType.INT),
         ],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="qb_over", data_source="lite",
         source_queries=[SlayerQuery(
-            source_model="nums", dimensions=["id"], filters=["id <= 25"],
+            population="nums", dimensions=["id"], filter=["id <= 25"],
         )],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="qb_at_cap", data_source="lite",
         source_queries=[SlayerQuery(
-            source_model="nums", dimensions=["id"], filters=["id <= 20"],
+            population="nums", dimensions=["id"], filter=["id <= 20"],
         )],
     ))
     return storage
@@ -460,7 +460,7 @@ class TestAttributesMachineSafe:
     def _with_attributes() -> SlayerResponse:
         attrs = ResponseAttributes(
             dimensions={"nums.id": FieldMetadata(label="ID")},
-            measures={"nums._count": FieldMetadata(
+            metrics={"nums._count": FieldMetadata(
                 label="Count", format=NumberFormat(type=NumberFormatType.INTEGER),
             )},
         )

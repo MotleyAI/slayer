@@ -9,7 +9,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
-from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2215_fixtures import BACKENDS, dev2215_engine, m, num, orders_model, q, single
@@ -102,20 +102,20 @@ class TestAggIsReserved:
     async def test_a_new_aggregation_is_refused(self, tmp_path) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
-        model = orders_model(aggregations=[Aggregation(name="Agg", formula="SUM({value})")])
+        model = orders_model(aggregations=[Aggregation(name="Agg", expression="SUM({value})")])
         with pytest.raises(SlayerError, match="agg"):
-            await storage.save_model(model)
+            await storage.save_dataset(model)
 
     async def test_a_measure_or_column_named_agg_is_legal(self) -> None:
         with_column = orders_model().model_copy(update={"columns": [
-            *orders_model().columns, Column(name="agg", sql="amount", type=DataType.DOUBLE)]})
-        with_measure = SlayerModel(name="totals", sql_table="orders", data_source="test",
-                                   columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                                            Column(name="amount", type=DataType.DOUBLE)],
-                                   measures=[ModelMeasure(name="agg", formula="sum(amount)")])
+            *orders_model().fields, DatasetField(name="agg", sql="amount", datatype=DataType.DOUBLE)]})
+        with_measure = SlayerDataset(name="totals", sql_table="orders", data_source="test",
+                                   fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                                            DatasetField(name="amount", datatype=DataType.DOUBLE)],
+                                   metrics=[DatasetMetric(name="agg", expression="sum(amount)")])
         async with dev2215_engine("sqlite", models=[with_column, with_measure]) as eng:
-            await eng.storage.save_model(with_column)
-            await eng.storage.save_model(with_measure)
+            await eng.storage.save_dataset(with_column)
+            await eng.storage.save_dataset(with_measure)
             column = await eng.execute(q(measures=[m("sum(agg)")]))
             measure = await eng.execute(q(source_model="totals", measures=["agg"]))
         assert num(single(column)) == 160.0

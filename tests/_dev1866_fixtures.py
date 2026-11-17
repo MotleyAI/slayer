@@ -40,14 +40,14 @@ from typing import AsyncIterator
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -67,176 +67,176 @@ DS_NAMED = "ds_named"
 # --------------------------------------------------------------------------- #
 # Model builders.
 # --------------------------------------------------------------------------- #
-def chain_models() -> list[SlayerModel]:
+def chain_models() -> list[SlayerDataset]:
     """orders → customers → regions; region is a column on customers."""
-    regions = SlayerModel(
+    regions = SlayerDataset(
         name="regions", data_source=DS_CHAIN, sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", data_source=DS_CHAIN, sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
-        joins=[
-            ModelJoin(
-                target_model="regions", join_pairs=[["region_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+        relationships=[
+            DatasetRelationship(
+                to="regions", join_pairs=[["region_id", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
     )
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source=DS_CHAIN, sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="ordered_at", datatype=DataType.TEXT),
         ],
-        measures=[
-            ModelMeasure(formula="sum(amount)", name="revenue"),
-            ModelMeasure(formula="avg(amount)", name="avg_amt"),
+        metrics=[
+            DatasetMetric(expression="sum(amount)", name="revenue"),
+            DatasetMetric(expression="avg(amount)", name="avg_amt"),
         ],
-        joins=[
-            ModelJoin(
-                target_model="customers", join_pairs=[["customer_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+        relationships=[
+            DatasetRelationship(
+                to="customers", join_pairs=[["customer_id", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
     )
     return [orders, customers, regions]
 
 
-def chain_models_by_name() -> dict[str, SlayerModel]:
+def chain_models_by_name() -> dict[str, SlayerDataset]:
     return {m.name: m for m in chain_models()}
 
 
-def pair_models() -> list[SlayerModel]:
+def pair_models() -> list[SlayerDataset]:
     """prof ↔ acct one-to-one — both sides to-one, so two viable candidates tie."""
-    acct = SlayerModel(
+    acct = SlayerDataset(
         name="acct", data_source=DS_PAIR, sql_table="acct",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="email", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="email", datatype=DataType.TEXT),
         ],
     )
-    prof = SlayerModel(
+    prof = SlayerDataset(
         name="prof", data_source=DS_PAIR, sql_table="prof",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="acct_id", type=DataType.INT, unique=True),
-            Column(name="bio", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="acct_id", datatype=DataType.INT, unique=True),
+            DatasetField(name="bio", datatype=DataType.TEXT),
         ],
-        joins=[
-            ModelJoin(
-                target_model="acct", join_pairs=[["acct_id", "id"]],
-                cardinality=JoinCardinality.ONE_TO_ONE,
+        relationships=[
+            DatasetRelationship(
+                to="acct", join_pairs=[["acct_id", "id"]],
+                cardinality=RelationshipCardinality.ONE_TO_ONE,
             ),
         ],
     )
     return [acct, prof]
 
 
-def fan_models() -> list[SlayerModel]:
+def fan_models() -> list[SlayerDataset]:
     """basket with two children — sibling dims have no to-one determiner."""
-    basket = SlayerModel(
+    basket = SlayerDataset(
         name="basket", data_source=DS_FAN, sql_table="basket",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     )
-    items = SlayerModel(
+    items = SlayerDataset(
         name="basket_items", data_source=DS_FAN, sql_table="basket_items",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="basket_id", type=DataType.INT),
-            Column(name="sku", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="basket_id", datatype=DataType.INT),
+            DatasetField(name="sku", datatype=DataType.TEXT),
         ],
-        joins=[
-            ModelJoin(
-                target_model="basket", join_pairs=[["basket_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+        relationships=[
+            DatasetRelationship(
+                to="basket", join_pairs=[["basket_id", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
     )
-    pays = SlayerModel(
+    pays = SlayerDataset(
         name="basket_pays", data_source=DS_FAN, sql_table="basket_pays",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="basket_id", type=DataType.INT),
-            Column(name="method", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="basket_id", datatype=DataType.INT),
+            DatasetField(name="method", datatype=DataType.TEXT),
         ],
-        joins=[
-            ModelJoin(
-                target_model="basket", join_pairs=[["basket_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+        relationships=[
+            DatasetRelationship(
+                to="basket", join_pairs=[["basket_id", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
     )
     return [basket, items, pays]
 
 
-def ambig_models() -> list[SlayerModel]:
+def ambig_models() -> list[SlayerDataset]:
     """shipment with two unnamed edges to depot — any depot hop is ambiguous."""
-    depot = SlayerModel(
+    depot = SlayerDataset(
         name="depot", data_source=DS_AMBIG, sql_table="depot",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
-    shipment = SlayerModel(
+    shipment = SlayerDataset(
         name="shipment", data_source=DS_AMBIG, sql_table="shipment",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="origin_depot_id", type=DataType.INT),
-            Column(name="dest_depot_id", type=DataType.INT),
-            Column(name="weight", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="origin_depot_id", datatype=DataType.INT),
+            DatasetField(name="dest_depot_id", datatype=DataType.INT),
+            DatasetField(name="weight", datatype=DataType.DOUBLE),
         ],
-        joins=[
-            ModelJoin(
-                target_model="depot", join_pairs=[["origin_depot_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+        relationships=[
+            DatasetRelationship(
+                to="depot", join_pairs=[["origin_depot_id", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
-            ModelJoin(
-                target_model="depot", join_pairs=[["dest_depot_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+            DatasetRelationship(
+                to="depot", join_pairs=[["dest_depot_id", "id"]],
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
     )
     return [depot, shipment]
 
 
-def unknown_models() -> list[SlayerModel]:
+def unknown_models() -> list[SlayerDataset]:
     """hits → sess over an undeclared-cardinality hop into a keyless target.
 
     ``sess`` has no primary key or unique column, so the hop is neither declared
     to-one nor unique-key covered — unknown cardinality, which does not count as
     determination in either direction.
     """
-    sess = SlayerModel(
+    sess = SlayerDataset(
         name="sess", data_source=DS_UNKNOWN, sql_table="sess",
-        columns=[
-            Column(name="sess_key", type=DataType.INT),
-            Column(name="token", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="sess_key", datatype=DataType.INT),
+            DatasetField(name="token", datatype=DataType.TEXT),
         ],
     )
-    hits = SlayerModel(
+    hits = SlayerDataset(
         name="hits", data_source=DS_UNKNOWN, sql_table="hits",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="sess_ref", type=DataType.INT),
-            Column(name="page", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="sess_ref", datatype=DataType.INT),
+            DatasetField(name="page", datatype=DataType.TEXT),
         ],
-        joins=[
-            ModelJoin(
-                target_model="sess", join_pairs=[["sess_ref", "sess_key"]],
+        relationships=[
+            DatasetRelationship(
+                to="sess", join_pairs=[["sess_ref", "sess_key"]],
                 cardinality=None,
             ),
         ],
@@ -244,30 +244,30 @@ def unknown_models() -> list[SlayerModel]:
     return [sess, hits]
 
 
-def keycov_models() -> list[SlayerModel]:
+def keycov_models() -> list[SlayerDataset]:
     """events → days over an UNDECLARED-cardinality hop into a unique key.
 
     ``events.day_id → days.id`` declares no cardinality, but ``days.id`` is the
     primary key, so the hop is provably to-one by unique-key coverage — it counts
     as determination even though cardinality is unset.
     """
-    days = SlayerModel(
+    days = SlayerDataset(
         name="days", data_source=DS_KEYCOV, sql_table="days",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="label", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="label", datatype=DataType.TEXT),
         ],
     )
-    events = SlayerModel(
+    events = SlayerDataset(
         name="events", data_source=DS_KEYCOV, sql_table="events",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="day_id", type=DataType.INT),
-            Column(name="kind", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="day_id", datatype=DataType.INT),
+            DatasetField(name="kind", datatype=DataType.TEXT),
         ],
-        joins=[
-            ModelJoin(
-                target_model="days", join_pairs=[["day_id", "id"]],
+        relationships=[
+            DatasetRelationship(
+                to="days", join_pairs=[["day_id", "id"]],
                 cardinality=None,
             ),
         ],
@@ -275,47 +275,47 @@ def keycov_models() -> list[SlayerModel]:
     return [days, events]
 
 
-def named_models() -> list[SlayerModel]:
+def named_models() -> list[SlayerDataset]:
     """tickets → agents over a *named* join ("reporter"); agents owns a saved measure,
     and column ``score`` deliberately shares a name with a custom aggregation."""
-    agents = SlayerModel(
+    agents = SlayerDataset(
         name="agents", data_source=DS_NAMED, sql_table="agents",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="score", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="score", datatype=DataType.INT),
         ],
-        measures=[ModelMeasure(formula="count(id)", name="handled")],
-        aggregations=[Aggregation(name="score", formula="MAX({score})")],
+        metrics=[DatasetMetric(expression="count(id)", name="handled")],
+        aggregations=[Aggregation(name="score", expression="MAX({score})")],
     )
-    tickets = SlayerModel(
+    tickets = SlayerDataset(
         name="tickets", data_source=DS_NAMED, sql_table="tickets",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="subject", type=DataType.TEXT),
-            Column(name="agent_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="subject", datatype=DataType.TEXT),
+            DatasetField(name="agent_id", datatype=DataType.INT),
         ],
-        joins=[
-            ModelJoin(
-                name="reporter", target_model="agents",
+        relationships=[
+            DatasetRelationship(
+                name="reporter", to="agents",
                 join_pairs=[["agent_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
             ),
         ],
     )
     return [agents, tickets]
 
 
-def named_models_by_name() -> dict[str, SlayerModel]:
+def named_models_by_name() -> dict[str, SlayerDataset]:
     return {m.name: m for m in named_models()}
 
 
-def widgets_model(data_source: str) -> SlayerModel:
-    return SlayerModel(
+def widgets_model(data_source: str) -> SlayerDataset:
+    return SlayerDataset(
         name="widgets", data_source=data_source, sql_table="widgets",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="x", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="x", datatype=DataType.TEXT),
         ],
     )
 
@@ -323,7 +323,7 @@ def widgets_model(data_source: str) -> SlayerModel:
 # --------------------------------------------------------------------------- #
 # Storage for metadata-only inference tests (no rows executed).
 # --------------------------------------------------------------------------- #
-_ALL_TOPOLOGIES: list[tuple[str, list[SlayerModel]]] = [
+_ALL_TOPOLOGIES: list[tuple[str, list[SlayerDataset]]] = [
     (DS_CHAIN, chain_models()),
     (DS_PAIR, pair_models()),
     (DS_FAN, fan_models()),
@@ -349,7 +349,7 @@ async def make_inference_storage() -> YAMLStorage:
             DatasourceConfig(name=ds, type="sqlite", database=":memory:"),
         )
         for model in models:
-            await storage.save_model(model, _validate=False)
+            await storage.save_dataset(model, _validate=False)
     return storage
 
 
@@ -425,7 +425,7 @@ async def seed_chain_storage(base_dir: str) -> tuple[YAMLStorage, str]:
         DatasourceConfig(name=DS_CHAIN, type="sqlite", database=db_path),
     )
     for model in chain_models():
-        await storage.save_model(model)
+        await storage.save_dataset(model)
     return storage, db_path
 
 

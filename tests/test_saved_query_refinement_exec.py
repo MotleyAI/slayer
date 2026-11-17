@@ -181,9 +181,9 @@ class TestSingleStage:
         assert calls == []
 
     async def test_stored_model_unchanged(self, engine: SlayerQueryEngine) -> None:
-        before = await engine.storage.get_model("monthly_revenue")
+        before = await engine.storage.get_dataset("monthly_revenue")
         await engine.execute("monthly_revenue", refine={"dimensions": ["region"], "limit": 1})
-        assert await engine.storage.get_model("monthly_revenue") == before
+        assert await engine.storage.get_dataset("monthly_revenue") == before
 
 
 class TestSavedWindow:

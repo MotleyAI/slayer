@@ -52,7 +52,7 @@ class TestWrongShapeGranularityCalls:
 class TestNonTemporalArgument:
     async def test_fails_at_binding_as_a_time_dimension(self, exec_engine) -> None:
         query = _q(["date_trunc('month', upper(status))"])  # accepted at construction
-        with pytest.raises(errors.TimeDimensionColumnError, match="TEXT"):
+        with pytest.raises(errors.TimeDimensionFieldError, match="TEXT"):
             await exec_engine.execute(query, dry_run=True)
 
 

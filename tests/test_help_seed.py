@@ -23,7 +23,7 @@ import slayer.mcp.server as mcp_server
 from slayer.api.server import create_app
 from slayer.cli import _run_inspect, _run_search_query
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.inspect.service import InspectService
 from slayer.mcp.server import create_mcp_server
 from slayer.memories import help_seed
@@ -68,15 +68,15 @@ async def storage() -> AsyncIterator[YAMLStorage]:
         await s.save_datasource(
             DatasourceConfig(name="mydb", type="sqlite", database=":memory:")
         )
-        await s.save_model(
-            SlayerModel(
+        await s.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="mydb",
-                columns=[
-                    Column(name="id", sql="id", type=DataType.INT,
+                fields=[
+                    DatasetField(name="id", sql="id", datatype=DataType.INT,
                            primary_key=True),
-                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
+                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
                 ],
             )
         )

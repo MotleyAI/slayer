@@ -17,7 +17,7 @@ from slayer.engine.query_engine import (
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1836_fixtures import (
     AMOUNT_BY_BAND,
-    ModelMeasure,
+    DatasetMetric,
     SPEND_BAND,
     SPEND_BY_BAND,
     broadcast_warnings,
@@ -33,9 +33,9 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
-POP = ModelMeasure(formula="sum(customers.regions.pop)", name="pop")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+POP = DatasetMetric(expression="sum(customers.regions.pop)", name="pop")
 
 
 #: Outside the conjunct pushdown scope for EVERY producer root here (the OR mixes
@@ -57,7 +57,7 @@ class TestPushedFilterEntryIdentity:
             dimensions=["customers.tier"], measures=[M, CM, POP],
             filters=[_EXCLUDED_APP],
         ))
-        assert sorted((w.measure, w.filter_text) for w in pushed_filter_infos(resp)) == [
+        assert sorted((w.metric, w.filter_text) for w in pushed_filter_infos(resp)) == [
             ("cm", _EXCLUDED_APP), ("pop", _EXCLUDED_APP),
         ]
 
@@ -73,7 +73,7 @@ class TestPushedFilterEntryIdentity:
         ))
         pushed = pushed_filter_infos(resp)
         assert {w.filter_text for w in pushed} == {_EXCLUDED_APP}
-        assert len({w.measure for w in pushed}) == 2, pushed
+        assert len({w.metric for w in pushed}) == 2, pushed
         by = rows_by(resp, "orders.sband")
         # Spine: app orders only (o2, o4, o5 — all gold customers → band hi).
         assert set(by) == {("hi",)}
@@ -114,12 +114,12 @@ class TestBroadcastDedup:
         resp = await engine.execute(q(
             dimensions=["status"], measures=[M, CM, POP],
             filters=["sum(customers.spend) > 0"],
-            order=[OrderItem.model_validate({"column": "sum(customers.spend)", "direction": "desc"})],
+            order=[OrderItem.model_validate({"field": "sum(customers.spend)", "direction": "desc"})],
             to_many_handling="broadcast",
         ))
         warnings = broadcast_warnings(resp)
         assert len(warnings) == 2
-        named = {w.measure for w in warnings}
+        named = {w.metric for w in warnings}
         assert any("cm" in name for name in named), named
         assert any("pop" in name for name in named), named
 
@@ -137,7 +137,7 @@ class TestBroadcastDedup:
         warnings = broadcast_warnings(resp)
         assert len(warnings) == 1
         (w,) = warnings
-        assert "cm" in w.measure
+        assert "cm" in w.metric
         dims = {d.dimension for d in w.dimensions}
         assert any("status" in d for d in dims), dims
         assert not any("sband" in d for d in dims), dims

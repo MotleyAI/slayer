@@ -44,13 +44,13 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import ModelMeasure
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetMetric
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
 from slayer.sql.render.joins import (
     build_grain_joinback_condition,
-    grain_alias_column,
+    grain_alias_field,
 )
 from slayer.sql.scope_check import assert_scope_closed
 
@@ -82,35 +82,35 @@ async def exec_engine() -> AsyncIterator[SlayerQueryEngine]:
 def _windowed_query() -> SlayerQuery:
     """Windowed measure grouped by a NULLABLE dimension + a month bucket."""
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status")],
+        population="orders",
+        dimensions=[FieldRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="sum(amount, window='90d')", name="rev_w")],
+        metrics=[DatasetMetric(expression="sum(amount, window='90d')", name="rev_w")],
     )
 
 
 def _windowed_chain_query() -> SlayerQuery:
     """The same shape against the shared orders_x chain (postgres-shaped)."""
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="status")],
+        population="orders_x",
+        dimensions=[FieldRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="sum(amount, window='90d')", name="rev_w")],
+        metrics=[DatasetMetric(expression="sum(amount, window='90d')", name="rev_w")],
     )
 
 
 def _cm_shared_grain_query() -> SlayerQuery:
     """Cross-model measure grouped by a grain shared with the target."""
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="customers_v2.status")],
-        measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+        population="orders_x",
+        dimensions=[FieldRef(name="customers_v2.status")],
+        metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
     )
 
 
@@ -314,8 +314,8 @@ class TestGrainSemantics:
         because the shared builder returns ``None`` for empty pairs and the
         caller must keep turning that into a CROSS JOIN."""
         query = SlayerQuery(
-            source_model="orders_x",
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            population="orders_x",
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, dialect="postgres")
         assert "CROSS JOIN _cm_" in _norm(sql), (
@@ -329,8 +329,8 @@ class TestGrainSemantics:
     ) -> None:
         """The CROSS JOIN must not multiply rows: one row, the scalar total."""
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="total")],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="total")],
         )
         resp = await exec_engine.execute(query)
         assert len(resp.data) == 1, f"scalar CMA must yield ONE row:\n{resp.data}"
@@ -349,12 +349,12 @@ class TestGrainSemantics:
         would yield a single-member grain and prove nothing.
         """
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             dimensions=[
-                ColumnRef(name="customers_v2.status"),
-                ColumnRef(name="customers_v2.ltv_x2"),
+                FieldRef(name="customers_v2.status"),
+                FieldRef(name="customers_v2.ltv_x2"),
             ],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, dialect="postgres")
         on = _norm(joinback_on_predicate_for(sql, prefix="_cm_", dialect="postgres"))
@@ -367,12 +367,12 @@ class TestGrainSemantics:
         """A type-coerced grain member (a DATE_TRUNC bucket) joins back
         null-safely like any other."""
         query = SlayerQuery(
-            source_model="orders_x",
+            population="orders_x",
             time_dimensions=[TimeDimension(
-                dimension="customers_v2.signup_at",
+                field="customers_v2.signup_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+            metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
         )
         sql = await _gen(query, dialect="postgres")
         on = _norm(joinback_on_predicate_for(sql, prefix="_cm_", dialect="postgres"))
@@ -387,9 +387,9 @@ class TestGrainSemantics:
         aggregate (this join-back is already null-safe; B2 rebuilds how the
         predicate is constructed and must not change what it means)."""
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="customers.tier")],
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="spend")],
+            population="orders",
+            dimensions=[FieldRef(name="customers.tier")],
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="spend")],
         )
         resp = await exec_engine.execute(query)
         by_tier = {r["orders.customers.tier"]: r["orders.spend"] for r in resp.data}
@@ -438,8 +438,8 @@ class TestSharedGrainJoinBackBuilder:
         """One builder, every dialect's own null-safe spelling — including the
         expanded two-valued fallback on T-SQL."""
         strategy = get_dialect(dialect)
-        left = grain_alias_column(alias="orders.status", table="_base")
-        right = grain_alias_column(alias="orders.status", table="_cm_x")
+        left = grain_alias_field(alias="orders.status", table="_base")
+        right = grain_alias_field(alias="orders.status", table="_cm_x")
         cond = build_grain_joinback_condition(
             pairs=[(left, right)], dialect=strategy,
         )
@@ -454,9 +454,9 @@ class TestSharedGrainJoinBackBuilder:
         """The B2 defect in miniature: a dotted PUBLIC ALIAS is one identifier,
         never a ``table.column`` reference. Built as AST it cannot decompose."""
         strategy = get_dialect(dialect)
-        left = grain_alias_column(alias="orders.customers.status", table="_base")
+        left = grain_alias_field(alias="orders.customers.status", table="_base")
         cond = build_grain_joinback_condition(
-            pairs=[(left, grain_alias_column(
+            pairs=[(left, grain_alias_field(
                 alias="orders.customers.status", table="_cm_x"))],
             dialect=strategy,
         )
@@ -473,7 +473,7 @@ class TestSharedGrainJoinBackBuilder:
     def test_alias_containing_a_quote_is_not_injectable(self) -> None:
         """An embedded quote must survive as data inside one identifier."""
         weird = 'orders."evil'
-        col = grain_alias_column(alias=weird, table="_base")
+        col = grain_alias_field(alias=weird, table="_base")
         assert col.name == weird, col.name
         rendered = col.sql(dialect="postgres")
         assert rendered.startswith('_base.'), rendered
@@ -492,17 +492,17 @@ class TestSharedGrainJoinBackBuilder:
     def test_case_sensitive_alias_is_quoted(self) -> None:
         """Mixed-case aliases must stay quoted, or a case-folding dialect
         resolves them to a different column."""
-        col = grain_alias_column(alias="Orders.Status", table="_base")
+        col = grain_alias_field(alias="Orders.Status", table="_base")
         rendered = col.sql(dialect="postgres")
         assert '"Orders.Status"' in rendered, rendered
 
     def test_composite_grain_ands_every_pair(self) -> None:
         strategy = get_dialect("postgres")
         pairs = [
-            (grain_alias_column(alias="a", table="_base"),
-             grain_alias_column(alias="a", table="_cm_x")),
-            (grain_alias_column(alias="b", table="_base"),
-             grain_alias_column(alias="b", table="_cm_x")),
+            (grain_alias_field(alias="a", table="_base"),
+             grain_alias_field(alias="a", table="_cm_x")),
+            (grain_alias_field(alias="b", table="_base"),
+             grain_alias_field(alias="b", table="_cm_x")),
         ]
         cond = build_grain_joinback_condition(pairs=pairs, dialect=strategy)
         assert cond is not None

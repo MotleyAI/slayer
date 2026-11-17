@@ -26,14 +26,14 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -46,40 +46,40 @@ from tests._engine_helpers import seeded_exec_engine
 _REGION_EXTRA = [("North", "2020-01-15", 1), ("South", "2021-06-15", 2)]
 
 
-def _by_name(models: List[SlayerModel], name: str) -> SlayerModel:
+def _by_name(models: List[SlayerDataset], name: str) -> SlayerDataset:
     return next(m for m in models if m.name == name)
 
 
-def dev1954_models(*, named: bool = True) -> List[SlayerModel]:
+def dev1954_models(*, named: bool = True) -> List[SlayerDataset]:
     """``named=False`` leaves the ``customers → regions`` edge unnamed."""
     models = dev1900_models()
     customers = _by_name(models, "customers")
-    customers.joins = [
-        ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]],
-                  cardinality=JoinCardinality.MANY_TO_ONE,
+    customers.relationships = [
+        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]],
+                  cardinality=RelationshipCardinality.MANY_TO_ONE,
                   name="hr" if named else None)
-        if j.target_model == "regions" else j
-        for j in customers.joins
+        if j.to == "regions" else j
+        for j in customers.relationships
     ]
-    customers.measures.append(ModelMeasure(name="tot_spend", formula="sum(spend)"))
+    customers.metrics.append(DatasetMetric(name="tot_spend", expression="sum(spend)"))
 
     regions = _by_name(models, "regions")
-    regions.columns = [c.model_copy(update={"label": "Population"}) if c.name == "pop" else c
-                       for c in regions.columns]
-    regions.columns.append(Column(name="rname", type=DataType.TEXT, label="Region name"))
-    regions.columns.append(Column(name="founded_at", type=DataType.TIMESTAMP,
+    regions.fields = [c.model_copy(update={"label": "Population"}) if c.name == "pop" else c
+                       for c in regions.fields]
+    regions.fields.append(DatasetField(name="rname", datatype=DataType.TEXT, label="Region name"))
+    regions.fields.append(DatasetField(name="founded_at", datatype=DataType.TIMESTAMP,
                                   label="Founded"))
-    regions.measures.append(ModelMeasure(name="maxpop", formula="max(pop)"))
+    regions.metrics.append(DatasetMetric(name="maxpop", expression="max(pop)"))
 
     orders = _by_name(models, "orders")
-    orders.columns.append(Column(
-        name="north_amount", type=DataType.DOUBLE, sql="amount",
+    orders.fields.append(DatasetField(
+        name="north_amount", datatype=DataType.DOUBLE, sql="amount",
         filter="customers.regions.rname = 'North'"))
-    orders.columns.append(Column(
-        name="region_label", type=DataType.TEXT, sql="customers.regions.rname"))
-    orders.measures.append(ModelMeasure(name="rp", formula="max(customers.regions.pop)"))
+    orders.fields.append(DatasetField(
+        name="region_label", datatype=DataType.TEXT, sql="customers.regions.rname"))
+    orders.metrics.append(DatasetMetric(name="rp", expression="max(customers.regions.pop)"))
     orders.aggregations.append(Aggregation(
-        name="wpop", formula="SUM({value} * {weight})",
+        name="wpop", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="customers.regions.pop")]))
     return models
 
@@ -107,7 +107,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerModel]] = None,
+    request, *, models: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture."""
     dialect = request.param

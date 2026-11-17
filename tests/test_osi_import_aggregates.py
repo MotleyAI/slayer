@@ -42,9 +42,9 @@ def _covariance(xs: Sequence[float], ys: Sequence[float], *, sample: bool) -> fl
 async def test_statistical_aggregate(db: Path, sql: str, aggregation: str, expected: float) -> None:
     result = convert(db=db, docs=documents(_orders(m("stat", sql))))
     assert not unconverted(result, "stat")
-    stat = by_name(result)["orders"].get_measure("stat")
+    stat = by_name(result)["orders"].get_metric("stat")
     assert stat is not None
-    assert aggregation in stat.formula
+    assert aggregation in stat.expression
     assert float(await scalar(result=result, db=db, model="orders", formula="stat")) == pytest.approx(expected)
 
 
@@ -67,9 +67,9 @@ async def test_approximate_distinct_count(db: Path) -> None:
         {"dialect": "DUCKDB", "expression": "APPROX_COUNT_DISTINCT(customer_id)"}]}}
     result = convert(db=db, docs=documents(_orders(metric)))
     assert not unconverted(result, "approx")
-    approx = by_name(result)["orders"].get_measure("approx")
+    approx = by_name(result)["orders"].get_metric("approx")
     assert approx is not None
-    assert "count_distinct_approx" in approx.formula
+    assert "count_distinct_approx" in approx.expression
     assert await scalar(result=result, db=db, model="orders", formula="approx") == 2
 
 

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import Aggregation, ModelMeasure
+from slayer.core.models import Aggregation, DatasetMetric
 from slayer.core.query import QueryRefinement, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._query_heal_fixtures import BACKENDS, heal_engine, heal_models, orders_model, table
@@ -68,12 +68,12 @@ class TestQueryMeasureNamedAfterTransform:
     @pytest.mark.parametrize("name", ["cumsum", "change", "change_pct", "time_shift", "first", "last", "lag", "lead",
                                       "consecutive_periods", "rank", "percent_rank", "dense_rank", "ntile"])
     def test_every_transform_name_accepted(self, name: str) -> None:
-        query = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "count(*)", "name": name}]})
-        assert [m.name for m in query.measures or []] == [name]
+        query = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "count(*)", "name": name}]})
+        assert [m.name for m in query.metrics or []] == [name]
 
     def test_refinement_measure_accepted(self) -> None:
-        refinement = QueryRefinement.model_validate({"measures": [{"formula": "count(*)", "name": "rank"}]})
-        assert [m.name for m in refinement.measures or []] == ["rank"]
+        refinement = QueryRefinement.model_validate({"metrics": [{"formula": "count(*)", "name": "rank"}]})
+        assert [m.name for m in refinement.metrics or []] == ["rank"]
 
 
 class TestModelExtensionMeasure:
@@ -93,12 +93,12 @@ class TestModelExtensionMeasure:
 
 class TestSavedMeasureNamedRank:
     def test_model_measure_accepted(self) -> None:
-        assert ModelMeasure(name="rank", formula="count(*)").name == "rank"
+        assert DatasetMetric(name="rank", expression="count(*)").name == "rank"
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_bare_name_reads_measure_and_call_is_transform(self, backend: str) -> None:
         orders = orders_model(measures=[
-            ModelMeasure(name="rank", formula="count(*)"), ModelMeasure(name="n", formula="count(*)"),
+            DatasetMetric(name="rank", expression="count(*)"), DatasetMetric(name="n", expression="count(*)"),
         ])
 
         def query(saved: str) -> dict[str, Any]:
@@ -121,4 +121,4 @@ class TestSavedMeasureNamedRank:
 
 def test_custom_aggregation_keeps_transform_reservation() -> None:
     with pytest.raises(ValueError, match="transform"):
-        Aggregation(name="cumsum", formula="SUM({value})")
+        Aggregation(name="cumsum", expression="SUM({value})")

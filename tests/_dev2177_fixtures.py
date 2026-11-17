@@ -18,7 +18,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ScalarOperandTypeError
-from slayer.core.models import Aggregation, AggregationParam, Column, ModelMeasure, SlayerModel
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
@@ -40,27 +40,27 @@ PAID_TOTAL = 345
 MONTH = [{"dimension": "order_date", "granularity": "month"}]
 
 
-def dev2177_models(*, data_source: str = "test") -> list[SlayerModel]:
+def dev2177_models(*, data_source: str = "test") -> list[SlayerDataset]:
     orders, customers, regions = idiom_models(data_source=data_source)
     orders = orders.model_copy(update={"aggregations": [
-        Aggregation(name="true_amount", formula="SUM(CASE WHEN {flag} THEN {value} END)",
+        Aggregation(name="true_amount", expression="SUM(CASE WHEN {flag} THEN {value} END)",
                     params=[AggregationParam(name="flag", sql="TRUE")]),
     ]})
-    regions = regions.model_copy(update={"columns": [
-        *regions.columns, Column(name="rank", sql="id", type=DataType.INT),
+    regions = regions.model_copy(update={"fields": [
+        *regions.fields, DatasetField(name="rank", sql="id", datatype=DataType.INT),
     ], "aggregations": [
-        Aggregation(name="weighted_avg", formula="SUM({value} * {weight}) * 1.0 / SUM({weight})",
+        Aggregation(name="weighted_avg", expression="SUM({value} * {weight}) * 1.0 / SUM({weight})",
                     params=[AggregationParam(name="weight", sql="1")]),
     ]})
     return [orders, customers, regions]
 
 
 def q(**kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "orders", **kw})
+    return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
-def m(formula: str, name: str = "v") -> ModelMeasure:
-    return ModelMeasure(formula=formula, name=name)
+def m(formula: str, name: str = "v") -> DatasetMetric:
+    return DatasetMetric(expression=formula, name=name)
 
 
 def num(value: Any) -> float | None:
@@ -119,8 +119,8 @@ async def check_boolean_weight_partitioned(engine: SlayerQueryEngine) -> None:
 
 async def check_boolean_weight_cross_model(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "customers", "dimensions": ["name"],
-        "measures": [m("weighted_avg(orders.amount, weight=orders.status = 'paid')")],
+        "population": "customers", "dimensions": ["name"],
+        "metrics": [m("weighted_avg(orders.amount, weight=orders.status = 'paid')")],
     }))
     got = {r["customers.name"]: num(r["customers.v"]) for r in resp.data}
     assert got == pytest.approx(PAID_AVG_BY_NAME), resp.sql
@@ -145,7 +145,7 @@ async def check_custom_aggregation_receives_raw_boolean(engine: SlayerQueryEngin
 async def check_builtin_named_override_lowers(engine: SlayerQueryEngine) -> None:
     """Regions 2, 3 and 4 weigh 1, North 0."""
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "regions", "measures": [m("weighted_avg(rank, weight=name <> 'North')")],
+        "population": "regions", "metrics": [m("weighted_avg(rank, weight=name <> 'North')")],
     }))
     assert num(single(resp, model="regions")) == pytest.approx(3.0), resp.sql
 

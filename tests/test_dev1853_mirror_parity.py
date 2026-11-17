@@ -13,24 +13,24 @@ import tempfile
 import pytest
 
 from slayer.core.enums import JoinType
-from slayer.core.join_search import count_routes, reachable
+from slayer.core.relationship_search import count_routes, reachable
 from slayer.core.query import SlayerQuery
-from slayer.engine.cardinality.join_safety import safe_reachable
+from slayer.engine.cardinality.relationship_safety import safe_reachable
 
 from tests._dev1853_fixtures import chain_engine, chain_models
 
 QUERIES = {
     "reverse_dims": SlayerQuery(
-        source_model="customers", dimensions=["name", "orders.status"]),
+        population="customers", dimensions=["name", "orders.status"]),
     "forward_dims": SlayerQuery(
-        source_model="orders", dimensions=["status", "customers.name"]),
+        population="orders", dimensions=["status", "customers.name"]),
     "reverse_aggregate": SlayerQuery.model_validate({
-        "source_model": "customers",
+        "population": "customers",
         "dimensions": ["name"],
-        "measures": [{"formula": "sum(orders.amount)", "name": "t"}],
+        "metrics": [{"formula": "sum(orders.amount)", "name": "t"}],
     }),
     "multi_hop": SlayerQuery(
-        source_model="regions", dimensions=["name", "customers.orders.status"]),
+        population="regions", dimensions=["name", "customers.orders.status"]),
 }
 
 
@@ -61,11 +61,11 @@ def test_reachability_parity() -> None:
     fwd = {m.name: m for m in chain_models(declare="forward")}
     rev = {m.name: m for m in chain_models(declare="reverse")}
     for node in ("orders", "customers", "regions"):
-        assert reachable(root=fwd[node], models_by_name=fwd) == \
-            reachable(root=rev[node], models_by_name=rev)
+        assert reachable(root=fwd[node], datasets_by_name=fwd) == \
+            reachable(root=rev[node], datasets_by_name=rev)
     for src, dst in (("customers", "orders"), ("orders", "regions")):
-        assert count_routes(root=fwd[src], target=dst, models_by_name=fwd) == \
-            count_routes(root=rev[src], target=dst, models_by_name=rev)
+        assert count_routes(root=fwd[src], target=dst, datasets_by_name=fwd) == \
+            count_routes(root=rev[src], target=dst, datasets_by_name=rev)
 
 
 def test_safety_parity() -> None:
@@ -77,5 +77,5 @@ def test_safety_parity() -> None:
         ("customers", ("orders",)),
     ]
     for root, path in probes:
-        assert safe_reachable(root=fwd[root], path=path, models_by_name=fwd) == \
-            safe_reachable(root=rev[root], path=path, models_by_name=rev)
+        assert safe_reachable(root=fwd[root], path=path, datasets_by_name=fwd) == \
+            safe_reachable(root=rev[root], path=path, datasets_by_name=rev)

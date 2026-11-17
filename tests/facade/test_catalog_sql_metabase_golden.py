@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.facade.catalog import (
     FacadeCatalog,
     build_catalog_grouped_by_schema,
@@ -39,42 +39,42 @@ FIXTURE = Path(__file__).parent / "fixtures" / "metabase_v0_62_sync_corpus.sql"
 
 def _demo_catalog() -> FacadeCatalog:
     """A 2-table catalog mirroring the captured Postgres (public.orders + public.customers)."""
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source="jaffle", sql_table="orders",
         description="Demo orders table",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="total", type=DataType.DOUBLE, description="Order total"),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="total", datatype=DataType.DOUBLE, description="Order total"),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
         ],
     )
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", data_source="jaffle", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="email", type=DataType.TEXT, description="Customer email"),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="email", datatype=DataType.TEXT, description="Customer email"),
         ],
     )
     return build_catalog_grouped_by_schema(
-        models_by_datasource={"jaffle": [orders, customers]}
+        datasets_by_datasource={"jaffle": [orders, customers]}
     )
 
 
 def _seven_table_demo_catalog() -> FacadeCatalog:
     """7-table jaffle-shop-shaped catalog so #9 asserts ``count == 7``."""
     models = [
-        SlayerModel(
+        SlayerDataset(
             name=tn, data_source="jaffle", sql_table=tn,
             description=f"jaffle {tn}",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
         )
         for tn in ("customers", "orders", "products", "stores", "supplies",
                    "items", "tweets")
     ]
     return build_catalog_grouped_by_schema(
-        models_by_datasource={"jaffle": models}
+        datasets_by_datasource={"jaffle": models}
     )
 
 

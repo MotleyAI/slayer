@@ -29,7 +29,7 @@ def _warn_signature(resp: SlayerResponse) -> list:
     """Order-independent signature of the broadcast warnings: each aggregate's
     named measure plus the set of dimensions it broadcast across."""
     return sorted(
-        (w.measure, tuple(sorted(d.dimension for d in w.dimensions)))
+        (w.metric, tuple(sorted(d.dimension for d in w.dimensions)))
         for w in broadcast_warnings(resp)
     )
 

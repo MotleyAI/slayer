@@ -11,55 +11,55 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.errors import UnresolvableDimensionJoinError
-from slayer.core.join_search import HopFilter, addressable_hops
-from slayer.core.join_walker import canonical_token
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.errors import UnresolvableDimensionRelationshipError
+from slayer.core.relationship_search import HopFilter, addressable_hops
+from slayer.core.relationship_walker import canonical_token
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.population.dimension_routing import (
     route_dotted_target,
     short_form_route_or_none,
 )
 
 
-def _pk() -> Column:
-    return Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True)
+def _pk() -> DatasetField:
+    return DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)
 
 
-def _d(name: str) -> Column:
-    return Column(name=name, sql=name, type=DataType.DOUBLE)
+def _d(name: str) -> DatasetField:
+    return DatasetField(name=name, sql=name, datatype=DataType.DOUBLE)
 
 
-def _t(name: str) -> Column:
-    return Column(name=name, sql=name, type=DataType.TEXT)
+def _t(name: str) -> DatasetField:
+    return DatasetField(name=name, sql=name, datatype=DataType.TEXT)
 
 
 def _model(
-    name: str, cols: list[Column], joins: list[ModelJoin] | None = None
-) -> SlayerModel:
-    return SlayerModel(
-        name=name, sql_table=name, data_source="ds", columns=cols, joins=joins or []
+    name: str, cols: list[DatasetField], joins: list[DatasetRelationship] | None = None
+) -> SlayerDataset:
+    return SlayerDataset(
+        name=name, sql_table=name, data_source="ds", fields=cols, relationships=joins or []
     )
 
 
-def _by_name(*models: SlayerModel) -> dict[str, SlayerModel]:
+def _by_name(*models: SlayerDataset) -> dict[str, SlayerDataset]:
     return {m.name: m for m in models}
 
 
-def _join(target: str, pairs: list[list[str]], **kw) -> ModelJoin:
-    return ModelJoin(target_model=target, join_pairs=pairs, **kw)
+def _join(target: str, pairs: list[list[str]], **kw) -> DatasetRelationship:
+    return DatasetRelationship(to=target, join_pairs=pairs, **kw)
 
 
-def _safe_hops(*, model: SlayerModel, models_by_name: dict[str, SlayerModel]) -> list[tuple[str, str]]:
+def _safe_hops(*, model: SlayerDataset, models_by_name: dict[str, SlayerDataset]) -> list[tuple[str, str]]:
     return [
-        (canonical_token(e), e.target_model)
-        for e in addressable_hops(model=model, models_by_name=models_by_name, hop_filter=HopFilter.TO_ONE)
+        (canonical_token(e), e.to)
+        for e in addressable_hops(dataset=model, datasets_by_name=models_by_name, hop_filter=HopFilter.TO_ONE)
     ]
 
 
 # short_form_route_or_none / route_dotted_target
 
-def _linear() -> dict[str, SlayerModel]:
+def _linear() -> dict[str, SlayerDataset]:
     """A → B → C → D, every hop onto the target PK (all fan-out-free)."""
     d = _model("D", [_pk(), _t("name")])
     c = _model("C", [_pk(), _d("d_id")], [_join("D", [["d_id", "id"]])])
@@ -72,14 +72,14 @@ class TestUniqueRoute:
     def test_single_route_returns_full_hop_path(self) -> None:
         models = _linear()
         route = short_form_route_or_none(
-            root=models["A"], target_model="D", models_by_name=models
+            root=models["A"], target_dataset="D", datasets_by_name=models
         )
         assert route == ["B", "C", "D"]
 
     def test_route_dotted_target_returns_route_no_raise(self) -> None:
         models = _linear()
         route = route_dotted_target(
-            root=models["A"], target_model="D", leaf="name", models_by_name=models
+            root=models["A"], target_dataset="D", leaf="name", datasets_by_name=models
         )
         assert route == ["B", "C", "D"]
 
@@ -95,13 +95,13 @@ class TestUniqueRoute:
         a = _model("A", [_pk(), _d("b_id")], [_join("B", [["b_id", "id"]])])
         models = _by_name(a, b, c, d)
         route = short_form_route_or_none(
-            root=models["A"], target_model="D", models_by_name=models
+            root=models["A"], target_dataset="D", datasets_by_name=models
         )
         assert route == ["B", "C", "D"]
 
 
 class TestFanoutTieBreak:
-    def _two_routes(self, *, second_safe: bool) -> dict[str, SlayerModel]:
+    def _two_routes(self, *, second_safe: bool) -> dict[str, SlayerDataset]:
         """A reaches D via a safe branch Bs and a second branch Cs.
 
         ``second_safe`` toggles whether Cs → D lands on the PK (safe) or on the
@@ -122,7 +122,7 @@ class TestFanoutTieBreak:
     def test_exactly_one_fanout_free_route_resolves(self) -> None:
         models = self._two_routes(second_safe=False)
         route = short_form_route_or_none(
-            root=models["A"], target_model="D", models_by_name=models
+            root=models["A"], target_dataset="D", datasets_by_name=models
         )
         assert route == ["Bs", "D"]
 
@@ -130,13 +130,13 @@ class TestFanoutTieBreak:
         models = self._two_routes(second_safe=True)
         assert (
             short_form_route_or_none(
-                root=models["A"], target_model="D", models_by_name=models
+                root=models["A"], target_dataset="D", datasets_by_name=models
             )
             is None
         )
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             route_dotted_target(
-                root=models["A"], target_model="D", leaf="name", models_by_name=models
+                root=models["A"], target_dataset="D", leaf="name", datasets_by_name=models
             )
         assert ei.value.suggested_path == "Bs.D.name"
 
@@ -152,13 +152,13 @@ class TestFanoutTieBreak:
         models = _by_name(a, c1, c2, d)
         assert (
             short_form_route_or_none(
-                root=models["A"], target_model="D", models_by_name=models
+                root=models["A"], target_dataset="D", datasets_by_name=models
             )
             is None
         )
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             route_dotted_target(
-                root=models["A"], target_model="D", leaf="name", models_by_name=models
+                root=models["A"], target_dataset="D", leaf="name", datasets_by_name=models
             )
         assert ei.value.suggested_path == "C1.D.name"
 
@@ -176,9 +176,9 @@ class TestFanoutTieBreak:
              _join("S2", [["s2_id", "id"]])],
         )
         models = _by_name(a, u, x, s1, s2, d)
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             route_dotted_target(
-                root=models["A"], target_model="D", leaf="name", models_by_name=models
+                root=models["A"], target_dataset="D", leaf="name", datasets_by_name=models
             )
         assert ei.value.suggested_path == "S1.X.D.name"
 
@@ -198,11 +198,11 @@ class TestFanoutTieBreak:
         )
         models = _by_name(root, a, b, d)
         assert short_form_route_or_none(
-            root=models["Root"], target_model="D", models_by_name=models
+            root=models["Root"], target_dataset="D", datasets_by_name=models
         ) is None
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             route_dotted_target(
-                root=models["Root"], target_model="D", leaf="name", models_by_name=models
+                root=models["Root"], target_dataset="D", leaf="name", datasets_by_name=models
             )
         assert ei.value.suggested_path == "A.D.name"
 
@@ -214,7 +214,7 @@ class TestUnreachable:
         models = _by_name(a, d)
         assert (
             short_form_route_or_none(
-                root=models["A"], target_model="D", models_by_name=models
+                root=models["A"], target_dataset="D", datasets_by_name=models
             )
             is None
         )
@@ -223,9 +223,9 @@ class TestUnreachable:
         a = _model("A", [_pk()])
         d = _model("D", [_pk(), _t("name")])
         models = _by_name(a, d)
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
             route_dotted_target(
-                root=models["A"], target_model="D", leaf="name", models_by_name=models
+                root=models["A"], target_dataset="D", leaf="name", datasets_by_name=models
             )
         assert ei.value.suggested_path is None
 
@@ -233,7 +233,7 @@ class TestUnreachable:
 # _safe_hops — the oriented fan-out-free executable hop set
 
 class TestSafeHops:
-    def _star(self) -> dict[str, SlayerModel]:
+    def _star(self) -> dict[str, SlayerDataset]:
         """A's edges: B (target PK), D (declared m:1) safe; C (non-unique target)
         and E (declared 1:m) unsafe forward."""
         b = _model("B", [_pk()])
@@ -246,8 +246,8 @@ class TestSafeHops:
             [
                 _join("B", [["b_id", "id"]]),
                 _join("C", [["c_grp", "grp"]]),
-                _join("D", [["d_x", "x"]], cardinality=JoinCardinality.MANY_TO_ONE),
-                _join("E", [["e_y", "y"]], cardinality=JoinCardinality.ONE_TO_MANY),
+                _join("D", [["d_x", "x"]], cardinality=RelationshipCardinality.MANY_TO_ONE),
+                _join("E", [["e_y", "y"]], cardinality=RelationshipCardinality.ONE_TO_MANY),
             ],
         )
         return _by_name(a, b, c, d, e)

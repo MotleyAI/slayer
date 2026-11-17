@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests._dev1838_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     OrderItem,
     dev1838_models,
     month_td,
@@ -31,30 +31,30 @@ def _cases() -> dict:
     return {
         "fuse/plain_hidden_order": q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
-            order=[OrderItem.model_validate({"column": "avg(amount)", "direction": "desc"})],
+            measures=[DatasetMetric(expression="sum(amount)", name="m")],
+            order=[OrderItem.model_validate({"field": "avg(amount)", "direction": "desc"})],
         ),
         "fuse/post_filter_on_transform": q(
             dimensions=["status"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(formula="cumsum(sum(amount))", name="x"),
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(expression="cumsum(sum(amount))", name="x"),
             ],
             filters=["cumsum(sum(amount)) > 50"],
         ),
         "fuse/multi_alias": q(
             dimensions=["status"],
             measures=[
-                ModelMeasure(formula="sum(amount)", name="m1"),
-                ModelMeasure(formula="sum(amount)", name="m2"),
+                DatasetMetric(expression="sum(amount)", name="m1"),
+                DatasetMetric(expression="sum(amount)", name="m2"),
             ],
         ),
         "fuse/dim_only_dedup": q(dimensions=["region", "city"]),
         "fuse/scalar_local": q(
-            measures=[ModelMeasure(formula="sum(amount)", name="m")],
+            measures=[DatasetMetric(expression="sum(amount)", name="m")],
         ),
         "fuse/scalar_cm_spine": q(
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="cm")],
+            measures=[DatasetMetric(expression="sum(customers.spend)", name="cm")],
         ),
     }
 

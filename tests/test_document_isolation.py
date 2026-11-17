@@ -232,7 +232,7 @@ def _assert_one_warning(records: list[warnings.WarningMessage], *, name: str, ca
 class TestTypedLoadError:
     async def test_validation_failure_names_the_model(self, bad_store: StorageBackend) -> None:
         with pytest.raises(StoredDocumentLoadError) as ei:
-            await bad_store.get_model(BAD, data_source=DS)
+            await bad_store.get_dataset(BAD, data_source=DS)
         assert isinstance(ei.value, ValueError)
         assert f"{DS}.{BAD}" in str(ei.value)
         assert isinstance(ei.value.__cause__, pydantic.ValidationError)
@@ -242,11 +242,11 @@ class TestTypedLoadError:
         storage = await store.seed(models=[_customers()])
         store.write_model(name=BAD, text=store.corrupt_text())
         with pytest.raises(StoredDocumentLoadError) as ei:
-            await storage.get_model(BAD, data_source=DS)
+            await storage.get_dataset(BAD, data_source=DS)
         assert isinstance(ei.value, ValueError)
         assert f"{DS}.{BAD}" in str(ei.value)
         assert ei.value.__cause__ is not None
-        assert await storage.get_model("customers", data_source=DS) is not None
+        assert await storage.get_dataset("customers", data_source=DS) is not None
 
     @pytest.mark.parametrize("case", sorted(_LOAD_FAILURES))
     async def test_every_load_stage_failure_is_typed(self, store: Store, case: str) -> None:
@@ -257,7 +257,7 @@ class TestTypedLoadError:
         engine = SlayerQueryEngine(storage=storage)
         try:
             with pytest.raises(StoredDocumentLoadError) as ei:
-                await engine.storage.get_model(BAD, data_source=DS)
+                await engine.storage.get_dataset(BAD, data_source=DS)
         finally:
             await engine.aclose()
             engine.close()
@@ -272,10 +272,10 @@ class TestEnumerationSkipsAndWarns:
     async def test_every_valid_model_resaves_with_one_warning(
         self, bad_store: StorageBackend, recorded: list, name: str,
     ) -> None:
-        model = await bad_store.get_model(name, data_source=DS)
+        model = await bad_store.get_dataset(name, data_source=DS)
         assert model is not None
         recorded.clear()
-        await bad_store.save_model(model)
+        await bad_store.save_dataset(model)
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
     async def test_reingest_succeeds_and_reports_the_bad_model_once(
@@ -289,24 +289,24 @@ class TestEnumerationSkipsAndWarns:
         finally:
             await engine.aclose()
             engine.close()
-        bad_errors = [e for e in result.errors if e.model_name == BAD]
+        bad_errors = [e for e in result.errors if e.dataset_name == BAD]
         assert len(bad_errors) == 1
         assert CAUSE in bad_errors[0].error
-        assert [e for e in result.errors if e.model_name != BAD] == []
-        customers = await bad_store.get_model("customers", data_source=DS)
+        assert [e for e in result.errors if e.dataset_name != BAD] == []
+        customers = await bad_store.get_dataset("customers", data_source=DS)
         assert customers is not None
-        assert customers.get_column("tier") is not None
-        products = await bad_store.get_model("products", data_source=DS)
+        assert customers.get_field("tier") is not None
+        products = await bad_store.get_dataset("products", data_source=DS)
         assert products is not None
-        assert products.get_column("sku") is not None
+        assert products.get_field("sku") is not None
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
     async def test_direct_load_still_raises_after_a_skip(self, bad_store: StorageBackend) -> None:
-        customers = await bad_store.get_model("customers", data_source=DS)
+        customers = await bad_store.get_dataset("customers", data_source=DS)
         assert customers is not None
-        await bad_store.save_model(customers)
+        await bad_store.save_dataset(customers)
         with pytest.raises(StoredDocumentLoadError):
-            await bad_store.get_model(BAD, data_source=DS)
+            await bad_store.get_dataset(BAD, data_source=DS)
 
 
 async def _mcp_text(storage: StorageBackend, *, tool: str, arguments: dict[str, Any]) -> str:
@@ -316,7 +316,7 @@ async def _mcp_text(storage: StorageBackend, *, tool: str, arguments: dict[str, 
 
 class TestEnumerationSurfaces:
     async def test_builtin_models_detailed(self, bad_store: StorageBackend, recorded: list) -> None:
-        [spine] = await bad_store.builtin_models(DS, detailed=True)
+        [spine] = await bad_store.builtin_datasets(DS, detailed=True)
         assert spine.name == "time_spine"
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
@@ -351,7 +351,7 @@ class TestEnumerationSurfaces:
         engine = SlayerQueryEngine(storage=bad_store)
         try:
             resp = await engine.execute(
-                SlayerQuery.model_validate({"source_model": "customers", "dimensions": ["name"]}))
+                SlayerQuery.model_validate({"population": "customers", "dimensions": ["name"]}))
         finally:
             engine.close()
         assert {r["customers.name"] for r in resp.data} == {"Ann", "Bob"}
@@ -387,12 +387,12 @@ class TestValidateModels:
     async def test_reports_the_unloadable_model_and_the_others(self, bad_store: StorageBackend) -> None:
         engine = SlayerQueryEngine(storage=bad_store)
         try:
-            report = await engine.validate_models(data_source=DS)
+            report = await engine.validate_datasets(data_source=DS)
         finally:
             engine.close()
-        [bad] = [e for e in report if e.model_name == BAD]
+        [bad] = [e for e in report if e.dataset_name == BAD]
         assert CAUSE in bad.model_dump_json()
-        [drift] = [e for e in report if e.model_name == "products"]
+        [drift] = [e for e in report if e.dataset_name == "products"]
         assert "gone" in drift.model_dump_json()
 
 
@@ -422,7 +422,7 @@ class TestAnswerPickingFailsClosed:
         engine = SlayerQueryEngine(storage=bad_store)
         try:
             with pytest.raises(StoredDocumentLoadError) as ei:
-                await engine.recommend_root_model(items, data_source=data_source)
+                await engine.recommend_population(items, data_source=data_source)
         finally:
             engine.close()
         assert f"{DS}.{BAD}" in str(ei.value)
@@ -431,7 +431,7 @@ class TestAnswerPickingFailsClosed:
         engine = SlayerQueryEngine(storage=bad_store)
         try:
             with pytest.raises(StoredDocumentLoadError) as ei:
-                await engine.detect_join_cardinality(data_source=DS)
+                await engine.detect_relationship_cardinality(data_source=DS)
         finally:
             engine.close()
         assert f"{DS}.{BAD}" in str(ei.value)

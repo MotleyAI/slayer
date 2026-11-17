@@ -21,7 +21,7 @@ from slayer.engine.elaborate_env import check_input_dependencies_analyzable
 
 from tests._dev1892_fixtures import assert_grain_residue, assert_ref_free
 from tests._dev1900_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     REAGG_BAD,
     REAGG_DERIVED_POP_WAVG,
     REAGG_GOOD,
@@ -34,22 +34,22 @@ UNPROVEN = "unproven join hop"
 HOP = "region_events"
 MODES = ["broadcast", "associate", "error"]
 
-CM_KWARG = ModelMeasure(
-    formula="weighted_avg(customers.spend, weight=customers.regions.bad_pop)", name="w")
-CM_POSITIONAL = ModelMeasure(
-    formula="weighted_avg(customers.spend, customers.regions.bad_pop)", name="w")
-CM_KWARG_CHAIN = ModelMeasure(
-    formula="weighted_avg(customers.spend, weight=customers.regions.bad_pop2)", name="w")
-LOCAL_KWARG = ModelMeasure(
-    formula="weighted_avg(amount, weight=customers.regions.bad_pop)", name="w")
-SOURCE_FANNING = ModelMeasure(formula="sum(customers.regions.bad_pop)", name="w")  # source crosses the hop
-CM_DEFAULT = ModelMeasure(formula="wsumx(customers.spend)", name="w")       # dotted default regions.bad_pop
-CM_DEFAULT_BARE = ModelMeasure(formula="wbadbare(customers.regions.pop)", name="w")  # bare owner-local default bad_pop
-CM_DEFAULT_EXPR = ModelMeasure(formula="wsumy(customers.spend)", name="w")  # expr default regions.bad_pop * 1
-CM_FILTER = ModelMeasure(formula="sum(customers.bad_pop_spend)", name="w")  # measure-local regions.bad_pop > 0
-CM_GOOD = ModelMeasure(formula="wgood(customers.spend)", name="w")          # default regions.derived_pop (to-one)
-CM_UNPARSE = ModelMeasure(formula="wunparse(customers.spend)", name="w")
-CM_EXPR_UNPARSE = ModelMeasure(formula="wexpr_unparse(customers.spend)", name="w")  # unparseable expr default → unnameable
+CM_KWARG = DatasetMetric(
+    expression="weighted_avg(customers.spend, weight=customers.regions.bad_pop)", name="w")
+CM_POSITIONAL = DatasetMetric(
+    expression="weighted_avg(customers.spend, customers.regions.bad_pop)", name="w")
+CM_KWARG_CHAIN = DatasetMetric(
+    expression="weighted_avg(customers.spend, weight=customers.regions.bad_pop2)", name="w")
+LOCAL_KWARG = DatasetMetric(
+    expression="weighted_avg(amount, weight=customers.regions.bad_pop)", name="w")
+SOURCE_FANNING = DatasetMetric(expression="sum(customers.regions.bad_pop)", name="w")  # source crosses the hop
+CM_DEFAULT = DatasetMetric(expression="wsumx(customers.spend)", name="w")       # dotted default regions.bad_pop
+CM_DEFAULT_BARE = DatasetMetric(expression="wbadbare(customers.regions.pop)", name="w")  # bare owner-local default bad_pop
+CM_DEFAULT_EXPR = DatasetMetric(expression="wsumy(customers.spend)", name="w")  # expr default regions.bad_pop * 1
+CM_FILTER = DatasetMetric(expression="sum(customers.bad_pop_spend)", name="w")  # measure-local regions.bad_pop > 0
+CM_GOOD = DatasetMetric(expression="wgood(customers.spend)", name="w")          # default regions.derived_pop (to-one)
+CM_UNPARSE = DatasetMetric(expression="wunparse(customers.spend)", name="w")
+CM_EXPR_UNPARSE = DatasetMetric(expression="wexpr_unparse(customers.spend)", name="w")  # unparseable expr default → unnameable
 
 #: wgood (to-one derived default) executes today; behaviour-preserving pin.
 WGOOD_TOONE_DEFAULT = 134000.0
@@ -141,8 +141,8 @@ class TestUnanalyzableDefinition:
     async def test_unparseable_column_filter_typed_error(self, unparse_engine):
         """A source column's ``filter=`` referencing an unanalyzable derived
         column is an input dependency too — fail closed, never stamped ``()``."""
-        q = orders_q(measures=[ModelMeasure(
-            formula="sum(customers.flagged_spend)", name="fs")])
+        q = orders_q(measures=[DatasetMetric(
+            expression="sum(customers.flagged_spend)", name="fs")])
         with pytest.raises(ValueError) as ei:
             await unparse_engine.execute(q)
         msg = str(ei.value)
@@ -168,11 +168,11 @@ class TestInputDependencyCheckerAlwaysRaises:
 
     def test_named_column_raises_naming_it(self):
         with pytest.raises(ValueError, match="derived column 'bad_pop'"):
-            check_input_dependencies_analyzable(alias="w", column="bad_pop")
+            check_input_dependencies_analyzable(alias="w", field="bad_pop")
 
     def test_unnameable_dependency_still_raises(self):
         with pytest.raises(ValueError, match="has an input dependency"):
-            check_input_dependencies_analyzable(alias="w", column=None)
+            check_input_dependencies_analyzable(alias="w", field=None)
 
 
 class TestReaggregationParameter:

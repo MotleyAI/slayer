@@ -9,7 +9,7 @@ import pytest
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.sql.dialects import SqlDialect, get_dialect
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
@@ -20,13 +20,13 @@ TG = TimeGranularity
 SHIFT_GRANULARITIES = [TG.HOUR, TG.DAY, TG.WEEK, TG.WEEK_SUNDAY, TG.MONTH, TG.QUARTER, TG.YEAR]
 
 
-def _ev_model() -> SlayerModel:
-    return SlayerModel(
+def _ev_model() -> SlayerDataset:
+    return SlayerDataset(
         name="ev", sql_table="ev", data_source="test", default_time_dimension="ts",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="ts", type=DataType.TIMESTAMP),
-            Column(name="v", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="ts", datatype=DataType.TIMESTAMP),
+            DatasetField(name="v", datatype=DataType.DOUBLE),
         ],
     )
 

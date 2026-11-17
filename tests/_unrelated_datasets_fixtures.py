@@ -26,8 +26,8 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, build_scope
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import UnrelatedDatasetWarningPayload
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -73,67 +73,67 @@ def main_tables(*, event_rows: Optional[list[tuple]] = None) -> list[TableSpec]:
     return [CUSTOMERS, events_table(event_rows), USERS, ORGS]
 
 
-def _many_to_one(target: str, column: str) -> ModelJoin:
-    return ModelJoin(target_model=target, join_pairs=[[column, "id"]], cardinality=JoinCardinality.MANY_TO_ONE)
+def _many_to_one(target: str, column: str) -> DatasetRelationship:
+    return DatasetRelationship(to=target, join_pairs=[[column, "id"]], cardinality=RelationshipCardinality.MANY_TO_ONE)
 
 
-def customers_model(**extra: Any) -> SlayerModel:
+def customers_model(**extra: Any) -> SlayerDataset:
     columns = [
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="city", type=DataType.TEXT),
-        Column(name="tenant", type=DataType.TEXT),
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="city", datatype=DataType.TEXT),
+        DatasetField(name="tenant", datatype=DataType.TEXT),
         *extra.pop("columns", []),
     ]
-    return SlayerModel(name="customers", sql_table="customers", data_source="test", columns=columns, **extra)
+    return SlayerDataset(name="customers", sql_table="customers", data_source="test", fields=columns, **extra)
 
 
-def events_model() -> SlayerModel:
-    return SlayerModel(
+def events_model() -> SlayerDataset:
+    return SlayerDataset(
         name="events", sql_table="events", data_source="test", default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="amount_x2", type=DataType.DOUBLE, sql="amount * 2"),
-            Column(name="created_at", type=DataType.DATE),
-            Column(name="kind", type=DataType.TEXT),
-            Column(name="user_id", type=DataType.INT),
-            Column(name="tenant", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="amount_x2", datatype=DataType.DOUBLE, sql="amount * 2"),
+            DatasetField(name="created_at", datatype=DataType.DATE),
+            DatasetField(name="kind", datatype=DataType.TEXT),
+            DatasetField(name="user_id", datatype=DataType.INT),
+            DatasetField(name="tenant", datatype=DataType.TEXT),
         ],
-        joins=[_many_to_one("users", "user_id")],
+        relationships=[_many_to_one("users", "user_id")],
     )
 
 
-def users_model() -> SlayerModel:
-    return SlayerModel(
+def users_model() -> SlayerDataset:
+    return SlayerDataset(
         name="users", sql_table="users", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="org_id", type=DataType.INT),
-            Column(name="tenant", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="org_id", datatype=DataType.INT),
+            DatasetField(name="tenant", datatype=DataType.TEXT),
         ],
-        joins=[_many_to_one("orgs", "org_id")],
+        relationships=[_many_to_one("orgs", "org_id")],
     )
 
 
-def orgs_model() -> SlayerModel:
-    return SlayerModel(
+def orgs_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orgs", sql_table="orgs", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="tenant", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="tenant", datatype=DataType.TEXT),
         ],
     )
 
 
-def main_models() -> list[SlayerModel]:
+def main_models() -> list[SlayerDataset]:
     return [customers_model(), events_model(), users_model(), orgs_model()]
 
 
 @contextlib.asynccontextmanager
 async def main_engine(
-    backend: str, *, models: Optional[list[SlayerModel]] = None, event_rows: Optional[list[tuple]] = None,
+    backend: str, *, models: Optional[list[SlayerDataset]] = None, event_rows: Optional[list[tuple]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """Executing engine over the main seed."""
     tables = main_tables(event_rows=event_rows)
@@ -165,16 +165,16 @@ def _wide_tables() -> list[TableSpec]:
     )]
 
 
-def _wide_models() -> list[SlayerModel]:
-    def flat(name: str, *columns: Column) -> SlayerModel:
-        return SlayerModel(
+def _wide_models() -> list[SlayerDataset]:
+    def flat(name: str, *columns: DatasetField) -> SlayerDataset:
+        return SlayerDataset(
             name=name, sql_table=name, data_source="wide",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True), *columns],
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), *columns],
         )
 
     return [
-        flat("customers", Column(name="city", type=DataType.TEXT)),
-        *(flat(name, Column(name="v", type=DataType.DOUBLE)) for name in WIDE_DATASETS),
+        flat("customers", DatasetField(name="city", datatype=DataType.TEXT)),
+        *(flat(name, DatasetField(name="v", datatype=DataType.DOUBLE)) for name in WIDE_DATASETS),
     ]
 
 
@@ -213,7 +213,7 @@ GROUPED = [m("count(*)", "n_customers"), m("count(events.id)", "n_events")]
 
 
 def query(**fields: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "customers", **fields})
+    return SlayerQuery.model_validate({"population": "customers", **fields})
 
 
 def ratio_query(**extra: Any) -> SlayerQuery:

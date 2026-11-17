@@ -30,7 +30,7 @@ from sqlglot.optimizer.scope import traverse_scope
 
 from slayer import usage_reporting
 from slayer.core.enums import DataType
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.storage.base import StorageBackend
 from slayer.storage.document_loading import DocumentLoadFailures
 from slayer.storage.engine_view import EngineStorage
@@ -586,17 +586,17 @@ class PgConnection:
 
     async def _build_catalog(self) -> FacadeCatalog:
         storage = cast(StorageBackend, self._read_storage)
-        models_by_datasource: dict[str, list[SlayerModel]] = {}
+        datasets_by_datasource: dict[str, list[SlayerDataset]] = {}
         schema_by_datasource: dict[str, str] = {}
         failures = DocumentLoadFailures()
         for datasource in await storage.list_datasources():
-            models_by_datasource[datasource] = failures.skip(await storage.load_models(data_source=datasource))
+            datasets_by_datasource[datasource] = failures.skip(await storage.load_datasets(data_source=datasource))
             config = await storage.get_datasource(datasource)
             if config is not None and config.postgres_schema:
                 schema_by_datasource[datasource] = config.postgres_schema
         priority = await storage.get_datasource_priority()
         return build_catalog_grouped_by_schema(
-            models_by_datasource=models_by_datasource,
+            datasets_by_datasource=datasets_by_datasource,
             schema_by_datasource=schema_by_datasource,
             datasource_priority=priority,
             default_schema=PUBLIC_SCHEMA,
@@ -1151,7 +1151,7 @@ class PgConnection:
             await self._send_error(code=code, message=message)
             self._fail_tx()
             return False
-        mapping = result.column_name_mapping
+        mapping = result.field_name_mapping
         types = result.projection_types
         formats = proto.parse_result_format_codes(result_formats or [], len(mapping))
         if send_row_description:
@@ -1186,7 +1186,7 @@ class PgConnection:
                 for i, c in enumerate(cols)
             ]
         if isinstance(result, QueryResult):
-            mapping = result.column_name_mapping
+            mapping = result.field_name_mapping
             types = result.projection_types
             formats = proto.parse_result_format_codes(result_formats or [], len(mapping))
             return [

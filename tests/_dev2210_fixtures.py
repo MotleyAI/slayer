@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType, JoinType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.plan import plan_query
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -54,34 +54,34 @@ def seed(dialect: str, db_path: str, statements: Sequence[str] = DDL) -> None:
             con.execute(statement)
 
 
-def _id(**kw: Any) -> Column:
-    return Column(name="id", type=DataType.INT, primary_key=True, **kw)
+def _id(**kw: Any) -> DatasetField:
+    return DatasetField(name="id", datatype=DataType.INT, primary_key=True, **kw)
 
 
-def _order_columns() -> list[Column]:
+def _order_columns() -> list[DatasetField]:
     return [
-        _id(), Column(name="status", type=DataType.TEXT), Column(name="amount", type=DataType.INT),
-        Column(name="ordered_at", type=DataType.DATE),
+        _id(), DatasetField(name="status", datatype=DataType.TEXT), DatasetField(name="amount", datatype=DataType.INT),
+        DatasetField(name="ordered_at", datatype=DataType.DATE),
     ]
 
 
-def _returns(name: str, *, joins: list[ModelJoin], extra: Sequence[Column] = (), **kw: Any) -> SlayerModel:
-    return SlayerModel(
+def _returns(name: str, *, joins: list[DatasetRelationship], extra: Sequence[DatasetField] = (), **kw: Any) -> SlayerDataset:
+    return SlayerDataset(
         name=name, data_source="test", sql_table="returns",
-        columns=[_id(), Column(name="order_id", type=DataType.INT), Column(name="reason", type=DataType.TEXT), *extra],
-        joins=joins, **kw,
+        fields=[_id(), DatasetField(name="order_id", datatype=DataType.INT), DatasetField(name="reason", datatype=DataType.TEXT), *extra],
+        relationships=joins, **kw,
     )
 
 
-def _to(target: str, *, pairs: tuple[str, str] = ("order_id", "id"), **kw: Any) -> ModelJoin:
-    return ModelJoin(target_model=target, join_pairs=[list(pairs)], **kw)
+def _to(target: str, *, pairs: tuple[str, str] = ("order_id", "id"), **kw: Any) -> DatasetRelationship:
+    return DatasetRelationship(to=target, join_pairs=[list(pairs)], **kw)
 
 
-def _orders(name: str, **kw: Any) -> SlayerModel:
-    return SlayerModel(name=name, data_source="test", sql_table="orders", columns=_order_columns(), **kw)
+def _orders(name: str, **kw: Any) -> SlayerDataset:
+    return SlayerDataset(name=name, data_source="test", sql_table="orders", fields=_order_columns(), **kw)
 
 
-def table_models() -> list[SlayerModel]:
+def table_models() -> list[SlayerDataset]:
     """Every table- and SQL-backed model of the fixture."""
     to_shipments = [_to("shipments", pairs=("id", "order_ref"))]
     return [
@@ -91,29 +91,29 @@ def table_models() -> list[SlayerModel]:
         _orders("ups_or_big_orders", joins=to_shipments, filters=["shipments.carrier = 'ups' or amount > 350"]),
         _orders("split_entry_orders", joins=to_shipments, filters=["shipments.id = 20", "shipments.id = 21"]),
         _orders("joint_entry_orders", joins=to_shipments, filters=["shipments.id = 20 and shipments.id = 21"]),
-        SlayerModel(name="shipments", data_source="test", sql_table="shipments", columns=[
-            _id(), Column(name="order_ref", type=DataType.INT), Column(name="carrier", type=DataType.TEXT),
+        SlayerDataset(name="shipments", data_source="test", sql_table="shipments", fields=[
+            _id(), DatasetField(name="order_ref", datatype=DataType.INT), DatasetField(name="carrier", datatype=DataType.TEXT),
         ]),
-        SlayerModel(name="carriers", data_source="test", sql_table="carriers", columns=[
-            _id(), Column(name="name", type=DataType.TEXT),
+        SlayerDataset(name="carriers", data_source="test", sql_table="carriers", fields=[
+            _id(), DatasetField(name="name", datatype=DataType.TEXT),
         ]),
         _returns("returns", joins=[_to("done_orders"), _to("ups_orders")],
-                 extra=[Column(name="done_status", type=DataType.TEXT, sql="done_orders.status")]),
+                 extra=[DatasetField(name="done_status", datatype=DataType.TEXT, sql="done_orders.status")]),
         _returns("late_returns", joins=[_to("orders")], filters=["reason = 'late'"]),
         _returns("returns_of_done", joins=[_to("done_orders")], filters=["done_orders.id is not null"]),
         _returns("returns_inner", joins=[_to("done_orders", join_type=JoinType.INNER)]),
-        SlayerModel(name="done_orders_sql", data_source="test", sql="SELECT id, status FROM orders",
-                    columns=[_id(), Column(name="status", type=DataType.TEXT)], filters=["status = 'done'"]),
+        SlayerDataset(name="done_orders_sql", data_source="test", sql="SELECT id, status FROM orders",
+                    fields=[_id(), DatasetField(name="status", datatype=DataType.TEXT)], filters=["status = 'done'"]),
         _returns("returns_sql", joins=[_to("done_orders_sql")]),
         _returns("returns_qb", joins=[_to("done_orders_qb")]),
     ]
 
 
-def query_backed_model() -> SlayerModel:
+def query_backed_model() -> SlayerDataset:
     """``done_orders_qb``: a query-backed model over ``orders``, filtered to done orders."""
-    return SlayerModel(
+    return SlayerDataset(
         name="done_orders_qb", data_source="test", filters=["status = 'done'"],
-        source_queries=[SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["id", "status"]})],
+        source_queries=[SlayerQuery.model_validate({"population": "orders", "dimensions": ["id", "status"]})],
     )
 
 
@@ -125,7 +125,7 @@ async def filtered_engine(backend: str, request: pytest.FixtureRequest) -> Async
         base_dir = str(request.getfixturevalue("tmp_path") / "store")
         with pg_database(info, statements=DDL, name="test") as ds:
             async with pg_query_engine(ds, base_dir=base_dir, models=table_models(), validate=False) as engine:
-                await engine.save_model(query_backed_model())
+                await engine.save_dataset(query_backed_model())
                 yield engine
         return
     if backend == "duckdb":
@@ -133,7 +133,7 @@ async def filtered_engine(backend: str, request: pytest.FixtureRequest) -> Async
     async with seeded_exec_engine(
         dialect=backend, seed=lambda p: seed(backend, p), models=table_models(),
     ) as (engine, _db):
-        await engine.save_model(query_backed_model())
+        await engine.save_dataset(query_backed_model())
         yield engine
 
 
@@ -144,11 +144,11 @@ def seeded_file(backend: str, tmp_dir: str) -> str:
     return path
 
 
-def bundle(source: str, *, dialect: str, models: Sequence[SlayerModel] | None = None) -> ResolvedSourceBundle:
+def bundle(source: str, *, dialect: str, models: Sequence[SlayerDataset] | None = None) -> ResolvedSourceBundle:
     by_name = {m.name: m for m in (models if models is not None else table_models())}
     return ResolvedSourceBundle(
-        dialect=dialect, source_model=by_name[source],
-        referenced_models=[m for n, m in by_name.items() if n != source],
+        dialect=dialect, population=by_name[source],
+        referenced_datasets=[m for n, m in by_name.items() if n != source],
     )
 
 
@@ -156,8 +156,8 @@ def render(query: dict[str, Any], *, dialect: str, force_association: bool = Fal
     """The SQL ``query`` renders to on ``dialect`` straight from the planner (no engine-level gating);
     ``force_association`` renders every filter read as its association, never inlined."""
     q = SlayerQuery.model_validate(query)
-    assert isinstance(q.source_model, str)
-    b = bundle(q.source_model, dialect=dialect)
+    assert isinstance(q.population, str)
+    b = bundle(q.population, dialect=dialect)
     gen = SQLGenerator(dialect=dialect, force_association_filters=True) if force_association else SQLGenerator(dialect=dialect)
     return gen.generate_from_planned(plan_query(query=q, bundle=b), bundle=b)
 

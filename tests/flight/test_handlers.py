@@ -28,7 +28,7 @@ from google.protobuf.any_pb2 import Any as PbAny
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.query_engine import SlayerResponse
 from slayer.flight import _flight_sql_pb2 as fsql_pb
 from slayer.flight.catalog import CATALOG_NAME
@@ -53,22 +53,22 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "capture-latest.jsonl"
 class _FakeStorage:
     """Minimal async StorageBackend stand-in for tests."""
 
-    def __init__(self, models_by_ds: dict[str, list[SlayerModel]]) -> None:
+    def __init__(self, models_by_ds: dict[str, list[SlayerDataset]]) -> None:
         self._by_ds = models_by_ds
 
     async def list_datasources(self) -> list[str]:  # NOSONAR(S7503) — must match async interface (called via await in production)
         return list(self._by_ds.keys())
 
-    async def list_models(self, *, data_source: str | None = None) -> list[str]:  # NOSONAR(S7503) — must match async interface (called via await in production)
+    async def list_datasets(self, *, data_source: str | None = None) -> list[str]:  # NOSONAR(S7503) — must match async interface (called via await in production)
         return [m.name for m in self._by_ds.get(data_source or "", [])]
 
-    async def get_model(self, *, name: str, data_source: str | None = None):  # NOSONAR(S7503) — must match async interface (called via await in production)
+    async def get_dataset(self, *, name: str, data_source: str | None = None):  # NOSONAR(S7503) — must match async interface (called via await in production)
         for m in self._by_ds.get(data_source or "", []):
             if m.name == name:
                 return m
         return None
 
-    async def load_models(self, *, data_source: str | None = None, exclude: str | None = None):  # NOSONAR(S7503) — must match async interface (called via await in production)
+    async def load_datasets(self, *, data_source: str | None = None, exclude: str | None = None):  # NOSONAR(S7503) — must match async interface (called via await in production)
         return [m for m in self._by_ds.get(data_source or "", []) if m.name != exclude], []
 
 
@@ -86,15 +86,15 @@ class _FakeEngine:
         return run_sync(workflow)
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="jaffle",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
         ],
     )
 

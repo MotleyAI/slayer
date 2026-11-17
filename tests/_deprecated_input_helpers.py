@@ -17,7 +17,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from slayer.core.deprecation import DeprecatedInputFutureWarning
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import DeprecatedInputWarning
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -80,7 +80,7 @@ def mcp_payload(text: str) -> dict[str, Any]:
 
 def saved_stage() -> SlayerQuery:
     return SlayerQuery.model_validate(
-        {"source_model": "orders", "dimensions": ["status"], "measures": [{"formula": "count(*)", "name": "n"}]},
+        {"population": "orders", "dimensions": ["status"], "metrics": [{"formula": "count(*)", "name": "n"}]},
     )
 
 
@@ -92,7 +92,7 @@ async def orders_engine() -> AsyncGenerator[SlayerQueryEngine]:
         _seed_sqlite(db_path)
         engine = await build_exec_engine(db_path, dialect="sqlite", models=dev1840_models())
         try:
-            await engine.save_model(SlayerModel(name=SAVED, source_queries=[saved_stage()]))
+            await engine.save_dataset(SlayerDataset(name=SAVED, source_queries=[saved_stage()]))
             yield engine
         finally:
             engine.close()

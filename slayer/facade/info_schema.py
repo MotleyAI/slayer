@@ -208,7 +208,7 @@ def _serve_columns(*, catalog: FacadeCatalog) -> RowBatch:
 
     DEV-1567: cross-model entries are excluded — they leak as dotted
     "columns" that Metabase / dbt fingerprint scans then project, landing
-    a dotted name in ``SlayerQuery.measures[*].name`` (Pydantic rejects
+    a dotted name in ``SlayerQuery.metrics[*].name`` (Pydantic rejects
     the dot). Catalog-namespaced surfaces (``INFORMATION_SCHEMA.METRICS``
     / ``.DIMENSIONS``) and the catalog SQL fingerprint hash continue to
     use the raw ``tbl.metrics`` / ``tbl.dimensions``.

@@ -260,12 +260,12 @@ async def test_hidden_columns_not_surfaced(metabase_e2e_env: MetabaseE2EEnv) -> 
     assert storage is not None, "pg_primary storage handle not wired through fixture"
     host, port = metabase_e2e_env.pg_primary
 
-    model = run_sync(storage.get_model(name="products", data_source="jaffle_shop"))
+    model = run_sync(storage.get_dataset(name="products", data_source="jaffle_shop"))
     assert model is not None
-    target = next(c for c in model.columns if c.name == "description")
+    target = next(c for c in model.fields if c.name == "description")
     original = target.hidden
     target.hidden = True
-    run_sync(storage.save_model(model))
+    run_sync(storage.save_dataset(model))
     try:
         conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
         try:
@@ -284,7 +284,7 @@ async def test_hidden_columns_not_surfaced(metabase_e2e_env: MetabaseE2EEnv) -> 
         assert "sku" in names
     finally:
         target.hidden = original
-        run_sync(storage.save_model(model))
+        run_sync(storage.save_dataset(model))
 
 
 async def test_descriptions_surface_in_metadata(metabase_e2e_env: MetabaseE2EEnv) -> None:
@@ -300,13 +300,13 @@ async def test_descriptions_surface_in_metadata(metabase_e2e_env: MetabaseE2EEnv
     assert storage is not None
     host, port = metabase_e2e_env.pg_primary
 
-    model = run_sync(storage.get_model(name="orders", data_source="jaffle_shop"))
+    model = run_sync(storage.get_dataset(name="orders", data_source="jaffle_shop"))
     assert model is not None
-    target = next(c for c in model.columns if c.name == "order_total")
+    target = next(c for c in model.fields if c.name == "order_total")
     original_desc = target.description
     marker = "e2e description marker"
     target.description = marker
-    run_sync(storage.save_model(model))
+    run_sync(storage.save_dataset(model))
     try:
         conn = await _asyncpg_connect(host, port, password=metabase_e2e_env.pg_primary_password)
         try:
@@ -322,7 +322,7 @@ async def test_descriptions_surface_in_metadata(metabase_e2e_env: MetabaseE2EEnv
         )
     finally:
         target.description = original_desc
-        run_sync(storage.save_model(model))
+        run_sync(storage.save_dataset(model))
 
 
 def test_four_part_qualified_refs_handled(metabase_e2e_env: MetabaseE2EEnv) -> None:
@@ -456,7 +456,7 @@ def test_dataset_source_table_returns_rows(metabase_e2e_env: MetabaseE2EEnv) -> 
     cols = _dataset_cols(payload)
     assert 1 <= len(rows) <= 10
     # 9 physical columns + the saved demo measures exposed by the catalog.
-    assert len(cols) == 9 + len(DEMO_ENRICHMENT["orders"].measures)
+    assert len(cols) == 9 + len(DEMO_ENRICHMENT["orders"].metrics)
 
 
 def test_empty_result_filter_returns_cleanly(metabase_e2e_env: MetabaseE2EEnv) -> None:

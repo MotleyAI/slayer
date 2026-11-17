@@ -30,11 +30,11 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.sqlite_conn import transaction
@@ -55,66 +55,66 @@ from tests._engine_helpers import _engine_generate
 # --------------------------------------------------------------------------- #
 # Models.
 # --------------------------------------------------------------------------- #
-def monthly_model() -> SlayerModel:
+def monthly_model() -> SlayerDataset:
     """One row per (region, month); a clean running-total substrate."""
-    return SlayerModel(
+    return SlayerDataset(
         name="monthly", data_source="test", sql_table="monthly",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def monthly_multi_model() -> SlayerModel:
+def monthly_multi_model() -> SlayerDataset:
     """Like ``monthly`` but TWO rows per (region, month) — the substrate that
     separates a second-order aggregation's count over operand CELLS (Axiom 2.4,
     no row leaf → home is the operand dataset) from a naive count over base rows."""
-    return SlayerModel(
+    return SlayerDataset(
         name="monthly_multi", data_source="test", sql_table="monthly_multi",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def _extend_graph_a(models: List[SlayerModel]) -> None:
+def _extend_graph_a(models: List[SlayerDataset]) -> None:
     """Add DEV-1832's columns/aggregations to the DEV-1900 graph in place."""
     orders = next(m for m in models if m.name == "orders")
-    orders.columns.extend([
-        Column(name="cost", type=DataType.DOUBLE),
-        Column(name="quantity", type=DataType.DOUBLE),
-        Column(name="weight", type=DataType.DOUBLE),
+    orders.fields.extend([
+        DatasetField(name="cost", datatype=DataType.DOUBLE),
+        DatasetField(name="quantity", datatype=DataType.DOUBLE),
+        DatasetField(name="weight", datatype=DataType.DOUBLE),
     ])
     cust = next(m for m in models if m.name == "customers")
-    cust.columns.extend([
-        Column(name="discount", type=DataType.DOUBLE),
+    cust.fields.extend([
+        DatasetField(name="discount", datatype=DataType.DOUBLE),
         # Filtered joined-model leaf: spend restricted to North customers.
-        Column(name="north_spend", type=DataType.DOUBLE, sql="spend",
+        DatasetField(name="north_spend", datatype=DataType.DOUBLE, sql="spend",
                filter="regions.name = 'North'"),
     ])
     # Customers-owned custom aggregation; default weight is customers-local, so
     # an explicit orders-local weight= widens the home (semantics home rule).
     cust.aggregations.append(Aggregation(
-        name="wsum", formula="SUM({value} * {weight})",
+        name="wsum", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="spend")]))
     # Expression defaults: one naming a shallower (root-side) model, one local.
     cust.aggregations.append(Aggregation(
-        name="wsum_expr", formula="SUM({value} * {weight})",
+        name="wsum_expr", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="stores.rent * 2")]))
     cust.aggregations.append(Aggregation(
-        name="wsum_local_expr", formula="SUM({value} * {weight})",
+        name="wsum_local_expr", expression="SUM({value} * {weight})",
         params=[AggregationParam(name="weight", sql="spend * 2")]))
 
 
-def dev1832_models() -> List[SlayerModel]:
+def dev1832_models() -> List[SlayerDataset]:
     """Graph A (extended DEV-1900) + the ``sales``, ``monthly`` and
     ``monthly_multi`` graphs."""
     models = dev1900_models()
@@ -122,7 +122,7 @@ def dev1832_models() -> List[SlayerModel]:
     return [*models, sales_model(), monthly_model(), monthly_multi_model()]
 
 
-def dev1832_unparseable_models() -> List[SlayerModel]:
+def dev1832_unparseable_models() -> List[SlayerDataset]:
     """Graph A with ``regions.unparseable`` (no dialect parses it) so an
     expression leaf naming it fails the analyzability check."""
     models = unparseable_derived_models()
@@ -159,26 +159,26 @@ def monthly_multi_q(**kw) -> SlayerQuery:
 
 
 def month_td() -> List[TimeDimension]:
-    return [TimeDimension(dimension="ordered_at",
+    return [TimeDimension(field="ordered_at",
                           granularity=TimeGranularity.MONTH)]
 
 
-def bundle(models: Optional[List[SlayerModel]] = None) -> ResolvedSourceBundle:
+def bundle(models: Optional[List[SlayerDataset]] = None) -> ResolvedSourceBundle:
     """A ``ResolvedSourceBundle`` rooted at the first model (default: sales,
     the plan-structure root)."""
     models = models if models is not None else [sales_model(), *dev1832_models()]
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=models[1:])
+        population=models[0], referenced_datasets=models[1:])
 
 
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb",
-              models: Optional[List[SlayerModel]] = None) -> str:
+              models: Optional[List[SlayerDataset]] = None) -> str:
     """Dry-run SQL for ``query`` (no seed; the fail-closed paths raise here)."""
     models = models if models is not None else dev1832_models()
     return await _engine_generate(
-        query=query, model=next(m for m in models if m.name == query.source_model),
-        extra_models=[m for m in models if m.name != query.source_model],
+        query=query, model=next(m for m in models if m.name == query.population),
+        extra_models=[m for m in models if m.name != query.population],
         dialect=dialect, validate=False)
 
 
@@ -341,7 +341,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerModel]] = None,
+    request, *, models: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture."""
     dialect = request.param
@@ -477,8 +477,8 @@ def status_key(resp, root: str = "orders") -> dict:
 
 
 __all__ = [
-    "Aggregation", "AggregationParam", "Column", "ColumnRef", "DataType",
-    "ModelMeasure", "SlayerModel", "SlayerQuery", "TimeDimension",
+    "Aggregation", "AggregationParam", "DatasetField", "FieldRef", "DataType",
+    "DatasetMetric", "SlayerDataset", "SlayerQuery", "TimeDimension",
     "TimeGranularity",
     "monthly_model", "monthly_multi_model",
     "dev1832_models", "dev1832_unparseable_models",

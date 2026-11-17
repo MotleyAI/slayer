@@ -54,7 +54,7 @@ class OrderScope(str, Enum):
     HOST_BASE = "host_base"
     #: In ``_base`` but trimmed from the public projection (order-only / unprojected).
     HOST_BASE_HIDDEN = "host_base_hidden"
-    CROSS_MODEL_CTE = "cross_model_cte"
+    CROSS_DATASET_CTE = "cross_dataset_cte"
     WINDOWED_CTE = "windowed_cte"
     RANKED_CTE = "ranked_cte"
     TRANSFORM_STEP = "transform_step"
@@ -102,7 +102,7 @@ class OrderEnv(BaseModel):
 
     host_base: Dict[str, exp.Expression] = Field(default_factory=dict)
     host_base_hidden: Dict[str, exp.Expression] = Field(default_factory=dict)
-    cross_model_cte: Dict[str, exp.Expression] = Field(default_factory=dict)
+    cross_dataset_cte: Dict[str, exp.Expression] = Field(default_factory=dict)
     windowed_cte: Dict[str, exp.Expression] = Field(default_factory=dict)
     ranked_cte: Dict[str, exp.Expression] = Field(default_factory=dict)
     transform_step: Dict[str, exp.Expression] = Field(default_factory=dict)

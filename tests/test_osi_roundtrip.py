@@ -10,8 +10,8 @@ from typing import Any
 import pytest
 import yaml
 
-from slayer.core.enums import DataType, JoinCardinality, JoinType
-from slayer.core.models import ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality, JoinType
+from slayer.core.models import DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
@@ -68,14 +68,14 @@ async def _mismatches(original: Env, imported: Env, payloads: list[dict[str, Any
     return found + [f"never ran on the original: {key}" for key in sorted(wanted - ran)]
 
 
-def _dimensions(model: SlayerModel) -> list[str]:
-    return [c.name for c in model.columns if not c.hidden]
+def _dimensions(model: SlayerDataset) -> list[str]:
+    return [c.name for c in model.fields if not c.hidden]
 
 
-def _payloads(model: SlayerModel, *, extra_dimensions: list[str], empty_filter: str | None) -> list[dict[str, Any]]:
+def _payloads(model: SlayerDataset, *, extra_dimensions: list[str], empty_filter: str | None) -> list[dict[str, Any]]:
     dims = _dimensions(model)
     out: list[dict[str, Any]] = [{"source_model": model.name, "dimensions": [d]} for d in dims]
-    for m in model.measures:
+    for m in model.metrics:
         base: dict[str, Any] = {"source_model": model.name, "measures": [m.name]}
         out += [base, {**base, "dimensions": dims}, {**base, "time_dimensions": _MONTH},
                 {**base, "time_dimensions": _MONTH, "dimensions": ["region"]}]
@@ -85,20 +85,20 @@ def _payloads(model: SlayerModel, *, extra_dimensions: list[str], empty_filter: 
     return out
 
 
-def _models() -> list[SlayerModel]:
-    to_active = ModelJoin(target_model="active_orders", join_pairs=[["id", "customer_id"]],
-                          cardinality=JoinCardinality.ONE_TO_MANY)
-    visitor = ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]], name="visitor",
+def _models() -> list[SlayerDataset]:
+    to_active = DatasetRelationship(to="active_orders", join_pairs=[["id", "customer_id"]],
+                          cardinality=RelationshipCardinality.ONE_TO_MANY)
+    visitor = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]], name="visitor",
                         join_type=JoinType.INNER, cardinality=None)
-    to_profile = ModelJoin(target_model="customer_profiles", join_pairs=[["id", "id"]],
-                           cardinality=JoinCardinality.ONE_TO_ONE)
-    profiles = SlayerModel(name="customer_profiles", sql_table="customers", data_source=DATASOURCE,
-                           columns=[col("id", DataType.INT, "c_custkey", primary_key=True),
+    to_profile = DatasetRelationship(to="customer_profiles", join_pairs=[["id", "id"]],
+                           cardinality=RelationshipCardinality.ONE_TO_ONE)
+    profiles = SlayerDataset(name="customer_profiles", sql_table="customers", data_source=DATASOURCE,
+                           fields=[col("id", DataType.INT, "c_custkey", primary_key=True),
                                     col("email", DataType.TEXT)],
-                           measures=[measure("n_profiles", "count(*)")])
+                           metrics=[measure("n_profiles", "count(*)")])
     rich = rich_orders()
-    rich.columns.append(col("LegalType", DataType.TEXT, '"LegalType"'))
-    rich.measures += [measure("n_types", "count_distinct(LegalType)"),
+    rich.fields.append(col("LegalType", DataType.TEXT, '"LegalType"'))
+    rich.metrics += [measure("n_types", "count_distinct(LegalType)"),
                       measure("approx", "count_distinct_approx(customer_id)")]
     return [
         customers(joins=[to_active, to_profile], measures=[
@@ -139,7 +139,7 @@ async def test_same_results_after_round_trip(trip: tuple[Env, Env]) -> None:
     assert await _mismatches(env, imported, payloads) == []
 
 
-def _masked_orders() -> SlayerModel:
+def _masked_orders() -> SlayerDataset:
     """Masked operands in every aggregate position; ``open``/``test`` groups are all-NULL under the mask."""
     keep = {"id", "amount", "price", "status", "region", "ordered_on"}
     return orders(
@@ -162,7 +162,7 @@ async def test_masked_operands_round_trip(tmp_path: Path, dialect: str, extensio
     env = await make_env(tmp_path, dialect=dialect)
     model = _masked_orders()
     if not extensions:
-        model.measures = [m for m in model.measures if m.name != "w"]
+        model.metrics = [m for m in model.metrics if m.name != "w"]
     await save(env, model)
     imported, _ = await reimport(env, (await export(env, extensions=extensions)).document)
     payloads = _payloads(model, extra_dimensions=[], empty_filter="amount < 0")
@@ -173,21 +173,21 @@ def _meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     return {k: v for k, v in (meta or {}).items() if not k.startswith("osi_")}
 
 
-def _column_shape(model: SlayerModel) -> dict[str, tuple]:
+def _column_shape(model: SlayerDataset) -> dict[str, tuple]:
     return {c.name: (c.primary_key, c.unique, c.label, c.description, c.hidden, c.format, c.granularity,
-                     c.allowed_aggregations, c.filter, _meta(c.meta)) for c in model.columns}
+                     c.allowed_aggregations, c.filter, _meta(c.meta)) for c in model.fields}
 
 
-def _measure_shape(model: SlayerModel) -> dict[str, tuple]:
-    return {m.name or m.formula: (m.formula, m.label, m.type, _meta(m.meta)) for m in model.measures}
+def _measure_shape(model: SlayerDataset) -> dict[str, tuple]:
+    return {m.name or m.expression: (m.expression, m.label, m.datatype, _meta(m.meta)) for m in model.metrics}
 
 
-def _join_shape(model: SlayerModel) -> set[tuple]:
-    return {(j.target_model, tuple(map(tuple, j.join_pairs)), j.join_type, j.cardinality, j.name)
-            for j in model.joins}
+def _join_shape(model: SlayerDataset) -> set[tuple]:
+    return {(j.to, tuple(map(tuple, j.join_pairs)), j.join_type, j.cardinality, j.name)
+            for j in model.relationships}
 
 
-def _model_shape(model: SlayerModel) -> tuple:
+def _model_shape(model: SlayerDataset) -> tuple:
     queries = [q.model_dump(exclude_none=True) for q in model.source_queries or []]
     return (model.sql_table, model.sql, queries, model.query_variables, model.filters, model.hidden,
             model.access_tags, model.default_time_dimension, [a.model_dump() for a in model.aggregations],
@@ -207,16 +207,16 @@ async def test_slayer_structure_restored(trip: tuple[Env, Env]) -> None:
 
 async def test_filtered_column_split_restored(trip: tuple[Env, Env]) -> None:
     _, imported = trip
-    completed = (await stored(imported, "orders")).get_column("completed_amount")
+    completed = (await stored(imported, "orders")).get_field("completed_amount")
     assert completed is not None
     assert (completed.sql, completed.filter) == ("amount", "status = 'completed'")
 
 
 async def test_formula_restored(trip: tuple[Env, Env]) -> None:
     _, imported = trip
-    aov = (await stored(imported, "orders")).get_measure("aov")
+    aov = (await stored(imported, "orders")).get_metric("aov")
     assert aov is not None
-    assert aov.formula == "revenue / n"
+    assert aov.expression == "revenue / n"
 
 
 async def test_second_round_trip_is_stable(trip: tuple[Env, Env]) -> None:
@@ -261,8 +261,8 @@ async def test_source_columns_round_trip(tmp_path: Path) -> None:
     second, _ = await reimport(env, exported, name="second")
     assert doc_text((await export(second)).document) == doc_text(exported)
     orders_model = await stored(second, "orders")
-    assert {c.name for c in orders_model.columns if not c.hidden} == {"order_id", "amount"}
-    assert [c for c in orders_model.columns if c.hidden]
+    assert {c.name for c in orders_model.fields if not c.hidden} == {"order_id", "amount"}
+    assert [c for c in orders_model.fields if c.hidden]
     assert not [e for e in entries(convert_document(env, exported)) if e.category == "extension"]
     payload = {"source_model": "orders", "measures": ["units", "total"]}
     assert normalized(await rows(second, payload)) == normalized(await rows(first, payload))

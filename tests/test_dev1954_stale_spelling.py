@@ -13,9 +13,9 @@ from typing import AsyncIterator, List
 import pytest
 
 from slayer.core.errors import UnknownReferenceError
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery
-from slayer.core.scope import StageColumn
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import FieldRef, SlayerQuery
+from slayer.core.scope import StageField
 from slayer.engine.plan import plan_stages
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -33,26 +33,26 @@ CANON = "customers__hr__rname"
 AMOUNT_BY_NAME = {"North": 100.0, "South": 20.0, None: 47.0}
 
 
-def _with_query_backed(models: List[SlayerModel]) -> List[SlayerModel]:
+def _with_query_backed(models: List[SlayerDataset]) -> List[SlayerDataset]:
     """+ ``region_amounts`` (query-backed on orders) and ``regions.qb_label``
     reading its column by the stale spelling over a ``regions`` join."""
     regions = next(m for m in models if m.name == "regions")
-    regions.joins.append(ModelJoin(
-        target_model="region_amounts", join_pairs=[["id", "customers__region_id"]]))
-    regions.columns.append(Column(
+    regions.relationships.append(DatasetRelationship(
+        to="region_amounts", join_pairs=[["id", "customers__region_id"]]))
+    regions.fields.append(DatasetField(
         name="qb_label", sql=f"region_amounts.{STALE}"))
-    return [*models, SlayerModel(
+    return [*models, SlayerDataset(
         name="region_amounts", data_source="test",
         source_queries=[orders_q(
             dimensions=["customers.region_id", "customers.regions.rname"],
             measures=[{"formula": "sum(amount)", "name": "amt"}])])]
 
 
-def _parallel_models() -> List[SlayerModel]:
+def _parallel_models() -> List[SlayerDataset]:
     models = dev1954_models()
     customers = next(m for m in models if m.name == "customers")
-    customers.joins.append(ModelJoin(
-        target_model="regions", join_pairs=[["region_id", "id"]], name="hr2"))
+    customers.relationships.append(DatasetRelationship(
+        to="regions", join_pairs=[["region_id", "id"]], name="hr2"))
     return models
 
 
@@ -70,15 +70,15 @@ async def unnamed_engine(request) -> AsyncIterator[SlayerQueryEngine]:
         yield e
 
 
-def _ambiguous_qb_models() -> List[SlayerModel]:
+def _ambiguous_qb_models() -> List[SlayerDataset]:
     """+ ``pq`` projecting both parallel edges and ``regions.amb`` reading it by the
     stale spelling (a respelling of two ``pq`` columns)."""
     models = _parallel_models()
     regions = next(m for m in models if m.name == "regions")
-    regions.joins.append(ModelJoin(
-        target_model="pq", join_pairs=[["id", "customers__region_id"]]))
-    regions.columns.append(Column(name="amb", sql=f"pq.{STALE}"))
-    return [*models, SlayerModel(
+    regions.relationships.append(DatasetRelationship(
+        to="pq", join_pairs=[["id", "customers__region_id"]]))
+    regions.fields.append(DatasetField(name="amb", sql=f"pq.{STALE}"))
+    return [*models, SlayerDataset(
         name="pq", data_source="test", source_queries=[orders_q(
             dimensions=["customers.region_id", "customers.hr.rname", "customers.hr2.rname"],
             measures=[{"formula": "sum(amount)", "name": "amt"}])])]
@@ -122,14 +122,14 @@ def _assert_one_stale(resp) -> None:
 class TestStageColumnRespellings:
     @staticmethod
     def _schema(*, models, stage: SlayerQuery):
-        bundle = ResolvedSourceBundle(dialect="postgres", source_model=models[0],
-                                      referenced_models=models[1:])
+        bundle = ResolvedSourceBundle(dialect="postgres", population=models[0],
+                                      referenced_datasets=models[1:])
         planned = plan_stages(
             queries=[stage, slayer_query(source_model=stage.name, measures=["count(*)"])],
             bundle=bundle)
         schema = planned[0].stage_schema
         assert schema is not None
-        return {c.name: c for c in schema.columns}
+        return {c.name: c for c in schema.fields}
 
     def test_one_named_hop(self) -> None:
         cols = self._schema(models=dev1954_models(), stage=_stage1(
@@ -159,10 +159,10 @@ class TestStageColumnRespellings:
     def test_two_named_hops(self) -> None:
         models = dev1954_models()
         orders = models[0]
-        orders.joins = [
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                      name="buyer") if j.target_model == "customers" else j
-            for j in orders.joins]
+        orders.relationships = [
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+                      name="buyer") if j.to == "customers" else j
+            for j in orders.relationships]
         cols = self._schema(models=models, stage=_stage1(measures=["max(customers.regions.pop)"]))
         assert set(cols["buyer__hr__rname"].respellings) == {
             "customers__hr__rname", "buyer__regions__rname", STALE}
@@ -181,13 +181,13 @@ class TestStageColumnRespellings:
                               measures=["max(customers__hr__pop_max)",
                                         {"formula": "min(customers__hr__pop_max)",
                                          "name": "customers__hr__lo"}])
-        bundle = ResolvedSourceBundle(dialect="postgres", source_model=dev1954_models()[0],
-                                      referenced_models=dev1954_models()[1:])
+        bundle = ResolvedSourceBundle(dialect="postgres", population=dev1954_models()[0],
+                                      referenced_datasets=dev1954_models()[1:])
         planned = plan_stages(queries=[stage1, stage2, slayer_query(
             source_model="s2", measures=["count(*)"])], bundle=bundle)
         schema = planned[1].stage_schema
         assert schema is not None
-        cols = {c.name: c for c in schema.columns}
+        cols = {c.name: c for c in schema.fields}
         assert set(cols[CANON].respellings) == {STALE}
         assert set(cols["customers__hr__pop_max_max"].respellings) == \
             {"customers__regions__pop_max_max"}
@@ -198,7 +198,7 @@ class TestStageColumnRespellings:
         assert cols[STALE].respellings == ()
 
     def test_default_is_empty(self) -> None:
-        assert StageColumn(name="x", sql_alias="x").respellings == ()
+        assert StageField(name="x", sql_alias="x").respellings == ()
 
 
 # --------------------------------------------------------------------------- #
@@ -301,7 +301,7 @@ class TestQueryBackedConsumer:
         _assert_one_stale(resp)
 
     async def test_query_backed_over_query_backed(self, engine: SlayerQueryEngine) -> None:
-        await engine.storage.save_model(SlayerModel(
+        await engine.storage.save_dataset(SlayerDataset(
             name="ra2", data_source="test", source_queries=[slayer_query(
                 source_model="region_amounts", dimensions=[CANON],
                 measures=[{"formula": "sum(amt)", "name": "amt2"}])]))
@@ -313,19 +313,19 @@ class TestQueryBackedConsumer:
     async def test_stored_query_keeps_its_spelling(self, engine: SlayerQueryEngine) -> None:
         await engine.execute(slayer_query(
             source_model="region_amounts", dimensions=[STALE], measures=["sum(amt)"]))
-        model = await engine.storage.get_model("region_amounts", data_source="test")
+        model = await engine.storage.get_dataset("region_amounts", data_source="test")
         assert model is not None
         assert model.source_queries
         dimensions = model.source_queries[0].dimensions
-        assert dimensions is not None and all(isinstance(d, ColumnRef) for d in dimensions)
-        dims = [d.full_name for d in dimensions if isinstance(d, ColumnRef)]
+        assert dimensions is not None and all(isinstance(d, FieldRef) for d in dimensions)
+        dims = [d.full_name for d in dimensions if isinstance(d, FieldRef)]
         assert dims == ["customers.region_id", "customers.regions.rname"]
 
     async def test_authored_columns_stay_exact(self, engine: SlayerQueryEngine) -> None:
-        orders = await engine.storage.get_model("orders", data_source="test")
+        orders = await engine.storage.get_dataset("orders", data_source="test")
         assert orders is not None
-        orders.columns = [*orders.columns, Column(name=CANON, sql="status")]
-        await engine.storage.save_model(orders)
+        orders.fields = [*orders.fields, DatasetField(name=CANON, sql="status")]
+        await engine.storage.save_dataset(orders)
         query = orders_q(dimensions=[STALE])
         with pytest.raises(UnknownReferenceError, match=STALE):
             await engine.execute(query)
@@ -339,12 +339,12 @@ class TestEdgeNamedLater:
         assert stale_warnings(before) == []
 
         storage = unnamed_engine.storage
-        customers = await storage.get_model("customers", data_source="test")
+        customers = await storage.get_dataset("customers", data_source="test")
         assert customers is not None
-        customers.joins = [
-            j.model_copy(update={"name": "hr"}) if j.target_model == "regions" else j
-            for j in customers.joins]
-        await storage.save_model(customers)
+        customers.relationships = [
+            j.model_copy(update={"name": "hr"}) if j.to == "regions" else j
+            for j in customers.relationships]
+        await storage.save_dataset(customers)
 
         after = await unnamed_engine.execute(query)
         assert sorted(map(repr, (r[f"region_amounts.{CANON}"] for r in after.data))) \

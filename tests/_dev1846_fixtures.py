@@ -29,12 +29,12 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -42,49 +42,49 @@ from tests._engine_helpers import seeded_exec_engine
 from tests._engine_helpers import _engine_generate
 
 
-def regions_model() -> SlayerModel:
-    return SlayerModel(
+def regions_model() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="factor", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="factor", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def sales_model() -> SlayerModel:
+def sales_model() -> SlayerDataset:
     """Host: ``wrevenue_sum`` crosses ``sales → regions`` (join-crossing leaf);
     ``hi_rev`` is a column-filtered projection of ``revenue``."""
-    return SlayerModel(
+    return SlayerDataset(
         name="sales", data_source="test", sql_table="sales",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="store", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="qty", type=DataType.DOUBLE),
-            Column(name="cost", type=DataType.DOUBLE),
-            Column(name="weight", type=DataType.DOUBLE),
-            Column(name="sku", type=DataType.TEXT),
-            Column(name="hi_rev", type=DataType.DOUBLE, sql="revenue",
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="store", datatype=DataType.TEXT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="qty", datatype=DataType.DOUBLE),
+            DatasetField(name="cost", datatype=DataType.DOUBLE),
+            DatasetField(name="weight", datatype=DataType.DOUBLE),
+            DatasetField(name="sku", datatype=DataType.TEXT),
+            DatasetField(name="hi_rev", datatype=DataType.DOUBLE, sql="revenue",
                    filter="revenue > 15"),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[
-            ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
         ],
         aggregations=[
             Aggregation(
-                name="wrevenue_sum", formula="SUM({value} * {f})",
+                name="wrevenue_sum", expression="SUM({value} * {f})",
                 params=[AggregationParam(name="f", sql="regions.factor")],
             ),
         ],
     )
 
 
-def dev1846_models() -> List[SlayerModel]:
+def dev1846_models() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
     return [sales_model(), regions_model()]
 
@@ -99,7 +99,7 @@ async def gen(query: SlayerQuery, *, dialect: str = "duckdb") -> str:
 
 def month_td(column: str = "ordered_at") -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=column,
+        field=column,
         granularity=TimeGranularity.MONTH,
     )]
 
@@ -172,6 +172,6 @@ def rows_by(resp, *keys) -> dict:
 __all__ = [
     "sales_model", "regions_model", "dev1846_models",
     "gen", "month_td", "make_exec_engine", "month_key", "rows_by",
-    "SlayerQuery", "ModelMeasure", "ColumnRef", "TimeDimension",
+    "SlayerQuery", "DatasetMetric", "FieldRef", "TimeDimension",
     "TimeGranularity",
 ]

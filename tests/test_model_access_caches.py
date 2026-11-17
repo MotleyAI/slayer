@@ -13,7 +13,7 @@ from typing import cast
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.pg_facade.connection import PgConnection
 from slayer.search import graph as search_graph
 from slayer.storage.base import StorageBackend
@@ -69,8 +69,8 @@ class _NoFingerprintYAML(YAMLStorage):
         return await StorageBackend.cache_identity(self)
 
 
-def _table_model(name: str) -> SlayerModel:
-    return SlayerModel(name=name, sql_table="t", data_source=DS, columns=[Column(name="id", type=DataType.INT, primary_key=True)])
+def _table_model(name: str) -> SlayerDataset:
+    return SlayerDataset(name=name, sql_table="t", data_source=DS, fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)])
 
 
 class TestGraphCache:
@@ -101,7 +101,7 @@ class TestGraphCache:
             os.utime(os.path.join(yaml_store.datasources_dir, f"{DS}.yaml"), (future, future))
             assert f"{DS}.pub" in await graph_models(AccessFilteredStorage(s.storage, tags={"fin"}, bypass=False))
             pub = await must_get(s.storage, "pub")
-            await s.storage.save_model(pub.model_copy(update={"access_tags": ["hr"]}), _validate=False)
+            await s.storage.save_dataset(pub.model_copy(update={"access_tags": ["hr"]}), _validate=False)
             assert f"{DS}.pub" not in await graph_models(AccessFilteredStorage(s.storage, tags={"fin"}, bypass=False))
 
     async def test_bypass_shares_the_inner_entry(self, store: AccessStore) -> None:
@@ -113,9 +113,9 @@ class TestGraphCache:
         with tempfile.TemporaryDirectory() as tmp:
             storage = _NoFingerprintYAML(base_dir=tmp)
             await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite", database=os.path.join(tmp, "x.db")))
-            await storage.save_model(_table_model("first"), _validate=False)
+            await storage.save_dataset(_table_model("first"), _validate=False)
             assert await graph_models(storage) == canonical({"first"})
-            await storage.save_model(_table_model("second"), _validate=False)
+            await storage.save_dataset(_table_model("second"), _validate=False)
             assert await graph_models(storage) == canonical({"first", "second"})
 
 
@@ -155,7 +155,7 @@ class TestCacheIdentity:
         before = await fin.graph_fingerprint()
         assert before is not None
         assert before != await hr.graph_fingerprint()
-        await store.storage.save_model(_table_model("extra"), _validate=False)
+        await store.storage.save_dataset(_table_model("extra"), _validate=False)
         assert await fin.graph_fingerprint() != before
 
     async def test_wrapper_over_unknown_fingerprint_is_unknown(self) -> None:
@@ -167,23 +167,23 @@ class TestCacheIdentity:
 class TestViewFreshness:
     async def test_view_follows_inner_writes(self, store: AccessStore) -> None:
         fin = AccessFilteredStorage(store.storage, tags={"fin"}, bypass=False)
-        assert set(await fin.list_models(DS)) == VISIBLE_TO_FIN
-        await store.storage.save_model(_table_model("extra"), _validate=False)
-        assert set(await fin.list_models(DS)) == VISIBLE_TO_FIN | {"extra"}
+        assert set(await fin.list_datasets(DS)) == VISIBLE_TO_FIN
+        await store.storage.save_dataset(_table_model("extra"), _validate=False)
+        assert set(await fin.list_datasets(DS)) == VISIBLE_TO_FIN | {"extra"}
         pub = await must_get(store.storage, "pub")
-        await store.storage.save_model(pub.model_copy(update={"access_tags": ["hr"]}), _validate=False)
-        assert set(await fin.list_models(DS)) == (VISIBLE_TO_FIN | {"extra"}) - {"pub"}
-        assert HIDDEN_FROM_FIN.isdisjoint(await fin.list_models(DS))
+        await store.storage.save_dataset(pub.model_copy(update={"access_tags": ["hr"]}), _validate=False)
+        assert set(await fin.list_datasets(DS)) == (VISIBLE_TO_FIN | {"extra"}) - {"pub"}
+        assert HIDDEN_FROM_FIN.isdisjoint(await fin.list_datasets(DS))
 
     async def test_facade_catalog_rebuilds_without_a_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             storage = _NoFingerprintYAML(base_dir=tmp)
             await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite", database=os.path.join(tmp, "x.db")))
-            await storage.save_model(_table_model("first"), _validate=False)
+            await storage.save_dataset(_table_model("first"), _validate=False)
             conn = PgConnection(asyncio.StreamReader(), cast(asyncio.StreamWriter, None), engine=None, storage=storage, catalog_ttl_seconds=0.0)
             conn._catalog = await conn._build_catalog()
             conn._catalog_fingerprint = await conn._read_fingerprint()
-            await storage.save_model(_table_model("second"), _validate=False)
+            await storage.save_dataset(_table_model("second"), _validate=False)
             await conn._maybe_refresh_catalog()
             assert conn._catalog is not None
             assert "second" in {t.name for s in conn._catalog.schemas for t in s.tables}
@@ -197,9 +197,9 @@ async def test_concurrent_first_reads_of_a_pre_v15_store_agree(backend: str) -> 
             models=[orders_v10(version=14), customers_v10(version=14)],
         )
         fin = AccessFilteredStorage(inner, tags={"fin"}, bypass=False)
-        listings = await asyncio.gather(*(fin.list_models("shop") for _ in range(8)))
-        models = await asyncio.gather(*(fin.get_model("orders", data_source="shop") for _ in range(8)))
+        listings = await asyncio.gather(*(fin.list_datasets("shop") for _ in range(8)))
+        models = await asyncio.gather(*(fin.get_dataset("orders", data_source="shop") for _ in range(8)))
         assert all(sorted(names) == ["customers", "orders"] for names in listings)
-        assert all(m is not None and [j.target_model for j in m.joins] == ["customers"] for m in models)
+        assert all(m is not None and [j.to for j in m.relationships] == ["customers"] for m in models)
         assert (await raw_doc(inner, "orders"))["version"] == CURRENT_VERSIONS["SlayerModel"]
-        assert sorted(await fin.list_models("shop")) == ["customers", "orders"]
+        assert sorted(await fin.list_datasets("shop")) == ["customers", "orders"]

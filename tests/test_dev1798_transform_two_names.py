@@ -15,7 +15,7 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.errors import DuplicateMeasureNameError
+from slayer.core.errors import DuplicateMetricNameError
 from slayer.core.query import SlayerQuery
 
 from tests._dev1747_fixtures import dev1747_models
@@ -27,9 +27,9 @@ _MONTH = [{"dimension": "created_at", "granularity": "month"}]
 def _generate(measures: list[dict], dialect: str = "postgres") -> str:
     models = dev1747_models()
     query = SlayerQuery(
-        source_model="orders",
+        population="orders",
         time_dimensions=_MONTH,
-        measures=measures,
+        metrics=measures,
     )
     return asyncio.run(_engine_generate(
         query=query, model=models[0], extra_models=models[1:],
@@ -142,7 +142,7 @@ def test_same_name_same_formula_raises() -> None:
 
 
 def test_same_name_different_formula_raises() -> None:
-    with pytest.raises(DuplicateMeasureNameError):
+    with pytest.raises(DuplicateMetricNameError):
         _generate([
             {"formula": "cumsum(sum(amount))", "name": "run_a"},
             {"formula": "sum(amount)", "name": "run_a"},

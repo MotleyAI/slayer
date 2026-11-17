@@ -27,7 +27,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, AggregationParam, Column, ModelJoin, SlayerModel
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 
@@ -93,74 +93,74 @@ TABLES = (ORDERS, CUSTOMERS, EVENTS, LEDGER)
 # Models
 # --------------------------------------------------------------------------- #
 def trimmed() -> Aggregation:
-    return Aggregation(name="trimmed", formula="AVG(CASE WHEN {value} > {cutoff} THEN {value} END)",
+    return Aggregation(name="trimmed", expression="AVG(CASE WHEN {value} > {cutoff} THEN {value} END)",
                        params=[AggregationParam(name="cutoff", sql="0")])
 
 
 def share() -> Aggregation:
-    return Aggregation(name="share", formula="SUM({value}) * 1.0 / COUNT(*)")
+    return Aggregation(name="share", expression="SUM({value}) * 1.0 / COUNT(*)")
 
 
-def orders_model(*, data_source: str = "test", aggregations: Iterable[Aggregation] = ()) -> SlayerModel:
-    return SlayerModel(
+def orders_model(*, data_source: str = "test", aggregations: Iterable[Aggregation] = ()) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source, default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="qty", type=DataType.INT),
-            Column(name="weight", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="shipped_at", type=DataType.TIMESTAMP),
-            Column(name="order_date", type=DataType.DATE),
-            Column(name="note", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="qty", datatype=DataType.INT),
+            DatasetField(name="weight", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="shipped_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="order_date", datatype=DataType.DATE),
+            DatasetField(name="note", datatype=DataType.TEXT),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         aggregations=[trimmed(), share(), *aggregations],
     )
 
 
-def customers_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def customers_model(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="updated_at", type=DataType.TIMESTAMP),
-            Column(name="score", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="updated_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="score", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def events_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def events_model(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="events", sql_table="events", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="updated_at", type=DataType.TIMESTAMP),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="updated_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="status", datatype=DataType.TEXT),
         ],
     )
 
 
-def ledger_model(*, data_source: str = "test") -> SlayerModel:
+def ledger_model(*, data_source: str = "test") -> SlayerDataset:
     """Grandfathered case collision: ``Revenue`` and ``revenue`` (save with ``_validate=False``)."""
-    return SlayerModel(
+    return SlayerDataset(
         name="ledger", sql_table="ledger", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="Revenue", sql="rev_a", type=DataType.DOUBLE),
-            Column(name="revenue", sql="rev_b", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="Revenue", sql="rev_a", datatype=DataType.DOUBLE),
+            DatasetField(name="revenue", sql="rev_b", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def dev2215_models(*, data_source: str = "test", aggregations: Iterable[Aggregation] = ()) -> list[SlayerModel]:
+def dev2215_models(*, data_source: str = "test", aggregations: Iterable[Aggregation] = ()) -> list[SlayerDataset]:
     return [orders_model(data_source=data_source, aggregations=aggregations), customers_model(data_source=data_source),
             events_model(data_source=data_source), ledger_model(data_source=data_source)]
 
@@ -170,7 +170,7 @@ def dev2215_models(*, data_source: str = "test", aggregations: Iterable[Aggregat
 # --------------------------------------------------------------------------- #
 @contextlib.asynccontextmanager
 async def dev2215_engine(
-    backend: str, *, models: Optional[list[SlayerModel]] = None, clock: Optional[PinnedClock] = None,
+    backend: str, *, models: Optional[list[SlayerDataset]] = None, clock: Optional[PinnedClock] = None,
     datasource_fields: Optional[dict[str, Any]] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     """Executing engine over the seed; the datasource defines ``fiscal_year``; models are saved unvalidated."""
@@ -194,7 +194,7 @@ def postgres_statements() -> list[str]:
 # Queries and readers
 # --------------------------------------------------------------------------- #
 def q(**kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "orders", **kw})
+    return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
 def m(formula: str, name: str = "v") -> dict[str, str]:

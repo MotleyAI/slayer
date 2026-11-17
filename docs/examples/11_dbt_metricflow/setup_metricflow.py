@@ -257,8 +257,8 @@ def convert_dbt_to_slayer(
     ).convert()
 
     storage = YAMLStorage(base_dir=str(models_dir))
-    for model in result.models:
-        run_sync(storage.save_model(model))
+    for model in result.datasets:
+        run_sync(storage.save_dataset(model))
     run_sync(
         storage.save_datasource(
             DatasourceConfig(

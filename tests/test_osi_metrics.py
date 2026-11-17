@@ -128,7 +128,7 @@ async def test_inline_operand(db: Path, sql: str, expected: float) -> None:
 async def test_operand_outside_the_formula_grammar_uses_a_helper(db: Path, sql: str, expected: float) -> None:
     result = _import(db, m("v", sql))
     [helper] = hidden(by_name(result)["orders"])
-    formula = next(x.formula for x in by_name(result)["orders"].measures if x.name == "v")
+    formula = next(x.expression for x in by_name(result)["orders"].metrics if x.name == "v")
     parsed = parse_expr(formula)
     assert isinstance(parsed, AggCall)
     assert isinstance(parsed.source, Ref)
@@ -138,14 +138,14 @@ async def test_operand_outside_the_formula_grammar_uses_a_helper(db: Path, sql: 
 
 async def test_cross_dataset_operand(db: Path) -> None:
     result = _import(db, model_metrics=[m("net", "SUM(orders.amount - customers.discount)")])
-    assert all(hidden(model) == [] for model in result.models)
+    assert all(hidden(model) == [] for model in result.datasets)
     assert float(await _value(result, db, "net")) == pytest.approx(19.5)
 
 
 async def test_operand_outside_the_formula_language_falls_back_to_a_hidden_column(db: Path) -> None:
     result = _import(db, m("v", "SUM(LENGTH(LPAD(status, 12, 'x')))"))
     [helper] = hidden(by_name(result)["orders"])
-    assert helper.type == DataType.INT
+    assert helper.datatype == DataType.INT
     assert await _value(result, db, "v") == 36
 
 

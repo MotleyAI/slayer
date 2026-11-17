@@ -10,8 +10,8 @@ import pytest
 
 from slayer.core import errors as core_errors
 from slayer.core.keys import TransformKey
-from slayer.core.models import ModelMeasure
-from slayer.core.scope import ModelScope
+from slayer.core.models import DatasetMetric
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.core.syntax import TransformCall, parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -56,7 +56,7 @@ async def engine(request):
 
 def _sales_with_measure(formula: str):
     model = sales_model()
-    model.measures = [ModelMeasure(name="saved_rank", formula=formula)]
+    model.metrics = [DatasetMetric(name="saved_rank", expression=formula)]
     return [model, regions_model(), customers_model(), corders_model()]
 
 
@@ -73,8 +73,8 @@ async def saved_bare_engine(request):
         yield e
 
 
-def _m(formula: str, name: str = "r") -> ModelMeasure:
-    return ModelMeasure(formula=formula, name=name)
+def _m(formula: str, name: str = "r") -> DatasetMetric:
+    return DatasetMetric(expression=formula, name=name)
 
 
 def _by_region(resp, name: str = "r") -> dict:
@@ -91,9 +91,9 @@ def _approx(d: dict) -> dict:
 
 def _bind(formula: str):
     models = dev1847_models()
-    bundle = ResolvedSourceBundle(dialect="postgres", source_model=models[0],
-                                  referenced_models=models[1:])
-    return bind_expr(parse_expr(formula), scope=ModelScope(source_model=models[0]),
+    bundle = ResolvedSourceBundle(dialect="postgres", population=models[0],
+                                  referenced_datasets=models[1:])
+    return bind_expr(parse_expr(formula), scope=DatasetScope(population=models[0]),
                      bundle=bundle).value_key
 
 

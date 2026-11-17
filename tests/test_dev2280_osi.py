@@ -11,7 +11,7 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from tests._dev2171_fixtures import import_osi, seed, value
 from tests._osi_export_fixtures import DATASOURCE
 from tests._osi_export_helpers import all_metrics, dataset, export_models, make_env, mentions, metric, reimport, rows
@@ -24,12 +24,12 @@ EV_DDL = [
 IMPORT_DDL = [s.replace(" ts ", " created_at ").replace("(id, ts", "(id, created_at") for s in EV_DDL]
 
 
-def ev_model(*measures: ModelMeasure) -> SlayerModel:
-    return SlayerModel(
+def ev_model(*measures: DatasetMetric) -> SlayerDataset:
+    return SlayerDataset(
         name="ev", sql_table="ev", data_source=DATASOURCE,
-        columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="ts", type=DataType.TIMESTAMP),
-                 Column(name="amount", type=DataType.DOUBLE)],
-        measures=list(measures),
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="ts", datatype=DataType.TIMESTAMP),
+                 DatasetField(name="amount", datatype=DataType.DOUBLE)],
+        metrics=list(measures),
     )
 
 
@@ -49,7 +49,7 @@ async def env(tmp_path: Path):
 
 class TestExport:
     async def test_date_only_bound_in_a_filtered_measure(self, env) -> None:
-        early = ModelMeasure(name="early", formula="count(*) FILTER (WHERE ts <= '2024-04-10')")
+        early = DatasetMetric(name="early", expression="count(*) FILTER (WHERE ts <= '2024-04-10')")
         result = await export_models(env, ev_model(early))
         exported = metric(dataset(result.document, "ev"), "early")
         assert exported is not None, result.entries
@@ -60,7 +60,7 @@ class TestExport:
         assert int(again[0]["ev.early"]) == int(original[0]["ev.early"]) == 1
 
     async def test_date_time_bound(self, env) -> None:
-        late = ModelMeasure(name="late", formula="count(*) FILTER (WHERE ts > '2024-04-10 09:00:00')")
+        late = DatasetMetric(name="late", expression="count(*) FILTER (WHERE ts > '2024-04-10 09:00:00')")
         result = await export_models(env, ev_model(late))
         exported = metric(dataset(result.document, "ev"), "late")
         assert exported is not None, result.entries
@@ -71,7 +71,7 @@ class TestExport:
         "count(*) FILTER (WHERE ts >= 'last month')",
     ])
     async def test_period_and_relative_comparisons_stay_slayer_only(self, env, formula: str) -> None:
-        result = await export_models(env, ev_model(ModelMeasure(name="p", formula=formula)), extensions=False)
+        result = await export_models(env, ev_model(DatasetMetric(name="p", expression=formula)), extensions=False)
         assert all(x["name"] != "p" for x in all_metrics(result.document))
         assert mentions(result, "p", severity="dropped"), result.entries
 
@@ -88,6 +88,6 @@ class TestImport:
     async def test_date_only_bound_keeps_ossie_meaning(self, db: Path, sql: str, expected: int) -> None:
         document = flat([ds("ev", fields=[f("id"), f("created_at"), f("amount")], metrics=[m("v", sql)])])
         result = import_osi(document, db=db)
-        got = await value(models=result.models, db=db, model="ev", formula="v")
+        got = await value(models=result.datasets, db=db, model="ev", formula="v")
         assert got is not None
         assert float(got) == expected, got

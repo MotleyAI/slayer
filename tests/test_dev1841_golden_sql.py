@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests._dev1840_fixtures import dev1840_models
-from tests._dev1841_fixtures import ModelMeasure, SlayerQuery, dev1841_models
+from tests._dev1841_fixtures import DatasetMetric, SlayerQuery, dev1841_models
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -32,13 +32,13 @@ _MODEL_SETS = {
     "ext": dev1841_models,
 }
 
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
-NC = ModelMeasure(formula="count(customers.*)", name="nc")
-POP = ModelMeasure(formula="sum(customers.regions.pop)", name="pop")
-MED = ModelMeasure(formula="median(customers.spend)", name="med")
-RENT = ModelMeasure(formula="sum(stores.rent)", name="rent")
-GS = ModelMeasure(formula="sum(customers.gold_spend)", name="gs")
-PART = ModelMeasure(formula="sum(customers.spend, partition_by=status)", name="cm")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+NC = DatasetMetric(expression="count(customers.*)", name="nc")
+POP = DatasetMetric(expression="sum(customers.regions.pop)", name="pop")
+MED = DatasetMetric(expression="median(customers.spend)", name="med")
+RENT = DatasetMetric(expression="sum(stores.rent)", name="rent")
+GS = DatasetMetric(expression="sum(customers.gold_spend)", name="gs")
+PART = DatasetMetric(expression="sum(customers.spend, partition_by=status)", name="cm")
 
 
 def _cases() -> dict:
@@ -70,7 +70,7 @@ async def _generate_one(case, dialect: str):
         kw = dict(case["kw"])
         if case["mode"] is not None:
             kw["to_many_handling"] = case["mode"]
-        query = SlayerQuery(source_model="orders", **kw)
+        query = SlayerQuery(population="orders", **kw)
         return await _engine_generate(
             query=query, model=models[0], extra_models=models[1:],
             dialect=dialect, validate=False,

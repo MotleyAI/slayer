@@ -15,7 +15,7 @@ def has_window_function(sql: str) -> bool:
 
     Uses a regex on the canonical `<func>(...) OVER (...)` shape. Robust enough
     for the contexts SLayer needs: detecting `OVER` inside `Column.sql`,
-    `ModelMeasure.formula`, and filter strings. We don't try to disambiguate
+    `ModelMeasure.expression`, and filter strings. We don't try to disambiguate
     e.g. `OVER` inside a string literal; SLayer's column SQL and filter
     formulas don't legitimately need that.
     """

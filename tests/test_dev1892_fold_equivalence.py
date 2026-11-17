@@ -15,7 +15,7 @@ import pytest
 
 from tests._dev1841_fixtures import (
     ASSOC_COUNT_BY_STATUS,
-    ModelMeasure,
+    DatasetMetric,
     assoc_q,
     make_exec_engine,
     status_key,
@@ -80,7 +80,7 @@ class TestBaseValueFoldRegression:
         """The fold's no-value (``count(*)``) branch is unchanged."""
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="count(customers.*)", name="nc")]))
+            measures=[DatasetMetric(expression="count(customers.*)", name="nc")]))
         vals = _vals(resp, "orders.nc")
         for status, n in ASSOC_COUNT_BY_STATUS.items():
             assert int(vals[status]) == n
@@ -91,7 +91,7 @@ class TestBaseValueFoldRegression:
         fold."""
         resp = await toone_filter_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="sum(customers.north_spend)", name="ns")]))
+            measures=[DatasetMetric(expression="sum(customers.north_spend)", name="ns")]))
         vals = _vals(resp, "orders.ns")
         for status, spend in NORTH_SPEND_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(spend)
@@ -104,8 +104,8 @@ class TestParameterOverSourceShapes:
         term."""
         resp = await assoc_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(
-                formula="weighted_avg(customers.regions.pop, weight=customers.spend)",
+            measures=[DatasetMetric(
+                expression="weighted_avg(customers.regions.pop, weight=customers.spend)",
                 name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in WAVG_POPVAL_BY_STATUS.items():
@@ -117,7 +117,7 @@ class TestParameterOverSourceShapes:
         owner-anchored default, never the host's per-order value."""
         resp = await shared_default_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="wsum(customers.spend)", name="w")]))
+            measures=[DatasetMetric(expression="wsum(customers.spend)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -127,7 +127,7 @@ class TestParameterOverSourceShapes:
         and evaluates once per entity — SUM(spend * spend)."""
         resp = await expr_default_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="wsum2(customers.spend)", name="w")]))
+            measures=[DatasetMetric(expression="wsum2(customers.spend)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -138,7 +138,7 @@ class TestParameterOverSourceShapes:
         SUM(spend * pop)."""
         resp = await toone_default_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="wsum3(customers.spend)", name="w")]))
+            measures=[DatasetMetric(expression="wsum3(customers.spend)", name="w")]))
         vals = _vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM3_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)

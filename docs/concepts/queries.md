@@ -366,7 +366,7 @@ by.
 
 ### Scalar Functions in Filters
 
-Filters in `SlayerQuery.filters` accept the
+Filters in `SlayerQuery.filter` accept the
 [portable function library](references.md#the-portable-function-library) — strings
 (`lower`, `left`, `split_part`, `concat_ws`, …), math (`round`, `div`, `atan2`, …), null
 handling, `greatest` / `least`, regex (`regexp_like`, `x ~ 'p'`), JSON (`json_value`,
@@ -473,7 +473,7 @@ The [list functions](references.md#lists) test a whole list, and [Database suppo
 
 Window functions (`OVER (...)`) are not allowed inside the inner WHERE on SQLite or most dialects. Query filters reject them in two ways:
 
-* **Raw `OVER (...)` in filter strings is rejected at SlayerQuery construction.** Inline window-function SQL inside a query filter or `ModelMeasure.formula` is not parseable by SLayer's formula grammar.
+* **Raw `OVER (...)` in filter strings is rejected at SlayerQuery construction.** Inline window-function SQL inside a query filter or `ModelMeasure.expression` is not parseable by SLayer's formula grammar.
 * **Filtering on a `Column` whose `sql` contains a window function is rejected at enrichment.** A query filter `"rn <= 3"` against a column whose `sql` is `row_number() over (...)` raises with a suggestion to use a rank-family transform.
 
 Use one of:
@@ -634,7 +634,7 @@ rec.root_model   # "orders"  (honored — it reaches both, overriding the closer
 
 When the hint determines every item it's honored outright, overriding the fewest-hops pick. When it can't, the auto-pick is used instead and `warnings` explains which owning models the hint missed and which root was chosen. If no model reaches everything (`reachable` is `False`), the hint's own row is included in `coverage` too, so you can see exactly what it reaches. `root_hint` is resolved after the datasource is fixed from the items, so it names a model *within* that datasource — it can't choose the datasource. A hint that isn't a model in the resolved datasource raises.
 
-Surfaces: MCP `recommend_root_model(items, data_source=None, root_hint=None, format="markdown")`, REST `POST /recommend-root-model` (`{"items": [...], "data_source": null, "root_hint": null}`), CLI `slayer recommend-root-model ITEM... [--data-source X] [--root-hint M] [--format json|text]`, and `SlayerClient.recommend_root_model(_sync)`. The optional `data_source` scopes name resolution to one datasource; all items must resolve to a single datasource.
+Surfaces: MCP `recommend_root_model(items, data_source=None, root_hint=None, format="markdown")`, REST `POST /recommend-root-model` (`{"items": [...], "data_source": null, "root_hint": null}`), CLI `slayer recommend-root-model ITEM... [--data-source X] [--root-hint M] [--format json|text]`, and `SlayerClient.recommend_population(_sync)`. The optional `data_source` scopes name resolution to one datasource; all items must resolve to a single datasource.
 
 ---
 

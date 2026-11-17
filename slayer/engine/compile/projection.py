@@ -10,16 +10,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
 from slayer.engine.elaborate_env import (
-    check_canonical_alias_shadows_column,
-    check_duplicate_measure_name,
-    check_measure_name_collision,
+    check_canonical_alias_shadows_field,
+    check_duplicate_metric_name,
+    check_metric_name_collision,
 )
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
     ArrayLiteralKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     InKey,
     KIND_POLICY,
     LiteralKey,
@@ -34,21 +34,21 @@ from slayer.core.keys import (
     TransformKey,
     VALUE_KEY_TYPES,
     ValueKey,
-    column_leaf,
-    column_path,
+    field_leaf,
+    field_path,
 )
 from slayer.sql.naming import canonical_aggregate_alias
 from slayer.ir.planned import SlotId, ValueSlot
-from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMeasure, OrderSpec
+from slayer.ir.bound import BoundExpr, BoundFilter, DeclaredMetric, OrderSpec
 
 __all__ = [
-    "DeclaredMeasure",
+    "DeclaredMetric",
     "OrderSpec",
     "ProjectionPlan",
     "ProjectionPlanner",
     "ValueRegistry",
     "filter_referenced_slot_ids",
-    "free_measure_name",
+    "free_metric_name",
 ]
 
 # Hoisted from the two signatures below: a paren inside a keyword-only default
@@ -56,7 +56,7 @@ __all__ = [
 _HOST_FALLBACK_NAME = "(host)"
 
 
-def free_measure_name(*, declared: str, canonical: Optional[str], taken: AbstractSet[str]) -> str:
+def free_metric_name(*, declared: str, canonical: Optional[str], taken: AbstractSet[str]) -> str:
     """``canonical`` when free, else the first free ``<declared>_<n>`` from n = 2."""
     if canonical and canonical != declared and canonical not in taken:
         return canonical
@@ -89,18 +89,18 @@ def _fill_missing_metadata(
 
 
 class ValueRegistry:
-    """Interns ``ValueKey``s by structural identity into ``ValueSlot``s; ``source_column_names`` drives alias-collision checks."""
+    """Interns ``ValueKey``s by structural identity into ``ValueSlot``s; ``source_field_names`` drives alias-collision checks."""
 
     def __init__(
         self,
         *,
-        source_column_names: Optional[FrozenSet[str]] = None,
-        host_model_name: str = _HOST_FALLBACK_NAME,
+        source_field_names: Optional[FrozenSet[str]] = None,
+        host_dataset_name: str = _HOST_FALLBACK_NAME,
     ) -> None:
         self._source_columns: FrozenSet[str] = (
-            source_column_names or frozenset()
+            source_field_names or frozenset()
         )
-        self._host_model_name = host_model_name
+        self._host_model_name = host_dataset_name
         self._slots: Dict[SlotId, ValueSlot] = {}
         self._by_key: Dict[ValueKey, SlotId] = {}
         self._declared_names: Dict[str, SlotId] = {}
@@ -132,7 +132,7 @@ class ValueRegistry:
             | (self._taken_names - self._reserved.keys())
             | (self._reserved - own).keys()
         )
-        free = free_measure_name(declared=public_name or declared_name, canonical=canonical_alias, taken=taken)
+        free = free_metric_name(declared=public_name or declared_name, canonical=canonical_alias, taken=taken)
         return f"rename it, e.g. to {free!r}"
 
     def _unique_hidden_name(self, declared_name: str) -> str:
@@ -156,18 +156,18 @@ class ValueRegistry:
         if isinstance(key, ListSetKey):
             key = key.source
         is_self_named_dimension = (
-            isinstance(key, ColumnKey)
+            isinstance(key, FieldKey)
             and key.path == ()
             and public_name == key.leaf
         ) or (
-            isinstance(key, ColumnSqlKey)
+            isinstance(key, FieldSqlKey)
             and key.path == ()
-            and public_name == key.column_name
+            and public_name == key.field_name
         ) or (
             isinstance(key, TimeTruncKey)
-            and isinstance(key.source, (ColumnKey, ColumnSqlKey))
-            and column_path(key.source) == ()
-            and public_name == column_leaf(key.source)
+            and isinstance(key.source, (FieldKey, FieldSqlKey))
+            and field_path(key.source) == ()
+            and public_name == field_leaf(key.source)
         )
         # An unnamed ``<agg>(*)`` (StarKey) is exempt: its canonical alias (``_count``)
         # is a structural marker, not a column ref. An explicit user name still raises.
@@ -179,7 +179,7 @@ class ValueRegistry:
         # A pathed column ref only flattens to a ``__`` name at a stage boundary;
         # that collision is owned by the stage-schema guard, so exempt it here.
         is_pathed_projection = (
-            isinstance(key, (ColumnKey, ColumnSqlKey)) and key.path != ()
+            isinstance(key, (FieldKey, FieldSqlKey)) and key.path != ()
         )
         collides = (
             public_name is not None
@@ -188,20 +188,20 @@ class ValueRegistry:
             and not is_unnamed_star_agg
             and not is_pathed_projection
         )
-        check_measure_name_collision(
+        check_metric_name_collision(
             name=public_name if collides else None,
-            model=self._host_model_name,
+            dataset=self._host_model_name,
             suggestion=self._collision_suggestion(
                 declared_name=declared_name, public_name=public_name, canonical_alias=canonical_alias,
             ) if collides else None,
         )
-        check_canonical_alias_shadows_column(
-            formula=declared_name,
+        check_canonical_alias_shadows_field(
+            expression=declared_name,
             canonical=canonical_alias if (
                 canonical_alias is not None
                 and canonical_alias in self._source_columns
             ) else None,
-            model=self._host_model_name,
+            dataset=self._host_model_name,
         )
 
     def intern(
@@ -250,7 +250,7 @@ class ValueRegistry:
         if public_name is not None:
             owner = self._declared_names.get(public_name)
             if owner is not None:
-                check_duplicate_measure_name(
+                check_duplicate_metric_name(
                     name=public_name,
                     occurrences=[
                         self._slots[owner].declared_name,
@@ -339,7 +339,7 @@ class ValueRegistry:
         slot = self._slots[existing_sid]
         owner = self._declared_names.get(public_name)
         if owner is not None and owner != existing_sid:
-            check_duplicate_measure_name(
+            check_duplicate_metric_name(
                 name=public_name,
                 occurrences=[
                     self._slots[owner].declared_name,
@@ -404,7 +404,7 @@ def _iter_slot_deps(key: ValueKey):
         for child in key.children():
             yield from _iter_slot_deps(child)
         return
-    if isinstance(key, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+    if isinstance(key, (FieldKey, FieldSqlKey, TimeTruncKey)):
         yield key
         return
     if isinstance(key, (StarKey, LiteralKey, ArrayLiteralKey)):
@@ -428,7 +428,7 @@ def _regroup_substituted_composite_phase(value_key: ValueKey) -> Optional[Phase]
     if not deps:
         return None
     for dep in deps:
-        if not (isinstance(dep, ColumnKey)
+        if not (isinstance(dep, FieldKey)
                 and dep.leaf.startswith(REGROUP_LEAF_PREFIX)):
             return None
     return Phase.AGGREGATE
@@ -451,25 +451,25 @@ class ProjectionPlanner:
     def plan(  # NOSONAR(S3776) — one sequential allocation pass (reserve names → intern measures → filter/order deps) sharing the same registry + hidden-slot rule; splitting the loops scatters that shared mutation invariant.
         self,
         *,
-        measures: List[DeclaredMeasure],
+        metrics: List[DeclaredMetric],
         filters: List[BoundFilter],
         order: List[OrderSpec],
-        source_column_names: Optional[FrozenSet[str]] = None,
-        host_model_name: str = _HOST_FALLBACK_NAME,
+        source_field_names: Optional[FrozenSet[str]] = None,
+        host_dataset_name: str = _HOST_FALLBACK_NAME,
     ) -> ProjectionPlan:
         registry = ValueRegistry(
-            source_column_names=source_column_names,
-            host_model_name=host_model_name,
+            source_field_names=source_field_names,
+            host_dataset_name=host_dataset_name,
         )
         # Claim every declared name before interning so hidden-name uniquification
         # is order-independent.
         registry.reserve_public_names(
             name
-            for m in measures
+            for m in metrics
             for name in (m.declared_name, m.public_name, m.canonical_alias)
         )
         public_projection: List[SlotId] = []
-        for m in measures:
+        for m in metrics:
             # An all-placeholder regroup composite measure is AGGREGATE-phase, not
             # the ROW phase its leaves imply; a computed dimension is excluded.
             phase = m.bound.phase
@@ -485,7 +485,7 @@ class ProjectionPlanner:
                 canonical_alias=m.canonical_alias,
                 phase=phase,
                 label=m.label,
-                type=m.type,
+                type=m.datatype,
                 element_type=m.element_type,
                 type_is_explicit=m.type_is_explicit,
                 preserve_native_type=m.preserve_native_type,
@@ -527,11 +527,11 @@ class ProjectionPlanner:
 
 def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isinstance dispatch over the closed ValueKey union; each branch is the per-type canonical-name contract. Extracting per-type helpers would scatter the contract.
     """Best-effort canonical name for a hidden slot (``sum(revenue)`` → ``revenue_sum``, ``customers.regions.name`` → ``customers__regions__name``)."""
-    if isinstance(key, ColumnKey):
+    if isinstance(key, FieldKey):
         return "__".join(key.path + (key.leaf,))
-    if isinstance(key, ColumnSqlKey):
+    if isinstance(key, FieldSqlKey):
         prefix = "__".join(key.path) + "__" if key.path else ""
-        return f"{prefix}{key.column_name}"
+        return f"{prefix}{key.field_name}"
     if isinstance(key, TimeTruncKey):
         # Granularity lives in the SQL DATE_TRUNC, not the alias.
         return _canonical_name(key.source)
@@ -557,7 +557,7 @@ def _canonical_name(key: ValueKey) -> str:  # NOSONAR(S3776) — sequential isin
     if isinstance(key, StarKey):
         return "_star"
     if isinstance(key, InKey):
-        return f"_in_{_canonical_name(key.column)}"
+        return f"_in_{_canonical_name(key.field)}"
     return "_hidden"
 
 

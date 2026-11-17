@@ -8,7 +8,7 @@ from typing import Any, Iterable, Optional
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -35,14 +35,14 @@ def one_value(row: dict, *, exclude: Iterable[str] = ()) -> Any:
     return vals[0]
 
 
-def _orders_columns(extra: Iterable[Column] = ()) -> list[Column]:
+def _orders_columns(extra: Iterable[DatasetField] = ()) -> list[DatasetField]:
     cols = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-        Column(name="amount", sql="amount", type=DataType.DOUBLE),
-        Column(name="region", sql="region", type=DataType.TEXT),
-        Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-        Column(name="shipped_at", sql="shipped_at", type=DataType.TIMESTAMP),
+        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+        DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+        DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+        DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+        DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+        DatasetField(name="shipped_at", sql="shipped_at", datatype=DataType.TIMESTAMP),
     ]
     cols.extend(extra)
     return cols
@@ -51,16 +51,16 @@ def _orders_columns(extra: Iterable[Column] = ()) -> list[Column]:
 def orders_model(
     *,
     data_source: str = "ds",
-    extra_columns: Iterable[Column] = (),
+    extra_columns: Iterable[DatasetField] = (),
     default_time_dimension: Optional[str] = "created_at",
-) -> SlayerModel:
+) -> SlayerDataset:
     """The single-table ``orders`` model (id, customer_id, amount, region, created_at, shipped_at)."""
-    return SlayerModel(
+    return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source=data_source,
         default_time_dimension=default_time_dimension,
-        columns=_orders_columns(extra_columns),
+        fields=_orders_columns(extra_columns),
     )
 
 
@@ -84,38 +84,38 @@ MONTHLY_ROWS = [
 
 # Inner stage: monthly revenue over ``orders.created_at`` (shared stage-axis fixture).
 MONTHLY_INNER = SlayerQuery.model_validate({
-    "name": "s1", "source_model": "orders",
-    "time_dimensions": [TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)],
-    "measures": [{"formula": "sum(amount)", "name": "rev"}],
+    "name": "s1", "population": "orders",
+    "time_dimensions": [TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)],
+    "metrics": [{"formula": "sum(amount)", "name": "rev"}],
 })
 
 
 # --- orders → customers → regions join chain (multi-hop flat-name tests) ---
 
-def region_chain_models(*, data_source: str = "ds") -> list[SlayerModel]:
-    regions = SlayerModel(
+def region_chain_models(*, data_source: str = "ds") -> list[SlayerDataset]:
+    regions = SlayerDataset(
         name="regions", sql_table="regions", data_source=data_source,
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="last_activity_at", sql="last_activity_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="last_activity_at", sql="last_activity_at", datatype=DataType.TIMESTAMP),
         ],
     )
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
     return [regions, customers, orders]
 
@@ -135,7 +135,7 @@ def region_chain_tables(
 
 
 async def make_engine(
-    backend: str, *, base_dir: str, db_path: str, tables: list[dict], models: list[SlayerModel],
+    backend: str, *, base_dir: str, db_path: str, tables: list[dict], models: list[SlayerDataset],
 ) -> SlayerQueryEngine:
     """Seed ``tables`` into a fresh ``backend`` DB and return an engine over ``models``.
 
@@ -166,5 +166,5 @@ async def make_engine(
         DatasourceConfig(name=models[0].data_source, type=backend, database=db_path),
     )
     for model in models:
-        await storage.save_model(model)
+        await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage)

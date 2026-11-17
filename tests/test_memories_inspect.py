@@ -16,10 +16,10 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.mcp.server import create_mcp_server
@@ -81,33 +81,33 @@ async def seeded(storage: YAMLStorage) -> YAMLStorage:
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="postgres", host="x")
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             data_source="mydb",
             sql_table="orders",
-            columns=[
-                Column(
-                    name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+            fields=[
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
                 ),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="status", sql="status", type=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
             ],
-            measures=[
-                ModelMeasure(formula="sum(amount) / count(*)", name="aov"),
+            metrics=[
+                DatasetMetric(expression="sum(amount) / count(*)", name="aov"),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers",
             data_source="mydb",
             sql_table="customers",
-            columns=[
-                Column(
-                    name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+            fields=[
+                DatasetField(
+                    name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
                 ),
-                Column(name="name", sql="name", type=DataType.TEXT),
+                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
             ],
         )
     )
@@ -156,8 +156,8 @@ class TestInspectModelLearningsSection:
             learning="example query",
             entities=["mydb.orders.amount"],
             query=SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="sum(amount)")],
+                population="orders",
+                metrics=[DatasetMetric(expression="sum(amount)")],
             ),
         )
         result = await _call(

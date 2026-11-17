@@ -73,15 +73,15 @@ class RelationNames:
         return render_table_name(parts=[self.live_name(part, name, quoted=quoted) for part, name in parts],
                                  dialect=self.dialect or dialect_for_ds_type(None))
 
-    def ref(self, model: str) -> str:
-        """The relation ``{{ ref(model) }}`` names for a model without SQL; a qualified or quoted ``model`` names
+    def ref(self, dataset: str) -> str:
+        """The relation ``{{ ref(model) }}`` names for a model without SQL; a qualified or quoted ``dataset`` names
         its relation part by part, a quoted part exactly."""
         try:
-            parts = exp.to_table(model, dialect=self._read).parts
+            parts = exp.to_table(dataset, dialect=self._read).parts
         except SqlglotError:
             parts = []
         if not 1 <= len(parts) <= len(_PARTS) or (len(parts) == 1 and not parts[0].args.get("quoted")):
-            return self.relation(("identifier", model))
+            return self.relation(("identifier", dataset))
         names = [quoted_name(p.name, True) if p.args.get("quoted") else self.live_name(kind, p.name)
                  for kind, p in zip(_PARTS[-len(parts):], parts)]
         return render_table_name(parts=names, dialect=self.dialect or dialect_for_ds_type(None))

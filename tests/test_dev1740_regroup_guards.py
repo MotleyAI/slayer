@@ -9,7 +9,7 @@ import re
 import pytest
 
 from slayer.core.errors import DistinctDimensionValuesError
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.query import DatasetMetric, SlayerQuery
 
 from tests._dev1740_fixtures import gen, month_td
 
@@ -27,7 +27,7 @@ class TestPartitionByRequired:
                 {"expression": "CASE WHEN sum(amount) > 5000 THEN 1 ELSE 0 END",
                  "name": "band"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            measures=[DatasetMetric(expression="sum(amount)", name="t")],
         )
         with pytest.raises(ValueError, match=r"partition_by") as ei:
             await gen(q)
@@ -48,7 +48,7 @@ class TestAggregateReferencingDimGenerates:
                 {"expression": "CASE WHEN sum(amount, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "name": "band"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            measures=[DatasetMetric(expression="sum(amount)", name="t")],
         )
         sql = await gen(q)
         assert "_cm_" in sql
@@ -65,7 +65,7 @@ class TestDeferredShapesRaiseDev1824:
                  "name": "x"},
             ],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            measures=[DatasetMetric(expression="sum(amount)", name="t")],
         )
         with pytest.raises(ValueError) as ei:
             await gen(q)
@@ -83,7 +83,7 @@ class TestDeferredShapesRaiseDev1824:
                                "> 5000 THEN 1 ELSE 0 END", "name": "x"},
             ],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            measures=[DatasetMetric(expression="sum(amount)", name="t")],
         )
         assert "__regroup__" not in await gen(q)
 
@@ -101,7 +101,7 @@ class TestDeferredShapesRaiseDev1824:
                 {"expression": f"CASE WHEN {agg}(amount, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "name": "x"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="t")],
+            measures=[DatasetMetric(expression="sum(amount)", name="t")],
         )
         assert "__regroup__" not in await gen(q)
 

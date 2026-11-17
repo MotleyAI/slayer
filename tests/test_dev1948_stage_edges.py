@@ -173,8 +173,8 @@ class TestExecution:
             {"source_model": "x", "dimensions": ["tier"], "measures": [{"formula": "sum(total_spend)", "name": "s"}]}]}
         with pytest.raises(ValueError, match=r"(?is)inline.*named stages?|named stages?.*inline"):
             SlayerQuery.model_validate({
-                "name": "n", "source_model": outer, "dimensions": ["tier"],
-                "measures": [{"formula": "sum(s)", "name": "s3"}]})
+                "name": "n", "population": outer, "dimensions": ["tier"],
+                "metrics": [{"formula": "sum(s)", "name": "s3"}]})
 
 
 # --------------------------------------------------------------------------- #
@@ -209,7 +209,7 @@ class TestPlanStages:
 
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
-        dialect="postgres", source_model=orders_model(), referenced_models=[customers_model()],
+        dialect="postgres", population=orders_model(), referenced_datasets=[customers_model()],
     )
 
 
@@ -217,7 +217,7 @@ def _q(name, source, **kw) -> SlayerQuery:
     kw.setdefault("dimensions", ["status"] if source == "orders" else [])
     kw.setdefault("measures", [{"formula": "sum(amount)", "name": "amt"}]
                   if source == "orders" else [{"formula": "sum(amt)", "name": "total"}])
-    return SlayerQuery(name=name, source_model=source, **kw)
+    return SlayerQuery(name=name, population=source, **kw)
 
 
 class TestPlanStagesDirect:

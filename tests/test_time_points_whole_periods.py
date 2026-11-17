@@ -81,7 +81,7 @@ class TestSubDay:
     async def test_current_hour_excluded(self) -> None:
         async with tp_engine("duckdb", clock=PinnedClock(D(2026, 9, 29, 12, 30))) as engine:
             resp = await engine.execute(SlayerQuery.model_validate({
-                "source_model": "ev", "measures": [PLAIN],
+                "population": "ev", "metrics": [PLAIN],
                 "time_dimensions": [{"dimension": "ts", "granularity": "hour", "date_range": ["2026-09-28", None]}],
                 "whole_periods_only": True,
             }))
@@ -91,7 +91,7 @@ class TestSubDay:
     async def test_current_hour_excluded_sqlite(self) -> None:
         async with tp_engine("sqlite", clock=PinnedClock(D(2026, 9, 29, 12, 30))) as engine:
             resp = await engine.execute(SlayerQuery.model_validate({
-                "source_model": "ev", "measures": [PLAIN],
+                "population": "ev", "metrics": [PLAIN],
                 "time_dimensions": [{"dimension": "ts", "granularity": "hour", "date_range": ["2026-09-28", None]}],
                 "whole_periods_only": True,
             }))
@@ -101,9 +101,9 @@ class TestSubDay:
 
 def _two_grain_query(order: list[str]) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "source_model": "ev", "measures": [PLAIN],
+        "population": "ev", "metrics": [PLAIN],
         "time_dimensions": [{"dimension": "ts", "granularity": g} for g in order],
-        "filters": ["ts >= '2025-01-15'"], "whole_periods_only": True,
+        "filter": ["ts >= '2025-01-15'"], "whole_periods_only": True,
     })
 
 

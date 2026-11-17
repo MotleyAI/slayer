@@ -8,9 +8,9 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.join_walker import list_child, with_list_children
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.relationship_walker import list_child, with_list_children
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.database.client import SlayerSQLClient
 from slayer.sql.dialects.base import ServerProfile
@@ -54,49 +54,49 @@ class TestTheChild:
         assert got == {("go", "Ann"): 2, ("sql", "Ann"): 1, ("sql", "Bob"): 1, ("go", "Eve"): 1}
 
     def test_double_underscore_names_keep_distinct_children(self) -> None:
-        def listed(name: str, column: str) -> SlayerModel:
-            return SlayerModel(name=name, sql_table=name, data_source="test", columns=[
-                Column(name=column, type=DataType.ARRAY, element_type=DataType.TEXT)])
+        def listed(name: str, column: str) -> SlayerDataset:
+            return SlayerDataset(name=name, sql_table=name, data_source="test", fields=[
+                DatasetField(name=column, datatype=DataType.ARRAY, element_type=DataType.TEXT)])
 
         models = with_list_children({"a__b": listed("a__b", "c"), "a": listed("a", "b__c")})
         assert {m.list_of for m in models.values() if m.list_of} == {("a__b", "c"), ("a", "b__c")}
 
     def test_a_child_is_built_once_per_parent_and_column(self) -> None:
         parent = contractors_model()
-        skills = parent.get_column("skills")
+        skills = parent.get_field("skills")
         assert skills is not None
-        assert list_child(parent=parent, column=skills) is list_child(parent=parent, column=skills)
+        assert list_child(parent=parent, field=skills) is list_child(parent=parent, field=skills)
 
     def test_a_changed_parent_gets_a_fresh_child(self) -> None:
         parent = contractors_model()
-        skills = parent.get_column("skills")
+        skills = parent.get_field("skills")
         assert skills is not None
-        first = list_child(parent=parent, column=skills)
+        first = list_child(parent=parent, field=skills)
         retyped = skills.model_copy(update={"element_type": DataType.INT})
         changed = parent.model_copy(update={
-            "data_source": "other", "columns": [retyped if c is skills else c for c in parent.columns]})
-        child = list_child(parent=changed, column=retyped)
+            "data_source": "other", "fields": [retyped if c is skills else c for c in parent.fields]})
+        child = list_child(parent=changed, field=retyped)
         assert child is not first
-        value = child.get_column("value")
+        value = child.get_field("value")
         assert value is not None
-        assert (child.data_source, value.type) == ("other", DataType.INT)
+        assert (child.data_source, value.datatype) == ("other", DataType.INT)
 
     def test_a_column_edited_in_place_gets_a_fresh_child(self) -> None:
         parent = contractors_model()
-        skills = parent.get_column("skills")
+        skills = parent.get_field("skills")
         assert skills is not None
-        first = list_child(parent=parent, column=skills)
+        first = list_child(parent=parent, field=skills)
         skills.element_type = DataType.INT
-        child = list_child(parent=parent, column=skills)
-        value = child.get_column("value")
+        child = list_child(parent=parent, field=skills)
+        value = child.get_field("value")
         assert child is not first
         assert value is not None
-        assert value.type is DataType.INT
+        assert value.datatype is DataType.INT
 
     async def test_element_type_is_the_columns(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "contractors", "dimensions": ["scores.value"],
-            "measures": [measure("count(scores.*)", "n")], "filters": ["scores.value > '2'"]}))
+            "population": "contractors", "dimensions": ["scores.value"],
+            "metrics": [measure("count(scores.*)", "n")], "filter": ["scores.value > '2'"]}))
         assert _per(resp, "scores.value") == {3: 1, 9: 1, 5: 1}
 
 
@@ -146,18 +146,18 @@ class TestKeylessAssociation:
 
     async def test_identical_parent_rows_stay_distinct(self, keyless) -> None:
         q = SlayerQuery.model_validate({
-            "source_model": "twins", "dimensions": ["skills.value"], "measures": [measure("count(*)", "n")],
+            "population": "twins", "dimensions": ["skills.value"], "metrics": [measure("count(*)", "n")],
             "to_many_handling": "associate"})
         with pytest.warns(UserWarning):
             resp = await keyless.execute(q)
         assert _per(resp, "skills.value", model="twins") == {"go": 2}
 
     async def test_another_to_many_hop_uses_the_row_identity(self) -> None:
-        contractors = contractors_model(keyed=False).model_copy(update={"joins": [ModelJoin(
-            target_model="assignments", join_pairs=[["id", "contractor_id"]],
-            cardinality=JoinCardinality.ONE_TO_MANY)]})
-        assignments = SlayerModel(name="assignments", sql_table="assignments", data_source="test", columns=[
-            Column(name="id", type=DataType.INT, primary_key=True), Column(name="contractor_id", type=DataType.INT)])
+        contractors = contractors_model(keyed=False).model_copy(update={"joins": [DatasetRelationship(
+            to="assignments", join_pairs=[["id", "contractor_id"]],
+            cardinality=RelationshipCardinality.ONE_TO_MANY)]})
+        assignments = SlayerDataset(name="assignments", sql_table="assignments", data_source="test", fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="contractor_id", datatype=DataType.INT)])
         async with list_engine(models=[contractors, assignments, twins_model()]) as e:
             resp = await e.execute(query(dimensions=["skills.value", "assignments.id"],
                                          measures=[measure("count(*)", "n")], to_many_handling="associate"))
@@ -178,30 +178,30 @@ class TestNoFanOut:
 class TestComposition:
     async def test_through_a_to_one_join(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "assignments", "dimensions": ["id"], "filters": ["contractors.skills.value = 'sql'"]}))
+            "population": "assignments", "dimensions": ["id"], "filter": ["contractors.skills.value = 'sql'"]}))
         assert {int(r["assignments.id"]) for r in resp.data} == {1, 2, 3}
 
     async def test_element_dimension_through_a_to_one_join(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "assignments", "dimensions": ["contractors.skills.value"],
-            "measures": [measure("count(contractors.skills.*)", "n")]}))
+            "population": "assignments", "dimensions": ["contractors.skills.value"],
+            "metrics": [measure("count(contractors.skills.*)", "n")]}))
         assert _per(resp, "contractors.skills.value", model="assignments") == {"go": 3, "sql": 2}
 
     async def test_derived_list_column(self) -> None:
-        derived = Column(name="a_skills", sql="CASE WHEN team = 'A' THEN skills END", type=DataType.ARRAY,
+        derived = DatasetField(name="a_skills", sql="CASE WHEN team = 'A' THEN skills END", datatype=DataType.ARRAY,
                          element_type=DataType.TEXT)
         base = contractors_model()
-        model = base.model_copy(update={"columns": [*base.columns, derived]})
+        model = base.model_copy(update={"fields": [*base.fields, derived]})
         async with list_engine(models=[model, *all_models()[1:]]) as e:
             resp = await e.execute(query(dimensions=["a_skills.value"], measures=[measure("count(a_skills.*)", "n")]))
         assert _per(resp, "a_skills.value") == {"go": 2, "sql": 2}
 
     async def test_element_aggregates_filtered_across_a_declared_to_many(self) -> None:
-        contractors = contractors_model().model_copy(update={"joins": [ModelJoin(
-            target_model="assignments", join_pairs=[["id", "contractor_id"]],
-            cardinality=JoinCardinality.ONE_TO_MANY)]})
-        assignments = SlayerModel(name="assignments", sql_table="assignments", data_source="test", columns=[
-            Column(name="id", type=DataType.INT, primary_key=True), Column(name="contractor_id", type=DataType.INT)])
+        contractors = contractors_model().model_copy(update={"joins": [DatasetRelationship(
+            to="assignments", join_pairs=[["id", "contractor_id"]],
+            cardinality=RelationshipCardinality.ONE_TO_MANY)]})
+        assignments = SlayerDataset(name="assignments", sql_table="assignments", data_source="test", fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="contractor_id", datatype=DataType.INT)])
         async with list_engine(models=[contractors, assignments, twins_model()]) as e:
             resp = await e.execute(query(dimensions=["team"], filters=["assignments.id = 1"], measures=[
                 measure("count(skills.*)", "n"), measure("count_distinct(skills.value)", "d"),
@@ -229,9 +229,9 @@ def _cell(row: dict[str, Any], suffix: str) -> Any:
 # --------------------------------------------------------------------------- #
 # Save-time name collisions
 # --------------------------------------------------------------------------- #
-def _plain(name: str, *, joins: list[ModelJoin] | None = None) -> SlayerModel:
-    return SlayerModel(name=name, sql_table=name, data_source="test", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True)], joins=joins or [])
+def _plain(name: str, *, joins: list[DatasetRelationship] | None = None) -> SlayerDataset:
+    return SlayerDataset(name=name, sql_table=name, data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True)], relationships=joins or [])
 
 
 @pytest.fixture
@@ -243,37 +243,37 @@ async def storage(tmp_path) -> YAMLStorage:
 
 class TestNameCollisions:
     async def test_a_list_column_named_like_a_joined_model(self, storage: StorageBackend) -> None:
-        await storage.save_model(_plain("skills"))
-        model = contractors_model().model_copy(update={"joins": [ModelJoin(target_model="skills",
+        await storage.save_dataset(_plain("skills"))
+        model = contractors_model().model_copy(update={"joins": [DatasetRelationship(to="skills",
                                                                            join_pairs=[["id", "id"]])]})
         with pytest.raises(ValueError, match="skills"):
-            await storage.save_model(model)
+            await storage.save_dataset(model)
 
     async def test_a_list_column_named_like_an_edge(self, storage: StorageBackend) -> None:
-        await storage.save_model(_plain("people"))
-        model = contractors_model().model_copy(update={"joins": [ModelJoin(target_model="people",
+        await storage.save_dataset(_plain("people"))
+        model = contractors_model().model_copy(update={"joins": [DatasetRelationship(to="people",
                                                                            join_pairs=[["id", "id"]],
                                                                            name="skills")]})
         with pytest.raises(ValueError, match="skills"):
-            await storage.save_model(model)
+            await storage.save_dataset(model)
 
     async def test_the_collision_created_from_the_other_side(self, storage: StorageBackend) -> None:
-        await storage.save_model(contractors_model())
-        skills = _plain("skills", joins=[ModelJoin(target_model="contractors", join_pairs=[["id", "id"]])])
+        await storage.save_dataset(contractors_model())
+        skills = _plain("skills", joins=[DatasetRelationship(to="contractors", join_pairs=[["id", "id"]])])
         with pytest.raises(ValueError, match=r"contractors\.skills"):
-            await storage.save_model(skills)
+            await storage.save_dataset(skills)
 
     async def test_a_named_edge_created_from_the_other_side(self, storage: StorageBackend) -> None:
-        await storage.save_model(contractors_model())
-        people = _plain("people", joins=[ModelJoin(target_model="contractors", join_pairs=[["id", "id"]],
+        await storage.save_dataset(contractors_model())
+        people = _plain("people", joins=[DatasetRelationship(to="contractors", join_pairs=[["id", "id"]],
                                                     name="skills")])
         with pytest.raises(ValueError, match=r"contractors\.skills"):
-            await storage.save_model(people)
+            await storage.save_dataset(people)
 
     async def test_no_collision_saves(self, storage: StorageBackend) -> None:
-        await storage.save_model(_plain("people"))
-        await storage.save_model(contractors_model().model_copy(update={"joins": [ModelJoin(
-            target_model="people", join_pairs=[["id", "id"]])]}))
+        await storage.save_dataset(_plain("people"))
+        await storage.save_dataset(contractors_model().model_copy(update={"joins": [DatasetRelationship(
+            to="people", join_pairs=[["id", "id"]])]}))
 
 
 # --------------------------------------------------------------------------- #
@@ -334,8 +334,8 @@ async def test_element_filter_through_a_to_one_join_reads_the_parents_row(
     dialect: str, function: str, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(SlayerSQLClient, "server_profile", _correlating)
-    q = SlayerQuery.model_validate({"source_model": "assignments", "dimensions": ["id"],
-                                    "filters": ["contractors.skills.value = 'sql'"]})
+    q = SlayerQuery.model_validate({"population": "assignments", "dimensions": ["id"],
+                                    "filter": ["contractors.skills.value = 'sql'"]})
     sql = await emit_contractors(q, dialect=dialect, models=all_models())
     tree = sqlglot.parse_one(sql, read=dialect)
     assert not list(tree.find_all(exp.Unnest)), sql

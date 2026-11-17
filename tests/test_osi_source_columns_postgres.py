@@ -43,7 +43,7 @@ def _import(datasource: DatasourceConfig, table: str, sql: str) -> ConversionRes
 async def test_unquoted_leaf_folds(pg: DatasourceConfig, tmp_path: Path) -> None:
     result = _import(pg, "orders", "SUM(source.Quantity)")
     assert visible(by_name(result)["orders"]) == {"order_id"}
-    async with pg_query_engine(pg, base_dir=str(tmp_path), models=result.models) as engine:
+    async with pg_query_engine(pg, base_dir=str(tmp_path), models=result.datasets) as engine:
         rows = (await engine.execute({"source_model": "orders", "measures": ["units"]})).data
     assert rows[0]["orders.units"] == 5
 
@@ -51,4 +51,4 @@ async def test_unquoted_leaf_folds(pg: DatasourceConfig, tmp_path: Path) -> None
 def test_leaf_matching_two_live_columns_is_unconverted(pg: DatasourceConfig) -> None:
     result = _import(pg, "twins", "SUM(source.Quantity)")
     assert unconverted(result, "units")
-    assert [c.name for c in by_name(result)["twins"].columns] == ["order_id"]
+    assert [c.name for c in by_name(result)["twins"].fields] == ["order_id"]

@@ -47,7 +47,7 @@ def test_import_cube_writes_models_and_report(tmp_path):
 
     # Models persisted, offline (no datasource ever created/connected).
     storage = YAMLStorage(base_dir=str(storage_dir))
-    names = asyncio.new_event_loop().run_until_complete(storage.list_models())
+    names = asyncio.new_event_loop().run_until_complete(storage.list_datasets())
     assert "orders" in names
     assert "customers" in names
     assert "orders_overview" in names
@@ -68,7 +68,7 @@ def test_import_cube_survives_save_failure(tmp_path, monkeypatch: pytest.MonkeyP
     async def _boom(self, model):
         raise RuntimeError("save exploded")
 
-    monkeypatch.setattr(YAMLStorage, "save_model", _boom)
+    monkeypatch.setattr(YAMLStorage, "save_dataset", _boom)
     storage_dir = tmp_path / "store"
     code = _run("import-cube", FIXTURE, "--datasource", "cube_ds", "--storage", str(storage_dir))
     assert code == 0

@@ -119,7 +119,7 @@ def test_non_sql_dialects_only_metric_is_unconverted(db: Path) -> None:
     reason = " ".join(e.message for e in mentions(result, "mdx_metric"))
     assert "MDX" in reason
     assert "DAX" in reason
-    assert {x.name for x in by_name(result)["orders"].measures} == {"total"}
+    assert {x.name for x in by_name(result)["orders"].metrics} == {"total"}
 
 
 def test_non_sql_dialect_only_field_is_reported(db: Path) -> None:
@@ -147,7 +147,7 @@ def test_expression_with_neither_form_is_reported(db: Path) -> None:
     assert "empty_field" not in visible(orders)
     assert mentions(result, "empty_field")
     assert unconverted(result, "empty_metric")
-    assert {x.name for x in orders.measures} == {"total"}
+    assert {x.name for x in orders.metrics} == {"total"}
 
 
 # ─────────────────────── rendering for the target ──────────────────────────

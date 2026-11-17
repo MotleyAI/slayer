@@ -29,7 +29,7 @@ import pytest
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
 from tests._dev1747_fixtures import (
     cte_body_names,
     dev1747_models,
@@ -45,12 +45,12 @@ import inspect
 #: A LOCAL (single-model) transform chain — no cross-model measure, so it takes
 #: the f-string splice path rather than the cross-model one PR 3 already fixed.
 _CHAIN_QUERY = SlayerQuery(
-    source_model="orders",
+    population="orders",
     time_dimensions=[TimeDimension(
-        dimension="created_at",
+        field="created_at",
         granularity=TimeGranularity.MONTH,
     )],
-    measures=[
+    metrics=[
         {"formula": "sum(amount)", "name": "rev"},
         {"formula": "cumsum(sum(amount))", "name": "cs"},
     ],
@@ -59,12 +59,12 @@ _CHAIN_QUERY = SlayerQuery(
 #: Two chained transforms, so the chain has more than one step and dependency
 #: ORDER is actually observable.
 _MULTI_STEP_QUERY = SlayerQuery(
-    source_model="orders",
+    population="orders",
     time_dimensions=[TimeDimension(
-        dimension="created_at",
+        field="created_at",
         granularity=TimeGranularity.MONTH,
     )],
-    measures=[
+    metrics=[
         {"formula": "sum(amount)", "name": "rev"},
         {"formula": "cumsum(sum(amount))", "name": "cs"},
         {"formula": "change(sum(amount))", "name": "ch"},
@@ -133,10 +133,10 @@ class TestWithChainAssembly:
     async def test_chain_still_orders_and_paginates(self) -> None:
         """The chain's outer wrap is where ORDER BY / LIMIT land; D8 must not
         disturb that while replacing the splice."""
-        sql = await _sql(SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="created_at",
+        sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(column=ColumnRef(name="cs"), direction="desc")], "limit": 2}))
+            )], "metrics": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="cs"), direction="desc")], "limit": 2}))
         assert order_by_text(sql), f"chain lost its ORDER BY:\n{sql}"
         assert "LIMIT" in sql.upper() or "TOP" in sql.upper()
 
@@ -226,15 +226,15 @@ class TestChainSemanticsPreserved:
     async def test_hidden_order_slot_survives_the_chain(self) -> None:
         """A hidden order-only slot has to be carried through every step; the
         carry lists are plan-ordered (B8, PR 3) and must stay that way."""
-        sql = await _sql(SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="created_at",
+        sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(column=ColumnRef(name="status"), direction="desc")]}))
+            )], "metrics": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "order": [OrderItem(field=FieldRef(name="status"), direction="desc")]}))
         assert order_by_text(sql)
 
     async def test_post_phase_filter_still_wraps_the_chain(self) -> None:
-        sql = await _sql(SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [TimeDimension(
-                dimension="created_at",
+        sql = await _sql(SlayerQuery.model_validate({"population": "orders", "time_dimensions": [TimeDimension(
+                field="created_at",
                 granularity=TimeGranularity.MONTH,
-            )], "measures": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "filters": ["cs > 5"]}))
+            )], "metrics": [{"formula": "cumsum(sum(amount))", "name": "cs"}], "filter": ["cs > 5"]}))
         assert "WHERE" in sql.upper()

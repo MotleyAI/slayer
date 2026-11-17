@@ -97,7 +97,7 @@ def _rewrite_text(value: Any, fn: FieldRewrite, where: str) -> Any:
     return fn(value, where) if isinstance(value, str) else value
 
 
-def _rewrite_measure(item: Any, fn: FieldRewrite, where: str) -> Any:
+def _rewrite_metric(item: Any, fn: FieldRewrite, where: str) -> Any:
     return fn(item, where) if isinstance(item, str) else _rewrite_key(item, "formula", fn, where)
 
 
@@ -124,27 +124,27 @@ def _text_only(fn: TextRewrite) -> FieldRewrite:
     return lambda text, _where: fn(text)
 
 
-def _measure_formulas(measures: list, fn: FieldRewrite, where: str) -> list:
-    return [_rewrite_key(m, "formula", fn, _item(where, i, m)) for i, m in enumerate(measures)]
+def _metric_expressions(metrics: list, fn: FieldRewrite, where: str) -> list:
+    return [_rewrite_key(m, "formula", fn, _item(where, i, m)) for i, m in enumerate(metrics)]
 
 
-def rewrite_model_texts_at(data: dict, fn: FieldRewrite) -> dict:
+def rewrite_dataset_texts_at(data: dict, fn: FieldRewrite) -> dict:
     """Apply ``fn`` to every measure formula with its field; mark nested stored queries as stored."""
     if isinstance(data.get("measures"), list):
-        data["measures"] = _measure_formulas(data["measures"], fn, "measures")
+        data["measures"] = _metric_expressions(data["measures"], fn, "measures")
     if isinstance(data.get("source_queries"), list):
         data["source_queries"] = [stamp_stored(q) for q in data["source_queries"]]
     return data
 
 
-def rewrite_model_texts(data: dict, fn: TextRewrite) -> dict:
+def rewrite_dataset_texts(data: dict, fn: TextRewrite) -> dict:
     """Apply ``fn`` to every measure formula; mark nested stored queries as stored."""
-    return rewrite_model_texts_at(data, _text_only(fn))
+    return rewrite_dataset_texts_at(data, _text_only(fn))
 
 
 def _rewrite_query_fields(data: dict, fn: FieldRewrite) -> dict:
     for field, rewrite in (
-        ("measures", _rewrite_measure), ("filters", _rewrite_text), ("dimensions", _rewrite_dimension),
+        ("measures", _rewrite_metric), ("filters", _rewrite_text), ("dimensions", _rewrite_dimension),
         ("time_dimensions", _rewrite_time_dimension), ("order", _rewrite_order),
         ("main_time_dimension", _rewrite_text),
     ):
@@ -165,13 +165,13 @@ def rewrite_query_texts_at(data: dict, fn: FieldRewrite) -> dict:
     if isinstance(source, dict):
         if "source_name" in source:
             if isinstance(source.get("measures"), list):
-                data["source_model"] = {**source, "measures": _measure_formulas(source["measures"], fn,
+                data["source_model"] = {**source, "measures": _metric_expressions(source["measures"], fn,
                                                                                 "source_model.measures")}
         else:
             data["source_model"] = stamp_stored(source)
     if isinstance(data.get("extensions"), list):
         data["extensions"] = [
-            {**e, "measures": _measure_formulas(e["measures"], fn, f"extensions[{i}].measures")}
+            {**e, "measures": _metric_expressions(e["measures"], fn, f"extensions[{i}].measures")}
             if isinstance(e, dict) and isinstance(e.get("measures"), list) else e
             for i, e in enumerate(data["extensions"])
         ]
@@ -183,9 +183,9 @@ def rewrite_query_texts(data: dict, fn: TextRewrite) -> dict:
     return rewrite_query_texts_at(data, _text_only(fn))
 
 
-def rewrite_model_ranks(data: dict) -> dict:
+def rewrite_dataset_ranks(data: dict) -> dict:
     """Fill ``direction='desc'`` into measure formulas; mark nested stored queries as stored."""
-    return rewrite_model_texts(data, add_desc_direction)
+    return rewrite_dataset_texts(data, add_desc_direction)
 
 
 def rewrite_query_ranks(data: dict) -> dict:
@@ -200,6 +200,6 @@ def stamp_memory_query(data: dict) -> dict:
     return data
 
 
-register_migration(entity="SlayerModel", source_version=12, stored_only=True)(rewrite_model_ranks)
+register_migration(entity="SlayerModel", source_version=12, stored_only=True)(rewrite_dataset_ranks)
 register_migration(entity="SlayerQuery", source_version=4, stored_only=True)(rewrite_query_ranks)
 register_migration(entity="Memory", source_version=2, stored_only=True)(stamp_memory_query)

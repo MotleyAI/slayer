@@ -14,8 +14,8 @@ from unittest import mock
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.errors import MeasureRecursionLimitError
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.errors import MetricRecursionLimitError
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 
 from tests._dev1842_fixtures import gen, make_exec_engine, month_td, q
 from tests._engine_helpers import _engine_generate
@@ -87,25 +87,25 @@ class TestDepthLimit:
     respects the configurable depth cap; exceeding it raises naming the chain."""
 
     def _models(self):
-        sub = SlayerModel(
+        sub = SlayerDataset(
             name="sub", data_source="test", sql_table="sub",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
             ],
-            measures=[
-                ModelMeasure(name="d1", formula="d2"),
-                ModelMeasure(name="d2", formula="d3"),
-                ModelMeasure(name="d3", formula="sum(amount)"),
+            metrics=[
+                DatasetMetric(name="d1", expression="d2"),
+                DatasetMetric(name="d2", expression="d3"),
+                DatasetMetric(name="d3", expression="sum(amount)"),
             ],
         )
-        main = SlayerModel(
+        main = SlayerDataset(
             name="main", data_source="test", sql_table="main",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="sub_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="sub_id", datatype=DataType.INT),
             ],
-            joins=[ModelJoin(target_model="sub", join_pairs=[["sub_id", "id"]])],
+            relationships=[DatasetRelationship(to="sub", join_pairs=[["sub_id", "id"]])],
         )
         return main, sub
 
@@ -119,7 +119,7 @@ class TestDepthLimit:
 
     async def test_depth_limit_exceeded_raises(self):
         with mock.patch.dict(os.environ, {"SLAYER_MEASURE_EXPANSION_DEPTH": "1"}):
-            with pytest.raises(MeasureRecursionLimitError) as ei:
+            with pytest.raises(MetricRecursionLimitError) as ei:
                 await self._generate("sub.d1")
             assert ei.value.limit == 1
 

@@ -24,10 +24,10 @@ from sqlglot import exp
 
 import slayer.engine.query_engine as qe_mod
 from slayer.core.enums import DataType
-from slayer.core.errors import UnresolvableDimensionJoinError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.errors import UnresolvableDimensionRelationshipError
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
-from slayer.sql.column_expansion import _requalify
+from slayer.sql.field_expansion import _requalify
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -49,7 +49,7 @@ async def _engine_with(models, *, dialect="postgres"):
     await storage.save_datasource(DatasourceConfig(name="test", type=dialect))
     engine = SlayerQueryEngine(storage=storage)
     for m in models:
-        await engine.save_model(m)
+        await engine.save_dataset(m)
     return engine
 
 
@@ -64,18 +64,18 @@ def _joined_table_names(sql: str) -> set[str]:
 # A __-named model resolves as an exact-match Mode-A join target.
 # --------------------------------------------------------------------------- #
 class TestDunderTargetResolves:
-    def _host_with_label(self) -> SlayerModel:
-        return SlayerModel(
+    def _host_with_label(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="cr_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="cr_id", datatype=DataType.INT),
                 # Mode-A reference to a DIRECT join target literally named
                 # ``customer__region`` — exact match, single hop.
-                Column(name="region_label", type=DataType.TEXT,
+                DatasetField(name="region_label", datatype=DataType.TEXT,
                        sql="customer__region.label"),
             ],
-            joins=[ModelJoin(target_model="customer__region",
+            relationships=[DatasetRelationship(to="customer__region",
                              join_pairs=[["cr_id", "id"]])],
         )
 
@@ -83,7 +83,7 @@ class TestDunderTargetResolves:
     async def test_dunder_target_joins_and_projects(self) -> None:
         host = self._host_with_label()
         sql = await _engine_generate(
-            query=SlayerQuery(source_model="orders", dimensions=["region_label"]),
+            query=SlayerQuery(population="orders", dimensions=["region_label"]),
             model=host, extra_models=[dunder_target()],
         )
         # The dim's physical table is joined and its label column read.
@@ -95,19 +95,19 @@ class TestDunderTargetResolves:
 # The legacy __ split-alias form is a hard D2 error — save time.
 # --------------------------------------------------------------------------- #
 class TestLegacyDunderIsHardErrorAtSave:
-    def _orders_with_legacy_alias(self) -> SlayerModel:
-        return SlayerModel(
+    def _orders_with_legacy_alias(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
                 # No model literally named ``customers__regions`` exists; the
                 # naive split walks customers -> regions, so this must be a D2
                 # error naming the dotted replacement.
-                Column(name="rn", type=DataType.TEXT,
+                DatasetField(name="rn", datatype=DataType.TEXT,
                        sql="customers__regions.name"),
             ],
-            joins=[ModelJoin(target_model="customers",
+            relationships=[DatasetRelationship(to="customers",
                              join_pairs=[["customer_id", "id"]])],
         )
 
@@ -116,7 +116,7 @@ class TestLegacyDunderIsHardErrorAtSave:
         engine = await _engine_with([chain_regions(), chain_customers()])
         model = self._orders_with_legacy_alias()
         with pytest.raises(ValueError) as ei:
-            await engine.save_model(model)
+            await engine.save_dataset(model)
         msg = str(ei.value)
         # Names BOTH the rejected legacy qualifier and the dotted replacement,
         # so an unrelated downstream error that merely quotes the path can't
@@ -130,22 +130,22 @@ class TestLegacyDunderIsHardErrorAtSave:
 # _engine_generate saves via storage.save_model, bypassing the save-time pass.
 # --------------------------------------------------------------------------- #
 class TestLegacyDunderIsHardErrorAtGeneration:
-    def _orders_with_legacy_alias(self) -> SlayerModel:
-        return SlayerModel(
+    def _orders_with_legacy_alias(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="rn", type=DataType.TEXT,
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="rn", datatype=DataType.TEXT,
                        sql="customers__regions.name"),
             ],
-            joins=[ModelJoin(target_model="customers",
+            relationships=[DatasetRelationship(to="customers",
                              join_pairs=[["customer_id", "id"]])],
         )
 
     @pytest.mark.asyncio
     async def test_generation_raises_d2(self) -> None:
-        query = SlayerQuery(source_model="orders", dimensions=["rn"])
+        query = SlayerQuery(population="orders", dimensions=["rn"])
         model = self._orders_with_legacy_alias()
         extras = [chain_customers(), chain_regions()]
         with pytest.raises(ValueError) as ei:
@@ -166,43 +166,43 @@ class TestModeAValidationOverReverseOnlyEdge:
     async def test_broken_tail_hop_rejected_on_joinless_model(self) -> None:
         # orders declares the only edge; customers has NO joins, but its
         # Mode-A chain over the reverse hop still validates (DEV-1853).
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
             ],
-            joins=[ModelJoin(target_model="customers",
+            relationships=[DatasetRelationship(to="customers",
                              join_pairs=[["customer_id", "id"]])],
         )
         engine = await _engine_with([orders])
-        customers = SlayerModel(
+        customers = SlayerDataset(
             name="customers", data_source="test", sql_table="customers",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="bad", type=DataType.TEXT,
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="bad", datatype=DataType.TEXT,
                        sql="orders.nonexistent.name"),
             ],
         )
-        with pytest.raises(UnresolvableDimensionJoinError):
-            await engine.save_model(customers)
+        with pytest.raises(UnresolvableDimensionRelationshipError):
+            await engine.save_dataset(customers)
 
 
 # --------------------------------------------------------------------------- #
 # A dotted chain whose later hop is not a join raises naming the failing hop.
 # --------------------------------------------------------------------------- #
 class TestBrokenChainNamesFailingHop:
-    def _orders_broken_chain(self) -> SlayerModel:
-        return SlayerModel(
+    def _orders_broken_chain(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
                 # customers is a join target; nonexistent is not a join on it.
-                Column(name="bad", type=DataType.TEXT,
+                DatasetField(name="bad", datatype=DataType.TEXT,
                        sql="customers.nonexistent.name"),
             ],
-            joins=[ModelJoin(target_model="customers",
+            relationships=[DatasetRelationship(to="customers",
                              join_pairs=[["customer_id", "id"]])],
         )
 
@@ -210,8 +210,8 @@ class TestBrokenChainNamesFailingHop:
     async def test_save_raises_naming_the_hop(self) -> None:
         engine = await _engine_with([chain_regions(), chain_customers()])
         model = self._orders_broken_chain()
-        with pytest.raises(UnresolvableDimensionJoinError) as ei:
-            await engine.save_model(model)
+        with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
+            await engine.save_dataset(model)
         assert "nonexistent" in str(ei.value)
 
 
@@ -229,17 +229,17 @@ class TestBrokenChainNamesFailingHop:
 class TestExactHostQualifier:
     @pytest.mark.asyncio
     async def test_host_qualified_column_resolves(self) -> None:
-        host = SlayerModel(
+        host = SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
                 # Explicit host qualifier — resolves to the host relation.
-                Column(name="doubled", type=DataType.DOUBLE, sql="orders.amount * 2"),
-                Column(name="amount", type=DataType.DOUBLE),
+                DatasetField(name="doubled", datatype=DataType.DOUBLE, sql="orders.amount * 2"),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
             ],
         )
         sql = await _engine_generate(
-            query=SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(doubled)"}]}),
+            query=SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(doubled)"}]}),
             model=host,
         )
         assert "amount" in sql
@@ -250,15 +250,15 @@ class TestExactHostQualifier:
 # Column.filter and SlayerModel.filters (the plan changes all three).
 # --------------------------------------------------------------------------- #
 class TestFilterSurfacesResolve:
-    def _host(self, *, col_filter=None, model_filters=None) -> SlayerModel:
-        return SlayerModel(
+    def _host(self, *, col_filter=None, model_filters=None) -> SlayerDataset:
+        return SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="amount", type=DataType.DOUBLE, filter=col_filter),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE, filter=col_filter),
             ],
-            joins=[ModelJoin(target_model="customers",
+            relationships=[DatasetRelationship(to="customers",
                              join_pairs=[["customer_id", "id"]])],
             filters=list(model_filters) if model_filters else [],
         )
@@ -268,7 +268,7 @@ class TestFilterSurfacesResolve:
         engine = await _engine_with([chain_regions(), chain_customers()])
         host = self._host(col_filter="customers__regions.name = 'US'")
         with pytest.raises(ValueError) as ei:
-            await engine.save_model(host)
+            await engine.save_dataset(host)
         assert "customers.regions.name" in str(ei.value)
 
     @pytest.mark.asyncio
@@ -276,7 +276,7 @@ class TestFilterSurfacesResolve:
         engine = await _engine_with([chain_regions(), chain_customers()])
         host = self._host(model_filters=["customers__regions.name = 'US'"])
         with pytest.raises(ValueError) as ei:
-            await engine.save_model(host)
+            await engine.save_dataset(host)
         assert "customers.regions.name" in str(ei.value)
 
 
@@ -286,26 +286,26 @@ class TestFilterSurfacesResolve:
 # the chain — both resolve, to DIFFERENT relations, no error.
 # --------------------------------------------------------------------------- #
 class TestAmbiguityImpossible:
-    def _host(self) -> SlayerModel:
-        return SlayerModel(
+    def _host(self) -> SlayerDataset:
+        return SlayerDataset(
             name="host", data_source="test", sql_table="host",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="a_id", type=DataType.INT),
-                Column(name="ab_id", type=DataType.INT),
-                Column(name="chain_val", type=DataType.TEXT, sql="a.b.val"),
-                Column(name="direct_val", type=DataType.TEXT, sql="a__b.val"),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="a_id", datatype=DataType.INT),
+                DatasetField(name="ab_id", datatype=DataType.INT),
+                DatasetField(name="chain_val", datatype=DataType.TEXT, sql="a.b.val"),
+                DatasetField(name="direct_val", datatype=DataType.TEXT, sql="a__b.val"),
             ],
-            joins=[
-                ModelJoin(target_model="a", join_pairs=[["a_id", "id"]]),
-                ModelJoin(target_model="a__b", join_pairs=[["ab_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="a", join_pairs=[["a_id", "id"]]),
+                DatasetRelationship(to="a__b", join_pairs=[["ab_id", "id"]]),
             ],
         )
 
     @pytest.mark.asyncio
     async def test_direct_model_and_chain_resolve_to_distinct_relations(self) -> None:
         sql = await _engine_generate(
-            query=SlayerQuery(source_model="host",
+            query=SlayerQuery(population="host",
                               dimensions=["chain_val", "direct_val"]),
             model=self._host(), extra_models=[ai_a(), ai_b(), ai_a__b()],
         )
@@ -321,31 +321,31 @@ class TestAmbiguityImpossible:
 # --------------------------------------------------------------------------- #
 class TestDeepDottedChainResolves:
     def _four_hop_models(self):
-        d = lambda name, cols, joins=(): SlayerModel(  # noqa: E731
+        d = lambda name, cols, joins=(): SlayerDataset(  # noqa: E731
             name=name, data_source="test", sql_table=name,
-            columns=cols, joins=list(joins),
+            fields=cols, relationships=list(joins),
         )
-        leaf = d("dd", [Column(name="id", type=DataType.INT, primary_key=True),
-                        Column(name="v", type=DataType.TEXT)])
-        cc = d("cc", [Column(name="id", type=DataType.INT, primary_key=True),
-                      Column(name="dd_id", type=DataType.INT)],
-               [ModelJoin(target_model="dd", join_pairs=[["dd_id", "id"]])])
-        bb = d("bb", [Column(name="id", type=DataType.INT, primary_key=True),
-                      Column(name="cc_id", type=DataType.INT)],
-               [ModelJoin(target_model="cc", join_pairs=[["cc_id", "id"]])])
-        aa = d("aa", [Column(name="id", type=DataType.INT, primary_key=True),
-                      Column(name="bb_id", type=DataType.INT)],
-               [ModelJoin(target_model="bb", join_pairs=[["bb_id", "id"]])])
-        host = SlayerModel(
+        leaf = d("dd", [DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                        DatasetField(name="v", datatype=DataType.TEXT)])
+        cc = d("cc", [DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                      DatasetField(name="dd_id", datatype=DataType.INT)],
+               [DatasetRelationship(to="dd", join_pairs=[["dd_id", "id"]])])
+        bb = d("bb", [DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                      DatasetField(name="cc_id", datatype=DataType.INT)],
+               [DatasetRelationship(to="cc", join_pairs=[["cc_id", "id"]])])
+        aa = d("aa", [DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                      DatasetField(name="bb_id", datatype=DataType.INT)],
+               [DatasetRelationship(to="bb", join_pairs=[["bb_id", "id"]])])
+        host = SlayerDataset(
             name="hh", data_source="test", sql_table="hh",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="aa_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="aa_id", datatype=DataType.INT),
                 # 5 name parts: aa.bb.cc.dd.v — a nested-Dot AST, not 4-part
                 # Column.parts. The extraction layer must still walk it.
-                Column(name="deep", type=DataType.TEXT, sql="aa.bb.cc.dd.v"),
+                DatasetField(name="deep", datatype=DataType.TEXT, sql="aa.bb.cc.dd.v"),
             ],
-            joins=[ModelJoin(target_model="aa", join_pairs=[["aa_id", "id"]])],
+            relationships=[DatasetRelationship(to="aa", join_pairs=[["aa_id", "id"]])],
         )
         return host, [aa, bb, cc, leaf]
 
@@ -353,7 +353,7 @@ class TestDeepDottedChainResolves:
     async def test_five_part_chain_resolves(self) -> None:
         host, extra = self._four_hop_models()
         sql = await _engine_generate(
-            query=SlayerQuery(source_model="hh", dimensions=["deep"]),
+            query=SlayerQuery(population="hh", dimensions=["deep"]),
             model=host, extra_models=extra,
         )
         # Every hop's physical table is actually joined (parsed exp.Table names,
@@ -381,17 +381,17 @@ class TestModeAValidationDialect:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig(name="test", type="mysql"))
         engine = SlayerQueryEngine(storage=storage)
-        host = SlayerModel(
+        host = SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="cr_id", type=DataType.INT),
-                Column(name="rl", type=DataType.TEXT, sql="customer__region.label"),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="cr_id", datatype=DataType.INT),
+                DatasetField(name="rl", datatype=DataType.TEXT, sql="customer__region.label"),
             ],
-            joins=[ModelJoin(target_model="customer__region",
+            relationships=[DatasetRelationship(to="customer__region",
                              join_pairs=[["cr_id", "id"]])],
         )
-        await engine.save_model(host)
+        await engine.save_dataset(host)
         assert captured.get("dialect") == "mysql"
 
 

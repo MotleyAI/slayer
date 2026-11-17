@@ -17,14 +17,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from slayer import usage_reporting
 from slayer.mcp.server import create_mcp_server
 from slayer.core.errors import (
-    AmbiguousModelError,
+    AmbiguousDatasetError,
     MemoryNotFoundError,
     SchemaDriftError,
 )
 from slayer.core.format import NumberFormat, encode_json
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import (
-    ModelExtension,
+    DatasetExtension,
     QueryRefinement,
     SlayerQuery,
     SourceSpec,
@@ -55,19 +55,19 @@ class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str | None = None  # Run-by-name: backing query for a query-backed model
-    source_model: SourceSpec | None = None
-    extensions: list[ModelExtension] | None = None
-    # ``measures`` and ``dimensions`` accept bare strings as a shorthand,
+    population: SourceSpec | None = None
+    extensions: list[DatasetExtension] | None = None
+    # ``metrics`` and ``dimensions`` accept bare strings as a shorthand,
     # mirroring the Python API: ``"count(*)"`` is lifted to
     # ``{"formula": "count(*)"}``, ``"status"`` to ``{"name": "status"}``.
     # ``SlayerQuery``'s before-validators (``_coerce_measures`` /
     # ``_coerce_dimensions``) do the actual lifting downstream.
-    measures: list[str | dict[str, Any]] | None = None
+    metrics: list[str | dict[str, Any]] | None = None
     dimensions: list[str | dict[str, Any]] | None = None
     # A string entry is the ``date_trunc('<unit>', expr)`` form, coerced downstream by
     # ``SlayerQuery``.
     time_dimensions: list[str | dict[str, Any]] | None = None
-    filters: list[str] | None = None
+    filter: list[str] | None = None
     order: list[dict[str, Any]] | None = None
     limit: int | None = None
     offset: int | None = None
@@ -102,7 +102,7 @@ class QueryRequest(BaseModel):
         return self._deprecated_inputs
 
     @model_validator(mode="after")
-    def _one_extension_per_model(self) -> "QueryRequest":
+    def _one_extension_per_dataset(self) -> "QueryRequest":
         check_unique_extensions(self.extensions)
         return self
 
@@ -139,7 +139,7 @@ class FieldMetadataResponse(BaseModel):
 
 class AttributesResponse(BaseModel):
     dimensions: dict[str, FieldMetadataResponse] = {}
-    measures: dict[str, FieldMetadataResponse] = {}
+    metrics: dict[str, FieldMetadataResponse] = {}
 
 
 class QueryResponse(BaseModel):
@@ -180,11 +180,11 @@ class IngestRequest(BaseModel):
         return self
 
 
-class ValidateModelsRequest(BaseModel):
+class ValidateDatasetsRequest(BaseModel):
     data_source: str | None = None
 
 
-class RecommendRootModelRequest(BaseModel):
+class RecommendPopulationRequest(BaseModel):
     """Body for ``POST /recommend-root-model``."""
     items: list[str]
     data_source: str | None = None
@@ -451,10 +451,10 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 return {k: FieldMetadataResponse(label=v.label, format=v.format) for k, v in d.items()}
 
             attributes = None
-            if attrs and (attrs.dimensions or attrs.measures):
+            if attrs and (attrs.dimensions or attrs.metrics):
                 attributes = AttributesResponse(
                     dimensions=_convert_meta(attrs.dimensions),
-                    measures=_convert_meta(attrs.measures),
+                    metrics=_convert_meta(attrs.metrics),
                 )
             response = QueryResponse(
                 data=result.data,
@@ -476,7 +476,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                 status_code=422,
                 detail={
                     "error": "schema_drift",
-                    "models": drift.models,
+                    "models": drift.datasets,
                     "to_delete": [
                         e.model_dump(mode="json") for e in drift.to_delete
                     ],
@@ -488,11 +488,11 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             raise HTTPException(status_code=400, detail=str(e))
 
     @app.get("/models")
-    async def list_models(
+    async def list_datasets(
         data_source: str | None = None,
     ) -> list[dict[str, Any]]:
         result = []
-        for model in DocumentLoadFailures().skip(await storage.load_models(data_source=data_source)):
+        for model in DocumentLoadFailures().skip(await storage.load_datasets(data_source=data_source)):
             if model.hidden:
                 continue
             entry: dict[str, Any] = {"name": model.name, "data_source": model.data_source}
@@ -503,7 +503,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         for ds_name in datasources:
             result.extend(
                 {"name": m.name, "data_source": ds_name, "description": m.description}
-                for m in await storage.builtin_models(ds_name)
+                for m in await storage.builtin_datasets(ds_name)
             )
         return result
 
@@ -520,13 +520,13 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             }
         },
     )
-    async def get_model(
+    async def get_dataset(
         name: str,
         data_source: str | None = None,
     ) -> dict[str, Any]:
         try:
-            model = await storage.get_model_or_builtin(name, data_source=data_source)
-        except AmbiguousModelError as exc:
+            model = await storage.get_dataset_or_builtin(name, data_source=data_source)
+        except AmbiguousDatasetError as exc:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -545,29 +545,29 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         "/models",
         responses={400: {"description": "Model failed validation (e.g. user-supplied cache fields on a query-backed model, save-time SQL generation failure)."}},
     )
-    async def create_model(model: SlayerModel) -> dict[str, Any]:
+    async def create_dataset(dataset: SlayerDataset) -> dict[str, Any]:
         # Route through engine.save_model so query-backed models get cache
         # populated (and user-supplied cache fields are rejected).
         notes: list[SlayerWarning] = []
         try:
-            await engine.save_model(model, warnings_out=notes)
+            await engine.save_dataset(dataset, warnings_out=notes)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return {"status": "created", "name": model.name, "warnings": _dumped(notes)}
+        return {"status": "created", "name": dataset.name, "warnings": _dumped(notes)}
 
     @app.put(
         "/models/{name}",
         responses={400: {"description": "Body name does not match path name, or model failed validation."}},
     )
-    async def update_model(name: str, model: SlayerModel) -> dict[str, Any]:
-        if model.name != name:
+    async def update_dataset(name: str, dataset: SlayerDataset) -> dict[str, Any]:
+        if dataset.name != name:
             raise HTTPException(
                 status_code=400,
-                detail=f"Path name '{name}' does not match body name '{model.name}'",
+                detail=f"Path name '{name}' does not match body name '{dataset.name}'",
             )
         notes: list[SlayerWarning] = []
         try:
-            await engine.save_model(model, warnings_out=notes)
+            await engine.save_dataset(dataset, warnings_out=notes)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         return {"status": "updated", "name": name, "warnings": _dumped(notes)}
@@ -585,13 +585,13 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             }
         },
     )
-    async def delete_model(
+    async def delete_dataset(
         name: str,
         data_source: str | None = None,
     ) -> dict[str, Any]:
         try:
-            deleted = await storage.delete_model(name, data_source=data_source)
-        except AmbiguousModelError as exc:
+            deleted = await storage.delete_dataset(name, data_source=data_source)
+        except AmbiguousDatasetError as exc:
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -690,8 +690,8 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
             },
         },
     )
-    async def validate_models_endpoint(
-        request: ValidateModelsRequest,
+    async def validate_datasets_endpoint(
+        request: ValidateDatasetsRequest,
     ) -> list[dict[str, Any]]:
         """Diff persisted SlayerModels against live DB schemas. Read-only."""
         if request.data_source is not None:
@@ -702,7 +702,7 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
                     detail=f"Datasource '{request.data_source}' not found",
                 )
         try:
-            entries = await engine.validate_models(data_source=request.data_source)
+            entries = await engine.validate_datasets(data_source=request.data_source)
         except (SQLAlchemyError, SqlClientError) as exc:
             safe_ds = (request.data_source or "").replace("\r", "").replace("\n", "")
             logger.exception("validate_models failed for datasource %r", safe_ds)
@@ -718,14 +718,14 @@ def create_app(  # NOSONAR(S3776) — FastAPI route-handler factory; complexity 
         "/recommend-root-model",
         responses={400: {"description": "Unresolvable / wrong-kind / cross-datasource items."}},
     )
-    async def recommend_root_model_endpoint(
-        request: RecommendRootModelRequest,
+    async def recommend_population_endpoint(
+        request: RecommendPopulationRequest,
     ) -> dict[str, Any]:
-        """Recommend the query ``source_model`` (root) for a set of
+        """Recommend the query ``population`` (root) for a set of
         ``model.column`` / ``model.metric`` items, plus each item's
         join-qualified path from that root. Read-only."""
         try:
-            rec = await engine.recommend_root_model(
+            rec = await engine.recommend_population(
                 request.items, data_source=request.data_source,
                 root_hint=request.root_hint,
             )

@@ -6,14 +6,14 @@ import json
 import re
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
-from slayer.core.query import ColumnRef
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import FieldRef
 from slayer.live_schema.ingestion import _updated_detail_lines
-from slayer.live_schema.schema_drift import ModelAddition
+from slayer.live_schema.schema_drift import DatasetAddition
 from slayer.facade.catalog import FacadeCatalog, FacadeTable, build_catalog
 from slayer.facade.translator import QueryResult, translate
-from slayer.inspect.collection_render import render_models_summary
-from slayer.inspect.model_render import model_skeleton_fields, render_model_inspection
+from slayer.inspect.collection_render import render_datasets_summary
+from slayer.inspect.dataset_render import dataset_skeleton_fields, render_dataset_inspection
 from slayer.mcp.server import _addition_has_changes, _addition_update_details
 
 from tests._dev2073_fixtures import (
@@ -29,13 +29,13 @@ from tests._dev2073_fixtures import (
 EDGE_NAMES = ["billing_address", "shipping_address"]
 
 
-def _orders() -> SlayerModel:
+def _orders() -> SlayerDataset:
     return orders_with(*named_pair())
 
 
-async def _inspect(model: SlayerModel, **kwargs) -> str:
+async def _inspect(model: SlayerDataset, **kwargs) -> str:
     async with model_store(addresses_model(), _orders()) as storage:
-        return await render_model_inspection(model=model, storage=storage, engine=None, **kwargs)
+        return await render_dataset_inspection(dataset=model, storage=storage, engine=None, **kwargs)
 
 
 class TestInspectShowsEdgeNames:
@@ -56,11 +56,11 @@ class TestInspectShowsEdgeNames:
         assert sorted(payload["joins_names"]) == EDGE_NAMES
 
     def test_skeleton_lists_edge_references(self) -> None:
-        assert model_skeleton_fields(model=_orders())["joins_to"] == EDGE_NAMES
+        assert dataset_skeleton_fields(dataset=_orders())["joins_to"] == EDGE_NAMES
 
 
-def _summary_joins(*models: SlayerModel) -> dict[str, list[str]]:
-    out = json.loads(render_models_summary(datasource_name=DS, models=list(models), fmt="json", compact=True))
+def _summary_joins(*models: SlayerDataset) -> dict[str, list[str]]:
+    out = json.loads(render_datasets_summary(datasource_name=DS, datasets=list(models), fmt="json", compact=True))
     return {m["name"]: m["joins_to"] for m in out["models"]}
 
 
@@ -80,41 +80,41 @@ def _table(catalog: FacadeCatalog, name: str) -> FacadeTable:
 
 
 def _facade_edges(table: FacadeTable) -> set[tuple]:
-    return {(j.name, j.target_model, str(j.join_pairs)) for j in table.joins}
+    return {(j.name, j.to, str(j.join_pairs)) for j in table.relationships}
 
 
 class TestFacadeCatalogExposesBothOrientations:
     def test_declaring_side_carries_names(self) -> None:
-        catalog = build_catalog(models_by_datasource={DS: [_orders(), addresses_model()]})
+        catalog = build_catalog(datasets_by_datasource={DS: [_orders(), addresses_model()]})
         assert _facade_edges(_table(catalog, "orders")) == {
             ("billing_address", "addresses", "[['billing_address_id', 'id']]"),
             ("shipping_address", "addresses", "[['shipping_address_id', 'id']]"),
         }
 
     def test_target_side_carries_oriented_incoming_edges(self) -> None:
-        catalog = build_catalog(models_by_datasource={DS: [_orders(), addresses_model()]})
+        catalog = build_catalog(datasets_by_datasource={DS: [_orders(), addresses_model()]})
         assert _facade_edges(_table(catalog, "addresses")) == {
             ("billing_address", "orders", "[['id', 'billing_address_id']]"),
             ("shipping_address", "orders", "[['id', 'shipping_address_id']]"),
         }
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source=DS, sql_table="customers",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="name", type=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                 DatasetField(name="name", datatype=DataType.TEXT)],
     )
 
 
 def _dimension_names(result: QueryResult) -> list[str]:
-    return [d.full_name if isinstance(d, ColumnRef) else repr(d) for d in result.query.dimensions or []]
+    return [d.full_name if isinstance(d, FieldRef) else repr(d) for d in result.query.dimensions or []]
 
 
 class TestTranslatorMatchesTheDeclaredEdge:
     def test_reverse_direction_join_traverses_the_declared_edge(self) -> None:
         orders = orders_with(join_to([["customer_id", "id"]], target="customers"))
-        catalog = build_catalog(models_by_datasource={DS: [orders, _customers()]})
+        catalog = build_catalog(datasets_by_datasource={DS: [orders, _customers()]})
         sql = (
             'SELECT "Orders"."status" AS "s" FROM "public"."customers" '
             'LEFT JOIN (SELECT "public"."orders"."id" AS "id", "public"."orders"."customer_id" AS "customer_id", '
@@ -123,11 +123,11 @@ class TestTranslatorMatchesTheDeclaredEdge:
         )
         result = translate(sql=sql, catalog=catalog, dialect="postgres")
         assert isinstance(result, QueryResult)
-        assert result.query.source_model == "customers"
+        assert result.query.population == "customers"
         assert _dimension_names(result) == ["orders.status"]
 
     def test_parallel_join_uses_the_edge_name(self) -> None:
-        catalog = build_catalog(models_by_datasource={DS: [_orders(), addresses_model()]})
+        catalog = build_catalog(datasets_by_datasource={DS: [_orders(), addresses_model()]})
         sql = (
             'SELECT "Ship"."city" AS "c" FROM "public"."orders" '
             'LEFT JOIN (SELECT "public"."addresses"."id" AS "id", "public"."addresses"."city" AS "city" '
@@ -136,13 +136,13 @@ class TestTranslatorMatchesTheDeclaredEdge:
         )
         result = translate(sql=sql, catalog=catalog, dialect="postgres")
         assert isinstance(result, QueryResult)
-        assert result.query.source_model == "orders"
+        assert result.query.population == "orders"
         assert _dimension_names(result) == ["shipping_address.city"]
 
 
 class TestIngestReportListsNamedEdges:
     def test_name_only_update_is_rendered(self) -> None:
-        addition = ModelAddition(model_name="transactions", data_source=DS, named_joins=["coupon_usage"])
+        addition = DatasetAddition(dataset_name="transactions", data_source=DS, named_relationships=["coupon_usage"])
         assert _addition_has_changes(addition)
         assert any("coupon_usage" in d for d in _addition_update_details(addition))
         assert any("coupon_usage" in d for d in _updated_detail_lines(addition))

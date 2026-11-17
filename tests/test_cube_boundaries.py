@@ -22,7 +22,7 @@ DS = "test_ds"
 
 def _convert(project: CubeProject):
     result = CubeToSlayerConverter(project=project, data_source=DS).convert()
-    return {m.name: m for m in result.models}, result.report
+    return {m.name: m for m in result.datasets}, result.report
 
 
 @pytest.mark.parametrize("name", ["cumsum", "rank"])
@@ -33,7 +33,7 @@ def test_measure_named_after_transform_is_imported(name):
         dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")],
     )])
     models, _ = _convert(project)
-    assert models["orders"].get_measure(name) is not None
+    assert models["orders"].get_metric(name) is not None
 
 
 def test_dimension_measure_name_overlap_does_not_raise():
@@ -47,8 +47,8 @@ def test_dimension_measure_name_overlap_does_not_raise():
     )])
     models, _ = _convert(project)
     orders = models["orders"]
-    col_names = {c.name for c in orders.columns}
-    measure_names = {m.name for m in orders.measures}
+    col_names = {c.name for c in orders.fields}
+    measure_names = {m.name for m in orders.metrics}
     assert not (col_names & measure_names)  # disjoint after disambiguation
 
 
@@ -76,8 +76,8 @@ def test_structurally_broken_column_sql_dropped_via_offline_validation():
         ],
     )])
     models, report = _convert(project)
-    assert models["orders"].get_column("broken") is None
-    assert models["orders"].get_column("id") is not None
+    assert models["orders"].get_field("broken") is None
+    assert models["orders"].get_field("id") is not None
     assert any(i.category == CubeIssueCategory.COMPLEX_SQL for i in report.issues)
 
 
@@ -107,5 +107,5 @@ def test_join_on_without_equality_yields_no_empty_join_pairs():
                  dimensions=[CubeDimension(name="id", sql="{CUBE}.id", type="number")]),
     ])
     models, report = _convert(project)
-    assert models["orders"].joins == []
+    assert models["orders"].relationships == []
     assert any(i.category == CubeIssueCategory.UNSUPPORTED_JOIN for i in report.issues)

@@ -33,7 +33,7 @@ from tests._dev1824_fixtures import (
     BAND35_OF,
     CITY_TOTAL,
     GRAND_TOTAL,
-    ModelMeasure,
+    DatasetMetric,
     RCM_GROUPS,
     RC_GROUPS,
     REGION_FIRST,
@@ -69,11 +69,11 @@ class TestWindowPlusPartition:
     async def test_rolling_total_at_coarser_grain(self, exec_engine) -> None:
         base = q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
-        with_w = base.model_copy(update={"measures": [
-            *(base.measures or []),
-            ModelMeasure(formula="sum(amount, window='90d', partition_by=region)", name="w"),
+        with_w = base.model_copy(update={"metrics": [
+            *(base.metrics or []),
+            DatasetMetric(expression="sum(amount, window='90d', partition_by=region)", name="w"),
         ]})
         plain = _rcm_rows(await exec_engine.execute(base))
         rows = _rcm_rows(await exec_engine.execute(with_w))
@@ -98,8 +98,8 @@ class TestWindowPlusPartition:
         # Jan 10 row → 90; (S,Mar) drops the Jan 25 row → 25.
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="sum(amount, window='45d', partition_by=region)", name="w",
+            measures=[DatasetMetric(
+                expression="sum(amount, window='45d', partition_by=region)", name="w",
             )],
         ))
         rows = _rcm_rows(resp)
@@ -112,8 +112,8 @@ class TestWindowPlusPartition:
     async def test_requires_resolvable_time_dimension(self, exec_engine) -> None:
         query = q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula="sum(amount, window='1y', partition_by=region)", name="w",
+            measures=[DatasetMetric(
+                expression="sum(amount, window='1y', partition_by=region)", name="w",
             )],
         )
         with pytest.raises(ValueError, match=r"resolve its time dimension"):
@@ -125,8 +125,8 @@ class TestFirstLastPartition:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
             measures=[
-                ModelMeasure(formula="sum(amount)", name="s"),
-                ModelMeasure(formula="last(amount, partition_by=region)", name="l"),
+                DatasetMetric(expression="sum(amount)", name="s"),
+                DatasetMetric(expression="last(amount, partition_by=region)", name="l"),
             ],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -138,7 +138,7 @@ class TestFirstLastPartition:
     async def test_region_first_on_city_rows(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="first(amount, partition_by=region)", name="f")],
+            measures=[DatasetMetric(expression="first(amount, partition_by=region)", name="f")],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == RC_GROUPS
@@ -154,8 +154,8 @@ class TestFirstLastPartition:
         # deterministic when ranking stays on the model's resolved time column.
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="last(amount, partition_by=[region, ordered_at])", name="l",
+            measures=[DatasetMetric(
+                expression="last(amount, partition_by=[region, ordered_at])", name="l",
             )],
         ))
         rows = _rcm_rows(resp)
@@ -172,8 +172,8 @@ class TestTransformOverPartitioned:
         # partitioned by the non-time dims (region, city).
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="cumsum(sum(amount, partition_by=[region, ordered_at]))",
+            measures=[DatasetMetric(
+                expression="cumsum(sum(amount, partition_by=[region, ordered_at]))",
                 name="c",
             )],
         ))
@@ -195,8 +195,8 @@ class TestTransformOverPartitioned:
         # city) rows rank by their attached region totals 100/100/100/60/50.
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(
-                formula="rank(sum(amount, partition_by=region), direction='desc')", name="r",
+            measures=[DatasetMetric(
+                expression="rank(sum(amount, partition_by=region), direction='desc')", name="r",
             )],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
@@ -211,12 +211,12 @@ class TestFilterOnPartitioned:
     async def test_keep_rows_whose_partition_total_qualifies(self, exec_engine) -> None:
         unfiltered = rows_by(await exec_engine.execute(q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )), "orders.region", "orders.city")
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filters=["sum(amount, partition_by=region) > 50"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == {k for k in RC_GROUPS if REGION_TOTAL[k[0]] > 50}
@@ -229,12 +229,12 @@ class TestFilterOnPartitioned:
         combined = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filters=["sum(amount, partition_by=region) > 50 and city != 'CityB'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         separate = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filters=["sum(amount, partition_by=region) > 50", "city != 'CityB'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         key = lambda resp: {  # noqa: E731
             (r["orders.region"], r["orders.city"]): float(r["orders.s"])
@@ -250,7 +250,7 @@ class TestFilterOnPartitioned:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filters=["sum(amount, partition_by=region) > 50 and sum(amount) > 25"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = rows_by(resp, "orders.region", "orders.city")
         assert set(by) == {
@@ -266,7 +266,7 @@ class TestFilterOnPartitioned:
         query = q(
             dimensions=["region", "city"],
             filters=["sum(amount, partition_by=region) > 50 or status == 'ok'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         with pytest.raises((ValueError, NotImplementedError)) as ei:
             await exec_engine.execute(query)
@@ -282,13 +282,13 @@ class TestFilterOnPartitioned:
         keep_all = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filters=["sum(amount, partition_by=[]) > 100"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert len(keep_all.data) == len(RC_GROUPS)
         keep_none = await exec_engine.execute(q(
             dimensions=["region", "city"],
             filters=["sum(amount, partition_by=[]) > 300"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert keep_none.data == []
 
@@ -298,8 +298,8 @@ class TestRowCombinedCoexistence:
         resp = await exec_engine.execute(q(
             dimensions=["region", {"expression": BAND35, "name": "band"}],
             measures=[
-                ModelMeasure(formula="sum(amount)", name="s"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+                DatasetMetric(expression="sum(amount)", name="s"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
             ],
         ))
         by = {
@@ -318,7 +318,7 @@ class TestRowCombinedCoexistence:
         band = "CASE WHEN sum(amount, partition_by=region) > 55 THEN 1 ELSE 0 END"
         resp = await exec_engine.execute(q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount, partition_by=region)", name="rt")],
+            measures=[DatasetMetric(expression="sum(amount, partition_by=region)", name="rt")],
         ))
         got = {
             r["orders.region"]: (int(r["orders.band"]), float(r["orders.rt"]))
@@ -337,7 +337,7 @@ class TestRowCombinedCoexistence:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city", {"expression": BAND35, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
             order=[{"column": "sum(amount, partition_by=city)", "direction": "asc"}],
         ))
         totals = [
@@ -351,7 +351,7 @@ class TestRowCombinedCoexistence:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city", {"expression": BAND35, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
             order=[{"column": "band", "direction": "asc"}],
         ))
         bands = [int(r["orders.band"]) for r in resp.data]
@@ -367,7 +367,7 @@ class TestRowCombinedCoexistence:
         # error, never the leaked-placeholder ValueError.
         query = q(
             dimensions=["region", {"expression": BAND35, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
             order=[{
                 "column": "sum(amount, partition_by=city)", "direction": "asc",
             }],
@@ -381,7 +381,7 @@ class TestCoexistenceAcrossFamilies:
     async def _assert_solo_equality(self, exec_engine, *, dims, tds, measures) -> None:
         """Each measure's combined-query values equal its solo-query values."""
         def _mk(pairs):
-            return [ModelMeasure(formula=f, name=n) for f, n in pairs]
+            return [DatasetMetric(expression=f, name=n) for f, n in pairs]
 
         def _index(resp):
             keys = [f"orders.{d}" for d in dims]
@@ -453,11 +453,11 @@ class TestCardinalityNeutral:
         tds = month_td() if tds else None
         base = q(
             dimensions=dims, time_dimensions=tds,
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
-        with_rt = base.model_copy(update={"measures": [
-            *(base.measures or []),
-            ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
+        with_rt = base.model_copy(update={"metrics": [
+            *(base.metrics or []),
+            DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
         ]})
         plain = await exec_engine.execute(base)
         extended = await exec_engine.execute(with_rt)
@@ -475,7 +475,7 @@ class TestCardinalityNeutral:
     ) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula="sum(amount, partition_by=[])", name="g")],
+            measures=[DatasetMetric(expression="sum(amount, partition_by=[])", name="g")],
         ))
         assert len(resp.data) == len(RC_GROUPS)
         for r in resp.data:

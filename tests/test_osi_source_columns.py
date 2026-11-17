@@ -127,13 +127,13 @@ def test_unreadable_source_column_is_unconverted_and_adds_no_column(db: Path, sq
     result = _import(db, m("units", sql))
     assert unconverted(result, "units")
     assert f"'{leaf}'" in _reason(result, "units")
-    assert [c.name for c in by_name(result)["orders"].columns] == ["order_id", "amount"]
+    assert [c.name for c in by_name(result)["orders"].fields] == ["order_id", "amount"]
 
 
 def test_metric_failing_after_its_source_column_resolves_adds_no_column(db: Path) -> None:
     result = _import(db, m("units", "SUM(source.quantity) + SUM(no_such_field)"))
     assert unconverted(result, "units")
-    assert [c.name for c in by_name(result)["orders"].columns] == ["order_id", "amount"]
+    assert [c.name for c in by_name(result)["orders"].fields] == ["order_id", "amount"]
 
 
 def test_field_named_source_takes_precedence(db: Path) -> None:
@@ -177,7 +177,7 @@ def test_field_reading_a_duplicated_label_is_reported(db: Path, sql: str) -> Non
     result = _import(db, name="paid", source=JOINED,
                      fields=[f("order_ref", sql), f("amount"), f("amount_plus", "amount + 0")])
     assert visible(by_name(result)["paid"]) == {"amount", "amount_plus"}
-    assert [e for e in result.warnings if e.model_name == "paid" and "'order_ref'" in e.message
+    assert [e for e in result.warnings if e.dataset_name == "paid" and "'order_ref'" in e.message
             and "'id'" in e.message and e.severity == "dropped"]
 
 
@@ -205,4 +205,4 @@ def test_source_column_reading_a_duplicated_label_is_unconverted(db: Path) -> No
                      name="paid", source=JOINED, fields=[f("amount")])
     assert unconverted(result, "ids")
     assert "'id'" in _reason(result, "ids")
-    assert [x.name for x in by_name(result)["paid"].measures] == ["total"]
+    assert [x.name for x in by_name(result)["paid"].metrics] == ["total"]

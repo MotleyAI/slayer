@@ -42,34 +42,34 @@ _DSL_TRANSFORM_CALL_RE = re.compile(
 )
 
 
-def _strip_string_literals(formula: str) -> str:
-    """Return ``formula`` with every string literal replaced by ``''`` so
+def _strip_string_literals(expression: str) -> str:
+    """Return ``expression`` with every string literal replaced by ``''`` so
     further regex scans don't false-match identifiers inside literals."""
-    return _STRING_LITERAL_RE.sub("''", formula)
+    return _STRING_LITERAL_RE.sub("''", expression)
 
 
-def _reject_dsl_constructs(formula: str) -> None:
+def _reject_dsl_constructs(expression: str) -> None:
     """Raise if the SQL-mode predicate contains a SLayer DSL construct."""
-    stripped = _strip_string_literals(formula)
+    stripped = _strip_string_literals(expression)
     agg_match = _COLON_AGG_RE.search(stripped)
     if agg_match is not None:
         raise ValueError(
             f"SQL-mode filter cannot contain a SLayer aggregation reference "
             f"({agg_match.group(0)!r}). Aggregations are a DSL construct — "
-            f"put them in a query filter (`SlayerQuery.filters`) or in a "
-            f"`ModelMeasure.formula`. The filter was: {formula!r}"
+            f"put them in a query filter (`SlayerQuery.filter`) or in a "
+            f"`ModelMeasure.expression`. The filter was: {expression!r}"
         )
     tx_match = _DSL_TRANSFORM_CALL_RE.search(stripped)
     if tx_match is not None:
         raise ValueError(
             f"SQL-mode filter cannot contain SLayer transform calls "
             f"({tx_match.group(1)!r}). Transforms are a DSL construct — "
-            f"put them in a query filter (`SlayerQuery.filters`) or in a "
-            f"`ModelMeasure.formula`. The filter was: {formula!r}"
+            f"put them in a query filter (`SlayerQuery.filter`) or in a "
+            f"`ModelMeasure.expression`. The filter was: {expression!r}"
         )
 
 
-def _bare_column_refs(formula: str) -> list[str]:
+def _bare_field_refs(expression: str) -> list[str]:
     """Best-effort extraction of column-like identifiers from a SQL-mode
     predicate. The render-time join-detection use was superseded by structured
     extraction (``reference_closure``) and the Mode-A door; this now serves
@@ -79,7 +79,7 @@ def _bare_column_refs(formula: str) -> list[str]:
     (``customers__regions.name`` → ``customers__regions.name``,
     ``status`` → ``status``) and excludes function-call heads.
     """
-    stripped = _strip_string_literals(formula)
+    stripped = _strip_string_literals(expression)
     refs: list[str] = []
     for match in re.finditer(r"\b[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*\b", stripped):
         token = match.group(0)
@@ -101,18 +101,18 @@ _SQL_KEYWORDS = frozenset({
 })
 
 
-def parse_sql_predicate(formula: str) -> ParsedFilter:
+def parse_sql_predicate(expression: str) -> ParsedFilter:
     """Validate a SQL-mode predicate string and return a :class:`ParsedFilter`.
 
     Pre-rejects DSL constructs (aggregation references, transform calls) and
     raw ``OVER (...)`` window-function syntax. Does NOT invoke sqlglot —
     full dialect-aware SQL parsing happens at generation time.
 
-    The ``ParsedFilter.sql`` field is the original ``formula`` unchanged;
+    The ``ParsedFilter.sql`` field is the original ``expression`` unchanged;
     ``columns`` is a best-effort regex extraction of column-shaped
-    identifiers, used only for validation (see :func:`_bare_column_refs`).
+    identifiers, used only for validation (see :func:`_bare_field_refs`).
     """
-    if has_window_function(formula):
-        raise ValueError(f"Filter '{formula}' {WINDOW_IN_FILTER_ERROR}")
-    _reject_dsl_constructs(formula)
-    return ParsedFilter(sql=formula, columns=_bare_column_refs(formula))
+    if has_window_function(expression):
+        raise ValueError(f"Filter '{expression}' {WINDOW_IN_FILTER_ERROR}")
+    _reject_dsl_constructs(expression)
+    return ParsedFilter(sql=expression, columns=_bare_field_refs(expression))

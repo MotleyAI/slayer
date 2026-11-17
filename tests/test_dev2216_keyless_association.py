@@ -10,10 +10,10 @@ import pytest
 from pydantic import ValidationError
 from pytest_postgresql import factories
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import SlayerError
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.sql.naming import ROW_IDENTITY_COLUMN
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.sql.naming import ROW_IDENTITY_FIELD
 from tests._dev1841_fixtures import keyless_root_models
 from tests._dev1841_fixtures import make_exec_engine as dev1841_engine
 from tests._dev2216_fixtures import (
@@ -97,22 +97,22 @@ def assert_sales_cells(resp) -> None:
     assert not [k for row in resp.data for k in row if "__slayer_" in k]
 
 
-def keyed_sales_models() -> list[SlayerModel]:
+def keyed_sales_models() -> list[SlayerDataset]:
     """``sales`` with a primary key and a nullable standalone unique ``source_ref``."""
-    sales = SlayerModel(
+    sales = SlayerDataset(
         name="sales", data_source="test", sql_table="sales",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="source_ref", type=DataType.TEXT, unique=True),
-            Column(name="tag_id", type=DataType.INT),
-            Column(name="amount", type=DataType.INT),
-            Column(name="weight", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="source_ref", datatype=DataType.TEXT, unique=True),
+            DatasetField(name="tag_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.INT),
+            DatasetField(name="weight", datatype=DataType.INT),
         ],
-        joins=[ModelJoin(target_model="tags", join_pairs=[["tag_id", "tag_id"]])],
+        relationships=[DatasetRelationship(to="tags", join_pairs=[["tag_id", "tag_id"]])],
     )
-    tags = SlayerModel(
+    tags = SlayerDataset(
         name="tags", data_source="test", sql_table="tags",
-        columns=[Column(name="tag_id", type=DataType.INT), Column(name="label", type=DataType.TEXT)],
+        fields=[DatasetField(name="tag_id", datatype=DataType.INT), DatasetField(name="label", datatype=DataType.TEXT)],
     )
     return [sales, tags]
 
@@ -191,10 +191,10 @@ class TestRowIdentity:
             assert ds is not None
             models = await engine.ingest(ds)
             sales = next(model for model in models if model.name == "sales")
-            assert next(col for col in sales.columns if col.name == "source_ref").unique
-            sales.joins = [ModelJoin(target_model="tags", join_pairs=[["tag_id", "tag_id"]])]
+            assert next(col for col in sales.fields if col.name == "source_ref").unique
+            sales.relationships = [DatasetRelationship(to="tags", join_pairs=[["tag_id", "tag_id"]])]
             for model in models:
-                await engine.storage.save_model(model, _validate=False)
+                await engine.storage.save_dataset(model, _validate=False)
             resp = await engine.execute(sales_query(source=source, mode=mode))
         assert_sales_cells(resp)
 
@@ -226,7 +226,7 @@ class TestRowIdentity:
 
     async def test_a_regroup_prefixed_home_column_does_not_shadow_the_row_identity(self, dialect) -> None:
         models = ossie_models()
-        models[1].columns = [*models[1].columns, Column(name="__regroup__row_id", sql="id", type=DataType.INT)]
+        models[1].fields = [*models[1].fields, DatasetField(name="__regroup__row_id", sql="id", datatype=DataType.INT)]
         async with ossie_engine(dialect, models=models) as engine:
             resp = await engine.execute(query(
                 source_model="orders", dimensions=["status"], measures=[measure("sum(customers.spend)", "sp")]))
@@ -234,7 +234,7 @@ class TestRowIdentity:
 
     def test_no_model_column_can_take_the_row_identity_name(self) -> None:
         with pytest.raises(ValidationError):
-            Column(name=ROW_IDENTITY_COLUMN, type=DataType.INT)
+            DatasetField(name=ROW_IDENTITY_FIELD, datatype=DataType.INT)
 
     async def test_postgres_executes(self, request) -> None:
         async with ossie_engine("postgres", request=request, duplicate=True) as engine:
@@ -288,8 +288,8 @@ class TestAttributableKeylessHome:
     @pytest.fixture(params=["sqlite", "duckdb"])
     async def engine(self, request):
         models = keyless_root_models()
-        models[0].joins = [j.model_copy(update={"cardinality": JoinCardinality.MANY_TO_ONE})
-                           if j.target_model == "customers" else j for j in models[0].joins]
+        models[0].relationships = [j.model_copy(update={"cardinality": RelationshipCardinality.MANY_TO_ONE})
+                           if j.to == "customers" else j for j in models[0].relationships]
         async for engine in dev1841_engine(request, models=models):
             yield engine
 

@@ -13,23 +13,23 @@ import pytest
 import sqlglot
 from sqlglot import exp
 
-from slayer.core import join_walker
+from slayer.core import relationship_walker
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import UnknownReferenceError
-from slayer.core.join_walker import walk, walk_cancelling
-from slayer.core.keys import AggregateKey, ColumnKey, ColumnSqlKey, StarKey, TimeTruncKey
-from slayer.core.models import ModelJoin, SlayerModel
+from slayer.core.relationship_walker import walk, walk_cancelling
+from slayer.core.keys import AggregateKey, FieldKey, FieldSqlKey, StarKey, TimeTruncKey
+from slayer.core.models import DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.engine import bind_inputs, param_binding
 from slayer.live_schema import schema_drift
 from slayer.engine.binding import bind_expr, bind_time_dimension
 from slayer.engine.extensions import QueryScope, query_scopes
-from slayer.engine.cardinality.join_safety import attributable_from_root, reroot_from_root
+from slayer.engine.cardinality.relationship_safety import attributable_from_root, reroot_from_root
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.sql import column_expansion
+from slayer.sql import field_expansion
 
 from tests._dev1836_fixtures import broadcast_warnings
 from tests._dev1954_fixtures import (
@@ -55,7 +55,7 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
         yield e
 
 
-def _mbn(models=None) -> Dict[str, SlayerModel]:
+def _mbn(models=None) -> Dict[str, SlayerDataset]:
     return {m.name: m for m in (models or dev1954_models())}
 
 
@@ -64,11 +64,11 @@ def _bundle(root: str = "orders") -> ResolvedSourceBundle:
     src = next(m for m in models if m.name == root)
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=src, referenced_models=[m for m in models if m.name != root])
+        population=src, referenced_datasets=[m for m in models if m.name != root])
 
 
-def _scope(root: str = "orders") -> ModelScope:
-    return ModelScope(source_model=_mbn()[root])
+def _scope(root: str = "orders") -> DatasetScope:
+    return DatasetScope(population=_mbn()[root])
 
 
 def _bind(text: str, *, root: str = "orders"):
@@ -79,8 +79,8 @@ def _parallel_models():
     """customers → regions on two named edges ``hr`` and ``hr2``."""
     models = dev1954_models()
     customers = next(m for m in models if m.name == "customers")
-    customers.joins.append(ModelJoin(
-        target_model="regions", join_pairs=[["region_id", "id"]], name="hr2"))
+    customers.relationships.append(DatasetRelationship(
+        to="regions", join_pairs=[["region_id", "id"]], name="hr2"))
     return models
 
 
@@ -93,11 +93,11 @@ async def _dry(engine: SlayerQueryEngine, query) -> str:
 async def _respell_orders(engine: SlayerQueryEngine, *, column: str, field: str,
                           value: str) -> None:
     """Re-save ``orders`` with ``column.field`` set to ``value``."""
-    orders = await engine.storage.get_model("orders", data_source="test")
+    orders = await engine.storage.get_dataset("orders", data_source="test")
     assert orders is not None
-    orders.columns = [c.model_copy(update={field: value}) if c.name == column else c
-                      for c in orders.columns]
-    await engine.storage.save_model(orders)
+    orders.fields = [c.model_copy(update={field: value}) if c.name == column else c
+                      for c in orders.fields]
+    await engine.storage.save_dataset(orders)
 
 
 async def _outcome(engine: SlayerQueryEngine, query):
@@ -125,28 +125,28 @@ class TestCanonicalPathHelper:
     ])
     def test_canonical_path(self, root, path, expected) -> None:
         M = _mbn()
-        chain = walk(root=M[root], path=path, models_by_name=M)
+        chain = walk(root=M[root], path=path, datasets_by_name=M)
         assert chain is not None
-        assert join_walker.canonical_path(chain) == expected
+        assert relationship_walker.canonical_path(chain) == expected
 
 
 class TestWalkCancellingIsCanonical:
     def test_model_name_hop_appends_the_edge_name(self) -> None:
         M = _mbn()
         assert walk_cancelling(root=M["orders"], owner_path=("customers",),
-                               tokens=("regions",), models_by_name=M) == ("customers", "hr")
+                               tokens=("regions",), datasets_by_name=M) == ("customers", "hr")
 
     def test_cancel_then_model_name_hop(self) -> None:
         M = _mbn()
         assert walk_cancelling(root=M["orders"], owner_path=("customers", "hr"),
                                tokens=("customers", "regions"),
-                               models_by_name=M) == ("customers", "hr")
+                               datasets_by_name=M) == ("customers", "hr")
 
     def test_root_default_spelled_by_model_name(self) -> None:
         M = _mbn()
         assert walk_cancelling(root=M["orders"], owner_path=(),
                                tokens=("customers", "regions"),
-                               models_by_name=M) == ("customers", "hr")
+                               datasets_by_name=M) == ("customers", "hr")
 
 
 # --------------------------------------------------------------------------- #
@@ -155,11 +155,11 @@ class TestWalkCancellingIsCanonical:
 class TestBoundKeysAreCanonical:
     def test_column_key(self) -> None:
         assert _bind("customers.regions.rname").value_key == \
-            ColumnKey(path=("customers", "hr"), leaf="rname")
+            FieldKey(path=("customers", "hr"), leaf="rname")
 
     def test_column_sql_key(self) -> None:
-        assert _bind("customers.regions.bad_pop").value_key == ColumnSqlKey(
-            path=("customers", "hr"), model="regions", column_name="bad_pop")
+        assert _bind("customers.regions.bad_pop").value_key == FieldSqlKey(
+            path=("customers", "hr"), dataset="regions", field_name="bad_pop")
 
     def test_star_key(self) -> None:
         key = _bind("count(customers.regions.*)").value_key
@@ -168,12 +168,12 @@ class TestBoundKeysAreCanonical:
 
     def test_time_trunc_key(self) -> None:
         bound = bind_time_dimension(
-            TimeDimension(dimension="customers.regions.founded_at",
+            TimeDimension(field="customers.regions.founded_at",
                           granularity=TimeGranularity.YEAR),
             scope=_scope(), bundle=_bundle())
         assert isinstance(bound.bound.value_key, TimeTruncKey)
         assert bound.bound.value_key.source == \
-            ColumnKey(path=("customers", "hr"), leaf="founded_at")
+            FieldKey(path=("customers", "hr"), leaf="founded_at")
         assert bound.bound.routed_dotted == "customers.hr.founded_at"
 
     def test_respelled_dimension_names_the_canonical_path(self) -> None:
@@ -181,17 +181,17 @@ class TestBoundKeysAreCanonical:
 
     def test_auto_routed_short_form(self) -> None:
         bound = _bind("regions.rname")
-        assert bound.value_key == ColumnKey(path=("customers", "hr"), leaf="rname")
+        assert bound.value_key == FieldKey(path=("customers", "hr"), leaf="rname")
         assert bound.routed_dotted == "customers.hr.rname"
 
     def test_reverse_named_hop(self) -> None:
         assert _bind("customers.spend", root="regions").value_key == \
-            ColumnKey(path=("hr",), leaf="spend")
+            FieldKey(path=("hr",), leaf="spend")
 
     def test_canonical_spellings_unchanged(self) -> None:
         assert _bind("customers.hr.rname").routed_dotted is None
         bound = _bind("customers.tier")
-        assert bound.value_key == ColumnKey(path=("customers",), leaf="tier")
+        assert bound.value_key == FieldKey(path=("customers",), leaf="tier")
         assert bound.routed_dotted is None
 
 
@@ -199,8 +199,8 @@ class TestSavedMeasureRefIsCanonical:
     @pytest.mark.parametrize("formula", [
         "customers.regions.maxpop", "customers.hr.maxpop", "regions.maxpop"])
     def test_canonical_ref(self, formula) -> None:
-        ref = bind_inputs._resolve_saved_measure_ref(  # noqa: SLF001
-            scope=_scope(), bundle=_bundle(), formula=formula)
+        ref = bind_inputs._resolve_saved_metric_ref(  # noqa: SLF001
+            scope=_scope(), bundle=_bundle(), expression=formula)
         assert ref is not None
         assert ref[2] == "customers.hr.maxpop"
 
@@ -211,31 +211,31 @@ class TestSavedMeasureRefIsCanonical:
 class TestModeAQualifiersAreCanonical:
     def test_strict_qualifiers(self) -> None:
         M = _mbn()
-        assert column_expansion._resolve_qualifiers(  # noqa: SLF001
+        assert field_expansion._resolve_qualifiers(  # noqa: SLF001
             qualifiers=("customers", "regions"), leaf="rname",
-            source_model=M["orders"], owner_alias="orders",
-            models_by_name=M) == ("customers", "hr")
+            source_dataset=M["orders"], owner_alias="orders",
+            datasets_by_name=M) == ("customers", "hr")
 
     @pytest.mark.parametrize("quals", [
         ("customers", "regions"), ("customers", "hr"),
         ("customers__regions",), ("customers__hr",)])
     def test_lenient_path_walked_forms(self, quals) -> None:
         M = _mbn()
-        assert column_expansion._lenient_path(  # noqa: SLF001
-            qualifiers=quals, source_model=M["orders"], owner_alias="orders",
-            models_by_name=M) == ("customers", "hr")
+        assert field_expansion._lenient_path(  # noqa: SLF001
+            qualifiers=quals, source_dataset=M["orders"], owner_alias="orders",
+            datasets_by_name=M) == ("customers", "hr")
 
     def test_lenient_path_leaves_a_fitted_alias_opaque(self) -> None:
         M = _mbn()
-        assert column_expansion._lenient_path(  # noqa: SLF001
-            qualifiers=("customers__regions_1a2b",), source_model=M["orders"],
-            owner_alias="orders", models_by_name=M) is None
+        assert field_expansion._lenient_path(  # noqa: SLF001
+            qualifiers=("customers__regions_1a2b",), source_dataset=M["orders"],
+            owner_alias="orders", datasets_by_name=M) is None
 
     def test_default_qualifier_path(self) -> None:
         M = _mbn()
         assert param_binding.resolve_default_qualifier_path(
             qualifiers=("customers", "regions"), leaf="pop",
-            root_model=M["orders"], owner_path=(), models_by_name=M,
+            root_dataset=M["orders"], owner_path=(), datasets_by_name=M,
         ) == ("customers", "hr")
 
     def test_default_reference_paths(self) -> None:
@@ -243,7 +243,7 @@ class TestModeAQualifiersAreCanonical:
         parsed = sqlglot.parse_one("customers.regions.pop * 1")
         assert isinstance(parsed, exp.Expression)  # pyright: ignore[reportPrivateImportUsage] — sqlglot ships no __all__
         assert param_binding.resolve_default_reference_paths(
-            parsed=parsed, owner_path=(), root_model=M["orders"], root_path=(),
+            parsed=parsed, owner_path=(), root_dataset=M["orders"], root_path=(),
             bundle=_bundle(),
         ) == [(("customers", "hr"), "pop")]
 
@@ -268,12 +268,12 @@ class TestNamedEdgeTypedByModelName:
             dimensions=["customers.hr.rname"], measures=["max(customers.hr.pop)"]))
         assert typed.attributes == canon.attributes
         assert typed.attributes.dimensions[RNAME].label == "Region name"
-        assert "orders.customers.hr.pop_max" in typed.attributes.measures
+        assert "orders.customers.hr.pop_max" in typed.attributes.metrics
 
     async def test_named_edge_time_dimension(self, engine: SlayerQueryEngine) -> None:
         query = orders_q(
             time_dimensions=[TimeDimension(
-                dimension="customers.regions.founded_at",
+                field="customers.regions.founded_at",
                 granularity=TimeGranularity.YEAR)],
             measures=["sum(amount)"],
             order=[{"column": "customers.regions.founded_at", "direction": "asc"}])
@@ -317,7 +317,7 @@ class TestMixedSpellingsJoinOnce:
         assert by_key(resp, RNAME, "orders.customers.hr.pop_max") == {"South": 200.0}
 
     async def test_functional_order_on_a_time_dimension(self, engine) -> None:
-        td = [TimeDimension(dimension="customers.hr.founded_at",
+        td = [TimeDimension(field="customers.hr.founded_at",
                             granularity=TimeGranularity.YEAR)]
         mixed = orders_q(time_dimensions=td, measures=["sum(amount)"], order=[
             {"column": "max(customers.regions.founded_at)", "direction": "desc"}])
@@ -370,10 +370,10 @@ class TestModelSqlSpelledByModelName:
             {("North", "North"), ("South", "South"), (None, None)}
 
     async def test_model_filter_joins_once(self, engine: SlayerQueryEngine) -> None:
-        orders = await engine.storage.get_model("orders", data_source="test")
+        orders = await engine.storage.get_dataset("orders", data_source="test")
         assert orders is not None
         orders.filters = [*orders.filters, "customers.regions.pop > 0"]
-        await engine.storage.save_model(orders)
+        await engine.storage.save_dataset(orders)
         query = orders_q(dimensions=["customers.hr.rname"], measures=["sum(amount)"])
         sql = await _dry(engine, query)
         # Once inside orders' filtered dataset, once for the dimension.
@@ -396,9 +396,9 @@ class TestModelSqlSpelledByModelName:
 
     async def test_persisted_model_keeps_its_spelling(self, engine: SlayerQueryEngine) -> None:
         await engine.execute(orders_q(dimensions=["region_label"]))
-        orders = await engine.storage.get_model("orders", data_source="test")
+        orders = await engine.storage.get_dataset("orders", data_source="test")
         assert orders is not None
-        label = next(c for c in orders.columns if c.name == "region_label")
+        label = next(c for c in orders.fields if c.name == "region_label")
         assert label.sql == "customers.regions.rname"
 
 
@@ -414,11 +414,11 @@ class TestDefinitionDefaultSpelledByModelName:
         assert by_key(await engine.execute(explicit), RNAME, "orders.w") == WPOP_BY_RNAME
         sql = await _dry(engine, default)
         assert sql == await _dry(engine, explicit)
-        orders = await engine.storage.get_model("orders", data_source="test")
+        orders = await engine.storage.get_dataset("orders", data_source="test")
         assert orders is not None
         wpop = next(a for a in orders.aggregations if a.name == "wpop")
         wpop.params = [p.model_copy(update={"sql": "customers.hr.pop"}) for p in wpop.params]
-        await engine.storage.save_model(orders)
+        await engine.storage.save_dataset(orders)
         assert sql == await _dry(engine, default)
 
 
@@ -440,7 +440,7 @@ class TestSavedMeasures:
         key = "orders.customers.hr.maxpop"
         assert resp.columns == [RNAME, key]
         assert by_key(resp, RNAME, key) == POP_MAX_BY_RNAME
-        assert key in resp.attributes.measures
+        assert key in resp.attributes.metrics
         assert not broadcast_warnings(resp)
 
     async def test_explicit_name_wins(self, engine) -> None:
@@ -495,7 +495,7 @@ class TestCanonicalSpellingsUnchanged:
 
 
 def _stage_scope(stage: SlayerQuery, models_by_name: dict) -> QueryScope:
-    return query_scopes([stage], models_by_ds={"ds": models_by_name}, data_source="ds")[0][0]
+    return query_scopes([stage], datasets_by_ds={"ds": models_by_name}, data_source="ds")[0][0]
 
 
 class TestSchemaDriftAttribution:
@@ -520,15 +520,15 @@ class TestDeterminationRouteOnCanonicalPaths:
         M = _mbn()
         assert attributable_from_root(
             host_path=("customers", "hr"), target_path=("customers", "hr"),
-            root_model=M["regions"], models_by_name=M, host_name="orders") is True
+            root_dataset=M["regions"], datasets_by_name=M, host_name="orders") is True
 
     def test_to_one_reverse_suffix_reroots(self) -> None:
         M = _mbn()
         target = ("customers", "hr", "region_events")
         assert attributable_from_root(
             host_path=("customers", "hr"), target_path=target,
-            root_model=M["region_events"], models_by_name=M, host_name="orders") is True
+            root_dataset=M["region_events"], datasets_by_name=M, host_name="orders") is True
         assert reroot_from_root(
-            ColumnKey(path=("customers", "hr"), leaf="pop"), target_path=target,
-            root_model=M["region_events"], models_by_name=M, host_name="orders",
-        ) == ColumnKey(path=("regions",), leaf="pop")
+            FieldKey(path=("customers", "hr"), leaf="pop"), target_path=target,
+            root_dataset=M["region_events"], datasets_by_name=M, host_name="orders",
+        ) == FieldKey(path=("regions",), leaf="pop")

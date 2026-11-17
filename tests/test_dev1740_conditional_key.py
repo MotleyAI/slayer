@@ -12,13 +12,13 @@ import pytest
 
 from typing import cast
 
-from slayer.core.keys import AggregateKey, ArithmeticKey, ColumnKey, LiteralKey, Phase, ScalarCallKey, ValueKey, reroot_value_key, walk_value_keys
+from slayer.core.keys import AggregateKey, ArithmeticKey, FieldKey, LiteralKey, Phase, ScalarCallKey, ValueKey, reroot_value_key, walk_value_keys
 from slayer.core.keys import Grain
 from slayer.sql.render.value_expr import contains_aggregate
 
 
 def _amount(**kw) -> AggregateKey:
-    return AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum", **kw)
+    return AggregateKey(source=FieldKey(path=(), leaf="amount"), agg="sum", **kw)
 
 
 def _iif(cond, then, otherwise) -> ScalarCallKey:
@@ -42,7 +42,7 @@ class TestPhaseJoin:
     def test_all_row_parts_is_row(self) -> None:
         key = _iif(
             cond=ArithmeticKey(
-                op=">", operands=(ColumnKey(path=(), leaf="amount"),
+                op=">", operands=(FieldKey(path=(), leaf="amount"),
                                   LiteralKey(value=5)),
             ),
             then=LiteralKey(value=1),
@@ -75,7 +75,7 @@ class TestIdentity:
 class TestStructuralTraversal:
     @pytest.mark.parametrize("where", [0, 1, 2])
     def test_aggregate_in_any_branch_is_discovered(self, where: int) -> None:
-        agg = _amount(partition_keys=Grain.of({ColumnKey(path=(), leaf="city")}))
+        agg = _amount(partition_keys=Grain.of({FieldKey(path=(), leaf="city")}))
         parts = [LiteralKey(value=True), LiteralKey(value=1), LiteralKey(value=0)]
         parts[where] = agg
         key = _iif(cond=parts[0], then=parts[1], otherwise=parts[2])
@@ -104,17 +104,17 @@ class TestReroot:
             cond=ArithmeticKey(
                 op=">",
                 operands=(
-                    AggregateKey(source=ColumnKey(path=("customers",), leaf="spend"),
+                    AggregateKey(source=FieldKey(path=("customers",), leaf="spend"),
                                  agg="sum"),
                     LiteralKey(value=100),
                 ),
             ),
-            then=ColumnKey(path=("customers",), leaf="tier"),
+            then=FieldKey(path=("customers",), leaf="tier"),
             otherwise=LiteralKey(value=None),
         )
         rerooted = reroot_value_key(key=key, target_path=("customers",))
-        assert rerooted.args[1] == ColumnKey(path=(), leaf="tier")
+        assert rerooted.args[1] == FieldKey(path=(), leaf="tier")
         cond = rerooted.args[0]
         assert isinstance(cond, ArithmeticKey)
         assert isinstance(cond.operands[0], AggregateKey)
-        assert cond.operands[0].source == ColumnKey(path=(), leaf="spend")
+        assert cond.operands[0].source == FieldKey(path=(), leaf="spend")

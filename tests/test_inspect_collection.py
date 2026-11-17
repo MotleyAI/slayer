@@ -41,11 +41,11 @@ from slayer.cli import _run_inspect, main
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.inspect.service import InspectService
 from slayer.mcp.server import create_mcp_server
@@ -67,35 +67,35 @@ async def _seed_two_ds(storage: YAMLStorage) -> None:
     await storage.save_datasource(
         DatasourceConfig(name="otherdb", type="sqlite", database=":memory:")
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="mydb",
         description="Orders fact.",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT, description="Order state."),
-            Column(name="amount", type=DataType.DOUBLE, description="USD amount."),
-            Column(name="customer_id", type=DataType.INT, hidden=True),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", datatype=DataType.TEXT, description="Order state."),
+            DatasetField(name="amount", datatype=DataType.DOUBLE, description="USD amount."),
+            DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
         ],
-        measures=[
-            ModelMeasure(name="revenue", formula="sum(amount)"),
-            ModelMeasure(name="orders_count", formula="count(*)"),
+        metrics=[
+            DatasetMetric(name="revenue", expression="sum(amount)"),
+            DatasetMetric(name="orders_count", expression="count(*)"),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="mydb",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     ))
     # A hidden model must NOT appear in any collection view.
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="secret", sql_table="secret", data_source="mydb", hidden=True,
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="events", sql_table="events", data_source="otherdb",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="kind", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="kind", datatype=DataType.TEXT),
         ],
     ))
     await storage.set_datasource_priority(["mydb", "otherdb"])
@@ -106,21 +106,21 @@ async def _seed_single_ds(storage: YAMLStorage) -> None:
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="postgres", host="h")
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="mydb",
         description="Orders fact.",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT, description="Order state."),
-            Column(name="amount", type=DataType.DOUBLE, description="USD amount."),
-            Column(name="customer_id", type=DataType.INT, hidden=True),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", datatype=DataType.TEXT, description="Order state."),
+            DatasetField(name="amount", datatype=DataType.DOUBLE, description="USD amount."),
+            DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
         ],
-        measures=[ModelMeasure(name="revenue", formula="sum(amount)")],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        metrics=[DatasetMetric(name="revenue", expression="sum(amount)")],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="mydb",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     ))
 
 
@@ -857,12 +857,12 @@ class TestHiddenColumnCount:
             await st.save_datasource(
                 DatasourceConfig(name="ds", type="postgres", host="h")
             )
-            await st.save_model(SlayerModel(
+            await st.save_dataset(SlayerDataset(
                 name="widgets", sql_table="w", data_source="ds",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="visible_col", type=DataType.TEXT),
-                    Column(name="secret_col", type=DataType.TEXT, hidden=True),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="visible_col", datatype=DataType.TEXT),
+                    DatasetField(name="secret_col", datatype=DataType.TEXT, hidden=True),
                 ],
             ))
             md = await _svc(st).inspect(reference=None, entity_type="model")
@@ -883,25 +883,25 @@ class TestSortedJoins:
             await st.save_datasource(
                 DatasourceConfig(name="ds", type="postgres", host="h")
             )
-            await st.save_model(SlayerModel(
+            await st.save_dataset(SlayerDataset(
                 name="hub", sql_table="h", data_source="ds",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="z_id", type=DataType.INT, hidden=True),
-                    Column(name="a_id", type=DataType.INT, hidden=True),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="z_id", datatype=DataType.INT, hidden=True),
+                    DatasetField(name="a_id", datatype=DataType.INT, hidden=True),
                 ],
-                joins=[
-                    ModelJoin(target_model="zebra", join_pairs=[["z_id", "id"]]),
-                    ModelJoin(target_model="alpha", join_pairs=[["a_id", "id"]]),
+                relationships=[
+                    DatasetRelationship(to="zebra", join_pairs=[["z_id", "id"]]),
+                    DatasetRelationship(to="alpha", join_pairs=[["a_id", "id"]]),
                 ],
             ))
-            await st.save_model(SlayerModel(
+            await st.save_dataset(SlayerDataset(
                 name="alpha", sql_table="a", data_source="ds",
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
             ))
-            await st.save_model(SlayerModel(
+            await st.save_dataset(SlayerDataset(
                 name="zebra", sql_table="z", data_source="ds",
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
             ))
             md = await _svc(st).inspect(reference=None, entity_type="model")
             assert "joins: `alpha`, `zebra`" in md

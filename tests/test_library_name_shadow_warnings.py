@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
 from slayer.core.keys import SCALAR_SPELLINGS
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.warnings import LibraryNameShadowWarning
 from slayer.engine.query_engine import SlayerResponse
 from slayer.mcp.server import create_mcp_server
@@ -28,7 +28,7 @@ def _payloads(resp: SlayerResponse) -> list[LibraryNameShadowWarning]:
 
 
 def _names(payloads: list[LibraryNameShadowWarning]) -> list[tuple[str, str, str]]:
-    return [(p.model, p.aggregation, p.function) for p in payloads]
+    return [(p.dataset, p.aggregation, p.function) for p in payloads]
 
 
 @contextlib.contextmanager
@@ -58,25 +58,25 @@ def _query(formula: str = "reverse(a)", **body: Any) -> dict:
 class TestSaveAndLoad:
     async def test_save(self) -> None:
         fresh = {k: v for k, v in t_doc(aggregations=[_REVERSE]).items() if k != "version"}
-        model = SlayerModel.model_validate(fresh)
+        model = SlayerDataset.model_validate(fresh)
         async with stored_engine(models=[]) as engine:
             with _python_shadows() as raised:
-                await engine.save_model(model)
+                await engine.save_dataset(model)
         assert _names(raised) == _SHADOW
 
     async def test_load(self) -> None:
         async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
             with _python_shadows() as raised:
-                assert await engine.storage.get_model("t", data_source=DS) is not None
+                assert await engine.storage.get_dataset("t", data_source=DS) is not None
         assert _SHADOW[0] in _names(raised)
 
     async def test_no_warning_for_a_builtin_override(self) -> None:
         doc = t_doc(aggregations=[agg("collect"), agg("sum", "MAX({value})")])
         async with stored_engine(models=[doc]) as engine:
             with _python_shadows() as raised:
-                model = await engine.storage.get_model("t", data_source=DS)
+                model = await engine.storage.get_dataset("t", data_source=DS)
                 assert model is not None
-                await engine.save_model(model)
+                await engine.save_dataset(model)
                 await engine.execute(_query("sum(a)"))
         assert raised == []
 
@@ -111,7 +111,7 @@ class TestEveryResponse:
         async with stored_engine(models=[t_doc(aggregations=[_REVERSE])]) as engine:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                await engine.create_model_from_query(query=stages, name="qb")
+                await engine.create_dataset_from_query(query=stages, name="qb")
             dry = await engine.execute(query, dry_run=True)
             assert "unused" not in (dry.sql or ""), "fixture must prune the unused stage"
             got = await _both(engine.execute(query))

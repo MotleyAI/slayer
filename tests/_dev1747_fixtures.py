@@ -32,7 +32,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.sqlite_conn import transaction
@@ -147,81 +147,81 @@ def seed_dev1747_sqlite(db_path: str) -> None:
         )
 
 
-def _regions_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def _regions_model(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="regions", sql_table="regions", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="population", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="population", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def _customers_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def _customers_model(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
 
 
-def _order_tags_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def _order_tags_model(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="order_tags", sql_table="order_tags", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="order_id", type=DataType.INT),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INT),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
 
 
-def _orders_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def _orders_model(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
             # Kept as a plain column; its second edge onto customers is gone —
             # DEV-1853 makes parallel edges fail closed in BOTH directions, so
             # host-local filters now push down by semi-join over the inverted
             # edge instead of dropping (divergences.md class (c)/(d)).
-            Column(name="billed_customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="amount", type=DataType.DOUBLE),
+            DatasetField(name="billed_customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
             # The DEV-1735 "also in scope" shape: a LOCAL derived column whose
             # ``Column.sql`` reaches THROUGH a join. Ordering by it is rejected
             # today in both grouped and ungrouped queries even though the bare
             # ``customers.regions.name`` resolves ungrouped (DEV-1703 Phase 1).
-            Column(
-                name="cust_region", type=DataType.TEXT,
+            DatasetField(
+                name="cust_region", datatype=DataType.TEXT,
                 sql="customers.regions.name",
             ),
             # A NON-crossing derived column — the control. Ordering by it must
             # keep working exactly as it does today.
-            Column(name="amount_x2", type=DataType.DOUBLE, sql="amount * 2"),
+            DatasetField(name="amount_x2", datatype=DataType.DOUBLE, sql="amount * 2"),
             # A derived column over ANOTHER derived column. Only the expanding
             # resolver inlines the sibling; resolving the raw ``Column.sql``
             # emits the bare name ``amount_x2``, which is not a database column
             # — so this is what tells the two render paths apart.
-            Column(name="amount_x4", type=DataType.DOUBLE, sql="amount_x2 * 2"),
+            DatasetField(name="amount_x4", datatype=DataType.DOUBLE, sql="amount_x2 * 2"),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="order_tags", join_pairs=[["id", "order_id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="order_tags", join_pairs=[["id", "order_id"]]),
         ],
     )
 
 
-def dev1747_models(*, data_source: str = "test") -> List[SlayerModel]:
+def dev1747_models(*, data_source: str = "test") -> List[SlayerDataset]:
     """``orders -> customers -> regions`` plus the 1:N ``order_tags``.
 
     Returned host-first; ``[0]`` is the host and the rest are ``extra_models``.
@@ -244,7 +244,7 @@ def dev1747_bundle():
     models = dev1747_models()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=models[1:],
+        population=models[0], referenced_datasets=models[1:],
     )
 
 

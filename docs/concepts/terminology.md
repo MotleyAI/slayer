@@ -6,13 +6,13 @@ Key terms used throughout SLayer documentation and code.
 
 **Model** — A semantic layer definition that maps a database table, SQL subquery, or saved query to queryable columns. Defined as YAML files or auto-generated via ingestion.
 
-**Column** — The unified row-level building block of a model (`SlayerModel.columns`). Each column has a `name`, `sql` expression, and `type` (`TEXT`/`INT`/`DOUBLE`/`BOOLEAN`/`DATE`/`TIMESTAMP`/`UNKNOWN`, or `ARRAY` with an `element_type`). At query time a column can be used as a group-by key (a dimension), as the input to an aggregation (a measure), or both; a list column has rules of its own, see [List columns](queries.md#list-columns). Columns can also carry `primary_key`, `allowed_aggregations` (whitelist), `filter` (a `CASE WHEN` value mask that fires in every position), `granularity` (the time bucket a temporal column is already truncated to), `format`, `label`, and `meta`. `ModelMeasure` (named formula) and `Aggregation` carry the same `meta` field with identical semantics — opaque JSON metadata for caller bookkeeping, persisted with the entity.
+**Column** — The unified row-level building block of a model (`SlayerModel.fields`). Each column has a `name`, `sql` expression, and `type` (`TEXT`/`INT`/`DOUBLE`/`BOOLEAN`/`DATE`/`TIMESTAMP`/`UNKNOWN`, or `ARRAY` with an `element_type`). At query time a column can be used as a group-by key (a dimension), as the input to an aggregation (a measure), or both; a list column has rules of its own, see [List columns](queries.md#list-columns). Columns can also carry `primary_key`, `allowed_aggregations` (whitelist), `filter` (a `CASE WHEN` value mask that fires in every position), `granularity` (the time bucket a temporal column is already truncated to), `format`, `label`, and `meta`. `ModelMeasure` (named formula) and `Aggregation` carry the same `meta` field with identical semantics — opaque JSON metadata for caller bookkeeping, persisted with the entity.
 
 **Dimension** — How a column is *used* in a query when it's a GROUP BY key. The column itself isn't a dimension or measure intrinsically — that role is decided per query. In SLayer's query DSL, the `dimensions` list names the columns to group/filter by.
 
-**Measure (in a query)** — A formula entry in `SlayerQuery.measures`. Examples: `"sum(revenue)"`, `"count(*)"`, `{"formula": "sum(revenue) / count(*)", "name": "aov"}`, `"cumsum(sum(revenue))"`. Each entry compiles to one output column.
+**Measure (in a query)** — A formula entry in `SlayerQuery.metrics`. Examples: `"sum(revenue)"`, `"count(*)"`, `{"formula": "sum(revenue) / count(*)", "name": "aov"}`, `"cumsum(sum(revenue))"`. Each entry compiles to one output column.
 
-**Measure (named formula)** — A saved formula stored on a model (`SlayerModel.measures: List[ModelMeasure]`). Shape `{formula, name, label, description}` — same as a query's inline `measures` entry. Queries reference saved measures by bare name in any formula context (`{"formula": "aov"}`).
+**Measure (named formula)** — A saved formula stored on a model (`SlayerModel.metrics: List[ModelMeasure]`). Shape `{formula, name, label, description}` — same as a query's inline `measures` entry. Queries reference saved measures by bare name in any formula context (`{"formula": "aov"}`).
 
 **Aggregation** — How a column is rolled up. Built-in aggregations: `sum`, `avg`, `min`, `max`, `count`, `count_distinct`, `count_distinct_approx`, `first`, `last`, `weighted_avg`, `median`, `percentile`, `stddev_samp`, `stddev_pop`, `var_samp`, `var_pop`, `corr`, `covar_samp`, `covar_pop`, `collect`. Custom aggregations can be defined at model level. Applied at query time as a function call: `sum(revenue)`, `count(*)`, `weighted_avg(price, weight=quantity)`, `corr(price, other=quantity)`.
 
@@ -30,7 +30,7 @@ Key terms used throughout SLayer documentation and code.
 
 ## Queries
 
-**Measure entry** — A formula entry in `SlayerQuery.measures` (called *Field* in v1, before the v2 schema rename). Defined by a formula string. Examples: aggregated column reference (`"sum(revenue)"`), `*`-count (`"count(*)"`), arithmetic on aggregated measures (`"sum(revenue) / count(*)"`), transform function (`"cumsum(sum(revenue))"`), or bare named-formula reference (`{"formula": "aov"}`). Supports an optional `label` for human-readable display. See [Formulas](formulas.md).
+**Measure entry** — A formula entry in `SlayerQuery.metrics` (called *Field* in v1, before the v2 schema rename). Defined by a formula string. Examples: aggregated column reference (`"sum(revenue)"`), `*`-count (`"count(*)"`), arithmetic on aggregated measures (`"sum(revenue) / count(*)"`), transform function (`"cumsum(sum(revenue))"`), or bare named-formula reference (`{"formula": "aov"}`). Supports an optional `label` for human-readable display. See [Formulas](formulas.md).
 
 **Label** — An optional human-readable display name for a measure entry, dimension, or time dimension. Separate from the technical `name`, which is used as the result column key. Example: `{"formula": "sum(revenue) / count(*)", "name": "aov", "label": "Average Order Value"}`.
 

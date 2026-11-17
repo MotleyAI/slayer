@@ -6,7 +6,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import TimeSpineError
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.refs import auto_name_from_expression
 from slayer.engine.query_engine import SlayerResponse
 from tests._dev1737_fixtures import TableSpec
@@ -43,22 +43,22 @@ ORDER_CELLS = {("2025-01", "2025-01"): (50.0, 1.0), ("2025-01", "2025-02"): (100
 RETURNS_BY_MONTH = {"2025-02": 20.0, "2025-03": 10.0, "2025-05": 5.0}
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", default_time_dimension="order_date",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="order_date", type=DataType.DATE),
-            Column(name="shipped_at", type=DataType.DATE),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="eff", type=DataType.DATE, sql="COALESCE(shipped_at, order_date)"),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="order_date", datatype=DataType.DATE),
+            DatasetField(name="shipped_at", datatype=DataType.DATE),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="eff", datatype=DataType.DATE, sql="COALESCE(shipped_at, order_date)"),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
-def _models() -> list[SlayerModel]:
+def _models() -> list[SlayerDataset]:
     return [_orders_model() if model.name == "orders" else model for model in spine_models()]
 
 

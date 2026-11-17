@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.embeddings import client as embedding_client
 from slayer.embeddings.client import current_model, embed_batch
 from slayer.embeddings.models import Embedding, EntityKind
@@ -21,7 +21,7 @@ from slayer.memories.models import Memory
 from slayer.memories.resolver import canonical_id_rooted_at
 from slayer.search.index import Corpus
 from slayer.search.render import (
-    collect_model_entity_pairs,
+    collect_dataset_entity_pairs,
     render_datasource_pair,
     render_memory_text_for_embedding,
 )
@@ -152,13 +152,13 @@ class EmbeddingRetriever(Retriever):
         self,
         *,
         storage: StorageBackend,
-        model_name: str | None = None,
+        dataset_name: str | None = None,
     ) -> None:
         self._storage = storage
-        self._model_name = model_name or current_model()
+        self._model_name = dataset_name or current_model()
 
     @property
-    def model_name(self) -> str:
+    def dataset_name(self) -> str:
         return self._model_name
 
     # ------------------------------------------------------------------
@@ -315,7 +315,7 @@ class EmbeddingRetriever(Retriever):
         self,
         *,
         name: str,
-        models: list[SlayerModel],
+        datasets: list[SlayerDataset],
         description: str | None = None,
     ) -> list[str]:
         """Refresh the embedding for one datasource doc.
@@ -331,7 +331,7 @@ class EmbeddingRetriever(Retriever):
         if not embedding_client.is_available():
             return []
         pair = render_datasource_pair(
-            name=name, models=models, description=description,
+            name=name, datasets=datasets, description=description,
         )
         pending = _PendingRefresh(
             canonical_id=pair.canonical_id,
@@ -340,7 +340,7 @@ class EmbeddingRetriever(Retriever):
         )
         return await self._apply_pending([pending])
 
-    async def refresh_model_subtree(self, model: SlayerModel) -> list[str]:
+    async def refresh_dataset_subtree(self, dataset: SlayerDataset) -> list[str]:
         """Refresh the model doc + every visible column + named measures
         + custom aggregations in a single batch call.
 
@@ -357,7 +357,7 @@ class EmbeddingRetriever(Retriever):
                 entity_kind=re.kind,  # type: ignore[arg-type]
                 text=re.text,
             )
-            for re in collect_model_entity_pairs(model=model)
+            for re in collect_dataset_entity_pairs(dataset=dataset)
         ]
         return await self._apply_pending(pending)
 

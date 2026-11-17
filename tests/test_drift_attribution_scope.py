@@ -18,11 +18,11 @@ from sqlglot.expressions.core import Expression
 import slayer.live_schema.schema_drift as schema_drift
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import IngestableObject
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.live_schema.schema_drift import EditModelDelete, LiveTable, ToDeleteEntry, WholeModelDelete
+from slayer.live_schema.schema_drift import EditDatasetDelete, LiveTable, ToDeleteEntry, WholeDatasetDelete
 from slayer.live_schema.schema_scope import SchemaRef
 from slayer.database import sqlite_introspect
 from slayer.database.client import DatabaseUnavailable, SlayerSQLClient
@@ -43,48 +43,48 @@ INSERT INTO orders VALUES (1, 10.0, 1, 1);
 """
 
 
-def _base_models(ds: str) -> list[SlayerModel]:
+def _base_models(ds: str) -> list[SlayerDataset]:
     return [
-        SlayerModel(
+        SlayerDataset(
             name="customers", sql_table="customers", data_source=ds,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="region", datatype=DataType.TEXT),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="products", sql_table="products", data_source=ds,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
-                Column(name="price", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="name", datatype=DataType.TEXT),
+                DatasetField(name="price", datatype=DataType.DOUBLE),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="orders", sql_table="orders", data_source=ds,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="product_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="product_id", datatype=DataType.INT),
                 # Derived, so never drift; executing it fails for a non-drift reason.
-                Column(name="bad", sql="no_such_fn(id)", type=DataType.DOUBLE),
+                DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.DOUBLE),
             ],
-            joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-                ModelJoin(target_model="products", join_pairs=[["product_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+                DatasetRelationship(to="products", join_pairs=[["product_id", "id"]]),
             ],
         ),
     ]
 
 
-def _sql_model(*, name: str, sql: str, ds: str = "ds") -> SlayerModel:
-    return SlayerModel(
+def _sql_model(*, name: str, sql: str, ds: str = "ds") -> SlayerDataset:
+    return SlayerDataset(
         name=name, sql=sql, data_source=ds,
-        columns=[
+        fields=[
             # A 0-row SQLite trial reports every column as TEXT.
-            Column(name="id", type=DataType.TEXT, primary_key=True),
-            Column(name="bad", sql="no_such_fn(id)", type=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.TEXT, primary_key=True),
+            DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.DOUBLE),
         ],
     )
 
@@ -118,8 +118,8 @@ class _Env:
         with transaction(self.db_path) as conn:
             conn.executescript(sql)
 
-    async def save(self, model: SlayerModel) -> None:
-        await self.engine.storage.save_model(model)
+    async def save(self, model: SlayerDataset) -> None:
+        await self.engine.storage.save_dataset(model)
 
 
 class _Spies:
@@ -156,14 +156,14 @@ def _install_clock(engine: SlayerQueryEngine, clock: _Clock) -> None:
     engine._drift_snapshots = schema_drift.LiveSnapshotCache(clock=clock)
 
 
-async def _make_env(tmp: Path, *, schema: str, models: list[SlayerModel]) -> _Env:
+async def _make_env(tmp: Path, *, schema: str, models: list[SlayerDataset]) -> _Env:
     db_path = str(tmp / "live.db")
     with transaction(db_path) as conn:
         conn.executescript(schema)
     storage = YAMLStorage(base_dir=str(tmp / "storage"))
     await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=db_path))
     for m in models:
-        await storage.save_model(m)
+        await storage.save_dataset(m)
     engine = SlayerQueryEngine(storage=storage)
     clock = _Clock()
     _install_clock(engine, clock)
@@ -187,7 +187,7 @@ def spies(env: _Env) -> Any:
     ) as introspect, patch.object(
         ingestion, "list_ingestable_objects", wraps=ingestion.list_ingestable_objects,
     ) as listing, patch.object(
-        schema_drift, "_live_columns_for_sql_model", wraps=schema_drift._live_columns_for_sql_model,
+        schema_drift, "_live_columns_for_sql_model", wraps=schema_drift._live_columns_for_sql_dataset,
     ) as trial, patch.object(
         sqlite_introspect, "probe_sqlite_integer_column",
         wraps=sqlite_introspect.probe_sqlite_integer_column,
@@ -215,7 +215,7 @@ async def _fails_with_drift(
 
 def _blamed(err: SchemaDriftError) -> set[str]:
     entries: list[ToDeleteEntry] = err.to_delete
-    return {e.model_name for e in entries}
+    return {e.dataset_name for e in entries}
 
 
 _EXPLAIN = pytest.mark.parametrize("explain", [False, True], ids=["data-query", "explain"])
@@ -231,7 +231,7 @@ class TestReadSetScope:
         }, explain=explain)
         assert "customers" in _blamed(err)
         assert any(
-            isinstance(e, WholeModelDelete) and e.model_name == "customers" for e in err.to_delete
+            isinstance(e, WholeDatasetDelete) and e.dataset_name == "customers" for e in err.to_delete
         )
         assert isinstance(err.__cause__, SQLAlchemyError)
 
@@ -283,10 +283,10 @@ class TestReadSetScope:
         payload: Any = [named, query] if named is not None else query
         err = await _fails_with_drift(env.engine, payload)
         assert dropped in _blamed(err)
-        assert dropped in err.models
+        assert dropped in err.datasets
 
     async def test_a_pruned_stored_stage_is_not_read(self, env: _Env) -> None:
-        await env.engine.create_model_from_query(
+        await env.engine.create_dataset_from_query(
             query=[
                 {"name": "unused", "source_model": "products", "dimensions": ["name"],
                  "measures": [{"formula": "count(*)", "name": "n"}]},
@@ -296,11 +296,11 @@ class TestReadSetScope:
             ],
             name="qb_pruned",
         )
-        stored = await env.engine.storage.get_model("qb_pruned", data_source="ds")
+        stored = await env.engine.storage.get_dataset("qb_pruned", data_source="ds")
         assert stored is not None
         # Swap s1's measure for one that fails at execution (not drift).
         stages = [
-            s.model_copy(update={"measures": [{"formula": "sum(bad)", "name": "total"}]})
+            s.model_copy(update={"metrics": [{"formula": "sum(bad)", "name": "total"}]})
             if s.name == "s1" else s
             for s in stored.source_queries or []
         ]
@@ -313,7 +313,7 @@ class TestReadSetScope:
         await _fails_unwrapped(env.engine, query)
 
     async def test_query_backed_source_is_read_through_its_stages(self, env: _Env) -> None:
-        await env.engine.create_model_from_query(
+        await env.engine.create_dataset_from_query(
             query=[
                 {"name": "s1", "source_model": "orders", "dimensions": ["customers.region"],
                  "measures": [{"formula": "sum(amount)", "name": "total"}]},
@@ -335,8 +335,8 @@ class TestPayload:
             "source_model": "orders", "dimensions": ["customers.region"],
             "measures": [{"formula": "sum(amount)"}],
         })
-        assert err.models == ["customers"]
-        assert err.models == sorted(_blamed(err))
+        assert err.datasets == ["customers"]
+        assert err.datasets == sorted(_blamed(err))
 
     async def test_models_are_sorted_and_distinct_across_blamed_entries(self, env: _Env) -> None:
         # Dropping customers blames it wholesale and cascades orders' join.
@@ -345,8 +345,8 @@ class TestPayload:
             "source_model": "orders", "dimensions": ["customers.region"],
             "measures": [{"formula": "sum(amount)"}],
         })
-        assert err.models == ["customers", "orders"]
-        assert err.models == sorted(_blamed(err))
+        assert err.datasets == ["customers", "orders"]
+        assert err.datasets == sorted(_blamed(err))
 
 
 class TestScopedInspection:
@@ -355,12 +355,12 @@ class TestScopedInspection:
             f"CREATE TABLE t{i} (id INTEGER PRIMARY KEY, v REAL);" for i in range(10)
         )
         models = [
-            SlayerModel(
+            SlayerDataset(
                 name=f"t{i}", sql_table=f"t{i}", data_source="ds",
-                columns=[
-                    Column(name="id", type=DataType.INT, primary_key=True),
-                    Column(name="v", type=DataType.DOUBLE),
-                    Column(name="bad", sql="no_such_fn(v)", type=DataType.DOUBLE),
+                fields=[
+                    DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                    DatasetField(name="v", datatype=DataType.DOUBLE),
+                    DatasetField(name="bad", sql="no_such_fn(v)", datatype=DataType.DOUBLE),
                 ],
             )
             for i in range(10)
@@ -398,7 +398,7 @@ class TestScopedInspection:
     async def test_a_schema_qualified_read_table_resolves_like_full_validation(
         self, env: _Env, spies: _Spies,
     ) -> None:
-        orders = await env.engine.storage.get_model("orders", data_source="ds")
+        orders = await env.engine.storage.get_dataset("orders", data_source="ds")
         assert orders is not None
         await env.save(orders.model_copy(update={"sql_table": "main.orders"}))
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
@@ -406,12 +406,12 @@ class TestScopedInspection:
 
     async def test_a_read_view_resolves_like_full_validation(self, env: _Env) -> None:
         env.live("CREATE VIEW v_orders AS SELECT id, amount FROM orders")
-        await env.save(SlayerModel(
+        await env.save(SlayerDataset(
             name="orders_view", sql_table="v_orders", data_source="ds",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="bad", sql="no_such_fn(id)", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.DOUBLE),
             ],
         ))
         await _fails_unwrapped(
@@ -425,8 +425,8 @@ class TestScopedInspection:
         await _fails_unwrapped(
             env.engine, {"source_model": "orders", "measures": [{"formula": "sum(bad)"}]},
         )
-        entries = await env.engine.validate_models(data_source="ds")
-        assert {e.model_name for e in entries} >= {"customers", "products"}
+        entries = await env.engine.validate_datasets(data_source="ds")
+        assert {e.dataset_name for e in entries} >= {"customers", "products"}
         assert {"customers", "products", "orders"} <= set(spies.introspected())
 
 
@@ -460,7 +460,7 @@ class TestSnapshotReuse:
         sql = "SELECT id, amount FROM orders"
         await env.save(_sql_model(name="sq_b", sql=sql))
         await env.save(_sql_model(name="sq_a", sql=sql).model_copy(update={
-            "joins": [ModelJoin(target_model="sq_b", join_pairs=[["id", "id"]])],
+            "joins": [DatasetRelationship(to="sq_b", join_pairs=[["id", "id"]])],
         }))
         await _fails_unwrapped(env.engine, {
             "source_model": "sq_a", "dimensions": ["sq_b.id"],
@@ -493,7 +493,7 @@ class TestSnapshotReuse:
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
         env.clock.now += _TTL_S / 2
         env.live("CREATE TABLE orders_v2 AS SELECT * FROM orders")
-        orders = await env.engine.storage.get_model("orders", data_source="ds")
+        orders = await env.engine.storage.get_dataset("orders", data_source="ds")
         assert orders is not None
         await env.save(orders.model_copy(update={"sql_table": "orders_v2"}))
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
@@ -519,14 +519,14 @@ class TestSnapshotReuse:
             env.engine, {"source_model": "orders", "measures": [{"formula": "sum(amount)"}]},
         )
         assert any(
-            isinstance(e, EditModelDelete) and e.model_name == "orders"
-            and "amount" in e.remove.columns
+            isinstance(e, EditDatasetDelete) and e.dataset_name == "orders"
+            and "amount" in e.remove.fields
             for e in first.to_delete
         )
-        orders = await env.engine.storage.get_model("orders", data_source="ds")
+        orders = await env.engine.storage.get_dataset("orders", data_source="ds")
         assert orders is not None
         await env.save(orders.model_copy(update={
-            "columns": [c for c in orders.columns if c.name != "amount"],
+            "fields": [c for c in orders.fields if c.name != "amount"],
         }))
         await _fails_unwrapped(
             env.engine, {"source_model": "orders", "measures": [{"formula": "sum(bad)"}]},
@@ -538,7 +538,7 @@ class TestSnapshotReuse:
     ) -> None:
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
         env.live("CREATE TABLE orders_v2 AS SELECT * FROM orders")
-        orders = await env.engine.storage.get_model("orders", data_source="ds")
+        orders = await env.engine.storage.get_dataset("orders", data_source="ds")
         assert orders is not None
         await env.save(orders.model_copy(update={"sql_table": "orders_v2"}))
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
@@ -550,7 +550,7 @@ class TestSnapshotReuse:
         for _ in range(3):
             err = await _fails_with_drift(env.engine, query)
             assert any(
-                isinstance(e, WholeModelDelete) and e.model_name == "orders" for e in err.to_delete
+                isinstance(e, WholeDatasetDelete) and e.dataset_name == "orders" for e in err.to_delete
             )
         assert spies.listing.call_count == 1
 
@@ -566,10 +566,10 @@ class TestSnapshotReuse:
         def _listing(*, client: Any, ref: SchemaRef, include_views: bool) -> list[Any]:
             return [IngestableObject(name=n, kind="table") for n in listed_objects[ref.name]]
 
-        def _orders(schema: str) -> SlayerModel:
-            return SlayerModel(
+        def _orders(schema: str) -> SlayerDataset:
+            return SlayerDataset(
                 name="orders", sql_table=f"{schema}.orders", data_source="ds",
-                columns=[Column(name="id", type=DataType.TEXT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.TEXT, primary_key=True)],
             )
 
         snapshot = schema_drift.DriftSnapshot(created_at=0.0)
@@ -582,12 +582,12 @@ class TestSnapshotReuse:
                 schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.TEXT}),
             ):
                 first = await schema_drift.validate_datasource(
-                    datasource=ds, models=[_orders("a")], client=client, snapshot=snapshot,
+                    datasource=ds, datasets=[_orders("a")], client=client, snapshot=snapshot,
                 )
                 # b.orders is created after the listing; only its basename was listed (in a).
                 listed_objects["b"].append("orders")
                 second = await schema_drift.validate_datasource(
-                    datasource=ds, models=[_orders("b")], client=client, snapshot=snapshot,
+                    datasource=ds, datasets=[_orders("b")], client=client, snapshot=snapshot,
                 )
         assert first == []
         assert second == []
@@ -600,9 +600,9 @@ class TestSnapshotReuse:
         with transaction(db_path) as conn:
             conn.executescript("CREATE TABLE seed (id INTEGER);")
         ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders", sql_table="a.orders", data_source="ds",
-            columns=[Column(name="id", type=DataType.TEXT, primary_key=True)],
+            fields=[DatasetField(name="id", datatype=DataType.TEXT, primary_key=True)],
         )
         async with _client(ds) as client:
             with patch.object(
@@ -614,7 +614,7 @@ class TestSnapshotReuse:
                 schema_drift, "_introspect_one_table", return_value=LiveTable(columns={"id": DataType.TEXT}),
             ) as introspect:
                 entries = await schema_drift.validate_datasource(
-                    datasource=ds, models=[model], client=client,
+                    datasource=ds, datasets=[model], client=client,
                     snapshot=schema_drift.DriftSnapshot(created_at=0.0),
                 )
         assert entries == []
@@ -623,10 +623,10 @@ class TestSnapshotReuse:
     async def test_explicit_validation_reads_live(self, env: _Env, spies: _Spies) -> None:
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
         env.live("ALTER TABLE customers DROP COLUMN region")
-        entries = await env.engine.validate_models(data_source="ds")
+        entries = await env.engine.validate_datasets(data_source="ds")
         assert any(
-            isinstance(e, EditModelDelete) and e.model_name == "customers"
-            and "region" in e.remove.columns
+            isinstance(e, EditDatasetDelete) and e.dataset_name == "customers"
+            and "region" in e.remove.fields
             for e in entries
         )
         assert spies.listing.call_count == 2
@@ -643,9 +643,9 @@ class TestResolvedDatasource:
             await env.engine.storage.save_datasource(
                 DatasourceConfig(name=other, type="sqlite", database=path),
             )
-            await env.save(SlayerModel(
+            await env.save(SlayerDataset(
                 name=f"{other}_t", sql_table=f"{other}_t", data_source=other,
-                columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
             ))
         spies.listing.reset_mock()
         render = SlayerQueryEngine._plan_and_render
@@ -653,8 +653,8 @@ class TestResolvedDatasource:
         async def _foreign_source(self: SlayerQueryEngine, **kwargs: Any) -> Any:
             # A pipeline model always carries a data_source; make it disagree with the executing one.
             rendered = await render(self, **kwargs)
-            foreign = rendered.model.model_copy(update={"data_source": "ds_a"})
-            return rendered.model_copy(update={"model": foreign})
+            foreign = rendered.dataset.model_copy(update={"data_source": "ds_a"})
+            return rendered.model_copy(update={"dataset": foreign})
 
         monkeypatch.setattr(SlayerQueryEngine, "_plan_and_render", _foreign_source)
         await _fails_unwrapped(env.engine, _UNRELATED_FAILURE)
@@ -675,8 +675,8 @@ class TestUnreadableTable:
         self, env: _Env,
     ) -> None:
         with patch.object(schema_drift, "_introspect_one_table", side_effect=_customers_unreadable):
-            entries = await env.engine.validate_models(data_source="ds")
-        assert "customers" not in {e.model_name for e in entries}
+            entries = await env.engine.validate_datasets(data_source="ds")
+        assert "customers" not in {e.dataset_name for e in entries}
 
     async def test_an_unreadable_read_table_is_no_attribution_evidence(self, env: _Env) -> None:
         with patch.object(schema_drift, "_introspect_one_table", side_effect=_customers_unreadable):
@@ -712,8 +712,8 @@ async def _unreachable_engine(tmp: Path) -> SlayerQueryEngine:
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=str(tmp / "missing" / "live.db")),
     )
-    await storage.save_model(_base_models("ds")[0])
-    await storage.save_model(_sql_model(name="sq_customers", sql="SELECT id, region FROM customers"))
+    await storage.save_dataset(_base_models("ds")[0])
+    await storage.save_dataset(_sql_model(name="sq_customers", sql="SELECT id, region FROM customers"))
     engine = SlayerQueryEngine(storage=storage)
     _install_clock(engine, _Clock())
     return engine
@@ -732,7 +732,7 @@ class TestUnreachableDatasource:
                 side_effect=SlayerSQLClient._metadata,
             ) as connect, patch.object(
                 schema_drift, "_live_columns_for_sql_model",
-                wraps=schema_drift._live_columns_for_sql_model,
+                wraps=schema_drift._live_columns_for_sql_dataset,
             ) as trial:
                 await _fails_unwrapped(engine, query, expected=DatabaseUnavailable)
                 attempts = connect.call_count + trial.call_count
@@ -749,11 +749,11 @@ class TestUnreachableDatasource:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=str(tmp_path / "missing" / "live.db")),
         )
-        await storage.save_model(_sql_model(name="sq_customers", sql="SELECT id, region FROM customers"))
+        await storage.save_dataset(_sql_model(name="sq_customers", sql="SELECT id, region FROM customers"))
         engine = SlayerQueryEngine(storage=storage)
         try:
             with pytest.raises(DatabaseUnavailable):
-                await engine.validate_models(data_source="ds")
+                await engine.validate_datasets(data_source="ds")
         finally:
             await engine.aclose()
 
@@ -804,30 +804,30 @@ _READ_SET_CORPUS = [
 ]
 
 
-def _long_chain_models(ds: str) -> list[SlayerModel]:
+def _long_chain_models(ds: str) -> list[SlayerDataset]:
     return [
-        SlayerModel(
+        SlayerDataset(
             name=f"{_LONG}Invoice", sql_table="invoices", data_source=ds,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="customer_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="customer_id", datatype=DataType.INT),
             ],
-            joins=[ModelJoin(target_model=f"{_LONG}Customer", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to=f"{_LONG}Customer", join_pairs=[["customer_id", "id"]])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name=f"{_LONG}Customer", sql_table="customers", data_source=ds,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="consumer_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="consumer_id", datatype=DataType.INT),
             ],
-            joins=[ModelJoin(target_model=f"{_LONG}Consumer", join_pairs=[["consumer_id", "id"]])],
+            relationships=[DatasetRelationship(to=f"{_LONG}Consumer", join_pairs=[["consumer_id", "id"]])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name=f"{_LONG}Consumer", sql_table="consumers", data_source=ds,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="lifetime_value", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="lifetime_value", datatype=DataType.DOUBLE),
             ],
         ),
     ]
@@ -870,8 +870,8 @@ class TestReadSetStamp:
     @pytest.fixture
     async def corpus_env(self, env: _Env) -> _Env:
         await env.save(_sql_model(name="sq_orders", sql="SELECT id, amount FROM orders"))
-        await env.engine.create_model_from_query(query=_QB_STAGES, name="qb")
-        await env.engine.create_model_from_query(
+        await env.engine.create_dataset_from_query(query=_QB_STAGES, name="qb")
+        await env.engine.create_dataset_from_query(
             query=[
                 {"name": "unused", "source_model": "products", "dimensions": ["name"],
                  "measures": [{"formula": "count(*)", "name": "n"}]},
@@ -900,7 +900,7 @@ class TestReadSetStamp:
             database="x", username="u", password="p",
         ))
         for m in _long_chain_models("pg"):
-            await storage.save_model(m)
+            await storage.save_dataset(m)
         engine = SlayerQueryEngine(storage=storage)
         try:
             statement, touched, sql = await _render(engine, {

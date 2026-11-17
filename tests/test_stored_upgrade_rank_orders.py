@@ -80,10 +80,10 @@ async def test_0_10_2_stage_ordering_by_rank_executes_descending(tmp_path, shop_
     storage = await raw_store(
         backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
         models=[orders_v10(), customers_v10(), query_backed_v10(name="top_status", stages=_stages())])
-    model = await storage.get_model("top_status", data_source=DS)
+    model = await storage.get_dataset("top_status", data_source=DS)
     assert model is not None
     [order] = (model.source_queries or [])[-1].order or []
-    assert order.raw_formula == STAGE_RANK_LOADED
+    assert order.raw_expression == STAGE_RANK_LOADED
     resp = await run(storage, TOP_QUERY)
     assert list(by_dimension(resp, dim_suffix="status")) == [TOP_STATUS_DESC]
 
@@ -97,7 +97,7 @@ async def test_0_10_2_memory_ordering_by_rank_executes_descending(tmp_path, shop
     mem = await storage.get_memory("m1")
     assert mem.query is not None
     [order] = mem.query.order or []
-    assert order.raw_formula == MEMORY_RANK_LOADED
+    assert order.raw_expression == MEMORY_RANK_LOADED
     resp = await run(storage, mem.query)
     assert list(by_dimension(resp, dim_suffix="status")) == [TOP_STATUS_DESC]
 
@@ -108,13 +108,13 @@ async def test_v13_model_with_unrewritten_raw_formula_is_repaired(tmp_path, shop
     storage = await raw_store(
         backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
         models=[orders_v10(version=13), customers_v10(version=13), qb])
-    model = await storage.get_model("top_status", data_source=DS)
+    model = await storage.get_dataset("top_status", data_source=DS)
     assert model is not None
     assert model.version == mig.CURRENT_VERSIONS["SlayerModel"]
     final = (model.source_queries or [])[-1]
     assert final.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     [order] = final.order or []
-    assert order.raw_formula == STAGE_RANK_LOADED
+    assert order.raw_expression == STAGE_RANK_LOADED
     doc = await raw_doc(storage, "top_status")
     assert doc["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
     resp = await run(storage, TOP_QUERY)
@@ -132,11 +132,11 @@ async def test_v3_memory_with_unrewritten_raw_formula_is_repaired(tmp_path, shop
     assert mem.query is not None
     assert mem.query.version == mig.CURRENT_VERSIONS["SlayerQuery"]
     [order] = mem.query.order or []
-    assert order.raw_formula == MEMORY_RANK_LOADED
+    assert order.raw_expression == MEMORY_RANK_LOADED
 
 
 def test_fresh_query_order_is_not_rewritten():
     mem = Memory.model_validate({"id": "f", "learning": "x", "query": _memory_query(version=None)})
     assert mem.query is not None
     [order] = mem.query.order or []
-    assert order.raw_formula == MEMORY_RANK
+    assert order.raw_expression == MEMORY_RANK

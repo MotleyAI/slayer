@@ -12,16 +12,16 @@ from slayer.engine.plan import plan_query
 from slayer.ir.planned import SemiJoinHop, _walk_regroup_attaches
 
 from tests._dev1840_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     SPEND_BAND_170,
     bundle,
     dev1840_models,
     q,
 )
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
-RM = ModelMeasure(formula="sum(stores.rent)", name="rm")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+RM = DatasetMetric(expression="sum(stores.rent)", name="rm")
 
 
 def _plan(query, models=None):
@@ -30,7 +30,7 @@ def _plan(query, models=None):
 
 def _attach(planned, root):
     matches = [a for a in planned.regroup_attach_plans
-               if a.producer_root_model == root]
+               if a.producer_root_dataset == root]
     assert len(matches) == 1
     return matches[0]
 
@@ -60,7 +60,7 @@ class TestGrouping:
         ), "customers")
         sjs = list(att.producer_plan.semi_join_filters)
         assert len(sjs) == 2
-        assert {sj.hops[0].target_model for sj in sjs} == {"orders", "plans"}
+        assert {sj.hops[0].to for sj in sjs} == {"orders", "plans"}
         assert all(len(sj.conjuncts) == 1 for sj in sjs)
 
     def test_shared_first_hop_builds_the_union_tree(self):
@@ -72,7 +72,7 @@ class TestGrouping:
             to_many_handling="broadcast",
         )), "stores")
         (sj,) = att.producer_plan.semi_join_filters
-        assert [h.target_model for h in sj.hops] == ["orders", "customers"]
+        assert [h.to for h in sj.hops] == ["orders", "customers"]
         assert _pairs(sj.hops[1]) == [("customer_id", "id")]
         assert len(sj.conjuncts) == 2
 
@@ -93,7 +93,7 @@ class TestHopDescriptors:
             to_many_handling="broadcast",
         )), "stores")
         (sj,) = att.producer_plan.semi_join_filters
-        assert [h.target_model for h in sj.hops] == ["orders"]
+        assert [h.to for h in sj.hops] == ["orders"]
         assert _pairs(sj.hops[0]) == [("co", "store_co"), ("no", "store_no")]
 
     def test_repeated_model_nodes_carry_distinct_identity(self):
@@ -105,7 +105,7 @@ class TestHopDescriptors:
             to_many_handling="broadcast",
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
-        assert [h.target_model for h in sj.hops] == ["orders", "customers"]
+        assert [h.to for h in sj.hops] == ["orders", "customers"]
         assert len({h.node_id for h in sj.hops}) == len(sj.hops)
 
 
@@ -119,7 +119,7 @@ class TestThreading:
         ))
         carrying = [
             att for att in _walk_regroup_attaches(planned)
-            if att.producer_root_model == "customers"
+            if att.producer_root_dataset == "customers"
             and list(att.producer_plan.semi_join_filters)
         ]
         assert carrying, "no customers-rooted producer carries the semi-join"

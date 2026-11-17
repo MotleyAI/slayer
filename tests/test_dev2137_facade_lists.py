@@ -13,7 +13,7 @@ import pyarrow as pa
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, ModelMeasure, SlayerModel
+from slayer.core.models import Aggregation, DatasetMetric, SlayerDataset
 from slayer.engine.query_engine import SlayerResponse
 from slayer.facade.catalog import build_catalog, build_catalog_grouped_by_schema
 from slayer.facade.datatypes import datatype_to_jdbc
@@ -32,31 +32,31 @@ from tests.pg_facade.test_connection import _messages, _parse_row_description, _
 DS = "jaffle"
 
 
-def _model() -> SlayerModel:
+def _model() -> SlayerDataset:
     return contractors_model(data_source=DS).model_copy(update={
-        "measures": [ModelMeasure(name="cities", formula="collect(city)")]})
+        "measures": [DatasetMetric(name="cities", expression="collect(city)")]})
 
 
 class TestCatalogs:
     def test_catalog_keeps_list_models(self) -> None:
-        catalog = build_catalog(models_by_datasource={DS: [_model()]})
+        catalog = build_catalog(datasets_by_datasource={DS: [_model()]})
         (schema,) = catalog.schemas
         table = next(t for t in schema.tables if t.name == "contractors")
         assert "skills" in {d.name for d in table.dimensions}
 
     def test_list_columns_offer_count_and_distinct_count(self) -> None:
-        model = _model().model_copy(update={"aggregations": [Aggregation(name="my_agg", formula="SUM({value})")]})
-        (schema,) = build_catalog(models_by_datasource={DS: [model]}).schemas
+        model = _model().model_copy(update={"aggregations": [Aggregation(name="my_agg", expression="SUM({value})")]})
+        (schema,) = build_catalog(datasets_by_datasource={DS: [model]}).schemas
         table = next(t for t in schema.tables if t.name == "contractors")
         assert {m.name for m in table.metrics if m.name.startswith("skills_")} == {"skills_count", "skills_count_distinct"}
 
     def test_a_sole_primary_key_offers_collect(self) -> None:
-        (schema,) = build_catalog(models_by_datasource={DS: [_model()]}).schemas
+        (schema,) = build_catalog(datasets_by_datasource={DS: [_model()]}).schemas
         table = next(t for t in schema.tables if t.name == "contractors")
         assert "id_collect" in {m.name for m in table.metrics}
 
     def test_grouped_catalog_keeps_list_models(self) -> None:
-        catalog = build_catalog_grouped_by_schema(models_by_datasource={DS: [_model()]})
+        catalog = build_catalog_grouped_by_schema(datasets_by_datasource={DS: [_model()]})
         tables = {t.name for s in catalog.schemas for t in s.tables}
         assert "contractors" in tables
 

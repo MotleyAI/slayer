@@ -19,9 +19,9 @@ from slayer.core.keys import (
     temporal_type,
     walk_value_keys,
 )
-from slayer.core.join_walker import model_column_type
-from slayer.core.models import SlayerModel
-from slayer.engine.reference_closure import column_default_key
+from slayer.core.relationship_walker import dataset_field_type
+from slayer.core.models import SlayerDataset
+from slayer.engine.reference_closure import field_default_key
 from slayer.ir.planned import (
     SlotId,
     ValueSlot,
@@ -46,22 +46,22 @@ def explicit_ranking_key(key: AggregateKey) -> Optional[ValueKey]:
 def _temporal_row_dimension_key(
     *,
     row_keys: Sequence[ValueKey],
-    source_model: SlayerModel,
+    source_dataset: SlayerDataset,
     bundle: ResolvedSourceBundle,
 ) -> Optional[ValueKey]:
     """The first row-level dimension typed DATE / TIMESTAMP — never a bucket, which ties a cell's rows."""
-    column_type = model_column_type(model=source_model, models_by_name=bundle.models_by_name)
+    column_type = dataset_field_type(dataset=source_dataset, datasets_by_name=bundle.datasets_by_name)
     for key in row_keys:
         if isinstance(key, TimeTruncKey) or any(
             isinstance(k, (AggregateKey, TransformKey)) for k in walk_value_keys(key)
         ):
             continue
-        if temporal_type(key, column_type=column_type) is not None:
+        if temporal_type(key, field_type=column_type) is not None:
             return key
     return None
 
 
-def _time_dimension_raw_column(
+def _time_dimension_raw_field(
     *, row_keys: Sequence[ValueKey],
 ) -> Optional[ValueKey]:
     """The first time dimension's untruncated source."""
@@ -74,7 +74,7 @@ def _time_dimension_raw_column(
 def resolve_ranking_time_key(
     *,
     key: AggregateKey,
-    root_model: SlayerModel,
+    root_dataset: SlayerDataset,
     bundle: ResolvedSourceBundle,
     row_keys: Sequence[ValueKey] = (),
 ) -> ValueKey:
@@ -87,21 +87,21 @@ def resolve_ranking_time_key(
     if arg is not None:
         return arg
     temporal = _temporal_row_dimension_key(
-        row_keys=row_keys, source_model=root_model, bundle=bundle,
+        row_keys=row_keys, source_dataset=root_dataset, bundle=bundle,
     )
     if temporal is not None:
         return temporal
-    raw = _time_dimension_raw_column(row_keys=row_keys)
+    raw = _time_dimension_raw_field(row_keys=row_keys)
     if raw is not None:
         return raw
-    default = root_model.effective_default_time_dimension
+    default = root_dataset.effective_default_time_dimension
     if default:
-        return column_default_key(path=(), leaf=default, base=root_model)
+        return field_default_key(path=(), leaf=default, base=root_dataset)
     raise ValueError(
         "first/last aggregation requires a ranking time column "
         "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
         "model's default_time_dimension); none is resolvable for "
-        f"model {root_model.name!r}."
+        f"model {root_dataset.name!r}."
     )
 
 

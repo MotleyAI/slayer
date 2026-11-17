@@ -9,13 +9,13 @@ from typing import Callable, List
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality, TimeGranularity
+from slayer.core.enums import DataType, RelationshipCardinality, TimeGranularity
 from slayer.core.errors import PartitionKeyError
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     Grain,
     LiteralKey,
     ScalarCallKey,
@@ -23,8 +23,8 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
 )
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.engine.compile.discovery import RootDisposition
 from slayer.engine.compile.stages import _regroup_producer_prebound
 from slayer.engine.plan import plan_query
@@ -34,7 +34,7 @@ from slayer.sql.scope_check import assert_scope_closed
 from slayer.storage.sqlite_conn import transaction
 
 from tests._dev1847_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     chain_q,
     dev1847_models,
     gen,
@@ -49,7 +49,7 @@ R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
 RLEVEL = {"expression": f"CASE WHEN {R} > 50 THEN 'hi' ELSE 'lo' END", "name": "rlevel"}
 TLEVEL = {"expression": f"CASE WHEN rank({R}, direction='desc') > 1 THEN 'top' ELSE 'rest' END",
           "name": "tlevel"}
-TOT = ModelMeasure(formula="sum(amount)", name="tot")
+TOT = DatasetMetric(expression="sum(amount)", name="tot")
 
 R_BY_REGION = {"North": 45.0, "South": 70.0, "East": 60.0, "Gap": 10.0, "Void": None}
 TOT_BY_REGION = {"North": 90.0, "South": 140.0, "East": 180.0, "Gap": 20.0, "Void": None}
@@ -84,8 +84,8 @@ async def exec_engine(request):
 def _bundle(source: str = "sales") -> ResolvedSourceBundle:
     models = dev1847_models()
     [host] = [m for m in models if m.name == source]
-    return ResolvedSourceBundle(dialect="duckdb", source_model=host,
-                                referenced_models=[m for m in models if m is not host])
+    return ResolvedSourceBundle(dialect="duckdb", population=host,
+                                referenced_datasets=[m for m in models if m is not host])
 
 
 def _col(resp, name: str) -> dict:
@@ -125,13 +125,13 @@ class TestReaggregationInDimensionAndElsewhere:
 
     async def test_measure(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", RLEVEL], measures=[TOT, ModelMeasure(formula=R, name="r")]))
+            dimensions=["region", RLEVEL], measures=[TOT, DatasetMetric(expression=R, name="r")]))
         assert _col(resp, "r") == _approx(R_BY_REGION)
         assert _col(resp, "rlevel") == RLEVEL_BY_REGION
 
     async def test_filter_by_dimension_name_uses_band(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
-            dimensions=["region", RLEVEL], measures=[TOT, ModelMeasure(formula=R, name="r")],
+            dimensions=["region", RLEVEL], measures=[TOT, DatasetMetric(expression=R, name="r")],
             filters=["rlevel = 'hi'"]))
         assert _col(resp, "r") == _approx({"South": 70.0, "East": 60.0})
 
@@ -145,7 +145,7 @@ class TestTransformOverReaggregationInDimension:
     async def test_rank_as_measure(self, exec_engine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", TLEVEL],
-            measures=[TOT, ModelMeasure(formula=f"rank({R}, direction='desc')", name="rk")]))
+            measures=[TOT, DatasetMetric(expression=f"rank({R}, direction='desc')", name="rk")]))
         assert _col(resp, "rk") == RANK_BY_REGION
         assert _col(resp, "tlevel") == TLEVEL_BY_REGION
 
@@ -168,7 +168,7 @@ class TestTransformOverReaggregationInDimension:
     async def test_two_dimensions_share_the_reaggregation(self, exec_engine: SlayerQueryEngine):
         resp = await exec_engine.execute(sales_q(
             dimensions=["region", TLEVEL, RLEVEL],
-            measures=[TOT, ModelMeasure(formula=R, name="r")]))
+            measures=[TOT, DatasetMetric(expression=R, name="r")]))
         got = {r["sales.region"]: (r["sales.tlevel"], r["sales.rlevel"]) for r in resp.data}
         assert got == {"South": ("rest", "hi"), "East": ("top", "hi"),
                        "North": ("top", "lo"), "Gap": ("top", "lo"), "Void": ("rest", "lo")}
@@ -218,7 +218,7 @@ class TestCrossModelReaggregationInDimension:
     async def test_measure_typed_filter(self, exec_engine):
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name", CL],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot")],
+            measures=[DatasetMetric(expression="sum(amount)", name="tot")],
             filters=[f"{CHAIN_R} < sum(amount)"]))
         got = [(r["corders.customers.regions.name"], r["corders.cl"], r["corders.tot"])
                for r in resp.data]
@@ -259,14 +259,14 @@ class TestPlainMeasureTypedFilterOverDimensionAggregate:
 
 def _fine_cases():
     """(id, query kwargs, expected location pattern) for combined consumers of FINE."""
-    fm = ModelMeasure(formula=FINE, name="f")
+    fm = DatasetMetric(expression=FINE, name="f")
     return [
         ("measure", {"measures": [fm]}, r"measure 'f'"),
         ("order", {"measures": [TOT], "order": [{"column": FINE, "direction": "asc"}]},
          r"order item\b"),
-        ("arithmetic", {"measures": [ModelMeasure(formula=f"{FINE} + 1", name="f")]},
+        ("arithmetic", {"measures": [DatasetMetric(expression=f"{FINE} + 1", name="f")]},
          r"measure 'f'"),
-        ("transform", {"measures": [ModelMeasure(formula=f"rank({FINE}, direction='desc')", name="f")]},
+        ("transform", {"measures": [DatasetMetric(expression=f"rank({FINE}, direction='desc')", name="f")]},
          r"measure 'f'"),
         ("filter", {"measures": [TOT], "filters": [f"{FINE} < sum(amount)"]}, r"filter\b"),
         ("split-filter",
@@ -308,7 +308,7 @@ class TestReaggregationOuterKeyCarriesTheRule:
     def test_cross_model_outer_key(self):
         formula = "avg(sum(amount, partition_by=customer_id), partition_by=customers.region_id)"
         query = chain_q(dimensions=["customers.regions.name"],
-                        measures=[ModelMeasure(formula=formula, name="c")])
+                        measures=[DatasetMetric(expression=formula, name="c")])
         bundle = _bundle("corders")
         with pytest.raises(PartitionKeyError) as ei:
             plan_query(query=query, bundle=bundle)
@@ -325,7 +325,7 @@ def _is_r(key: ValueKey) -> bool:
 _R_CONSUMERS = [
     pytest.param({"filters": [f"{R} < sum(amount)"]}, id="filter"),
     pytest.param({"order": [{"column": R, "direction": "desc"}]}, id="order"),
-    pytest.param({"measures": [TOT, ModelMeasure(formula=R, name="r")]}, id="measure"),
+    pytest.param({"measures": [TOT, DatasetMetric(expression=R, name="r")]}, id="measure"),
 ]
 
 
@@ -374,7 +374,7 @@ class TestDimensionTransformOwnsReaggregation:
 
     def test_measure_occurrence_is_combined_only(self):
         ds = _discover(sales_q(dimensions=["region", TLEVEL],
-                               measures=[TOT, ModelMeasure(formula=R, name="r")]),
+                               measures=[TOT, DatasetMetric(expression=R, name="r")]),
                        _bundle())
         assert {d.phase for d in ds if _is_rank(d.root)} == {"row"}
         assert {d.phase for d in ds if _is_r(d.root)} == {"combined"}
@@ -385,7 +385,7 @@ class TestDimensionTransformOwnsReaggregation:
 # Synthesized producer grain names — injective, key-derived.
 # --------------------------------------------------------------------------- #
 def _flag(column: str, value: str) -> ScalarCallKey:
-    cond = ArithmeticKey(op="=", operands=(ColumnKey(leaf=column), LiteralKey(value=value)))
+    cond = ArithmeticKey(op="=", operands=(FieldKey(leaf=column), LiteralKey(value=value)))
     return ScalarCallKey(name="iif", args=(cond, LiteralKey(value=Decimal(1)),
                                            LiteralKey(value=Decimal(0))))
 
@@ -395,19 +395,19 @@ def _grain_names(keys) -> dict:
     models = dev1847_models()
     prebound, _ = _regroup_producer_prebound(
         pks=Grain(keys=frozenset(keys)),
-        aggs=[AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")],
-        model=models[0], bundle=_bundle(), inherited=[], n_date_range=0, mode_policy=ModePolicy(),
+        aggs=[AggregateKey(source=FieldKey(leaf="amount"), agg="sum")],
+        dataset=models[0], bundle=_bundle(), inherited=[], n_date_range=0, mode_policy=ModePolicy(),
     )
-    dims = [dm for dm in prebound.declared_measures if dm.is_dimension]
+    dims = [dm for dm in prebound.declared_metrics if dm.is_dimension]
     return {dm.bound.value_key: dm.public_name for dm in dims}
 
 
 class TestSynthesizedGrainNames:
     def test_expression_keys_get_distinct_names(self):
         a, b = _flag("product", "P"), _flag("region", "North")
-        names = _grain_names([a, b, ColumnKey(leaf="city")])
+        names = _grain_names([a, b, FieldKey(leaf="city")])
         assert len(set(names.values())) == 3
-        assert names[ColumnKey(leaf="city")] == "city"
+        assert names[FieldKey(leaf="city")] == "city"
 
     def test_name_is_key_derived_not_encounter_order(self):
         a = _flag("product", "P")
@@ -417,9 +417,9 @@ class TestSynthesizedGrainNames:
         assert with_later[a] == with_earlier[a]
 
     def test_time_bucket_spelled_like_a_column(self):
-        bucket = TimeTruncKey(source=ColumnKey(leaf="city"), granularity=TimeGranularity.MONTH)
-        names = _grain_names([bucket, ColumnKey(leaf="city_month")])
-        assert names[ColumnKey(leaf="city_month")] == "city_month"
+        bucket = TimeTruncKey(source=FieldKey(leaf="city"), granularity=TimeGranularity.MONTH)
+        names = _grain_names([bucket, FieldKey(leaf="city_month")])
+        assert names[FieldKey(leaf="city_month")] == "city_month"
         assert len(set(names.values())) == 2
 
     async def test_same_leaf_time_keys_on_different_paths(self):
@@ -437,25 +437,25 @@ class TestSynthesizedGrainNames:
                 conn.executemany("INSERT INTO customers VALUES (?,?)", custs)
 
         models = [
-            SlayerModel(name="orders", data_source="test", sql_table="orders", columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="region", type=DataType.TEXT),
-                Column(name="created_at", type=DataType.TIMESTAMP),
-                Column(name="amount", type=DataType.DOUBLE),
-            ], joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                                cardinality=JoinCardinality.MANY_TO_ONE)]),
-            SlayerModel(name="customers", data_source="test", sql_table="customers", columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="created_at", type=DataType.TIMESTAMP),
+            SlayerDataset(name="orders", data_source="test", sql_table="orders", fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="region", datatype=DataType.TEXT),
+                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+            ], relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+                                cardinality=RelationshipCardinality.MANY_TO_ONE)]),
+            SlayerDataset(name="customers", data_source="test", sql_table="customers", fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
             ]),
         ]
-        months = [TimeDimension(dimension=n, granularity=TimeGranularity.MONTH)
+        months = [TimeDimension(field=n, granularity=TimeGranularity.MONTH)
                   for n in ("created_at", "customers.created_at")]
         q = SlayerQuery(
-            source_model="orders", dimensions=[ColumnRef(name="region")], time_dimensions=months,
-            measures=[ModelMeasure(
-                formula="avg(sum(amount, partition_by=[region, created_at, customers.created_at]),"
+            population="orders", dimensions=[FieldRef(name="region")], time_dimensions=months,
+            metrics=[DatasetMetric(
+                expression="avg(sum(amount, partition_by=[region, created_at, customers.created_at]),"
                         " partition_by=[created_at, customers.created_at])", name="m")],
         )
         async with seeded_exec_engine(dialect="sqlite", seed=seed, models=models) as (eng, _):

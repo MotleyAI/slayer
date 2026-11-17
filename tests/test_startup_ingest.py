@@ -36,9 +36,9 @@ from slayer.live_schema.ingestion import (
 from slayer.live_schema.schema_drift import (
     IdempotentIngestResult,
     IngestionError,
-    ModelAddition,
+    DatasetAddition,
     ToDeleteEntry,
-    WholeModelDelete,
+    WholeDatasetDelete,
 )
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
@@ -105,12 +105,12 @@ def _ok_result() -> IdempotentIngestResult:
 def _result_with_addition(model_name: str, data_source: str) -> IdempotentIngestResult:
     return IdempotentIngestResult(
         additions=[
-            ModelAddition(
-                model_name=model_name,
+            DatasetAddition(
+                dataset_name=model_name,
                 data_source=data_source,
                 created=True,
-                new_columns=["a", "b"],
-                new_joins=[],
+                new_fields=["a", "b"],
+                new_relationships=[],
             )
         ],
         to_delete=[],
@@ -122,8 +122,8 @@ def _result_with_drift(data_source: str) -> IdempotentIngestResult:
     return IdempotentIngestResult(
         additions=[],
         to_delete=[
-            WholeModelDelete(
-                model_name="dropped_table",
+            WholeDatasetDelete(
+                dataset_name="dropped_table",
                 data_source=data_source,
                 reasons=[],
             )
@@ -138,7 +138,7 @@ def _result_with_per_table_errors(data_source: str) -> IdempotentIngestResult:
         to_delete=[],
         errors=[
             IngestionError(
-                model_name="widgets",
+                dataset_name="widgets",
                 data_source=data_source,
                 error="Connection timed out",
             )
@@ -343,7 +343,7 @@ class TestOrchestrator:
 
         assert len(summary.drift_pending) == 2
         pending: list[ToDeleteEntry] = summary.drift_pending
-        names = {entry.model_name for entry in pending}
+        names = {entry.dataset_name for entry in pending}
         assert names == {"dropped_table"}
         sources = {entry.data_source for entry in summary.drift_pending}
         assert sources == {"a", "b"}

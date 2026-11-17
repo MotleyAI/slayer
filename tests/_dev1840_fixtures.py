@@ -85,14 +85,14 @@ from typing import AsyncIterator, List, Optional
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality, TimeGranularity
+from slayer.core.enums import DataType, RelationshipCardinality, TimeGranularity
 from slayer.core.models import (
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.sqlite_conn import transaction
@@ -108,143 +108,143 @@ from tests._engine_helpers import _engine_generate
 # --------------------------------------------------------------------------- #
 # Models.
 # --------------------------------------------------------------------------- #
-def regions_model() -> SlayerModel:
-    return SlayerModel(
+def regions_model() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="pop", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="pop", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def plans_model(*, strong: bool = True) -> SlayerModel:
+def plans_model(*, strong: bool = True) -> SlayerDataset:
     # `strong` puts a PK on the join-target column: provably m:1 vs unproven.
-    return SlayerModel(
+    return SlayerDataset(
         name="plans", data_source="test", sql_table="plans",
-        columns=[
-            Column(name="code", type=DataType.TEXT, primary_key=strong),
-            Column(name="level", type=DataType.TEXT),
-            Column(name="fee", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="code", datatype=DataType.TEXT, primary_key=strong),
+            DatasetField(name="level", datatype=DataType.TEXT),
+            DatasetField(name="fee", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def stores_model() -> SlayerModel:
-    return SlayerModel(
+def stores_model() -> SlayerDataset:
+    return SlayerDataset(
         name="stores", data_source="test", sql_table="stores",
-        columns=[
-            Column(name="co", type=DataType.TEXT, primary_key=True),
-            Column(name="no", type=DataType.INT, primary_key=True),
-            Column(name="city", type=DataType.TEXT),
-            Column(name="rent", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="co", datatype=DataType.TEXT, primary_key=True),
+            DatasetField(name="no", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="city", datatype=DataType.TEXT),
+            DatasetField(name="rent", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def customers_model(*, declare_reverse: bool = False) -> SlayerModel:
+def customers_model(*, declare_reverse: bool = False) -> SlayerDataset:
     """``declare_reverse=True``: customers OWNS the orders edge (1:N) and the
     ``last_status`` Mode-A probe; orders then declares no customers edge — one
     symmetric edge either way (DEV-1853)."""
     columns = [
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="region_id", type=DataType.INT),
-        Column(name="plan_code", type=DataType.TEXT),
-        Column(name="tier", type=DataType.TEXT),
-        Column(name="spend", type=DataType.DOUBLE),
-        Column(name="signup_at", type=DataType.TIMESTAMP),
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="region_id", datatype=DataType.INT),
+        DatasetField(name="plan_code", datatype=DataType.TEXT),
+        DatasetField(name="tier", datatype=DataType.TEXT),
+        DatasetField(name="spend", datatype=DataType.DOUBLE),
+        DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
     ]
     joins = [
-        ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
-        ModelJoin(target_model="plans", join_pairs=[["plan_code", "code"]]),
+        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
+        DatasetRelationship(to="plans", join_pairs=[["plan_code", "code"]]),
     ]
     if declare_reverse:
-        joins.append(ModelJoin(
-            target_model="orders", join_pairs=[["id", "customer_id"]],
-            cardinality=JoinCardinality.ONE_TO_MANY,
+        joins.append(DatasetRelationship(
+            to="orders", join_pairs=[["id", "customer_id"]],
+            cardinality=RelationshipCardinality.ONE_TO_MANY,
         ))
         # Derived over the declared 1:N hop — classification-by-deps probe.
-        columns.append(Column(
-            name="last_status", type=DataType.TEXT, sql="orders.status",
+        columns.append(DatasetField(
+            name="last_status", datatype=DataType.TEXT, sql="orders.status",
         ))
-    return SlayerModel(
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=columns, joins=joins,
+        fields=columns, relationships=joins,
     )
 
 
-def orders_model(*, customers_edge: bool = True) -> SlayerModel:
+def orders_model(*, customers_edge: bool = True) -> SlayerDataset:
     joins = [
-        ModelJoin(target_model="stores",
+        DatasetRelationship(to="stores",
                   join_pairs=[["store_co", "co"], ["store_no", "no"]]),
     ]
     if customers_edge:
-        joins.insert(0, ModelJoin(
-            target_model="customers", join_pairs=[["customer_id", "id"]],
+        joins.insert(0, DatasetRelationship(
+            to="customers", join_pairs=[["customer_id", "id"]],
         ))
-    return SlayerModel(
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="channel", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="store_co", type=DataType.TEXT),
-            Column(name="store_no", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="channel", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="store_co", datatype=DataType.TEXT),
+            DatasetField(name="store_no", datatype=DataType.INT),
             # Host-declared, target-reading: expanded-deps probe.
-            Column(name="cust_tier", type=DataType.TEXT, sql="customers.tier"),
+            DatasetField(name="cust_tier", datatype=DataType.TEXT, sql="customers.tier"),
         ],
-        joins=joins,
+        relationships=joins,
     )
 
 
-def agents_model() -> SlayerModel:
-    return SlayerModel(
+def agents_model() -> SlayerDataset:
+    return SlayerDataset(
         name="agents", data_source="test", sql_table="agents",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="score", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="score", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def reviews_model() -> SlayerModel:
-    return SlayerModel(
+def reviews_model() -> SlayerDataset:
+    return SlayerDataset(
         name="reviews", data_source="test", sql_table="reviews",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="stars", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="stars", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def tickets_model() -> SlayerModel:
+def tickets_model() -> SlayerDataset:
     # TWO unnamed parallel edges to agents: any hop across the pair fails closed.
-    return SlayerModel(
+    return SlayerDataset(
         name="tickets", data_source="test", sql_table="tickets",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="opened_by", type=DataType.INT),
-            Column(name="closed_by", type=DataType.INT),
-            Column(name="review_id", type=DataType.INT),
-            Column(name="priority", type=DataType.TEXT),
-            Column(name="effort", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="opened_by", datatype=DataType.INT),
+            DatasetField(name="closed_by", datatype=DataType.INT),
+            DatasetField(name="review_id", datatype=DataType.INT),
+            DatasetField(name="priority", datatype=DataType.TEXT),
+            DatasetField(name="effort", datatype=DataType.DOUBLE),
         ],
-        joins=[
-            ModelJoin(target_model="agents", join_pairs=[["opened_by", "id"]]),
-            ModelJoin(target_model="agents", join_pairs=[["closed_by", "id"]]),
-            ModelJoin(target_model="reviews", join_pairs=[["review_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="agents", join_pairs=[["opened_by", "id"]]),
+            DatasetRelationship(to="agents", join_pairs=[["closed_by", "id"]]),
+            DatasetRelationship(to="reviews", join_pairs=[["review_id", "id"]]),
         ],
     )
 
 
 def dev1840_models(*, declare_reverse: bool = False,
-                   strong_plans: bool = True) -> List[SlayerModel]:
+                   strong_plans: bool = True) -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
     return [
         orders_model(customers_edge=not declare_reverse),
@@ -255,7 +255,7 @@ def dev1840_models(*, declare_reverse: bool = False,
     ]
 
 
-def ambiguity_models() -> List[SlayerModel]:
+def ambiguity_models() -> List[SlayerDataset]:
     return [tickets_model(), agents_model(), reviews_model()]
 
 
@@ -272,23 +272,23 @@ def tq(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def bundle(models: Optional[List[SlayerModel]] = None) -> ResolvedSourceBundle:
+def bundle(models: Optional[List[SlayerDataset]] = None) -> ResolvedSourceBundle:
     models = models if models is not None else dev1840_models()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=models[1:],
+        population=models[0], referenced_datasets=models[1:],
     )
 
 
 def signup_month_td() -> List[TimeDimension]:
     return [TimeDimension(
-        dimension="customers.signup_at",
+        field="customers.signup_at",
         granularity=TimeGranularity.MONTH,
     )]
 
 
 async def gen(query: SlayerQuery, *, dialect: str = "duckdb",
-              models: Optional[List[SlayerModel]] = None) -> str:
+              models: Optional[List[SlayerDataset]] = None) -> str:
     models = models if models is not None else dev1840_models()
     return await _engine_generate(
         query=query, model=models[0], extra_models=models[1:],
@@ -443,7 +443,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 
 async def make_exec_engine(
-    request, *, models: Optional[List[SlayerModel]] = None,
+    request, *, models: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """Body for a ``params=["sqlite", "duckdb"]`` fixture; each test module
     wraps this in ``@pytest.fixture`` so the fixture name lives where used."""
@@ -479,7 +479,7 @@ __all__ = [
     "SPEND_APP_1Y_BY_SIGNUP_MONTH", "SPEND_NEW_1Y_BY_SIGNUP_MONTH",
     "SPEND_APP_FIRST_BY_TIER",
     "SPEND_APP_LAST_BY_TIER", "SPEND_BAND_170",
-    "SlayerQuery", "ModelMeasure", "ColumnRef", "TimeDimension",
-    "TimeGranularity", "ModelJoin", "Column", "SlayerModel", "DataType",
-    "JoinCardinality",
+    "SlayerQuery", "DatasetMetric", "FieldRef", "TimeDimension",
+    "TimeGranularity", "DatasetRelationship", "DatasetField", "SlayerDataset", "DataType",
+    "RelationshipCardinality",
 ]

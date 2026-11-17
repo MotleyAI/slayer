@@ -91,4 +91,4 @@ class TestAdvertisedSchema:
 
     def test_raw_formula_still_accepted_on_input(self) -> None:
         query = SlayerQuery.model_validate(by_region([{"column": "sum(amount)", "raw_formula": "sum(amount)"}]))
-        assert (query.order or [])[0].raw_formula == "sum(amount)"
+        assert (query.order or [])[0].raw_expression == "sum(amount)"

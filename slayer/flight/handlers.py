@@ -24,7 +24,7 @@ from google.protobuf.any_pb2 import Any as PbAny
 from slayer import usage_reporting
 from slayer.core.enums import DataType
 from slayer.core.format import encode_text
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.flight import _flight_sql_pb2 as fsql_pb
@@ -197,16 +197,16 @@ class FlightHandlers:
     # ----- helpers ----------------------------------------------------------
 
     def _build_catalog(self) -> FlightCatalog:
-        models_by_ds = self._fetch_models_by_datasource()
-        return build_catalog(models_by_datasource=models_by_ds)
+        models_by_ds = self._fetch_datasets_by_datasource()
+        return build_catalog(datasets_by_datasource=models_by_ds)
 
-    def _fetch_models_by_datasource(self) -> dict[str, list[SlayerModel]]:
-        async def fetch() -> dict[str, list[SlayerModel]]:
+    def _fetch_datasets_by_datasource(self) -> dict[str, list[SlayerDataset]]:
+        async def fetch() -> dict[str, list[SlayerDataset]]:
             failures = DocumentLoadFailures()
-            out: dict[str, list[SlayerModel]] = {}
+            out: dict[str, list[SlayerDataset]] = {}
             storage = self._engine.storage  # the engine's view refines stored models through its clients
             for ds in await storage.list_datasources():
-                if models := failures.skip(await storage.load_models(data_source=ds)):
+                if models := failures.skip(await storage.load_datasets(data_source=ds)):
                     out[ds] = models
             return out
 
@@ -397,7 +397,7 @@ class FlightHandlers:
         usage_reporting.observe_executed(response)
         schema = self._build_schema(result)
         rows = [
-            self._rewrite_row(row, result.column_name_mapping, result.projection_types)
+            self._rewrite_row(row, result.field_name_mapping, result.projection_types)
             for row in response.data
         ]
         return pa.Table.from_pylist(rows, schema=schema)
@@ -407,7 +407,7 @@ class FlightHandlers:
         """Build a pa.Schema in projection order from catalog-declared types."""
         fields = []
         for (_, projected_name), dt in zip(
-            result.column_name_mapping, result.projection_types,
+            result.field_name_mapping, result.projection_types,
         ):
             arrow_type = datatype_to_arrow(dt) if dt is not None else pa.utf8()
             fields.append(pa.field(projected_name, arrow_type))

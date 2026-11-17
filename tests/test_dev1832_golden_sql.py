@@ -22,7 +22,7 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1832_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 ALLOWED_DELTAS: dict[str, str] = {}
 
-_MONTH_TD = [TimeDimension(dimension="ordered_at",
+_MONTH_TD = [TimeDimension(field="ordered_at",
                            granularity=TimeGranularity.MONTH)]
 
 
@@ -107,7 +107,7 @@ async def _generate_one(case, dialect: str):
         kw = dict(case["kw"])
         if case["mode"] is not None:
             kw["to_many_handling"] = case["mode"]
-        query = SlayerQuery(source_model=case["source"], **kw)
+        query = SlayerQuery(population=case["source"], **kw)
         root = next(m for m in models if m.name == case["source"])
         return await _engine_generate(
             query=query, model=root,

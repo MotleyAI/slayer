@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from slayer.memories.models import Memory
 from slayer.storage.base import StorageBackend
@@ -32,35 +32,35 @@ def _storage(*, backend: str, base: Path) -> StorageBackend:
 def _ordered_query() -> SlayerQuery:
     """Leaves every field added by this release unset: ``OrderItem.nulls``, ``TimeDimension.name``."""
     return SlayerQuery.model_validate({
-        "source_model": "orders",
-        "measures": [{"formula": "sum(amount)", "name": "rev"}],
+        "population": "orders",
+        "metrics": [{"formula": "sum(amount)", "name": "rev"}],
         "dimensions": ["status"],
-        "time_dimensions": [TimeDimension(dimension="ordered_at", granularity="month")],
-        "order": [OrderItem.model_validate({"column": {"name": "status"}, "direction": "desc"})],
+        "time_dimensions": [TimeDimension(field="ordered_at", granularity="month")],
+        "order": [OrderItem.model_validate({"field": {"name": "status"}, "direction": "desc"})],
     })
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source=DS,
-        columns=[
-            Column(name="order_id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="order_id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
-        measures=[ModelMeasure(name="revenue", formula="sum(amount)")],
+        metrics=[DatasetMetric(name="revenue", expression="sum(amount)")],
     )
 
 
-def _saved_query() -> SlayerModel:
-    return SlayerModel(name="rev_by_status", data_source=DS, source_queries=[_ordered_query()])
+def _saved_query() -> SlayerDataset:
+    return SlayerDataset(name="rev_by_status", data_source=DS, source_queries=[_ordered_query()])
 
 
 async def _populate(storage: StorageBackend) -> None:
     await storage.save_datasource(DatasourceConfig(name=DS, type="sqlite", database="/nonexistent/shop.db"))
-    await storage.save_model(_orders())
-    await storage.save_model(_saved_query())
+    await storage.save_dataset(_orders())
+    await storage.save_dataset(_saved_query())
     await storage.save_memory(id="m_ordered", learning="Revenue by status.", entities=["orders"],
                               query=_ordered_query())
 
@@ -97,7 +97,7 @@ def _stored(*, backend: str, base: Path) -> dict[str, dict[str, Any]]:
         }
 
 
-_ROOT = {"SlayerModel": SlayerModel, "saved query": SlayerModel, "DatasourceConfig": DatasourceConfig,
+_ROOT = {"SlayerModel": SlayerDataset, "saved query": SlayerDataset, "DatasourceConfig": DatasourceConfig,
          "Memory": Memory}
 
 

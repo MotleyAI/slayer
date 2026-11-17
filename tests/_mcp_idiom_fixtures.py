@@ -43,7 +43,7 @@ from typing import Any, AsyncIterator, Callable
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.sqlite_conn import transaction
 
@@ -123,35 +123,35 @@ EXAMPLE_OWNERS: dict[str, tuple[str, str]] = {
 # --------------------------------------------------------------------------- #
 # Models + seed
 # --------------------------------------------------------------------------- #
-def idiom_models(*, data_source: str = "test") -> list[SlayerModel]:
+def idiom_models(*, data_source: str = "test") -> list[SlayerDataset]:
     return [
-        SlayerModel(
+        SlayerDataset(
             name="orders", sql_table="orders", data_source=data_source,
             default_time_dimension="order_date",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="order_date", type=DataType.DATE),
-                Column(name="amount", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="order_date", datatype=DataType.DATE),
+                DatasetField(name="amount", datatype=DataType.INT),
             ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="customers", sql_table="customers", data_source=data_source,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
-                Column(name="region_id", type=DataType.INT),
-                Column(name="credit", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="name", datatype=DataType.TEXT),
+                DatasetField(name="region_id", datatype=DataType.INT),
+                DatasetField(name="credit", datatype=DataType.INT),
             ],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="regions", sql_table="regions", data_source=data_source,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="name", datatype=DataType.TEXT),
             ],
         ),
     ]
@@ -220,7 +220,7 @@ def _idiom_seed(*, dialect: str, with_namesake: bool, with_last_year: bool) -> C
 
 async def make_idiom_engine(
     *, dialect: str = "duckdb", with_namesake: bool = False, with_last_year: bool = False,
-    models: list[SlayerModel] | None = None,
+    models: list[SlayerDataset] | None = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """The idiom dataset on ``sqlite`` or ``duckdb``; ``models`` replaces :func:`idiom_models`."""
     if dialect == "duckdb":
@@ -233,42 +233,42 @@ async def make_idiom_engine(
         yield engine
 
 
-def _child_models(*, data_source: str = "test") -> list[SlayerModel]:
-    def child(name: str) -> SlayerModel:
-        return SlayerModel(
+def _child_models(*, data_source: str = "test") -> list[SlayerDataset]:
+    def child(name: str) -> SlayerDataset:
+        return SlayerDataset(
             name=name, sql_table=name, data_source=data_source,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="amount", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="amount", datatype=DataType.INT),
             ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         )
 
     return [
         child("orders"),
         child("returns"),
-        SlayerModel(
+        SlayerDataset(
             name="customers", sql_table="customers", data_source=data_source,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
-                Column(name="region_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="name", datatype=DataType.TEXT),
+                DatasetField(name="region_id", datatype=DataType.INT),
             ],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="regions", sql_table="regions", data_source=data_source,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="name", datatype=DataType.TEXT),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="events", sql_table="events", data_source=data_source,
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="kind", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="kind", datatype=DataType.TEXT),
             ],
         ),
     ]
@@ -307,15 +307,15 @@ async def make_child_engine(*, with_regionless: bool = True) -> AsyncIterator[Sl
         yield engine
 
 
-def _items_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def _items_model(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="items", sql_table="items", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="code", type=DataType.TEXT),
-            Column(name="flag", type=DataType.BOOLEAN),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="tags", type=DataType.ARRAY, element_type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="code", datatype=DataType.TEXT),
+            DatasetField(name="flag", datatype=DataType.BOOLEAN),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.TEXT),
         ],
     )
 

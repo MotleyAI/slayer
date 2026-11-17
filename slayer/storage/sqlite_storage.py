@@ -17,7 +17,7 @@ from typing import Any
 from sqlglot import exp
 
 from slayer.core.errors import StoredDocumentLoadError
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.base import (
@@ -194,12 +194,12 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             counter = f.read(28)[24:28]
         return f"{counter.hex()}:{stat_key(self.db_path)}"
 
-    def _save_model_sync(self, model: SlayerModel) -> None:
-        data = json.dumps(without_none(model.model_dump(mode="json")))
+    def _save_dataset_sync(self, dataset: SlayerDataset) -> None:
+        data = json.dumps(without_none(dataset.model_dump(mode="json")))
         with transaction(self.db_path) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO models (data_source, name, data) VALUES (?, ?, ?)",
-                (model.data_source, model.name, data),
+                (dataset.data_source, dataset.name, data),
             )
 
     def _list_all_identities_sync(self) -> list[tuple[str, str]]:
@@ -209,7 +209,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             ).fetchall()
         return [(r[0], r[1]) for r in rows]
 
-    def _get_model_sync(self, data_source: str, name: str) -> str | None:
+    def _get_dataset_sync(self, data_source: str, name: str) -> str | None:
         with transaction(self.db_path) as conn:
             row = conn.execute(
                 "SELECT data FROM models WHERE data_source = ? AND name = ?",
@@ -217,7 +217,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
             ).fetchone()
         return row[0] if row else None
 
-    def _delete_model_sync(self, data_source: str, name: str) -> bool:
+    def _delete_dataset_sync(self, data_source: str, name: str) -> bool:
         with transaction(self.db_path) as conn:
             cursor = conn.execute(
                 "DELETE FROM models WHERE data_source = ? AND name = ?",
@@ -278,36 +278,36 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     # --- Async interface ---
 
-    async def _save_model_impl(self, model: SlayerModel) -> None:
-        await asyncio.to_thread(self._save_model_sync, model)
+    async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
+        await asyncio.to_thread(self._save_dataset_sync, dataset)
 
-    async def _list_all_model_identities(self) -> list[tuple[str, str]]:
+    async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
         return await asyncio.to_thread(self._list_all_identities_sync)
 
-    async def get_model(
+    async def get_dataset(
         self,
         name: str,
         data_source: str | None = None,
-    ) -> SlayerModel | None:
+    ) -> SlayerDataset | None:
         target = await self._resolve_target_or_none(name, data_source=data_source)
         if target is None:
             return None
         data_source, name = target
-        raw = await asyncio.to_thread(self._get_model_sync, data_source, name)
+        raw = await asyncio.to_thread(self._get_dataset_sync, data_source, name)
         if not raw:
             return None
-        with stored_document_boundary(kind="model", name=name, data_source=data_source):
+        with stored_document_boundary(kind="dataset", name=name, data_source=data_source):
             return await self._migrate_and_refine_on_load(
                 name=name, data=json.loads(raw), data_source=data_source,
             )
 
-    async def _load_raw_model_dict(
+    async def _load_raw_dataset_dict(
         self, *, name: str, data_source: str,
     ) -> dict | None:
         """Read the stored JSON verbatim (no migration / no
         validation) for sibling-hop resolution during the legacy-``__``
         rewrite. Returns ``None`` when the row is absent, corrupt or not a mapping."""
-        raw = await asyncio.to_thread(self._get_model_sync, data_source, name)
+        raw = await asyncio.to_thread(self._get_dataset_sync, data_source, name)
         if not raw:
             return None
         try:
@@ -333,7 +333,7 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
         with transaction(self.db_path) as conn:
             conn.execute(sql, params)
 
-    async def _write_raw_model_dict(self, *, name: str, data_source: str, data: dict) -> None:
+    async def _write_raw_dataset_dict(self, *, name: str, data_source: str, data: dict) -> None:
         await asyncio.to_thread(
             self._update_sync, "UPDATE models SET data = ? WHERE data_source = ? AND name = ?",
             (json.dumps(data), data_source, name),
@@ -352,31 +352,31 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
     async def _write_raw_memory_dict(self, *, memory_id: str, data: dict) -> None:
         await asyncio.to_thread(self._update_sync, "UPDATE memories SET data = ? WHERE id = ?", (json.dumps(data), memory_id))
 
-    async def _delete_model_row(
+    async def _delete_dataset_row(
         self, *, data_source: str, name: str,
     ) -> bool:
-        return await asyncio.to_thread(self._delete_model_sync, data_source, name)
+        return await asyncio.to_thread(self._delete_dataset_sync, data_source, name)
 
-    def _update_column_sampled_sync(
-        self, *, data_source: str, model_name: str,
-        column_name: str, sampled: str | None,
+    def _update_field_sampled_sync(
+        self, *, data_source: str, dataset_name: str,
+        field_name: str, sampled: str | None,
         sampled_values: list[str] | None,
         distinct_count: int | None,
     ) -> None:
         with transaction(self.db_path) as conn:
             row = conn.execute(
                 "SELECT data FROM models WHERE data_source = ? AND name = ?",
-                (data_source, model_name),
+                (data_source, dataset_name),
             ).fetchone()
             if not row:
                 raise ValueError(
-                    f"update_column_sampled: model {model_name!r} in datasource "
+                    f"update_field_sampled: model {dataset_name!r} in datasource "
                     f"{data_source!r} not found."
                 )
             data = json.loads(row[0])
             cols = data.get("columns") or []
             for col in cols:
-                if isinstance(col, dict) and col.get("name") == column_name:
+                if isinstance(col, dict) and col.get("name") == field_name:
                     _write_sample_fields(
                         col,
                         sampled=sampled,
@@ -386,31 +386,31 @@ class SQLiteStorage(SidecarEmbeddingsMixin, StorageBackend):
                     break
             else:
                 raise ValueError(
-                    f"update_column_sampled: column {column_name!r} not found "
-                    f"on model {model_name!r} in datasource {data_source!r}."
+                    f"update_field_sampled: column {field_name!r} not found "
+                    f"on model {dataset_name!r} in datasource {data_source!r}."
                 )
             conn.execute(
                 "UPDATE models SET data = ? WHERE data_source = ? AND name = ?",
-                (json.dumps(data), data_source, model_name),
+                (json.dumps(data), data_source, dataset_name),
             )
 
-    async def update_column_sampled(
+    async def update_field_sampled(
         self,
         *,
         data_source: str,
-        model_name: str,
-        column_name: str,
+        dataset_name: str,
+        field_name: str,
         sampled: str | None,
         sampled_values: list[str] | None,
         distinct_count: int | None,
     ) -> None:
         await asyncio.to_thread(
-            self._update_column_sampled_sync,
-            data_source=data_source, model_name=model_name,
-            column_name=column_name, sampled=sampled,
+            self._update_field_sampled_sync,
+            data_source=data_source, dataset_name=dataset_name,
+            field_name=field_name, sampled=sampled,
             sampled_values=sampled_values, distinct_count=distinct_count,
         )
-        self._forget_raw(data_source=data_source, name=model_name)
+        self._forget_raw(data_source=data_source, name=dataset_name)
 
     async def _save_datasource_impl(self, datasource: DatasourceConfig) -> None:
         await asyncio.to_thread(self._save_datasource_sync, datasource)

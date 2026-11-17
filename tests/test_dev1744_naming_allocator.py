@@ -25,22 +25,22 @@ import tests.test_parity_guards as guard_module
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.keys import (
     AggregateKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     StarKey,
 )
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.engine.compile.projection import _canonical_name
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine import bind_inputs
-from slayer.engine.bind_inputs import _canonical_alias_for_formula
+from slayer.engine.bind_inputs import _canonical_alias_for_expression
 from slayer.sql import generator as generator_module
 from slayer.sql import naming
 from slayer.sql import stage_wrapper as sw_module
@@ -92,46 +92,46 @@ async def _build_engine(*, base_dir: str, dialect: str = "sqlite") -> SlayerQuer
         DatasourceConfig(name="prod", type=dialect, database=db_path)
     )
     # Unvalidated save: a grandfathered case collision a validated save would refuse.
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region_id", type=DataType.INT),
-                Column(name="revenue", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="region_id", datatype=DataType.INT),
+                DatasetField(name="revenue", datatype=DataType.DOUBLE),
                 # Case-only pair over two DIFFERENT physical columns.
-                Column(name="Rev", sql="revx", type=DataType.DOUBLE),
-                Column(name="rev", sql="revy", type=DataType.DOUBLE),
+                DatasetField(name="Rev", sql="revx", datatype=DataType.DOUBLE),
+                DatasetField(name="rev", sql="revy", datatype=DataType.DOUBLE),
             ],
         ),
         _validate=False,
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="prod",
             default_time_dimension="created_at",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="created_at", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
                 # __-name carve-out + join-crossing filter => filtered-local
                 # isolation (its own _cm_ CTE).
-                Column(
+                DatasetField(
                     name="customers__revenue",
                     sql="amount",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                     filter="customers.region_id = 1",
                 ),
             ],
-            joins=[
-                ModelJoin(
-                    target_model="customers", join_pairs=[["customer_id", "id"]],
+            relationships=[
+                DatasetRelationship(
+                    to="customers", join_pairs=[["customer_id", "id"]],
                 ),
             ],
         )
@@ -161,7 +161,7 @@ def _cte_names(sql: str, *, dialect: str = "sqlite") -> List[str]:
 async def _isolated_then_combined(
     engine: SlayerQueryEngine,
     *,
-    measures: List[ModelMeasure],
+    measures: List[DatasetMetric],
     dimension: str = "status",
 ) -> None:
     """Self-calibrating: each measure alone, then together must reproduce every isolated value."""
@@ -169,23 +169,23 @@ async def _isolated_then_combined(
     for m in measures:
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name=dimension)],
-                measures=[m],
+                population="orders",
+                dimensions=[FieldRef(name=dimension)],
+                metrics=[m],
             )
         )
         assert len(resp.data) == 1, resp.data
         # The single non-dimension key is this measure's value.
         row = resp.data[0]
         keys = [k for k in row if not k.endswith(f".{dimension}")]
-        assert len(keys) == 1, (m.formula, list(row))
+        assert len(keys) == 1, (m.expression, list(row))
         isolated[keys[0]] = row[keys[0]]
 
     resp = await engine.execute(
         SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name=dimension)],
-            measures=measures,
+            population="orders",
+            dimensions=[FieldRef(name=dimension)],
+            metrics=measures,
         )
     )
     assert len(resp.data) == 1, resp.data
@@ -212,8 +212,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             measures=[
-                ModelMeasure(formula="sum(customers.Rev)", name="upper"),
-                ModelMeasure(formula="sum(customers.rev)", name="lower"),
+                DatasetMetric(expression="sum(customers.Rev)", name="upper"),
+                DatasetMetric(expression="sum(customers.rev)", name="lower"),
             ],
         )
 
@@ -222,11 +222,11 @@ class TestCrossModelCteNameAllocation:
     ) -> None:
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="sum(customers.Rev)", name="upper"),
-                    ModelMeasure(formula="sum(customers.rev)", name="lower"),
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[
+                    DatasetMetric(expression="sum(customers.Rev)", name="upper"),
+                    DatasetMetric(expression="sum(customers.rev)", name="lower"),
                 ],
             ),
             dry_run=True,
@@ -249,8 +249,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             measures=[
-                ModelMeasure(formula="sum(customers.revenue)", name="xmodel"),
-                ModelMeasure(formula="sum(customers__revenue)", name="local"),
+                DatasetMetric(expression="sum(customers.revenue)", name="xmodel"),
+                DatasetMetric(expression="sum(customers__revenue)", name="local"),
             ],
         )
 
@@ -260,8 +260,8 @@ class TestCrossModelCteNameAllocation:
         await _isolated_then_combined(
             engine,
             measures=[
-                ModelMeasure(formula="sum(amount)", name="unfiltered"),
-                ModelMeasure(formula="sum(customers__revenue)", name="filtered"),
+                DatasetMetric(expression="sum(amount)", name="unfiltered"),
+                DatasetMetric(expression="sum(customers__revenue)", name="filtered"),
             ],
         )
 
@@ -270,11 +270,11 @@ class TestCrossModelCteNameAllocation:
     ) -> None:
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="sum(customers.revenue)"),
-                    ModelMeasure(formula="sum(customers.Rev)"),
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[
+                    DatasetMetric(expression="sum(customers.revenue)"),
+                    DatasetMetric(expression="sum(customers.Rev)"),
                 ],
             )
         )
@@ -291,20 +291,20 @@ class TestCrossModelCteNameAllocation:
         own canonical alias — a stale value emits the alias twice in one SELECT."""
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
+                population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension="created_at",
+                        field="created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                measures=[
+                metrics=[
                     # Hidden CMA feeding a transform.
-                    ModelMeasure(
-                        formula="cumsum(sum(customers.revenue))", name="run",
+                    DatasetMetric(
+                        expression="cumsum(sum(customers.revenue))", name="run",
                     ),
                     # A second cross-model aggregate, so a leaked alias differs.
-                    ModelMeasure(formula="sum(customers.Rev)", name="rv"),
+                    DatasetMetric(expression="sum(customers.Rev)", name="rv"),
                 ],
                 to_many_handling="broadcast",
             ),
@@ -332,11 +332,11 @@ class TestCrossModelCteNameAllocation:
     async def test_same_key_slots_still_share_one_cte(self, engine) -> None:
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="sum(customers.revenue)", name="a"),
-                    ModelMeasure(formula="sum(customers.revenue)", name="b"),
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[
+                    DatasetMetric(expression="sum(customers.revenue)", name="a"),
+                    DatasetMetric(expression="sum(customers.revenue)", name="b"),
                 ],
             ),
             dry_run=True,
@@ -349,11 +349,11 @@ class TestCrossModelCteNameAllocation:
     ) -> None:
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="sum(customers.revenue)", name="a"),
-                    ModelMeasure(formula="sum(customers.revenue)", name="b"),
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[
+                    DatasetMetric(expression="sum(customers.revenue)", name="a"),
+                    DatasetMetric(expression="sum(customers.revenue)", name="b"),
                 ],
             )
         )
@@ -419,16 +419,16 @@ class TestAllocatorRouting:
         )
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
+                population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension="created_at",
+                        field="created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                measures=[
-                    ModelMeasure(formula="sum(amount, window='90d')", name="Wm"),
-                    ModelMeasure(formula="sum(amount, window='30d')", name="wm2"),
+                metrics=[
+                    DatasetMetric(expression="sum(amount, window='90d')", name="Wm"),
+                    DatasetMetric(expression="sum(amount, window='30d')", name="wm2"),
                 ],
             ),
             dry_run=True,
@@ -509,18 +509,18 @@ async def _hostile_engine(*, column: str, base_dir: str) -> SlayerQueryEngine:
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="prod",
             default_time_dimension="created_at",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="created_at", type=DataType.TIMESTAMP),
-                Column(name=column, sql="hostile", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name=column, sql="hostile", datatype=DataType.DOUBLE),
             ],
         )
     )
@@ -540,11 +540,11 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         )
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula=f"sum({column})", name="hostile_sum"),
-                    ModelMeasure(formula="sum(amount)", name="amt"),
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[
+                    DatasetMetric(expression=f"sum({column})", name="hostile_sum"),
+                    DatasetMetric(expression="sum(amount)", name="amt"),
                 ],
             )
         )
@@ -565,9 +565,9 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         )
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name=column)],
-                measures=[ModelMeasure(formula="sum(amount)", name="amt")],
+                population="orders",
+                dimensions=[FieldRef(name=column)],
+                metrics=[DatasetMetric(expression="sum(amount)", name="amt")],
             )
         )
         assert {r[f"orders.{column}"] for r in resp.data} == {1.0, 2.0, 3.0}
@@ -582,9 +582,9 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         )
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="last(amount)", name="lastamt")],
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[DatasetMetric(expression="last(amount)", name="lastamt")],
             )
         )
         by_status = {r["orders.status"]: r["orders.lastamt"] for r in resp.data}
@@ -600,15 +600,15 @@ class TestInternalNamesDoNotCollideWithUserColumns:
         )
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
+                population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension="created_at",
+                        field="created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                measures=[
-                    ModelMeasure(formula="sum(amount, window='90d')", name="w"),
+                metrics=[
+                    DatasetMetric(expression="sum(amount, window='90d')", name="w"),
                 ],
             )
         )
@@ -666,30 +666,30 @@ _MATRIX: List[tuple] = [
     # (case, key, A, B, C, D)
     (
         "columnkey_local",
-        _key(ColumnKey(leaf="revenue"), "sum"),
+        _key(FieldKey(leaf="revenue"), "sum"),
         "orders.revenue_sum", "revenue_sum", "revenue_sum", "revenue_sum",
     ),
     (
         "columnkey_path",
-        _key(ColumnKey(path=("customers",), leaf="revenue"), "sum"),
+        _key(FieldKey(path=("customers",), leaf="revenue"), "sum"),
         "orders.customers.revenue_sum", "revenue_sum", "revenue_sum",
         "customers.revenue_sum",
     ),
     (
         "columnkey_two_hop",
-        _key(ColumnKey(path=("customers", "regions"), leaf="pop"), "max"),
+        _key(FieldKey(path=("customers", "regions"), leaf="pop"), "max"),
         "orders.customers.regions.pop_max", "pop_max", "pop_max",
         "customers.regions.pop_max",
     ),
     (
         "columnsqlkey_local",
-        _key(ColumnSqlKey(model="orders", column_name="net"), "sum"),
+        _key(FieldSqlKey(dataset="orders", field_name="net"), "sum"),
         "orders.net_sum", "net_sum", "net_sum", "net_sum",
     ),
     (
         "columnsqlkey_path",
         _key(
-            ColumnSqlKey(path=("customers",), model="customers", column_name="net"),
+            FieldSqlKey(path=("customers",), dataset="customers", field_name="net"),
             "sum",
         ),
         "orders.customers.net_sum", "net_sum", "net_sum", "customers.net_sum",
@@ -706,21 +706,21 @@ _MATRIX: List[tuple] = [
     ),
     (
         "kwargs",
-        _key(ColumnKey(leaf="revenue"), "percentile", kwargs=(("p", Decimal("0.5")),)),
+        _key(FieldKey(leaf="revenue"), "percentile", kwargs=(("p", Decimal("0.5")),)),
         "orders.revenue_percentile_p_0_5", "revenue_percentile_p_0_5",
         "revenue_percentile_p_0_5", "revenue_percentile_p_0_5",
     ),
     (
         "positional_args",
-        _key(ColumnKey(leaf="revenue"), "last", args=(ColumnKey(leaf="created_at"),)),
+        _key(FieldKey(leaf="revenue"), "last", args=(FieldKey(leaf="created_at"),)),
         "orders.revenue_last_created_at", "revenue_last_created_at",
         "revenue_last_created_at", "revenue_last_created_at",
     ),
     (
         "args_and_kwargs",
         _key(
-            ColumnKey(leaf="revenue"), "wavg",
-            args=(Decimal(2),), kwargs=(("w", ColumnKey(leaf="qty")),),
+            FieldKey(leaf="revenue"), "wavg",
+            args=(Decimal(2),), kwargs=(("w", FieldKey(leaf="qty")),),
         ),
         "orders.revenue_wavg_2_w_qty", "revenue_wavg_2_w_qty",
         "revenue_wavg_2_w_qty", "revenue_wavg_2_w_qty",
@@ -730,7 +730,7 @@ _MATRIX: List[tuple] = [
 # Kept out of the matrix because profile D returns None here: a re-aggregation
 # source derives no leaf.
 _MISSING_LEAF_KEY = AggregateKey(
-    source=AggregateKey(source=ColumnKey(leaf="x"), agg="sum"), agg="sum",
+    source=AggregateKey(source=FieldKey(leaf="x"), agg="sum"), agg="sum",
 )
 
 
@@ -746,7 +746,7 @@ class TestCanonicalAggregateAlias:
         self, case, key, expected_a, expected_b, expected_c, expected_d,
     ) -> None:
         assert naming.canonical_aggregate_alias(
-            key, profile="cross_model_cte", source_relation="orders",
+            key, profile="cross_dataset_cte", source_relation="orders",
         ) == expected_a
         assert naming.canonical_aggregate_alias(
             key, profile="cte_schema",
@@ -755,13 +755,13 @@ class TestCanonicalAggregateAlias:
             key, profile="declared_name",
         ) == expected_c
         assert naming.canonical_aggregate_alias(
-            key, profile="stage_formula",
+            key, profile="stage_expression",
         ) == expected_d
 
     def test_missing_leaf_edge_keeps_each_profiles_escape_hatch(self) -> None:
         """The one edge where the four disagree: star form / ``_agg_`` / None."""
         assert naming.canonical_aggregate_alias(
-            _MISSING_LEAF_KEY, profile="cross_model_cte",
+            _MISSING_LEAF_KEY, profile="cross_dataset_cte",
             source_relation="orders",
         ) == "orders._sum"
         assert naming.canonical_aggregate_alias(
@@ -771,27 +771,27 @@ class TestCanonicalAggregateAlias:
             _MISSING_LEAF_KEY, profile="declared_name",
         ) == "_agg_sum"
         assert naming.canonical_aggregate_alias(
-            _MISSING_LEAF_KEY, profile="stage_formula",
+            _MISSING_LEAF_KEY, profile="stage_expression",
         ) is None
 
     def test_source_relation_is_required_by_the_cross_model_profile(
         self,
     ) -> None:
         """Profile validation makes impossible combinations unrepresentable."""
-        key = _key(ColumnKey(leaf="revenue"), "sum")
+        key = _key(FieldKey(leaf="revenue"), "sum")
         with pytest.raises(ValueError):
-            naming.canonical_aggregate_alias(key, profile="cross_model_cte")
+            naming.canonical_aggregate_alias(key, profile="cross_dataset_cte")
 
     def test_source_relation_is_rejected_by_the_other_profiles(self) -> None:
-        key = _key(ColumnKey(leaf="revenue"), "sum")
-        for profile in ("cte_schema", "declared_name", "stage_formula"):
+        key = _key(FieldKey(leaf="revenue"), "sum")
+        for profile in ("cte_schema", "declared_name", "stage_expression"):
             with pytest.raises(ValueError):
                 naming.canonical_aggregate_alias(
                     key, profile=profile, source_relation="orders",
                 )
 
     def test_unknown_profile_is_rejected(self) -> None:
-        key = _key(ColumnKey(leaf="revenue"), "sum")
+        key = _key(FieldKey(leaf="revenue"), "sum")
         with pytest.raises(ValueError):
             naming.canonical_aggregate_alias(key, profile="nonsense")
 
@@ -809,11 +809,11 @@ class TestProductionCallersDelegate:
     ) -> None:
 
         gen = SQLGenerator(dialect="postgres")
-        assert gen._canonical_cross_model_alias(
+        assert gen._canonical_cross_dataset_alias(
             source_relation="orders", key=key,
         ) == expected_a
         assert _canonical_name(key) == expected_c
-        assert _canonical_alias_for_formula(
+        assert _canonical_alias_for_expression(
             "IGNORED_TEXT", bound=BoundExpr(value_key=key),
         ) == expected_d
 
@@ -821,7 +821,7 @@ class TestProductionCallersDelegate:
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Spy on the naming module and assert each caller forwards with its profile."""
-        key = _key(ColumnKey(path=("customers",), leaf="revenue"), "sum")
+        key = _key(FieldKey(path=("customers",), leaf="revenue"), "sum")
         calls: List[dict] = []
         real = naming.canonical_aggregate_alias
 
@@ -838,19 +838,19 @@ class TestProductionCallersDelegate:
                     module, "canonical_aggregate_alias", _spy, raising=False,
                 )
 
-        SQLGenerator(dialect="postgres")._canonical_cross_model_alias(
+        SQLGenerator(dialect="postgres")._canonical_cross_dataset_alias(
             source_relation="orders", key=key,
         )
         assert calls, "the generator did not delegate to the naming module"
-        assert calls[-1].get("profile") == "cross_model_cte"
+        assert calls[-1].get("profile") == "cross_dataset_cte"
         assert calls[-1].get("source_relation") == "orders"
 
         projection._canonical_name(key)
         assert calls[-1].get("profile") == "declared_name"
 
-        bind_inputs._canonical_alias_for_formula(
+        bind_inputs._canonical_alias_for_expression(
             "IGNORED_TEXT", bound=BoundExpr(value_key=key),
         )
-        assert calls[-1].get("profile") == "stage_formula"
+        assert calls[-1].get("profile") == "stage_expression"
 
 

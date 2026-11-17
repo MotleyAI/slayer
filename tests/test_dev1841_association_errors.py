@@ -14,7 +14,7 @@ from slayer.core.errors import SlayerError
 
 from tests._dev1841_fixtures import (
     ASSOC_SPEND_BY_STATUS,
-    ModelMeasure,
+    DatasetMetric,
     TimeDimension,
     TimeGranularity,
     assoc_q,
@@ -30,12 +30,12 @@ from tests._dev1892_fixtures import (
     ASSOC_WSUM_BY_STATUS,
 )
 
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 #: Must name the association concept — a generic ranked/time-dimension rejection
 #: (which would fire before association eligibility) must NOT satisfy it.
 _COMBO = re.compile(r"associat|attribut|distinct.entity|combination", re.IGNORECASE)
 _SIGNUP_TD = [TimeDimension(
-    dimension="customers.signup_at",
+    field="customers.signup_at",
     granularity=TimeGranularity.MONTH)]
 
 
@@ -72,7 +72,7 @@ class TestUnsupportedCombinations:
         _, engine = exec_backend
         query = assoc_q(
             dimensions=["status"], time_dimensions=_SIGNUP_TD,
-            measures=[ModelMeasure(formula="last(customers.spend)", name="lastspend")])
+            measures=[DatasetMetric(expression="last(customers.spend)", name="lastspend")])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(query)
         assert _COMBO.search(str(ei.value))
@@ -83,8 +83,8 @@ class TestUnsupportedCombinations:
         _, engine = exec_backend
         query = assoc_q(
             dimensions=["status"], time_dimensions=_SIGNUP_TD,
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, window='90d')", name="win")])
+            measures=[DatasetMetric(
+                expression="sum(customers.spend, window='90d')", name="win")])
         with pytest.raises(SlayerError) as ei:
             await engine.execute(query)
         assert _COMBO.search(str(ei.value))
@@ -103,7 +103,7 @@ class TestMissingUniqueKey:
 class TestUnsafeInputInAssociate:
     """Input safety is mode-invariant: a crossing-hop input rejected on the broadcast/error path is rejected before association too."""
 
-    VIP = ModelMeasure(formula="sum(customers.vip_spend)", name="vip")
+    VIP = DatasetMetric(expression="sum(customers.vip_spend)", name="vip")
 
     async def test_crossing_input_rejected_in_associate(self, exec_backend_crossing):
         _, engine = exec_backend_crossing
@@ -121,9 +121,9 @@ class TestColumnReferenceParameter:
     """A column-reference parameter is picked once per distinct entity: the explicit
     weight and the definition default both execute."""
 
-    WAVG = ModelMeasure(
-        formula="weighted_avg(customers.spend, weight=customers.spend)", name="wavg")
-    WSUM = ModelMeasure(formula="wsum(customers.spend)", name="wsum")
+    WAVG = DatasetMetric(
+        expression="weighted_avg(customers.spend, weight=customers.spend)", name="wavg")
+    WSUM = DatasetMetric(expression="wsum(customers.spend)", name="wsum")
 
     async def test_explicit_column_param_executes(self, exec_backend):
         _, engine = exec_backend

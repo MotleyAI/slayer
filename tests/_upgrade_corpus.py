@@ -13,7 +13,7 @@ import duckdb
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.database import engine_factory
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
@@ -97,12 +97,12 @@ def offline(corpus: Corpus, *, backend: str, tmp: Path, monkeypatch: pytest.Monk
     return storage
 
 
-async def load_all(corpus: Corpus, storage: StorageBackend) -> tuple[list[SlayerModel], list]:
-    identities = await storage._list_all_model_identities()
+async def load_all(corpus: Corpus, storage: StorageBackend) -> tuple[list[SlayerDataset], list]:
+    identities = await storage._list_all_dataset_identities()
     assert {ds for ds, _ in identities} == set(corpus.datasources)
     models = []
     for ds, name in sorted(identities):
-        model = await storage.get_model(name, data_source=ds)
+        model = await storage.get_dataset(name, data_source=ds)
         assert model is not None, (ds, name)
         models.append(model)
     memories = [await storage.get_memory(mid) for mid in corpus.memory_ids]
@@ -194,7 +194,7 @@ class OnlineChecks:
     async def test_every_model_resaves(self, online_store: StorageBackend):
         models, _ = await load_all(self.corpus, online_store)
         for model in models:
-            await online_store.save_model(model)
+            await online_store.save_dataset(model)
 
     async def test_datasource_reingests(self, online_store, data_source):
         await reingest(self.corpus, online_store, data_source)

@@ -7,8 +7,8 @@ from typing import Dict, List, Optional, Tuple
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     REGROUP_LEAF_PREFIX,
     CastKey,
     ListSetKey,
@@ -26,7 +26,7 @@ __all__ = ["carried_placeholders", "is_placeholder", "_series_mode"]
 
 
 def is_placeholder(key: ValueKey) -> bool:
-    return isinstance(key, ColumnKey) and key.leaf.startswith(REGROUP_LEAF_PREFIX)
+    return isinstance(key, FieldKey) and key.leaf.startswith(REGROUP_LEAF_PREFIX)
 
 
 def _series_flags(node: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> Tuple[bool, bool]:
@@ -45,7 +45,7 @@ def _series_flags(node: ValueKey, *, to_original: Dict[ValueKey, ValueKey]) -> T
             has_cross_model = True  # unknown placeholder — fail closed
         else:
             return _series_flags(original, to_original=to_original)
-    elif not isinstance(node, (ColumnKey, ColumnSqlKey, TimeTruncKey)):
+    elif not isinstance(node, (FieldKey, FieldSqlKey, TimeTruncKey)):
         for child in node.children():
             t, x = _series_flags(child, to_original=to_original)
             has_transform = has_transform or t

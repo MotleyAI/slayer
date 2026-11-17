@@ -17,10 +17,10 @@ from slayer.core.enums import DataType
 from slayer.core.errors import ForcedFilterError
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import DatasourceConfig
-from slayer.core.policy import ColumnFilterRuleset, SessionPolicy
+from slayer.core.policy import FieldFilterRuleset, SessionPolicy
 from slayer.live_schema import ingestion
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.live_schema.schema_drift import WholeModelDelete
+from slayer.live_schema.schema_drift import WholeDatasetDelete
 from slayer.database import engine_factory
 from slayer.database.client import (
     AuthenticationRefused,
@@ -118,14 +118,14 @@ class TestTypedFailures:
     async def test_an_unreachable_client_refuses_validation(self, shop: Shop) -> None:
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=_wrapping(_Unavailable))
         with pytest.raises(Exception) as excinfo:  # NOSONAR(S5958) — the cause chain is the contract
-            await engine.validate_models(DS_NAME)
+            await engine.validate_datasets(DS_NAME)
         assert any(isinstance(e, DatabaseUnavailable) for e in _chain(excinfo.value))
 
     async def test_a_table_missing_from_the_listing_is_drift(self, shop: Shop) -> None:
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=_wrapping(_HidesTable))
-        entries = await engine.validate_models(DS_NAME)
-        whole = [e for e in entries if isinstance(e, WholeModelDelete)]
-        assert [e.model_name for e in whole] == ["customers"]
+        entries = await engine.validate_datasets(DS_NAME)
+        whole = [e for e in entries if isinstance(e, WholeDatasetDelete)]
+        assert [e.dataset_name for e in whole] == ["customers"]
 
     @pytest.mark.parametrize("error", [
         ObjectNotFound("customers vanished"),
@@ -134,8 +134,8 @@ class TestTypedFailures:
     ], ids=["not_found", "permission", "unsupported"])
     async def test_a_listed_but_unreadable_table_yields_no_verdict(self, shop: Shop, error: Exception) -> None:
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=_wrapping(_unreadable_customers(error)))
-        entries = await engine.validate_models(DS_NAME)
-        assert [e for e in entries if e.model_name == "customers"] == []
+        entries = await engine.validate_datasets(DS_NAME)
+        assert [e for e in entries if e.dataset_name == "customers"] == []
 
     async def test_an_unconfirmable_policy_column_refuses_the_query(self, shop: Shop) -> None:
         class _ColumnsDown(DelegatingSqlClient):
@@ -144,7 +144,7 @@ class TestTypedFailures:
 
         engine = SlayerQueryEngine(
             storage=shop.storage, client_factory=_wrapping(_ColumnsDown),
-            policy=SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="acme")),
+            policy=SessionPolicy(ruleset=FieldFilterRuleset(field="org", value="acme")),
         )
         with pytest.raises(ForcedFilterError):
             await engine.execute(COUNT_ORDERS)
@@ -153,7 +153,7 @@ class TestTypedFailures:
         factory = GatewayFactory()
         engine = SlayerQueryEngine(
             storage=shop.storage, client_factory=factory,
-            policy=SessionPolicy(ruleset=ColumnFilterRuleset(column="org", value="acme")),
+            policy=SessionPolicy(ruleset=FieldFilterRuleset(field="org", value="acme")),
         )
         response = await engine.execute(COUNT_ORDERS)
         assert response.data[0]["orders.n"] == 3
@@ -281,8 +281,8 @@ class TestReflectedMetadataUsesSlayerTypes:
             await engine.aclose()
             engine.close()
             engine_factory.invalidate_engine(ds)
-        (model,) = report.models
-        assert {c.name: (c.type, c.format, c.db_type) for c in model.columns} == expected
+        (model,) = report.datasets
+        assert {c.name: (c.datatype, c.format, c.db_type) for c in model.fields} == expected
         assert all(isinstance(c.type, DataType) for c in reflected)
         assert {c.name: c.type for c in reflected} == {name: t for name, (t, _f, _d) in expected.items()}
 
@@ -308,7 +308,7 @@ class TestDelegatingClient:
 
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
         response = await engine.execute(COUNT_ORDERS)
-        await engine.validate_models(DS_NAME)
+        await engine.validate_datasets(DS_NAME)
         engine.close()
         engine_factory.invalidate_engine(backend)
         assert response.sql in overridden

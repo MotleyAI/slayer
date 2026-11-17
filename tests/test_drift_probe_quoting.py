@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.live_schema.schema_drift import WholeModelDelete
+from slayer.live_schema.schema_drift import WholeDatasetDelete
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -26,23 +26,23 @@ async def _engine(tmp_path: Path) -> tuple[SlayerQueryEngine, str]:
     return SlayerQueryEngine(storage=storage), db
 
 
-def _model(sql: str) -> SlayerModel:
-    return SlayerModel(name="m", sql=sql, data_source="ds", columns=[
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="amount", sql="amount", type=DataType.DOUBLE),
+def _model(sql: str) -> SlayerDataset:
+    return SlayerDataset(name="m", sql=sql, data_source="ds", fields=[
+        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+        DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
     ])
 
 
-async def _verdict(engine: SlayerQueryEngine) -> list[WholeModelDelete]:
-    entries = await engine.validate_models(data_source="ds")
-    return [e for e in entries if e.model_name == "m" and isinstance(e, WholeModelDelete)]
+async def _verdict(engine: SlayerQueryEngine) -> list[WholeDatasetDelete]:
+    entries = await engine.validate_datasets(data_source="ds")
+    return [e for e in entries if e.dataset_name == "m" and isinstance(e, WholeDatasetDelete)]
 
 
 @pytest.mark.parametrize("table", TABLES)
 async def test_broken_sql_over_a_quoted_table_is_invalid_sql(tmp_path: Path, table: str) -> None:
     engine, _ = await _engine(tmp_path)
     try:
-        await engine.storage.save_model(_model(f"SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM {table}"))
+        await engine.storage.save_dataset(_model(f"SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM {table}"))
         (entry,) = await _verdict(engine)
         assert entry.cause == "invalid_sql"
     finally:
@@ -53,7 +53,7 @@ async def test_broken_sql_over_a_quoted_table_is_invalid_sql(tmp_path: Path, tab
 async def test_dropped_column_of_a_quoted_table_is_drift(tmp_path: Path, table: str) -> None:
     engine, db = await _engine(tmp_path)
     try:
-        await engine.storage.save_model(_model(f"SELECT id, amount FROM {table}"))
+        await engine.storage.save_dataset(_model(f"SELECT id, amount FROM {table}"))
         with transaction(db) as conn:
             conn.execute(f"ALTER TABLE {table} DROP COLUMN amount")
         (entry,) = await _verdict(engine)

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import parse_expr
 from slayer.database import engine_factory
@@ -61,19 +61,19 @@ def test_loaded_text_parses(stored: str, loaded: str) -> None:
 
 @pytest.mark.parametrize(("stored", "loaded"), CASES)
 def test_model_measure_formula(stored: str, loaded: str) -> None:
-    doc = {**orders_v10(version=15), "measures": [{"name": "x", "formula": stored}]}
-    assert SlayerModel.model_validate(doc).measures[0].formula == _fully_loaded(stored, loaded)
+    doc = {**orders_v10(version=15), "metrics": [{"name": "x", "expression": stored}]}
+    assert SlayerDataset.model_validate(doc).metrics[0].expression == _fully_loaded(stored, loaded)
 
 
 @pytest.mark.parametrize(("stored", "loaded"), CASES)
 def test_query_filter(stored: str, loaded: str) -> None:
-    query = SlayerQuery.model_validate({"version": 6, "source_model": "orders", "filters": [stored]})
-    assert query.filters == [_fully_loaded(stored, loaded)]
+    query = SlayerQuery.model_validate({"version": 6, "population": "orders", "filter": [stored]})
+    assert query.filter == [_fully_loaded(stored, loaded)]
 
 
 def test_current_version_text_is_never_rewritten() -> None:
-    doc = {**orders_v10(version=16), "measures": [{"name": "x", "formula": "sum(a) --note"}]}
-    assert SlayerModel.model_validate(doc).measures[0].formula == "sum(a) --note"
+    doc = {**orders_v10(version=16), "metrics": [{"name": "x", "expression": "sum(a) --note"}]}
+    assert SlayerDataset.model_validate(doc).metrics[0].expression == "sum(a) --note"
 
 
 @pytest.fixture

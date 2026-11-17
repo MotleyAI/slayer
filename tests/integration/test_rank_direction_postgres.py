@@ -51,7 +51,7 @@ class TestPostgresNullInputs(base.TestNullInputs):
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(ds)
         for model in dev1847_models():
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
         try:
             yield engine

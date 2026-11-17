@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests._dev1840_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     SPEND_BAND_170,
     ambiguity_models,
     dev1840_models,
@@ -37,10 +37,10 @@ _MODEL_SETS = {
     "amb": ambiguity_models,
 }
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
-RM = ModelMeasure(formula="sum(stores.rent)", name="rm")
-SM = ModelMeasure(formula="sum(agents.score)", name="sm")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+RM = DatasetMetric(expression="sum(stores.rent)", name="rm")
+SM = DatasetMetric(expression="sum(agents.score)", name="sm")
 
 
 def _cases() -> dict:

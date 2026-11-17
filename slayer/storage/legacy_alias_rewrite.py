@@ -18,7 +18,7 @@ import sqlglot
 from sqlglot import exp
 
 
-def _dunder_chain_for_column(col: exp.Column) -> tuple[str, ...] | None:
+def _dunder_chain_for_field(col: exp.Column) -> tuple[str, ...] | None:
     """Return the ``__``-split hop chain of ``col``'s qualifier, or ``None``.
 
     Only a single-identifier qualifier containing ``__`` qualifies — an
@@ -55,7 +55,7 @@ def extract_dunder_chains(sql_text: str | None) -> set[tuple[str, ...]]:
         return set()
     chains: set[tuple[str, ...]] = set()
     for col in parsed.find_all(exp.Column):
-        chain = _dunder_chain_for_column(col)
+        chain = _dunder_chain_for_field(col)
         if chain is not None:
             chains.add(chain)
     return chains
@@ -80,7 +80,7 @@ def apply_dunder_rewrite(
     root = parsed
     changed = False
     for col in list(parsed.find_all(exp.Column)):  # NOSONAR(S7504) — materialised before in-place col.replace mutation
-        chain = _dunder_chain_for_column(col)
+        chain = _dunder_chain_for_field(col)
         if chain is None or chain not in resolvable:
             continue
         leaf_sql = col.this.sql()
@@ -93,11 +93,11 @@ def apply_dunder_rewrite(
     return root.sql() if changed else sql_text
 
 
-def _column_surface_refs(columns):
+def _field_surface_refs(fields):
     """Yield ``(col_dict, key)`` for each column's ``sql`` / ``filter`` string."""
-    if not isinstance(columns, list):
+    if not isinstance(fields, list):
         return
-    for col in columns:
+    for col in fields:
         if not isinstance(col, dict):
             continue
         for key in ("sql", "filter"):
@@ -120,8 +120,8 @@ def _mode_a_surface_refs(data: dict):
     and each model-level filter (container = the ``filters`` list, key = index).
     ``container[key]`` reads and writes that surface. One traversal shared by the
     read (:func:`mode_a_surface_texts`) and the mutate
-    (:func:`apply_dunder_rewrite_to_model_dict`) helpers so they can't drift."""
-    yield from _column_surface_refs(data.get("columns"))
+    (:func:`apply_dunder_rewrite_to_dataset_dict`) helpers so they can't drift."""
+    yield from _field_surface_refs(data.get("columns"))
     yield from _filter_surface_refs(data.get("filters"))
 
 
@@ -131,7 +131,7 @@ def mode_a_surface_texts(data: dict) -> list[str]:
     return [container[key] for container, key in _mode_a_surface_refs(data)]
 
 
-def apply_dunder_rewrite_to_model_dict(
+def apply_dunder_rewrite_to_dataset_dict(
     data: dict, *, resolvable: set[tuple[str, ...]],
 ) -> None:
     """Rewrite every Mode-A surface in ``data`` in place — each column's ``sql`` /

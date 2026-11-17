@@ -16,12 +16,12 @@ from sqlalchemy import event, exc
 from pydantic import BaseModel
 from sqlalchemy.engine.reflection import Inspector
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.live_schema import ingestion
 from slayer.live_schema.ingestion import (
     IngestionScanReport,
-    introspect_table_to_model,
+    introspect_table_to_dataset,
 )
 from slayer.database import engine_factory
 from slayer.database.client import SlayerSQLClient
@@ -29,7 +29,7 @@ from slayer.storage.sqlite_conn import transaction
 from tests._key_read_failure import LOST, fail_key_read
 
 _REGCLASS = "Catalog Error: Type with name REGCLASS does not exist!"
-_TO_ONE = {JoinCardinality.MANY_TO_ONE, JoinCardinality.ONE_TO_ONE}
+_TO_ONE = {RelationshipCardinality.MANY_TO_ONE, RelationshipCardinality.ONE_TO_ONE}
 
 
 def _duck(path: Path, statements: list[str]) -> None:
@@ -101,20 +101,20 @@ async def _report(ds: DatasourceConfig, **kwargs: Any) -> IngestionScanReport:
         return await ingestion.ingest_datasource_report_async(ds, client=client, **kwargs)
 
 
-def _models(report: IngestionScanReport) -> dict[str, SlayerModel]:
-    return {m.name: m for m in report.models}
+def _models(report: IngestionScanReport) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in report.datasets}
 
 
-def _pk(model: SlayerModel) -> list[str]:
-    return [c.name for c in model.columns if c.primary_key]
+def _pk(model: SlayerDataset) -> list[str]:
+    return [c.name for c in model.fields if c.primary_key]
 
 
-def _unique(model: SlayerModel) -> set[str]:
-    return {c.name for c in model.columns if c.unique}
+def _unique(model: SlayerDataset) -> set[str]:
+    return {c.name for c in model.fields if c.unique}
 
 
-def _joins(model: SlayerModel) -> dict[str, tuple[list[list[str]], JoinCardinality | None]]:
-    return {j.target_model: (j.join_pairs, j.cardinality) for j in model.joins}
+def _joins(model: SlayerDataset) -> dict[str, tuple[list[list[str]], RelationshipCardinality | None]]:
+    return {j.to: (j.join_pairs, j.cardinality) for j in model.relationships}
 
 
 def _raise_regclass(*_args: Any, **_kwargs: Any) -> NoReturn:
@@ -171,7 +171,7 @@ class TestDuckdbKeys:
     async def test_default_schema_twins_keep_their_own_keys(self, schema_db) -> None:
         models = _models(await _report(_ds(schema_db)))
         assert _pk(models["parent"]) == ["x"]
-        assert models["child"].joins == []
+        assert models["child"].relationships == []
 
 
 @asynccontextmanager
@@ -196,7 +196,7 @@ async def _attached(paths: tuple[Path, Path]) -> AsyncGenerator[SlayerSQLClient,
 class TestAttachedCatalog:
     async def test_attached_twin_contributes_no_keys(self, attached_paths) -> None:
         async with _attached(attached_paths) as client:
-            model = await introspect_table_to_model(
+            model = await introspect_table_to_dataset(
                 client=client, table_name="t", ref=None, data_source="ds",
             )
         assert _pk(model) == ["id"]
@@ -214,7 +214,7 @@ class TestGenericReflectionBypassed:
         models = _models(report)
         assert report.skipped == []
         assert set(models) == {"customers", "orders", "pairs", "lines"}
-        assert [c.name for c in models["customers"].columns] == [
+        assert [c.name for c in models["customers"].fields] == [
             "id", "code", "a", "b", "Mixed Case", "name",
         ]
         assert _pk(models["customers"]) == ["id"]
@@ -223,8 +223,8 @@ class TestGenericReflectionBypassed:
         assert _joins(models["orders"])["customers"][0] == [["customer_code", "code"]]
         assert _joins(models["pairs"])["customers"][0] == [["a", "a"], ["b", "b"]]
         assert _joins(models["lines"])["orders"][0] == [["order_id", "id"]]
-        amount = next(c for c in models["orders"].columns if c.name == "amount")
-        assert (amount.type, amount.db_type) == (DataType.DOUBLE, "DECIMAL(12,2)")
+        amount = next(c for c in models["orders"].fields if c.name == "amount")
+        assert (amount.datatype, amount.db_type) == (DataType.DOUBLE, "DECIMAL(12,2)")
 
     async def test_non_default_schema_join_survives(self, schema_db, broken_generic_reflection) -> None:
         models = _models(await _report(_ds(schema_db), schemas=["ofr"]))
@@ -294,7 +294,7 @@ class TestKeyReadFailureIsVisible:
         assert report.skipped == []
         assert set(models) == {"customers", "orders", "pairs", "lines"}
         orders, customers = models["orders"], models["customers"]
-        assert [c.name for c in orders.columns] == ["id", "customer_code", "amount"]
+        assert [c.name for c in orders.fields] == ["id", "customer_code", "amount"]
         assert _joins(models["lines"])["orders"][0] == [["order_id", "id"]]
         assert _pk(orders) == ([] if kind == "primary_key" else ["id"])
         assert ("customers" in _joins(orders)) is (kind != "foreign_keys")
@@ -320,7 +320,7 @@ class TestKeyReadFailureIsVisible:
         report = await _report(_ds(db, kind="sqlite"))
         models = _models(report)
         assert report.skipped == []
-        assert models["orders"].joins == []
+        assert models["orders"].relationships == []
         assert _joins(models["items"])["orders"][0] == [["order_id", "id"]]
         _assert_one_read_warning(_warnings_naming(caplog, "orders"), word="foreign", marker=LOST)
 
@@ -371,10 +371,10 @@ class TestSqliteBaseBehaviour:
         customers, orders = models["customers"], models["orders"]
         assert _pk(customers) == ["id"]
         assert _unique(customers) == {"email", "code"}
-        joins = {tuple(map(tuple, j.join_pairs)): j.cardinality for j in orders.joins}
+        joins = {tuple(map(tuple, j.join_pairs)): j.cardinality for j in orders.relationships}
         assert joins == {
-            (("customer_id", "id"),): JoinCardinality.MANY_TO_ONE,
-            (("a", "a"), ("b", "b")): JoinCardinality.MANY_TO_ONE,
+            (("customer_id", "id"),): RelationshipCardinality.MANY_TO_ONE,
+            (("a", "a"), ("b", "b")): RelationshipCardinality.MANY_TO_ONE,
         }
 
     async def test_pk_never_reads_information_schema(self, sqlite_db, statement_log) -> None:

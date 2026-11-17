@@ -58,18 +58,18 @@ def test_warm_demo_setup_rebuilds_and_writes_nothing(
 
     # First setup populates all base models.
     ensure_demo_datasource(
-        storage, storage_path=str(base), ingest_models=True, assume_yes=True
+        storage, storage_path=str(base), ingest_datasets=True, assume_yes=True
     )
-    present = set(run_sync(storage.list_models(data_source=DEMO_NAME)))
+    present = set(run_sync(storage.list_datasets(data_source=DEMO_NAME)))
     assert all(t in present for t in TABLE_NAMES)
 
     async def _forbid_save(*_args, **_kwargs):
         raise AssertionError("a warm demo setup must not rewrite any model")
 
     monkeypatch.setattr(jaffle, "generate_data", _forbid_jafgen)
-    monkeypatch.setattr(storage, "save_model", _forbid_save)
+    monkeypatch.setattr(storage, "save_dataset", _forbid_save)
     _ds, models, db_built = ensure_demo_datasource(
-        storage, storage_path=str(base), ingest_models=True, assume_yes=True
+        storage, storage_path=str(base), ingest_datasets=True, assume_yes=True
     )
     assert db_built is False
     assert {m.name for m in models} == set(TABLE_NAMES)

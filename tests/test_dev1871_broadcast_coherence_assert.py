@@ -6,30 +6,30 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelMeasure, SlayerModel
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
+from slayer.core.query import FieldRef, SlayerQuery
 from slayer.engine import elaborate, plan
 from slayer.ir.planned import PlannedQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 
 def _bundle() -> ResolvedSourceBundle:
-    return ResolvedSourceBundle(dialect="postgres", source_model=SlayerModel(
+    return ResolvedSourceBundle(dialect="postgres", population=SlayerDataset(
         name="orders", data_source="coh_ds", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
     ))
 
 
 def _query(formula: str) -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders",
-        dimensions=[ColumnRef(name="status"), ColumnRef(name="tier")],
-        measures=[ModelMeasure(formula=formula, name="mix")],
+        population="orders",
+        dimensions=[FieldRef(name="status"), FieldRef(name="tier")],
+        metrics=[DatasetMetric(expression=formula, name="mix")],
     )
 
 
@@ -49,8 +49,8 @@ def test_assert_fires_when_elaboration_drops_broadcasts(monkeypatch: pytest.Monk
 
     def stripped(**kwargs):
         env = real(**kwargs)
-        return env.model_copy(update={"measures": tuple(
-            e.model_copy(update={"broadcasts": ()}) for e in env.measures
+        return env.model_copy(update={"metrics": tuple(
+            e.model_copy(update={"broadcasts": ()}) for e in env.metrics
         )})
 
     monkeypatch.setattr(elaborate, "build_environment", stripped)

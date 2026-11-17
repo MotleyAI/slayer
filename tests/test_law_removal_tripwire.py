@@ -37,12 +37,15 @@ PINNED: dict[tuple[str, str], str] = {
             "engine.broken_dependents", "engine.internal_tables", "engine.fk_edges", "storage.type_refinement",
             "engine.home", "engine.dimension_routing", "engine.filter_reachability",
             "engine.join_safety", "engine.unrelated", "engine.syntax", "core.formula", "osi.expression",
+            "core.join_edges", "core.join_search", "core.join_walker", "engine.cardinality.join_safety",
+            "engine.column_dependency", "engine.model_reads", "importers.measures", "inspect.model_render",
+            "sql.column_expansion", "storage.extension_columns", "storage.model_overlay",
         )
     },
     ("slayer/engine/population/__init__.py", "slayer.engine.population."): "3.0",
     ("slayer/engine/cardinality/__init__.py", "slayer.engine.cardinality."): "3.0",
     ("slayer/core/query.py", "strict"): "3.0",
-    ("slayer/core/query.py", "An extension object in `source_model`"): "3.0",
+    ("slayer/core/query.py", "An extension object in `population`"): "3.0",
     **{("slayer/core/legacy_spellings.py", token): "3.0" for token in MODE_B_SPELLING_TOKENS},
     ("slayer/engine/elaborate_env.py", "midnight"): "3.0",
 }

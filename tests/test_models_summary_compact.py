@@ -27,11 +27,11 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
@@ -55,29 +55,29 @@ async def _seed_orders(storage: YAMLStorage) -> None:
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="postgres", host="h")
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="mydb",
         description="Orders fact.",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT, description="Order state."),
-            Column(name="amount", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", datatype=DataType.TEXT, description="Order state."),
+            DatasetField(name="amount", datatype=DataType.DOUBLE,
                    description="USD amount."),
-            Column(name="customer_id", type=DataType.INT, hidden=True),
+            DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
         ],
-        measures=[
-            ModelMeasure(name="revenue", formula="sum(amount)"),
-            ModelMeasure(name="orders_count", formula="count(*)"),
+        metrics=[
+            DatasetMetric(name="revenue", expression="sum(amount)"),
+            DatasetMetric(name="orders_count", expression="count(*)"),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers",
         sql_table="customers",
         data_source="mydb",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     ))
 
 
@@ -176,9 +176,9 @@ async def test_compact_markdown_no_joins_marker(
     await yaml_storage.save_datasource(
         DatasourceConfig(name="ds", type="postgres", host="h")
     )
-    await yaml_storage.save_model(SlayerModel(
+    await yaml_storage.save_dataset(SlayerDataset(
         name="solo", sql_table="t", data_source="ds",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     ))
     mcp = create_mcp_server(storage=yaml_storage)
     result = await _call(mcp, name="models_summary", arguments={

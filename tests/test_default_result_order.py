@@ -10,7 +10,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.facade.catalog import build_catalog
@@ -61,52 +61,52 @@ _ORDERS_ROWS = [
 ]
 
 
-def _stores() -> SlayerModel:
-    return SlayerModel(
+def _stores() -> SlayerDataset:
+    return SlayerDataset(
         name="stores", data_source="test", sql_table="stores",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="name", type=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT)],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="name", type=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT)],
     )
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders", default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="store_id", type=DataType.INT),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="order_total", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.DATE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="store_id", datatype=DataType.INT),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="order_total", datatype=DataType.DOUBLE),
+            DatasetField(name="ordered_at", datatype=DataType.DATE),
             # Sorts opposite to order_total: big orders label "a-big".
-            Column(
-                name="size_label", type=DataType.TEXT,
+            DatasetField(
+                name="size_label", datatype=DataType.TEXT,
                 sql="CASE WHEN order_total >= 50 THEN 'a-big' ELSE 'b-small' END",
             ),
         ],
-        joins=[
-            ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]]),
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]]),
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
         ],
     )
 
 
-def _per_customer_backed() -> SlayerModel:
-    return SlayerModel(
+def _per_customer_backed() -> SlayerDataset:
+    return SlayerDataset(
         name="per_customer_m", data_source="test",
         source_queries=[SlayerQuery.model_validate({k: v for k, v in PER_CUSTOMER_STAGE.items() if k != "name"})],
     )
 
 
-def _models() -> list[SlayerModel]:
+def _models() -> list[SlayerDataset]:
     return [_orders(), _stores(), _customers()]
 
 
@@ -302,7 +302,7 @@ class TestOnlyOutermost:
         assert "region" in _order_text(sql, dialect=dialect)
 
     async def test_saved_query_used_as_source_unordered(self, engine: SlayerQueryEngine) -> None:
-        await engine.create_model_from_query(query=[PER_CUSTOMER_STAGE, BY_REGION_STAGE], name="by_region")
+        await engine.create_dataset_from_query(query=[PER_CUSTOMER_STAGE, BY_REGION_STAGE], name="by_region")
         resp = await engine.execute(
             {"source_model": "by_region", "dimensions": ["region"], "measures": ["sum(total)"]}, dry_run=True,
         )
@@ -311,7 +311,7 @@ class TestOnlyOutermost:
         assert _outer_order(resp.sql, dialect="duckdb") is not None
 
     async def test_saved_query_run_by_name_is_ordered(self, engine: SlayerQueryEngine) -> None:
-        await engine.create_model_from_query(
+        await engine.create_dataset_from_query(
             query={"source_model": "orders", "dimensions": ["status"], "measures": ["count(*)"]},
             name="status_counts",
         )
@@ -319,7 +319,7 @@ class TestOnlyOutermost:
         assert _column(resp, "orders.status") == ["a", "b", "c", "d", None]
 
     async def test_refined_saved_query_is_ordered(self, engine: SlayerQueryEngine) -> None:
-        await engine.create_model_from_query(
+        await engine.create_dataset_from_query(
             query={"source_model": "orders", "dimensions": ["status"], "measures": ["count(*)"]},
             name="status_counts",
         )
@@ -329,7 +329,7 @@ class TestOnlyOutermost:
         assert keys[-1][0] is None
 
     async def test_saved_multistage_query_ordered_on_final_stage(self, engine: SlayerQueryEngine) -> None:
-        await engine.create_model_from_query(query=[PER_CUSTOMER_STAGE, BY_REGION_STAGE], name="by_region")
+        await engine.create_dataset_from_query(query=[PER_CUSTOMER_STAGE, BY_REGION_STAGE], name="by_region")
         resp = await engine.execute("by_region")
         region_key = next(c for c in resp.columns if c.endswith("region"))
         assert _column(resp, region_key) == ["EU", "US"]
@@ -397,7 +397,7 @@ class TestCombinations:
 
 class TestFacades:
     async def test_pg_facade_query_is_ordered(self, engine) -> None:
-        catalog = build_catalog(models_by_datasource={"test": _models()})
+        catalog = build_catalog(datasets_by_datasource={"test": _models()})
         result = translate(sql="SELECT status, order_total_sum FROM orders", catalog=catalog, dialect="postgres")
         assert isinstance(result, QueryResult), result
         resp = await engine.execute(query=result.query, data_source=result.data_source)

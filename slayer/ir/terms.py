@@ -30,11 +30,11 @@ class _Term(BaseModel, frozen=True):
     pass
 
 
-class ModelDataset(_Term, frozen=True):
+class StoredDataset(_Term, frozen=True):
     """Model-backed dataset, identified by (datasource, model name)."""
 
     data_source: str
-    model_name: str
+    dataset_name: str
 
     @property
     def kind(self) -> str:
@@ -52,7 +52,7 @@ class StageDataset(_Term, frozen=True):
 
 
 #: Concrete datasets an ``Aggregate`` may aggregate over, or a ``Field`` live on.
-DatasetT = Union[ModelDataset, StageDataset, "Aggregate"]
+DatasetT = Union[StoredDataset, StageDataset, "Aggregate"]
 
 
 class Aggregate(_Term, frozen=True):

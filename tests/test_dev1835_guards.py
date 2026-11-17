@@ -18,9 +18,9 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 
-from tests._dev1835_fixtures import ModelMeasure, month_td, q
+from tests._dev1835_fixtures import DatasetMetric, month_td, q
 from tests._dev1739_fixtures import dev1739_models
 from tests._engine_helpers import _engine_generate
 from tests.test_dev1837_guards import ARM_WINDOWED_RANKED, _sources_containing
@@ -94,7 +94,7 @@ class TestPreservedGuardsVerbatim:
     async def test_g8_malformed_duration(self) -> None:
         query = q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount, window='90x')", name="w")],
+            measures=[DatasetMetric(expression="sum(amount, window='90x')", name="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
@@ -103,7 +103,7 @@ class TestPreservedGuardsVerbatim:
     async def test_g2_no_resolvable_time_dimension(self) -> None:
         query = q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount, window='90d')", name="w")],
+            measures=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query)
@@ -114,11 +114,11 @@ class TestPreservedGuardsVerbatim:
         # A second temporal column leaves no sole-column default either.
         models[0] = models[0].model_copy(update={
             "default_time_dimension": None,
-            "columns": [*models[0].columns, Column(name="updated_at", sql="ordered_at", type=DataType.TIMESTAMP)],
+            "columns": [*models[0].fields, DatasetField(name="updated_at", sql="ordered_at", datatype=DataType.TIMESTAMP)],
         })
         query = q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="last(amount)", name="l")],
+            measures=[DatasetMetric(expression="last(amount)", name="l")],
         )
         with pytest.raises(ValueError) as ei:
             await _gen(query, models=models)
@@ -134,8 +134,8 @@ class TestRepointedGuards:
         # unreachable from the customers root.
         query = q(
             dimensions=["customers.tier"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, window='90d')", name="w",
+            measures=[DatasetMetric(
+                expression="sum(customers.spend, window='90d')", name="w",
             )],
             to_many_handling="broadcast",
         )

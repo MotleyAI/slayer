@@ -7,8 +7,8 @@ then generates SLayer ModelJoin objects for foreign entity references.
 
 import logging
 
-from slayer.core.enums import JoinCardinality, JoinType
-from slayer.core.models import ModelJoin, is_base_column_sql
+from slayer.core.enums import RelationshipCardinality, JoinType
+from slayer.core.models import DatasetRelationship, is_base_field_sql
 from slayer.dbt.models import DbtSemanticModel
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ class EntityRegistry:
                         break
                 self._register(
                     entity_name=model.primary_entity,
-                    model_name=model.name,
+                    dataset_name=model.name,
                     expr=expr,
                 )
 
@@ -42,23 +42,23 @@ class EntityRegistry:
                 if entity.type in ("primary", "unique"):
                     self._register(
                         entity_name=entity.name,
-                        model_name=model.name,
+                        dataset_name=model.name,
                         expr=entity.expr or entity.name,
                     )
 
-    def _register(self, entity_name: str, model_name: str, expr: str) -> None:
+    def _register(self, entity_name: str, dataset_name: str, expr: str) -> None:
         if entity_name not in self._primaries:
             self._primaries[entity_name] = []
         # Deduplicate by model_name
-        if any(m == model_name for m, _ in self._primaries[entity_name]):
+        if any(m == dataset_name for m, _ in self._primaries[entity_name]):
             return
         if self._primaries[entity_name]:
             existing_model, _ = self._primaries[entity_name][0]
             logger.debug(
                 "Entity '%s' shared by '%s' and '%s' (peer join will be created)",
-                entity_name, existing_model, model_name,
+                entity_name, existing_model, dataset_name,
             )
-        self._primaries[entity_name].append((model_name, expr))
+        self._primaries[entity_name].append((dataset_name, expr))
 
     def get_primary_model(self, entity_name: str) -> tuple[str, str] | None:
         """Look up which model owns this entity as primary.
@@ -72,13 +72,13 @@ class EntityRegistry:
             return None
         return min(entries, key=lambda e: e[0])
 
-    def resolve_joins_for_model(self, model: DbtSemanticModel) -> list[ModelJoin]:
+    def resolve_relationships_for_model(self, model: DbtSemanticModel) -> list[DatasetRelationship]:
         """For each foreign entity in the model, generate a ModelJoin to the primary model.
 
         Returns a list of ModelJoin objects. Skips entities whose primary model
         is the same as the current model (self-joins are not useful).
         """
-        joins: list[ModelJoin] = []
+        relationships: list[DatasetRelationship] = []
         # Dedupe by full join signature (target + FK columns) so distinct FKs
         # to the same target — e.g. buyer_id -> users.id AND seller_id -> users.id —
         # each get their own ModelJoin instead of silently collapsing.
@@ -97,10 +97,10 @@ class EntityRegistry:
                 continue
 
             foreign_expr = entity.expr or entity.name
-            if not is_base_column_sql(foreign_expr):
+            if not is_base_field_sql(foreign_expr):
                 continue  # not a column; the converter reports it
             for target_model_name, primary_expr in primaries:
-                if target_model_name == model.name or not is_base_column_sql(primary_expr):
+                if target_model_name == model.name or not is_base_field_sql(primary_expr):
                     continue  # self-join, or a non-column key the converter reports
 
                 signature = (target_model_name, foreign_expr, primary_expr)
@@ -108,12 +108,12 @@ class EntityRegistry:
                     continue
                 seen_signatures.add(signature)
 
-                joins.append(ModelJoin(
-                    target_model=target_model_name,
+                relationships.append(DatasetRelationship(
+                    to=target_model_name,
                     join_pairs=[[foreign_expr, primary_expr]],
                     join_type=JoinType.INNER,
                     # foreign -> primary: many source rows, one target row.
-                    cardinality=JoinCardinality.MANY_TO_ONE,
+                    cardinality=RelationshipCardinality.MANY_TO_ONE,
                 ))
 
         # Peer joins: models sharing the same primary/unique entity are joinable.
@@ -127,22 +127,22 @@ class EntityRegistry:
             peers = self._primaries.get(entity.name, [])
             local_expr = entity.expr or entity.name
             for peer_model_name, peer_expr in peers:
-                if (peer_model_name <= model.name or not is_base_column_sql(local_expr)
-                        or not is_base_column_sql(peer_expr)):
+                if (peer_model_name <= model.name or not is_base_field_sql(local_expr)
+                        or not is_base_field_sql(peer_expr)):
                     continue
                 peer_signature = (peer_model_name, local_expr, peer_expr)
                 if peer_signature in seen_peer_signatures:
                     continue
                 seen_peer_signatures.add(peer_signature)
-                joins.append(ModelJoin(
-                    target_model=peer_model_name,
+                relationships.append(DatasetRelationship(
+                    to=peer_model_name,
                     join_pairs=[[local_expr, peer_expr]],
                     join_type=JoinType.INNER,
                     # Both sides are a primary/unique entity: one-to-one.
-                    cardinality=JoinCardinality.ONE_TO_ONE,
+                    cardinality=RelationshipCardinality.ONE_TO_ONE,
                 ))
 
-        return joins
+        return relationships
 
     def resolve_entity_to_model(self, entity_name: str) -> str | None:
         """Given an entity name, return the first model that owns it as primary."""

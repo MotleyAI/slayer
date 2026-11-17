@@ -1,6 +1,6 @@
 """The Mode-B grammar.
 
-``parse_expr(text) -> ParsedExpr`` parses a Mode-B expression (``ModelMeasure.formula``,
+``parse_expr(text) -> ParsedExpr`` parses a Mode-B expression (``ModelMeasure.expression``,
 query measures / dimensions / filters / order) with one SQL-compatible pyparsing grammar —
 pure syntax, no scope resolution or named-measure expansion (binder's job). Every spelling
 of a construct collapses to one node: CASE → ``iif``, ``EXTRACT`` → ``date_part``,
@@ -1628,40 +1628,40 @@ def bare_literal_text(name: str, value: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-class _MeasureScope(BaseModel):
+class _MetricScope(BaseModel):
     """What a saved measure's names resolve against."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     names: frozenset[str]
     aggregations: frozenset[str]
-    columns: Optional[frozenset[str]] = None
-    join_path: Optional[Callable[[Tuple[str, ...]], bool]] = None
+    fields: Optional[frozenset[str]] = None
+    relationship_path: Optional[Callable[[Tuple[str, ...]], bool]] = None
 
 
-def measure_dependency_problems(
-    formulas: List[Tuple[Optional[str], str]], *, aggregations: frozenset[str] = frozenset(),
-    columns: Optional[frozenset[str]] = None, join_path: Optional[Callable[[Tuple[str, ...]], bool]] = None,
+def metric_dependency_problems(
+    expressions: List[Tuple[Optional[str], str]], *, aggregations: frozenset[str] = frozenset(),
+    fields: Optional[frozenset[str]] = None, relationship_path: Optional[Callable[[Tuple[str, ...]], bool]] = None,
 ) -> List[Optional[str]]:
     """Per ``(name, formula)``: why the saved measure cannot resolve among its peers, else ``None``.
 
     Outside an aggregation a bare name must be a peer measure; an aggregation must be built-in
-    or one of ``aggregations``, and, given ``columns``, read only those columns or paths
-    ``join_path`` accepts; a measure on a cycle, or reading one that cannot resolve, cannot
+    or one of ``aggregations``, and, given ``fields``, read only those columns or paths
+    ``relationship_path`` accepts; a measure on a cycle, or reading one that cannot resolve, cannot
     resolve either."""
-    scope = _MeasureScope(names=frozenset(name for name, _ in formulas if name), aggregations=aggregations,
-                          columns=columns, join_path=join_path)
+    scope = _MetricScope(names=frozenset(name for name, _ in expressions if name), aggregations=aggregations,
+                          fields=fields, relationship_path=relationship_path)
     own: Dict[int, Optional[str]] = {}
     deps: Dict[int, set] = {}
-    for i, (_name, formula) in enumerate(formulas):
+    for i, (_name, formula) in enumerate(expressions):
         try:
-            refs, problem = _measure_refs(parse_expr(formula), scope=scope)
+            refs, problem = _metric_refs(parse_expr(formula), scope=scope)
         except ValueError as e:
             refs, problem = set(), str(e)
         own[i], deps[i] = problem, refs
-    index = {name: i for i, (name, _) in enumerate(formulas) if name}
+    index = {name: i for i, (name, _) in enumerate(expressions) if name}
     out: List[Optional[str]] = []
-    for i, (name, _) in enumerate(formulas):
+    for i, (name, _) in enumerate(expressions):
         out.append(_resolution_problem(i, own=own, deps=deps, index=index, path=(name or "",)))
     return out
 
@@ -1680,7 +1680,7 @@ def _resolution_problem(
     return None
 
 
-def _measure_refs(node: Any, *, scope: _MeasureScope) -> Tuple[set, Optional[str]]:
+def _metric_refs(node: Any, *, scope: _MetricScope) -> Tuple[set, Optional[str]]:
     """The peer measures ``node`` reads outside aggregations, and the first problem found."""
     if isinstance(node, Ref):
         if node.name in scope.names:
@@ -1700,22 +1700,22 @@ def _measure_refs(node: Any, *, scope: _MeasureScope) -> Tuple[set, Optional[str
     children = [node.input] if isinstance(node, TransformCall) else _operands(node)
     refs: set = set()
     for child in children:
-        found, problem = _measure_refs(child, scope=scope)
+        found, problem = _metric_refs(child, scope=scope)
         if problem is not None:
             return refs, problem
         refs |= found
     return refs, None
 
 
-def _aggregation_input_problem(node: AggCall, *, scope: _MeasureScope) -> Optional[str]:
+def _aggregation_input_problem(node: AggCall, *, scope: _MetricScope) -> Optional[str]:
     """The first name an aggregation reads that is neither a column nor a join path; unchecked without columns."""
-    if scope.columns is None:
+    if scope.fields is None:
         return None
     inputs = [node.source, node.filter, *node.args, *(v for _, v in node.kwargs)]
     for leaf in (ref for value in inputs if value is not None for ref in walk_parsed_refs(value)):
-        if isinstance(leaf, Ref) and leaf.name not in scope.columns:
+        if isinstance(leaf, Ref) and leaf.name not in scope.fields:
             return f"aggregation {node.agg!r} reads {leaf.name!r}, which is not a column of the model"
-        if isinstance(leaf, DottedRef) and not (scope.join_path is not None and scope.join_path(tuple(leaf.parts))):
+        if isinstance(leaf, DottedRef) and not (scope.relationship_path is not None and scope.relationship_path(tuple(leaf.parts))):
             return f"aggregation {node.agg!r} reads {'.'.join(leaf.parts)!r}, which no join path reaches"
     return None
 
@@ -2088,7 +2088,7 @@ def _dispatch_call(  # NOSONAR(S3776) — the one call-dispatch ladder (builtin 
     if func_name.lower() in RESERVED_NAMES:
         raise ReservedFunctionNameError(name=func_name, where=f"Invalid Mode-B expression {original!r}")
     if func_name.lower() in GRANULARITY_NAMES:
-        raise GranularityCallError.no_call_form(func_name.lower(), operand=", ".join(map(canonical_measure_text, args)))
+        raise GranularityCallError.no_call_form(func_name.lower(), operand=", ".join(map(canonical_metric_text, args)))
     raise UnknownFunctionError(
         name=func_name,
         location=original,
@@ -2516,7 +2516,7 @@ def _operand_text(node: Any, *, minimum: int, legacy: bool) -> str:
     return f"({text})" if _precedence(node) < minimum else text
 
 
-def canonical_measure_text(parsed: Any) -> str:
+def canonical_metric_text(parsed: Any) -> str:
     """Render a ``ParsedExpr`` to canonical functional text that parses back to the same tree."""
     return _render(parsed, legacy=False)
 
@@ -2644,13 +2644,13 @@ def split_entity_agg_ref(raw: str) -> Tuple[str, Optional[str]]:
     return prefix, _functional_suffix_text(raw, agg=parsed.agg)
 
 
-def measure_text_at_path(formula: str, *, path: Sequence[str]) -> str:
-    """``formula`` read from the model at the join ``path``, as canonical text: an aggregation's source re-rooted
+def metric_text_at_path(expression: str, *, path: Sequence[str]) -> str:
+    """``expression`` read from the model at the join ``path``, as canonical text: an aggregation's source re-rooted
     (``count(*)`` → ``count(customers.*)``), any other reference prefixed."""
-    node = parse_expr(formula)
+    node = parse_expr(expression)
     if isinstance(node, AggCall):
-        return canonical_measure_text(node.model_copy(update={"source": _onto_path(node.source, path=tuple(path))}))
-    return canonical_measure_text(_onto_path(node, path=tuple(path)))
+        return canonical_metric_text(node.model_copy(update={"source": _onto_path(node.source, path=tuple(path))}))
+    return canonical_metric_text(_onto_path(node, path=tuple(path)))
 
 
 # ---------------------------------------------------------------------------
@@ -2704,10 +2704,10 @@ __all__ = [
     "AggCall", "ArrayLit", "Arith", "BoolOp", "CallSource", "Cast", "Cmp", "DottedRef", "Literal", "ParsedExpr",
     "BoundVariable", "Placeholder", "Ref", "ScalarCall", "StarSource", "TemporalLiteral", "TransformCall", "TupleLit", "UnaryOp",
     "CallSpan", "DateTrunc", "NamedArg", "DATE_TRUNC_FORM", "call_spans", "legacy_spans",
-    "aggregation_reading", "bind_variables", "call_keywords", "call_source", "canonical_measure_text",
+    "aggregation_reading", "bind_variables", "call_keywords", "call_source", "canonical_metric_text",
     "classify_arguments", "colon_twin", "comparison_hint",
     "bare_literal_text", "dotted_quoting", "drop_root_hop", "drop_root_qualifier", "has_bindings", "keyword_spelling",
-    "legacy_result_name_seed", "map_refs", "measure_dependency_problems", "measure_text_at_path", "onto_path",
+    "legacy_result_name_seed", "map_refs", "metric_dependency_problems", "metric_text_at_path", "onto_path",
     "parse_bound_expr", "parse_expr", "parse_template", "placeholder_names", "positional_hint", "referenced_paths",
     "rewrite_colon_spans", "root_relative", "split_entity_agg_ref", "StringLiteralSpan", "string_literal_spans",
     "text_paths", "value_text", "variable_names", "walk_parsed", "walk_parsed_refs",

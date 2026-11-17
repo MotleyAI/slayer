@@ -9,11 +9,11 @@ import tempfile
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import (
     SlayerQueryEngine,
-    _substitute_model_sql_surfaces,
+    _substitute_dataset_sql_surfaces,
 )
 from slayer.sql.dialects import SqliteDialect
 from slayer.storage.sqlite_conn import transaction
@@ -33,7 +33,7 @@ def _seed(db_path) -> None:
         )
 
 
-async def _engine_with(*models: SlayerModel):
+async def _engine_with(*models: SlayerDataset):
     tmp = tempfile.TemporaryDirectory()
     _seed(f"{tmp.name}/orders.db")
     storage = YAMLStorage(base_dir=tmp.name)
@@ -41,7 +41,7 @@ async def _engine_with(*models: SlayerModel):
         DatasourceConfig(name="ds", type="sqlite", database=f"{tmp.name}/orders.db")
     )
     for m in models:
-        await storage.save_model(m)
+        await storage.save_dataset(m)
     return SlayerQueryEngine(storage=storage), tmp
 
 
@@ -50,16 +50,16 @@ def _sum(resp, alias: str) -> float:
     return resp.data[0][alias]
 
 
-def _block_model() -> SlayerModel:
+def _block_model() -> SlayerDataset:
     # sql-mode model whose WHERE carries an optional IN-list block.
-    return SlayerModel(
+    return SlayerDataset(
         name="orders",
         sql="SELECT * FROM orders WHERE 1=1 AND {? region IN ({regions}) ?}",
         data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="region", sql="region", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
     )
 
@@ -70,7 +70,7 @@ def _block_model() -> SlayerModel:
 async def test_optional_block_collapses_to_unfiltered_when_missing():
     engine, tmp = await _engine_with(_block_model())
     try:
-        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(amount)"}]})
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 735.0
     finally:
@@ -81,8 +81,8 @@ async def test_optional_block_filters_with_in_list_when_present():
     engine, tmp = await _engine_with(_block_model())
     try:
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "metrics": [{"formula": "sum(amount)"}],
             "variables": {"regions": ["US", "CA"]},
         })
         resp = await engine.execute(q)
@@ -95,8 +95,8 @@ async def test_optional_block_single_value_list():
     engine, tmp = await _engine_with(_block_model())
     try:
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "metrics": [{"formula": "sum(amount)"}],
             "variables": {"regions": ["EU"]},
         })
         resp = await engine.execute(q)
@@ -106,22 +106,22 @@ async def test_optional_block_single_value_list():
 
 
 async def test_required_var_alongside_block_raises_and_names_it():
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders",
         sql="SELECT * FROM orders WHERE amount >= {min_amount} "
             "AND {? region IN ({regions}) ?}",
         data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="region", sql="region", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
     )
     engine, tmp = await _engine_with(model)
     try:
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(amount)"}],
+            "population": "orders",
+            "metrics": [{"formula": "sum(amount)"}],
             "variables": {"regions": ["US"]},
         })
         with pytest.raises(Exception, match="min_amount"):
@@ -134,7 +134,7 @@ async def test_dimension_query_over_block_model_resolves_types():
     # Exercises get_result_column_types: blocks must collapse under the defaults probe.
     engine, tmp = await _engine_with(_block_model())
     try:
-        q = SlayerQuery(source_model="orders", dimensions=["region"])
+        q = SlayerQuery(population="orders", dimensions=["region"])
         resp = await engine.execute(q)
         assert {r["orders.region"] for r in resp.data} == {"US", "EU", "CA"}
     finally:
@@ -146,11 +146,11 @@ async def test_dimension_query_over_block_model_resolves_types():
 
 def test_blockfree_empty_vars_leaves_model_untouched():
     # DEV-1625 brace-literal protection: no vars + no block -> no substitution.
-    model = SlayerModel(
+    model = SlayerDataset(
         name="m", sql="SELECT * FROM t WHERE tags = '{1,2,3}'", data_source="ds",
     )
-    out = _substitute_model_sql_surfaces(
-        model=model, variables={}, dialect=SqliteDialect())
+    out = _substitute_dataset_sql_surfaces(
+        dataset=model, variables={}, dialect=SqliteDialect())
     assert out.sql == "SELECT * FROM t WHERE tags = '{1,2,3}'"
 
 
@@ -158,31 +158,31 @@ def test_blockfree_required_var_zero_vars_is_untouched_not_raised():
     # The documented boundary hole: a block-free model whose only placeholder is
     # a *declared-looking* required var, called with zero variables, is left
     # untouched (NOT raised) — substitution only runs when vars OR a block exist.
-    model = SlayerModel(
+    model = SlayerDataset(
         name="m", sql="SELECT * FROM t WHERE region = '{region}'", data_source="ds",
     )
-    out = _substitute_model_sql_surfaces(
-        model=model, variables={}, dialect=SqliteDialect())
+    out = _substitute_dataset_sql_surfaces(
+        dataset=model, variables={}, dialect=SqliteDialect())
     assert out.sql == "SELECT * FROM t WHERE region = '{region}'"
 
 
 async def test_bare_var_default_satisfies_required_at_runtime():
     # A query_variables default fulfils an otherwise-bare required var so the
     # query runs without the caller supplying it.
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders",
         sql="SELECT * FROM orders WHERE region = '{region}'",
         data_source="ds",
         query_variables={"region": "EU"},
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="region", sql="region", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
     )
     engine, tmp = await _engine_with(model)
     try:
-        q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+        q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(amount)"}]})
         resp = await engine.execute(q)
         assert _sum(resp, "orders.amount_sum") == 275.0  # EU only
     finally:
@@ -192,7 +192,7 @@ async def test_bare_var_default_satisfies_required_at_runtime():
 async def test_get_result_column_types_probes_scalar_and_date_and_list_contexts():
     # The defaults probe must yield valid SQL across all optional-context shapes:
     # a scalar-cast block, a date-range block, and an IN-list block.
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders",
         sql="SELECT id, region, amount, "
             "{? '{d_from}' ?} AS d_scalar "
@@ -200,10 +200,10 @@ async def test_get_result_column_types_probes_scalar_and_date_and_list_contexts(
             "AND {? amount >= {min_amt} AND amount <= {max_amt} ?} "
             "AND {? region IN ({regions}) ?}",
         data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="region", sql="region", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
     )
     engine, tmp = await _engine_with(model)
@@ -217,11 +217,11 @@ async def test_get_result_column_types_probes_scalar_and_date_and_list_contexts(
 
 def test_block_bearing_empty_vars_collapses_block():
     # A block-bearing model must collapse even when zero variables are supplied.
-    model = SlayerModel(
+    model = SlayerDataset(
         name="m",
         sql="SELECT * FROM t WHERE 1=1 AND {? region IN ({regions}) ?}",
         data_source="ds",
     )
-    out = _substitute_model_sql_surfaces(
-        model=model, variables={}, dialect=SqliteDialect())
+    out = _substitute_dataset_sql_surfaces(
+        dataset=model, variables={}, dialect=SqliteDialect())
     assert out.sql == "SELECT * FROM t WHERE 1=1 AND (1=1)"

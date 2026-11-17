@@ -14,7 +14,7 @@ import re
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, ModelMeasure
+from slayer.core.models import DatasetField, DatasetMetric
 from slayer.core.query import OrderItem, SlayerQuery, TimeDimension
 from slayer.core.refs import auto_name_from_expression
 from tests._dev1879_helpers import dry_response, mart_model
@@ -28,10 +28,10 @@ _KEY_RE = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*")
 async def _dry(query: SlayerQuery):
     mart = mart_model(
         extra_columns=[
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="quantity", type=DataType.DOUBLE),
+            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="quantity", datatype=DataType.DOUBLE),
         ],
-        measures=[ModelMeasure(name="aov", formula="sum(revenue) / sum(quantity)")],
+        measures=[DatasetMetric(name="aov", expression="sum(revenue) / sum(quantity)")],
     )
     return await dry_response(query, mart=mart)
 
@@ -44,7 +44,7 @@ def _q(**kw) -> SlayerQuery:
 def _month_td() -> list[TimeDimension]:
     return [
         TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )
     ]
@@ -189,7 +189,7 @@ class TestRawFormulaReferences:
                 order=[
                     OrderItem.model_validate(
                         {
-                            "column": "sum(logo_churn) / sum(logo_bop)",
+                            "field": "sum(logo_churn) / sum(logo_bop)",
                             "direction": "desc",
                         }
                     )

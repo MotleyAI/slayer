@@ -45,7 +45,7 @@ _VIEW_FIELDS = set(CubeView.model_fields)
 _DIM_FIELDS = set(CubeDimension.model_fields)
 _MEAS_FIELDS = set(CubeMeasure.model_fields)
 _SEG_FIELDS = set(CubeSegment.model_fields)
-_JOIN_FIELDS = set(CubeJoin.model_fields)
+_RELATIONSHIP_FIELDS = set(CubeJoin.model_fields)
 _VIEW_CUBE_FIELDS = set(CubeViewCubeRef.model_fields)
 
 # member-map sections: key → (target field set)
@@ -490,7 +490,7 @@ def _member_maps_to_lists(d: dict) -> None:
             d[key] = _map_to_member_list(m, fields)
     joins = d.get("joins")
     if isinstance(joins, dict):
-        d["joins"] = _map_to_member_list(joins, _JOIN_FIELDS)
+        d["joins"] = _map_to_member_list(joins, _RELATIONSHIP_FIELDS)
     pre = d.get("pre_aggregations")
     if isinstance(pre, dict):
         d["pre_aggregations"] = [

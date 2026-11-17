@@ -18,7 +18,7 @@ from typing import List, Tuple
 from slayer.async_utils import run_sync
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.errors import MemoryNotFoundError
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.demo.jaffle_shop import ensure_demo_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -46,7 +46,7 @@ def _pre_clean_memories(client: SlayerClient) -> None:
 
 def ensure_lightning_talk_demo(
     years: int = 3,
-) -> Tuple[SlayerQueryEngine, YAMLStorage, SlayerClient, List[SlayerModel]]:
+) -> Tuple[SlayerQueryEngine, YAMLStorage, SlayerClient, List[SlayerDataset]]:
     """Ensure the isolated lightning-talk YAML store is populated and return
     a ready-to-use ``(engine, storage, client, models)`` 4-tuple.
 
@@ -63,7 +63,7 @@ def ensure_lightning_talk_demo(
         storage=storage,
         storage_path=_JAFFLE_DATA_DIR,
         years=years,
-        ingest_models=True,
+        ingest_datasets=True,
         assume_yes=True,
     )
 

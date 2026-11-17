@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousRelationshipPathError
 
 from tests._dev1902_fixtures import (
     AMOUNT_BY_CUSTOMER,
@@ -19,7 +19,7 @@ from tests.test_dev1902_join_key_spelling import _customer_totals, _query
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def saved_totals_engine(request):
     async for engine in make_exec_engine(request, models=renamed_graph()):
-        await engine.save_model(_customer_totals())
+        await engine.save_dataset(_customer_totals())
         yield engine
 
 
@@ -50,7 +50,7 @@ async def test_repeating_saved_join_in_extension_is_still_usable(saved_totals_en
         source_model="customer_totals",
         extensions=[{
             "source_name": "customer_totals",
-            "joins": [join.model_dump() for join in model.joins],
+            "joins": [join.model_dump() for join in model.relationships],
         }],
         dimensions=["customers.name"],
         measures=[{"formula": "sum(amt)", "name": "total"}],
@@ -66,7 +66,7 @@ async def test_repeating_stored_join_in_table_model_extension_is_that_edge(saved
     response = await saved_totals_engine.execute(_query(
         source_model="orders",
         extensions=[{"source_name": "orders", "joins": [
-            orders_model().joins[0].model_copy(update={"description": "repeated"}).model_dump()]}],
+            orders_model().relationships[0].model_copy(update={"description": "repeated"}).model_dump()]}],
         dimensions=["customers.name"],
         measures=[{"formula": "sum(amount)", "name": "total"}],
     ))
@@ -81,5 +81,5 @@ async def test_extension_join_differing_from_stored_one_stays_a_parallel_edge(sa
         dimensions=["customers.name"],
         measures=[{"formula": "sum(amount)", "name": "total"}],
     )
-    with pytest.raises(AmbiguousJoinPathError):
+    with pytest.raises(AmbiguousRelationshipPathError):
         await saved_totals_engine.execute(query)

@@ -10,7 +10,7 @@ import pytest
 
 from slayer.core.enums import AGGREGATION_ALIASES, BUILTIN_AGGREGATIONS
 from slayer.core.errors import ColonSpellingError
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.syntax import parse_expr
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -177,11 +177,11 @@ class TestFreshQueries:
 
 
 async def _save_failure(storage: StorageBackend, doc: dict) -> BaseException:
-    model = SlayerModel.model_validate(doc)
+    model = SlayerDataset.model_validate(doc)
     engine = SlayerQueryEngine(storage=storage)
     try:
         with pytest.raises(ValueError) as ei:
-            await engine.save_model(model)
+            await engine.save_dataset(model)
     finally:
         engine.close()
     return ei.value
@@ -196,7 +196,7 @@ class TestSaves:
                "measures": [{"name": "total", "formula": "amount:sum"}]}
         exc = await _save_failure(storage, doc)
         assert_colon_refused(exc, span="amount:sum", twin="sum(amount)")
-        assert await storage.get_model("orders_m", data_source=DS) is None
+        assert await storage.get_dataset("orders_m", data_source=DS) is None
 
     async def test_query_backed_model(self, make_store: StoreFactory) -> None:  # noqa: F811
         storage = await make_store()
@@ -204,7 +204,7 @@ class TestSaves:
                "source_queries": [{"source_model": "orders", "measures": [{"name": "n", "formula": "*:count"}]}]}
         exc = await _save_failure(storage, doc)
         assert_colon_refused(exc, span="*:count", twin="count(*)")
-        assert await storage.get_model("order_count", data_source=DS) is None
+        assert await storage.get_dataset("order_count", data_source=DS) is None
 
 
 EntityCall = Callable[[StorageBackend], Awaitable[Any]]
@@ -213,7 +213,7 @@ EntityCall = Callable[[StorageBackend], Awaitable[Any]]
 async def _recommend(storage: StorageBackend) -> Any:
     engine = SlayerQueryEngine(storage=storage)
     try:
-        return await engine.recommend_root_model(["orders.amount:sum"], data_source=DS)
+        return await engine.recommend_population(["orders.amount:sum"], data_source=DS)
     finally:
         engine.close()
 

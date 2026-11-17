@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -51,11 +51,11 @@ def with_granularities(cfg: DatasourceConfig, *, name: str) -> DatasourceConfig:
     return DatasourceConfig.model_validate({**cfg.model_dump(), "name": name, **DS_GRANULARITIES})
 
 
-def _on(model: SlayerModel, *, data_source: str, **update: Any) -> SlayerModel:
+def _on(model: SlayerDataset, *, data_source: str, **update: Any) -> SlayerDataset:
     return model.model_copy(update={"data_source": data_source, **update})
 
 
-def server_models(*, data_source: str) -> list[SlayerModel]:
+def server_models(*, data_source: str) -> list[SlayerDataset]:
     """DATE axes: the spine models, ``events`` and ``fy_orders``."""
     return [
         *(_on(x, data_source=data_source) for x in spine_models()),
@@ -64,7 +64,7 @@ def server_models(*, data_source: str) -> list[SlayerModel]:
     ]
 
 
-def server_models_ts(*, data_source: str) -> list[SlayerModel]:
+def server_models_ts(*, data_source: str) -> list[SlayerDataset]:
     """``orders`` over the TIMESTAMP-axis ``orders_ts`` table, plus ``customers`` and ``returns``."""
     models = spine_models(date_type=DataType.TIMESTAMP)
     return [
@@ -99,9 +99,9 @@ async def check_quarter_hour_year(engine: SlayerQueryEngine, *, data_source: str
 async def _buckets(engine: SlayerQueryEngine, *, data_source: str, model: str, column: str, granularity: str,
                    series: str | None = None, width: int = 10) -> dict[str, float]:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": model, "measures": [m("sum(amount)", "s")],
+        "population": model, "metrics": [m("sum(amount)", "s")],
         "time_dimensions": [{"dimension": column, "granularity": granularity}],
-        "filters": [f"series = '{series}'"] if series else [],
+        "filter": [f"series = '{series}'"] if series else [],
     }), data_source=data_source)
     return {bucket_key(value(r, column), width=width): float(value(r, "s")) for r in resp.data}
 

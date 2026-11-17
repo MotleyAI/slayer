@@ -23,7 +23,7 @@ from sqlglot.dialects.dialect import Dialect
 
 import slayer.engine.query_engine as query_engine_module
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.generator import SQLGenerator
 from tests import _statement_render_law as law
@@ -177,14 +177,14 @@ class TestLiveGenerator:
 # --------------------------------------------------------------------------- #
 # Every assembly seam compiles under the law.
 # --------------------------------------------------------------------------- #
-def _stats_models() -> list[SlayerModel]:
+def _stats_models() -> list[SlayerDataset]:
     orders = orders_model()
-    orders.joins = [ModelJoin(target_model="customers", join_pairs=[["id", "id"]])]
-    customers = SlayerModel(
+    orders.relationships = [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]
+    customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="tier", sql="tier", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="tier", sql="tier", datatype=DataType.TEXT),
         ],
     )
     return [orders, customers]
@@ -236,8 +236,8 @@ async def test_query_backed_expansion_composes_without_a_statement_render(ds_typ
     _, sql = await _expand(
         ds_type=ds_type,
         columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
         ],
         dimensions=["status"],
     )

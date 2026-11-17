@@ -45,7 +45,7 @@ def _law(condition: bool, *, detail: str) -> None:
 @pytest.mark.parametrize("label, dims, filters, population", _BASES)
 async def test_measure_does_not_requantify(chain_engine: SlayerQueryEngine, label, dims, filters,
                                            population) -> None:
-    base = await chain_engine.execute(SlayerQuery(dimensions=dims, filters=filters))
+    base = await chain_engine.execute(SlayerQuery(dimensions=dims, filter=filters))
     _law(base.population == population,
          detail=f"{label}: base population {base.population!r} != {population!r}")
     dim_cols = list(base.columns)
@@ -53,7 +53,7 @@ async def test_measure_does_not_requantify(chain_engine: SlayerQueryEngine, labe
 
     for measures in _MEASURE_SETS:
         resp = await chain_engine.execute(SlayerQuery(
-            dimensions=dims, filters=filters, measures=measures or None,
+            dimensions=dims, filter=filters, metrics=measures or None,
         ))
         _law(resp.population == population,
              detail=f"{label}: population moved to {resp.population!r} "

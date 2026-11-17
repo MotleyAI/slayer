@@ -144,8 +144,8 @@ def convert_osi_to_slayer(
     engine.run_sync(converter.collect_metadata(client=engine.client_for(ds)))
     result = converter.convert()
 
-    for model in result.models:
-        run_sync(storage.save_model(model))
+    for model in result.datasets:
+        run_sync(storage.save_dataset(model))
     return result
 
 

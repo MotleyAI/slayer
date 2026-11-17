@@ -49,7 +49,7 @@ from tests._dev1832_fixtures import (
     WINDOWED_INNER_BY_MONTH,
     WINDOWED_MULTI_BY_MONTH,
     XMODEL_TIER_CUMSUM_BY_MONTH,
-    ModelMeasure,
+    DatasetMetric,
     TimeDimension,
     TimeGranularity,
     broadcast_warnings,
@@ -128,8 +128,8 @@ def _monthly_bundle() -> ResolvedSourceBundle:
     monthly = next(m for m in models if m.name == "monthly")
     return ResolvedSourceBundle(
         dialect="duckdb",
-        source_model=monthly,
-        referenced_models=[m for m in models if m.name != "monthly"])
+        population=monthly,
+        referenced_datasets=[m for m in models if m.name != "monthly"])
 
 
 def _monthly_multi_bundle() -> ResolvedSourceBundle:
@@ -137,8 +137,8 @@ def _monthly_multi_bundle() -> ResolvedSourceBundle:
     mm = next(m for m in models if m.name == "monthly_multi")
     return ResolvedSourceBundle(
         dialect="duckdb",
-        source_model=mm,
-        referenced_models=[m for m in models if m.name != "monthly_multi"])
+        population=mm,
+        referenced_datasets=[m for m in models if m.name != "monthly_multi"])
 
 
 # --------------------------------------------------------------------------- #
@@ -150,7 +150,7 @@ class TestGrainedTransformConstituent:
     async def test_running_total_minus_one_by_month(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula=GRAINED_CUMSUM, name="m")],
+            measures=[DatasetMetric(expression=GRAINED_CUMSUM, name="m")],
             time_dimensions=month_td()))
         got = _by_month(resp, "m")
         assert got == pytest.approx(GRAINED_CUMSUM_BY_MONTH)
@@ -162,7 +162,7 @@ class TestUngrainedTransformConstituent:
     async def test_identity_plus_degenerate_warning(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula=UNGRAINED_CUMSUM, name="m")],
+            measures=[DatasetMetric(expression=UNGRAINED_CUMSUM, name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(UNGRAINED_CUMSUM_BY_MONTH)
         assert degenerate_warnings(resp), "expected a degenerate-reaggregation warning"
@@ -173,14 +173,14 @@ class TestUngrainedTransformConstituent:
         # coalesce leaves the non-null values unchanged.
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(
-                formula="coalesce(sum(cumsum(sum(amount))), 0)", name="m")],
+            measures=[DatasetMetric(
+                expression="coalesce(sum(cumsum(sum(amount))), 0)", name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(UNGRAINED_CUMSUM_BY_MONTH)
 
 
 def _year_td() -> TimeDimension:
-    return TimeDimension(dimension="ordered_at",
+    return TimeDimension(field="ordered_at",
                          granularity=TimeGranularity.YEAR)
 
 
@@ -194,11 +194,11 @@ class TestDualGranularityQueryGrain:
     def test_ungrained_inner_is_grained_at_both_buckets(self, tds):
         elab = elaborate_query(
             query=monthly_q(
-                measures=[ModelMeasure(formula="sum(rank(sum(amount), direction='desc'))", name="m")],
+                measures=[DatasetMetric(expression="sum(rank(sum(amount), direction='desc'))", name="m")],
                 time_dimensions=tds),
             bundle=_monthly_bundle())
         assert elab.prebound is not None
-        root = elab.prebound.declared_measures[-1].bound.value_key
+        root = elab.prebound.declared_metrics[-1].bound.value_key
         inner = next(k for k in walk_value_keys(root)
                      if isinstance(k, AggregateKey) and k is not root)
         assert inner.partition_keys is not None
@@ -211,7 +211,7 @@ class TestDualGranularityQueryGrain:
         # per-column grain would rank the lone yearly total (1 everywhere).
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula="sum(rank(sum(amount), direction='desc'))", name="m")],
+            measures=[DatasetMetric(expression="sum(rank(sum(amount), direction='desc'))", name="m")],
             time_dimensions=[*month_td(), _year_td()]))
         got = {month_key(row["monthly.ordered_at.month"]): row["monthly.m"]
                for row in resp.data}
@@ -225,7 +225,7 @@ class TestMixedTransformConstituent:
     async def test_rank_mixed_by_region(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(sales_q(
-            dimensions=["region"], measures=[ModelMeasure(formula=RANK_MIXED, name="m")]))
+            dimensions=["region"], measures=[DatasetMetric(expression=RANK_MIXED, name="m")]))
         got = {k[0]: v["sales.m"] for k, v in rows_by(resp, "sales.region").items()
                if v["sales.m"] is not None}
         assert got == pytest.approx(MIXED_RANK_SUM_BY_REGION)
@@ -234,7 +234,7 @@ class TestMixedTransformConstituent:
         _, engine = exec_backend
         resp = await engine.execute(orders_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula=JOINED_ROWLEAF_MIXED, name="m")]))
+            measures=[DatasetMetric(expression=JOINED_ROWLEAF_MIXED, name="m")]))
         got = {k: v["orders.m"] for k, v in status_key(resp).items()
                if v["orders.m"] is not None}
         assert got == pytest.approx(JOINED_ROWLEAF_MIXED_BY_STATUS)
@@ -246,7 +246,7 @@ class TestMixedTransformConstituent:
 class TestTransformSourceRejections:
     async def test_row_leaf_under_transform_rejected(self):
         query = orders_q(
-            measures=[ModelMeasure(formula="sum(cumsum(weight) - 1)", name="m")],
+            measures=[DatasetMetric(expression="sum(cumsum(weight) - 1)", name="m")],
             time_dimensions=month_td())
         with pytest.raises(ValueError, match="cannot consume the row-level") as ei:
             await gen(query)
@@ -258,7 +258,7 @@ class TestTransformSourceRejections:
         _, engine = exec_backend
         resp = await engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(rank(region, direction='desc'))", name="m")]))
+            measures=[DatasetMetric(expression="sum(rank(region, direction='desc'))", name="m")]))
         got = {k[0]: v["sales.m"] for k, v in rows_by(resp, "sales.region").items()}
         assert set(got) == {"North", "South", "East", "Gap", "Void"}
         assert all(v is not None for v in got.values())
@@ -268,8 +268,8 @@ class TestTransformSourceRejections:
         # The same time-axis error a dimension-position transform raises
         # (check_dimension_temporal_axis → TimeAxisError), position-neutral.
         query = monthly_q(
-            measures=[ModelMeasure(
-                formula="sum(cumsum(sum(amount, partition_by=region)))", name="m")],
+            measures=[DatasetMetric(
+                expression="sum(cumsum(sum(amount, partition_by=region)))", name="m")],
             time_dimensions=month_td())
         with pytest.raises(TimeAxisError, match="time axis"):
             await gen(query)
@@ -279,12 +279,12 @@ class TestTransformSourceRejections:
         # measures (a coarser producer grain would else reach planning).
         axis_missing = "sum(cumsum(sum(amount, partition_by=region)))"
         filter_query = monthly_q(
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
             filters=[f"{axis_missing} > 5"], time_dimensions=month_td())
         with pytest.raises(TimeAxisError, match="time axis"):
             await gen(filter_query)
         order_query = monthly_q(
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
             order=[{"column": axis_missing, "direction": "desc"}],
             time_dimensions=month_td())
         with pytest.raises(TimeAxisError, match="time axis"):
@@ -294,16 +294,16 @@ class TestTransformSourceRejections:
         # A transform inside an aggregate that is a scalar-call argument must still
         # reach the no-time-dimension guard (time attach + unresolved-time walk
         # descend into an aggregate arg).
-        query = monthly_q(measures=[ModelMeasure(
-            formula="coalesce(sum(cumsum(sum(amount))), 0)", name="m")])
+        query = monthly_q(measures=[DatasetMetric(
+            expression="coalesce(sum(cumsum(sum(amount))), 0)", name="m")])
         with pytest.raises(ValueError, match="unambiguous time dimension"):
             await gen(query)
 
     async def test_first_over_mixed_source_is_the_ranked_aggregate(self):
         query = sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula="first(quantity * avg(unit_price, partition_by=product), id)",
+            measures=[DatasetMetric(
+                expression="first(quantity * avg(unit_price, partition_by=product), id)",
                 name="m")])
         assert "ROW_NUMBER" in (await gen(query)).upper()
 
@@ -314,14 +314,14 @@ class TestTransformSourceRejections:
 class TestGrainedTransformPlanStructure:
     async def test_one_flat_with_and_parses(self):
         sql = await gen(monthly_q(
-            measures=[ModelMeasure(formula=GRAINED_CUMSUM, name="m")],
+            measures=[DatasetMetric(expression=GRAINED_CUMSUM, name="m")],
             time_dimensions=month_td()))
         assert len([ln for ln in sql.split("\n")
                     if ln.strip().upper().startswith("WITH ")]) <= 1, sql
 
     async def test_no_placeholder_leak_in_group_by(self):
         sql = await gen(monthly_q(
-            measures=[ModelMeasure(formula=GRAINED_CUMSUM, name="m")],
+            measures=[DatasetMetric(expression=GRAINED_CUMSUM, name="m")],
             time_dimensions=month_td()))
         tree = sqlglot.parse_one(sql, read="duckdb")
         for group in tree.find_all(exp.Group):
@@ -330,14 +330,14 @@ class TestGrainedTransformPlanStructure:
 
     async def test_scopes_closed(self):
         sql = await gen(monthly_q(
-            measures=[ModelMeasure(formula=GRAINED_CUMSUM, name="m")],
+            measures=[DatasetMetric(expression=GRAINED_CUMSUM, name="m")],
             time_dimensions=month_td()), dialect="duckdb")
         assert_scope_closed(sql, dialect="duckdb")
 
     def test_exactly_one_producer_for_the_transform(self):
         planned = plan_query(
             query=monthly_q(
-                measures=[ModelMeasure(formula=GRAINED_CUMSUM, name="m")],
+                measures=[DatasetMetric(expression=GRAINED_CUMSUM, name="m")],
                 time_dimensions=month_td()),
             bundle=_monthly_bundle())
         assert len(planned.regroup_attach_plans) == 1
@@ -350,7 +350,7 @@ class TestCollapsingConstituent:
     async def test_last_collapses_along_the_axis(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula=LAST_X, name="m")],
+            measures=[DatasetMetric(expression=LAST_X, name="m")],
             time_dimensions=month_td(), to_many_handling="broadcast"))
         assert _by_month(resp, "m") == pytest.approx(LAST_SUM_BY_MONTH)
         # The collapsed value drops the month axis, so it broadcasts across months.
@@ -359,7 +359,7 @@ class TestCollapsingConstituent:
     async def test_first_collapses_along_the_axis(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula=FIRST_X, name="m")],
+            measures=[DatasetMetric(expression=FIRST_X, name="m")],
             time_dimensions=month_td(), to_many_handling="broadcast"))
         assert _by_month(resp, "m") == pytest.approx(FIRST_SUM_BY_MONTH)
         assert broadcast_warnings(resp)
@@ -367,7 +367,7 @@ class TestCollapsingConstituent:
     async def test_preserving_minus_collapsing_no_warning(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula=CUMSUM_MINUS_LAST, name="m")],
+            measures=[DatasetMetric(expression=CUMSUM_MINUS_LAST, name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(CUMSUM_MINUS_LAST_BY_MONTH)
         assert not broadcast_warnings(resp), "cumsum keeps the axis; no broadcast"
@@ -376,7 +376,7 @@ class TestCollapsingConstituent:
         # last-sum is 45 > 40 for every month, so every cell survives unchanged.
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula=LAST_X, name="m")],
+            measures=[DatasetMetric(expression=LAST_X, name="m")],
             filters=[f"{LAST_X} > 40"], time_dimensions=month_td(), to_many_handling="broadcast"))
         assert _by_month(resp, "m") == pytest.approx(LAST_SUM_BY_MONTH)
 
@@ -387,7 +387,7 @@ class TestCollapsingRejections:
         # dimension is the Axiom 9 residue error — collapse does not bypass it.
         query = monthly_q(
             dimensions=[{"expression": "last(sum(amount))", "name": "b"}],
-            measures=[ModelMeasure(formula=UNGRAINED_CUMSUM, name="m")],
+            measures=[DatasetMetric(expression=UNGRAINED_CUMSUM, name="m")],
             time_dimensions=month_td())
         with pytest.raises(ValueError, match="partition_by"):
             await gen(query)
@@ -396,7 +396,7 @@ class TestCollapsingRejections:
 class TestCollapsingPlanStructure:
     def test_one_reaggregation_producer_no_top_level_max(self):
         planned = plan_query(
-            query=monthly_q(measures=[ModelMeasure(formula=LAST_X, name="m")],
+            query=monthly_q(measures=[DatasetMetric(expression=LAST_X, name="m")],
                             time_dimensions=month_td()),
             bundle=_monthly_bundle())
         # The synthesized max is discovered inside the carrier sub-plan, so the
@@ -404,7 +404,7 @@ class TestCollapsingPlanStructure:
         assert len(planned.regroup_attach_plans) == 1
 
     async def test_one_flat_with_and_scopes_closed(self):
-        sql = await gen(monthly_q(measures=[ModelMeasure(formula=LAST_X, name="m")],
+        sql = await gen(monthly_q(measures=[DatasetMetric(expression=LAST_X, name="m")],
                                   time_dimensions=month_td()), dialect="duckdb")
         assert len([ln for ln in sql.split("\n")
                     if ln.strip().upper().startswith("WITH ")]) <= 1, sql
@@ -426,7 +426,7 @@ class TestTransformFamily:
     async def test_family_by_month(self, exec_backend: tuple[str, SlayerQueryEngine], op, oracle):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula=f"sum({op})", name="m")],
+            measures=[DatasetMetric(expression=f"sum({op})", name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(oracle)
 
@@ -439,7 +439,7 @@ class TestSameOpTransformConstituents:
     async def test_two_same_op_constituents_get_distinct_aliases(self):
         sql = await gen(monthly_q(
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula=TWO_CUMSUM, name="m")],
+            measures=[DatasetMetric(expression=TWO_CUMSUM, name="m")],
         ))
         assert "cumsum_2" in sql, sql
 
@@ -449,14 +449,14 @@ class TestSameOpTransformConstituents:
 # --------------------------------------------------------------------------- #
 def _reagg_plan(formula: str):
     return plan_query(
-        query=monthly_q(measures=[ModelMeasure(formula=formula, name="m")],
+        query=monthly_q(measures=[DatasetMetric(expression=formula, name="m")],
                         time_dimensions=month_td()),
         bundle=_monthly_bundle())
 
 
 def _reagg_multi_plan(formula: str):
     return plan_query(
-        query=monthly_multi_q(measures=[ModelMeasure(formula=formula, name="m")],
+        query=monthly_multi_q(measures=[DatasetMetric(expression=formula, name="m")],
                               time_dimensions=month_td()),
         bundle=_monthly_multi_bundle())
 
@@ -476,28 +476,28 @@ class TestReaggMixedSource:
     async def test_collapse_mixed_executes(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula=COLLAPSE_MIXED, name="m")],
+            measures=[DatasetMetric(expression=COLLAPSE_MIXED, name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(COLLAPSE_MIXED_BY_MONTH)
 
     async def test_handwritten_min_mixed_executes(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula=HANDWRITTEN_MIN, name="m")],
+            measures=[DatasetMetric(expression=HANDWRITTEN_MIN, name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(HANDWRITTEN_MIN_MIXED_BY_MONTH)
 
     async def test_empty_grain_mixed_broadcasts_one_value(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula=EMPTY_GRAIN_MIXED, name="m")],
+            measures=[DatasetMetric(expression=EMPTY_GRAIN_MIXED, name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(EMPTY_GRAIN_MIXED_BY_MONTH)
 
     async def test_reaggregation_as_attached_parameter(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula=WAVG_MIN_PARAM, name="m")],
+            measures=[DatasetMetric(expression=WAVG_MIN_PARAM, name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(WAVG_MIN_MIXED_BY_MONTH)
 
@@ -505,7 +505,7 @@ class TestReaggMixedSource:
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=MIXED_COMBINED, name="m")],
+            measures=[DatasetMetric(expression=MIXED_COMBINED, name="m")],
             time_dimensions=month_td()))
         assert len(resp.data) == 6  # (region, month) cells incl. West's NULL row
         assert _region_month(resp) == pytest.approx(MIXED_COMBINED_BY_REGION_MONTH)
@@ -513,7 +513,7 @@ class TestReaggMixedSource:
     async def test_collapse_mixed_in_filter_position(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
             filters=[f"{COLLAPSE_MIXED} > 400"], time_dimensions=month_td()))
         # collapse-mixed is Jan 375 / Feb 825 / Mar 900 → only Feb, Mar survive,
         # each keeping its unfiltered amount:sum (a measure-typed filter prunes only).
@@ -522,7 +522,7 @@ class TestReaggMixedSource:
     async def test_collapse_mixed_in_order_position(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
             order=[{"column": COLLAPSE_MIXED, "direction": "desc"}],
             time_dimensions=month_td()))
         month_col = next(c for c in resp.columns if "ordered_at" in c)
@@ -547,7 +547,7 @@ class TestReaggMixedPlanStructure:
 
     async def test_one_flat_with_scopes_closed_no_leak(self):
         sql = await gen(monthly_q(
-            measures=[ModelMeasure(formula=HANDWRITTEN_MIN, name="m")],
+            measures=[DatasetMetric(expression=HANDWRITTEN_MIN, name="m")],
             time_dimensions=month_td()), dialect="duckdb")
         assert len([ln for ln in sql.split("\n")
                     if ln.strip().upper().startswith("WITH ")]) <= 1, sql
@@ -557,11 +557,11 @@ class TestReaggMixedPlanStructure:
     async def test_adding_mixed_reagg_is_cardinality_neutral(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         base = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
             time_dimensions=month_td()))
         with_mixed = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula="sum(amount)", name="s"),
-                      ModelMeasure(formula=HANDWRITTEN_MIN, name="m")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s"),
+                      DatasetMetric(expression=HANDWRITTEN_MIN, name="m")],
             time_dimensions=month_td()))
         assert len(with_mixed.data) == len(base.data)
         # identical rows and identical shared-column (s) values, not just row count.
@@ -577,7 +577,7 @@ class TestReaggMixedModeAxis:
         _, engine = exec_backend
         resp = await engine.execute(orders_q(
             dimensions=[FAN_DIM],
-            measures=[ModelMeasure(formula=MIXED_FAN, name="m")],
+            measures=[DatasetMetric(expression=MIXED_FAN, name="m")],
             to_many_handling="broadcast"))
         vals = [row["orders.m"] for row in resp.data if row["orders.m"] is not None]
         # the SAME non-null value repeats across at least two fanning cells (the
@@ -590,7 +590,7 @@ class TestReaggMixedModeAxis:
         _, engine = exec_backend
         query = orders_q(
             dimensions=[FAN_DIM],
-            measures=[ModelMeasure(formula=MIXED_FAN, name="m")],
+            measures=[DatasetMetric(expression=MIXED_FAN, name="m")],
             to_many_handling="error")
         with pytest.raises((SlayerError, ValueError)) as ei:
             await engine.execute(query)
@@ -606,7 +606,7 @@ class TestWindowedInnerConstituent:
     async def test_executes_three_buckets_all_nonnull(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
-            measures=[ModelMeasure(formula=WINDOWED_INNER, name="m")],
+            measures=[DatasetMetric(expression=WINDOWED_INNER, name="m")],
             time_dimensions=month_td()))
         got = _by_month(resp, "m")
         assert got == pytest.approx(WINDOWED_INNER_BY_MONTH)
@@ -627,7 +627,7 @@ class TestWindowedInnerConstituent:
 
     async def test_one_flat_with_scopes_closed_no_leak(self):
         sql = await gen(monthly_q(
-            measures=[ModelMeasure(formula=WINDOWED_INNER, name="m")],
+            measures=[DatasetMetric(expression=WINDOWED_INNER, name="m")],
             time_dimensions=month_td()), dialect="duckdb")
         assert len([ln for ln in sql.split("\n")
                     if ln.strip().upper().startswith("WITH ")]) <= 1, sql
@@ -637,7 +637,7 @@ class TestWindowedInnerConstituent:
     async def test_rank_isolates_null_cells_on_postgres(self):
         # Postgres's native DESC is NULLS FIRST; the NULL window cell must rank NULL, never 1.
         sql = await gen(monthly_q(
-            measures=[ModelMeasure(formula=WINDOWED_INNER, name="m")],
+            measures=[DatasetMetric(expression=WINDOWED_INNER, name="m")],
             time_dimensions=month_td()), dialect="postgres")
         [window] = rank_windows(sql, dialect="postgres")
         assert window.fn == "RANK", sql
@@ -655,7 +655,7 @@ class TestCrossModelGrainedInnerBoundary:
     @pytest.mark.parametrize("mode", ["broadcast", "error"])
     async def test_host_time_axis_fails_closed_every_mode(self, mode):
         query = orders_q(
-            measures=[ModelMeasure(formula=XMODEL_BOUNDARY, name="m")],
+            measures=[DatasetMetric(expression=XMODEL_BOUNDARY, name="m")],
             time_dimensions=month_td(), to_many_handling=mode)
         with pytest.raises(ValueError, match="partition_by") as ei:
             await gen(query)
@@ -669,7 +669,7 @@ class TestCrossModelGrainedInnerBoundary:
     async def test_host_time_axis_associates_by_default(self, exec_backend: tuple[str, SlayerQueryEngine], mode):
         _, engine = exec_backend
         resp = await engine.execute(orders_q(
-            measures=[ModelMeasure(formula=XMODEL_BOUNDARY, name="m")],
+            measures=[DatasetMetric(expression=XMODEL_BOUNDARY, name="m")],
             time_dimensions=month_td(), to_many_handling=mode))
         assert _by_month(resp, "m") == pytest.approx(
             {"2024-01": 100.0, "2024-02": 150.0, "2024-03": 200.0, "2024-04": 420.0})
@@ -677,7 +677,7 @@ class TestCrossModelGrainedInnerBoundary:
     async def test_to_one_cross_model_partition_key_executes(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(orders_q(
-            measures=[ModelMeasure(formula=XMODEL_TOONE, name="m")],
+            measures=[DatasetMetric(expression=XMODEL_TOONE, name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(XMODEL_TIER_CUMSUM_BY_MONTH)
 
@@ -685,7 +685,7 @@ class TestCrossModelGrainedInnerBoundary:
         _, engine = exec_backend
         resp = await engine.execute(orders_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula=XMODEL_CONTRAST, name="w")],
+            measures=[DatasetMetric(expression=XMODEL_CONTRAST, name="w")],
             to_many_handling="associate"))
         by = {k: v["orders.w"] for k, v in status_key(resp).items()}
         assert by == pytest.approx({"new": 290.0, "ok": 420.0})
@@ -704,7 +704,7 @@ class TestReaggAxiomCompliance:
     async def test_windowed_pure_reagg_counts_cells_not_rows(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_multi_q(
-            measures=[ModelMeasure(formula=WINDOWED_INNER, name="m")],
+            measures=[DatasetMetric(expression=WINDOWED_INNER, name="m")],
             time_dimensions=month_td()))
         got = _by_month(resp, "m")
         assert got == pytest.approx(WINDOWED_MULTI_BY_MONTH)
@@ -715,7 +715,7 @@ class TestReaggAxiomCompliance:
     async def test_mixed_reagg_counts_rows(self, exec_backend: tuple[str, SlayerQueryEngine]):
         _, engine = exec_backend
         resp = await engine.execute(monthly_multi_q(
-            measures=[ModelMeasure(formula=HANDWRITTEN_MIN, name="m")],
+            measures=[DatasetMetric(expression=HANDWRITTEN_MIN, name="m")],
             time_dimensions=month_td()))
         assert _by_month(resp, "m") == pytest.approx(MIXED_MULTI_BY_MONTH)
 
@@ -734,8 +734,8 @@ class TestReaggAxiomCompliance:
         _, engine = exec_backend
         resp = await engine.execute(monthly_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=REAGG_STANDALONE, name="a"),
-                      ModelMeasure(formula=HANDWRITTEN_MIN, name="b")],
+            measures=[DatasetMetric(expression=REAGG_STANDALONE, name="a"),
+                      DatasetMetric(expression=HANDWRITTEN_MIN, name="b")],
             time_dimensions=month_td()))
         mcol = next(c for c in resp.columns if "ordered_at" in c)
 

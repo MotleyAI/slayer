@@ -1,9 +1,9 @@
 """v1 → v2 schema migrations for SlayerModel and SlayerQuery.
 
-The v2 schema collapses ``SlayerModel.dimensions`` and ``SlayerModel.measures``
-into a single ``columns`` list, and repurposes ``SlayerModel.measures`` to hold
+The v2 schema collapses ``SlayerModel.dimensions`` and ``SlayerModel.metrics``
+into a single ``fields`` list, and repurposes ``SlayerModel.metrics`` to hold
 named formulas (the shape v1 had under ``SlayerQuery.fields``). It also renames
-``SlayerQuery.fields`` to ``SlayerQuery.measures`` to match.
+``SlayerQuery.fields`` to ``SlayerQuery.metrics`` to match.
 
 These converters run as pure dict→dict transforms before Pydantic validates,
 so they can rename keys, restructure nested objects, and reject unmigratable
@@ -14,29 +14,29 @@ from slayer.core.enums import BUILTIN_AGGREGATIONS
 from slayer.storage.migrations import register_migration
 
 
-def _migrate_model_extension_v1_to_v2(ext: dict) -> dict:
+def _migrate_dataset_extension_v1_to_v2(ext: dict) -> dict:
     """Migrate a v1 ``ModelExtension`` dict to v2.
 
     v1 had ``dimensions`` (Dimension objects) and ``measures`` (Measure objects).
-    v2 has ``columns`` (Column objects, the merge of both) and ``measures``
+    v2 has ``fields`` (Column objects, the merge of both) and ``measures``
     (ModelMeasure formula objects — empty after migration). No-op if the
     extension is already in v2 shape.
     """
-    if not _looks_like_v1_model(ext):
+    if not _looks_like_v1_dataset(ext):
         return ext
 
     out = dict(ext)
-    columns: list[dict] = []
+    fields: list[dict] = []
     seen: set[str] = set()
     collisions: list[str] = []
 
     for dim in out.pop("dimensions", None) or []:
         if isinstance(dim, dict):
-            _record(dict(dim), columns, seen, collisions)
+            _record(dict(dim), fields, seen, collisions)
 
     for meas in out.pop("measures", None) or []:
         if isinstance(meas, dict):
-            _record(_migrate_measure_dict(dict(meas)), columns, seen, collisions)
+            _record(_migrate_metric_dict(dict(meas)), fields, seen, collisions)
 
     if collisions:
         raise ValueError(
@@ -45,12 +45,12 @@ def _migrate_model_extension_v1_to_v2(ext: dict) -> dict:
             f"migrating."
         )
 
-    out["columns"] = columns
+    out["columns"] = fields
     out["measures"] = []  # repurposed; users may add ModelMeasure formulas later
     return out
 
 
-def _migrate_measure_dict(col: dict) -> dict:
+def _migrate_metric_dict(col: dict) -> dict:
     """Apply v1-Measure-specific migrations to a measure dict bound for the
     columns list.
 
@@ -70,29 +70,29 @@ def _migrate_measure_dict(col: dict) -> dict:
 
 def _record(
     col: dict,
-    columns: list[dict],
+    fields: list[dict],
     seen: set[str],
     collisions: list[str],
 ) -> None:
-    """Append ``col`` to ``columns`` unless its name collides with a prior entry."""
+    """Append ``col`` to ``fields`` unless its name collides with a prior entry."""
     n = col.get("name")
     if not isinstance(n, str):
         # Pydantic will raise on missing/invalid name later; just append and let it.
-        columns.append(col)
+        fields.append(col)
         return
     if n in seen:
         collisions.append(n)
     else:
         seen.add(n)
-        columns.append(col)
+        fields.append(col)
 
 
-def _looks_like_v1_model(data: dict) -> bool:
+def _looks_like_v1_dataset(data: dict) -> bool:
     """Decide whether to actually run the v1→v2 SlayerModel converter.
 
     The chain walker invokes this migration whenever ``version < 2`` (including
     the no-version case for fresh Pydantic constructions, which default to v1).
-    But fresh v2 constructions arrive here with v2-shaped keys (``columns``)
+    But fresh v2 constructions arrive here with v2-shaped keys (``fields``)
     that we must not clobber.
 
     Heuristics for "this is v1 data":
@@ -113,13 +113,13 @@ def _looks_like_v1_model(data: dict) -> bool:
 
 
 @register_migration("SlayerModel", 1)
-def _model_v1_to_v2(data: dict) -> dict:
-    """Merge v1 ``dimensions`` + ``measures`` into v2 ``columns``; reset ``measures``.
+def _dataset_v1_to_v2(data: dict) -> dict:
+    """Merge v1 ``dimensions`` + ``measures`` into v2 ``fields``; reset ``measures``.
 
     Also recursively migrates ``source_queries`` entries so re-saves don't
     persist v1 inner shapes. See module docstring for the rationale.
     """
-    if _looks_like_v1_model(data):
+    if _looks_like_v1_dataset(data):
         columns: list[dict] = []
         seen: set[str] = set()
         collisions: list[str] = []
@@ -133,7 +133,7 @@ def _model_v1_to_v2(data: dict) -> dict:
         # (b) v1 Measures → Columns (with measure-specific defaults).
         for meas in data.pop("measures", None) or []:
             if isinstance(meas, dict):
-                _record(_migrate_measure_dict(dict(meas)), columns, seen, collisions)
+                _record(_migrate_metric_dict(dict(meas)), columns, seen, collisions)
 
         if collisions:
             raise ValueError(
@@ -184,6 +184,6 @@ def _query_v1_to_v2(data: dict) -> dict:
     ):
         # Inline ModelExtension — no version of its own; piggyback this query's
         # v1→v2 migration to rename dimensions→columns and convert measures.
-        data["source_model"] = _migrate_model_extension_v1_to_v2(sm)
+        data["source_model"] = _migrate_dataset_extension_v1_to_v2(sm)
 
     return data

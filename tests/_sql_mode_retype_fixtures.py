@@ -13,7 +13,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.query_engine import SlayerQueryEngine
 
@@ -37,15 +37,15 @@ def sql_shapes(*, table: str, column: str, untypeable: str | None) -> list[Any]:
     return shapes
 
 
-def stale_sql_model(*, sql: str, column: str, data_source: str) -> SlayerModel:
+def stale_sql_model(*, sql: str, column: str, data_source: str) -> SlayerDataset:
     """The model as stored before list columns: the list typed ``DOUBLE``."""
-    return SlayerModel(name=MODEL, sql=sql, data_source=data_source, columns=[
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name=column, type=DataType.DOUBLE, allowed_aggregations=["sum", "count"])])
+    return SlayerDataset(name=MODEL, sql=sql, data_source=data_source, fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name=column, datatype=DataType.DOUBLE, allowed_aggregations=["sum", "count"])])
 
 
 async def check_validation_finding(engine: SlayerQueryEngine, *, data_source: str, column: str) -> None:
-    entries = [e.model_dump(mode="json") for e in await engine.validate_models(data_source=data_source)]
+    entries = [e.model_dump(mode="json") for e in await engine.validate_datasets(data_source=data_source)]
     mine = [e for e in entries if e.get("model_name") == MODEL]
     deletes = [e for e in mine if e.get("tool") == "delete_model" or column in ((e.get("remove") or {}).get("columns") or [])]
     assert deletes == [], mine
@@ -66,9 +66,9 @@ async def check_reingest_retypes(
 ) -> None:
     result = await ingest_datasource_idempotent(datasource=datasource, storage=engine.storage,
                                                 client=engine.client_for(datasource), include_tables=[table])
-    assert any(a.model_name == MODEL and column in a.widened_columns for a in result.additions), result.additions
-    loaded = await engine.storage.get_model(MODEL, data_source=datasource.name)
+    assert any(a.dataset_name == MODEL and column in a.widened_fields for a in result.additions), result.additions
+    loaded = await engine.storage.get_dataset(MODEL, data_source=datasource.name)
     assert loaded is not None
-    col = loaded.get_column(column)
+    col = loaded.get_field(column)
     assert col is not None
-    assert (col.type, col.element_type, col.allowed_aggregations) == (DataType.ARRAY, element, ["count"])
+    assert (col.datatype, col.element_type, col.allowed_aggregations) == (DataType.ARRAY, element, ["count"])

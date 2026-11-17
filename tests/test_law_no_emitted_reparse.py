@@ -267,8 +267,8 @@ async def _every_operation(engine: SlayerQueryEngine) -> None:
     await engine.execute(SHAPES["query_backed"])
     assert await engine.get_result_column_types("orders")
     assert await engine.get_result_column_types("spend")
-    await engine.detect_join_cardinality(data_source="test", model="customers")
-    await engine.create_model_from_query(
+    await engine.detect_relationship_cardinality(data_source="test", dataset="customers")
+    await engine.create_dataset_from_query(
         {"source_model": "orders", "dimensions": ["status"], "measures": ["sum(amount)"]}, name="by_status",
     )
 

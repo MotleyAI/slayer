@@ -26,10 +26,10 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.search.service import (
@@ -47,76 +47,76 @@ from slayer.storage.yaml_storage import YAMLStorage
 # ---------------------------------------------------------------------------
 
 
-def _make_corpus_models() -> list[SlayerModel]:
+def _make_corpus_models() -> list[SlayerDataset]:
     return [
-        SlayerModel(
+        SlayerDataset(
             name="orders",
             sql_table="public.orders",
             data_source="warehouse",
             description="Checkout orders.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(
                     name="amount",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                     description="Net amount in cents.",
                 ),
-                Column(
+                DatasetField(
                     name="status",
-                    type=DataType.TEXT,
+                    datatype=DataType.TEXT,
                     description="paid|refunded.",
                 ),
-                Column(
+                DatasetField(
                     name="internal_token",
-                    type=DataType.TEXT,
+                    datatype=DataType.TEXT,
                     description="Internal payment token.",
                     hidden=True,
                 ),
             ],
-            measures=[
-                ModelMeasure(
+            metrics=[
+                DatasetMetric(
                     name="aov",
-                    formula="sum(amount) / count(*)",
+                    expression="sum(amount) / count(*)",
                     description="Average order value.",
                 ),
             ],
             aggregations=[
                 Aggregation(
                     name="paid_only_sum",
-                    formula="SUM(CASE WHEN status='paid' THEN {col} END)",
+                    expression="SUM(CASE WHEN status='paid' THEN {col} END)",
                     description="Sum gated by paid status.",
                 ),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="customers",
             sql_table="public.customers",
             data_source="warehouse",
             description="Customer master.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="email", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="email", datatype=DataType.TEXT),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="internal_audit",
             sql_table="public.audit",
             data_source="warehouse",
             description="Internal audit log.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="event", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="event", datatype=DataType.TEXT),
             ],
             hidden=True,
         ),
-        SlayerModel(
+        SlayerDataset(
             name="products",
             sql_table="public.products",
             data_source="other_db",
             description="Product catalog (other ds).",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="name", datatype=DataType.TEXT),
             ],
         ),
     ]
@@ -139,7 +139,7 @@ async def storage() -> AsyncIterator[YAMLStorage]:
             DatasourceConfig(name="empty_ds", type="sqlite", database=":memory:"),
         )
         for m in _make_corpus_models():
-            await s.save_model(m)
+            await s.save_dataset(m)
         yield s
 
 
@@ -373,8 +373,8 @@ async def test_memory_id_in_entities_surfaces_query_bearing_in_example_queries(
         learning="example: revenue rollup pattern",
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(amount)")],
         ),
     )
     resp = await service.search(
@@ -440,8 +440,8 @@ async def test_query_arg_entities_also_surface_in_entities_bucket(
     service: SearchService,
 ) -> None:
     q = SlayerQuery(
-        source_model="orders",
-        measures=[ModelMeasure(formula="sum(amount)")],
+        population="orders",
+        metrics=[DatasetMetric(expression="sum(amount)")],
     )
     resp = await service.search(
         query=q,
@@ -611,7 +611,7 @@ async def test_named_hit_with_question_active_reuses_corpus_path(
             "direct-render fallback called when corpus already covers the canonical"
         )
     monkeypatch.setattr(
-        "slayer.search.service.collect_model_entity_pairs",
+        "slayer.search.service.collect_dataset_entity_pairs",
         fail_if_called,
     )
     resp = await service.search(
@@ -684,14 +684,14 @@ async def test_hidden_column_drops_entity_but_memories_still_surface(
 async def _make_amount_stale(storage: YAMLStorage) -> None:
     """Re-save ``warehouse.orders`` without the ``amount`` column so any
     memory tagged or query referencing ``amount`` becomes stale."""
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="warehouse",
         description="Checkout orders.",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", datatype=DataType.TEXT),
         ],
     ))
 
@@ -703,8 +703,8 @@ async def test_stale_query_warning_for_named_memory_id_default_cap(
         learning="legacy revenue lookup",
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(amount)")],
         ),
     )
     # Make `amount` stale — the attached query no longer resolves.
@@ -733,8 +733,8 @@ async def test_stale_query_warning_for_named_memory_id_under_tight_cap(
         learning="legacy revenue lookup",
         entities=["warehouse.orders.amount"],
         query=SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(amount)")],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(amount)")],
         ),
     )
     await _make_amount_stale(storage)
@@ -776,7 +776,7 @@ async def test_lookup_returns_missing_when_model_deleted_after_resolution(
 
     # Delete the parent model. Resolution is not re-run; we simulate the
     # race by deleting between resolve and lookup at the function level.
-    await storage.delete_model("orders", data_source="warehouse")
+    await storage.delete_dataset("orders", data_source="warehouse")
     result = await _lookup_named_entity(
         canonical=canonical, storage=storage, corpus=None,
     )

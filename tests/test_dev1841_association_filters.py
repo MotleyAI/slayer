@@ -24,13 +24,13 @@ from tests._dev1840_fixtures import dev1840_models
 from tests._dev1841_fixtures import (
     ASSOC_APP_SPEND_BY_STATUS,
     ASSOC_BASIC_SPEND_BY_STATUS,
-    ModelMeasure,
+    DatasetMetric,
     assoc_q,
     make_exec_engine,
     status_key,
 )
 
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

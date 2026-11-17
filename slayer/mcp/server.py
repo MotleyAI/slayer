@@ -15,22 +15,22 @@ from sqlalchemy.exc import DatabaseError
 
 from slayer import __version__, usage_reporting
 from slayer.core.errors import (
-    AmbiguousModelError,
+    AmbiguousDatasetError,
     EntityResolutionError,
     MemoryNotFoundError,
     SlayerError,
 )
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.format import encode_json, encode_text
 from slayer.core.granularity import CustomGranularity
-from slayer.core.join_edges import JoinEdgeRef, edge_reference, resolve_join_refs, without_joins
+from slayer.core.relationship_edges import RelationshipEdgeRef, edge_reference, resolve_relationship_refs, without_relationships
 from slayer.core.query import QueryRefinement, SlayerQuery, deprecated_inputs_of
 from slayer.core.recommend import render_recommendation_markdown
 from slayer.core.warnings import ResponseTruncationWarning, SlayerWarning
@@ -47,14 +47,14 @@ from slayer.live_schema.ingestion import (
     key_read_failures_header,
     list_ingestable_objects,
 )
-from slayer.live_schema.schema_drift import IdempotentIngestResult, IngestionError, ModelAddition, ToDeleteEntry
+from slayer.live_schema.schema_drift import IdempotentIngestResult, IngestionError, DatasetAddition, ToDeleteEntry
 from slayer.live_schema.schema_scope import schema_ref_from_token, validate_scope_args
 from slayer.search.service import handle_edit_refresh
 from slayer.engine.query_engine import ClientFactory, SlayerQueryEngine, SlayerResponse
 from slayer.engine.response_meta import FieldMetadata, ResponseAttributes
 from slayer.database.client import SqlClient, SqlClientError
 from slayer.memories.help_seed import seed_help_memories
-from slayer.inspect.model_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
+from slayer.inspect.dataset_render import (  # noqa: F401 — re-exported for backward-compat (tests + other modules import these names from slayer.mcp.server)
     _build_sample_query_args,
     _escape_md_cell,
     _format_meta,
@@ -64,13 +64,13 @@ from slayer.inspect.model_render import (  # noqa: F401 — re-exported for back
     _render_inspect_footer,
     _resolve_inspect_sections,
     _source_type_for,
-    _strip_model_prefix,
+    _strip_dataset_prefix,
     _truncate_description,
-    render_model_inspection,
+    render_dataset_inspection,
 )
 from slayer.inspect.collection_render import (
     render_datasource_list,
-    render_models_summary,
+    render_datasets_summary,
 )
 from slayer.inspect.service import InspectService
 from slayer.memories.service import MemoryService
@@ -232,7 +232,7 @@ def _set_server_version(mcp) -> None:
         logger.debug("MCP serverInfo.version is read-only; leaving it", exc_info=True)
 
 
-def _ambiguous_with_mcp_hint(exc: AmbiguousModelError) -> str:
+def _ambiguous_with_mcp_hint(exc: AmbiguousDatasetError) -> str:
     """Render an ``AmbiguousModelError`` with an MCP-specific remediation hint."""
     return (
         f"{exc} Pass data_source=... to this tool, or use the "
@@ -304,72 +304,72 @@ async def _empty_ingest_message(*, schema_name: str, client: SqlClient) -> str:
     )
 
 
-def _addition_has_changes(a: ModelAddition) -> bool:
+def _addition_has_changes(a: DatasetAddition) -> bool:
     """True when a non-created addition carries any change worth rendering."""
     return bool(
-        a.new_columns
-        or a.new_joins
-        or getattr(a, "named_joins", None)
-        or getattr(a, "widened_columns", None)
+        a.new_fields
+        or a.new_relationships
+        or getattr(a, "named_relationships", None)
+        or getattr(a, "widened_fields", None)
         or getattr(a, "kind_change", None)
-        or getattr(a, "described_columns", None)
-        or getattr(a, "model_described", False)
+        or getattr(a, "described_fields", None)
+        or getattr(a, "dataset_described", False)
     )
 
 
-def _render_new_models_section(new_models: list[ModelAddition]) -> list[str]:
-    if not new_models:
+def _render_new_datasets_section(new_datasets: list[DatasetAddition]) -> list[str]:
+    if not new_datasets:
         return []
-    lines = [f"Created {len(new_models)} new model(s):"]
-    for a in new_models:
-        described = getattr(a, "described_columns", []) or []
+    lines = [f"Created {len(new_datasets)} new model(s):"]
+    for a in new_datasets:
+        described = getattr(a, "described_fields", []) or []
         suffix = f", {len(described)} described" if described else ""
         lines.append(
-            f"- {a.model_name} ({len(a.new_columns)} columns, "
-            f"{len(a.new_joins)} joins{suffix})"
+            f"- {a.dataset_name} ({len(a.new_fields)} columns, "
+            f"{len(a.new_relationships)} joins{suffix})"
         )
     return lines
 
 
-def _addition_update_details(a: ModelAddition) -> list[str]:
+def _addition_update_details(a: DatasetAddition) -> list[str]:
     """Detail fragments for one non-created addition, in CLI-renderer order."""
     details = []
-    if a.new_columns:
-        details.append(f"+columns: {', '.join(a.new_columns)}")
-    if a.new_joins:
-        details.append(f"+joins: {', '.join(a.new_joins)}")
-    named = getattr(a, "named_joins", []) or []
+    if a.new_fields:
+        details.append(f"+columns: {', '.join(a.new_fields)}")
+    if a.new_relationships:
+        details.append(f"+joins: {', '.join(a.new_relationships)}")
+    named = getattr(a, "named_relationships", []) or []
     if named:
         details.append(f"named joins: {', '.join(named)}")
-    widened = getattr(a, "widened_columns", []) or []
+    widened = getattr(a, "widened_fields", []) or []
     if widened:
         details.append(f"widened: {', '.join(widened)}")
     kind_change = getattr(a, "kind_change", None)
     if kind_change:
         details.append(f"source_kind: {kind_change}")
-    described = getattr(a, "described_columns", []) or []
+    described = getattr(a, "described_fields", []) or []
     if described:
         details.append(f"+descriptions: {', '.join(described)}")
-    if getattr(a, "model_described", False):
+    if getattr(a, "dataset_described", False):
         details.append("+model description")
     return details
 
 
-def _render_updated_section(updated: list[ModelAddition]) -> list[str]:
+def _render_updated_section(updated: list[DatasetAddition]) -> list[str]:
     if not updated:
         return []
     lines = [f"Updated {len(updated)} existing model(s):"]
     for a in updated:
-        lines.append(f"- {a.model_name} ({'; '.join(_addition_update_details(a))})")
+        lines.append(f"- {a.dataset_name} ({'; '.join(_addition_update_details(a))})")
     return lines
 
 
-def _render_unchanged_section(unchanged: list[ModelAddition]) -> list[str]:
+def _render_unchanged_section(unchanged: list[DatasetAddition]) -> list[str]:
     if not unchanged:
         return []
     return [
         f"Re-introspected {len(unchanged)} unchanged model(s): "
-        f"{', '.join(a.model_name for a in unchanged)}"
+        f"{', '.join(a.dataset_name for a in unchanged)}"
     ]
 
 
@@ -377,7 +377,7 @@ def _render_drift_section(to_delete: list[ToDeleteEntry]) -> list[str]:
     if not to_delete:
         return []
     out = ["", "Pending drift (run validate_models / apply manually):"]
-    out.extend(f"- {entry.tool}: {entry.model_name}" for entry in to_delete)
+    out.extend(f"- {entry.tool}: {entry.dataset_name}" for entry in to_delete)
     return out
 
 
@@ -435,7 +435,7 @@ def _render_errors_section(errors: list[IngestionError]) -> list[str]:
     if not errors:
         return []
     out = ["", f"Errors ({len(errors)}):"]
-    out.extend(f"- {err.model_name}: {err.error}" for err in errors)
+    out.extend(f"- {err.dataset_name}: {err.error}" for err in errors)
     return out
 
 
@@ -446,7 +446,7 @@ async def _render_ingest_result(
     ds: DatasourceConfig,
     client: SqlClient,
 ) -> str:
-    """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource_models`` tool."""
+    """Render an ``IdempotentIngestResult`` for the MCP ``ingest_datasource`` tool."""
     additions = list(result.additions)
     # Read defensively — older result shapes may lack these attributes.
     skipped = list(getattr(result, "skipped", None) or [])
@@ -481,7 +481,7 @@ async def _render_ingest_result(
     ]
 
     lines: list[str] = []
-    lines.extend(_render_new_models_section(new_models))
+    lines.extend(_render_new_datasets_section(new_models))
     lines.extend(_render_updated_section(updated))
     lines.extend(_render_unchanged_section(unchanged))
     if datasource_described:
@@ -616,7 +616,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     # Model discovery
 
     @tool()
-    async def models_summary(
+    async def datasets_summary(
         datasource_name: Annotated[str, Field(description="Datasource name (from list_datasources).")],
         format: Annotated[str, Field(description='"markdown" (default) or "json".')] = "markdown",
         compact: Annotated[bool, Field(
@@ -638,16 +638,16 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if ds is None:
             return f"Datasource '{datasource_name}' not found."
 
-        loaded = DocumentLoadFailures().skip(await storage.load_models(data_source=datasource_name))
+        loaded = DocumentLoadFailures().skip(await storage.load_datasets(data_source=datasource_name))
         matched = [m for m in loaded if not m.hidden]
-        matched.extend(await storage.builtin_models(datasource_name))
+        matched.extend(await storage.builtin_datasets(datasource_name))
         matched.sort(key=lambda m: m.name)
 
         # Rendering delegates to the shared renderer (also used by
         # the ``inspect`` model collection view) — one code path, no drift.
-        return render_models_summary(
+        return render_datasets_summary(
             datasource_name=datasource_name,
-            models=matched,
+            datasets=matched,
             fmt=fmt,
             compact=compact,
         )
@@ -691,7 +691,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
 
         Before using a column as a filter, projection, group-by or join key, inspect it with compact=false and read its Description (the author's intent) and Sample values (stored literal forms; a top-N sample). Build text conditions from these, never from a guessed spelling, and never pick a column by its name alone.
 
-        Collection: omit `reference` with entity_type "model" (every model, grouped by datasource) or "datasource".
+        Collection: omit `reference` with entity_type "dataset" (every dataset, grouped by datasource) or "datasource".
         Batch: a list of same-kind references returns one block per id in input order (a JSON array in json); a bad id does not sink the batch.
         Help: reference "memory:help.intro" (entity_type "memory") for the overview; batch several help topics in one call.
         """
@@ -709,13 +709,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     # Model creation and editing
 
     @tool()
-    async def create_model(
+    async def create_dataset(
         name: Annotated[str, Field(description="Unique model name (lowercase, underscores).")],
         sql_table: Annotated[str | None, Field(description='Database table, e.g. "public.orders".')] = None,
         sql: Annotated[str | None, Field(description="A SQL query as the model's source, instead of sql_table.")] = None,
         data_source: Annotated[str | None, Field(description="Datasource name (from list_datasources).")] = None,
         description: Annotated[str | None, Field(description="What one row of this model represents.")] = None,
-        columns: Annotated[list[dict[str, Any]] | None, Field(
+        fields: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Column definitions: {"name", "sql", "type"} with type TEXT, INT, DOUBLE, BOOLEAN, '
                 "DATE, TIMESTAMP, UNKNOWN, or ARRAY with element_type (one of the others); optional "
@@ -725,7 +725,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 "label, description, hidden, meta."
             ),
         )] = None,
-        measures: Annotated[list[dict[str, Any]] | None, Field(
+        metrics: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Saved formulas, {"name": "aov", "formula": "sum(revenue) / count(*)"} plus optional '
                 'label, description, meta; queries reference them by bare name ({"formula": "aov"}).'
@@ -764,7 +764,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             table_params = {
                 k: v for k, v in {
                     "sql_table": sql_table, "sql": sql, "data_source": data_source,
-                    "columns": columns, "measures": measures, "aggregations": aggregations,
+                    "columns": fields, "measures": metrics, "aggregations": aggregations,
                 }.items()
                 if v
             }
@@ -779,7 +779,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     parsed_query = [SlayerQuery.model_validate(q) for q in query]
                 else:
                     parsed_query = SlayerQuery.model_validate(query)
-                model = await engine.create_model_from_query(
+                model = await engine.create_dataset_from_query(
                     query=parsed_query,
                     name=name,
                     description=description or "",
@@ -791,8 +791,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 raise _db_tool_failure(e) from e
             except Exception as e:
                 return f"Error creating model from query: {e}"
-            cols = [c.name for c in model.columns]
-            meas = [m.name for m in model.measures]
+            cols = [c.name for c in model.fields]
+            meas = [m.name for m in model.metrics]
             return (
                 f"Model '{name}' created from query. "
                 f"Columns: {cols}. Measures: {meas}."
@@ -804,20 +804,20 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             sql=sql,
             data_source=data_source,
             description=description,
-            columns=columns,
-            measures=measures,
+            columns=fields,
+            measures=metrics,
             aggregations=aggregations,
             access_tags=access_tags,
         )
-        model = SlayerModel.model_validate(data)
+        model = SlayerDataset.model_validate(data)
         existed = (
-            await storage.get_model(name, data_source=model.data_source)
+            await storage.get_dataset(name, data_source=model.data_source)
             is not None
         )
         # save_model normalizes, validates Mode-A join paths, and trial-executes
         # a raw-sql source against its datasource before it persists.
         try:
-            await engine.save_model(model, warnings_out=notes)
+            await engine.save_dataset(model, warnings_out=notes)
         except _DB_FAILURES as e:
             raise _db_tool_failure(e) from e
         except Exception as e:
@@ -862,16 +862,16 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             changes.append(f"created {label} '{entity_id}'")
         return None
 
-    def _upsert_join(*, joins: list[ModelJoin], spec: dict, changes: list) -> str | None:
+    def _upsert_relationship(*, relationships: list[DatasetRelationship], spec: dict, changes: list) -> str | None:
         """Upsert one join: match by name, else target + key pairs, else the sole join to the target."""
         target = spec.get("target_model", "")
         if not target:
             return "Missing 'target_model' in join specification."
         name = spec.get("name")
         pairs = {tuple(p) for p in spec.get("join_pairs") or [] if isinstance(p, list)}
-        to_target = [j for j in joins if j.target_model == target]
+        to_target = [j for j in relationships if j.to == target]
         existing = (
-            next((j for j in joins if name and j.name == name), None)
+            next((j for j in relationships if name and j.name == name), None)
             or next((j for j in to_target if pairs and {tuple(p) for p in j.join_pairs} == pairs), None)
             # A differently named sole join is another edge, never this one.
             or (to_target[0] if len(to_target) == 1 and not (name and to_target[0].name) else None)
@@ -883,22 +883,22 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 f"parallel edges stay addressable."
             )
         try:
-            updated = ModelJoin.model_validate({**(existing.model_dump() if existing else {}), **spec})
+            updated = DatasetRelationship.model_validate({**(existing.model_dump() if existing else {}), **spec})
         except Exception as exc:
             return f"Invalid {label}: {exc}"
         if existing is None:
-            joins.append(updated)
+            relationships.append(updated)
             changes.append(f"created {label}")
         else:
-            joins[joins.index(existing)] = updated
+            relationships[relationships.index(existing)] = updated
             changes.append(f"updated {label}")
         return None
 
     VALID_REMOVE_KEYS = {"columns", "measures", "aggregations", "joins", "join_edges"}
 
     @tool()
-    async def edit_model(
-        model_name: Annotated[str, Field(description="Model to edit.")],  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
+    async def edit_dataset(
+        dataset_name: Annotated[str, Field(description="Model to edit.")],  # NOSONAR(S107) — each parameter is a field of the agent-facing MCP tool schema
         *,
         description: Annotated[str | None, Field(description="New model description.")] = None,
         data_source: Annotated[str | None, Field(
@@ -924,7 +924,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         access_tags: Annotated[list[str] | None, Field(
             description="Replace the access groups allowed to see the model; [] makes it public.",
         )] = None,
-        columns: Annotated[list[dict[str, Any]] | None, Field(
+        fields: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Columns to upsert by name; only the given fields change. {"name", "type", "element_type", "sql", '
                 '"description", "primary_key", "unique", "hidden", "allowed_aggregations", "filter", '
@@ -934,7 +934,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 "granularity only for a column truly bucketed at that grain (null clears it)."
             ),
         )] = None,
-        measures: Annotated[list[dict[str, Any]] | None, Field(
+        metrics: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Saved formulas to upsert by name, {"name": "aov", "formula": "sum(revenue) / '
                 'count(*)"} plus optional label, description, meta; queries use them by bare name.'
@@ -946,7 +946,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 '{param} placeholders), "params": [{"name", "sql"}], "description", "meta"}.'
             ),
         )] = None,
-        joins: Annotated[list[dict[str, Any]] | None, Field(
+        relationships: Annotated[list[dict[str, Any]] | None, Field(
             description=(
                 'Joins to upsert, {"target_model": "customers", "join_pairs": [["customer_id", "id"]], '
                 '"name", "cardinality": "many_to_one", "description", "meta"}, matched by name, else '
@@ -979,17 +979,17 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         Example: edit_model(model_name="orders", columns=[{"name": "status", "type": "TEXT"}], measures=[{"name": "aov", "formula": "sum(revenue) / count(*)"}], remove={"measures": ["old_metric"]})
         """
         try:
-            model = await storage.get_model(model_name, data_source=data_source)
-        except AmbiguousModelError as exc:
+            model = await storage.get_dataset(dataset_name, data_source=data_source)
+        except AmbiguousDatasetError as exc:
             return _ambiguous_with_mcp_hint(exc)
         if model is None:
-            return f"Model '{model_name}' not found."
+            return f"Model '{dataset_name}' not found."
 
         original_data_source = model.data_source
         changes: list[str] = []
         # Track column-level vs model-level changes so the post-save hook
         # refreshes only the touched columns when possible.
-        changed_columns: set = set()
+        changed_fields: set = set()
         model_level_change = False
         # Model-doc changes (measures / joins) don't invalidate Column.sampled
         # but do change the embedding text — track separately to refresh
@@ -1005,10 +1005,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             # is taken and defer the delete until after the new save (Phase 5).
             # Here we only mutate the in-memory model.
             try:
-                existing_target = await storage.get_model(
+                existing_target = await storage.get_dataset(
                     model.name, data_source=new_data_source
                 )
-            except AmbiguousModelError:
+            except AmbiguousDatasetError:
                 existing_target = None  # Strict lookup; ambiguity is for bare names only.
             if existing_target is not None:
                 return (
@@ -1052,7 +1052,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             model.sql_table = None
             model.sql = None
             # Clear the user-managed columns so the cache write succeeds.
-            model.columns = []
+            model.fields = []
             changes.append(f"set source_queries ({len(source_queries)} stage(s))")
         if query_variables is not _UNSET:
             model.query_variables = query_variables or {}
@@ -1081,57 +1081,57 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                     )
 
             for name in remove.get("columns", []):
-                match = next((c for c in model.columns if c.name == name), None)
+                match = next((c for c in model.fields if c.name == name), None)
                 if match is None:
-                    return f"Column '{name}' not found on model '{model_name}'."
-                model.columns.remove(match)
+                    return f"Column '{name}' not found on model '{dataset_name}'."
+                model.fields.remove(match)
                 changes.append(f"removed column '{name}'")
 
             for name in remove.get("measures", []):
-                match = next((m for m in model.measures if m.name == name), None)
+                match = next((m for m in model.metrics if m.name == name), None)
                 if match is None:
-                    return f"Measure '{name}' not found on model '{model_name}'."
-                model.measures.remove(match)
+                    return f"Measure '{name}' not found on model '{dataset_name}'."
+                model.metrics.remove(match)
                 changes.append(f"removed measure '{name}'")
                 model_doc_changed = True
 
             for name in remove.get("aggregations", []):
                 match = next((a for a in model.aggregations if a.name == name), None)
                 if match is None:
-                    return f"Aggregation '{name}' not found on model '{model_name}'."
+                    return f"Aggregation '{name}' not found on model '{dataset_name}'."
                 model.aggregations.remove(match)
                 changes.append(f"removed aggregation '{name}'")
                 model_doc_changed = True
 
             try:
-                removed = resolve_join_refs(model=model, refs=[
-                    r if isinstance(r, str) else JoinEdgeRef.model_validate(r)
+                removed = resolve_relationship_refs(dataset=model, refs=[
+                    r if isinstance(r, str) else RelationshipEdgeRef.model_validate(r)
                     for r in (*remove.get("joins", []), *remove.get("join_edges", []))
                 ])
             except ValueError as exc:
                 return str(exc)
             for join in removed:
-                changes.append(f"removed join '{edge_reference(model=model, join=join)}'")
+                changes.append(f"removed join '{edge_reference(dataset=model, relationship=join)}'")
             if removed:
-                model.joins = without_joins(model=model, joins=removed)
+                model.relationships = without_relationships(dataset=model, relationships=removed)
                 model_doc_changed = True
 
         # --- Phase 3: Entity upserts ---
-        for spec in columns or []:
+        for spec in fields or []:
             col_name = spec.get("name")
             if isinstance(col_name, str):
-                changed_columns.add(col_name)
+                changed_fields.add(col_name)
             err = _upsert_entity(
-                entity_list=model.columns, spec=spec, entity_cls=Column,
-                id_field="name", changes=changes, label="column",
+                entity_list=model.fields, spec=spec, entity_cls=DatasetField,
+                id_field="name", changes=changes, label="field",
             )
             if err:
                 return err
 
-        for spec in measures or []:
+        for spec in metrics or []:
             err = _upsert_entity(
-                entity_list=model.measures, spec=spec, entity_cls=ModelMeasure,
-                id_field="name", changes=changes, label="measure",
+                entity_list=model.metrics, spec=spec, entity_cls=DatasetMetric,
+                id_field="name", changes=changes, label="metric",
             )
             if err:
                 return err
@@ -1146,8 +1146,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 return err
             model_doc_changed = True
 
-        for spec in joins or []:
-            err = _upsert_join(joins=model.joins, spec=spec, changes=changes)
+        for spec in relationships or []:
+            err = _upsert_relationship(relationships=model.relationships, spec=spec, changes=changes)
             if err:
                 return err
             model_doc_changed = True
@@ -1165,13 +1165,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         if remove_filters:
             for f in remove_filters:
                 if f not in model.filters:
-                    return f"Filter not found on model '{model_name}': {f}"
+                    return f"Filter not found on model '{dataset_name}': {f}"
                 model.filters.remove(f)
                 changes.append(f"removed filter '{f}'")
                 model_level_change = True
 
         if not changes:
-            return f"No changes specified for model '{model_name}'."
+            return f"No changes specified for model '{dataset_name}'."
 
         # --- Phase 5: Validate and save ---
         # Query-backed models route through engine.save_model so the
@@ -1180,27 +1180,27 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # Before the round trip below, which drops what the converted source queries carry.
         notes: list[SlayerWarning] = [*deprecated_inputs_of(model.source_queries or [])]
         try:
-            validated = SlayerModel.model_validate(model.model_dump(mode="json"))
+            validated = SlayerDataset.model_validate(model.model_dump(mode="json"))
         except Exception as exc:
             return f"Validation error: {exc}"
 
         if validated.source_queries:
             # columns are engine-managed here; reject explicit user supply
             # rather than silently dropping it.
-            if columns is not None:
+            if fields is not None:
                 return (
                     "Validation error: cannot supply 'columns' on a "
-                    f"query-backed model ('{model_name}'). Columns are "
+                    f"query-backed model ('{dataset_name}'). Columns are "
                     "engine-managed (auto-derived from the backing query)."
                 )
             # Strip the cached columns so save_model repopulates them from a
             # fresh expansion of the backing query.
-            validated = validated.model_copy(update={"columns": []})
+            validated = validated.model_copy(update={"fields": []})
         # save_model refreshes a query-backed model's cache (and may recompute its
         # data_source, so cleanup below uses the returned identity); otherwise it
         # normalizes, validates Mode-A join paths and trial-executes a raw-sql source.
         try:
-            saved_model = await engine.save_model(validated, warnings_out=notes)
+            saved_model = await engine.save_dataset(validated, warnings_out=notes)
         except Exception as exc:
             return f"Validation error: {exc}"
 
@@ -1208,25 +1208,25 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # only if the saved model actually landed at a different data_source
         # (the cache populator can override new_data_source).
         if saved_model.data_source != original_data_source:
-            await storage.delete_model(
+            await storage.delete_dataset(
                 name=saved_model.name, data_source=original_data_source
             )
         # Refresh sampled column values and subtree embeddings. Best-effort —
         # a raise is captured into refresh_warnings so the save still succeeds.
         refresh_warnings: list[str] = []
-        if changed_columns or model_level_change or model_doc_changed:
+        if changed_fields or model_level_change or model_doc_changed:
             try:
                 refresh_warnings = await handle_edit_refresh(
                     engine=engine,
                     storage=storage,
                     data_source=saved_model.data_source,
-                    model_name=saved_model.name,
-                    changed_columns=changed_columns,
-                    model_level_change=model_level_change,
+                    dataset_name=saved_model.name,
+                    changed_fields=changed_fields,
+                    dataset_level_change=model_level_change,
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort post-save
                 logger.warning(
-                    "edit_model refresh hook raised for %s.%s: %s",
+                    "edit_dataset refresh hook raised for %s.%s: %s",
                     saved_model.data_source, saved_model.name, exc,
                 )
                 refresh_warnings = [
@@ -1234,9 +1234,9 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 ]
         response_payload: dict = {
             "success": True,
-            "model_name": model_name,
+            "model_name": dataset_name,
             "changes": changes,
-            "message": f"Applied {len(changes)} change(s) to '{model_name}'",
+            "message": f"Applied {len(changes)} change(s) to '{dataset_name}'",
         }
         reply_warnings = [*(n.human_message() for n in notes), *refresh_warnings]
         if reply_warnings:
@@ -1338,7 +1338,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 lines.append(f"Auto-ingestion failed: {_friendly_db_error(e)}")
                 return "\n".join(lines)
             raise
-        models = ingest_output.models
+        models = ingest_output.datasets
 
         if ingest_output.schema_description and not ds.description:
             try:
@@ -1351,10 +1351,10 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
                 lines.append(f"Could not save datasource description: {exc}")
 
         save_errors: list[str] = []
-        saved_models: list[SlayerModel] = []
+        saved_models: list[SlayerDataset] = []
         for model in models:
             try:
-                await storage.save_model(model)
+                await storage.save_dataset(model)
                 saved_models.append(model)
             except ValueError as exc:
                 # e.g. quoted case-variant tables — report and continue.
@@ -1369,7 +1369,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         elif models:
             lines.append(f"Ingested {len(models)} model(s):")
             for m in models:
-                lines.append(f"- {m.name} ({len(m.columns)} columns, {len(m.measures)} measures)")
+                lines.append(f"- {m.name} ({len(m.fields)} columns, {len(m.metrics)} measures)")
             lines.append("")
             lines.append("Use models_summary and inspect to explore, then query to fetch data.")
 
@@ -1493,11 +1493,11 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # partial success rather than failing the already-committed save.
         refresh_warning: str | None = None
         if description is not None and description != old_description:
-            models_in_ds = DocumentLoadFailures().skip(await storage.load_models(data_source=name))
+            models_in_ds = DocumentLoadFailures().skip(await storage.load_datasets(data_source=name))
             try:
                 await search_service.refresh_datasource(
                     name=name,
-                    models=models_in_ds,
+                    datasets=models_in_ds,
                     description=ds.description,
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort post-save refresh
@@ -1515,7 +1515,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     # Delete operations
 
     @tool()
-    async def delete_model(
+    async def delete_dataset(
         name: Annotated[str, Field(description="Model to delete.")],
         data_source: Annotated[str | None, Field(
             description="The model's datasource; required when the name exists in several datasources.",
@@ -1523,15 +1523,15 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     ) -> str:
         """Delete a semantic model."""
         try:
-            deleted = await storage.delete_model(name, data_source=data_source)
-        except AmbiguousModelError as exc:
+            deleted = await storage.delete_dataset(name, data_source=data_source)
+        except AmbiguousDatasetError as exc:
             return _ambiguous_with_mcp_hint(exc)
         if deleted:
             return f"Model '{name}' deleted."
         return f"Model '{name}' not found."
 
     @tool()
-    async def validate_models(
+    async def validate_datasets(
         data_source: Annotated[str | None, Field(description="Datasource to validate; omit for all.")] = None,
     ) -> str:
         """Diff stored models against the live database schemas.
@@ -1547,13 +1547,13 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         # Reuse the closure engine so its schema-drift SQL client is cached and
         # disposed at teardown.
         try:
-            entries = await engine.validate_models(data_source=data_source)
+            entries = await engine.validate_datasets(data_source=data_source)
         except _DB_FAILURES as exc:
             raise _db_tool_failure(exc) from exc
         return json.dumps([e.model_dump(mode="json") for e in entries], indent=2)
 
     @tool()
-    async def recommend_root_model(
+    async def recommend_population(
         items: Annotated[list[str], Field(
             description="Entity references: orders.revenue, customers.name, sum(orders.revenue), a saved measure's bare name, ...",
         )],
@@ -1577,18 +1577,18 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         fmt = format.lower().strip()
         if fmt not in ("markdown", "json"):
             return (
-                f"recommend_root_model failed: unknown format '{format}'. "
+                f"recommend_population failed: unknown format '{format}'. "
                 f"Use 'markdown' or 'json'."
             )
         # Reuse the closure engine (see validate_models above).
         try:
-            rec = await engine.recommend_root_model(
+            rec = await engine.recommend_population(
                 items, data_source=data_source, root_hint=root_hint
             )
-        except AmbiguousModelError as exc:
+        except AmbiguousDatasetError as exc:
             return _ambiguous_with_mcp_hint(exc)
         except (ValueError, EntityResolutionError) as exc:
-            return f"recommend_root_model failed: {exc}"
+            return f"recommend_population failed: {exc}"
         if fmt == "json":
             return json.dumps(rec.model_dump(mode="json"), indent=2)
         return render_recommendation_markdown(rec)
@@ -1603,7 +1603,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
     # Ingestion
 
     @tool()
-    async def ingest_datasource_models(
+    async def ingest_datasource(
         datasource_name: Annotated[str, Field(description="An existing datasource (from list_datasources).")],
         include_tables: Annotated[str, Field(description="Comma-separated tables to ingest; empty for all.")] = "",
         schema_name: Annotated[str, Field(description='One schema, e.g. "public"; empty is the default schema.')] = "",
@@ -1681,7 +1681,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         """Convert a typed resolution / not-found / ambiguous error into
         a friendly text response (matches the existing convention of
         never raising back to the agent)."""
-        if isinstance(exc, AmbiguousModelError):
+        if isinstance(exc, AmbiguousDatasetError):
             return _ambiguous_with_mcp_hint(exc)
         prefix = f"{type(exc).__name__}: "
         return f"Error: {exc}" if str(exc).startswith(prefix) else f"Error: {prefix}{exc}"
@@ -1723,7 +1723,7 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
             )
         except (
             EntityResolutionError,
-            AmbiguousModelError,
+            AmbiguousDatasetError,
             ValueError,
         ) as exc:
             return _format_resolution_error(exc)
@@ -1763,8 +1763,8 @@ def create_mcp_server(  # NOSONAR(S3776) — FastMCP tool-registration factory; 
         cypher_filter: Annotated[str | None, Field(
             description=(
                 "openCypher MATCH ... RETURN <node>.id AS id pre-filtering hits to the returned ids, e.g. "
-                "MATCH (n:ModelColumn) RETURN n.id AS id to spend max_results on columns only. Labels: "
-                "Memory, Datasource, Model, ModelColumn, Measure, Aggregation; without the "
+                "MATCH (n:DatasetField) RETURN n.id AS id to spend max_results on fields only. Labels: "
+                "Memory, Datasource, Dataset, DatasetField, Metric, Aggregation; without the "
                 "advanced_search extra only such label filters work."
             ),
         )] = None,
@@ -1804,7 +1804,7 @@ def _build_dict(**kwargs: Any) -> dict[str, Any]:
     return {k: v for k, v in kwargs.items() if v is not None}
 
 
-def _format_table(data: list[dict[str, Any]], columns: list[str], max_rows: int = 50) -> str:
+def _format_table(data: list[dict[str, Any]], fields: list[str], max_rows: int = 50) -> str:
     """Format data as a pipe-separated table (used for sample data display)."""
     if not data:
         return "No results."
@@ -1812,11 +1812,11 @@ def _format_table(data: list[dict[str, Any]], columns: list[str], max_rows: int 
     truncated = len(data) > max_rows
     rows = data[:max_rows]
 
-    header = " | ".join(columns)
-    separator = " | ".join("-" * len(c) for c in columns)
+    header = " | ".join(fields)
+    separator = " | ".join("-" * len(c) for c in fields)
     body_lines = []
     for row in rows:
-        body_lines.append(" | ".join(encode_text(row.get(c)) for c in columns))
+        body_lines.append(" | ".join(encode_text(row.get(c)) for c in fields))
 
     result = f"{header}\n{separator}\n" + "\n".join(body_lines)
     if truncated:
@@ -1861,14 +1861,14 @@ def _inferred_population(result: SlayerResponse) -> str | None:
     return result.population if result.population_inferred else None
 
 
-def _format_csv(data: list[dict[str, Any]], columns: list[str]) -> str:
+def _format_csv(data: list[dict[str, Any]], fields: list[str]) -> str:
     """Format data as CSV."""
     if not data:
         return ""
-    lines = [",".join(columns)]
+    lines = [",".join(fields)]
     for row in data:
         values = []
-        for c in columns:
+        for c in fields:
             v = encode_text(row.get(c))
             if "," in v or '"' in v or "\n" in v:
                 v = '"' + v.replace('"', '""') + '"'
@@ -1942,7 +1942,7 @@ def _format_output(result: SlayerResponse, fmt: str) -> str:
         meta = _json_metadata(result)
         return encode_json({"data": result.data, **meta} if meta else result.data)
     body = (
-        _format_csv(data=result.data, columns=result.columns)
+        _format_csv(data=result.data, fields=result.columns)
         if fmt == "csv"
         else result.to_markdown()
     )
@@ -1992,7 +1992,7 @@ def _format_attributes(attributes: ResponseAttributes) -> str:
     if dim_lines:
         lines.append("Dimension attributes:")
         lines.extend(dim_lines)
-    measure_lines = _format_field_meta(attributes.measures)
+    measure_lines = _format_field_meta(attributes.metrics)
     if measure_lines:
         lines.append("Measure attributes:")
         lines.extend(measure_lines)
@@ -2000,7 +2000,7 @@ def _format_attributes(attributes: ResponseAttributes) -> str:
 
 
 def _has_attributes(attributes: ResponseAttributes | None) -> bool:
-    return bool(attributes and (attributes.dimensions or attributes.measures))
+    return bool(attributes and (attributes.dimensions or attributes.metrics))
 
 
 def _attributes_footer(attributes) -> str:

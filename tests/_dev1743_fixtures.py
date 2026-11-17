@@ -32,54 +32,54 @@ from typing import List
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    SlayerModel,
+    DatasetRelationship,
+    SlayerDataset,
 )
 
 DS = "test"
 
 
-def _col(name: str, type_: DataType = DataType.TEXT, *, pk: bool = False) -> Column:
-    return Column(name=name, type=type_, primary_key=pk)
+def _col(name: str, type_: DataType = DataType.TEXT, *, pk: bool = False) -> DatasetField:
+    return DatasetField(name=name, datatype=type_, primary_key=pk)
 
 
 # --------------------------------------------------------------------------- #
 # Scenario 1 — plain chain orders → customers → regions.
 # --------------------------------------------------------------------------- #
-def chain_regions() -> SlayerModel:
-    return SlayerModel(
+def chain_regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source=DS, sql_table="regions",
-        columns=[_col("id", DataType.INT, pk=True), _col("name")],
+        fields=[_col("id", DataType.INT, pk=True), _col("name")],
     )
 
 
-def chain_customers() -> SlayerModel:
-    return SlayerModel(
+def chain_customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source=DS, sql_table="customers",
-        columns=[
+        fields=[
             _col("id", DataType.INT, pk=True),
             _col("region_id", DataType.INT),
             _col("name"),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
 
 
-def chain_orders() -> SlayerModel:
-    return SlayerModel(
+def chain_orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
-        columns=[
+        fields=[
             _col("id", DataType.INT, pk=True),
             _col("customer_id", DataType.INT),
             _col("amount", DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
-def chain_models() -> List[SlayerModel]:
+def chain_models() -> List[SlayerDataset]:
     """``[host, *referenced]`` order (host first, as ``_engine_generate`` wants)."""
     return [chain_orders(), chain_customers(), chain_regions()]
 
@@ -87,67 +87,67 @@ def chain_models() -> List[SlayerModel]:
 # --------------------------------------------------------------------------- #
 # Scenario 2 — a ``__``-named model as a DIRECT join target.
 # --------------------------------------------------------------------------- #
-def dunder_target() -> SlayerModel:
+def dunder_target() -> SlayerDataset:
     """A denormalised dim literally named ``customer__region``.
 
     Constructing this raises today (``_validate_model_name`` rejects ``__``);
     the flip must let it through.
     """
-    return SlayerModel(
+    return SlayerDataset(
         name="customer__region", data_source=DS, sql_table="customer_region_dim",
-        columns=[_col("id", DataType.INT, pk=True), _col("label")],
+        fields=[_col("id", DataType.INT, pk=True), _col("label")],
     )
 
 
-def dunder_target_host() -> SlayerModel:
-    return SlayerModel(
+def dunder_target_host() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source=DS, sql_table="orders",
-        columns=[
+        fields=[
             _col("id", DataType.INT, pk=True),
             _col("cr_id", DataType.INT),
             _col("amount", DataType.DOUBLE),
         ],
-        joins=[
-            ModelJoin(target_model="customer__region", join_pairs=[["cr_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customer__region", join_pairs=[["cr_id", "id"]]),
         ],
     )
 
 
-def dunder_target_models() -> List[SlayerModel]:
+def dunder_target_models() -> List[SlayerDataset]:
     return [dunder_target_host(), dunder_target()]
 
 
 # --------------------------------------------------------------------------- #
 # Scenario 3 — ambiguity is impossible: direct ``a__b`` model AND a chain a→b.
 # --------------------------------------------------------------------------- #
-def ai_b() -> SlayerModel:
-    return SlayerModel(
+def ai_b() -> SlayerDataset:
+    return SlayerDataset(
         name="b", data_source=DS, sql_table="b",
-        columns=[_col("id", DataType.INT, pk=True), _col("val")],
+        fields=[_col("id", DataType.INT, pk=True), _col("val")],
     )
 
 
-def ai_a() -> SlayerModel:
-    return SlayerModel(
+def ai_a() -> SlayerDataset:
+    return SlayerDataset(
         name="a", data_source=DS, sql_table="a",
-        columns=[_col("id", DataType.INT, pk=True), _col("b_id", DataType.INT)],
-        joins=[ModelJoin(target_model="b", join_pairs=[["b_id", "id"]])],
+        fields=[_col("id", DataType.INT, pk=True), _col("b_id", DataType.INT)],
+        relationships=[DatasetRelationship(to="b", join_pairs=[["b_id", "id"]])],
     )
 
 
-def ai_a__b() -> SlayerModel:
+def ai_a__b() -> SlayerDataset:
     """A model literally named ``a__b`` — collides in SPELLING with the alias the
     chain ``a → b`` mints (``a__b``), but is a different relation."""
-    return SlayerModel(
+    return SlayerDataset(
         name="a__b", data_source=DS, sql_table="a_b_direct",
-        columns=[_col("id", DataType.INT, pk=True), _col("val")],
+        fields=[_col("id", DataType.INT, pk=True), _col("val")],
     )
 
 
-def ai_host() -> SlayerModel:
-    return SlayerModel(
+def ai_host() -> SlayerDataset:
+    return SlayerDataset(
         name="host", data_source=DS, sql_table="host",
-        columns=[
+        fields=[
             _col("id", DataType.INT, pk=True),
             _col("a_id", DataType.INT),
             _col("ab_id", DataType.INT),
@@ -155,17 +155,17 @@ def ai_host() -> SlayerModel:
             # chain leaf and the direct model in one SELECT without tripping the
             # (orthogonal) flat public-name namespace — isolating the D4
             # join-alias-distinctness concern.
-            Column(name="chain_val", type=DataType.TEXT, sql="a.b.val"),
-            Column(name="direct_val", type=DataType.TEXT, sql="a__b.val"),
+            DatasetField(name="chain_val", datatype=DataType.TEXT, sql="a.b.val"),
+            DatasetField(name="direct_val", datatype=DataType.TEXT, sql="a__b.val"),
         ],
-        joins=[
-            ModelJoin(target_model="a", join_pairs=[["a_id", "id"]]),
-            ModelJoin(target_model="a__b", join_pairs=[["ab_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="a", join_pairs=[["a_id", "id"]]),
+            DatasetRelationship(to="a__b", join_pairs=[["ab_id", "id"]]),
         ],
     )
 
 
-def ambiguity_impossible_models() -> List[SlayerModel]:
+def ambiguity_impossible_models() -> List[SlayerDataset]:
     return [ai_host(), ai_a(), ai_b(), ai_a__b()]
 
 
@@ -183,48 +183,48 @@ _L3 = "consumer_entity_record"
 _L4 = "household_entity_record"
 
 
-def long_household() -> SlayerModel:
-    return SlayerModel(
+def long_household() -> SlayerDataset:
+    return SlayerDataset(
         name=_L4, data_source=DS, sql_table=_L4,
-        columns=[_col("id", DataType.INT, pk=True), _col("bucket")],
+        fields=[_col("id", DataType.INT, pk=True), _col("bucket")],
     )
 
 
-def long_consumer() -> SlayerModel:
-    return SlayerModel(
+def long_consumer() -> SlayerDataset:
+    return SlayerDataset(
         name=_L3, data_source=DS, sql_table=_L3,
-        columns=[
+        fields=[
             _col("id", DataType.INT, pk=True),
             _col("household_id", DataType.INT),
         ],
-        joins=[ModelJoin(target_model=_L4, join_pairs=[["household_id", "id"]])],
+        relationships=[DatasetRelationship(to=_L4, join_pairs=[["household_id", "id"]])],
     )
 
 
-def long_customer() -> SlayerModel:
-    return SlayerModel(
+def long_customer() -> SlayerDataset:
+    return SlayerDataset(
         name=_L2, data_source=DS, sql_table=_L2,
-        columns=[
+        fields=[
             _col("id", DataType.INT, pk=True),
             _col("consumer_id", DataType.INT),
         ],
-        joins=[ModelJoin(target_model=_L3, join_pairs=[["consumer_id", "id"]])],
+        relationships=[DatasetRelationship(to=_L3, join_pairs=[["consumer_id", "id"]])],
     )
 
 
-def long_subscription() -> SlayerModel:
-    return SlayerModel(
+def long_subscription() -> SlayerDataset:
+    return SlayerDataset(
         name=_L1, data_source=DS, sql_table=_L1,
-        columns=[
+        fields=[
             _col("id", DataType.INT, pk=True),
             _col("customer_id", DataType.INT),
             _col("amount", DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model=_L2, join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to=_L2, join_pairs=[["customer_id", "id"]])],
     )
 
 
-def long_chain_models() -> List[SlayerModel]:
+def long_chain_models() -> List[SlayerDataset]:
     """Host-first: subscription → customer → consumer → household."""
     return [long_subscription(), long_customer(), long_consumer(), long_household()]
 

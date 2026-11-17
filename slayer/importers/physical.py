@@ -10,8 +10,8 @@ from sqlglot.dialects.dialect import Dialect, NormalizationStrategy
 from sqlglot.errors import SqlglotError
 from sqlglot.expressions.core import Expression
 
-from slayer.core.models import Column, is_base_column_sql
-from slayer.sql.column_expansion import root_scope_column_ids
+from slayer.core.models import DatasetField, is_base_field_sql
+from slayer.sql.field_expansion import root_scope_field_ids
 from slayer.sql.dialects import SqlDialect
 from slayer.sql.naming import as_sql_dialect, denoted_name
 
@@ -27,7 +27,7 @@ class UndecidableIdentifierCaseError(Exception):
             f"names in the source.")
 
 
-def physical_identifier(col: Column, *, dialect: str | None) -> exp.Identifier:
+def physical_identifier(col: DatasetField, *, dialect: str | None) -> exp.Identifier:
     """The identifier a base column's SQL reads (its name when it has none)."""
     try:
         node = sqlglot.parse_one(col.sql, read=dialect) if col.sql is not None else None
@@ -58,11 +58,11 @@ def case_insensitive(dialect: str | None) -> bool:
 class PhysicalIndex:
     """A model's columns plus the physical columns known to exist, matched in one dialect."""
 
-    def __init__(self, columns: Iterable[Column], *, dialect: str | None, live: Iterable[str] = ()) -> None:
+    def __init__(self, fields: Iterable[DatasetField], *, dialect: str | None, live: Iterable[str] = ()) -> None:
         self.dialect = dialect
         self._sql_dialect = as_sql_dialect(dialect)
         self._insensitive = case_insensitive(dialect)
-        self.columns = list(columns)
+        self.columns = list(fields)
         # Physical spellings: exact name -> whether written unquoted.
         self._reads: dict[int, tuple[str, bool]] = {
             id(c): self._spelling(physical_identifier(c, dialect=dialect))
@@ -91,10 +91,10 @@ class PhysicalIndex:
     def _targets(self, ident: exp.Identifier) -> list[str]:
         return self._matches(ident, self._known) or [self._spelling(ident)[0]]
 
-    def _named(self, ident: exp.Identifier, col: Column) -> bool:
+    def _named(self, ident: exp.Identifier, col: DatasetField) -> bool:
         return bool(self._matches(ident, {self._spelling(exp.to_identifier(col.name))[0]: True}))
 
-    def reader(self, ident: exp.Identifier) -> Column | None:
+    def reader(self, ident: exp.Identifier) -> DatasetField | None:
         """The unfiltered base column reading ``ident``'s physical column, a same-named one first."""
         targets = self._targets(ident)
         readers = [c for c in self.columns if id(c) in self._reads and self._reads[id(c)][0] in targets]
@@ -120,7 +120,7 @@ class PhysicalIndex:
             tree = sqlglot.parse_one(sql, read=self.dialect)
         except SqlglotError as exc:
             tree = exc
-        if is_base_column_sql(sql) and not isinstance(tree, exp.Column):
+        if is_base_field_sql(sql) and not isinstance(tree, exp.Column):
             return f"{sql.strip()!r} is a reserved word; quote it to read the physical column"
         if isinstance(tree, SqlglotError):
             return f"SQL does not parse: {tree}"
@@ -130,8 +130,8 @@ class PhysicalIndex:
         return None
 
 
-def unreadable_columns(
-    columns: list[Column], *, dialect: str | None, live: Iterable[str] = (), logical: frozenset[str] = frozenset(),
+def unreadable_fields(
+    fields: list[DatasetField], *, dialect: str | None, live: Iterable[str] = (), logical: frozenset[str] = frozenset(),
     prepare: Callable[[str], str] = str,
 ) -> dict[str, str]:
     """Columns to drop, with why: self-named ones first (freeing their names), then those reading a masked column.
@@ -139,7 +139,7 @@ def unreadable_columns(
     ``prepare`` turns stored SQL into parseable SQL (placeholders rendered)."""
     live = list(live)
 
-    def check(pool: list[Column]) -> dict[str, str]:
+    def check(pool: list[DatasetField]) -> dict[str, str]:
         index = PhysicalIndex(pool, dialect=dialect, live=live)
         found: dict[str, str] = {}
         for col in pool:
@@ -149,13 +149,13 @@ def unreadable_columns(
                         found[col.name] = problem
         return found
 
-    self_named = {n: p for n, p in check(columns).items() if p.endswith("of its own name")}
-    return {**self_named, **check([c for c in columns if c.name not in self_named])}
+    self_named = {n: p for n, p in check(fields).items() if p.endswith("of its own name")}
+    return {**self_named, **check([c for c in fields if c.name not in self_named])}
 
 
 def root_physical_columns(tree: exp.Expr) -> list[exp.Column]:
     """Unqualified column references in ``tree``'s root scope."""
     if not isinstance(tree, Expression):
         return []
-    root = root_scope_column_ids(parsed=tree)
+    root = root_scope_field_ids(parsed=tree)
     return [c for c in tree.find_all(exp.Column) if id(c) in root and not c.table and isinstance(c.this, exp.Identifier)]

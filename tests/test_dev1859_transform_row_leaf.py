@@ -20,7 +20,7 @@ from slayer.engine.plan import plan_query
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1846_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     SlayerQuery,
     dev1846_models,
     make_exec_engine,
@@ -51,8 +51,8 @@ def _call(op: str, inner: str) -> str:
 
 def _bundle() -> ResolvedSourceBundle:
     models = dev1846_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0],
-                                referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="postgres", population=models[0],
+                                referenced_datasets=models[1:])
 
 
 def _q(**kw) -> SlayerQuery:
@@ -95,7 +95,7 @@ class TestGrainRefiningLeafRejected:
     @pytest.mark.parametrize("shape", list(SHAPES))
     def test_matrix_cell_rejected_at_plan_time(self, op, shape):
         kw = {"time_dimensions": month_td(),
-              "measures": [ModelMeasure(formula=_call(op, SHAPES[shape]),
+              "measures": [DatasetMetric(expression=_call(op, SHAPES[shape]),
                                         name="t")]}
         if shape == "mixed":  # the constituent's partition key is projected
             kw["dimensions"] = ["store"]
@@ -108,7 +108,7 @@ class TestGrainRefiningLeafRejected:
         """Scenario: Bare grain-refining leaf rejected — never SQL whose base
         grain is one row per (bucket, weight-value)."""
         q = _q(time_dimensions=month_td(),
-               measures=[ModelMeasure(formula="cumsum(weight)", name="t")])
+               measures=[DatasetMetric(expression="cumsum(weight)", name="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "cumsum")
@@ -116,7 +116,7 @@ class TestGrainRefiningLeafRejected:
     async def test_rank_family_covered(self, exec_engine):
         """Scenario: Rank family is covered."""
         q = _q(dimensions=["store"], time_dimensions=month_td(),
-               measures=[ModelMeasure(formula="rank(qty, direction='desc')", name="t")])
+               measures=[DatasetMetric(expression="rank(qty, direction='desc')", name="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "rank")
@@ -124,7 +124,7 @@ class TestGrainRefiningLeafRejected:
     async def test_predicate_over_unprojected_column(self, exec_engine):
         """Scenario: Predicate over an unprojected row column rejected."""
         q = _q(time_dimensions=month_td(),
-                measures=[ModelMeasure(formula="consecutive_periods(weight > 0)",
+                measures=[DatasetMetric(expression="consecutive_periods(weight > 0)",
                                        name="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
@@ -133,7 +133,7 @@ class TestGrainRefiningLeafRejected:
     async def test_raw_time_source_column_refines_the_bucket(self, exec_engine):
         """The bucketed TD's raw source column is not a projected grain key."""
         q = _q(time_dimensions=month_td(),
-               measures=[ModelMeasure(formula="rank(ordered_at, direction='desc')", name="t")])
+               measures=[DatasetMetric(expression="rank(ordered_at, direction='desc')", name="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "rank")
@@ -141,7 +141,7 @@ class TestGrainRefiningLeafRejected:
     async def test_filter_position(self, exec_engine):
         q = _q(time_dimensions=month_td(),
                filters=["cumsum(weight) > 0"],
-               measures=[ModelMeasure(formula="sum(revenue)", name="r")])
+               measures=[DatasetMetric(expression="sum(revenue)", name="r")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "cumsum")
@@ -149,7 +149,7 @@ class TestGrainRefiningLeafRejected:
     async def test_order_position(self, exec_engine):
         q = _q(time_dimensions=month_td(),
                order=[{"column": "rank(qty, direction='desc')", "direction": "desc"}],
-               measures=[ModelMeasure(formula="sum(revenue)", name="r")])
+               measures=[DatasetMetric(expression="sum(revenue)", name="r")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(q)
         _assert_leg_b_message(str(ei.value), "rank")
@@ -161,7 +161,7 @@ class TestProjectedGrainKeyStaysLegal:
         weight a query dimension, verified sound today."""
         resp = await exec_engine.execute(_q(
             dimensions=["weight"],
-            measures=[ModelMeasure(formula="rank(weight, direction='desc')", name="t")]))
+            measures=[DatasetMetric(expression="rank(weight, direction='desc')", name="t")]))
         by = rows_by(resp, "sales.weight")
         assert len(resp.data) == 2
         assert int(by[(2.0,)]["sales.t"]) == 1
@@ -172,7 +172,7 @@ class TestProjectedGrainKeyStaysLegal:
         (weight, month) pair present, cumulative within the weight group."""
         resp = await exec_engine.execute(_q(
             dimensions=["weight"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="cumsum(weight)", name="t")]))
+            measures=[DatasetMetric(expression="cumsum(weight)", name="t")]))
         got = {(r["sales.weight"], month_key(r["sales.ordered_at"])):
                float(r["sales.t"]) for r in resp.data}
         assert got == {
@@ -188,7 +188,7 @@ class TestProjectedGrainKeyStaysLegal:
         wband = "CASE WHEN weight > 1 THEN 2 ELSE 1 END"
         resp = await exec_engine.execute(_q(
             dimensions=[{"expression": wband, "name": "wband"}],
-            measures=[ModelMeasure(formula=f"rank({wband}, direction='desc')", name="t")]))
+            measures=[DatasetMetric(expression=f"rank({wband}, direction='desc')", name="t")]))
         by = rows_by(resp, "sales.wband")
         assert len(resp.data) == 2
         assert int(by[(2,)]["sales.t"]) == 1
@@ -202,14 +202,14 @@ class TestWalkerBehaviourUnchanged:
     async def test_pure_aggregate_input_is_legal(self, exec_engine):
         resp = await exec_engine.execute(_q(
             dimensions=["store"], time_dimensions=month_td(),
-            measures=[ModelMeasure(
-                formula="cumsum(sum(weight, partition_by=store))", name="t")]))
+            measures=[DatasetMetric(
+                expression="cumsum(sum(weight, partition_by=store))", name="t")]))
         assert resp.data
 
     async def test_all_projected_composite_is_legal(self, exec_engine):
         resp = await exec_engine.execute(_q(
             dimensions=["weight", "qty"],
-            measures=[ModelMeasure(formula="rank(weight * qty, direction='desc')", name="t")]))
+            measures=[DatasetMetric(expression="rank(weight * qty, direction='desc')", name="t")]))
         assert resp.data
 
 
@@ -224,7 +224,7 @@ class TestShiftFamilyRejectsRowLeaf:
     ])
     async def test_bare_row_leaf_rejected(self, exec_engine, formula, op):
         query = _q(time_dimensions=month_td(),
-                   measures=[ModelMeasure(formula=formula, name="t")])
+                   measures=[DatasetMetric(expression=formula, name="t")])
         with pytest.raises(ValueError) as ei:
             await exec_engine.execute(query)
         msg = str(ei.value)
@@ -241,7 +241,7 @@ class TestLastOverShiftComposition:
     async def test_last_over_change_broadcasts_latest_period(self, exec_engine):
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="last(change(sum(revenue)))", name="t")]))
+            measures=[DatasetMetric(expression="last(change(sum(revenue)))", name="t")]))
         # revenue:sum 60/100/60 → change NULL/+40/-40; last() = -40 broadcast.
         got = {month_key(r["sales.ordered_at"]): r["sales.t"] for r in resp.data}
         assert got == {"2024-01": -40.0, "2024-02": -40.0, "2024-03": -40.0}
@@ -255,7 +255,7 @@ class TestLastOverShiftComposition:
         resp = await exec_engine.execute(_q(
             time_dimensions=month_td(), dimensions=["store"],
             measures=["sum(revenue)",
-                      ModelMeasure(formula="change(sum(revenue))", name="ch")],
+                      DatasetMetric(expression="change(sum(revenue))", name="ch")],
             filters=["last(change(sum(revenue))) < 0"]))
         rows = [(r["sales.store"], month_key(r["sales.ordered_at"]), r["sales.ch"])
                 for r in resp.data]

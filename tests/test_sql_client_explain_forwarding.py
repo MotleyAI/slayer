@@ -205,7 +205,7 @@ class TestDelegationForwardsExplain:
         try:
             response = await engine.execute(COUNT_ORDERS)
             explained = await engine.execute(COUNT_ORDERS, explain=True)
-            await engine.validate_models(DS_NAME)
+            await engine.validate_datasets(DS_NAME)
         finally:
             engine.close()
         assert response.sql in overridden

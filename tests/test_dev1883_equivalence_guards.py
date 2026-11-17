@@ -10,7 +10,7 @@ import pytest
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import AmbiguousReferenceError, GranularityCallError
-from slayer.core.keys import ColumnKey, TimeTruncKey
+from slayer.core.keys import FieldKey, TimeTruncKey
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.bind_inputs import (
     _assert_equivalent_tds_agree,
@@ -37,7 +37,7 @@ def _mtd(*grans_and_cols: tuple) -> SlayerQuery:
 
 async def _orders_model(engine: SlayerQueryEngine, **overrides):
     """The orders model (asserted present), with optional field overrides applied."""
-    model = await engine.storage.get_model("orders")
+    model = await engine.storage.get_dataset("orders")
     assert model is not None
     return model.model_copy(update=overrides) if overrides else model
 
@@ -60,21 +60,21 @@ class TestMainTimeDimensionAmbiguity:
         model = await _orders_model(engine)
         q = _mtd(("month", "created_at"), ("year", "created_at"))
         with pytest.raises(AmbiguousReferenceError):
-            _resolve_main_time_dimension(query=q, model=model)
+            _resolve_main_time_dimension(query=q, dataset=model)
 
     async def test_single_bucket_still_resolves(self, engine) -> None:
         model = await _orders_model(engine)
-        td = TimeDimension(dimension="created_at", granularity=TimeGranularity.MONTH)
-        q = SlayerQuery(source_model="orders", time_dimensions=[td], main_time_dimension="created_at")
+        td = TimeDimension(field="created_at", granularity=TimeGranularity.MONTH)
+        q = SlayerQuery(population="orders", time_dimensions=[td], main_time_dimension="created_at")
         # A lone TD ignores main_time_dimension and resolves regardless.
-        assert _resolve_main_time_dimension(query=q, model=model) is td
+        assert _resolve_main_time_dimension(query=q, dataset=model) is td
 
     async def test_distinct_columns_still_resolve(self, engine) -> None:
         model = await _orders_model(engine)
         q = _mtd(("month", "created_at"), ("year", "customers.created_at"))
-        resolved = _resolve_main_time_dimension(query=q, model=model)
+        resolved = _resolve_main_time_dimension(query=q, dataset=model)
         assert resolved is not None
-        assert resolved.dimension == "created_at"
+        assert resolved.field == "created_at"
 
     async def test_ambiguous_default_resolves_to_none(self, engine) -> None:
         # A passive model default can't pick a bucket: resolve to None (lenient) so
@@ -88,7 +88,7 @@ class TestMainTimeDimensionAmbiguity:
             ],
             measures=[{"formula": "sum(amount)"}],
         )
-        assert _resolve_main_time_dimension(query=q, model=model) is None
+        assert _resolve_main_time_dimension(query=q, dataset=model) is None
 
     async def test_default_time_dimension_single_host_match_resolves(self, engine) -> None:
         model = await _orders_model(engine, default_time_dimension="created_at")
@@ -100,13 +100,13 @@ class TestMainTimeDimensionAmbiguity:
             ],
             measures=[{"formula": "sum(amount)"}],
         )
-        resolved = _resolve_main_time_dimension(query=q, model=model)
+        resolved = _resolve_main_time_dimension(query=q, dataset=model)
         assert resolved is not None
-        assert resolved.dimension == "created_at"
+        assert resolved.field == "created_at"
 
     async def _orders_with_default_axis(self, tmp_path):
         engine = await fx.build_engine(tmp_path)
-        await engine.storage.save_model(
+        await engine.storage.save_dataset(
             await _orders_model(engine, default_time_dimension="created_at")
         )
         return engine
@@ -139,13 +139,13 @@ class TestMainTimeDimensionAmbiguity:
 
 
 def _bound_td(col: str, gran: str, key: TimeTruncKey, **meta) -> tuple:
-    td = TimeDimension(dimension=col, granularity=TimeGranularity(gran), **meta)
+    td = TimeDimension(field=col, granularity=TimeGranularity(gran), **meta)
     return (td, BoundExpr(value_key=key), col)
 
 
 class TestEquivalentTimeDimensionMetadataGuard:
-    K_MONTH = TimeTruncKey(source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.MONTH)
-    K_YEAR = TimeTruncKey(source=ColumnKey(leaf="created_at"), granularity=TimeGranularity.YEAR)
+    K_MONTH = TimeTruncKey(source=FieldKey(leaf="created_at"), granularity=TimeGranularity.MONTH)
+    K_YEAR = TimeTruncKey(source=FieldKey(leaf="created_at"), granularity=TimeGranularity.YEAR)
 
     def test_conflicting_date_range_raises(self) -> None:
         tds = [

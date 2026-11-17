@@ -16,7 +16,7 @@ import logging
 
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, is_base_column_sql, physical_column_sql
+from slayer.core.models import DatasourceConfig, is_base_field_sql, physical_column_sql
 from slayer.live_schema.introspect_utils import table_location
 from slayer.live_schema.schema_scope import UNREACHABLE, schema_ref_from_token, sql_table_location, table_schema_ref
 from slayer.database import sqlite_introspect
@@ -28,15 +28,15 @@ from slayer.sql.dialects.reflection import TableLocation
 logger = logging.getLogger(__name__)
 
 
-def _column_is_base(sql: object) -> bool:
+def _field_is_base(sql: object) -> bool:
     """A column dict's ``sql`` claims a live column (see ``is_base_column_sql``)."""
-    return (sql is None or isinstance(sql, str)) and is_base_column_sql(sql)
+    return (sql is None or isinstance(sql, str)) and is_base_field_sql(sql)
 
 
 def _physical(col: dict) -> str | None:
     """The live column a base column dict names, else ``None``."""
     name, sql = col.get("name"), col.get("sql")
-    if not isinstance(name, str) or not _column_is_base(sql):
+    if not isinstance(name, str) or not _field_is_base(sql):
         return None
     return physical_column_sql(sql=sql, name=name)
 
@@ -63,7 +63,7 @@ def _format_for_widened_type_dict(verdict: DataType) -> dict | None:
     return None  # TEXT clears format
 
 
-def has_refineable_columns(d: dict) -> bool:
+def has_refineable_fields(d: dict) -> bool:
     """Whether ``d`` is a table-backed model dict with a DOUBLE base column (refinement needs the datasource)."""
     if not isinstance(d, dict):
         return False
@@ -76,12 +76,12 @@ def has_refineable_columns(d: dict) -> bool:
     return any(
         isinstance(c, dict)
         and c.get("type") == DataType.DOUBLE.value
-        and _column_is_base(c.get("sql"))
+        and _field_is_base(c.get("sql"))
         for c in columns
     )
 
 
-def has_sqlite_widenable_columns(d: dict) -> bool:
+def has_sqlite_widenable_fields(d: dict) -> bool:
     """Whether ``d`` is a table-backed model dict with an INT base column (SQLite widening; best-effort)."""
     if not isinstance(d, dict):
         return False
@@ -94,7 +94,7 @@ def has_sqlite_widenable_columns(d: dict) -> bool:
     return any(
         isinstance(c, dict)
         and c.get("type") == DataType.INT.value
-        and _column_is_base(c.get("sql"))
+        and _field_is_base(c.get("sql"))
         for c in columns
     )
 
@@ -122,20 +122,20 @@ async def _live_table_location(sql_table: str, datasource: DatasourceConfig,
 
 
 async def _safe_probe(
-    *, client: SqlClient, table: str, column: str, schema: str | None,
+    *, client: SqlClient, table: str, field: str, schema: str | None,
     sql_table: str, persisted_type: str,
 ) -> DataType | None:
     """Run the probe; an unexpected failure keeps the persisted type, an unreachable database raises."""
     try:
         return await sqlite_introspect.probe_sqlite_integer_column(
-            client=client, table=table, column=column, schema=schema,
+            client=client, table=table, column=field, schema=schema,
         )
     except UNREACHABLE:
         raise
     except Exception as exc:
         logger.warning(
             "probe call raised for %s.%s; keeping persisted type %s: %s",
-            sql_table, column, persisted_type, exc,
+            sql_table, field, persisted_type, exc,
         )
         return None
 
@@ -179,7 +179,7 @@ def _apply_format_flip(
         )
 
 
-async def _refine_one_column(
+async def _refine_one_field(
     *, client: SqlClient, col: dict, d: dict, table_name: str, schema_name: str | None,
     sql_table: str,
 ) -> bool:
@@ -190,7 +190,7 @@ async def _refine_one_column(
         return False
     persisted_type = col.get("type")
     verdict = await _safe_probe(
-        client=client, table=table_name, column=col_name, schema=schema_name,
+        client=client, table=table_name, field=col_name, schema=schema_name,
         sql_table=sql_table, persisted_type=str(persisted_type),
     )
     if verdict is None:
@@ -216,7 +216,7 @@ async def _refine_dict_sqlite_probe(d: dict, datasource: DatasourceConfig, clien
         c for c in columns
         if isinstance(c, dict)
         and c.get("type") in (DataType.INT.value, DataType.DOUBLE.value)
-        and _column_is_base(c.get("sql"))
+        and _field_is_base(c.get("sql"))
     ]
     if not refineable:
         return False
@@ -224,7 +224,7 @@ async def _refine_dict_sqlite_probe(d: dict, datasource: DatasourceConfig, clien
     schema_name, table_name = _parse_sql_table_with_default_schema(sql_table, datasource)
     changed = False
     for col in refineable:
-        if await _refine_one_column(
+        if await _refine_one_field(
             client=client, col=col, d=d, table_name=table_name,
             schema_name=schema_name, sql_table=sql_table,
         ):
@@ -238,11 +238,11 @@ async def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig, cl
     Returns whether a column changed; idempotent. An unreachable datasource raises.
     """
     if _is_sqlite_datasource(datasource):
-        if not (has_refineable_columns(d) or has_sqlite_widenable_columns(d)):
+        if not (has_refineable_fields(d) or has_sqlite_widenable_fields(d)):
             return False
         return await _refine_dict_sqlite_probe(d, datasource, client)
 
-    if not has_refineable_columns(d):
+    if not has_refineable_fields(d):
         return False
 
     sql_table = d["sql_table"]
@@ -251,7 +251,7 @@ async def refine_dict_with_live_schema(d: dict, datasource: DatasourceConfig, cl
         c for c in columns
         if isinstance(c, dict)
         and c.get("type") == DataType.DOUBLE.value
-        and _column_is_base(c.get("sql"))
+        and _field_is_base(c.get("sql"))
     ]
     if not refinable:
         return False

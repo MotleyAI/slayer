@@ -58,9 +58,9 @@ async def _store(*, tmp_path, ds: DatasourceConfig, backend: str, filters: list[
 
 
 async def _loaded_filters(storage: StorageBackend) -> list[str]:
-    model = await storage.get_model("rev_f", data_source=DS)
+    model = await storage.get_dataset("rev_f", data_source=DS)
     assert model is not None
-    return list((model.source_queries or [])[0].filters or [])
+    return list((model.source_queries or [])[0].filter or [])
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -99,7 +99,7 @@ async def test_memory_query_filter_literal_is_repaired(tmp_path, shop_ds, backen
                               memories=[memory_v2(memory_id="m_filter", query=query)])
     mem = await storage.get_memory("m_filter")
     assert mem.query is not None
-    [loaded] = mem.query.filters or []
+    [loaded] = mem.query.filter or []
     assert "+02:00" not in loaded
     resp = await run(storage, mem.query)
     assert measure_total(resp, measure="rev") == 150.0

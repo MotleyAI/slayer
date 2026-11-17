@@ -43,10 +43,10 @@ from slayer.sql.render.aggregates import apply_aggregate, resolve_agg_entry
 __all__ = [
     "RANKED_CTE_PREFIX",
     "RANKED_SOURCE_ALIAS",
-    "RANK_COLUMN",
-    "RANK_KEY_COLUMN",
+    "RANK_FIELD",
+    "RANK_KEY_FIELD",
     "RankedGrainProjection",
-    "build_rank_column",
+    "build_rank_field",
     "build_rank_key",
     "build_ranked_cte_select",
     "build_ranked_pick",
@@ -61,9 +61,9 @@ RANKED_CTE_PREFIX = "_rk_"
 #: must be free of the deleted ``_wm_`` / ``_rk_`` relation prefixes).
 RANKED_SOURCE_ALIAS = "_ranked_src"
 #: The ``ROW_NUMBER`` column the outer SELECT picks rank 1 from.
-RANK_COLUMN = "_ranked_rn"
+RANK_FIELD = "_ranked_rn"
 #: The ranking key, carried out of the ranked scope so a NULL key is never picked.
-RANK_KEY_COLUMN = "_ranked_key"
+RANK_KEY_FIELD = "_ranked_key"
 
 
 class RankedGrainProjection(BaseModel):
@@ -82,7 +82,7 @@ class RankedGrainProjection(BaseModel):
     inner_ref: Expression
 
 
-def build_rank_column(
+def build_rank_field(
     *,
     partition_by: Sequence[Expression],
     ranking_time: exp.Ordered,
@@ -101,7 +101,7 @@ def build_rank_column(
             _null_flag(ranking_time.this), *(o.copy() for o in leading), ranking_time.copy(),
         ]),
     )
-    return window.as_(RANK_COLUMN)
+    return window.as_(RANK_FIELD)
 
 
 def _null_flag(key: Expression) -> exp.Ordered:
@@ -113,7 +113,7 @@ def _null_flag(key: Expression) -> exp.Ordered:
 
 def build_rank_key(ranking_time: Expression) -> Expression:
     """The ranking key projected out of the ranked scope."""
-    return exp.Alias(this=ranking_time.copy(), alias=exp.to_identifier(RANK_KEY_COLUMN))
+    return exp.Alias(this=ranking_time.copy(), alias=exp.to_identifier(RANK_KEY_FIELD))
 
 
 def build_ranked_pick(
@@ -129,8 +129,8 @@ def build_ranked_pick(
     """
     ranked = exp.Case(ifs=[exp.If(
         this=exp.and_(
-            exp.EQ(this=exp.column(RANK_COLUMN), expression=exp.Literal.number("1")),
-            exp.Not(this=exp.Is(this=exp.column(RANK_KEY_COLUMN), expression=exp.Null())),
+            exp.EQ(this=exp.column(RANK_FIELD), expression=exp.Literal.number("1")),
+            exp.Not(this=exp.Is(this=exp.column(RANK_KEY_FIELD), expression=exp.Null())),
         ),
         true=value_ref.copy(),
     )])

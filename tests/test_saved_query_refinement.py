@@ -8,9 +8,9 @@ import pytest
 from pydantic import ValidationError
 
 from slayer.core.errors import RefinementConflictError
-from slayer.core.models import ModelMeasure
+from slayer.core.models import DatasetMetric
 from slayer.core.query import (
-    ColumnRef,
+    FieldRef,
     ComputedDimension,
     OrderItem,
     QueryRefinement,
@@ -24,7 +24,7 @@ MONTH_TD = {"dimension": "ordered_at", "granularity": "month"}
 
 
 def saved(**kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "orders", **kw})
+    return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
 def merge(base: SlayerQuery, **refinement: Any) -> SlayerQuery:
@@ -42,7 +42,7 @@ def dim_names(q: SlayerQuery) -> list[str | None]:
 
 
 def td_keys(q: SlayerQuery) -> list[tuple[str, str]]:
-    return [(td.dimension, str(td.granularity)) for td in q.time_dimensions or []]
+    return [(td.field, str(td.granularity)) for td in q.time_dimensions or []]
 
 
 def only_td(q: SlayerQuery) -> TimeDimension:
@@ -64,30 +64,30 @@ class TestQueryRefinementModel:
 
     def test_input_coercions_match_query(self) -> None:
         r = QueryRefinement.model_validate({
-            "measures": ["count(*)"],
+            "metrics": ["count(*)"],
             "dimensions": ["region", {"expression": "amount * 2", "name": "dbl"}],
             "order": [{"revenue": "desc"}],
         })
-        assert r.measures == [ModelMeasure(formula="count(*)")]
-        assert r.dimensions == [ColumnRef(name="region"), ComputedDimension(expression="amount * 2", name="dbl")]
-        assert r.order == [OrderItem(column=ColumnRef(name="revenue"), direction="desc")]
+        assert r.metrics == [DatasetMetric(expression="count(*)")]
+        assert r.dimensions == [FieldRef(name="region"), ComputedDimension(expression="amount * 2", name="dbl")]
+        assert r.order == [OrderItem(field=FieldRef(name="revenue"), direction="desc")]
 
     def test_functional_granularity_in_dimensions_becomes_time_dimension(self) -> None:
         r = QueryRefinement.model_validate({"dimensions": ["region", "date_trunc('year', ordered_at)"]})
         assert [d.name for d in r.dimensions or []] == ["region"]
-        assert [(td.dimension, str(td.granularity)) for td in r.time_dimensions or []] == [
+        assert [(td.field, str(td.granularity)) for td in r.time_dimensions or []] == [
             ("ordered_at", "year"),
         ]
 
     def test_time_dimension_string_form(self) -> None:
         r = QueryRefinement.model_validate({"time_dimensions": ["date_trunc('year', ordered_at)"]})
-        assert [(td.dimension, str(td.granularity)) for td in r.time_dimensions or []] == [
+        assert [(td.field, str(td.granularity)) for td in r.time_dimensions or []] == [
             ("ordered_at", "year"),
         ]
 
     def test_window_filter_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            QueryRefinement.model_validate({"filters": ["sum(amount) OVER (PARTITION BY region) > 1"]})
+            QueryRefinement.model_validate({"filter": ["sum(amount) OVER (PARTITION BY region) > 1"]})
 
     def test_supplied_fields_recorded_including_null(self) -> None:
         assert QueryRefinement.model_validate({"limit": None}).model_fields_set == {"limit"}
@@ -138,19 +138,19 @@ class TestDimensions:
 class TestMeasures:
     def test_union_appends_new_entries(self) -> None:
         merged = merge(saved(measures=[REVENUE]), measures=["count(*)"])
-        assert [m.formula for m in merged.measures or []] == ["sum(amount)", "count(*)"]
+        assert [m.expression for m in merged.metrics or []] == ["sum(amount)", "count(*)"]
 
     def test_identical_named_measure_collapses(self) -> None:
         base = saved(measures=[REVENUE])
-        assert merge(base, measures=[REVENUE]).measures == base.measures
+        assert merge(base, measures=[REVENUE]).metrics == base.metrics
 
     def test_identical_unnamed_measure_collapses(self) -> None:
         base = saved(measures=["count(*)"])
-        assert merge(base, measures=["count(*)"]).measures == base.measures
+        assert merge(base, measures=["count(*)"]).metrics == base.metrics
 
     def test_same_formula_other_name_is_a_new_measure(self) -> None:
         merged = merge(saved(measures=[REVENUE]), measures=[{"formula": "sum(amount)", "name": "rev2"}])
-        assert [m.name for m in merged.measures or []] == ["revenue", "rev2"]
+        assert [m.name for m in merged.metrics or []] == ["revenue", "rev2"]
 
     def test_same_name_different_formula_conflicts(self) -> None:
         message = conflict(saved(measures=[REVENUE]), measures=[{"formula": "count(*)", "name": "revenue"}])
@@ -246,15 +246,15 @@ class TestTimeDimensions:
 class TestFilters:
     def test_filters_and_together_in_order(self) -> None:
         merged = merge(saved(measures=[REVENUE], filters=["status = 'paid'"]), filters=["amount >= 50"])
-        assert merged.filters == ["status = 'paid'", "amount >= 50"]
+        assert merged.filter == ["status = 'paid'", "amount >= 50"]
 
     def test_exact_duplicate_dropped(self) -> None:
         merged = merge(saved(measures=[REVENUE], filters=["status = 'paid'"]),
                        filters=["status = 'paid'", "amount >= 50"])
-        assert merged.filters == ["status = 'paid'", "amount >= 50"]
+        assert merged.filter == ["status = 'paid'", "amount >= 50"]
 
     def test_added_to_query_without_filters(self) -> None:
-        assert merge(saved(measures=[REVENUE]), filters=["amount >= 50"]).filters == ["amount >= 50"]
+        assert merge(saved(measures=[REVENUE]), filters=["amount >= 50"]).filter == ["amount >= 50"]
 
 
 class TestReplacedSettings:
@@ -263,7 +263,7 @@ class TestReplacedSettings:
 
     def test_order_replaced(self) -> None:
         merged = merge(saved(**self.ORDERED), order=[{"column": "region", "direction": "asc"}])
-        assert merged.order == [OrderItem(column=ColumnRef(name="region"), direction="asc")]
+        assert merged.order == [OrderItem(field=FieldRef(name="region"), direction="asc")]
 
     @pytest.mark.parametrize("cleared", [[], None])
     def test_order_cleared(self, cleared: Any) -> None:
@@ -302,9 +302,9 @@ class TestReplacedSettings:
 class TestWholeQuery:
     def test_empty_refinement_is_lossless(self) -> None:
         base = SlayerQuery.model_validate({
-            "name": "final", "source_model": "orders", "dimensions": ["region"],
+            "name": "final", "population": "orders", "dimensions": ["region"],
             "time_dimensions": [{**MONTH_TD, "date_range": ["2025-01-01", "2025-02-28"], "label": "Month"}],
-            "measures": [REVENUE, "count(*)"], "filters": ["status = '{status}'"],
+            "metrics": [REVENUE, "count(*)"], "filter": ["status = '{status}'"],
             "variables": {"status": "paid"}, "order": [{"column": "revenue", "direction": "desc"}],
             "limit": 2, "offset": 1, "to_many_handling": "associate", "whole_periods_only": True,
         })
@@ -314,12 +314,12 @@ class TestWholeQuery:
 
     def test_non_refinable_fields_survive(self) -> None:
         base = SlayerQuery.model_validate({
-            "name": "final", "source_model": "orders", "extensions": [{"source_name": "orders"}], "measures": [REVENUE],
+            "name": "final", "population": "orders", "extensions": [{"source_name": "orders"}], "metrics": [REVENUE],
             "variables": {"status": "paid"},
         })
         merged = merge(base, dimensions=["region"])
-        assert (merged.name, merged.source_model, merged.extensions, merged.variables, merged.version) == (
-            base.name, base.source_model, base.extensions, base.variables, base.version,
+        assert (merged.name, merged.population, merged.extensions, merged.variables, merged.version) == (
+            base.name, base.population, base.extensions, base.variables, base.version,
         )
 
     def test_merged_query_revalidated(self) -> None:
@@ -330,7 +330,7 @@ class TestWholeQuery:
 
     def test_inputs_not_mutated(self) -> None:
         base = saved(dimensions=["region"], measures=[REVENUE], filters=["status = 'paid'"])
-        refinement = QueryRefinement.model_validate({"dimensions": ["status"], "filters": ["amount > 1"]})
+        refinement = QueryRefinement.model_validate({"dimensions": ["status"], "filter": ["amount > 1"]})
         base_before, refinement_before = base.model_dump(), refinement.model_dump()
         refine_query(saved=base, refinement=refinement)
         assert base.model_dump() == base_before

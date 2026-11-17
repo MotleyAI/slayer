@@ -12,7 +12,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ScalarArgumentError
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.sql.dialects._clickhouse_cells import array_reader
 from slayer.sql.dialects.postgres import describe_pg_cursor_column
@@ -56,20 +56,20 @@ def _seed_amounts(db_path: str) -> None:
                     f"(3, 'a', 1.5, 1.5, '{UUID_B}'), (4, 'b', NULL, NULL, NULL)")
 
 
-def _amounts_model() -> SlayerModel:
+def _amounts_model() -> SlayerDataset:
     """``n`` / ``big`` are exact numerics read as DOUBLE; ``u`` a UUID read as TEXT, as ingestion types them."""
-    return SlayerModel(name="amounts", sql_table="amounts", data_source="test", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True), Column(name="team", type=DataType.TEXT),
-        Column(name="n", type=DataType.DOUBLE), Column(name="big", type=DataType.DOUBLE),
-        Column(name="u", type=DataType.TEXT),
+    return SlayerDataset(name="amounts", sql_table="amounts", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="team", datatype=DataType.TEXT),
+        DatasetField(name="n", datatype=DataType.DOUBLE), DatasetField(name="big", datatype=DataType.DOUBLE),
+        DatasetField(name="u", datatype=DataType.TEXT),
     ])
 
 
 async def test_collect_over_exact_numerics_on_duckdb() -> None:
     async with seeded_exec_engine(dialect="duckdb", seed=_seed_amounts, models=[_amounts_model()]) as (engine, _db):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "amounts", "dimensions": ["team"],
-            "measures": [measure("collect(n)", "cn"), measure("collect(big)", "cbig")],
+            "population": "amounts", "dimensions": ["team"],
+            "metrics": [measure("collect(n)", "cn"), measure("collect(big)", "cbig")],
         }))
     for name in ("cn", "cbig"):
         got = {k: None if v is None else [float(x) for x in v] for k, v in by(resp, "team", name, model="amounts").items()}
@@ -79,7 +79,7 @@ async def test_collect_over_exact_numerics_on_duckdb() -> None:
 async def test_collect_over_uuid_on_duckdb() -> None:
     async with seeded_exec_engine(dialect="duckdb", seed=_seed_amounts, models=[_amounts_model()]) as (engine, _db):
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "amounts", "dimensions": ["team"], "measures": [measure("collect(u)", "cu")],
+            "population": "amounts", "dimensions": ["team"], "metrics": [measure("collect(u)", "cu")],
         }))
     got = {k: None if v is None else [str(x) for x in v] for k, v in by(resp, "team", "cu", model="amounts").items()}
     assert got == {"a": [UUID_A, UUID_B], "b": []}, resp.sql

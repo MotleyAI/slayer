@@ -7,13 +7,13 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.extensions import query_scopes
-from slayer.engine.model_reads import models_read_by
+from slayer.engine.dataset_reads import datasets_read_by
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.engine.statement_reads import StatementReads
-from slayer.live_schema.schema_drift import ToDeleteEntry, WholeModelDelete, column_dependents
+from slayer.live_schema.schema_drift import ToDeleteEntry, WholeDatasetDelete, field_dependents
 from tests._dev2102_fixtures import (
     DS, CUSTOMER_PAIRS, base_models, customers, ext, join, q, regions, respelled_model, shop,
 )
@@ -25,20 +25,20 @@ _SPENT_BY_CUSTOMER = {"source_model": "orders", "dimensions": ["customer_id"],
                       "measures": [{"formula": "sum(amount)", "name": "spent"}]}
 
 
-def _models() -> list[SlayerModel]:
+def _models() -> list[SlayerDataset]:
     """The shop, with ``customers → regions → countries`` for short-form routes and a query-backed ``cust_spend``."""
-    home = ModelJoin(target_model="regions", join_pairs=_REGION_PAIRS)
-    country = ModelJoin(target_model="countries", join_pairs=[["country_id", "id"]])
+    home = DatasetRelationship(to="regions", join_pairs=_REGION_PAIRS)
+    country = DatasetRelationship(to="countries", join_pairs=[["country_id", "id"]])
     replaced = {"customers": customers(home), "regions": regions().model_copy(update={"joins": [country]})}
-    cust_spend = SlayerModel(name="cust_spend", data_source=DS,
+    cust_spend = SlayerDataset(name="cust_spend", data_source=DS,
                              source_queries=[SlayerQuery.model_validate(_SPENT_BY_CUSTOMER)])
     return [replaced.get(m.name, m) for m in base_models()] + [cust_spend, _cities()]
 
 
-def _cities(*extra: dict, name: str = "cities_src") -> SlayerModel:
+def _cities(*extra: dict, name: str = "cities_src") -> SlayerDataset:
     """A stored model over ``addresses``."""
-    return SlayerModel.model_validate({"name": name, "data_source": DS, "sql_table": "addresses", "columns": [
-        {"name": "id", "type": "INT", "primary_key": True}, {"name": "city", "type": "TEXT"}, *extra]})
+    return SlayerDataset.model_validate({"name": name, "data_source": DS, "sql_table": "addresses", "fields": [
+        {"name": "id", "datatype": "INT", "primary_key": True}, {"name": "city", "datatype": "TEXT"}, *extra]})
 
 _CORPUS: list[Any] = [
     pytest.param(q(source_model="orders", dimensions=["regions.name"], measures=[_AMOUNT],
@@ -135,37 +135,37 @@ async def _planned(engine: SlayerQueryEngine, payload: Any) -> tuple[set[str], S
     return set(prepared.touched), prepared.reads
 
 
-async def _stored(engine: SlayerQueryEngine, name: str) -> SlayerModel:
+async def _stored(engine: SlayerQueryEngine, name: str) -> SlayerDataset:
     """``name`` as saved, query-backed caches included."""
-    model = await engine.storage.get_model(name, data_source=DS)
+    model = await engine.storage.get_dataset(name, data_source=DS)
     assert model is not None
     return model
 
 
-def _access_reads(qb: SlayerModel, *, universe: list[SlayerModel]) -> set[tuple[str, str]]:
+def _access_reads(qb: SlayerDataset, *, universe: list[SlayerDataset]) -> set[tuple[str, str]]:
     """What the access filter sees ``qb`` read: ``models_read_by``, closed over what each read model reads."""
     by_id = {(m.data_source, m.name): m for m in universe}
     seen: set[tuple[str, str]] = set()
-    pending = list(models_read_by(qb, models=universe))
+    pending = list(datasets_read_by(qb, datasets=universe))
     while pending:
         key = pending.pop()
         if key not in seen:
             seen.add(key)
             if key in by_id:
-                pending.extend(models_read_by(by_id[key], models=universe))
+                pending.extend(datasets_read_by(by_id[key], datasets=universe))
     return seen
 
 
-def _keys(models: dict[str, SlayerModel], reads: StatementReads) -> set[tuple[str, str]]:
+def _keys(models: dict[str, SlayerDataset], reads: StatementReads) -> set[tuple[str, str]]:
     """Primary keys and every join key the statement crosses."""
-    pks = {(m.name, c.name) for m in models.values() for c in m.columns if c.primary_key}
-    crossed = {(owner, col) for declaring, target, _, pairs in reads.joins
+    pks = {(m.name, c.name) for m in models.values() for c in m.fields if c.primary_key}
+    crossed = {(owner, col) for declaring, target, _, pairs in reads.relationships
                for s, t in pairs for owner, col in ((declaring, s), (target, t))}
     return pks | crossed
 
 
 def _drops_qb(entries: list[ToDeleteEntry]) -> bool:
-    return any(e.model_name == _HARNESS_QB for e in entries if isinstance(e, WholeModelDelete) or e.remove.columns)
+    return any(e.dataset_name == _HARNESS_QB for e in entries if isinstance(e, WholeDatasetDelete) or e.remove.fields)
 
 
 @pytest.mark.parametrize("payload", _CORPUS)
@@ -173,7 +173,7 @@ async def test_static_readers_cover_the_planned_statement(payload: Any) -> None:
     stored = _models()
     async with shop("sqlite", stored) as engine:
         touched, reads = await _planned(engine, payload)
-        qb = await engine.create_model_from_query(query=payload, name=_HARNESS_QB, save=False)
+        qb = await engine.create_dataset_from_query(query=payload, name=_HARNESS_QB, save=False)
         stored = [await _stored(engine, m.name) for m in stored]
     universe = [*stored, qb]
     by_name = {m.name: m for m in stored}
@@ -183,11 +183,11 @@ async def test_static_readers_cover_the_planned_statement(payload: Any) -> None:
     keys = _keys(by_name, reads)
     physical = {
         (m, c) for m, c in reads.columns
-        if m in by_name and by_name[m].sql_table and by_name[m].get_column(c) is not None and (m, c) not in keys
+        if m in by_name and by_name[m].sql_table and by_name[m].get_field(c) is not None and (m, c) not in keys
     }
     undetected = {
         (m, c) for m, c in physical
-        if not _drops_qb(column_dependents(models=universe, model=by_name[m], column=c))
+        if not _drops_qb(field_dependents(datasets=universe, dataset=by_name[m], field=c))
     }
     assert not undetected, f"drift misses {_HARNESS_QB} as a dependent of {sorted(undetected)}"
 
@@ -204,21 +204,21 @@ async def test_a_stage_extension_reaches_the_stored_model_beside_a_root_of_anoth
 
 @pytest.mark.parametrize("data_source", [DS, ""], ids=["own-datasource", "no-datasource"])
 def test_a_stage_source_written_in_another_case_is_read(data_source: str) -> None:
-    backed = SlayerModel(name="backed", data_source=data_source, source_queries=[
+    backed = SlayerDataset(name="backed", data_source=data_source, source_queries=[
         q(source_model="customers", dimensions=["name", "region_label"])])
-    label = Column(name="region_label", sql="regions.name", type=DataType.TEXT)
-    models = [m.model_copy(update={"columns": [*m.columns, label]}) if m.name == "Customers" else m
+    label = DatasetField(name="region_label", sql="regions.name", datatype=DataType.TEXT)
+    models = [m.model_copy(update={"fields": [*m.fields, label]}) if m.name == "Customers" else m
               for m in respelled_model(_models(), name="customers", spelling="Customers")]
-    assert {(DS, "Customers"), (DS, "regions")} <= models_read_by(backed, models=models)
+    assert {(DS, "Customers"), (DS, "regions")} <= datasets_read_by(backed, datasets=models)
 
 
 def _root_source_and_base(
-    stages: list[SlayerQuery], models: list[SlayerModel], *, data_source: str | None,
+    stages: list[SlayerQuery], models: list[SlayerDataset], *, data_source: str | None,
 ) -> tuple[Any, str | None]:
     """The root's static scope: its source as respelled and the stored model its chain ends on."""
-    (scope,) = query_scopes(stages, models_by_ds={DS: {m.name: m for m in models}}, data_source=data_source)[-1]
+    (scope,) = query_scopes(stages, datasets_by_ds={DS: {m.name: m for m in models}}, data_source=data_source)[-1]
     assert scope.query is not None
-    return scope.query.source_model, scope.base
+    return scope.query.population, scope.base
 
 
 def test_a_sibling_written_in_another_case_is_followed() -> None:
@@ -262,8 +262,8 @@ _STORED_LABEL_READ = {"source_model": "orders", "dimensions": ["customers.label"
 async def test_a_stored_derived_column_closes_over_its_own_definition_beside_another_source(
     stages: list[SlayerQuery | dict],
 ) -> None:
-    labelled = customers(ModelJoin(target_model="regions", join_pairs=_REGION_PAIRS)).model_copy(update={"columns": [
-        *customers().columns, Column(name="label", sql="upper(name)", type=DataType.TEXT)]})
+    labelled = customers(DatasetRelationship(to="regions", join_pairs=_REGION_PAIRS)).model_copy(update={"columns": [
+        *customers().fields, DatasetField(name="label", sql="upper(name)", datatype=DataType.TEXT)]})
     async with shop("sqlite", [labelled if m.name == "customers" else m for m in _models()] + [_LABELS]) as engine:
         _, reads = await _planned(engine, stages)
     assert {("customers", "label"), ("customers", "name")} <= reads.columns

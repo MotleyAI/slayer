@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.enums import JoinCardinality
+from slayer.core.enums import RelationshipCardinality
 from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.ingest_report import ConversionResult
 from slayer.osi.converter import OsiConversionError
@@ -53,7 +53,7 @@ def _single_agg(formula: str) -> tuple[str, str]:
 
 def _formula(result: ConversionResult, measure: str) -> str:
     home = measure_home(result, measure)
-    return next(x.formula for x in home.measures if x.name == measure)
+    return next(x.expression for x in home.metrics if x.name == measure)
 
 
 # ─────────────────────────── document shapes ───────────────────────────────
@@ -62,9 +62,9 @@ async def test_flat_document_imports_end_to_end(db: Path) -> None:
     result = convert(db=db, docs=documents(_shop(metrics=[m("total_amount", "SUM(orders.amount)")])))
     models = by_name(result)
     assert set(models) == {"orders", "customers"}
-    [join] = models["orders"].joins
-    assert join.target_model == "customers"
-    assert join.cardinality == JoinCardinality.MANY_TO_ONE
+    [join] = models["orders"].relationships
+    assert join.to == "customers"
+    assert join.cardinality == RelationshipCardinality.MANY_TO_ONE
     assert join.join_pairs == [["customer_id", "id"]]
     assert measure_home(result, "total_amount").name == "orders"
     assert not result.unconverted_metrics
@@ -83,7 +83,7 @@ def test_flat_document_of_either_version_imports_the_same(
         result = convert(db=db, docs=parse_osi_path(path))
     models = by_name(result)
     assert set(models) == {"orders", "customers"}
-    assert [(j.target_model, j.join_pairs) for j in models["orders"].joins] == [("customers", [["customer_id", "id"]])]
+    assert [(j.to, j.join_pairs) for j in models["orders"].relationships] == [("customers", [["customer_id", "id"]])]
     assert measure_home(result, "total_amount").name == "orders"
     assert not result.unconverted_metrics
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING and "version" in r.getMessage().lower()]
@@ -128,7 +128,7 @@ async def test_derived_field_over_an_undeclared_source_column(db: Path) -> None:
 def test_dataset_without_fields_imports_with_a_warning(db: Path) -> None:
     result = convert(db=db, docs=documents(flat([ds("orders")])))
     assert visible(by_name(result)["orders"]) == set()
-    assert [e for e in result.warnings if e.model_name == "orders" and "field" in e.message.lower()]
+    assert [e for e in result.warnings if e.dataset_name == "orders" and "field" in e.message.lower()]
 
 
 def test_field_typo_is_reported_and_skipped(db: Path) -> None:
@@ -141,7 +141,7 @@ def test_field_typo_is_reported_and_skipped(db: Path) -> None:
 
 async def test_relationship_on_renamed_fields_joins_the_source_columns(db: Path) -> None:
     result = convert(db=db, docs=documents(_shop()))
-    assert [j.join_pairs for j in by_name(result)["orders"].joins] == [[["customer_id", "id"]]]
+    assert [j.join_pairs for j in by_name(result)["orders"].relationships] == [[["customer_id", "id"]]]
     rows = await query(result=result, db=db, payload={
         "source_model": "orders", "dimensions": ["customers.segment"],
         "measures": [{"formula": "sum(amount)", "name": "s"}]})
@@ -152,7 +152,7 @@ async def test_relationship_on_renamed_fields_joins_the_source_columns(db: Path)
 def test_relationship_on_a_source_column_is_reported(db: Path, from_columns: list[str], to_columns: list[str]) -> None:
     bad = rel("o2c_src", src="orders", to="customers", from_columns=from_columns, to_columns=to_columns)
     result = convert(db=db, docs=documents(_shop(relationships=[bad])))
-    assert by_name(result)["orders"].joins == []
+    assert by_name(result)["orders"].relationships == []
     assert mentions(result, "o2c_src")
 
 
@@ -162,14 +162,14 @@ def test_computed_join_key_is_reported(db: Path, side: str) -> None:
     customers = _customers([*CUSTOMER_FIELDS, f("code", "UPPER(cust_code)" if side == "to" else "cust_code")])
     computed = rel("o2c_code", src="orders", to="customers", from_columns=["cust_key"], to_columns=["code"])
     result = convert(db=db, docs=documents(_shop(orders=orders, customers=customers, relationships=[computed])))
-    assert by_name(result)["orders"].joins == []
+    assert by_name(result)["orders"].relationships == []
     assert mentions(result, "o2c_code")
 
 
 def test_relationship_with_empty_keys_is_reported(db: Path) -> None:
     empty = rel("o2c_empty", src="orders", to="customers", from_columns=[], to_columns=[])
     result = convert(db=db, docs=documents(_shop(relationships=[empty])))
-    assert by_name(result)["orders"].joins == []
+    assert by_name(result)["orders"].relationships == []
     assert mentions(result, "o2c_empty")
 
 
@@ -178,42 +178,42 @@ def test_cross_document_relationship_is_reported(db: Path) -> None:
     doc2 = flat([_customers()], name="crm")
     result = convert(db=db, docs=documents(doc1, doc2))
     assert set(by_name(result)) == {"orders", "customers"}
-    assert by_name(result)["orders"].joins == []
+    assert by_name(result)["orders"].relationships == []
     assert mentions(result, "o2c")
 
 
 def test_primary_key_on_a_source_column_is_reported(db: Path) -> None:
     orders = _orders([f("total_amount", "o_totalprice")], primary_key=["o_orderkey"])
     result = convert(db=db, docs=documents(flat([orders])))
-    assert not [c for c in by_name(result)["orders"].columns if c.primary_key]
-    assert [e for e in result.warnings if e.model_name == "orders" and "o_orderkey" in e.message]
+    assert not [c for c in by_name(result)["orders"].fields if c.primary_key]
+    assert [e for e in result.warnings if e.dataset_name == "orders" and "o_orderkey" in e.message]
 
 
 def test_renamed_introspected_key_without_declaration(db: Path) -> None:
     result = convert(db=db, docs=documents(flat([_orders()])))
-    assert [c.name for c in by_name(result)["orders"].columns if c.primary_key] == ["order_id"]
+    assert [c.name for c in by_name(result)["orders"].fields if c.primary_key] == ["order_id"]
 
 
 def test_declared_primary_key_replaces_the_introspected_one(db: Path) -> None:
     result = convert(db=db, docs=documents(flat([_orders(primary_key=["customer_id"])])))
-    assert [c.name for c in by_name(result)["orders"].columns if c.primary_key] == ["customer_id"]
+    assert [c.name for c in by_name(result)["orders"].fields if c.primary_key] == ["customer_id"]
 
 
 def test_composite_primary_key(db: Path) -> None:
     result = convert(db=db, docs=documents(flat([_orders(primary_key=["order_id", "status"])])))
-    assert {c.name for c in by_name(result)["orders"].columns if c.primary_key} == {"order_id", "status"}
+    assert {c.name for c in by_name(result)["orders"].fields if c.primary_key} == {"order_id", "status"}
 
 
 def test_partly_unresolved_primary_key_is_reported_and_not_applied(db: Path) -> None:
     result = convert(db=db, docs=documents(flat([_orders(primary_key=["order_id", "o_custkey"])])))
     assert not cols(by_name(result)["orders"])["customer_id"].primary_key
-    assert [e for e in result.warnings if e.model_name == "orders" and "o_custkey" in e.message]
+    assert [e for e in result.warnings if e.dataset_name == "orders" and "o_custkey" in e.message]
 
 
 def test_empty_primary_key_is_reported_and_does_not_count_as_absent(db: Path) -> None:
     result = convert(db=db, docs=documents(flat([_orders(primary_key=[])])))
-    assert not [c for c in by_name(result)["orders"].columns if c.primary_key]
-    assert [e for e in result.warnings if e.model_name == "orders" and "primary_key" in e.message]
+    assert not [c for c in by_name(result)["orders"].fields if c.primary_key]
+    assert [e for e in result.warnings if e.dataset_name == "orders" and "primary_key" in e.message]
 
 
 def test_empty_unique_key_entry_is_reported_and_others_kept(db: Path) -> None:
@@ -221,7 +221,7 @@ def test_empty_unique_key_entry_is_reported_and_others_kept(db: Path) -> None:
     result = convert(db=db, docs=documents(flat([customers])))
     meta = by_name(result)["customers"].meta or {}
     assert meta["osi_unique_keys"] == [["email"]]
-    assert [e for e in result.warnings if e.model_name == "customers" and "unique_keys" in e.message]
+    assert [e for e in result.warnings if e.dataset_name == "customers" and "unique_keys" in e.message]
 
 
 def test_unique_key_on_a_source_column_is_reported(db: Path) -> None:
@@ -229,7 +229,7 @@ def test_unique_key_on_a_source_column_is_reported(db: Path) -> None:
     result = convert(db=db, docs=documents(flat([customers])))
     meta = by_name(result)["customers"].meta or {}
     assert meta["osi_unique_keys"] == [["segment"]]
-    assert [e for e in result.warnings if e.model_name == "customers" and "email" in e.message]
+    assert [e for e in result.warnings if e.dataset_name == "customers" and "email" in e.message]
 
 
 # ─────────────────────────── metric resolution ─────────────────────────────
@@ -307,7 +307,7 @@ def test_legacy_relationship_on_a_source_column(db: Path, tmp_path: Path) -> Non
     model = {"name": "s", "datasets": [_orders([f("amount")]), _customers([f("segment")])],
              "relationships": [src_rel]}
     result = convert(db=db, docs=_legacy_docs(tmp_path, model))
-    assert [j.join_pairs for j in by_name(result)["orders"].joins] == [[["o_custkey", "c_custkey"]]]
+    assert [j.join_pairs for j in by_name(result)["orders"].relationships] == [[["o_custkey", "c_custkey"]]]
 
 
 def test_legacy_unique_keys_resolve_against_source_columns_and_fields(db: Path, tmp_path: Path) -> None:
@@ -362,7 +362,7 @@ def test_names_repeated_within_a_dataset_refuse_the_import(
 def test_dataset_scoped_and_model_scoped_metric_name_clash(db: Path) -> None:
     orders = _orders(metrics=[m("tot", "SUM(amount)")])
     result = convert(db=db, docs=documents(_shop(orders=orders, metrics=[m("tot", "MAX(orders.amount)")])))
-    assert [x.formula for x in by_name(result)["orders"].measures if x.name == "tot"] == ["sum(amount)"]
+    assert [x.expression for x in by_name(result)["orders"].metrics if x.name == "tot"] == ["sum(amount)"]
     assert mentions(result, "tot")
 
 

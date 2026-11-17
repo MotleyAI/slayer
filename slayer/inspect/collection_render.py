@@ -6,7 +6,7 @@ A null/omitted ``reference`` on ``inspect`` renders the *collection* at an
 MCP tools (kept as thin aliases), guaranteeing byte-identical output.
 
 ``slayer.inspect`` must NOT import ``slayer.mcp`` (cycle avoidance); the shared
-markdown/skeleton helpers live in ``slayer.inspect.model_render``.
+markdown/skeleton helpers live in ``slayer.inspect.dataset_render``.
 """
 
 from __future__ import annotations
@@ -14,13 +14,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from slayer.core.join_walker import addressable_token, neighbors
-from slayer.core.models import SlayerModel, column_type_text
-from slayer.core.time_spine import TIME_SPINE_MODEL, is_spine
-from slayer.inspect.model_render import (
+from slayer.core.relationship_walker import addressable_token, neighbors
+from slayer.core.models import SlayerDataset, field_type_text
+from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine
+from slayer.inspect.dataset_render import (
     _markdown_table,
     _truncate_description,
-    model_skeleton_fields,
+    dataset_skeleton_fields,
     saved_queries_index,
 )
 
@@ -34,28 +34,28 @@ _NO_DATASOURCES = (
 )
 
 
-def _visible_column_count(model: SlayerModel) -> int:
-    return sum(1 for c in model.columns if not c.hidden)
+def _visible_field_count(dataset: SlayerDataset) -> int:
+    return sum(1 for c in dataset.fields if not c.hidden)
 
 
-def _join_targets(
-    model: SlayerModel, all_models: list[SlayerModel] | None = None
+def _relationship_targets(
+    dataset: SlayerDataset, all_datasets: list[SlayerDataset] | None = None
 ) -> list[str]:
     """The hop token of every one-hop neighbour, in either direction, and each unaddressable neighbour
-    marked ambiguous; with ``all_models`` reverse-reachable neighbours are included, else only declared
+    marked ambiguous; with ``all_datasets`` reverse-reachable neighbours are included, else only declared
     forward targets. The spine's virtual edges are left out (its description names its wiring)."""
-    if is_spine(model):
+    if is_spine(dataset):
         return []
-    models_by_name = {m.name: m for m in (all_models or [model])}
-    models_by_name.setdefault(model.name, model)
+    models_by_name = {m.name: m for m in (all_datasets or [dataset])}
+    models_by_name.setdefault(dataset.name, dataset)
     tokens: set[str] = set()
     ambiguous: set[str] = set()
-    for hop in neighbors(model=model, models_by_name=models_by_name):
-        if hop.target_model == TIME_SPINE_MODEL:
+    for hop in neighbors(dataset=dataset, datasets_by_name=models_by_name):
+        if hop.to == TIME_SPINE_DATASET:
             continue
-        token = addressable_token(current=model, edge=hop, models_by_name=models_by_name)
+        token = addressable_token(current=dataset, edge=hop, datasets_by_name=models_by_name)
         if token is None:
-            ambiguous.add(hop.target_model)
+            ambiguous.add(hop.to)
         else:
             tokens.add(token)
     return sorted(tokens) + [f"{t} (ambiguous: name the edges)" for t in sorted(ambiguous)]
@@ -66,10 +66,10 @@ def _join_targets(
 # ---------------------------------------------------------------------------
 
 
-def render_models_summary(
+def render_datasets_summary(
     *,
     datasource_name: str,
-    models: list[SlayerModel],
+    datasets: list[SlayerDataset],
     fmt: str,
     compact: bool,
     descriptions_max_chars: int | None = None,
@@ -80,7 +80,7 @@ def render_models_summary(
     ``inspect`` model collection (compact=False) render through one path. With
     ``descriptions_max_chars=None`` the output is byte-identical to the tool.
     """
-    if not models:
+    if not datasets:
         # An empty datasource must still emit valid JSON under fmt="json"
         # (a plain-text sentinel would break json.loads for the caller).
         if fmt == "json":
@@ -91,12 +91,12 @@ def render_models_summary(
         return f"Datasource '{datasource_name}' has no models."
     desc = _desc_fn(descriptions_max_chars)
     if fmt == "json":
-        return _models_summary_json(
-            datasource_name=datasource_name, models=models, compact=compact,
+        return _datasets_summary_json(
+            datasource_name=datasource_name, datasets=datasets, compact=compact,
             desc=desc,
         )
-    return _models_summary_markdown(
-        datasource_name=datasource_name, models=models, compact=compact,
+    return _datasets_summary_markdown(
+        datasource_name=datasource_name, datasets=datasets, compact=compact,
         desc=desc,
     )
 
@@ -107,19 +107,19 @@ def _desc_fn(descriptions_max_chars: int | None):
     return _desc
 
 
-def _models_summary_json(
-    *, datasource_name: str, models: list[SlayerModel], compact: bool, desc,
+def _datasets_summary_json(
+    *, datasource_name: str, datasets: list[SlayerDataset], compact: bool, desc,
 ) -> str:
     if compact:
         model_payload = [
             {
                 "name": m.name,
                 "description": desc(m.description),
-                "column_count": _visible_column_count(m),
-                "measure_names": [mm.name for mm in m.measures],
-                "joins_to": _join_targets(m, models),
+                "column_count": _visible_field_count(m),
+                "measure_names": [mm.name for mm in m.metrics],
+                "joins_to": _relationship_targets(m, datasets),
             }
-            for m in models
+            for m in datasets
         ]
     else:
         model_payload = [
@@ -129,103 +129,103 @@ def _models_summary_json(
                 "columns": [
                     {
                         "name": c.name,
-                        "type": str(c.type),
+                        "type": str(c.datatype),
                         **({"element_type": str(c.element_type)} if c.element_type is not None else {}),
                         "description": desc(c.description),
                     }
-                    for c in m.columns if not c.hidden
+                    for c in m.fields if not c.hidden
                 ],
                 "measures": [
                     {
                         "name": mm.name,
-                        "formula": mm.formula,
+                        "formula": mm.expression,
                         "description": desc(mm.description),
                     }
-                    for mm in m.measures
+                    for mm in m.metrics
                 ],
-                "joins_to": _join_targets(m, models),
+                "joins_to": _relationship_targets(m, datasets),
             }
-            for m in models
+            for m in datasets
         ]
     return json.dumps(
         {
             "datasource_name": datasource_name,
-            "model_count": len(models),
+            "model_count": len(datasets),
             "models": model_payload,
         },
         indent=2,
     )
 
 
-def _models_summary_markdown(
-    *, datasource_name: str, models: list[SlayerModel], compact: bool, desc,
+def _datasets_summary_markdown(
+    *, datasource_name: str, datasets: list[SlayerDataset], compact: bool, desc,
 ) -> str:
     sections: list[str] = [
-        f"# Datasource: `{datasource_name}` — {len(models)} model(s)"
+        f"# Datasource: `{datasource_name}` — {len(datasets)} model(s)"
     ]
-    for m in models:
+    for m in datasets:
         model_lines: list[str] = [f"## `{m.name}`"]
         if m.description:
             model_lines.append(desc(m.description) or "")
         if compact:
-            _append_compact_model_lines(
-                model_lines=model_lines, m=m, all_models=models,
+            _append_compact_dataset_lines(
+                dataset_lines=model_lines, m=m, all_datasets=datasets,
             )
         else:
-            _append_verbose_model_lines(
-                model_lines=model_lines, m=m, desc=desc, all_models=models,
+            _append_verbose_dataset_lines(
+                dataset_lines=model_lines, m=m, desc=desc, all_datasets=datasets,
             )
         sections.append("\n".join(model_lines))
     return "\n\n".join(sections)
 
 
-def _append_compact_model_lines(
-    *, model_lines: list[str], m: SlayerModel,
-    all_models: list[SlayerModel] | None = None,
+def _append_compact_dataset_lines(
+    *, dataset_lines: list[str], m: SlayerDataset,
+    all_datasets: list[SlayerDataset] | None = None,
 ) -> None:
-    model_lines.append(f"Columns: {_visible_column_count(m)}")
-    measure_names = ", ".join(mm.name for mm in m.measures if mm.name is not None)
-    model_lines.append(f"Measures: {measure_names}")
-    targets = _join_targets(m, all_models)
+    dataset_lines.append(f"Columns: {_visible_field_count(m)}")
+    measure_names = ", ".join(mm.name for mm in m.metrics if mm.name is not None)
+    dataset_lines.append(f"Measures: {measure_names}")
+    targets = _relationship_targets(m, all_datasets)
     if targets:
         rendered = ", ".join(f"`{t}`" for t in targets)
-        model_lines.append(f"Joins to: {rendered}")
+        dataset_lines.append(f"Joins to: {rendered}")
     else:
-        model_lines.append("Joins to: _(none)_")
+        dataset_lines.append("Joins to: _(none)_")
 
 
-def _append_verbose_model_lines(
-    *, model_lines: list[str], m: SlayerModel, desc,
-    all_models: list[SlayerModel] | None = None,
+def _append_verbose_dataset_lines(
+    *, dataset_lines: list[str], m: SlayerDataset, desc,
+    all_datasets: list[SlayerDataset] | None = None,
 ) -> None:
     col_rows = [
-        {"name": c.name, "type": column_type_text(c), "description": desc(c.description)}
-        for c in m.columns if not c.hidden
+        {"name": c.name, "type": field_type_text(c), "description": desc(c.description)}
+        for c in m.fields if not c.hidden
     ]
-    model_lines.append(f"**Columns ({len(col_rows)}):**")
-    model_lines.append("")
-    model_lines.append(
-        _markdown_table(rows=col_rows, columns=["name", "type", "description"])
+    dataset_lines.append(f"**Columns ({len(col_rows)}):**")
+    dataset_lines.append("")
+    dataset_lines.append(
+        _markdown_table(rows=col_rows, fields=["name", "type", "description"])
     )
-    model_lines.append("")
+    dataset_lines.append("")
 
     measure_rows = [
-        {"name": mm.name, "formula": mm.formula, "description": desc(mm.description)}
-        for mm in m.measures
+        {"name": mm.name, "formula": mm.expression, "description": desc(mm.description)}
+        for mm in m.metrics
     ]
-    model_lines.append(f"**Measures ({len(measure_rows)}):**")
-    model_lines.append("")
-    model_lines.append(
-        _markdown_table(rows=measure_rows, columns=["name", "formula", "description"])
+    dataset_lines.append(f"**Measures ({len(measure_rows)}):**")
+    dataset_lines.append("")
+    dataset_lines.append(
+        _markdown_table(rows=measure_rows, fields=["name", "formula", "description"])
     )
-    model_lines.append("")
+    dataset_lines.append("")
 
-    targets = _join_targets(m, all_models)
+    targets = _relationship_targets(m, all_datasets)
     if targets:
         rendered = ", ".join(f"`{t}`" for t in targets)
-        model_lines.append(f"**Joins to:** {rendered}")
+        dataset_lines.append(f"**Joins to:** {rendered}")
     else:
-        model_lines.append("**Joins to:** _(none)_")
+        dataset_lines.append("**Joins to:** _(none)_")
 
 
 # ---------------------------------------------------------------------------
@@ -234,12 +234,12 @@ def _append_verbose_model_lines(
 
 # A per-DS group is (data_source, models) where ``models is None`` marks a
 # datasource whose config failed to load (invalid-config tolerance).
-ModelGroup = tuple[str, list[SlayerModel] | None]
+DatasetGroup = tuple[str, list[SlayerDataset] | None]
 
 
-def render_model_oneliner_index(
+def render_dataset_oneliner_index(
     *,
-    groups: list[ModelGroup],
+    groups: list[DatasetGroup],
     fmt: str,
     warnings: list[str],
 ) -> str:
@@ -252,7 +252,7 @@ def render_model_oneliner_index(
 
 
 def _oneliner_index_json(
-    *, groups: list[ModelGroup], warnings: list[str],
+    *, groups: list[DatasetGroup], warnings: list[str],
 ) -> str:
     entries: list[dict[str, Any]] = []
     for ds, models in groups:
@@ -267,14 +267,14 @@ def _oneliner_index_json(
             "models": [
                 {
                     "name": m.name,
-                    "column_count": _visible_column_count(m),
-                    "joins_to": _join_targets(m, models),
+                    "column_count": _visible_field_count(m),
+                    "joins_to": _relationship_targets(m, models),
                 }
                 for m in models
             ],
         })
     return json.dumps({
-        "entity_type": "model",
+        "entity_type": "dataset",
         "collection": True,
         "datasources": entries,
         "warnings": warnings,
@@ -282,7 +282,7 @@ def _oneliner_index_json(
 
 
 def _oneliner_index_markdown(
-    *, groups: list[ModelGroup], warnings: list[str],
+    *, groups: list[DatasetGroup], warnings: list[str],
 ) -> str:
     blocks: list[str] = []
     for ds, models in groups:
@@ -291,12 +291,12 @@ def _oneliner_index_markdown(
             continue
         lines = [f"# Datasource: `{ds}` — {len(models)} model(s)"]
         for m in models:
-            joins = _join_targets(m, models)
+            joins = _relationship_targets(m, models)
             joins_str = (
                 ", ".join(f"`{t}`" for t in joins) if joins else "_(none)_"
             )
             lines.append(
-                f"- `{m.name}` ({_visible_column_count(m)} cols; "
+                f"- `{m.name}` ({_visible_field_count(m)} cols; "
                 f"joins: {joins_str})"
             )
         blocks.append("\n".join(lines))
@@ -352,19 +352,19 @@ def datasource_skeleton_fields(
     *,
     name: str,
     description: str | None,
-    models: list[SlayerModel],
+    datasets: list[SlayerDataset],
     descriptions_max_chars: int | None,
 ) -> dict[str, Any]:
     """The datasource compact=False JSON per-DS element: name + description +
     per-model skeletons."""
-    saved = saved_queries_index(models, max_chars=descriptions_max_chars)
+    saved = saved_queries_index(datasets, max_chars=descriptions_max_chars)
     return {
         "name": name,
         "description": _truncate_description(description, descriptions_max_chars),
         "models": [
-            model_skeleton_fields(
-                model=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
+            dataset_skeleton_fields(
+                dataset=m, max_chars=descriptions_max_chars, saved_queries=saved.get(m.name),
             )
-            for m in models
+            for m in datasets
         ],
     }

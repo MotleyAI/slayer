@@ -53,9 +53,9 @@ from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 
@@ -84,59 +84,59 @@ ALLOWED_DELTAS: dict[str, str] = {}
 # --------------------------------------------------------------------------- #
 # Model graph — every Mode-A surface is represented at least once.
 # --------------------------------------------------------------------------- #
-def _regions() -> SlayerModel:
-    return SlayerModel(
+def _regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="population", type=DataType.DOUBLE),
-            Column(name="weight", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="population", datatype=DataType.DOUBLE),
+            DatasetField(name="weight", datatype=DataType.DOUBLE),
             # Column.sql — derived on a two-hop target
-            Column(name="pop_x2", sql="population * 2", type=DataType.DOUBLE),
+            DatasetField(name="pop_x2", sql="population * 2", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def _customers() -> SlayerModel:
-    return SlayerModel(
+def _customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="spend", type=DataType.DOUBLE),
-            Column(name="tier", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="tier", datatype=DataType.TEXT),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
         aggregations=[
             Aggregation(
-                name="wscaled_sum", formula="SUM({value} * {w})",
+                name="wscaled_sum", expression="SUM({value} * {w})",
                 params=[AggregationParam(name="w", sql="regions.weight")],
             ),
         ],
     )
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         # SlayerModel.filters — a Mode-A always-applied WHERE
         filters=["amount >= 0"],
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
             # 'status' also exists on regions — same-name collision
-            Column(name="status", type=DataType.TEXT),
+            DatasetField(name="status", datatype=DataType.TEXT),
             # a column named like a statement keyword
-            Column(name="select", type=DataType.TEXT),
-            Column(name="doubled", sql="amount * 2", type=DataType.DOUBLE),
+            DatasetField(name="select", datatype=DataType.TEXT),
+            DatasetField(name="doubled", sql="amount * 2", datatype=DataType.DOUBLE),
             # Column.filter — Mode-A predicate crossing a join
-            Column(name="eu_amount", sql="amount",
-                   filter="customers.tier = 'eu'", type=DataType.DOUBLE),
+            DatasetField(name="eu_amount", sql="amount",
+                   filter="customers.tier = 'eu'", datatype=DataType.DOUBLE),
             # raw ref that inlines to a constant (dual-scan contract)
-            Column(name="flag_const", sql="1", type=DataType.INT),
+            DatasetField(name="flag_const", sql="1", datatype=DataType.INT),
             # Quoted dotted identifier. Mode-A is raw SQL for the TARGET
             # dialect, and this spelling is Postgres-flavoured: BigQuery quotes
             # identifiers with backticks and reads "..." as a STRING, so there
@@ -145,17 +145,17 @@ def _orders() -> SlayerModel:
             # baseline entry records exactly that, which is what the dialect
             # does with this input rather than a defect to fix here. Mode-A
             # portability across quoting styles is a separate concern.
-            Column(name="quoted_cross", sql='"customers"."spend"',
-                   type=DataType.DOUBLE),
+            DatasetField(name="quoted_cross", sql='"customers"."spend"',
+                   datatype=DataType.DOUBLE),
             # derived-of-derived, two hops (currently BROKEN — see module doc)
-            Column(name="deep_pop", sql="customers.regions.pop_x2",
-                   type=DataType.DOUBLE),
-            Column(name="multi_model",
+            DatasetField(name="deep_pop", sql="customers.regions.pop_x2",
+                   datatype=DataType.DOUBLE),
+            DatasetField(name="multi_model",
                    sql="customers.spend + customers.regions.population",
-                   type=DataType.DOUBLE),
+                   datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(
-            target_model="customers", join_pairs=[["customer_id", "id"]],
+        relationships=[DatasetRelationship(
+            to="customers", join_pairs=[["customer_id", "id"]],
         )],
     )
 

@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 import pytest
 
 from slayer.core.errors import SlayerError, TimeSpineError, VariableError
-from slayer.core.models import ModelMeasure, SlayerModel
+from slayer.core.models import DatasetMetric, SlayerDataset
 from slayer.core.query import (
     ORDER_PLACEHOLDER_NAMES,
     ComputedDimension,
@@ -19,7 +19,7 @@ from slayer.core.query import (
 from slayer.core.warnings import NormalizationWarning
 from slayer.engine.plan import _StagePlanner
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.inspect.model_render import model_skeleton_fields, render_model_inspection
+from slayer.inspect.dataset_render import dataset_skeleton_fields, render_dataset_inspection
 
 from tests._dev2187_fixtures import BACKENDS, assert_same, canonical_rows, orders_columns, orders_engine
 
@@ -258,9 +258,9 @@ async def test_a_quoted_identifier_placeholder_is_refused_and_never_demanded(
         await engine.execute({**body, "variables": {"x": 1}}, dry_run=True)
 
 
-def _backing(filter_text: str) -> SlayerModel:
-    return SlayerModel(name="qbv", data_source="test", source_queries=[SlayerQuery.model_validate(
-        {"source_model": "orders", "measures": ["count(*)"], "filters": [filter_text]})])
+def _backing(filter_text: str) -> SlayerDataset:
+    return SlayerDataset(name="qbv", data_source="test", source_queries=[SlayerQuery.model_validate(
+        {"population": "orders", "metrics": ["count(*)"], "filter": [filter_text]})])
 
 
 @pytest.mark.parametrize(("filter_text", "required"), [
@@ -271,13 +271,13 @@ def _backing(filter_text: str) -> SlayerModel:
 async def test_inspection_reports_the_looked_up_variables(
     engine: SlayerQueryEngine, filter_text: str, required: list[str],
 ) -> None:
-    rendered = await render_model_inspection(model=_backing(filter_text), storage=engine.storage, engine=None,
+    rendered = await render_dataset_inspection(dataset=_backing(filter_text), storage=engine.storage, engine=None,
                                              format="json")
     assert json.loads(rendered)["backing_query"]["required_variables"] == required
 
 
 async def test_text_binding_does_not_look_up_runs_without_variables(engine: SlayerQueryEngine) -> None:
-    await engine.storage.save_model(_backing("status = '{{s}}' OR regexp_like(status, '[0-9]{3}')"))
+    await engine.storage.save_dataset(_backing("status = '{{s}}' OR regexp_like(status, '[0-9]{3}')"))
     resp = await engine.execute({"source_model": "qbv", "measures": ["count(*)"]})
     assert resp.data
 
@@ -289,7 +289,7 @@ async def test_text_binding_does_not_look_up_runs_without_variables(engine: Slay
 async def test_a_spliced_backing_query_looks_up_what_it_reports(
     engine: SlayerQueryEngine, filter_text: str, needed: set[str],
 ) -> None:
-    await engine.storage.save_model(_backing(filter_text))
+    await engine.storage.save_dataset(_backing(filter_text))
     body = {"source_model": "qbv", "measures": ["count(*)"]}
     await engine.execute(body, variables=dict.fromkeys(needed, "a"), dry_run=True)
     for name in needed:
@@ -304,9 +304,9 @@ async def test_a_spliced_backing_query_looks_up_what_it_reports(
     ('sum(iif("{x}" = 1, amount, 0))', []),
 ], ids=["looked-up", "doubled-brace", "digit-braces", "quoted-identifier"])
 def test_saved_measure_formula_demand(formula: str, required: list[str]) -> None:
-    model = SlayerModel(name="m", sql_table="orders", data_source="test", columns=orders_columns(),
-                        measures=[ModelMeasure(name="v", formula=formula)])
-    assert model_skeleton_fields(model=model)["variables"]["required"] == required
+    model = SlayerDataset(name="m", sql_table="orders", data_source="test", fields=orders_columns(),
+                        metrics=[DatasetMetric(name="v", expression=formula)])
+    assert dataset_skeleton_fields(dataset=model)["variables"]["required"] == required
 
 
 # --------------------------------------------------------------------------- #
@@ -336,17 +336,17 @@ ORDER_LITERALS = [
 
 @pytest.mark.parametrize("entry", sorted(ORDER_PINS))
 def test_order_coercion_pin(entry: str) -> None:
-    column = OrderItem.model_validate({"column": entry})
-    coerced = (column.column.model, column.column.name, column.raw_formula)
+    column = OrderItem.model_validate({"field": entry})
+    coerced = (column.field.dataset, column.field.name, column.raw_expression)
     assert coerced == ORDER_PINS[entry]
 
 
 @pytest.mark.parametrize("entry", ORDER_LITERALS)
 def test_an_order_literal_is_one_whole_expression(entry: str) -> None:
-    column = OrderItem.model_validate({"column": entry})
-    assert column.column.model is None
-    assert column.column.name in ORDER_PLACEHOLDER_NAMES
-    assert column.raw_formula == entry
+    column = OrderItem.model_validate({"field": entry})
+    assert column.field.dataset is None
+    assert column.field.name in ORDER_PLACEHOLDER_NAMES
+    assert column.raw_expression == entry
 
 
 @pytest.mark.parametrize(("entry", "expected"), [
@@ -384,24 +384,24 @@ TD_REFUSED = ["date_trunc('month', created_at, x=1)", "date_trunc('month', {x})"
 @pytest.mark.parametrize("field", ["time_dimensions", "dimensions"])
 @pytest.mark.parametrize("entry", sorted(TD_PINS))
 def test_functional_time_dimension_pin(entry: str, field: str) -> None:
-    query = SlayerQuery.model_validate({"source_model": "orders", field: [entry]})
-    assert [(td.dimension, str(td.granularity)) for td in query.time_dimensions or []] == [TD_PINS[entry]]
+    query = SlayerQuery.model_validate({"population": "orders", field: [entry]})
+    assert [(td.field, str(td.granularity)) for td in query.time_dimensions or []] == [TD_PINS[entry]]
     assert not query.dimensions
 
 
 def test_a_datasource_granularity_time_dimension_pin() -> None:
-    query = SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": ["date_trunc('fiscal_year', created_at)"]})
-    assert [(td.dimension, str(td.granularity)) for td in query.time_dimensions or []] == [("created_at", "fiscal_year")]
+    query = SlayerQuery.model_validate({"population": "orders", "time_dimensions": ["date_trunc('fiscal_year', created_at)"]})
+    assert [(td.field, str(td.granularity)) for td in query.time_dimensions or []] == [("created_at", "fiscal_year")]
 
 
 @pytest.mark.parametrize("entry", TD_REFUSED)
 def test_functional_time_dimension_refusal_pin(entry: str) -> None:
     with pytest.raises(ValueError):
-        SlayerQuery.model_validate({"source_model": "orders", "time_dimensions": [entry]})
+        SlayerQuery.model_validate({"population": "orders", "time_dimensions": [entry]})
 
 
 def test_a_non_granularity_call_stays_a_dimension() -> None:
-    query = SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["upper(status)"]})
+    query = SlayerQuery.model_validate({"population": "orders", "dimensions": ["upper(status)"]})
     assert not query.time_dimensions
     assert [d.expression for d in query.dimensions or [] if isinstance(d, ComputedDimension)] == ["upper(status)"]
 

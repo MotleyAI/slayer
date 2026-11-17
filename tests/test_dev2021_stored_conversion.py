@@ -15,8 +15,8 @@ import yaml
 
 from slayer.core.enums import DataType
 from slayer.core.errors import StoredDocumentLoadError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
-from slayer.core.query import ComputedDimension, ModelMeasure, SlayerQuery
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.core.query import ComputedDimension, DatasetMetric, SlayerQuery
 from slayer.database import engine_factory
 from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
@@ -71,10 +71,10 @@ async def _store(tmp_path, ds: DatasourceConfig, backend: str, *docs: dict, orde
                            models=[orders or orders_v10(), customers_v10(), *docs], memories=memories)
 
 
-async def _load(storage: StorageBackend, name: str) -> tuple[SlayerModel, list[warnings.WarningMessage]]:
+async def _load(storage: StorageBackend, name: str) -> tuple[SlayerDataset, list[warnings.WarningMessage]]:
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        model = await storage.get_model(name, data_source=DS)
+        model = await storage.get_dataset(name, data_source=DS)
     assert model is not None
     return model, list(caught)
 
@@ -83,7 +83,7 @@ def _conversion_warnings(caught: list[warnings.WarningMessage], *, document: str
     return [str(w.message) for w in caught if document in str(w.message) and column in str(w.message)]
 
 
-def _stage_of(model: SlayerModel) -> SlayerQuery:
+def _stage_of(model: SlayerDataset) -> SlayerQuery:
     (stage,) = model.source_queries or []
     return stage
 
@@ -155,7 +155,7 @@ class TestMeasure:
         storage = await _store(tmp_path, shop_ds, backend, _qb("dbl", stage))
         model, caught = await _load(storage, "dbl")
         loaded = _stage_of(model)
-        assert ModelMeasure(formula="sum(CAST(amount * 2 AS DOUBLE))", name="double_amount_sum") in (loaded.measures or [])
+        assert DatasetMetric(expression="sum(CAST(amount * 2 AS DOUBLE))", name="double_amount_sum") in (loaded.metrics or [])
         assert len(_conversion_warnings(caught, document="dbl", column="double_amount")) == 1
         resp = await run(storage, {"source_model": "dbl", "measures": [{"formula": "sum(double_amount_sum)", "name": "t"}]})
         assert resp.data[0]["dbl.t"] == pytest.approx(420.0)
@@ -165,8 +165,8 @@ class TestMeasure:
                        dimensions=["status"], measures=["sum(customers.cid)"])
         storage = await _store(tmp_path, shop_ds, "yaml", _qb("cids", stage))
         model, _ = await _load(storage, "cids")
-        assert ModelMeasure(formula="sum(CAST(customers.id * 10 AS INT))", name="customers__cid_sum") in (
-            _stage_of(model).measures or [])
+        assert DatasetMetric(expression="sum(CAST(customers.id * 10 AS INT))", name="customers__cid_sum") in (
+            _stage_of(model).metrics or [])
         resp = await run(storage, {"source_model": "cids", "dimensions": ["status"],
                                    "measures": [{"formula": "sum(customers__cid_sum)", "name": "t"}]})
         assert _rows(resp, "cids.status", "cids.t") == [("2024/01/01", 20.0), ("new", 40.0), ("ok", 60.0)]
@@ -229,7 +229,7 @@ class TestQualification:
         # A hop keeps its written spelling, which resolves the same.
         assert [d.expression.casefold() for d in loaded.dimensions or [] if isinstance(d, ComputedDimension)] == [
             "upper(customers.region)"]
-        assert [f.casefold() for f in loaded.filters or []] == ["upper(customers.region) = 'north'"]
+        assert [f.casefold() for f in loaded.filter or []] == ["upper(customers.region) = 'north'"]
         resp = await run(storage, loaded)
         assert [r["orders.rev"] for r in resp.data] == [120.0]
 
@@ -256,12 +256,12 @@ class TestColumnShapes:
         model, caught = await _load(storage, "shapes")
         stage = _stage_of(model)
         _no_extension_columns(stage)
-        formulas = {m.name: m.formula for m in stage.measures or []}
+        formulas = {m.name: m.expression for m in stage.metrics or []}
         assert formulas == {"q_amount_sum": f"sum({_Q_AMOUNT})", "q_double_sum": f"sum({_Q_AMOUNT} * 2)",
                             "status_count": "count(status)"}
-        assert f"{_Q_AMOUNT} * 2" in (stage.filters or [])[0]
-        assert (stage.filters or [])[1] == "status = 'ok'"
-        assert _Q_AMOUNT in ((stage.order or [])[0].raw_formula or "")
+        assert f"{_Q_AMOUNT} * 2" in (stage.filter or [])[0]
+        assert (stage.filter or [])[1] == "status = 'ok'"
+        assert _Q_AMOUNT in ((stage.order or [])[0].raw_expression or "")
         for column in ("q_amount", "q_double", "status"):
             assert len(_conversion_warnings(caught, document="shapes", column=column)) == 1
         resp = await run(storage, stage)
@@ -308,7 +308,7 @@ class TestEveryPosition:
         loaded = _stage_of(model)
         _no_extension_columns(loaded)
         assert "CAST(ordered_at AS TIMESTAMP)" in str(loaded.main_time_dimension)
-        assert "CAST(ordered_at AS TIMESTAMP)" in str((loaded.time_dimensions or [])[0].dimension)
+        assert "CAST(ordered_at AS TIMESTAMP)" in str((loaded.time_dimensions or [])[0].field)
         resp = await run(storage, loaded)
         assert sorted(float(r["orders.rev"]) for r in resp.data) == [10.0, 50.0, 150.0]
 
@@ -324,10 +324,10 @@ class TestEveryPosition:
         model, _ = await _load(storage, "keys")
         loaded = _stage_of(model)
         _no_extension_columns(loaded)
-        formulas = {m.name: m.formula for m in loaded.measures or []}
+        formulas = {m.name: m.expression for m in loaded.metrics or []}
         assert "iif(amount > 25, 'big', 'small')" in formulas["per_bucket"]
         assert "CAST(ordered_at AS TIMESTAMP)" in formulas["latest"]
-        [big_total] = [m.formula for e in loaded.extensions or [] for m in e.measures or [] if m.name == "big_total"]
+        [big_total] = [m.expression for e in loaded.extensions or [] for m in e.metrics or [] if m.name == "big_total"]
         assert "iif(amount > 25, 'big', 'small')" in big_total
         resp = await run(storage, loaded)
         keys = ("orders.status", "orders.bucket", "orders.per_bucket", "orders.latest", "orders.big_total")
@@ -376,10 +376,10 @@ class TestUnconvertible:
         base = str(tmp_path / "store")
         before = stored_bytes(backend=backend, base=base, name="bad")
         with pytest.raises(StoredDocumentLoadError) as exc:
-            await storage.get_model("bad", data_source=DS)
+            await storage.get_dataset("bad", data_source=DS)
         assert f"{DS}.bad" in str(exc.value)
         assert stored_bytes(backend=backend, base=base, name="bad") == before
-        loaded, failed = await storage.load_models(data_source=DS)
+        loaded, failed = await storage.load_datasets(data_source=DS)
         assert {m.name for m in loaded} == {"orders", "customers", "good"}
         assert [e.name for e in failed] == ["bad"]
 
@@ -388,7 +388,7 @@ class TestUnconvertible:
                        dimensions=["customers.tier_label"], measures=[_REV])
         storage = await _store(tmp_path, shop_ds, "yaml", {**customers_v10(), "name": "CUSTOMERS"}, _qb("bad", stage))
         with pytest.raises(StoredDocumentLoadError):
-            await storage.get_model("bad", data_source=DS)
+            await storage.get_dataset("bad", data_source=DS)
 
 
 # --------------------------------------------------------------------------- #
@@ -468,14 +468,14 @@ class TestMemories:
         storage = await _store(tmp_path, shop_ds, backend,
                                memories=(memory_v2(memory_id="m_tier", query=_TIER, version=_MEMORY_V),))
         await storage.save_datasource(shop_ds.model_copy(update={"name": _OTHER_DS}))
-        orders = await storage.get_model("orders", data_source=DS)
-        customers = await storage.get_model("customers", data_source=DS)
+        orders = await storage.get_dataset("orders", data_source=DS)
+        customers = await storage.get_dataset("customers", data_source=DS)
         assert orders is not None
         assert customers is not None
-        extra = [Column(name="tier_label", sql="region", type=DataType.TEXT)] if clash else []
-        await storage.save_model(orders.model_copy(update={"data_source": _OTHER_DS}))
-        await storage.save_model(customers.model_copy(update={
-            "data_source": _OTHER_DS, "columns": [*customers.columns, *extra]}))
+        extra = [DatasetField(name="tier_label", sql="region", datatype=DataType.TEXT)] if clash else []
+        await storage.save_dataset(orders.model_copy(update={"data_source": _OTHER_DS}))
+        await storage.save_dataset(customers.model_copy(update={
+            "data_source": _OTHER_DS, "fields": [*customers.fields, *extra]}))
         return storage
 
 
@@ -487,4 +487,4 @@ class TestFreshInputIsNeverConverted:
     def test_a_versioned_model_document_outside_storage_is_refused(self) -> None:
         document = yaml.safe_load(yaml.safe_dump(_qb("rev_by_tier", _TIER)))
         with pytest.raises(ValueError, match="columns"):
-            SlayerModel.model_validate(document)
+            SlayerDataset.model_validate(document)

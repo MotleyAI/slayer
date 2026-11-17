@@ -11,15 +11,15 @@ from typing import Callable, Dict, Optional, Tuple
 import pytest
 
 from slayer.core.errors import PartitionKeyError, UnknownReferenceError
-from slayer.core.keys import AggregateKey, ColumnKey, Grain, TransformKey
-from slayer.core.scope import ModelScope
+from slayer.core.keys import AggregateKey, FieldKey, Grain, TransformKey
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.core.syntax import parse_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1847_fixtures import (
     SPEND_BAND_EXPR,
-    ModelMeasure,
+    DatasetMetric,
     _SALES_ROWS_WIDE,
     dev1847_models,
     make_exec_engine,
@@ -122,8 +122,8 @@ async def engine(request):
 
 def _scope_bundle():
     models = dev1847_models()
-    return (ModelScope(source_model=models[0]),
-            ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:]))
+    return (DatasetScope(population=models[0]),
+            ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:]))
 
 
 def _bind(formula: str, alias_map: Optional[Dict] = None):
@@ -161,7 +161,7 @@ class TestBindingSymmetry:
         amap = _alias(name="ureg", expr="upper(region)")
         agg = _bind(formula="sum(amount, partition_by=[ureg, product])", alias_map=amap)
         rank = _bind(formula="rank(sum(amount), partition_by=[ureg, product], direction='desc')", alias_map=amap)
-        want = Grain.of([amap["ureg"], ColumnKey(path=(), leaf="product")])
+        want = Grain.of([amap["ureg"], FieldKey(path=(), leaf="product")])
         assert isinstance(rank, TransformKey)
         assert isinstance(agg, AggregateKey)
         assert rank.partition_keys == agg.partition_keys == want
@@ -200,13 +200,13 @@ class TestBindingSymmetry:
 class TestExecutedPositions:
     async def test_measure(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG, "city"], measures=[ModelMeasure(formula=RANK_UREG, name="r")]))
+            dimensions=[UREG, "city"], measures=[DatasetMetric(expression=RANK_UREG, name="r")]))
         got = {k: v["sales.r"] for k, v in rows_by(resp, "sales.ureg", "sales.city").items()}
         assert got == MEASURE_RANKS
 
     async def test_aggregation_parameter(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[UREG], measures=[ModelMeasure(formula=PARAM_UREG, name="w")]))
+            dimensions=[UREG], measures=[DatasetMetric(expression=PARAM_UREG, name="w")]))
         got = {k[0]: v["sales.w"] for k, v in rows_by(resp, "sales.ureg").items()}
         approx_map(got=got, want=PARAM_BY_UREG)
 
@@ -234,7 +234,7 @@ class TestExecutedPositions:
 
     async def test_undeclared_name_stays_unknown(self, engine):
         query = sales_q(
-            dimensions=["city"], measures=[ModelMeasure(formula=RANK_UREG, name="r")])
+            dimensions=["city"], measures=[DatasetMetric(expression=RANK_UREG, name="r")])
         with pytest.raises(UnknownReferenceError, match="ureg"):
             await engine.execute(query)
 
@@ -258,7 +258,7 @@ class TestAttachCarryingKey:
 
     async def test_measure(self, engine):
         resp = await engine.execute(sales_q(
-            dimensions=[BAND, "city"], measures=[ModelMeasure(formula=RANK_BAND, name="r")]))
+            dimensions=[BAND, "city"], measures=[DatasetMetric(expression=RANK_BAND, name="r")]))
         got = {k: v["sales.r"]
                for k, v in rows_by(resp, "sales.spend_band", "sales.city").items()}
         assert got == _band_city_ranks()
@@ -267,7 +267,7 @@ class TestAttachCarryingKey:
     async def test_parameter(self, engine):
         resp = await engine.execute(sales_q(
             dimensions=[BAND],
-            measures=[ModelMeasure(
-                formula=f"weighted_avg(amount, weight={PARAM_BAND})", name="w")]))
+            measures=[DatasetMetric(
+                expression=f"weighted_avg(amount, weight={PARAM_BAND})", name="w")]))
         approx_map(got={r["sales.spend_band"]: r["sales.w"] for r in resp.data},
                    want=_param_by_band())

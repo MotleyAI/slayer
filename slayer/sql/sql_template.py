@@ -20,7 +20,7 @@ from slayer.core.models import (
     VALUE_PLACEHOLDER,
     WINDOW_PARAM,
     Aggregation,
-    rendered_formula,
+    rendered_expression,
     reserved_window_param_message,
 )
 from slayer.sql.dialects import get_dialect
@@ -275,7 +275,7 @@ def placeholder_names(text: str, dialect: str) -> frozenset[str]:
 
 def aggregation_reads(*, agg: str, definition: Aggregation | None, dialect: str) -> frozenset[str]:
     """Names ``agg`` reads when rendered: its formula's placeholders, else a built-in's own parameters."""
-    formula = rendered_formula(agg=agg, definition=definition)
+    formula = rendered_expression(agg=agg, definition=definition)
     if formula is None:
         return frozenset(BUILTIN_AGGREGATION_PARAM_ORDER.get(agg, ()))
     return placeholder_names(formula, dialect)
@@ -305,12 +305,12 @@ def _check_quoted_defaults(*, template: SqlTemplate, defaults: Mapping[str, str 
 
 def check_aggregation_definition(*, where: str, agg: Aggregation, dialect: str) -> None:
     """Reject a formula that does not parse in ``dialect``, or a declared param it never reads."""
-    if agg.formula and agg.name in RANKED_AGGREGATIONS:
+    if agg.expression and agg.name in RANKED_AGGREGATIONS:
         raise AggregationArgumentError(f"{where}: a ranked aggregation cannot take a formula.")
     try:
-        if agg.formula:
+        if agg.expression:
             _check_quoted_defaults(
-                template=sql_template(text=agg.formula, dialect=dialect),
+                template=sql_template(text=agg.expression, dialect=dialect),
                 defaults={p.name: p.sql for p in agg.params},
             )
         reads = aggregation_reads(agg=agg.name, definition=agg, dialect=dialect)
@@ -320,7 +320,7 @@ def check_aggregation_definition(*, where: str, agg: Aggregation, dialect: str) 
         raise AggregationArgumentError(f"{where}: {reserved_window_param_message(agg.name)}")
     unread = [p.name for p in agg.params if p.name not in reads]
     if unread:
-        reader = "its formula" if rendered_formula(agg=agg.name, definition=agg) else "the built-in"
+        reader = "its formula" if rendered_expression(agg=agg.name, definition=agg) else "the built-in"
         raise AggregationArgumentError(
             f"{where}: parameter '{unread[0]}' is never referenced by {reader}; remove it.",
         )

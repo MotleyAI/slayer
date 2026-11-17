@@ -35,11 +35,11 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    SlayerModel,
+    SlayerDataset,
 )
-from slayer.inspect.model_render import _TRUNCATION_MARKER
+from slayer.inspect.dataset_render import _TRUNCATION_MARKER
 from slayer.inspect.service import InspectService
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -473,9 +473,9 @@ class TestPerIdFieldsAcrossList:
             ))
             # A model literally named "shared" living in datasource "other" —
             # makes the bare name "shared" both a datasource and a model.
-            await st.save_model(SlayerModel(
+            await st.save_dataset(SlayerDataset(
                 name="shared", sql_table="shared", data_source="other",
-                columns=[Column(name="id", sql="id", type=DataType.INT,
+                fields=[DatasetField(name="id", sql="id", datatype=DataType.INT,
                                 primary_key=True)],
             ))
             await st.set_datasource_priority(["shared", "other"])

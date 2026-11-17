@@ -15,7 +15,7 @@ import duckdb
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.database.client import SlayerSQLClient
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -65,16 +65,16 @@ _BASE_COLUMNS = (
 )
 
 
-def _columns(*extra: Column) -> list[Column]:
-    return [Column(name=n, type=t, primary_key=n == "id") for n, t in _BASE_COLUMNS] + list(extra)
+def _columns(*extra: DatasetField) -> list[DatasetField]:
+    return [DatasetField(name=n, datatype=t, primary_key=n == "id") for n, t in _BASE_COLUMNS] + list(extra)
 
 
-def _table_model(*, filters: list[str] | None = None, extra: tuple[Column, ...] = (), name: str = "orders") -> SlayerModel:
-    return SlayerModel(name=name, sql_table="orders", data_source=DS, filters=filters or [], columns=_columns(*extra))
+def _table_model(*, filters: list[str] | None = None, extra: tuple[DatasetField, ...] = (), name: str = "orders") -> SlayerDataset:
+    return SlayerDataset(name=name, sql_table="orders", data_source=DS, filters=filters or [], fields=_columns(*extra))
 
 
-def _sql_model(sql: str, *, name: str = "orders_sql") -> SlayerModel:
-    return SlayerModel(name=name, sql=sql, data_source=DS, columns=_columns())
+def _sql_model(sql: str, *, name: str = "orders_sql") -> SlayerDataset:
+    return SlayerDataset(name=name, sql=sql, data_source=DS, fields=_columns())
 
 
 def _query(source: str, formula: str, *, variables: dict[str, Any] | None = None, **extra: Any) -> SlayerQuery:
@@ -89,11 +89,11 @@ class _Env:
         self.storage = storage
         self.engine = engine
 
-    async def run(self, model: SlayerModel, query: SlayerQuery, *, validate: bool = True) -> Any:
-        await self.storage.save_model(model, _validate=validate)
+    async def run(self, model: SlayerDataset, query: SlayerQuery, *, validate: bool = True) -> Any:
+        await self.storage.save_dataset(model, _validate=validate)
         return await self.engine.execute(query)
 
-    async def value(self, model: SlayerModel, query: SlayerQuery) -> Any:
+    async def value(self, model: SlayerDataset, query: SlayerQuery) -> Any:
         resp = await self.run(model, query)
         return resp.data[0][f"{model.name}.v"]
 
@@ -137,10 +137,10 @@ def executed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return seen
 
 
-_SCALED = Column(name="scaled", sql="amount * {k}", type=DataType.DOUBLE)
-_FLOORED = Column(name="big", sql="amount", filter="amount >= {floor}", type=DataType.DOUBLE)
-_TAGGED = Column(name="tagged", sql="name || '{suffix}'", type=DataType.TEXT)
-_FLAGGED = Column(name="flagged", sql="CASE WHEN {flag} THEN amount ELSE 0 END", type=DataType.DOUBLE)
+_SCALED = DatasetField(name="scaled", sql="amount * {k}", datatype=DataType.DOUBLE)
+_FLOORED = DatasetField(name="big", sql="amount", filter="amount >= {floor}", datatype=DataType.DOUBLE)
+_TAGGED = DatasetField(name="tagged", sql="name || '{suffix}'", datatype=DataType.TEXT)
+_FLAGGED = DatasetField(name="flagged", sql="CASE WHEN {flag} THEN amount ELSE 0 END", datatype=DataType.DOUBLE)
 
 #: (model, formula, variables) — one hostile value per Mode-A surface.
 _HOSTILE = {
@@ -158,7 +158,7 @@ class TestHostileValuesAreRefused:
     async def test_refused_before_sql_runs(self, env: _Env, executed: list[str], case: tuple) -> None:
         build, formula, variables = case
         model = build()
-        await env.storage.save_model(model)
+        await env.storage.save_dataset(model)
         query = _query(model.name, formula, variables=variables)
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
             await env.engine.execute(query)
@@ -166,7 +166,7 @@ class TestHostileValuesAreRefused:
 
     async def test_a_model_default_is_bound_as_a_literal_too(self, env: _Env, executed: list[str]) -> None:
         model = _table_model(extra=(_SCALED,)).model_copy(update={"query_variables": {"k": _HOSTILE_SCALAR}})
-        await env.storage.save_model(model)
+        await env.storage.save_dataset(model)
         query = _query("orders", "sum(scaled)")
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
             await env.engine.execute(query)
@@ -193,7 +193,7 @@ class TestLiteralValuesBind:
 
     async def test_a_quote_inside_a_string_literal(self, env: _Env) -> None:
         resp = await env.run(_table_model(extra=(_TAGGED,)), SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["id", "tagged"], "filters": ["id = 1"],
+            "population": "orders", "dimensions": ["id", "tagged"], "filter": ["id = 1"],
             "variables": {"suffix": "O'Brien"},
         }))
         assert [r["orders.tagged"] for r in resp.data] == ["AnnO'Brien"]
@@ -204,7 +204,7 @@ class TestLiteralValuesBind:
         assert await env.value(model, _query("orders", "sum(flagged)", variables={"flag": flag})) == expected
 
     async def test_sql_and_filter_of_one_column_both_bind(self, env: _Env) -> None:
-        both = Column(name="both", sql="amount * {k}", filter="amount >= {floor}", type=DataType.DOUBLE)
+        both = DatasetField(name="both", sql="amount * {k}", filter="amount >= {floor}", datatype=DataType.DOUBLE)
         model = _table_model(extra=(both,))
         assert await env.value(model, _query("orders", "sum(both)", variables={"k": 2, "floor": 25})) == 140
 
@@ -212,22 +212,22 @@ class TestLiteralValuesBind:
 #: (field, model) pairs whose placeholder stands in a non-literal position.
 _NON_LITERAL = {
     "model-sql-table": _sql_model("SELECT * FROM {table}"),
-    "column-function-name": _table_model(extra=(Column(name="c", sql="{f}(amount)", type=DataType.DOUBLE),)),
-    "column-quoted-identifier": _table_model(extra=(Column(name="c", sql='"{c}"', type=DataType.DOUBLE),)),
-    "column-comment": _table_model(extra=(Column(name="c", sql="amount /* {c} */", type=DataType.DOUBLE),)),
-    "column-type-name": _table_model(extra=(Column(name="c", sql="CAST(amount AS {t})", type=DataType.DOUBLE),)),
-    "column-partial-in-list": _table_model(extra=(Column(name="c", sql="status IN ('x', {s})", type=DataType.BOOLEAN),)),
+    "column-function-name": _table_model(extra=(DatasetField(name="c", sql="{f}(amount)", datatype=DataType.DOUBLE),)),
+    "column-quoted-identifier": _table_model(extra=(DatasetField(name="c", sql='"{c}"', datatype=DataType.DOUBLE),)),
+    "column-comment": _table_model(extra=(DatasetField(name="c", sql="amount /* {c} */", datatype=DataType.DOUBLE),)),
+    "column-type-name": _table_model(extra=(DatasetField(name="c", sql="CAST(amount AS {t})", datatype=DataType.DOUBLE),)),
+    "column-partial-in-list": _table_model(extra=(DatasetField(name="c", sql="status IN ('x', {s})", datatype=DataType.BOOLEAN),)),
 }
 #: A bare slot is a literal position: saved, and refused at query time when its value is no number or boolean.
-_BARE_SLOT = _table_model(extra=(Column(name="c", sql="{col} * 2", type=DataType.DOUBLE),))
+_BARE_SLOT = _table_model(extra=(DatasetField(name="c", sql="{col} * 2", datatype=DataType.DOUBLE),))
 
 
 class TestNonLiteralPositionsAreRefused:
     @pytest.mark.parametrize("model", list(_NON_LITERAL.values()), ids=list(_NON_LITERAL))
-    async def test_refused_at_save(self, env: _Env, model: SlayerModel) -> None:
+    async def test_refused_at_save(self, env: _Env, model: SlayerDataset) -> None:
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
-            await env.storage.save_model(model)
-        assert await env.storage.get_model(model.name, data_source=DS) is None
+            await env.storage.save_dataset(model)
+        assert await env.storage.get_dataset(model.name, data_source=DS) is None
 
     @pytest.mark.parametrize(("model", "formula", "variables"), [
         pytest.param(_BARE_SLOT, "sum(c)", {"col": "amount"}, id="identifier"),
@@ -235,9 +235,9 @@ class TestNonLiteralPositionsAreRefused:
         pytest.param(_NON_LITERAL["model-sql-table"], "count(*)", {"table": "users"}, id="table-name"),
     ])
     async def test_a_stored_model_is_refused_at_query_time(
-        self, env: _Env, executed: list[str], model: SlayerModel, formula: str, variables: dict[str, Any],
+        self, env: _Env, executed: list[str], model: SlayerDataset, formula: str, variables: dict[str, Any],
     ) -> None:
-        await env.storage.save_model(model, _validate=False)
+        await env.storage.save_dataset(model, _validate=False)
         query = _query(model.name, formula, variables=variables)
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
             await env.engine.execute(query)
@@ -255,15 +255,15 @@ class TestOptionalBlocks:
 
     async def test_a_hostile_value_inside_a_block_stays_a_literal(self, env: _Env) -> None:
         model = _table_model(filters=["{? amount >= {floor} ?}"])
-        await env.storage.save_model(model)
+        await env.storage.save_dataset(model)
         query = _query("orders", "sum(amount)", variables={"floor": _HOSTILE_PREDICATE})
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
             await env.engine.execute(query)
 
     async def test_escaped_braces_render_one_brace(self, env: _Env) -> None:
-        tag = Column(name="tag", sql="'{{x}}' || '{suffix}'", type=DataType.TEXT)
+        tag = DatasetField(name="tag", sql="'{{x}}' || '{suffix}'", datatype=DataType.TEXT)
         resp = await env.run(_table_model(extra=(tag,)), SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["tag"], "variables": {"suffix": "!"},
+            "population": "orders", "dimensions": ["tag"], "variables": {"suffix": "!"},
         }))
         assert {r["orders.tag"] for r in resp.data} == {"{x}!"}
 
@@ -272,7 +272,7 @@ class TestPostgres:
     async def test_literal_values_bind(self, pg_env: _Env) -> None:
         model = _table_model(filters=["status IN ({statuses})", "amount >= {floor}"], extra=(_SCALED, _TAGGED))
         resp = await pg_env.run(model, SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["tagged"], "measures": [{"formula": "sum(scaled)", "name": "v"}],
+            "population": "orders", "dimensions": ["tagged"], "metrics": [{"formula": "sum(scaled)", "name": "v"}],
             "variables": {"statuses": ["ok", "new"], "floor": "15", "k": 2, "suffix": "O'Brien"},
         }))
         assert {r["orders.tagged"]: float(r["orders.v"]) for r in resp.data} == {
@@ -280,7 +280,7 @@ class TestPostgres:
         }
 
     async def test_a_hostile_value_is_refused(self, pg_env: _Env, executed: list[str]) -> None:
-        await pg_env.storage.save_model(_table_model(extra=(_SCALED,)))
+        await pg_env.storage.save_dataset(_table_model(extra=(_SCALED,)))
         query = _query("orders", "sum(scaled)", variables={"k": _HOSTILE_SCALAR})
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
             await pg_env.engine.execute(query)
@@ -288,4 +288,4 @@ class TestPostgres:
 
     async def test_a_non_literal_position_is_refused_at_save(self, pg_env: _Env) -> None:
         with pytest.raises(ValueError, match=_LITERAL_VALUES):
-            await pg_env.storage.save_model(_NON_LITERAL["column-function-name"])
+            await pg_env.storage.save_dataset(_NON_LITERAL["column-function-name"])

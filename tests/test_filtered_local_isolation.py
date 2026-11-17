@@ -16,14 +16,14 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, JoinType, TimeGranularity
 from slayer.core.errors import UnanalyzableAggregationParameterError
-from slayer.core.keys import ColumnKey
+from slayer.core.keys import FieldKey
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelMeasure,
-    ModelJoin,
-    SlayerModel,
+    DatasetField,
+    DatasetMetric,
+    DatasetRelationship,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.ir.planned import MaskTyping, RankedProducerKernel
@@ -37,75 +37,75 @@ from tests._engine_helpers import plan_as_producer
 # Fixtures
 
 
-def _loss_payment() -> SlayerModel:
-    return SlayerModel(
+def _loss_payment() -> SlayerDataset:
+    return SlayerDataset(
         name="loss_payment", data_source="test", sql_table="Loss_Payment",
-        columns=[
-            Column(name="claim_amount_id", type=DataType.INT, primary_key=True),
-            Column(name="has_flag", sql="1", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="claim_amount_id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="has_flag", sql="1", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def _loss_reserve() -> SlayerModel:
-    return SlayerModel(
+def _loss_reserve() -> SlayerDataset:
+    return SlayerDataset(
         name="loss_reserve", data_source="test", sql_table="Loss_Reserve",
-        columns=[
-            Column(name="claim_amount_id", type=DataType.INT, primary_key=True),
-            Column(name="has_flag", sql="1", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="claim_amount_id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="has_flag", sql="1", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def _claim() -> SlayerModel:
-    return SlayerModel(
+def _claim() -> SlayerDataset:
+    return SlayerDataset(
         name="claim", data_source="test", sql_table="Claim",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="claim_number", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="claim_number", datatype=DataType.TEXT),
         ],
     )
 
 
 def _claim_amount(
     *, with_time: bool = False, with_filter_first: bool = False,
-) -> SlayerModel:
+) -> SlayerDataset:
     cols = [
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="claim_id", type=DataType.INT),
-        Column(name="amount", type=DataType.DOUBLE),
-        Column(name="total_amount", sql="amount", type=DataType.DOUBLE),
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="claim_id", datatype=DataType.INT),
+        DatasetField(name="amount", datatype=DataType.DOUBLE),
+        DatasetField(name="total_amount", sql="amount", datatype=DataType.DOUBLE),
         # Same-model filter — must NOT trigger isolation.
-        Column(name="paid_amount", sql="amount", filter="claim_id > 0", type=DataType.DOUBLE),
+        DatasetField(name="paid_amount", sql="amount", filter="claim_id > 0", datatype=DataType.DOUBLE),
         # Cross-model filter — must trigger.
-        Column(
+        DatasetField(
             name="loss_payment_amt", sql="amount",
-            filter="loss_payment.has_flag = 1", type=DataType.DOUBLE,
+            filter="loss_payment.has_flag = 1", datatype=DataType.DOUBLE,
         ),
     ]
     if with_time:
-        cols.append(Column(name="created_at", type=DataType.TIMESTAMP))
+        cols.append(DatasetField(name="created_at", datatype=DataType.TIMESTAMP))
     if with_filter_first:
-        cols.append(Column(
+        cols.append(DatasetField(
             name="latest_payment", sql="amount",
-            filter="loss_payment.has_flag = 1", type=DataType.DOUBLE,
+            filter="loss_payment.has_flag = 1", datatype=DataType.DOUBLE,
         ))
-    return SlayerModel(
+    return SlayerDataset(
         name="claim_amount", data_source="test", sql_table="Claim_Amount",
-        columns=cols,
-        joins=[
-            ModelJoin(
-                target_model="loss_payment",
+        fields=cols,
+        relationships=[
+            DatasetRelationship(
+                to="loss_payment",
                 join_pairs=[["id", "claim_amount_id"]],
                 join_type="inner",
             ),
-            ModelJoin(
-                target_model="loss_reserve",
+            DatasetRelationship(
+                to="loss_reserve",
                 join_pairs=[["id", "claim_amount_id"]],
                 join_type="inner",
             ),
-            ModelJoin(
-                target_model="claim",
+            DatasetRelationship(
+                to="claim",
                 join_pairs=[["claim_id", "id"]],
             ),
         ],
@@ -113,45 +113,45 @@ def _claim_amount(
     )
 
 
-def _bundle(host: SlayerModel) -> ResolvedSourceBundle:
+def _bundle(host: SlayerDataset) -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=host,
-        referenced_models=[_loss_payment(), _loss_reserve(), _claim()],
+        population=host,
+        referenced_datasets=[_loss_payment(), _loss_reserve(), _claim()],
     )
 
 
 def _orders_with_derived_eu_filter(*, eu_amount_filter: str):
     """``orders`` host whose ``eu_amount`` filter references derived ``is_eu`` (crosses to customers.region); ``eu_amount_filter`` varies the ref shape."""
-    host = SlayerModel(
+    host = SlayerDataset(
         name="orders", data_source="test", sql_table="Orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(
-                name="is_eu", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(
+                name="is_eu", datatype=DataType.DOUBLE,
                 sql="CASE WHEN customers.region = 'EU' THEN 1 ELSE 0 END",
             ),
-            Column(
+            DatasetField(
                 name="eu_amount", sql="amount", filter=eu_amount_filter,
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
             ),
         ],
-        joins=[ModelJoin(
-            target_model="customers", join_pairs=[["customer_id", "id"]],
+        relationships=[DatasetRelationship(
+            to="customers", join_pairs=[["customer_id", "id"]],
         )],
     )
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", data_source="test", sql_table="Customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region", datatype=DataType.TEXT),
         ],
     )
     bundle = ResolvedSourceBundle(
         dialect="postgres",
-        source_model=host, referenced_models=[customers],
+        population=host, referenced_datasets=[customers],
     )
     return host, bundle
 
@@ -165,8 +165,8 @@ class TestCrossModelPlannerTriggerPredicate:
     def test_no_filter_local_measure_does_not_trigger(self):
         host = _claim_amount()
         q = SlayerQuery.model_validate({
-            "source_model": "claim_amount",
-            "measures": [{"formula": "sum(total_amount)"}],
+            "population": "claim_amount",
+            "metrics": [{"formula": "sum(total_amount)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -177,8 +177,8 @@ class TestCrossModelPlannerTriggerPredicate:
     def test_same_model_filter_does_not_trigger(self):
         host = _claim_amount()
         q = SlayerQuery(
-            source_model="claim_amount",
-            measures=[{"formula": "sum(paid_amount)"}],
+            population="claim_amount",
+            metrics=[{"formula": "sum(paid_amount)"}],
             dimensions=["claim.claim_number"],
         )
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -189,8 +189,8 @@ class TestCrossModelPlannerTriggerPredicate:
     def test_dotted_cross_model_filter_triggers_isolation(self):
         host = _claim_amount()
         q = SlayerQuery.model_validate({
-            "source_model": "claim_amount",
-            "measures": [{"formula": "sum(loss_payment_amt)"}],
+            "population": "claim_amount",
+            "metrics": [{"formula": "sum(loss_payment_amt)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -201,9 +201,9 @@ class TestCrossModelPlannerTriggerPredicate:
         assert len(attaches) == 1, (
             f"Expected 1 host-rooted producer; got {attaches}"
         )
-        assert attaches[0].producer_root_model is None, (
+        assert attaches[0].producer_root_dataset is None, (
             f"Expected a HOST-rooted producer for filtered-local; got root "
-            f"{attaches[0].producer_root_model!r}"
+            f"{attaches[0].producer_root_dataset!r}"
         )
 
     def test_derived_ref_cross_model_filter_triggers_isolation(self):
@@ -211,8 +211,8 @@ class TestCrossModelPlannerTriggerPredicate:
             eu_amount_filter="is_eu = 1",
         )
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(eu_amount)"}],
+            "population": "orders",
+            "metrics": [{"formula": "sum(eu_amount)"}],
             "dimensions": ["id"],
         })
         planned = plan_query(query=q, bundle=bundle)
@@ -224,62 +224,62 @@ class TestCrossModelPlannerTriggerPredicate:
             f"Derived-ref cross-model filter must trigger isolation; got "
             f"{attaches}"
         )
-        assert attaches[0].producer_root_model is None
+        assert attaches[0].producer_root_dataset is None
 
     def test_cross_model_agg_still_triggers_via_path(self):
         """A non-empty ``source.path`` triggers the cross-model planner; the producer roots at the join target ``loss_payment``."""
         host = _claim_amount()
         q = SlayerQuery.model_validate({
-            "source_model": "claim_amount",
-            "measures": [{"formula": "sum(loss_payment.has_flag)"}],
+            "population": "claim_amount",
+            "metrics": [{"formula": "sum(loss_payment.has_flag)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
         assert len(planned.regroup_attach_plans) == 1
-        assert planned.regroup_attach_plans[0].producer_root_model == "loss_payment"
+        assert planned.regroup_attach_plans[0].producer_root_dataset == "loss_payment"
 
     def test_cross_model_agg_with_target_column_filter_does_not_become_filtered_local(self):
         """A cross-model aggregate whose TARGET column has its own filter keeps genuine cross-model semantics, not host-rooted filtered-local."""
-        regions = SlayerModel(
+        regions = SlayerDataset(
             name="regions", data_source="test", sql_table="regions",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="is_premium", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="is_premium", datatype=DataType.DOUBLE),
             ],
         )
-        customers = SlayerModel(
+        customers = SlayerDataset(
             name="customers", data_source="test", sql_table="customers",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region_id", type=DataType.INT),
-                Column(name="revenue", type=DataType.DOUBLE),
-                Column(
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="region_id", datatype=DataType.INT),
+                DatasetField(name="revenue", datatype=DataType.DOUBLE),
+                DatasetField(
                     name="premium_rev", sql="revenue",
-                    filter="regions.is_premium = 1", type=DataType.DOUBLE,
+                    filter="regions.is_premium = 1", datatype=DataType.DOUBLE,
                 ),
             ],
-            joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+            relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
         )
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
             ],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         )
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=orders, referenced_models=[customers, regions],
+            population=orders, referenced_datasets=[customers, regions],
         )
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(customers.premium_rev)"}],
+            "population": "orders",
+            "metrics": [{"formula": "sum(customers.premium_rev)"}],
             "dimensions": ["id"],
         })
         planned = plan_query(query=q, bundle=bundle)
         assert len(planned.regroup_attach_plans) == 1
-        assert planned.regroup_attach_plans[0].producer_root_model == "customers"
+        assert planned.regroup_attach_plans[0].producer_root_dataset == "customers"
 
 
 # Producer mode
@@ -292,8 +292,8 @@ class TestProducerMode:
         """The host-rooted sub-plan must contain zero nested attaches, else the filtered measure re-isolates."""
         host = _claim_amount()
         q = SlayerQuery.model_validate({
-            "source_model": "claim_amount",
-            "measures": [{"formula": "sum(loss_payment_amt)"}],
+            "population": "claim_amount",
+            "metrics": [{"formula": "sum(loss_payment_amt)"}],
             "dimensions": ["claim.claim_number"],
         })
         planned = plan_query(query=q, bundle=_bundle(host))
@@ -317,18 +317,18 @@ class TestHostModelFiltersInteractions:
 
     def test_host_model_filter_lands_inside_filtered_local_sub_plan(self):
         """Every read of the host's table, the combined sub-plan's included, is its filtered dataset."""
-        host = SlayerModel(
+        host = SlayerDataset(
             name="claim_amount", data_source="test", sql_table="Claim_Amount",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(
                     name="loss_payment_amt", sql="amount",
-                    filter="loss_payment.has_flag = 1", type=DataType.DOUBLE,
+                    filter="loss_payment.has_flag = 1", datatype=DataType.DOUBLE,
                 ),
             ],
-            joins=[ModelJoin(
-                target_model="loss_payment",
+            relationships=[DatasetRelationship(
+                to="loss_payment",
                 join_pairs=[["id", "claim_amount_id"]],
                 join_type="inner",
             )],
@@ -336,11 +336,11 @@ class TestHostModelFiltersInteractions:
         )
         bundle = ResolvedSourceBundle(
             dialect="postgres",
-            source_model=host, referenced_models=[_loss_payment()],
+            population=host, referenced_datasets=[_loss_payment()],
         )
         q = SlayerQuery.model_validate({
-            "source_model": "claim_amount",
-            "measures": [{"formula": "sum(loss_payment_amt)"}],
+            "population": "claim_amount",
+            "metrics": [{"formula": "sum(loss_payment_amt)"}],
             "dimensions": ["id"],
         })
         planned = plan_query(query=q, bundle=bundle)
@@ -359,23 +359,23 @@ class TestHostModelFiltersInteractions:
     def test_host_model_filter_referencing_aggregate_measure_raises(self):
         """``model.filters`` referencing an aggregate measure must raise at construction (``ValidationError`` is a ``ValueError``), not emit bad SQL."""
         columns = [
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(
                 name="loss_payment_amt", sql="amount",
-                filter="loss_payment.has_flag = 1", type=DataType.DOUBLE,
+                filter="loss_payment.has_flag = 1", datatype=DataType.DOUBLE,
             ),
         ]
-        joins = [ModelJoin(
-            target_model="loss_payment",
+        joins = [DatasetRelationship(
+            to="loss_payment",
             join_pairs=[["id", "claim_amount_id"]],
             join_type=JoinType.INNER,
         )]
         with pytest.raises(ValueError, match=r"(?i)aggregation reference|measure"):
-            SlayerModel(
+            SlayerDataset(
                 name="claim_amount", data_source="test", sql_table="Claim_Amount",
-                columns=columns,
-                joins=joins,
+                fields=columns,
+                relationships=joins,
                 # Illegal: model.filters cannot reference an aggregate measure.
                 filters=["loss_payment_amt:sum > 0"],
             )
@@ -387,12 +387,12 @@ class TestFirstLastNoNestedCmaPlans:
     def test_filtered_local_first_last_isolates_without_nesting(self):
         host = _claim_amount(with_time=True, with_filter_first=True)
         q = SlayerQuery.model_validate({
-            "source_model": "claim_amount",
-            "measures": [{"formula": "last(latest_payment)"}],
+            "population": "claim_amount",
+            "metrics": [{"formula": "last(latest_payment)"}],
             "dimensions": ["claim.claim_number"],
             "time_dimensions": [
                 TimeDimension(
-                    dimension="created_at",
+                    field="created_at",
                     granularity=TimeGranularity.MONTH,
                 ),
             ],
@@ -402,7 +402,7 @@ class TestFirstLastNoNestedCmaPlans:
         assert len(planned.regroup_attach_plans) == 1
         attach = planned.regroup_attach_plans[0]
         assert attach.kernel.kind == "ranked"
-        assert attach.producer_root_model is None  # rooted at the host
+        assert attach.producer_root_dataset is None  # rooted at the host
         # The crossing filter rides on the source column; no second plan needed.
         assert len(attach.producer_plan.aggregate_slots) == 1
 
@@ -410,65 +410,65 @@ class TestFirstLastNoNestedCmaPlans:
 # Widened Law-3 trigger: ANY crossing input isolates.
 
 
-def _s5_regions() -> SlayerModel:
-    return SlayerModel(
+def _s5_regions() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="payment_amount", type=DataType.DOUBLE),
-            Column(name="weight", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="payment_amount", datatype=DataType.DOUBLE),
+            DatasetField(name="weight", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def _s5_customers() -> SlayerModel:
-    return SlayerModel(
+def _s5_customers() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="weight", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="weight", datatype=DataType.DOUBLE),
+            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
 
 
-def _s5_orders() -> SlayerModel:
+def _s5_orders() -> SlayerDataset:
     """Host with one derived column per crossing-input kind, plus custom aggregations."""
-    return SlayerModel(
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name="region_pay", sql="customers.regions.payment_amount",
-                   type=DataType.DOUBLE),
-            Column(name="cust_weight_d", sql="customers.weight",
-                   type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="region_pay", sql="customers.regions.payment_amount",
+                   datatype=DataType.DOUBLE),
+            DatasetField(name="cust_weight_d", sql="customers.weight",
+                   datatype=DataType.DOUBLE),
             # Sibling derived chain: doubled_pop -> pop_helper -> crossing.
-            Column(name="pop_helper", sql="customers.regions.payment_amount",
-                   type=DataType.DOUBLE),
-            Column(name="doubled_pop", sql="pop_helper * 2",
-                   type=DataType.DOUBLE),
+            DatasetField(name="pop_helper", sql="customers.regions.payment_amount",
+                   datatype=DataType.DOUBLE),
+            DatasetField(name="doubled_pop", sql="pop_helper * 2",
+                   datatype=DataType.DOUBLE),
             # Derived TIME column crossing a join (explicit-arg use only).
-            Column(name="cross_time", sql="customers.signup_at",
-                   type=DataType.TIMESTAMP),
-            Column(name="local_double", sql="amount * 2", type=DataType.DOUBLE),
+            DatasetField(name="cross_time", sql="customers.signup_at",
+                   datatype=DataType.TIMESTAMP),
+            DatasetField(name="local_double", sql="amount * 2", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(
-            target_model="customers", join_pairs=[["customer_id", "id"]],
+        relationships=[DatasetRelationship(
+            to="customers", join_pairs=[["customer_id", "id"]],
         )],
         aggregations=[
             # User-supplied template-fragment kwarg (`scale=` str values).
             Aggregation(
-                name="scaled_sum", formula="SUM({value}) / {scale}",
+                name="scaled_sum", expression="SUM({value}) / {scale}",
                 params=[AggregationParam(name="scale", sql="1")],
             ),
             # Model-default fragment CROSSES a join — the param sql is the crossing input.
             Aggregation(
-                name="wscaled_sum", formula="SUM({value} * {w})",
+                name="wscaled_sum", expression="SUM({value} * {w})",
                 params=[AggregationParam(
                     name="w", sql="customers.regions.weight",
                 )],
@@ -477,18 +477,18 @@ def _s5_orders() -> SlayerModel:
     )
 
 
-def _s5_bundle(host: SlayerModel | None = None) -> ResolvedSourceBundle:
+def _s5_bundle(host: SlayerDataset | None = None) -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=host or _s5_orders(),
-        referenced_models=[_s5_customers(), _s5_regions()],
+        population=host or _s5_orders(),
+        referenced_datasets=[_s5_customers(), _s5_regions()],
     )
 
 
 def _s5_plans(formula: str, *, dimensions=None, **plan_kwargs):
     q = SlayerQuery(
-        source_model="orders",
-        measures=[{"formula": formula, "name": "m0"}],
+        population="orders",
+        metrics=[{"formula": formula, "name": "m0"}],
         dimensions=dimensions,
     )
     planned = plan_query(query=q, bundle=_s5_bundle(), **plan_kwargs)
@@ -496,7 +496,7 @@ def _s5_plans(formula: str, *, dimensions=None, **plan_kwargs):
     return planned, [
         a for a in planned.regroup_attach_plans
         if a.attach_phase == "combined"
-        and a.producer_root_model is None
+        and a.producer_root_dataset is None
         and a.kernel.kind == "plain"
     ]
 
@@ -509,7 +509,7 @@ def _assert_single_ranked_host(planned):
     )
     attach = planned.regroup_attach_plans[0]
     assert attach.kernel.kind == "ranked", attach.kernel
-    assert attach.producer_root_model is None, attach.producer_root_model
+    assert attach.producer_root_dataset is None, attach.producer_root_dataset
     assert attach.producer_plan.regroup_attach_plans == [], (
         f"the ranked producer must hold its measure inline; "
         f"got nested attaches: {attach.producer_plan.regroup_attach_plans}"
@@ -523,9 +523,9 @@ def _assert_single_host_rooted(plans):
         f"Expected exactly one host-rooted producer; got {len(plans)}: {plans}"
     )
     attach = plans[0]
-    assert attach.producer_root_model is None, (
+    assert attach.producer_root_dataset is None, (
         f"Widened Law-3 trigger must produce a HOST-rooted producer; got "
-        f"root {attach.producer_root_model!r}"
+        f"root {attach.producer_root_dataset!r}"
     )
     assert attach.producer_plan.regroup_attach_plans == [], (
         f"Host-rooted producer must hold its measure inline (recursion "
@@ -553,7 +553,7 @@ class TestCrossingFirstLastStaysRanked:
         attach = _assert_single_ranked_host(planned)
         # The ranking key reaches through the customers join (path () if non-crossing).
         assert isinstance(attach.kernel, RankedProducerKernel)
-        assert isinstance(attach.kernel.ranking_time_key, ColumnKey)
+        assert isinstance(attach.kernel.ranking_time_key, FieldKey)
         assert attach.kernel.ranking_time_key.path == ("customers",)
 
     def test_derived_time_arg_stays_ranked(self):
@@ -642,26 +642,26 @@ class TestWidenedLaw3TriggerCrossingInputs:
         planned, cma = _s5_plans("sum(customers.weight)")
         assert cma == []
         assert len(planned.regroup_attach_plans) == 1
-        assert planned.regroup_attach_plans[0].producer_root_model == "customers"
+        assert planned.regroup_attach_plans[0].producer_root_dataset == "customers"
 
     def test_producer_mode_keeps_target_rooted(self):
         # Producer mode still plans a cross-model aggregate target-rooted.
         planned = plan_as_producer(query=SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.weight)", name="m0")],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(customers.weight)", name="m0")],
         ), bundle=_s5_bundle())
         (attach,) = [
             a for a in planned.regroup_attach_plans
             if a.attach_phase == "combined"
         ]
-        assert attach.producer_root_model == "customers"
+        assert attach.producer_root_dataset == "customers"
 
     def test_identical_key_shared_between_public_and_composite_leaf(self):
         # Identical AggregateKeys intern to one slot → one plan, even across a
         # public measure and a composite leaf.
         q = SlayerQuery(
-            source_model="orders",
-            measures=[
+            population="orders",
+            metrics=[
                 {"formula": "sum(region_pay)"},
                 {"formula": "sum(region_pay) + sum(amount)", "name": "combo"},
             ],
@@ -678,8 +678,8 @@ class TestWidenedLaw3TriggerCrossingInputs:
     def test_two_distinct_crossing_measures_two_plans(self):
         # Two DISTINCT crossing aggregates → two separate host-rooted plans.
         q = SlayerQuery(
-            source_model="orders",
-            measures=[
+            population="orders",
+            metrics=[
                 {"formula": "sum(region_pay)"},
                 {"formula": "sum(cust_weight_d)"},
             ],
@@ -699,9 +699,9 @@ class TestWidenedLaw3TriggerCrossingInputs:
     def test_host_row_filter_propagates_into_widened_sub_plan(self):
         # A host ROW filter must propagate into the sub-plan's filters.
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(region_pay)"}],
-            "filters": ["amount > 50"],
+            "population": "orders",
+            "metrics": [{"formula": "sum(region_pay)"}],
+            "filter": ["amount > 50"],
         })
         planned = plan_query(query=q, bundle=_s5_bundle())
         (attach,) = [
@@ -718,9 +718,9 @@ class TestWidenedLaw3TriggerCrossingInputs:
         # A host ROW filter whose expression itself crosses a join still roots at
         # the host, so it too propagates into the sub-plan.
         q = SlayerQuery.model_validate({
-            "source_model": "orders",
-            "measures": [{"formula": "sum(region_pay)"}],
-            "filters": ["customers.weight > 1"],
+            "population": "orders",
+            "metrics": [{"formula": "sum(region_pay)"}],
+            "filter": ["customers.weight > 1"],
         })
         planned = plan_query(query=q, bundle=_s5_bundle())
         (attach,) = [

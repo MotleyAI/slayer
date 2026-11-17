@@ -20,8 +20,8 @@ from slayer.core.keys import (
     ArrayLiteralKey,
     CastKey,
     ListSetKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     InKey,
     LiteralKey,
     ScalarCallKey,
@@ -35,10 +35,10 @@ from slayer.core.keys import (
 )
 from slayer.core.keys import Grain
 
-CITY = ColumnKey(path=(), leaf="city")
-AMOUNT = ColumnKey(path=(), leaf="amount")
+CITY = FieldKey(path=(), leaf="city")
+AMOUNT = FieldKey(path=(), leaf="amount")
 AGG = AggregateKey(source=AMOUNT, agg="sum", partition_keys=Grain.of({CITY}))
-PLACEHOLDER = ColumnKey(path=(), leaf="__regroup__0__amount_sum")
+PLACEHOLDER = FieldKey(path=(), leaf="__regroup__0__amount_sum")
 MAPPING = {AGG: PLACEHOLDER}
 
 
@@ -73,15 +73,15 @@ class TestDirectAndNestedHits:
     def test_nested_in_time_point_and_in(self) -> None:
         tp = TimePointCmpKey(op=">=", operand=AGG, point="last month")
         assert substitute_value_keys(tp, MAPPING).operand == PLACEHOLDER
-        ik = InKey(column=AGG, values=(LiteralKey(value="gold"),))
-        assert substitute_value_keys(ik, MAPPING).column == PLACEHOLDER
+        ik = InKey(field=AGG, values=(LiteralKey(value="gold"),))
+        assert substitute_value_keys(ik, MAPPING).field == PLACEHOLDER
 
     def test_column_to_column_inside_time_trunc(self) -> None:
         # TimeTruncKey.source is typed ColumnKey/ColumnSqlKey — a column-to-
         # column mapping must reach through it.
-        other = ColumnKey(path=(), leaf="shipped_at")
-        tt = TimeTruncKey(source=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH)
-        out = substitute_value_keys(tt, {ColumnKey(path=(), leaf="ordered_at"): other})
+        other = FieldKey(path=(), leaf="shipped_at")
+        tt = TimeTruncKey(source=FieldKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+        out = substitute_value_keys(tt, {FieldKey(path=(), leaf="ordered_at"): other})
         assert out.source == other
 
 
@@ -90,7 +90,7 @@ class TestAtomicity:
         # CITY appears both inside AGG (partition_keys) and as a sibling
         # operand. The AGG match is atomic: its inner CITY must survive, while
         # the sibling CITY is replaced.
-        other = ColumnKey(path=(), leaf="region")
+        other = FieldKey(path=(), leaf="region")
         tree = ArithmeticKey(op="+", operands=(AGG, CITY))
         out = substitute_value_keys(tree, {AGG: PLACEHOLDER, CITY: other})
         assert out.operands == (PLACEHOLDER, other)
@@ -98,7 +98,7 @@ class TestAtomicity:
     def test_aggregate_internals_reachable_when_agg_itself_unmatched(self) -> None:
         # Without an AGG-level match the rewriter descends into source /
         # partition_keys, so a producer-side rewrite can retarget them.
-        other = ColumnKey(path=(), leaf="city2")
+        other = FieldKey(path=(), leaf="city2")
         out = substitute_value_keys(AGG, {CITY: other})
         assert out.partition_keys == Grain.of({other})
         assert out.source == AMOUNT
@@ -107,10 +107,10 @@ class TestAtomicity:
 class TestTotality:
     def test_every_union_member_has_a_sample(self) -> None:
         samples = {
-            ColumnKey: CITY,
-            ColumnSqlKey: ColumnSqlKey(path=(), model="orders", column_name="margin"),
+            FieldKey: CITY,
+            FieldSqlKey: FieldSqlKey(path=(), dataset="orders", field_name="margin"),
             TimeTruncKey: TimeTruncKey(
-                source=ColumnKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH,
+                source=FieldKey(path=(), leaf="ordered_at"), granularity=TimeGranularity.MONTH,
             ),
             StarKey: StarKey(),
             LiteralKey: LiteralKey(value=Decimal("1")),
@@ -119,7 +119,7 @@ class TestTotality:
             ArithmeticKey: ArithmeticKey(op="+", operands=(CITY, AMOUNT)),
             ScalarCallKey: ScalarCallKey(name="coalesce", args=(CITY, "x")),
             TimePointCmpKey: TimePointCmpKey(op="=", operand=CITY, point="2025-Q1"),
-            InKey: InKey(column=CITY, values=(LiteralKey(value="gold"),)),
+            InKey: InKey(field=CITY, values=(LiteralKey(value="gold"),)),
             SqlFragmentKey: SqlFragmentKey(template="{r0} * 2", refs=(CITY,)),
             CastKey: CastKey(source=CITY, type_text="TEXT", data_type=DataType.TEXT),
             ArrayLiteralKey: ArrayLiteralKey(values=(LiteralKey(value="gold"),)),

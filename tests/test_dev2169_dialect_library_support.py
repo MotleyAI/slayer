@@ -18,7 +18,7 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType, DatePart, TimeGranularity
 from slayer.core.errors import ListTypeError, UnsupportedServerFunctionError
 from slayer.core.keys import SCALAR_SPECS, CastKey, LiteralKey
-from slayer.core.models import DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import (
@@ -131,7 +131,7 @@ class LibCase(BaseModel):
     name: str
     build: Callable[[], Any]
     mentions: str
-    models: Callable[[], list[SlayerModel]] = lambda: [lib_model()]
+    datasets: Callable[[], list[SlayerDataset]] = lambda: [lib_model()]
 
 
 def _dim(case_id: str, name: str, expr: str, *, mentions: str | None = None) -> LibCase:
@@ -143,17 +143,17 @@ def _flt(case_id: str, name: str, expr: str, *, mentions: str | None = None) -> 
 
 
 def _lib(**body: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "lib", **body})
+    return SlayerQuery.model_validate({"population": "lib", **body})
 
 
-def _with_saved_measure() -> list[SlayerModel]:
+def _with_saved_measure() -> list[SlayerDataset]:
     base = lib_model()
-    return [base.model_copy(update={"measures": [ModelMeasure(name="txt_total", formula="sum(num_txt * 2)")]})]
+    return [base.model_copy(update={"metrics": [DatasetMetric(name="txt_total", expression="sum(num_txt * 2)")]})]
 
 
 def _stages() -> list[SlayerQuery]:
-    return [SlayerQuery.model_validate({"name": "s1", "source_model": "lib", "dimensions": ["id", "num_txt"]}),
-            SlayerQuery.model_validate({"source_model": "s1", "dimensions": ["id"], "filters": ["num_txt > 100"]})]
+    return [SlayerQuery.model_validate({"name": "s1", "population": "lib", "dimensions": ["id", "num_txt"]}),
+            SlayerQuery.model_validate({"population": "s1", "dimensions": ["id"], "filter": ["num_txt > 100"]})]
 
 
 FUNCTION_CASES = [
@@ -216,7 +216,7 @@ COERCION_CASES = [
     LibCase(case_id="coerce|measure", name="try_cast", mentions="number",
             build=lambda: _lib(measures=[{"formula": "sum(num_txt * 2)", "name": "t"}])),
     LibCase(case_id="coerce|saved-measure", name="try_cast", mentions="number",
-            build=lambda: _lib(measures=["txt_total"]), models=_with_saved_measure),
+            build=lambda: _lib(measures=["txt_total"]), datasets=_with_saved_measure),
     LibCase(case_id="coerce|order-by", name="try_cast", mentions="number",
             build=lambda: _lib(dimensions=["id"], order=[{"column": "num_txt * 2"}])),
     LibCase(case_id="coerce|stage", name="try_cast", mentions="number", build=_stages),
@@ -229,7 +229,7 @@ def test_every_library_function_has_a_case() -> None:
 
 
 async def _emit(case: LibCase, ds_type: str) -> str:
-    return await emit(case.build(), dialect=ds_type, models=case.models())
+    return await emit(case.build(), dialect=ds_type, models=case.datasets())
 
 
 @pytest.mark.parametrize("ds_type", DS_TYPES)
@@ -250,7 +250,7 @@ async def test_refused_on_execution_too(ds_type: str) -> None:
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig(name="test", type=ds_type, host="localhost", database="db"))
-        await storage.save_model(lib_model())
+        await storage.save_dataset(lib_model())
         engine, query, name = SlayerQueryEngine(storage=storage), lib_query("json_value(payload, '$.a')"), database(ds_type)
         with pytest.raises(UnsupportedServerFunctionError, match=name):
             await engine.execute(query)
@@ -436,7 +436,7 @@ def test_base_defaults_outside_the_library_are_neutral(hook: str, tree: Expressi
 # List constructs (spec: models/list-columns › Backends without native lists reject list constructs)
 # --------------------------------------------------------------------------- #
 def _contractors(**body: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "contractors", **body})
+    return SlayerQuery.model_validate({"population": "contractors", **body})
 
 
 def _count(name: str = "n") -> dict[str, str]:
@@ -467,13 +467,13 @@ LIST_CASES = [
     ListCase(case_id="child-filter", mentions="skills",
              build=lambda: _contractors(measures=[_count()], filters=["skills.value = 'go'"])),
     ListCase(case_id="nested-hop", mentions="skills",
-             build=lambda: SlayerQuery.model_validate({"source_model": "assignments", "dimensions": ["id"],
-                                                       "filters": ["contractors.skills.value = 'sql'"]})),
+             build=lambda: SlayerQuery.model_validate({"population": "assignments", "dimensions": ["id"],
+                                                       "filter": ["contractors.skills.value = 'sql'"]})),
     ListCase(case_id="stage", mentions="contains",
              build=lambda: [
-                 SlayerQuery.model_validate({"name": "s1", "source_model": "contractors", "dimensions": ["id"],
-                                             "filters": ["contains(skills, 'go')"]}),
-                 SlayerQuery.model_validate({"source_model": "s1", "measures": [_count()]}),
+                 SlayerQuery.model_validate({"name": "s1", "population": "contractors", "dimensions": ["id"],
+                                             "filter": ["contains(skills, 'go')"]}),
+                 SlayerQuery.model_validate({"population": "s1", "metrics": [_count()]}),
              ]),
     ListCase(case_id="collect", mentions="collect",
              build=lambda: _contractors(dimensions=["team"], measures=[{"formula": "collect(city)", "name": "c"}])),

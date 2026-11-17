@@ -29,12 +29,12 @@ def _carriers() -> list[UserWarning]:
         location="measures[0].formula",
     )
     return [
-        BroadcastGrainWarning(measure="orders.revenue_sum", reason="no join path"),
+        BroadcastGrainWarning(metric="orders.revenue_sum", reason="no join path"),
         AssociatedGrainWarning(
-            measure="orders.revenue_sum", dimensions="customers.region"
+            metric="orders.revenue_sum", dimensions="customers.region"
         ),
         AssociatedGrainWarning(
-            measure="orders.revenue_sum", dimensions="customers.region, status"
+            metric="orders.revenue_sum", dimensions="customers.region, status"
         ),
         SlayerNormalizationWarning(nw),
     ]

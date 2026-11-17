@@ -19,7 +19,7 @@ from sqlglot.errors import SqlglotError
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import GranularitySpec
-from slayer.core.models import Aggregation, Column, ModelJoin, ModelMeasure
+from slayer.core.models import Aggregation, DatasetField, DatasetRelationship, DatasetMetric
 from slayer.osi.dialects import PORTABLE_READER, reader_for
 from slayer.osi.models import OSIExpression, OSINonportableExtension
 
@@ -37,34 +37,34 @@ class _Payload(BaseModel):
     fingerprint: str = ""
 
 
-class JoinDeclaration(BaseModel):
+class RelationshipDeclaration(BaseModel):
     """One SLayer join a relationship stands for, on its declaring model."""
 
     model_config = ConfigDict(extra="forbid")
 
-    model: str
-    join: ModelJoin
+    dataset: str
+    relationship: DatasetRelationship
 
 
 class RelationshipPayload(_Payload):
     kind: Literal["relationship"] = "relationship"
-    declarations: list[JoinDeclaration]
+    declarations: list[RelationshipDeclaration]
 
 
 class MetricPayload(_Payload):
     kind: Literal["metric"] = "metric"
-    model: str
-    measure: ModelMeasure
+    dataset: str
+    metric: DatasetMetric
 
 
-class ColumnContent(BaseModel):
-    """A field's SLayer column attributes; ``sql`` / ``filter`` are its value/filter split, ``type`` its typing."""
+class FieldContent(BaseModel):
+    """A field's SLayer column attributes; ``sql`` / ``filter`` are its value/filter split, ``datatype`` its typing."""
 
     model_config = ConfigDict(extra="forbid")
 
     sql: str | None = None
     filter: str | None = None
-    type: DataType | None = None
+    datatype: DataType | None = None
     hidden: bool = False
     format: NumberFormat | None = None
     granularity: GranularitySpec | None = None
@@ -74,7 +74,7 @@ class ColumnContent(BaseModel):
 
 class FieldPayload(_Payload):
     kind: Literal["field"] = "field"
-    column: ColumnContent
+    field: FieldContent
 
 
 class SourceStructure(BaseModel):
@@ -98,8 +98,8 @@ class DatasetPayload(_Payload):
     meta: dict[str, Any] | None = None
     aggregations: list[Aggregation] = []
     #: SLayer-only content: columns reading joined models, measures Ossie cannot express.
-    columns: list[Column] = []
-    measures: list[ModelMeasure] = []
+    fields: list[DatasetField] = []
+    metrics: list[DatasetMetric] = []
 
 
 Payload = Annotated[

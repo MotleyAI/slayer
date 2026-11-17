@@ -56,31 +56,31 @@ class TestPhysicalReferences:
     async def test_collision_in_a_measure_expr(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[RENAMED_STATUS], measures=[
             meas("paid_cnt", "sum", "CASE WHEN status = 'paid' THEN 1 ELSE 0 END")])], db=db)
-        assert await value(models=result.models, db=db, model="orders", formula="paid_cnt") == 2
+        assert await value(models=result.datasets, db=db, model="orders", formula="paid_cnt") == 2
 
     @MASKED
     async def test_collision_in_sum_boolean(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[RENAMED_STATUS], measures=[
             meas("paid_cnt", "sum_boolean", "status = 'paid'")])], db=db)
-        assert await value(models=result.models, db=db, model="orders", formula="paid_cnt") == 2
+        assert await value(models=result.datasets, db=db, model="orders", formula="paid_cnt") == 2
 
     @MASKED
     async def test_collision_in_a_dimension_expr(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[RENAMED_STATUS, dim("status_upper", "UPPER(status)")])], db=db)
-        assert await counts_by(models=result.models, db=db, model="orders", dimension="status_upper") == {
+        assert await counts_by(models=result.datasets, db=db, model="orders", dimension="status_upper") == {
             "PAID": 2, "OPEN": 1}
 
     @MASKED
     async def test_entity_key_masked_by_a_dimension(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[dim("customer_id", "legacy_ref")], entities=[ORDER, CUSTOMER_FK]),
                              CUSTOMERS], db=db)
-        assert await counts_by(models=result.models, db=db, model="orders", dimension="customers.name") == {
+        assert await counts_by(models=result.datasets, db=db, model="orders", dimension="customers.name") == {
             "Ann": 2, "Bo": 1}
 
     @MASKED
     async def test_self_named_dimension(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[dim("status", "UPPER(status)")])], db=db)
-        assert await counts_by(models=result.models, db=db, model="orders", dimension="status") == {
+        assert await counts_by(models=result.datasets, db=db, model="orders", dimension="status") == {
             "PAID": 2, "OPEN": 1}
 
     def test_case_only_ambiguity_is_dropped(self) -> None:
@@ -100,7 +100,7 @@ class TestDeclaredDataType:
     def test_list_data_types(self, data_type: str, element: DataType) -> None:
         result = import_dbt([sm(dimensions=[dim("tags")])], regular_models=typed(("tags", data_type)))
         col = column(models_of(result)["orders"], "tags")
-        assert (col.type, col.element_type) == (DataType.ARRAY, element)
+        assert (col.datatype, col.element_type) == (DataType.ARRAY, element)
 
     @pytest.mark.parametrize(("data_type", "expected"), [
         ("bigint", DataType.INT), ("numeric(10,2)", DataType.DOUBLE), ("varchar(255)", DataType.TEXT),
@@ -108,25 +108,25 @@ class TestDeclaredDataType:
     ])
     def test_scalar_data_types(self, data_type: str, expected: DataType) -> None:
         result = import_dbt([sm(dimensions=[dim("note")])], regular_models=typed(("note", data_type)))
-        assert column(models_of(result)["orders"], "note").type == expected
+        assert column(models_of(result)["orders"], "note").datatype == expected
 
     def test_declared_type_of_a_time_dimension(self) -> None:
         created = {"name": "created_at", "type": "time", "type_params": {"time_granularity": "day"}}
         result = import_dbt([sm(dimensions=[created])], regular_models=typed(("created_at", "date")))
-        assert column(models_of(result)["orders"], "created_at").type == DataType.DATE
+        assert column(models_of(result)["orders"], "created_at").datatype == DataType.DATE
 
     def test_declared_types_reach_keys_and_measure_sources(self) -> None:
         result = import_dbt([sm(measures=[meas("total", "sum", "amount"), meas("tag_cnt", "count", "tags")])],
                             regular_models=typed(("id", "bigint"), ("amount", "numeric(10,2)"), ("tags", "text[]")))
         model = models_of(result)["orders"]
-        assert column(model, "id").type == DataType.INT
-        assert source_column(model, "total").type == DataType.DOUBLE
+        assert column(model, "id").datatype == DataType.INT
+        assert source_column(model, "total").datatype == DataType.DOUBLE
         tags = source_column(model, "tag_cnt")
-        assert (tags.type, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
 
     def test_unrecognised_data_type(self) -> None:
         result = import_dbt([sm(measures=[meas("geo_sum", "sum", "geo")])], regular_models=typed(("geo", "geography")))
-        assert source_column(models_of(result)["orders"], "geo_sum").type == DataType.DOUBLE
+        assert source_column(models_of(result)["orders"], "geo_sum").datatype == DataType.DOUBLE
         assert entries(result, "geography", severity="info"), result.warnings
 
     @pytest.mark.parametrize(("data_type", "expected", "element"), [
@@ -138,7 +138,7 @@ class TestDeclaredDataType:
         result = import_dbt([sm(dimensions=[dim("note")])], regular_models=typed(("note", data_type)),
                             target_dialect="bigquery")
         col = column(models_of(result)["orders"], "note")
-        assert (col.type, col.element_type) == (expected, element)
+        assert (col.datatype, col.element_type) == (expected, element)
 
     def test_read_from_schema_yml_without_hidden_models(self, tmp_path: Path) -> None:
         write_yaml(tmp_path / "models" / "schema.yml", {
@@ -148,11 +148,11 @@ class TestDeclaredDataType:
         project = parse_dbt_project(str(tmp_path))
         result = DbtToSlayerConverter(project=project, data_source=DS).convert()
         col = column(models_of(result)["orders"], "tags")
-        assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
 
     async def test_declared_type_contradicted_by_the_database(self, db: Path) -> None:
         result = import_dbt([sm(dimensions=[dim("amount")])], regular_models=typed(("amount", "text")), db=db)
-        assert column(models_of(result)["orders"], "amount").type == DataType.INT
+        assert column(models_of(result)["orders"], "amount").datatype == DataType.INT
         assert entries(result, "amount", severity="info"), result.warnings
 
 
@@ -161,9 +161,9 @@ class TestTypingOrder:
         result = import_dbt([sm(measures=[meas("total", "sum", "amount"), meas("n_notes", "count", "note"),
                                           meas("paid", "sum_boolean", "status = 'paid'")])])
         model = models_of(result)["orders"]
-        assert source_column(model, "total").type == DataType.DOUBLE
-        assert source_column(model, "n_notes").type == DataType.TEXT
-        assert source_column(model, "paid").type == DataType.INT
+        assert source_column(model, "total").datatype == DataType.DOUBLE
+        assert source_column(model, "n_notes").datatype == DataType.TEXT
+        assert source_column(model, "paid").datatype == DataType.INT
 
     @pytest.mark.parametrize("target", ["mysql", "mssql"])
     def test_median_refused_by_the_target_is_dropped(self, target: str) -> None:
@@ -200,20 +200,20 @@ class TestTypingOrder:
                   "filter": "{{ Dimension('order__status') }} = 'paid'"}
         result = import_dbt([sm(dimensions=[dim("status")], measures=[meas("latest", "max", "created_at")])],
                             regular_models=typed(("created_at", "timestamp")), metrics=[metric])
-        assert source_column(models_of(result)["orders"], "late_paid").type is DataType.TIMESTAMP
+        assert source_column(models_of(result)["orders"], "late_paid").datatype is DataType.TIMESTAMP
 
     def test_model_sql_with_a_trailing_semicolon_is_typed_live(self, db: Path) -> None:
         orders_q = {**sm(measures=[meas("tag_cnt", "count", "tags")]), "model": "orders_q"}
         result = import_dbt([orders_q], regular_models=[{"name": "orders_q", "raw_code": "SELECT * FROM orders;"}],
                             db=db)
         col = source_column(models_of(result)["orders"], "tag_cnt")
-        assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
 
     async def test_list_measure_source_typed_from_the_database(self, db: Path) -> None:
         result = import_dbt([sm(measures=[meas("tag_cnt", "count", "tags")])], db=db)
         col = source_column(models_of(result)["orders"], "tag_cnt")
-        assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)
-        assert await value(models=result.models, db=db, model="orders", formula="tag_cnt") == 2
+        assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert await value(models=result.datasets, db=db, model="orders", formula="tag_cnt") == 2
 
     @pytest.mark.parametrize("agg", ["count_distinct", "min", "max", "sum", "average"])
     def test_aggregation_refused_over_a_list_is_dropped(self, db: Path, agg: str) -> None:
@@ -224,7 +224,7 @@ class TestTypingOrder:
 
     async def test_validate_models_proposes_no_deletion(self, db: Path, tmp_path: Path) -> None:
         result = import_dbt([sm(dimensions=[dim("tags")], measures=[meas("tag_cnt", "count", "tags")])], db=db)
-        found = await drift_entries(models=result.models, db=db, base_dir=tmp_path / "store")
+        found = await drift_entries(models=result.datasets, db=db, base_dir=tmp_path / "store")
         assert deletes(found, model="orders") == [], found
 
 
@@ -240,4 +240,4 @@ def test_cli_types_without_hidden_models(db: Path, tmp_path: Path) -> None:
         engine_factory.invalidate_engine(DatasourceConfig(name=DS, type="duckdb", database=str(db)))
     assert code == 0
     col = source_column(stored_model(store, "orders"), "tag_cnt")
-    assert (col.type, col.element_type) == (DataType.ARRAY, DataType.TEXT)
+    assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)

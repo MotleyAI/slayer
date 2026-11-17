@@ -8,10 +8,10 @@ from typing import Any, Dict
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.inspect.model_render import _resolve_inspect_sections, _truncate_description
+from slayer.inspect.dataset_render import _resolve_inspect_sections, _truncate_description
 from slayer.inspect.service import InspectService
 from slayer.mcp.server import create_mcp_server
 from slayer.search.service import SearchService
@@ -32,19 +32,19 @@ ON_ORDERS = {
 REVENUE = {"formula": "sum(amount)", "name": "revenue"}
 
 
-def _plain_model(name: str) -> SlayerModel:
-    return SlayerModel(name=name, data_source="test", sql_table="orders", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="region", type=DataType.TEXT),
-        Column(name="amount", type=DataType.DOUBLE),
+def _plain_model(name: str) -> SlayerDataset:
+    return SlayerDataset(name=name, data_source="test", sql_table="orders", fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="region", datatype=DataType.TEXT),
+        DatasetField(name="amount", datatype=DataType.DOUBLE),
     ])
 
 
 @pytest.fixture
 async def storage(tmp_path) -> YAMLStorage:
     store = await build_refine_storage(str(tmp_path))
-    await store.save_model(_plain_model("targets"))
-    await store.save_model(_plain_model("untouched"))
+    await store.save_dataset(_plain_model("targets"))
+    await store.save_dataset(_plain_model("untouched"))
     engine = SlayerQueryEngine(storage=store)
     try:
         for name, query in (
@@ -62,10 +62,10 @@ async def storage(tmp_path) -> YAMLStorage:
             ("monthly_rollup", {"source_model": "monthly_revenue",
                                 "measures": [{"formula": "sum(revenue)", "name": "total"}]}),
         ):
-            await engine.create_model_from_query(query=query, name=name, description=EXTRA_DESCRIPTIONS[name])
-        await engine.save_model(SlayerModel(
+            await engine.create_dataset_from_query(query=query, name=name, description=EXTRA_DESCRIPTIONS[name])
+        await engine.save_dataset(SlayerDataset(
             name="hidden_q", data_source="test", hidden=True, description="Hidden saved query",
-            source_queries=[SlayerQuery.model_validate({"source_model": "orders", "measures": [REVENUE]})],
+            source_queries=[SlayerQuery.model_validate({"population": "orders", "metrics": [REVENUE]})],
         ))
     finally:
         await engine.aclose()

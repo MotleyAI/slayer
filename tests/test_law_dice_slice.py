@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 
 from tests._dev1841_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     assoc_q,
     make_exec_engine,
     q,
@@ -48,7 +48,7 @@ async def exec_backend(request):
 @pytest.mark.parametrize("measure_key,dim,value", FAMILY)
 async def test_filtered_value_equals_sliced_cell(exec_backend, measure_key, dim, value):
     _, engine = exec_backend
-    measure = ModelMeasure(formula=MEASURES[measure_key], name="m")
+    measure = DatasetMetric(expression=MEASURES[measure_key], name="m")
 
     filtered = await engine.execute(
         assoc_q(measures=[measure], filters=[f"{dim} = '{value}'"]))
@@ -65,7 +65,7 @@ async def test_filtered_value_equals_sliced_cell(exec_backend, measure_key, dim,
 @pytest.mark.parametrize("measure_key,dim,value", FAMILY)
 async def test_holds_by_default(exec_backend, measure_key, dim, value):
     _, engine = exec_backend
-    measure = ModelMeasure(formula=MEASURES[measure_key], name="m")
+    measure = DatasetMetric(expression=MEASURES[measure_key], name="m")
 
     filtered = await engine.execute(q(measures=[measure], filters=[f"{dim} = '{value}'"]))
     sliced = await engine.execute(q(dimensions=[dim], measures=[measure]))

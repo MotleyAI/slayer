@@ -29,7 +29,7 @@ from typing import AsyncIterator, List, Optional
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -45,34 +45,34 @@ AOV = "sum(amount) / count(*)"
 CROSS_RATIO = "sum(amount) / max(customers.score)"
 
 
-def orders_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def orders_model(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="order_date",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="order_date", type=DataType.DATE),
-            Column(name="amount", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="order_date", datatype=DataType.DATE),
+            DatasetField(name="amount", datatype=DataType.INT),
         ],
-        measures=[ModelMeasure(name="aov", formula=AOV)],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        metrics=[DatasetMetric(name="aov", expression=AOV)],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
-def customers_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def customers_model(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="score", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="score", datatype=DataType.INT),
         ],
     )
 
 
-def dev2062_models(*, data_source: str = "test") -> List[SlayerModel]:
+def dev2062_models(*, data_source: str = "test") -> List[SlayerDataset]:
     return [orders_model(data_source=data_source), customers_model(data_source=data_source)]
 
 
@@ -83,8 +83,8 @@ DATE_RANGE: List[Optional[str]] = ["2025-01-01", "2025-12-31"]
 DATE_FILTER = "order_date >= '2025-01-01'"
 
 
-def m(formula: str, name: str = "v") -> ModelMeasure:
-    return ModelMeasure(formula=formula, name=name)
+def m(formula: str, name: str = "v") -> DatasetMetric:
+    return DatasetMetric(expression=formula, name=name)
 
 
 def orders_q(**kw) -> SlayerQuery:
@@ -94,11 +94,11 @@ def orders_q(**kw) -> SlayerQuery:
 
 def month_td(*, date_range: Optional[List[Optional[str]]] = None) -> List[TimeDimension]:
     return [TimeDimension(
-        dimension="order_date", granularity=TimeGranularity.MONTH, date_range=date_range,
+        field="order_date", granularity=TimeGranularity.MONTH, date_range=date_range,
     )]
 
 
-def monthly_q(*measures: ModelMeasure, **kw) -> SlayerQuery:
+def monthly_q(*measures: DatasetMetric, **kw) -> SlayerQuery:
     kw.setdefault("time_dimensions", month_td())
     return orders_q(measures=list(measures), **kw)
 

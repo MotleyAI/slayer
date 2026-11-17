@@ -14,14 +14,14 @@ import warnings as _warnings
 import pytest
 
 from slayer.core.errors import (
-    AmbiguousJoinPathError,
+    AmbiguousRelationshipPathError,
     AssociatedGrainWarning,
     BroadcastGrainWarning,
 )
 
 from tests._dev1841_fixtures import pushed_filter_infos
 from tests._dev1840_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     SPEND_APP_BY_TIER,
     SPEND_BASIC_BY_TIER,
     ambiguity_models,
@@ -53,10 +53,10 @@ async def exec_backend_amb(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
-SM = ModelMeasure(formula="sum(agents.score)", name="sm")
-RV = ModelMeasure(formula="sum(reviews.stars)", name="rv")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+SM = DatasetMetric(expression="sum(agents.score)", name="sm")
+RV = DatasetMetric(expression="sum(reviews.stars)", name="rv")
 
 
 class TestPushedFiltersAreSilent:
@@ -130,7 +130,7 @@ class TestStrictNarrows:
         DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
         query = tq(to_many_handling="error", measures=[SM], filters=["effort > 2"])
-        with pytest.raises(AmbiguousJoinPathError) as ei:
+        with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await engine.execute(query=query)
         assert "opened_by" in str(ei.value)
         assert "closed_by" in str(ei.value)
@@ -143,7 +143,7 @@ class TestStrictNarrows:
         class (d)."""
         _, engine = exec_backend_amb
         query = tq(to_many_handling="error", measures=[RV], filters=["agents.name = 'Ann'"])
-        with pytest.raises(AmbiguousJoinPathError) as ei:
+        with pytest.raises(AmbiguousRelationshipPathError) as ei:
             await engine.execute(query=query)
         assert "opened_by" in str(ei.value)
         assert "closed_by" in str(ei.value)
@@ -180,7 +180,7 @@ class TestBooleanTotalPushdownReplacesTheWarning:
         retired. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
         query = tq(measures=[SM], filters=["effort > 2"])
-        with pytest.raises(AmbiguousJoinPathError):
+        with pytest.raises(AmbiguousRelationshipPathError):
             await engine.execute(query)
 
     async def test_ambiguous_filter_hop_errors_in_lenient_mode(
@@ -190,5 +190,5 @@ class TestBooleanTotalPushdownReplacesTheWarning:
         lenient mode too — never dropped. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
         query = tq(measures=[RV], filters=["agents.name = 'Ann'"])
-        with pytest.raises(AmbiguousJoinPathError):
+        with pytest.raises(AmbiguousRelationshipPathError):
             await engine.execute(query)

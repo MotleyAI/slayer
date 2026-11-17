@@ -3,7 +3,7 @@ from slayer.storage.sqlite_conn import transaction
 from typing import Any
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -19,9 +19,9 @@ def td(**kw: Any) -> TimeDimension:
     return TimeDimension(**kw)
 
 
-def model(**kw: Any) -> SlayerModel:
+def model(**kw: Any) -> SlayerDataset:
     """Build a ``SlayerModel`` from shorthand kwargs (dict columns/aggregations coerced by validators)."""
-    return SlayerModel(**kw)
+    return SlayerDataset(**kw)
 
 # Orders span three month buckets across two years so month vs year bucketing
 # is observable: 2024-01 -> 10.0, 2024-02 -> 60.0, 2025-03 -> 5.0.
@@ -35,24 +35,24 @@ MONTH_SUMS = {"2024-01-01": 10.0, "2024-02-01": 60.0, "2025-03-01": 5.0}
 
 
 async def save_models(storage: YAMLStorage) -> None:
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="region", sql="region", type=DataType.TEXT),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
         ],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.INT),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     ))
 
 

@@ -79,7 +79,7 @@ def _stage_flags(stage: SlayerQuery) -> set[str]:
     present = {
         "inline_source": bool(stage.extensions),
         "time_dimensions": bool(stage.time_dimensions),
-        "filters": bool(stage.filters),
+        "filters": bool(stage.filter),
         "computed_dimensions": any(isinstance(d, ComputedDimension) for d in stage.dimensions or []),
         "to_many_handling": stage.to_many_handling is not None,
     }
@@ -88,14 +88,14 @@ def _stage_flags(stage: SlayerQuery) -> set[str]:
 
 def _expressions(stage: SlayerQuery) -> Iterator[str]:
     """Every Mode B text of a stage: measures, dimensions, time dimensions, filters, order and extension measures."""
-    yield from (m.formula for m in stage.measures or [] if m.formula)
+    yield from (m.expression for m in stage.metrics or [] if m.expression)
     yield from (d.expression for d in stage.dimensions or [] if isinstance(d, ComputedDimension))
-    yield from (td.dimension for td in stage.time_dimensions or [] if isinstance(td.dimension, str))
-    yield from stage.filters or []
-    yield from (o.raw_formula for o in stage.order or [] if o.raw_formula)
-    for measure in (m for e in stage.extensions or [] for m in e.measures or []):
-        if measure.formula:
-            yield measure.formula
+    yield from (td.field for td in stage.time_dimensions or [] if isinstance(td.field, str))
+    yield from stage.filter or []
+    yield from (o.raw_expression for o in stage.order or [] if o.raw_expression)
+    for measure in (m for e in stage.extensions or [] for m in e.metrics or []):
+        if measure.expression:
+            yield measure.expression
 
 
 def query_features(query: Any) -> QueryFeatures:

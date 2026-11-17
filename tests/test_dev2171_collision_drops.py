@@ -52,11 +52,11 @@ class TestCube:
         result = import_cube([cube], db=db)
         model = models_of(result)["orders"]
         for name in ("status_upper", "bucket", "is_paid", "paid_amount", "paid_cnt"):
-            assert model.get_column(name) is None, name
-            assert model.get_measure(name) is None, name
+            assert model.get_field(name) is None, name
+            assert model.get_metric(name) is None, name
             assert _reported(cube_issues(result, name), "status"), name
-        assert await counts_by(models=result.models, db=db, model="orders", dimension="status") == STATE_COUNTS
-        assert await value(models=result.models, db=db, model="orders", formula="total") == 35
+        assert await counts_by(models=result.datasets, db=db, model="orders", dimension="status") == STATE_COUNTS
+        assert await value(models=result.datasets, db=db, model="orders", formula="total") == 35
 
     async def test_self_named_member_is_dropped(self, db: Path) -> None:
         cube = {"name": "orders", "sql_table": "orders",
@@ -65,13 +65,13 @@ class TestCube:
         result = import_cube([cube], db=db)
         assert not has_column(result, "orders", "status")
         assert cube_issues(result, "status")
-        assert await value(models=result.models, db=db, model="orders", formula="paid_amount") == 30
+        assert await value(models=result.datasets, db=db, model="orders", formula="paid_amount") == 30
 
     def test_masked_join_key_drops_the_join(self) -> None:
         cube = {"name": "orders", "sql_table": "orders", "joins": [JOIN],
                 "dimensions": [ID, {"name": "customer_id", "sql": "{CUBE}.legacy_ref", "type": "number"}]}
         result = import_cube([cube, CUSTOMERS])
-        assert models_of(result)["orders"].joins == []
+        assert models_of(result)["orders"].relationships == []
         assert _reported(cube_issues(result, "customers"), "customer_id")
 
     async def test_nested_scope_reference_does_not_collide(self, db: Path) -> None:
@@ -80,14 +80,14 @@ class TestCube:
             {"name": "min_amount", "sql": "(SELECT MIN(amount) FROM orders)", "type": "number"}]}
         result = import_cube([cube], db=db)
         assert "SELECT MIN(amount) FROM orders" in (column(models_of(result)["orders"], "min_amount").sql or "")
-        assert await by_id(models=result.models, db=db, model="orders", dimension="min_amount") == [5, 5, 5]
+        assert await by_id(models=result.datasets, db=db, model="orders", dimension="min_amount") == [5, 5, 5]
 
     async def test_view_over_a_filtered_measure(self, db: Path) -> None:
         cube = {"name": "orders", "sql_table": "orders", "dimensions": [ID], "measures": [
             {"name": "paid_sum", "type": "sum", "sql": "{CUBE}.amount", "filters": PAID}]}
         view = {"name": "orders_view", "cubes": [{"join_path": "orders", "includes": ["id", "paid_sum"]}]}
         result = import_cube([cube], views=[view], db=db)
-        assert await value(models=result.models, db=db, model="orders_view", formula="paid_sum") == 30
+        assert await value(models=result.datasets, db=db, model="orders_view", formula="paid_sum") == 30
 
 
 class TestDbt:
@@ -104,8 +104,8 @@ class TestDbt:
             assert not has_column(result, "orders", name), name
             assert not has_measure(result, "orders", name), name
             assert _reported(entries(result, name), "status"), name
-        assert await counts_by(models=result.models, db=db, model="orders", dimension="status") == STATE_COUNTS
-        assert await value(models=result.models, db=db, model="orders", formula="total") == 35
+        assert await counts_by(models=result.datasets, db=db, model="orders", dimension="status") == STATE_COUNTS
+        assert await value(models=result.datasets, db=db, model="orders", formula="total") == 35
 
     def test_self_named_member_and_masked_entity(self) -> None:
         orders = {"name": "orders", "model": "orders",
@@ -118,7 +118,7 @@ class TestDbt:
         result = import_dbt([orders, customers])
         assert not has_column(result, "orders", "status")
         assert entries(result, "status")
-        assert models_of(result)["orders"].joins == []
+        assert models_of(result)["orders"].relationships == []
         assert entries(result, "customer_id")
 
 
@@ -131,8 +131,8 @@ async def test_osi_collisions_are_dropped(db: Path, tmp_path: Path, kind: str) -
     result = convert_osi(docs, db=db)
     assert not has_column(result, "orders", "status_upper")
     assert _reported(entries(result, "status_upper"), "status")
-    assert await counts_by(models=result.models, db=db, model="orders", dimension="status") == STATE_COUNTS
-    self_status = models_of(result)["orders_self"].get_column("status")
+    assert await counts_by(models=result.datasets, db=db, model="orders", dimension="status") == STATE_COUNTS
+    self_status = models_of(result)["orders_self"].get_field("status")
     assert self_status is None if kind == "current" else (
         self_status is not None and self_status.is_base and self_status.physical_name == "status")
     assert entries(result, "status")

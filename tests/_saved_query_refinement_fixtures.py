@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple, cast
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
@@ -62,17 +62,17 @@ MONTHLY = {"2025-01": 100.0, "2025-02": 105.0, "2025-03": 50.0}
 BY_REGION_MONTH = {("US", "2025-01"): 100.0, ("EU", "2025-02"): 105.0, ("US", "2025-03"): 50.0}
 
 
-def orders_model() -> SlayerModel:
-    return SlayerModel(
+def orders_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.TEXT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.DATE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.TEXT),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="ordered_at", datatype=DataType.DATE),
         ],
     )
 
@@ -112,8 +112,8 @@ async def save_saved_queries(engine: SlayerQueryEngine) -> None:
         ("monthly_revenue_q1", MONTHLY_REVENUE_Q1),
         ("avg_customer_revenue", AVG_CUSTOMER_REVENUE),
     ):
-        await engine.create_model_from_query(query=query, name=name, description=DESCRIPTIONS[name])
-    await engine.create_model_from_query(
+        await engine.create_dataset_from_query(query=query, name=name, description=DESCRIPTIONS[name])
+    await engine.create_dataset_from_query(
         query=REVENUE_BY_STATUS, name="revenue_by_status", variables={"status": "paid"},
         description=DESCRIPTIONS["revenue_by_status"],
     )
@@ -122,7 +122,7 @@ async def save_saved_queries(engine: SlayerQueryEngine) -> None:
 async def populate_refine_storage(storage: StorageBackend, *, db_path: str) -> None:
     """Register the seeded SQLite ``db_path``, the ``orders`` model and the saved queries in ``storage``."""
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=db_path))
-    await storage.save_model(orders_model())
+    await storage.save_dataset(orders_model())
     engine = SlayerQueryEngine(storage=storage)
     try:
         await save_saved_queries(engine)

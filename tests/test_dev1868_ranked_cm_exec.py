@@ -7,11 +7,11 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 
 from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER,
-    ModelMeasure,
+    DatasetMetric,
     make_exec_engine,
     q,
     rows_by,
@@ -39,8 +39,8 @@ class TestMeasurePosition:
     async def test_last_by_tier_with_plain_sibling(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula=LAST_TIER, name="l"),
-                      ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression=LAST_TIER, name="l"),
+                      DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = rows_by(resp, TIER)
         assert len(resp.data) == 4  # sibling grain unchanged
@@ -56,8 +56,8 @@ class TestMeasurePosition:
     async def test_first_by_region(self, exec_engine) -> None:
         resp = await exec_engine.execute(q(
             dimensions=["customers.regions.name"],
-            measures=[ModelMeasure(formula=FIRST_REGION, name="f"),
-                      ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression=FIRST_REGION, name="f"),
+                      DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = rows_by(resp, REGION)
         for region, expected in FIRST_SPEND_BY_REGION.items():
@@ -71,7 +71,7 @@ class TestFilterPosition:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
             filters=[f"{LAST_TIER} > 100"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         # Only silver's last spend (150) clears 100.
         assert [(r[TIER], float(r["orders.s"])) for r in resp.data] == [
@@ -83,7 +83,7 @@ class TestOrderPosition:
         resp = await exec_engine.execute(q(
             dimensions=["customers.tier"],
             filters=["customers.tier is not null"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
             order=[{"column": LAST_TIER, "direction": "desc"}],
         ))
         # silver 150 > gold 60 > bronze 40; the sort key stays hidden.
@@ -96,7 +96,7 @@ class TestDimensionPosition:
         band = f"CASE WHEN {LAST_TIER} > 100 THEN 'hi' ELSE 'lo' END"
         resp = await exec_engine.execute(q(
             dimensions=[{"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = rows_by(resp, "orders.band")
         # hi = silver (30); lo = gold + bronze + NULL-customer (40+40+7).
@@ -108,15 +108,15 @@ class TestRanklessTargetStaysTyped:
     async def test_no_ranking_column_is_a_clear_error(self, exec_engine: SlayerQueryEngine) -> None:
         # customers has no default_time_dimension and, with a second temporal
         # column, no sole-column default: the typed ranking-time error names the remedy.
-        customers = await exec_engine.storage.get_model("customers")
+        customers = await exec_engine.storage.get_dataset("customers")
         assert customers is not None
-        await exec_engine.storage.save_model(customers.model_copy(update={"columns": [
-            *customers.columns, Column(name="signup_copy", sql="signup_at", type=DataType.TIMESTAMP),
+        await exec_engine.storage.save_dataset(customers.model_copy(update={"fields": [
+            *customers.fields, DatasetField(name="signup_copy", sql="signup_at", datatype=DataType.TIMESTAMP),
         ]}))
         query = q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(
-                formula="last(customers.spend, partition_by=customers.tier)",
+            measures=[DatasetMetric(
+                expression="last(customers.spend, partition_by=customers.tier)",
                 name="l")],
         )
         with pytest.raises(ValueError, match=r"ranking time column"):

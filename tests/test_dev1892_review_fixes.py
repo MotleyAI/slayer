@@ -5,18 +5,18 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.errors import (
     UnanalyzableAggregationParameterError,
     UnknownReferenceError,
-    UnresolvableDimensionJoinError,
+    UnresolvableDimensionRelationshipError,
 )
-from slayer.core.keys import ColumnKey, Grain
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.engine.cardinality.join_safety import grain_determines
+from slayer.core.keys import FieldKey, Grain
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.engine.cardinality.relationship_safety import grain_determines
 
 from tests._dev1841_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     assoc_q,
     make_exec_engine as make_assoc_engine,
     status_key,
@@ -53,35 +53,35 @@ from tests._dev1892_fixtures import (
 from tests._engine_helpers import _engine_generate, models_bundle
 
 
-def _customers_model(*, key_sql: str | None) -> SlayerModel:
-    return SlayerModel(
+def _customers_model(*, key_sql: str | None) -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="prod", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, sql=key_sql, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, sql=key_sql, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
 
 
-def _fk_hop_models(*, fk_sql: str | None) -> tuple[SlayerModel, dict[str, SlayerModel]]:
+def _fk_hop_models(*, fk_sql: str | None) -> tuple[SlayerDataset, dict[str, SlayerDataset]]:
     """``customers`` (FK ``region_id``, renamable) → ``regions`` (m:1), keyed by
     the logical ``region_id`` whatever its physical spelling."""
-    regions = SlayerModel(
+    regions = SlayerDataset(
         name="regions", data_source="prod", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="pop", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="pop", datatype=DataType.INT),
         ],
     )
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", data_source="prod", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT, sql=fk_sql),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT, sql=fk_sql),
         ],
-        joins=[ModelJoin(
-            target_model="regions", join_pairs=[["region_id", "id"]],
-            cardinality=JoinCardinality.MANY_TO_ONE,
+        relationships=[DatasetRelationship(
+            to="regions", join_pairs=[["region_id", "id"]],
+            cardinality=RelationshipCardinality.MANY_TO_ONE,
         )],
     )
     return customers, {"customers": customers, "regions": regions}
@@ -92,16 +92,16 @@ class TestGrainDeterminesRenamedKey:
         # logical grain leaf ``id`` must match the physical PK ``customer_id``.
         model = _customers_model(key_sql="customer_id")
         assert grain_determines(
-            key=ColumnKey(leaf="name"), grain=Grain.of([ColumnKey(leaf="id")]),
-            host_model=model, models_by_name={"customers": model},
+            key=FieldKey(leaf="name"), grain=Grain.of([FieldKey(leaf="id")]),
+            host_dataset=model, datasets_by_name={"customers": model},
             bundle=models_bundle({"customers": model}),
         )
 
     def test_plain_key_unaffected(self) -> None:
         model = _customers_model(key_sql=None)
         assert grain_determines(
-            key=ColumnKey(leaf="name"), grain=Grain.of([ColumnKey(leaf="id")]),
-            host_model=model, models_by_name={"customers": model},
+            key=FieldKey(leaf="name"), grain=Grain.of([FieldKey(leaf="id")]),
+            host_dataset=model, datasets_by_name={"customers": model},
             bundle=models_bundle({"customers": model}),
         )
 
@@ -110,17 +110,17 @@ class TestGrainDeterminesRenamedKey:
         # (physical ``region_fk``) — else a valid lifted parameter is rejected.
         customers, models = _fk_hop_models(fk_sql="region_fk")
         assert grain_determines(
-            key=ColumnKey(path=("regions",), leaf="pop"),
-            grain=Grain.of([ColumnKey(leaf="region_id")]),
-            host_model=customers, models_by_name=models, bundle=models_bundle(models),
+            key=FieldKey(path=("regions",), leaf="pop"),
+            grain=Grain.of([FieldKey(leaf="region_id")]),
+            host_dataset=customers, datasets_by_name=models, bundle=models_bundle(models),
         )
 
     def test_plain_fk_unaffected(self) -> None:
         customers, models = _fk_hop_models(fk_sql=None)
         assert grain_determines(
-            key=ColumnKey(path=("regions",), leaf="pop"),
-            grain=Grain.of([ColumnKey(leaf="region_id")]),
-            host_model=customers, models_by_name=models, bundle=models_bundle(models),
+            key=FieldKey(path=("regions",), leaf="pop"),
+            grain=Grain.of([FieldKey(leaf="region_id")]),
+            host_dataset=customers, datasets_by_name=models, bundle=models_bundle(models),
         )
 
 
@@ -136,8 +136,8 @@ class TestPickedParamDoesNotInheritSourceFilter:
         sql = await _engine_generate(
             query=assoc_q(
                 dimensions=["channel"],
-                measures=[ModelMeasure(
-                    formula="weighted_avg(customers.north_spend, weight=customers.spend)",
+                measures=[DatasetMetric(
+                    expression="weighted_avg(customers.north_spend, weight=customers.spend)",
                     name="w")]),
             model=orders, extra_models=extra, dialect="sqlite", validate=False,
         )
@@ -231,7 +231,7 @@ class TestExprDefaultQualifiedRefs:
         # default was neither lifted nor rejected.
         resp = await qual_expr_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="wsum6(customers.spend)", name="w")]))
+            measures=[DatasetMetric(expression="wsum6(customers.spend)", name="w")]))
         vals = _status_vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM6_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -240,7 +240,7 @@ class TestExprDefaultQualifiedRefs:
         # ``spend * regions.pop``: owner and qualified refs in one expression.
         resp = await mixed_expr_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="wsum7(customers.spend)", name="w")]))
+            measures=[DatasetMetric(expression="wsum7(customers.spend)", name="w")]))
         vals = _status_vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM7_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -250,7 +250,7 @@ class TestExprDefaultQualifiedRefs:
         # self-reference, not a hop (and not opaque) — SUM(spend * spend).
         resp = await self_qual_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="wsum8(customers.spend)", name="w")]))
+            measures=[DatasetMetric(expression="wsum8(customers.spend)", name="w")]))
         vals = _status_vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -260,7 +260,7 @@ class TestExprDefaultQualifiedRefs:
         # the owner-anchored entry alongside the qualified ref.
         resp = await derived_local_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="wsum9(customers.spend)", name="w")]))
+            measures=[DatasetMetric(expression="wsum9(customers.spend)", name="w")]))
         vals = _status_vals(resp, "orders.w")
         for status, expected in ASSOC_WSUM9_BY_STATUS.items():
             assert float(vals[status]) == pytest.approx(expected)
@@ -270,7 +270,7 @@ class TestExprDefaultQualifiedRefs:
         # model columns, exactly as its explicit spelling must.
         q = assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="wphys(customers.spend)", name="w")])
+            measures=[DatasetMetric(expression="wphys(customers.spend)", name="w")])
         with pytest.raises(UnknownReferenceError, match="tier"):
             await phys_expr_engine.execute(q)
 
@@ -278,8 +278,8 @@ class TestExprDefaultQualifiedRefs:
         # Was silent NULL: ``customers.region_id * 1`` is FK-seeded by the
         # operand grain (customer_id pins the to-one customers row).
         resp = await qual_reagg_engine.execute(chain_q(
-            measures=[ModelMeasure(
-                formula="cwavg(sum(amount, partition_by=customer_id))", name="w")]))
+            measures=[DatasetMetric(
+                expression="cwavg(sum(amount, partition_by=customer_id))", name="w")]))
         got = float(resp.data[0]["corders.w"])
         assert got == pytest.approx(CORDERS_GLOBAL_WAVG)
         assert got != pytest.approx(CORDERS_GLOBAL_UNWEIGHTED)
@@ -291,8 +291,8 @@ class TestExprDefaultLiteralsAndResidue:
         # ``amount`` column. Weight is constant 2.0 -> the unweighted average.
         resp = await lit_reagg_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula="wlit(sum(amount, partition_by=[city, region]))",
+            measures=[DatasetMetric(
+                expression="wlit(sum(amount, partition_by=[city, region]))",
                 name="w")]))
         vals = {k[0]: v["sales.w"] for k, v in region_key(resp).items()}
         for region, expected in UNWEIGHTED_CITY_BY_REGION.items():
@@ -304,8 +304,8 @@ class TestExprDefaultLiteralsAndResidue:
         # 2.0 -> the unweighted average. Was a spurious ``amount`` dependency.
         resp = await lit_only_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula="wconst(sum(amount, partition_by=[city, region]))",
+            measures=[DatasetMetric(
+                expression="wconst(sum(amount, partition_by=[city, region]))",
                 name="w")]))
         vals = {k[0]: v["sales.w"] for k, v in region_key(resp).items()}
         for region, expected in UNWEIGHTED_CITY_BY_REGION.items():
@@ -315,8 +315,8 @@ class TestExprDefaultLiteralsAndResidue:
     async def test_undetermined_qualified_expr_default_rejected(self, qual_reagg_engine):
         # An operand grain that pins nothing about customers -> the one-rule
         # typed error (was silent invalid SQL).
-        q = chain_q(measures=[ModelMeasure(
-            formula="cwavg(sum(amount, partition_by=amount))", name="w")])
+        q = chain_q(measures=[DatasetMetric(
+            expression="cwavg(sum(amount, partition_by=amount))", name="w")])
         with pytest.raises(SlayerError) as ei:
             await qual_reagg_engine.execute(q)
         assert_grain_residue(ei.value, param="weight")
@@ -325,8 +325,8 @@ class TestExprDefaultLiteralsAndResidue:
         # ``nosuch.col`` resolves no join walk -> the default fails at binding.
         q = assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="wopq(customers.spend)", name="w")])
-        with pytest.raises(UnresolvableDimensionJoinError, match="nosuch.col"):
+            measures=[DatasetMetric(expression="wopq(customers.spend)", name="w")])
+        with pytest.raises(UnresolvableDimensionRelationshipError, match="nosuch.col"):
             await opaque_expr_engine.execute(q)
 
     async def test_unparseable_default_fails_closed(self, unparseable_engine):
@@ -334,7 +334,7 @@ class TestExprDefaultLiteralsAndResidue:
         # level-2 render, and never the parser's own diagnostics.
         q = assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="wugly(customers.spend)", name="w")])
+            measures=[DatasetMetric(expression="wugly(customers.spend)", name="w")])
         with pytest.raises(UnanalyzableAggregationParameterError, match="weight") as ei:
             await unparseable_engine.execute(q)
         assert "\x1b" not in str(ei.value)
@@ -348,9 +348,9 @@ class TestExprDefaultLiteralsAndResidue:
         resp = await root_named_expr_engine.execute(assoc_q(
             dimensions=["status"],
             measures=[
-                ModelMeasure(formula="wroot(customers.spend)", name="w"),
-                ModelMeasure(
-                    formula="sum(customers.spend * (orders.amount + 0))", name="oracle"),
+                DatasetMetric(expression="wroot(customers.spend)", name="w"),
+                DatasetMetric(
+                    expression="sum(customers.spend * (orders.amount + 0))", name="oracle"),
             ]))
         default_vals = _status_vals(resp=resp, measure="orders.w")
         oracle_vals = _status_vals(resp=resp, measure="orders.oracle")

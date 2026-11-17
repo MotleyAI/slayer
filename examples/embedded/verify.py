@@ -52,7 +52,7 @@ def main():
     for m in models:
         if m.name == "orders":
             m.default_time_dimension = "created_at"
-        run_sync(storage.save_model(m))
+        run_sync(storage.save_dataset(m))
 
     passed = 0
     failed = 0
@@ -69,20 +69,20 @@ def main():
     # --- Model structure checks ---
     print("Model structure:")
 
-    orders_model = run_sync(storage.get_model("orders"))
+    orders_model = run_sync(storage.get_dataset("orders"))
     check(name="orders model exists", condition=orders_model is not None)
     if orders_model is None:
         return
-    check(name="orders has dynamic joins", condition=len(orders_model.joins) > 0 and orders_model.sql_table is not None)
+    check(name="orders has dynamic joins", condition=len(orders_model.relationships) > 0 and orders_model.sql_table is not None)
     check(name="orders has default_time_dimension", condition=orders_model.default_time_dimension == "created_at")
 
-    column_names = [c.name for c in orders_model.columns]
+    column_names = [c.name for c in orders_model.fields]
     check(name="orders has quantity column", condition="quantity" in column_names)
-    join_targets = [j.target_model for j in orders_model.joins]
+    join_targets = [j.to for j in orders_model.relationships]
     check(name="orders joins to customers", condition="customers" in join_targets)
     check(name="orders joins to products", condition="products" in join_targets)
 
-    regions_model = run_sync(storage.get_model("regions"))
+    regions_model = run_sync(storage.get_dataset("regions"))
     check(name="regions model exists", condition=regions_model is not None)
     if regions_model is not None:
         check(name="regions has no rollup (sql_table set)", condition=regions_model.sql_table is not None)
@@ -92,16 +92,16 @@ def main():
 
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
-            measures=[COUNT_MEASURE],
+            population="orders",
+            metrics=[COUNT_MEASURE],
         )
     )
     check(name=f"total orders = {TOTAL_ORDERS}", condition=result.data[0][COUNT_KEY] == TOTAL_ORDERS)
 
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
-            measures=[COUNT_MEASURE],
+            population="orders",
+            metrics=[COUNT_MEASURE],
             dimensions=["status"],
         )
     )
@@ -112,8 +112,8 @@ def main():
     # Rollup: by product category
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
-            measures=[COUNT_MEASURE],
+            population="orders",
+            metrics=[COUNT_MEASURE],
             dimensions=["products.category"],
         )
     )
@@ -123,9 +123,9 @@ def main():
     # Filter
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
-            measures=[COUNT_MEASURE],
-            filters=["status = 'completed'"],
+            population="orders",
+            metrics=[COUNT_MEASURE],
+            filter=["status = 'completed'"],
         )
     )
     check(name=f"filtered completed = {STATUS_COUNTS['completed']}", condition=result.data[0][COUNT_KEY] == STATUS_COUNTS["completed"])
@@ -133,8 +133,8 @@ def main():
     # Order + limit
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
-            measures=[COUNT_MEASURE],
+            population="orders",
+            metrics=[COUNT_MEASURE],
             dimensions=["customers.name"],
             order=[{"column": "count", "direction": "desc"}],
             limit=3,
@@ -147,9 +147,9 @@ def main():
 
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[
+            metrics=[
                 COUNT_MEASURE,
                 "sum(quantity)",
                 {"formula": "sum(quantity) / count(*)", "name": "avg_qty"},
@@ -167,9 +167,9 @@ def main():
     # Cumulative sum
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[COUNT_MEASURE, {"formula": "cumsum(count(*))", "name": "cumulative"}],
+            metrics=[COUNT_MEASURE, {"formula": "cumsum(count(*))", "name": "cumulative"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
@@ -182,9 +182,9 @@ def main():
     # time_shift (row-based, previous period)
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[COUNT_MEASURE, {"formula": "time_shift(count(*), -1)", "name": "prev"}],
+            metrics=[COUNT_MEASURE, {"formula": "time_shift(count(*), -1)", "name": "prev"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
@@ -194,9 +194,9 @@ def main():
     # Change
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[COUNT_MEASURE, {"formula": "change(count(*))", "name": "chg"}],
+            metrics=[COUNT_MEASURE, {"formula": "change(count(*))", "name": "chg"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
@@ -207,9 +207,9 @@ def main():
     # Rank
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
+            population="orders",
             dimensions=["customers.name"],
-            measures=[COUNT_MEASURE, {"formula": "rank(count(*), direction='desc')", "name": "rnk"}],
+            metrics=[COUNT_MEASURE, {"formula": "rank(count(*), direction='desc')", "name": "rnk"}],
             order=[{"column": "count", "direction": "desc"}],
         )
     )
@@ -221,9 +221,9 @@ def main():
 
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
+            population="orders",
             dimensions=["products.category"],
-            measures=[
+            metrics=[
                 COUNT_MEASURE,
                 "sum(quantity)",
                 {"formula": "sum(quantity) / count(*)", "name": "avg_qty"},
@@ -237,9 +237,9 @@ def main():
     # cumsum + change in one query
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[
+            metrics=[
                 COUNT_MEASURE,
                 {"formula": "cumsum(count(*))", "name": "running"},
                 {"formula": "change(count(*))", "name": "chg"},
@@ -255,9 +255,9 @@ def main():
     # last() — broadcast latest value
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[COUNT_MEASURE, {"formula": "last(count(*))", "name": "latest"}],
+            metrics=[COUNT_MEASURE, {"formula": "last(count(*))", "name": "latest"}],
             order=[{"column": "created_at", "direction": "asc"}],
         )
     )
@@ -273,9 +273,9 @@ def main():
     # For monthly counts, cumsum of changes should equal count minus first month's count
     result = engine.execute_sync(
         query=SlayerQuery(
-            source_model="orders",
+            population="orders",
             time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
-            measures=[
+            metrics=[
                 COUNT_MEASURE,
                 {"formula": "cumsum(change(count(*)))", "name": "cumsum_change"},
             ],

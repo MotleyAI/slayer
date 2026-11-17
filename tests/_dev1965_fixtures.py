@@ -23,7 +23,7 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expression
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -45,17 +45,17 @@ ORDERS_ROWS = [
 CUMSUM_BY_MONTH = {"2024-01": 30.0, "2024-02": 100.0, "2024-03": 210.0, "2024-04": 280.0}
 
 
-def orders_model(*, filters: Optional[list[str]] = None) -> SlayerModel:
-    return SlayerModel(
+def orders_model(*, filters: Optional[list[str]] = None) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at", filters=filters or [],
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT),
-            Column(name="region", sql="region", type=DataType.TEXT),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="qty", sql="qty", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+            DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="qty", sql="qty", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
         ],
     )
 
@@ -89,7 +89,7 @@ def where_having_query() -> SlayerQuery:
     ])
 
 
-async def gen(query, *, dialect: str, model: Optional[SlayerModel] = None) -> str:
+async def gen(query, *, dialect: str, model: Optional[SlayerDataset] = None) -> str:
     return await _engine_generate(
         query=query, model=model or orders_model(), dialect=dialect, validate=False,
     )
@@ -117,7 +117,7 @@ def _seed_duckdb(db_path: str) -> None:
 
 @asynccontextmanager
 async def exec_engine(
-    dialect: str, *, model: Optional[SlayerModel] = None,
+    dialect: str, *, model: Optional[SlayerDataset] = None,
 ) -> AsyncGenerator[SlayerQueryEngine]:
     if dialect == "duckdb":
         pytest.importorskip("duckdb")

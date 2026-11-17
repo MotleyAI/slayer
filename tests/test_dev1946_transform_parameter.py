@@ -16,9 +16,9 @@ import pytest
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.errors import SlayerError, TimeAxisError
-from slayer.core.keys import AggregateKey, ColumnKey, Grain, TimeTruncKey, TransformKey
+from slayer.core.keys import AggregateKey, FieldKey, Grain, TimeTruncKey, TransformKey
 from slayer.core.refs import agg_kwarg_canonical_str
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.engine.binding import bind_expr
 from slayer.engine.plan import plan_query
 from slayer.core.syntax import parse_expr
@@ -32,7 +32,7 @@ from tests._dev1840_fixtures import (
     gen as orders_gen,
     make_exec_engine as make_orders_engine,
 )
-from tests._dev1841_fixtures import ModelMeasure, associated_warnings, broadcast_warnings
+from tests._dev1841_fixtures import DatasetMetric, associated_warnings, broadcast_warnings
 from tests._dev1847_fixtures import (
     dev1847_models,
     gen as sales_gen,
@@ -91,11 +91,11 @@ from tests._dev1946_fixtures import (
     local_sales_global,
 )
 
-AMOUNT = ModelMeasure(formula="sum(amount)", name="a")
+AMOUNT = DatasetMetric(expression="sum(amount)", name="a")
 
 
-def _m(formula: str) -> ModelMeasure:
-    return ModelMeasure(formula=formula, name="w")
+def _m(formula: str) -> DatasetMetric:
+    return DatasetMetric(expression=formula, name="w")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -124,13 +124,13 @@ def _assert_time_axis_error(exc) -> None:
 
 def _orders_scope_bundle():
     models = dev1840_models()
-    return ModelScope(source_model=models[0]), orders_bundle()
+    return DatasetScope(population=models[0]), orders_bundle()
 
 
 def _sales_scope_bundle():
     models = dev1847_models()
-    return (ModelScope(source_model=models[0]),
-            ResolvedSourceBundle(dialect="sqlite", source_model=models[0], referenced_models=models[1:]))
+    return (DatasetScope(population=models[0]),
+            ResolvedSourceBundle(dialect="sqlite", population=models[0], referenced_datasets=models[1:]))
 
 
 # --------------------------------------------------------------------------- #
@@ -390,7 +390,7 @@ class TestOwnPartitionBy:
 # --------------------------------------------------------------------------- #
 def _customers_attach(planned):
     (att,) = [a for a in planned.regroup_attach_plans
-              if a.producer_root_model == "customers"]
+              if a.producer_root_dataset == "customers"]
     return att
 
 
@@ -457,7 +457,7 @@ class TestPlanShape:
 # --------------------------------------------------------------------------- #
 def _sales_bundle() -> ResolvedSourceBundle:
     models = dev1847_models()
-    return ResolvedSourceBundle(dialect="sqlite", source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="sqlite", population=models[0], referenced_datasets=models[1:])
 
 
 class TestReaggregationOuter:
@@ -473,7 +473,7 @@ class TestReaggregationOuter:
         bundle = _sales_bundle()
         # The weight IS a transform constituent (not a column/aggregate).
         bound = bind_expr(parse_expr(REAGG_RANK_COUNT),
-                          scope=ModelScope(source_model=bundle.source_model), bundle=bundle)
+                          scope=DatasetScope(population=bundle.population), bundle=bundle)
         assert isinstance(bound.value_key, AggregateKey)
         assert isinstance(dict(bound.value_key.kwargs)["weight"], TransformKey)
         # …and rides the carrier as a picked parameter named ``weight``.
@@ -529,11 +529,11 @@ class TestBindLevel:
         granularities gets distinct canonical fragments — the fragment keeps a
         ``TimeTruncKey``'s granularity, as it already does for the resolved
         ``time_key``, so month- and year-bucketed aliases stay legible and stable."""
-        inner = AggregateKey(source=ColumnKey(leaf="amount"), agg="sum",
-                             partition_keys=Grain.of([ColumnKey(leaf="region")]))
+        inner = AggregateKey(source=FieldKey(leaf="amount"), agg="sum",
+                             partition_keys=Grain.of([FieldKey(leaf="region")]))
 
         def _ranked(gran: TimeGranularity) -> TransformKey:
             return TransformKey(op="rank", input=inner, partition_keys=Grain.of([
-                TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=gran)]))
+                TimeTruncKey(source=FieldKey(leaf="ordered_at"), granularity=gran)]))
 
         assert agg_kwarg_canonical_str(_ranked(TimeGranularity.MONTH)) != agg_kwarg_canonical_str(_ranked(TimeGranularity.YEAR))

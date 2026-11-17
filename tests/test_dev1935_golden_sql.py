@@ -90,7 +90,7 @@ def _cases() -> dict:
 async def _generate_one(case, dialect: str):
     models = dev1900_models()
     try:
-        query = SlayerQuery(source_model=case["source"], **case["kw"])
+        query = SlayerQuery(population=case["source"], **case["kw"])
         return await _engine_generate(
             query=query, model=models[0], extra_models=models[1:],
             dialect=dialect, validate=False,

@@ -73,9 +73,9 @@ class TestJoinResolution:
         reg = EntityRegistry()
         reg.build([orders, customers])
 
-        joins = reg.resolve_joins_for_model(orders)
+        joins = reg.resolve_relationships_for_model(orders)
         assert len(joins) == 1
-        assert joins[0].target_model == "customers"
+        assert joins[0].to == "customers"
         assert joins[0].join_pairs == [["customer_id", "id"]]
 
     def test_no_self_joins(self) -> None:
@@ -87,7 +87,7 @@ class TestJoinResolution:
         reg = EntityRegistry()
         reg.build([orders])
 
-        joins = reg.resolve_joins_for_model(orders)
+        joins = reg.resolve_relationships_for_model(orders)
         assert len(joins) == 0
 
     def test_truly_duplicate_signature_deduped(self) -> None:
@@ -103,7 +103,7 @@ class TestJoinResolution:
         reg = EntityRegistry()
         reg.build([orders, customers])
 
-        joins = reg.resolve_joins_for_model(orders)
+        joins = reg.resolve_relationships_for_model(orders)
         assert len(joins) == 1
 
     def test_distinct_fks_to_same_target_kept_separate(self) -> None:
@@ -121,10 +121,10 @@ class TestJoinResolution:
         reg = EntityRegistry()
         reg.build([transactions, users])
 
-        joins = reg.resolve_joins_for_model(transactions)
+        joins = reg.resolve_relationships_for_model(transactions)
         assert len(joins) == 2
         # Both joins point at users but via different FK columns
-        assert all(j.target_model == "users" for j in joins)
+        assert all(j.to == "users" for j in joins)
         fk_columns = sorted(j.join_pairs[0][0] for j in joins)
         assert fk_columns == ["buyer_id", "seller_id"]
         # Both target the same primary key on users
@@ -145,9 +145,9 @@ class TestJoinResolution:
         reg = EntityRegistry()
         reg.build([orders, customers, products])
 
-        joins = reg.resolve_joins_for_model(orders)
+        joins = reg.resolve_relationships_for_model(orders)
         assert len(joins) == 2
-        target_names = {j.target_model for j in joins}
+        target_names = {j.to for j in joins}
         assert target_names == {"customers", "products"}
 
     def test_unresolvable_foreign_entity(self) -> None:
@@ -158,7 +158,7 @@ class TestJoinResolution:
         reg = EntityRegistry()
         reg.build([orders])
 
-        joins = reg.resolve_joins_for_model(orders)
+        joins = reg.resolve_relationships_for_model(orders)
         assert len(joins) == 0
 
     def test_peer_joins_two_entities_same_peer_different_columns(self) -> None:
@@ -176,9 +176,9 @@ class TestJoinResolution:
         reg = EntityRegistry()
         reg.build([model_a, model_b])
 
-        joins = reg.resolve_joins_for_model(model_a)
+        joins = reg.resolve_relationships_for_model(model_a)
         # Both peer joins should survive (different columns)
-        assert len(joins) == 2, f"Expected 2 peer joins, got {len(joins)}: {[(j.target_model, j.join_pairs) for j in joins]}"
+        assert len(joins) == 2, f"Expected 2 peer joins, got {len(joins)}: {[(j.to, j.join_pairs) for j in joins]}"
         pairs = sorted([j.join_pairs[0] for j in joins])
         assert pairs == [["col_x", "bx"], ["col_y", "by"]]
 
@@ -193,6 +193,6 @@ class TestJoinResolution:
         ])
         reg = EntityRegistry()
         reg.build([model_a, model_b])
-        assert reg.resolve_joins_for_model(model_b) == []
-        forward = reg.resolve_joins_for_model(model_a)
-        assert [j.target_model for j in forward] == ["model_b"]
+        assert reg.resolve_relationships_for_model(model_b) == []
+        forward = reg.resolve_relationships_for_model(model_a)
+        assert [j.to for j in forward] == ["model_b"]

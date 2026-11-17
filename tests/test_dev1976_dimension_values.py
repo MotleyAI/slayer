@@ -21,7 +21,7 @@ from slayer.core.errors import (
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     AggregateKey,
-    ColumnKey,
+    FieldKey,
     Grain,
     InKey,
     LiteralKey,
@@ -41,7 +41,7 @@ from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1847_fixtures import (
     _SALES_ROWS_WIDE,
-    ModelMeasure,
+    DatasetMetric,
     chain_q,
     dev1847_models,
     gen,
@@ -56,8 +56,8 @@ from tests._engine_helpers import _extract_cte_body
 P = "sum(amount, partition_by=region)"
 R = "avg(sum(amount, partition_by=[city, region]), partition_by=region)"
 C = "sum(amount, partition_by=[city, region])"
-TOT = ModelMeasure(formula="sum(amount)", name="tot")
-N = ModelMeasure(formula="count(*)", name="n")
+TOT = DatasetMetric(expression="sum(amount)", name="tot")
+N = DatasetMetric(expression="count(*)", name="n")
 
 RD_P = {"expression": P, "name": "rd"}
 RD_R = {"expression": R, "name": "rd"}
@@ -78,15 +78,15 @@ async def exec_engine(request):
         yield engine
 
 
-def _m(formula: str, name: str = "m") -> ModelMeasure:
-    return ModelMeasure(formula=formula, name=name)
+def _m(formula: str, name: str = "m") -> DatasetMetric:
+    return DatasetMetric(expression=formula, name=name)
 
 
 def _bundle(source: str = "sales") -> ResolvedSourceBundle:
     models = dev1847_models()
     [host] = [m for m in models if m.name == source]
-    return ResolvedSourceBundle(dialect="duckdb", source_model=host,
-                                referenced_models=[m for m in models if m is not host])
+    return ResolvedSourceBundle(dialect="duckdb", population=host,
+                                referenced_datasets=[m for m in models if m is not host])
 
 
 def _col(resp, name: str, key: str = "sales.region") -> dict:
@@ -324,7 +324,7 @@ class TestInPredicatePositionParity:
 
 
 class TestPredicatePhase:
-    _COL = ColumnKey(path=(), leaf="amount")
+    _COL = FieldKey(path=(), leaf="amount")
     _AGG = AggregateKey(source=_COL, agg="sum")
     _RANK = TransformKey(op="rank", input=_AGG)
 
@@ -335,17 +335,17 @@ class TestPredicatePhase:
     ])
     def test_phase_follows_the_operands(self, operand, phase):
         lit = LiteralKey(value=Decimal(1))
-        assert InKey(column=operand, values=(lit,)).phase == phase
+        assert InKey(field=operand, values=(lit,)).phase == phase
         assert TimePointCmpKey(op=">=", operand=operand, point="2025-Q1").phase == phase
 
 
 class TestPredicateGrainPruning:
     def test_in_over_a_non_grain_column_is_kept(self):
-        region, city = ColumnKey(path=(), leaf="region"), ColumnKey(path=(), leaf="city")
-        p = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="sum",
+        region, city = FieldKey(path=(), leaf="region"), FieldKey(path=(), leaf="city")
+        p = AggregateKey(source=FieldKey(path=(), leaf="amount"), agg="sum",
                          partition_keys=Grain.of({region}))
         d = ScalarCallKey(name="iif", args=(
-            InKey(column=city, values=(LiteralKey(value="Alpha"),)), p, Decimal(0)))
+            InKey(field=city, values=(LiteralKey(value="Alpha"),)), p, Decimal(0)))
         assert d in _prune_functionally_determined_grain(Grain.of({region, d})).keys
 
 
@@ -393,11 +393,11 @@ class TestStageDimensionValue:
     async def test_conditional_over_stage_dimension(self, exec_engine):
         resp = await exec_engine.execute([
             SlayerQuery.model_validate({
-                "name": "st", "source_model": "sales", "dimensions": ["region", "city"],
-                "measures": [{"formula": "sum(amount)", "name": "tot"}]}),
+                "name": "st", "population": "sales", "dimensions": ["region", "city"],
+                "metrics": [{"formula": "sum(amount)", "name": "tot"}]}),
             SlayerQuery.model_validate({
-                "source_model": "st", "dimensions": ["region"],
-                "measures": [{"formula": "iif(region == 'North', sum(tot), 0)", "name": "m"}]}),
+                "population": "st", "dimensions": ["region"],
+                "metrics": [{"formula": "iif(region == 'North', sum(tot), 0)", "name": "m"}]}),
         ])
         got = {r["st.region"]: r["st.m"] for r in resp.data}
         assert got == {"North": 90.0, "South": 0, "East": 0, "Gap": 0, "Void": 0}

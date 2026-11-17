@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousRelationshipPathError
 from slayer.engine.plan import plan_query
 from slayer.ir.planned import SemiJoinHop
 
 from tests._dev1840_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     ambiguity_models,
     bundle,
     dev1840_models,
@@ -25,10 +25,10 @@ from tests._dev1840_fixtures import (
     tq,
 )
 
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
-RM = ModelMeasure(formula="sum(stores.rent)", name="rm")
-SM = ModelMeasure(formula="sum(agents.score)", name="sm")
-RV = ModelMeasure(formula="sum(reviews.stars)", name="rv")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+RM = DatasetMetric(expression="sum(stores.rent)", name="rm")
+SM = DatasetMetric(expression="sum(agents.score)", name="sm")
+RV = DatasetMetric(expression="sum(reviews.stars)", name="rv")
 
 
 def _plan(query, models=None):
@@ -37,8 +37,8 @@ def _plan(query, models=None):
 
 def _attach(planned, root):
     matches = [a for a in planned.regroup_attach_plans
-               if a.producer_root_model == root]
-    assert len(matches) == 1, [a.producer_root_model
+               if a.producer_root_dataset == root]
+    assert len(matches) == 1, [a.producer_root_dataset
                                for a in planned.regroup_attach_plans]
     return matches[0]
 
@@ -73,7 +73,7 @@ class TestSemiJoinPushdown:
             filters=["channel = 'app'"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
-        assert [h.target_model for h in sj.hops] == ["orders"]
+        assert [h.to for h in sj.hops] == ["orders"]
         assert _pairs(sj.hops[0]) == [("id", "customer_id")]
         assert len(sj.conjuncts) == 1
         assert any("channel" in (t or "") for t in sj.filter_texts)
@@ -88,7 +88,7 @@ class TestSemiJoinPushdown:
             query, models=dev1840_models(declare_reverse=True),
         ), "customers")
         (sj,) = att.producer_plan.semi_join_filters
-        assert [h.target_model for h in sj.hops] == ["orders"]
+        assert [h.to for h in sj.hops] == ["orders"]
         assert _pairs(sj.hops[0]) == [("id", "customer_id")]
         assert await gen(query) == await gen(
             query, models=dev1840_models(declare_reverse=True),
@@ -103,7 +103,7 @@ class TestSemiJoinPushdown:
             models=dev1840_models(strong_plans=False),
         ), "customers")
         (sj,) = att.producer_plan.semi_join_filters
-        assert [h.target_model for h in sj.hops] == ["plans"]
+        assert [h.to for h in sj.hops] == ["plans"]
         assert _pairs(sj.hops[0]) == [("plan_code", "code")]
 
     def test_pure_cross_path_disjunction_pushes(self):
@@ -121,7 +121,7 @@ class TestSemiJoinPushdown:
             filters=["NOT (channel = 'app')"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
-        assert [h.target_model for h in sj.hops] == ["orders"]
+        assert [h.to for h in sj.hops] == ["orders"]
 
     def test_root_local_mixing_under_conjunctive_comparison_pushes(self):
         """An atomic comparison may mix a root-local ref (correlated outer
@@ -131,7 +131,7 @@ class TestSemiJoinPushdown:
             filters=["customers.spend > amount"],
         )), "customers")
         (sj,) = att.producer_plan.semi_join_filters
-        assert [h.target_model for h in sj.hops] == ["orders"]
+        assert [h.to for h in sj.hops] == ["orders"]
 
 
 class TestExpandedDependencies:
@@ -145,7 +145,7 @@ class TestExpandedDependencies:
         )), "customers")
         sjs = list(att.producer_plan.semi_join_filters)
         assert len(sjs) == 1
-        assert sjs[0].hops[0].target_model == "orders"
+        assert sjs[0].hops[0].to == "orders"
 
     def test_target_declared_column_crossing_1n_never_inlines(self):
         """The latent inline hole: ``customers.last_status`` is declared on
@@ -157,7 +157,7 @@ class TestExpandedDependencies:
             models=dev1840_models(declare_reverse=True),
         ), "customers")
         (sj,) = att.producer_plan.semi_join_filters
-        assert [h.target_model for h in sj.hops] == ["orders"]
+        assert [h.to for h in sj.hops] == ["orders"]
 
 
 class TestBooleanTotalPushdown:
@@ -205,7 +205,7 @@ class TestExcludedConjuncts:
         first-match. Divergence class (d)."""
         query = tq(measures=[SM], filters=["effort > 2"])
         models = ambiguity_models()
-        with pytest.raises(AmbiguousJoinPathError) as ei:
+        with pytest.raises(AmbiguousRelationshipPathError) as ei:
             _plan(query, models=models)
         msg = str(ei.value)
         assert "opened_by" in msg
@@ -217,7 +217,7 @@ class TestExcludedConjuncts:
         pair; drop+warn is retired. Divergence class (d)."""
         query = tq(measures=[RV], filters=["agents.name = 'Ann'"])
         models = ambiguity_models()
-        with pytest.raises(AmbiguousJoinPathError) as ei:
+        with pytest.raises(AmbiguousRelationshipPathError) as ei:
             _plan(query, models=models)
         msg = str(ei.value)
         assert "opened_by" in msg

@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from slayer.async_utils import run_sync
 from slayer.core.granularity import CustomGranularity
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.policy import SessionPolicy
 from slayer.core.time_points import SLAYER_NOW
 from slayer.embeddings.client import SLAYER_EMBEDDING_MODEL_ENV
@@ -184,7 +184,7 @@ async def fill_store(storage: YAMLStorage, db_path: Path, setup: str) -> SlayerQ
             docs = [yaml.safe_load(f.read_text()) for f in sorted((HERE / "models").glob("*.yaml"))]
             # Query-backed models validate by dry-run, so their sources must exist first.
             for doc in sorted(docs, key=lambda d: bool(d.get("source_queries"))):
-                await engine.save_model(SlayerModel.model_validate(doc))
+                await engine.save_dataset(SlayerDataset.model_validate(doc))
     except BaseException:
         await engine.aclose()
         raise
@@ -269,15 +269,15 @@ def project(resp: SlayerResponse, keys: List[str], values: List[str]) -> List[Li
 
 def run_query(engine: SlayerQueryEngine, block: SlayerBlock) -> Tuple[Optional[SlayerResponse], Optional[Exception]]:
     handling = block.options.get("to_many_handling")
-    extras = [SlayerModel.model_validate(yaml.safe_load((HERE / "extra_models" / f).read_text()))
+    extras = [SlayerDataset.model_validate(yaml.safe_load((HERE / "extra_models" / f).read_text()))
               for f in block.extra_models]
-    saved: List[SlayerModel] = []
+    saved: List[SlayerDataset] = []
     try:
         for model in extras:
-            run_sync(engine.save_model(model))
+            run_sync(engine.save_dataset(model))
             saved.append(model)
         if block.create_model_from_query:
-            engine.create_model_from_query_sync(
+            engine.create_dataset_from_query_sync(
                 query=block.create_model_from_query.query, name=block.create_model_from_query.name
             )
         if block.run_by_name is not None:
@@ -293,7 +293,7 @@ def run_query(engine: SlayerQueryEngine, block: SlayerBlock) -> Tuple[Optional[S
         for model in saved:
             # A failed cleanup must not mask the probe's own outcome.
             with contextlib.suppress(Exception):
-                run_sync(engine.delete_model_by_name(model_name=model.name, data_source=model.data_source))
+                run_sync(engine.delete_dataset_by_name(dataset_name=model.name, data_source=model.data_source))
 
 
 class SessionResult(BaseModel):

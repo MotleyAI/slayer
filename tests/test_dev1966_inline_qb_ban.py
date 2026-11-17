@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
 from slayer.core.errors import StoredDocumentLoadError
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -54,19 +54,19 @@ async def engine(request) -> AsyncIterator[SlayerQueryEngine]:
 
 class TestConstructionRejects:
     def test_object_form(self) -> None:
-        inline = SlayerModel.model_validate(INLINE_QB)
+        inline = SlayerDataset.model_validate(INLINE_QB)
         with pytest.raises(ValueError) as exc:
-            SlayerQuery(source_model=inline, **OUTER)  # pyright: ignore[reportArgumentType]  # the removed form must fail
+            SlayerQuery(population=inline, **OUTER)  # pyright: ignore[reportArgumentType]  # the removed form must fail
         _assert_ban(exc.value)
 
     def test_dict_form(self) -> None:
         with pytest.raises(ValueError) as exc:
-            SlayerQuery.model_validate({"source_model": INLINE_QB, **OUTER})
+            SlayerQuery.model_validate({"population": INLINE_QB, **OUTER})
         _assert_ban(exc.value)
 
     def test_inside_a_stored_models_stages(self) -> None:
         with pytest.raises(ValueError) as exc:
-            SlayerModel.model_validate({
+            SlayerDataset.model_validate({
                 "name": "outer", "data_source": "test",
                 "source_queries": [{"source_model": INLINE_QB, **OUTER}],
             })
@@ -74,7 +74,7 @@ class TestConstructionRejects:
 
     def test_inside_a_runtime_list_stage(self) -> None:
         with pytest.raises(ValueError) as exc:
-            SlayerQuery.model_validate({"name": "n", "source_model": INLINE_QB, **OUTER})
+            SlayerQuery.model_validate({"name": "n", "population": INLINE_QB, **OUTER})
         _assert_ban(exc.value)
 
     def test_rest_responds_422(self) -> None:
@@ -88,15 +88,15 @@ class TestConstructionRejects:
 class TestStoredModelsReject:
     async def test_create_model_from_query(self, engine: SlayerQueryEngine) -> None:
         with pytest.raises(ValueError) as exc:
-            await engine.create_model_from_query(
+            await engine.create_dataset_from_query(
                 query={"source_model": INLINE_QB, **OUTER}, name="wrapper")
         _assert_ban(exc.value)
 
     async def test_loading_a_persisted_model_containing_one(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             storage = YAMLStorage(base_dir=tmp)
-            await storage.save_model(rev_by_status_model(), _validate=False)
-            path = storage._model_path("test", "rev_by_status")
+            await storage.save_dataset(rev_by_status_model(), _validate=False)
+            path = storage._dataset_path("test", "rev_by_status")
             with open(path) as fh:
                 raw = yaml.safe_load(fh)
             raw["source_queries"][0]["source_model"] = INLINE_QB
@@ -104,7 +104,7 @@ class TestStoredModelsReject:
                 yaml.safe_dump(raw, fh)
             reloaded = YAMLStorage(base_dir=tmp)
             with pytest.raises(StoredDocumentLoadError, match="(?i)inline") as exc:
-                await reloaded.get_model("rev_by_status", data_source="test")
+                await reloaded.get_dataset("rev_by_status", data_source="test")
         assert "rev_by_status" in str(exc.value)
 
 

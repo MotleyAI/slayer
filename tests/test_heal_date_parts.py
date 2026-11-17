@@ -190,7 +190,7 @@ class TestAmbiguousWeekdays:
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_custom_aggregation_named_weekday_still_works(self, backend: str) -> None:
-        orders = orders_model(aggregations=[Aggregation(name="weekday", formula="MAX({value})")])
+        orders = orders_model(aggregations=[Aggregation(name="weekday", expression="MAX({value})")])
         async with heal_engine(backend, models=heal_models(orders=orders)) as eng:
             resp = await eng.execute({"source_model": "orders", "dimensions": ["region"], "measures": ["weekday(amount)"]})
         assert {r["orders.region"]: r[resp.columns[1]] for r in resp.data} == {"US": 50.0, "EU": 60.0, None: 70.0}
@@ -200,7 +200,7 @@ class TestReservedNames:
     @pytest.mark.parametrize("name", [*sorted(ALIASES), "extract", "ISODOW", "Extract"])
     def test_custom_aggregation_rejected(self, name: str) -> None:
         with pytest.raises(ValueError) as info:
-            Aggregation(name=name, formula="SUM({value})")
+            Aggregation(name=name, expression="SUM({value})")
         assert name in str(info.value)
 
     @pytest.mark.parametrize("name", [*sorted(ALIASES), "extract", "IsoDow"])

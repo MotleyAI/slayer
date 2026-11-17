@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from slayer.core import deprecation
-from slayer.core.models import ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._dev2215_fixtures import (
     BACKENDS, customers_model, dev2215_engine, dev2215_models, events_model, future_warnings, ids, m, orders_model,
@@ -72,7 +72,7 @@ class TestInstantReading:
         assert await _ids(engine, "created_at <= '{cutoff}'", variables={"cutoff": "2024-04-10"}) == {1}
 
     async def test_variable_saved_default(self, engine: SlayerQueryEngine) -> None:
-        await engine.create_model_from_query(
+        await engine.create_dataset_from_query(
             query=q(dimensions=["id"], filters=["created_at <= '{cutoff}'"]), name="early",
             variables={"cutoff": "2024-04-10"},
         )
@@ -92,13 +92,13 @@ class TestInsideMeasures:
     @pytest.mark.parametrize("formula", [FILTERED, CASED])
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_saved_measure(self, backend: str, formula: str) -> None:
-        model = orders_model().model_copy(update={"measures": [ModelMeasure(name="v", formula=formula)]})
+        model = orders_model().model_copy(update={"measures": [DatasetMetric(name="v", expression=formula)]})
         async with dev2215_engine(backend, models=[model, *_others()]) as eng:
             resp = await eng.execute(q(measures=["v"], filters=[FIRST_TWO]))
         assert int(single(resp)) == 1
 
 
-def _others() -> list[SlayerModel]:
+def _others() -> list[SlayerDataset]:
     return [mod for mod in dev2215_models() if mod.name != "orders"]
 
 
@@ -206,7 +206,7 @@ class TestNotice:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_same_named_column_elsewhere_names_no_variable(self, backend: str, bound: str) -> None:
         events = events_model().model_copy(update={"joins": [
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])]})
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])]})
         async with dev2215_engine(backend, models=[orders_model(), customers_model(), events]) as eng:
             resp = await eng.execute(q(
                 source_model="customers", dimensions=["id"],
@@ -253,10 +253,10 @@ class TestNotice:
 
     async def test_a_saved_measure_is_announced_at_save(self, engine: SlayerQueryEngine) -> None:
         model = orders_model().model_copy(update={"measures": [
-            ModelMeasure(name="on_day", formula="count(*) FILTER (WHERE created_at = '2024-04-10')")]})
+            DatasetMetric(name="on_day", expression="count(*) FILTER (WHERE created_at = '2024-04-10')")]})
         notes: list[Any] = []
         with recorded_warnings() as caught:
-            await engine.save_model(model, warnings_out=notes)
+            await engine.save_dataset(model, warnings_out=notes)
         assert len([n for n in notes if NOTICE in payload_text(n)]) == 1, notes
         assert future_warnings(caught) == []
 
@@ -268,15 +268,15 @@ class TestNotice:
     async def test_a_saved_measure_on_a_case_variant_or_joined_column_is_announced(
         self, engine: SlayerQueryEngine, formula: str,
     ) -> None:
-        model = orders_model().model_copy(update={"measures": [ModelMeasure(name="on_day", formula=formula)]})
+        model = orders_model().model_copy(update={"measures": [DatasetMetric(name="on_day", expression=formula)]})
         notes: list[Any] = []
-        await engine.save_model(model, warnings_out=notes)
+        await engine.save_dataset(model, warnings_out=notes)
         assert len([n for n in notes if NOTICE in payload_text(n)]) == 1, notes
 
     async def test_a_saved_query_is_announced_at_save(self, engine: SlayerQueryEngine) -> None:
         notes: list[Any] = []
         with recorded_warnings() as caught:
-            await engine.create_model_from_query(
+            await engine.create_dataset_from_query(
                 query=q(dimensions=["id"], filters=["created_at <= '2024-04-10'"]), name="early_q",
                 warnings_out=notes,
             )

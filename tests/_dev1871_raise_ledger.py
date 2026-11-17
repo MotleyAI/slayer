@@ -138,7 +138,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="checker", family="time-axis", user=True, owner="checker"),
     _row(module=_EE, function="_require_temporal", exc="DateOperandTypeError",
          message="…() needs a DATE or TIMESTAMP operand; `…` is not one."
-         + SUGGEST + "Pass a column declared DATE / TIMESTAMP (set Column.type), min/max/first/last of one, "
+         + SUGGEST + "Pass a column declared DATE / TIMESTAMP (set Column.datatype), min/max/first/last of one, "
          "a date function, now() / current_date(), or an ISO literal such as '2024-01-31' or "
          "'2024-01-31 10:00:00'.",
          category="checker", family="date-operand", user=True, owner="checker"),
@@ -189,7 +189,7 @@ ROWS: Tuple[LedgerRow, ...] = (
          category="checker", family="time-literal", user=True, owner="checker"),
     _row(module=_EE, function="_non_temporal_comparison", exc="DateOperandTypeError",
          message="'…' is a time point, but `…` is not a DATE or TIMESTAMP operand."
-         + SUGGEST + "Declare the column's type as DATE or TIMESTAMP (set Column.type), "
+         + SUGGEST + "Declare the column's type as DATE or TIMESTAMP (set Column.datatype), "
          "or compare it with a plain value.",
          category="checker", family="date-operand", user=True, owner="checker"),
     _row(module=_EE, function="check_time_transforms_resolved", exc="TimeAxisError",

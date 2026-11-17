@@ -23,8 +23,8 @@ from slayer.core.keys import (
     ArithmeticKey,
     CastKey,
     ListSetKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     InKey,
     ArrayLiteralKey,
     LiteralKey,
@@ -38,20 +38,20 @@ from slayer.core.keys import (
     source_row_leaves,
 )
 from slayer.core.errors import (
-    AmbiguousJoinPathError,
-    CircularJoinPathError,
+    AmbiguousRelationshipPathError,
+    CircularRelationshipPathError,
     SlayerError,
     UnreachableDefinitionError,
 )
-from slayer.core.join_walker import canonical_path, walk
-from slayer.core.models import Column, SlayerModel
+from slayer.core.relationship_walker import canonical_path, walk
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.ir.source_bundle import ResolvedSourceBundle
-from slayer.sql.column_expansion import (
-    ColumnCycleError,
+from slayer.sql.field_expansion import (
+    DatasetFieldCycleError,
     expand_derived_refs_sync,
     is_trivial_base,
     reference_sites,
-    root_scope_column_ids,
+    root_scope_field_ids,
 )
 
 Path = Tuple[str, ...]
@@ -77,7 +77,7 @@ def parse_fragment_any_dialect(sql: str) -> Optional[exp.Expression]:  # pyright
 
 
 def _expand_derived_refs_any_dialect(
-    *, sql: str, model: SlayerModel, alias_path: str, bundle: ResolvedSourceBundle,
+    *, sql: str, dataset: SlayerDataset, alias_path: str, bundle: ResolvedSourceBundle,
 ) -> Optional[str]:
     """First successful ``expand_derived_refs_sync`` across the chain, else ``None``."""
     for dialect in _PLANNER_PARSE_DIALECT_CHAIN:
@@ -85,10 +85,10 @@ def _expand_derived_refs_any_dialect(
             continue
         try:
             expanded = expand_derived_refs_sync(
-                sql=sql, model=model, alias_path=alias_path,
-                models_by_name=bundle.models_by_name, dialect=dialect,
+                sql=sql, dataset=dataset, alias_path=alias_path,
+                datasets_by_name=bundle.datasets_by_name, dialect=dialect,
             )
-        except (ColumnCycleError, CircularJoinPathError, UnreachableDefinitionError):
+        except (DatasetFieldCycleError, CircularRelationshipPathError, UnreachableDefinitionError):
             raise
         except Exception:
             continue
@@ -112,7 +112,7 @@ class _OrderedSink:
 
 
 def fragment_closure(
-    *, sql: Optional[str], model: SlayerModel, owner_path: Path,
+    *, sql: Optional[str], dataset: SlayerDataset, owner_path: Path,
     anchor_relation: str, bundle: ResolvedSourceBundle,
     cache: "Optional[dict]" = None,
 ) -> Optional[Tuple[Path, ...]]:
@@ -125,7 +125,7 @@ def fragment_closure(
     keyed by ``(model, sql, owner_path, anchor_relation)``."""
     if not sql:
         return ()
-    ck = ("fragment_closure", model.name, sql, tuple(owner_path), anchor_relation)
+    ck = ("fragment_closure", dataset.name, sql, tuple(owner_path), anchor_relation)
     if cache is not None and ck in cache:
         return cache[ck]
     result: Optional[Tuple[Path, ...]] = None
@@ -135,11 +135,11 @@ def fragment_closure(
         sink = _OrderedSink()
         try:
             expanded = expand_derived_refs_sync(
-                sql=sql, model=model, alias_path=anchor_relation,
-                owner_path=tuple(owner_path), models_by_name=bundle.models_by_name,
+                sql=sql, dataset=dataset, alias_path=anchor_relation,
+                owner_path=tuple(owner_path), datasets_by_name=bundle.datasets_by_name,
                 dialect=dialect, crossed_paths=sink,
             )
-        except (ColumnCycleError, CircularJoinPathError, UnreachableDefinitionError):
+        except (DatasetFieldCycleError, CircularRelationshipPathError, UnreachableDefinitionError):
             raise
         except Exception:
             continue
@@ -172,25 +172,25 @@ def _node_propagates_null(node: object) -> bool:
 
 
 def fragment_null_propagates(
-    *, column: Column, model: SlayerModel, anchor_relation: str,
+    *, field: DatasetField, dataset: SlayerDataset, anchor_relation: str,
     bundle: ResolvedSourceBundle,
 ) -> bool:
     """Is a derived column NULL whenever its owner row is? True for
     a bare column, arithmetic or comparison over ≥1 column once derived references
     are expanded; a function call, CASE, literal-only or unparseable definition
     is data-dependent."""
-    if is_trivial_base(column=column):
+    if is_trivial_base(field=field):
         return True
     for dialect in _PLANNER_PARSE_DIALECT_CHAIN:
         if dialect is None:
             continue
         try:
             expanded = expand_derived_refs_sync(
-                sql=column.sql, model=model, alias_path=anchor_relation,
-                models_by_name=bundle.models_by_name, dialect=dialect,
+                sql=field.sql, dataset=dataset, alias_path=anchor_relation,
+                datasets_by_name=bundle.datasets_by_name, dialect=dialect,
             )
             nodes = list(sqlglot.parse_one(expanded or "", dialect=dialect).walk())
-        except (ColumnCycleError, CircularJoinPathError, UnreachableDefinitionError):
+        except (DatasetFieldCycleError, CircularRelationshipPathError, UnreachableDefinitionError):
             raise
         except Exception:
             continue
@@ -207,7 +207,7 @@ def _prefixes(path: Path) -> List[Path]:
 
 # Values a key tree carries INLINE — plain data, never references.
 _INLINE_SCALARS = (str, int, float, bool, Decimal)
-_LEAF_KINDS = (LiteralKey, ArrayLiteralKey, StarKey, ColumnKey, ColumnSqlKey)
+_LEAF_KINDS = (LiteralKey, ArrayLiteralKey, StarKey, FieldKey, FieldSqlKey)
 
 
 class UnhandledValueKindError(SlayerError, TypeError):
@@ -244,7 +244,7 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
     if isinstance(node, ScalarCallKey):
         return list(node.args)
     if isinstance(node, InKey):
-        return [node.column, *node.values]
+        return [node.field, *node.values]
     if isinstance(node, TimePointCmpKey):
         return [node.operand]
     if isinstance(node, SqlFragmentKey):
@@ -254,13 +254,13 @@ def _child_keys(node, *, descend_aggregates: bool = True) -> List:
     raise UnhandledValueKindError(node)
 
 
-def _terminal_model(
-    node: ColumnSqlKey, *, anchor_model: SlayerModel, bundle: ResolvedSourceBundle,
-) -> Optional[SlayerModel]:
+def _terminal_dataset(
+    node: FieldSqlKey, *, anchor_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
+) -> Optional[SlayerDataset]:
     """The model a ``ColumnSqlKey`` names, falling back to the anchor for its own name."""
-    terminal = bundle.models_by_name.get(node.model)
-    if terminal is None and node.model == anchor_model.name:
-        return anchor_model
+    terminal = bundle.datasets_by_name.get(node.dataset)
+    if terminal is None and node.dataset == anchor_dataset.name:
+        return anchor_dataset
     return terminal
 
 
@@ -268,7 +268,7 @@ def _definition_fragments(col) -> List[str]:
     """The Mode-A fragments a column's definition reads: its non-trivial ``sql`` and its ``filter``."""
     return [
         sql for sql in (
-            col.sql if col.sql is not None and not is_trivial_base(column=col) else None,
+            col.sql if col.sql is not None and not is_trivial_base(field=col) else None,
             col.filter,
         )
         if sql
@@ -276,44 +276,44 @@ def _definition_fragments(col) -> List[str]:
 
 
 def _definition_ref(
-    *, key: ColumnSqlKey, owner: SlayerModel, col: Column, quals: Path, leaf: str,
+    *, key: FieldSqlKey, owner: SlayerDataset, col: DatasetField, quals: Path, leaf: str,
     bundle: ResolvedSourceBundle,
 ) -> Optional[ValueKey]:
     """One definition reference as an anchor-relative column key, else ``None``."""
     hops = quals[1:] if quals[:1] == (owner.name,) else quals
-    models = {**bundle.models_by_name, owner.name: owner}
+    models = {**bundle.datasets_by_name, owner.name: owner}
     try:
-        chain = walk(root=owner, path=hops, models_by_name=models)
-    except (AmbiguousJoinPathError, CircularJoinPathError):
+        chain = walk(root=owner, path=hops, datasets_by_name=models)
+    except (AmbiguousRelationshipPathError, CircularRelationshipPathError):
         return None
     if chain is None:
         return None
-    target = models.get(chain[-1].target_model) if chain else owner
+    target = models.get(chain[-1].to) if chain else owner
     path = (*key.path, *canonical_path(chain))
     if target is owner and leaf == col.name:
-        return ColumnKey(path=path, leaf=leaf)  # a filter reading its own physical column
-    if target is None or target.get_column(leaf) is None:
+        return FieldKey(path=path, leaf=leaf)  # a filter reading its own physical column
+    if target is None or target.get_field(leaf) is None:
         return None
-    return column_default_key(path=path, leaf=leaf, base=target)
+    return field_default_key(path=path, leaf=leaf, base=target)
 
 
 def definition_refs(
-    *, key: ColumnSqlKey, anchor_model: SlayerModel, bundle: ResolvedSourceBundle,
+    *, key: FieldSqlKey, anchor_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
 ) -> Optional[List[ValueKey]]:
     """The column keys a derived column's value and ``Column.filter`` read, at
     anchor-relative paths; ``None`` when the definition cannot be analysed."""
-    owner = _terminal_model(key, anchor_model=anchor_model, bundle=bundle)
-    col = owner.get_column(key.column_name) if owner is not None else None
+    owner = _terminal_dataset(key, anchor_dataset=anchor_dataset, bundle=bundle)
+    col = owner.get_field(key.field_name) if owner is not None else None
     if owner is None or col is None:
         return None
     out: List[ValueKey] = (
-        [ColumnKey(path=key.path, leaf=col.name)] if is_trivial_base(column=col) else []
+        [FieldKey(path=key.path, leaf=col.name)] if is_trivial_base(field=col) else []
     )
     for sql in _definition_fragments(col):
         parsed = parse_fragment_any_dialect(sql)
         if parsed is None:
             return None
-        for _node, quals, leaf in reference_sites(parsed, root_scope_column_ids(parsed=parsed)):
+        for _node, quals, leaf in reference_sites(parsed, root_scope_field_ids(parsed=parsed)):
             ref = _definition_ref(
                 key=key, owner=owner, col=col, quals=tuple(quals), leaf=leaf, bundle=bundle,
             )
@@ -323,8 +323,8 @@ def definition_refs(
     return out
 
 
-def _column_key_closure(
-    node, *, anchor_model: SlayerModel, anchor_relation: str,
+def _field_key_closure(
+    node, *, anchor_dataset: SlayerDataset, anchor_relation: str,
     bundle: ResolvedSourceBundle, cache: "Optional[dict]" = None,
 ) -> Optional[List[Path]]:
     """Own path prefixes of a ``ColumnSqlKey``/``ColumnKey`` plus the fragment
@@ -333,21 +333,21 @@ def _column_key_closure(
     ``None`` propagates (a dependency that cannot be analysed)."""
     path = tuple(getattr(node, "path", ()) or ())
     out: List[Path] = list(_prefixes(path))
-    if not isinstance(node, ColumnSqlKey):
+    if not isinstance(node, FieldSqlKey):
         return out
-    terminal = _terminal_model(node, anchor_model=anchor_model, bundle=bundle)
-    col = terminal.get_column(node.column_name) if terminal is not None else None
+    terminal = _terminal_dataset(node, anchor_dataset=anchor_dataset, bundle=bundle)
+    col = terminal.get_field(node.field_name) if terminal is not None else None
     if terminal is None or col is None:
         return out
     owner_relation = "__".join(path) if path else anchor_relation
     for sql in _definition_fragments(col):
         try:
             frag = fragment_closure(
-                sql=sql, model=terminal, owner_path=path,
+                sql=sql, dataset=terminal, owner_path=path,
                 anchor_relation=owner_relation, bundle=bundle, cache=cache,
             )
         except UnreachableDefinitionError as exc:
-            raise exc.labelled(f"column {col.name!r}") from None
+            raise exc.labelled(f"field {col.name!r}") from None
         if frag is None:
             return None
         out.extend(frag)
@@ -355,7 +355,7 @@ def _column_key_closure(
 
 
 def key_closure(
-    *, key, anchor_model: SlayerModel, anchor_relation: str,
+    *, key, anchor_dataset: SlayerDataset, anchor_relation: str,
     bundle: ResolvedSourceBundle, cache: "Optional[dict]" = None,
 ) -> Optional[Tuple[Path, ...]]:
     """Every join path ``key``'s dependency tree crosses, anchored at
@@ -364,13 +364,13 @@ def key_closure(
     de-duplicated; ``()`` = local; ``None`` = a dependency could not be analysed
     (fail closed). A cyclic derived definition raises ``ColumnCycleError``."""
     return _closure(
-        key, anchor_model=anchor_model, anchor_relation=anchor_relation,
+        key, anchor_dataset=anchor_dataset, anchor_relation=anchor_relation,
         bundle=bundle, cache=cache, opaque=(),
     )
 
 
 def _closure(
-    key, *, anchor_model: SlayerModel, anchor_relation: str,
+    key, *, anchor_dataset: SlayerDataset, anchor_relation: str,
     bundle: ResolvedSourceBundle, cache: "Optional[dict]", opaque: Tuple[type, ...],
 ) -> Optional[Tuple[Path, ...]]:
     """``key_closure`` with nodes of the ``opaque`` kinds contributing nothing."""
@@ -379,7 +379,7 @@ def _closure(
     def _walk(node) -> bool:
         if node is None or isinstance(node, opaque):
             return True
-        leafs = _leaf_closure(node, anchor_model=anchor_model,
+        leafs = _leaf_closure(node, anchor_dataset=anchor_dataset,
                               anchor_relation=anchor_relation, bundle=bundle,
                               cache=cache)
         if leafs is None:
@@ -395,33 +395,33 @@ def _closure(
 
 
 def _leaf_closure(
-    node, *, anchor_model: SlayerModel, anchor_relation: str,
+    node, *, anchor_dataset: SlayerDataset, anchor_relation: str,
     bundle: ResolvedSourceBundle, cache: "Optional[dict]" = None,
 ) -> Optional[List[Path]]:
     """Paths a node contributes ITSELF (not via children). ``None`` = unanalysable."""
-    if isinstance(node, ColumnSqlKey):
-        return _column_key_closure(
-            node, anchor_model=anchor_model, anchor_relation=anchor_relation,
+    if isinstance(node, FieldSqlKey):
+        return _field_key_closure(
+            node, anchor_dataset=anchor_dataset, anchor_relation=anchor_relation,
             bundle=bundle, cache=cache,
         )
-    if isinstance(node, ColumnKey):
+    if isinstance(node, FieldKey):
         return _prefixes(tuple(node.path))
     return []
 
 
 
 
-def column_default_key(
-    *, path: Path, leaf: str, base: Optional[SlayerModel],
+def field_default_key(
+    *, path: Path, leaf: str, base: Optional[SlayerDataset],
 ) -> ValueKey:
     """A ``ColumnSqlKey`` when ``leaf`` names a derived or filtered column on
     ``base`` (so its definition expands and its crossings close), else a plain
     ``ColumnKey``."""
     if base is not None:
-        col = next((c for c in (base.columns or []) if c.name == leaf), None)
+        col = next((c for c in (base.fields or []) if c.name == leaf), None)
         if col is not None and col.needs_expansion:
-            return ColumnSqlKey(path=path, model=base.name, column_name=leaf)
-    return ColumnKey(path=path, leaf=leaf)
+            return FieldSqlKey(path=path, dataset=base.name, field_name=leaf)
+    return FieldKey(path=path, leaf=leaf)
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +440,7 @@ def _explicit_input_refs(*, key: AggregateKey, include_source: bool) -> List[obj
 
 
 def _refs_closure(
-    *, refs: List[object], anchor_model: SlayerModel,
+    *, refs: List[object], anchor_dataset: SlayerDataset,
     anchor_relation: str, bundle: ResolvedSourceBundle,
 ) -> Optional[List[Path]]:
     """The combined closure of a list of input refs, attached constituents opaque
@@ -449,7 +449,7 @@ def _refs_closure(
     out: List[Path] = []
     for ref in refs:
         c = _closure(
-            ref, anchor_model=anchor_model, anchor_relation=anchor_relation,
+            ref, anchor_dataset=anchor_dataset, anchor_relation=anchor_relation,
             bundle=bundle, cache=None, opaque=(AggregateKey, TransformKey),
         )
         if c is None:
@@ -471,7 +471,7 @@ def _merge_paths(*, seen: "dict[Path, None]", part: Optional[List[Path]]) -> boo
 
 
 def aggregate_input_closure(
-    *, key: AggregateKey, anchor_model: Optional[SlayerModel],
+    *, key: AggregateKey, anchor_dataset: Optional[SlayerDataset],
     anchor_relation: str, bundle: ResolvedSourceBundle,
     include_source: bool = True,
 ) -> Optional[Tuple[Path, ...]]:
@@ -483,12 +483,12 @@ def aggregate_input_closure(
     (fail closed, short-circuiting on the first unanalysable component); ``()``
     when purely local. Attached constituents (aggregates, transforms) are opaque:
     their inputs belong to their own producer."""
-    if anchor_model is None:
+    if anchor_dataset is None:
         return ()
     seen: "dict[Path, None]" = {}
     if not _merge_paths(seen=seen, part=_refs_closure(
         refs=_explicit_input_refs(key=key, include_source=include_source),
-        anchor_model=anchor_model,
+        anchor_dataset=anchor_dataset,
         anchor_relation=anchor_relation, bundle=bundle,
     )):
         return None
@@ -496,42 +496,42 @@ def aggregate_input_closure(
 
 
 def _unanalyzable_derived_name(
-    *, ref: object, anchor_model: SlayerModel, anchor_relation: str,
+    *, ref: object, anchor_dataset: SlayerDataset, anchor_relation: str,
     bundle: ResolvedSourceBundle,
 ) -> Optional[str]:
     """``ref``'s column name when its definition — derived ``sql`` OR
     ``Column.filter`` — is one no dialect can analyse, else ``None``."""
-    if not isinstance(ref, ColumnSqlKey):
+    if not isinstance(ref, FieldSqlKey):
         return None
     path = tuple(ref.path or ())
-    terminal = bundle.models_by_name.get(ref.model)
-    if terminal is None and ref.model == anchor_model.name:
-        terminal = anchor_model
-    col = terminal.get_column(ref.column_name) if terminal is not None else None
+    terminal = bundle.datasets_by_name.get(ref.dataset)
+    if terminal is None and ref.dataset == anchor_dataset.name:
+        terminal = anchor_dataset
+    col = terminal.get_field(ref.field_name) if terminal is not None else None
     if terminal is None or col is None:
         return None
     owner_relation = "__".join(path) if path else anchor_relation
     for sql in (
-        col.sql if col.sql is not None and not is_trivial_base(column=col) else None,
+        col.sql if col.sql is not None and not is_trivial_base(field=col) else None,
         col.filter,
     ):
         if sql and fragment_closure(
-            sql=sql, model=terminal, owner_path=path,
+            sql=sql, dataset=terminal, owner_path=path,
             anchor_relation=owner_relation, bundle=bundle,
         ) is None:
-            return ref.column_name
+            return ref.field_name
     return None
 
 
-def first_unanalyzable_input_column(
-    *, key: AggregateKey, anchor_model: Optional[SlayerModel],
+def first_unanalyzable_input_field(
+    *, key: AggregateKey, anchor_dataset: Optional[SlayerDataset],
     anchor_relation: str, bundle: ResolvedSourceBundle, include_source: bool = True,
 ) -> Optional[str]:
     """The column name of the first aggregate input whose derived definition no
     dialect can analyse (best-effort diagnostic naming the
     ``check_input_dependencies_analyzable`` error — the safety DECISION is the
     closure's tri-state), else ``None``."""
-    if anchor_model is None:
+    if anchor_dataset is None:
         return None
     refs = [
         leaf for ref in _explicit_input_refs(key=key, include_source=include_source)
@@ -539,7 +539,7 @@ def first_unanalyzable_input_column(
     ]
     for ref in refs:
         name = _unanalyzable_derived_name(
-            ref=ref, anchor_model=anchor_model, anchor_relation=anchor_relation,
+            ref=ref, anchor_dataset=anchor_dataset, anchor_relation=anchor_relation,
             bundle=bundle,
         )
         if name is not None:
@@ -548,19 +548,19 @@ def first_unanalyzable_input_column(
 
 
 def source_row_leaf_closure(
-    *, key: AggregateKey, anchor_model: Optional[SlayerModel],
+    *, key: AggregateKey, anchor_dataset: Optional[SlayerDataset],
     anchor_relation: str, bundle: ResolvedSourceBundle,
 ) -> Optional[Tuple[Path, ...]]:
     """The dependency closure of an aggregate SOURCE's own ROW-level leaves, with
     attached constituents opaque (Axiom 2.3) — unlike ``aggregate_input_closure``,
     which descends a nested aggregate inside an expression source. ``None`` when a
     leaf's derived definition cannot be analysed (fail closed); ``()`` = local."""
-    if anchor_model is None:
+    if anchor_dataset is None:
         return ()
     seen: "dict[Path, None]" = {}
     for leaf in source_row_leaves(key.source):
         c = key_closure(
-            key=leaf, anchor_model=anchor_model,
+            key=leaf, anchor_dataset=anchor_dataset,
             anchor_relation=anchor_relation, bundle=bundle,
         )
         if c is None:
@@ -572,16 +572,16 @@ def source_row_leaf_closure(
 
 
 def first_unanalyzable_source_row_leaf(
-    *, key: AggregateKey, anchor_model: Optional[SlayerModel],
+    *, key: AggregateKey, anchor_dataset: Optional[SlayerDataset],
     anchor_relation: str, bundle: ResolvedSourceBundle,
 ) -> Optional[str]:
     """Column name of the first source ROW leaf whose derived definition no dialect
     can analyse (diagnostic for ``check_input_dependencies_analyzable``)."""
-    if anchor_model is None:
+    if anchor_dataset is None:
         return None
     for leaf in source_row_leaves(key.source):
         name = _unanalyzable_derived_name(
-            ref=leaf, anchor_model=anchor_model, anchor_relation=anchor_relation,
+            ref=leaf, anchor_dataset=anchor_dataset, anchor_relation=anchor_relation,
             bundle=bundle,
         )
         if name is not None:
@@ -589,20 +589,20 @@ def first_unanalyzable_source_row_leaf(
     return None
 
 
-def first_unanalyzable_filter_column(
-    *, key, anchor_model: Optional[SlayerModel], anchor_relation: str,
+def first_unanalyzable_filter_field(
+    *, key, anchor_dataset: Optional[SlayerDataset], anchor_relation: str,
     bundle: ResolvedSourceBundle,
 ) -> Optional[str]:
     """Column name of the first reference in a filter conjunct whose derived
     definition no dialect can analyse (diagnostic for
     ``check_filter_dependencies_analyzable``), else ``None``."""
-    if anchor_model is None:
+    if anchor_dataset is None:
         return None
     stack: List[object] = [key]
     while stack:
         node = stack.pop()
         name = _unanalyzable_derived_name(
-            ref=node, anchor_model=anchor_model, anchor_relation=anchor_relation,
+            ref=node, anchor_dataset=anchor_dataset, anchor_relation=anchor_relation,
             bundle=bundle,
         )
         if name is not None:

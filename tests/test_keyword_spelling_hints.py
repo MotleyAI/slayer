@@ -3,7 +3,7 @@
 import pytest
 
 from slayer.core.errors import UnknownReferenceError
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -12,8 +12,8 @@ from tests._dev1737_fixtures import customers_model, orders_model
 
 def _bind(text: str) -> None:
     model = orders_model()
-    bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[customers_model()])
-    bind_expr(parse_expr(text), scope=ModelScope(source_model=model), bundle=bundle, allow_measures=True)
+    bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[customers_model()])
+    bind_expr(parse_expr(text), scope=DatasetScope(population=model), bundle=bundle, allow_metrics=True)
 
 
 @pytest.mark.parametrize(("expr", "twin"), [

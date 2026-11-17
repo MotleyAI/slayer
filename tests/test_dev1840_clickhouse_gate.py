@@ -18,11 +18,11 @@ from sqlglot import exp
 import pytest
 
 from slayer.core.errors import ForcedFilterError, SlayerError
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.policy import (
-    ColumnFilterRuleset,
-    JoinFilterRule,
-    JoinFilterRuleset,
+    FieldFilterRuleset,
+    RelationshipFilterRule,
+    RelationshipFilterRuleset,
     SessionPolicy,
 )
 from slayer.engine.plan import plan_query, plan_stages
@@ -37,7 +37,7 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 from tests._ch_fake_http import FakeClickHouse, fake_ch_engine, route_engine
 from tests._dev1840_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     SPEND_BAND_170,
     bundle,
     dev1840_models,
@@ -47,14 +47,14 @@ from tests._dev1840_fixtures import (
 
 _SETTING = "allow_experimental_correlated_subqueries"
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 
 PUSHED = q(dimensions=["customers.tier"], measures=[M, CM],
            filters=["channel = 'app'"])
 
-_ORDERS_RULE = JoinFilterRule(
-    target_table="orders", join_path=("orders.customer_id = customers.id",),
+_ORDERS_RULE = RelationshipFilterRule(
+    target_table="orders", relationship_path=("orders.customer_id = customers.id",),
 )
 
 
@@ -62,7 +62,7 @@ async def _ch_engine(tmp_path, *, policy: SessionPolicy | None = None) -> Slayer
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(DatasourceConfig(name="test", type="clickhouse"))
     for model in dev1840_models():
-        await storage.save_model(model, _validate=False)
+        await storage.save_dataset(model, _validate=False)
     return SlayerQueryEngine(storage=storage, policy=policy)
 
 
@@ -273,8 +273,8 @@ class TestOnlyEmittedStagesGate:
         fake = ch_server.start(version="25.4.1.1", readonly=1, correlated=False)
         engine = await _ch_engine(tmp_path)
         unused = PUSHED.model_copy(update={"name": "unused"})
-        await engine.storage.save_model(
-            SlayerModel(name="qb", data_source="test", source_queries=[unused, q(dimensions=["status"], measures=[M])]),
+        await engine.storage.save_dataset(
+            SlayerDataset(name="qb", data_source="test", source_queries=[unused, q(dimensions=["status"], measures=[M])]),
             _validate=False,
         )
         sql = await _dry_sql(engine, q(source_model="qb", dimensions=["status"]))
@@ -291,22 +291,22 @@ class TestPolicyNeedsNoProbe:
     @pytest.mark.parametrize(
         "ruleset",
         [
-            JoinFilterRuleset(
-                table="customers", column="organization_uuid", value="orgA",
-                joins=(_ORDERS_RULE,),
+            RelationshipFilterRuleset(
+                table="customers", field="organization_uuid", value="orgA",
+                relationships=(_ORDERS_RULE,),
             ),
-            JoinFilterRuleset(
-                table="customers", column="organization_uuid", value="orgA",
+            RelationshipFilterRuleset(
+                table="customers", field="organization_uuid", value="orgA",
                 whitelist=("orders",),
             ),
-            ColumnFilterRuleset(column="organization_uuid", value="orgA"),
+            FieldFilterRuleset(field="organization_uuid", value="orgA"),
         ],
         ids=["join", "anchor_only", "column"],
     )
     async def test_policy_only_query_sends_nothing(self, tmp_path, ch_server, monkeypatch: pytest.MonkeyPatch, ruleset):
         fake = ch_server.start(version="25.4.1.1", readonly=1, correlated=False)
         engine = await _ch_engine(tmp_path, policy=SessionPolicy(ruleset=ruleset))
-        monkeypatch.setattr(engine, "_column_present", _always_present)
+        monkeypatch.setattr(engine, "_field_present", _always_present)
         sql = await _dry_sql(engine, q(measures=[M]))
         assert fake.requests == []
         assert _SETTING not in sql
@@ -332,11 +332,11 @@ class TestSettingsCoexistence:
         out = apply_session_policy(
             sqlglot.parse_one(sql, dialect="clickhouse"),
             sql_dialect=get_dialect("clickhouse"),
-            policy=SessionPolicy(ruleset=JoinFilterRuleset(
-                table="customers", column="organization_uuid", value="orgA",
-                joins=(_ORDERS_RULE,),
+            policy=SessionPolicy(ruleset=RelationshipFilterRuleset(
+                table="customers", field="organization_uuid", value="orgA",
+                relationships=(_ORDERS_RULE,),
             )),
-            has_column=_boom_probe,
+            has_field=_boom_probe,
         ).sql(dialect="clickhouse")
         assert out.count("SETTINGS") == 1
         assert out.count(_SETTING) == 1

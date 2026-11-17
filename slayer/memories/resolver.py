@@ -12,7 +12,7 @@ The leaf rule (§3.2):
 * ``count(*)`` collapses to the source model.
 * For dotted paths through joins, only the leaf segment is tagged; the
   intermediates are discarded.
-* The named-entity SQL (``Column.sql`` or ``ModelMeasure.formula``) is
+* The named-entity SQL (``Column.sql`` or ``ModelMeasure.expression``) is
   opaque — we never recurse into it, except for a query's own extension
   fields, which stand for the stored entities their definitions read.
 
@@ -35,20 +35,20 @@ from collections.abc import Iterable
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.errors import (
-    AmbiguousJoinPathError,
-    AmbiguousModelError,
+    AmbiguousRelationshipPathError,
+    AmbiguousDatasetError,
     ColonSpellingError,
-    CircularJoinPathError,
+    CircularRelationshipPathError,
     EntityResolutionError,
     PopulationInferenceError,
     UnknownFunctionError,
 )
-from slayer.core.join_walker import walk_miss, walk_terminal
-from slayer.core.models import SlayerModel
-from slayer.core.query import ComputedDimension, SlayerQuery, extension_model_names
+from slayer.core.relationship_walker import walk_miss, walk_terminal
+from slayer.core.models import SlayerDataset
+from slayer.core.query import ComputedDimension, SlayerQuery, extension_dataset_names
 from slayer.core.time_spine import is_spine_query
-from slayer.engine.bundle_builder import stored_model
-from slayer.engine.column_dependency import definition_reads
+from slayer.engine.bundle_builder import stored_dataset
+from slayer.engine.field_dependency import definition_reads
 from slayer.engine.extensions import FieldKind, QueryScope, query_field_texts, query_scopes
 from slayer.engine.population.inference import infer_population, infer_spine_population
 from slayer.core.syntax import (
@@ -114,28 +114,28 @@ class EntityResolution(BaseModel):
     warnings: list[str] = []
 
 
-def _model_has_leaf(model: SlayerModel, leaf: str) -> bool:
+def _dataset_has_leaf(dataset: SlayerDataset, leaf: str) -> bool:
     """``True`` if ``leaf`` is a column / named measure / custom
-    aggregation on ``model``."""
-    if model.get_column(leaf) is not None:
+    aggregation on ``dataset``."""
+    if dataset.get_field(leaf) is not None:
         return True
-    if model.get_measure(leaf) is not None:
+    if dataset.get_metric(leaf) is not None:
         return True
-    if model.get_aggregation(leaf) is not None:
+    if dataset.get_aggregation(leaf) is not None:
         return True
     return False
 
 
-async def _all_models_in_datasource(
+async def _all_datasets_in_datasource(
     storage: StorageBackend, data_source: str
-) -> list[SlayerModel]:
+) -> list[SlayerDataset]:
     """Every model of ``data_source``; an unloadable one fails closed."""
-    return all_or_raise(await storage.load_models(data_source=data_source))
+    return all_or_raise(await storage.load_datasets(data_source=data_source))
 
 
 async def _find_leaf_in_priority_winner(
     storage: StorageBackend, leaf: str
-) -> tuple[str | None, list[SlayerModel]]:
+) -> tuple[str | None, list[SlayerDataset]]:
     """Walk the priority list; return ``(data_source, matches)`` for the
     first datasource that has ≥1 model carrying ``leaf`` as a column /
     measure / custom aggregation. ``matches`` may have multiple models
@@ -145,78 +145,78 @@ async def _find_leaf_in_priority_winner(
     all_dses = await storage.list_datasources()
     # Walk priority list first, then any unlisted datasources.
     for ds in priority + [d for d in all_dses if d not in priority]:
-        models = await _all_models_in_datasource(storage, ds)
-        matches = [m for m in models if _model_has_leaf(m, leaf)]
+        models = await _all_datasets_in_datasource(storage, ds)
+        matches = [m for m in models if _dataset_has_leaf(m, leaf)]
         if matches:
             return ds, matches
     return None, []
 
 
-async def _datasource_models(storage: StorageBackend, model: SlayerModel) -> dict[str, SlayerModel]:
-    """``model``'s datasource peers by name, ``model`` itself included; unloadable peers skipped."""
-    peers = DocumentLoadFailures().skip(await storage.load_models(data_source=model.data_source))
-    return {**{m.name: m for m in peers}, model.name: model}
+async def _datasource_datasets(storage: StorageBackend, dataset: SlayerDataset) -> dict[str, SlayerDataset]:
+    """``dataset``'s datasource peers by name, ``dataset`` itself included; unloadable peers skipped."""
+    peers = DocumentLoadFailures().skip(await storage.load_datasets(data_source=dataset.data_source))
+    return {**{m.name: m for m in peers}, dataset.name: dataset}
 
 
-def _walk_join_path(
-    starting_model: SlayerModel, path: list[str], *, models_by_name: dict[str, SlayerModel],
-) -> SlayerModel:
-    """Walk a chain of join targets over ``models_by_name``, returning the leaf model.
+def _walk_relationship_path(
+    starting_dataset: SlayerDataset, path: list[str], *, datasets_by_name: dict[str, SlayerDataset],
+) -> SlayerDataset:
+    """Walk a chain of join targets over ``datasets_by_name``, returning the leaf model.
 
     Raises ``EntityResolutionError`` when a segment doesn't match any join on the current model.
     """
     try:
-        walked = walk_terminal(root=starting_model, path=path, models_by_name=models_by_name)
-        miss = walk_miss(root=starting_model, path=path, models_by_name=models_by_name) if walked is None else None
-    except CircularJoinPathError as exc:
+        walked = walk_terminal(root=starting_dataset, path=path, datasets_by_name=datasets_by_name)
+        miss = walk_miss(root=starting_dataset, path=path, datasets_by_name=datasets_by_name) if walked is None else None
+    except CircularRelationshipPathError as exc:
         raise EntityResolutionError(str(exc)) from exc
     if walked is not None:
         return walked[0]
     assert miss is not None
-    via = walk_terminal(root=starting_model, path=path[:miss.index], models_by_name=models_by_name)
+    via = walk_terminal(root=starting_dataset, path=path[:miss.index], datasets_by_name=datasets_by_name)
     raise EntityResolutionError(
         f"'{miss.token}' is not a join target on model "
-        f"'{via[0].name if via is not None else starting_model.name}'."
+        f"'{via[0].name if via is not None else starting_dataset.name}'."
     )
 
 
 def _dotted_canonical(
-    starting_model: SlayerModel, rest: list[str], *, models_by_name: dict[str, SlayerModel],
+    starting_dataset: SlayerDataset, rest: list[str], *, datasets_by_name: dict[str, SlayerDataset],
 ) -> str:
     """Apply the leaf rule to a path ``[hop, hop, ..., leaf?]`` rooted at
-    ``starting_model``. Returns the canonical form."""
+    ``starting_dataset``. Returns the canonical form."""
     if not rest:
-        return f"{starting_model.data_source}.{starting_model.name}"
+        return f"{starting_dataset.data_source}.{starting_dataset.name}"
     # Try interpreting the last segment as a leaf attribute on the
     # model reached by walking the rest.
     leaf_segment = rest[-1]
     try:
-        leaf_model = _walk_join_path(starting_model, rest[:-1], models_by_name=models_by_name)
+        leaf_model = _walk_relationship_path(starting_dataset, rest[:-1], datasets_by_name=datasets_by_name)
     except EntityResolutionError:
         # The walk failed before reaching the last segment — fall
         # through to the "every segment is a join" interpretation
         # below.
         leaf_model = None
-    if leaf_model is not None and _model_has_leaf(leaf_model, leaf_segment):
+    if leaf_model is not None and _dataset_has_leaf(leaf_model, leaf_segment):
         return f"{leaf_model.data_source}.{leaf_model.name}.{leaf_segment}"
     # No leaf attribute — every segment must be a join target, with
     # the path terminating at the join'd model itself (§3.2 step 3).
-    final_model = _walk_join_path(starting_model, rest, models_by_name=models_by_name)
+    final_model = _walk_relationship_path(starting_dataset, rest, datasets_by_name=datasets_by_name)
     return f"{final_model.data_source}.{final_model.name}"
 
 
-async def _resolve_dotted_against_model(storage: StorageBackend, starting_model: SlayerModel, rest: list[str]) -> str:
-    """``_dotted_canonical`` over ``starting_model``'s stored datasource peers."""
+async def _resolve_dotted_against_dataset(storage: StorageBackend, starting_dataset: SlayerDataset, rest: list[str]) -> str:
+    """``_dotted_canonical`` over ``starting_dataset``'s stored datasource peers."""
     if not rest:
-        return f"{starting_model.data_source}.{starting_model.name}"
-    return _dotted_canonical(starting_model, rest, models_by_name=await _datasource_models(storage, starting_model))
+        return f"{starting_dataset.data_source}.{starting_dataset.name}"
+    return _dotted_canonical(starting_dataset, rest, datasets_by_name=await _datasource_datasets(storage, starting_dataset))
 
 
 async def resolve_entity(
     raw: str,
     *,
     storage: StorageBackend,
-    source_model: SlayerModel | None = None,
+    source_dataset: SlayerDataset | None = None,
 ) -> EntityResolution:
     """Resolve a single entity reference.
 
@@ -225,7 +225,7 @@ async def resolve_entity(
     aggregations (``sum(x)``, ``weighted_avg(x, weight=qty)``), and
     ``count(*)``.
 
-    With ``source_model`` set, bare-name resolution prefers attributes
+    With ``source_dataset`` set, bare-name resolution prefers attributes
     on the given source model — matching the engine's runtime behaviour
     inside a query body.
     """
@@ -257,11 +257,11 @@ async def resolve_entity(
         raise EntityResolutionError(str(exc)) from exc
     agg = suffix.split("(", 1)[0] if suffix is not None else None
     return await _resolve_reference(
-        raw=raw, prefix=prefix, agg=agg, storage=storage, source_model=source_model)
+        raw=raw, prefix=prefix, agg=agg, storage=storage, source_dataset=source_dataset)
 
 
 async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch matching the spec's resolution-case table; splitting per-case helpers would obscure the shared error-message style and warning aggregation
-    *, raw: str, prefix: str, agg: str | None, storage: StorageBackend, source_model: SlayerModel | None,
+    *, raw: str, prefix: str, agg: str | None, storage: StorageBackend, source_dataset: SlayerDataset | None,
 ) -> EntityResolution:
     """Resolve the reference ``prefix`` (aggregated by ``agg``, if any) written as ``raw``."""
 
@@ -275,7 +275,7 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
                 f"'{raw}' is not a valid entity reference; use 'count(*)' "
                 "to refer to a model's row count."
             )
-        if source_model is None:
+        if source_dataset is None:
             raise EntityResolutionError(
                 "'count(*)' requires a model context: write "
                 "'count(<model>.*)' or invoke from a query that has "
@@ -283,7 +283,7 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
             )
         return EntityResolution(
             canonical_forms=[
-                f"{source_model.data_source}.{source_model.name}"
+                f"{source_dataset.data_source}.{source_dataset.name}"
             ]
         )
 
@@ -297,7 +297,7 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
             )
         model_part = prefix[:-2]
         return await resolve_entity(
-            model_part, storage=storage, source_model=source_model
+            model_part, storage=storage, source_dataset=source_dataset
         )
 
     segments = prefix.split(".")
@@ -322,8 +322,8 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
         # NOT abort a perfectly valid datasource-prefixed reference, so we
         # treat the ambiguity as "yes, also a model" and keep going.
         try:
-            ds_as_model = await storage.resolve_model_identity(ds)
-        except AmbiguousModelError:
+            ds_as_model = await storage.resolve_dataset_identity(ds)
+        except AmbiguousDatasetError:
             ds_as_model = (ds, ds)
         if ds_as_model is not None:
             warnings.append(
@@ -335,12 +335,12 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
         if not rest:
             return EntityResolution(canonical_forms=[ds], warnings=warnings)
         model_name = rest[0]
-        model = await storage.get_model(model_name, data_source=ds)
+        model = await storage.get_dataset(model_name, data_source=ds)
         if model is None:
             raise EntityResolutionError(
                 f"No model '{model_name}' in datasource '{ds}'."
             )
-        canonical = await _resolve_dotted_against_model(
+        canonical = await _resolve_dotted_against_dataset(
             storage, model, rest[1:]
         )
         return EntityResolution(
@@ -352,23 +352,23 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
         leaf = segments[0]
 
         # source_model context → prefer attributes on the source model.
-        if source_model is not None and _model_has_leaf(source_model, leaf):
+        if source_dataset is not None and _dataset_has_leaf(source_dataset, leaf):
             return EntityResolution(
                 canonical_forms=[
-                    f"{source_model.data_source}.{source_model.name}.{leaf}"
+                    f"{source_dataset.data_source}.{source_dataset.name}.{leaf}"
                 ]
             )
 
         # Try as a model first (§4.3 step 5).
-        identity = await storage.resolve_model_identity(leaf)
+        identity = await storage.resolve_dataset_identity(leaf)
         if identity is not None:
             ds_winner, model_name = identity
             # Case A: any other model in the priority-winner ds with
             # this name as a column / measure / custom-agg?
             other_models = [
                 m
-                for m in await _all_models_in_datasource(storage, ds_winner)
-                if m.name != model_name and _model_has_leaf(m, leaf)
+                for m in await _all_datasets_in_datasource(storage, ds_winner)
+                if m.name != model_name and _dataset_has_leaf(m, leaf)
             ]
             if other_models:
                 names = sorted(m.name for m in other_models)
@@ -407,16 +407,16 @@ async def _resolve_reference(  # NOSONAR(S3776) — single linear dispatch match
 
     # ----- step 6: dotted form (n≥2) -------------------------------------
     head = segments[0]
-    identity = await storage.resolve_model_identity(head)
+    identity = await storage.resolve_dataset_identity(head)
     if identity is None:
         raise EntityResolutionError(
             f"'{head}' is neither a known datasource nor a saved "
             f"model. (segment of '{raw}')."
         )
     ds_winner, model_name = identity
-    model = await storage.get_model(model_name, data_source=ds_winner)
+    model = await storage.get_dataset(model_name, data_source=ds_winner)
     assert model is not None, "resolve_model_identity returned a stale match"
-    canonical = await _resolve_dotted_against_model(
+    canonical = await _resolve_dotted_against_dataset(
         storage, model, segments[1:]
     )
     return EntityResolution(
@@ -453,7 +453,7 @@ def _agg_call_tokens(node: AggCall) -> Iterable[EntityToken]:
                 yield _ref_token(inner)
 
 
-def _formula_entity_tokens(parsed: ParsedExpr) -> Iterable[EntityToken]:
+def _expression_entity_tokens(parsed: ParsedExpr) -> Iterable[EntityToken]:
     """Yield every entity *token* referenced by a parsed Mode-B formula.
 
     Aggregations surface as ``(source, agg)`` (``("*", "count")`` included), bare and dotted refs as their
@@ -480,7 +480,7 @@ def _field_entity_tokens(kind: FieldKind, text: str) -> list[EntityToken]:
     # IllegalWindowInFilterError is-a ValueError, so ValueError covers it.
     except (ValueError, UnknownFunctionError):
         return [text]
-    return list(_formula_entity_tokens(parsed))
+    return list(_expression_entity_tokens(parsed))
 
 
 class _ExtensionScope(BaseModel):
@@ -491,15 +491,15 @@ class _ExtensionScope(BaseModel):
 
     storage: StorageBackend
     scope: QueryScope
-    stored: dict[str, SlayerModel]
+    stored: dict[str, SlayerDataset]
     expanded: set[tuple[str, str, str]] = set()
 
-    def _extended(self, name: str) -> SlayerModel | None:
+    def _extended(self, name: str) -> SlayerDataset | None:
         """Model ``name`` when the query changes it (stored models resolve through storage, as outside a query)."""
-        model = self.scope.models.get(name)
+        model = self.scope.datasets.get(name)
         return model if model is not None and model is not self.stored.get(name) else None
 
-    async def resolve(self, token: EntityToken, *, host: SlayerModel) -> list[EntityResolution]:
+    async def resolve(self, token: EntityToken, *, host: SlayerDataset) -> list[EntityResolution]:
         source, agg = token if isinstance(token, tuple) else (token, None)
         field = self._extension_field(source, host=host)
         if field is not None:
@@ -509,24 +509,24 @@ class _ExtensionScope(BaseModel):
             return [EntityResolution(canonical_forms=[scoped])]
         if agg is not None:
             return [await _resolve_reference(
-                raw=f"{agg}({source})", prefix=source, agg=agg, storage=self.storage, source_model=host)]
-        return [await resolve_entity(source, storage=self.storage, source_model=host)]
+                raw=f"{agg}({source})", prefix=source, agg=agg, storage=self.storage, source_dataset=host)]
+        return [await resolve_entity(source, storage=self.storage, source_dataset=host)]
 
-    def _extension_field(self, source: str, *, host: SlayerModel) -> tuple[SlayerModel, str] | None:
+    def _extension_field(self, source: str, *, host: SlayerDataset) -> tuple[SlayerDataset, str] | None:
         """``(extended model, field)`` when ``source`` names a field the query's extensions add."""
         *prefix, leaf = source.split(".")
-        if not any(leaf in m.query_local_names for m in self.scope.models.values()):
+        if not any(leaf in m.query_local_names for m in self.scope.datasets.values()):
             return None
-        owner = self._model(prefix, host=host)
+        owner = self._dataset(prefix, host=host)
         return (owner, leaf) if owner is not None and leaf in owner.query_local_names else None
 
-    def _walked(self, start: SlayerModel, path: list[str]) -> SlayerModel | None:
+    def _walked(self, start: SlayerDataset, path: list[str]) -> SlayerDataset | None:
         try:
-            return _walk_join_path(start, path, models_by_name={**self.scope.models, start.name: start})
-        except (EntityResolutionError, AmbiguousJoinPathError):
+            return _walk_relationship_path(start, path, datasets_by_name={**self.scope.datasets, start.name: start})
+        except (EntityResolutionError, AmbiguousRelationshipPathError):
             return None
 
-    def _model(self, path: list[str], *, host: SlayerModel) -> SlayerModel | None:
+    def _dataset(self, path: list[str], *, host: SlayerDataset) -> SlayerDataset | None:
         """The model ``path`` names: edge tokens from ``host`` (a lone hop short-form routed, as the binder does),
         else a model the query extends and its edge tokens."""
         path = list(drop_root_hop(path, host.spelling, head_quoted=False))
@@ -537,11 +537,11 @@ class _ExtensionScope(BaseModel):
             return walked
         routed = self.scope.resolve(path, root=host)
         if routed is not None and routed[1]:
-            return self.scope.models.get(routed[1][-1].target_model)
+            return self.scope.datasets.get(routed[1][-1].to)
         head = self._extended(path[0])
         return self._walked(head, path[1:]) if head is not None else None
 
-    def _scoped_form(self, source: str, *, agg: str | None, host: SlayerModel) -> str | None:
+    def _scoped_form(self, source: str, *, agg: str | None, host: SlayerDataset) -> str | None:
         """Canonical form of a dotted ``source`` over the scope — its head an edge token from ``host`` or short-form
         routed from it, else a model the query extends — or ``None``."""
         star = source.endswith(".*")
@@ -549,47 +549,47 @@ class _ExtensionScope(BaseModel):
         if (star and agg != "count") or (not star and len(segments) < 2):
             return None
         if star:
-            model = self._model(segments, host=host)
+            model = self._dataset(segments, host=host)
             return f"{model.data_source}.{model.name}" if model is not None else None
         heads = [(host, list(drop_root_qualifier(segments, host.spelling, quoted=())))]
         routed = self.scope.resolve(segments[:-1], root=host)
         if routed is not None and routed[1]:
-            heads.append((self.scope.models[routed[1][-1].target_model], segments[-1:]))
+            heads.append((self.scope.datasets[routed[1][-1].to], segments[-1:]))
         head = self._extended(segments[0])
         if head is not None:
             heads.append((head, segments[1:]))
         for start, rest in heads:
             try:
-                return _dotted_canonical(start, rest, models_by_name={**self.scope.models, start.name: start})
-            except (EntityResolutionError, AmbiguousJoinPathError):
+                return _dotted_canonical(start, rest, datasets_by_name={**self.scope.datasets, start.name: start})
+            except (EntityResolutionError, AmbiguousRelationshipPathError):
                 continue
         return None
 
-    async def _field_reads(self, *, owner: SlayerModel, name: str) -> list[EntityResolution]:
+    async def _field_reads(self, *, owner: SlayerDataset, name: str) -> list[EntityResolution]:
         mark = (owner.data_source, owner.name, name)
         if mark in self.expanded:
             return []
         self.expanded.add(mark)
-        column = owner.get_column(name)
+        column = owner.get_field(name)
         if column is not None:
-            reachable = {**self.scope.models, owner.name: owner}
+            reachable = {**self.scope.datasets, owner.name: owner}
             out: list[EntityResolution] = []
-            for model_name, leaf in definition_reads(column=column, host=owner, reachable=reachable):
+            for model_name, leaf in definition_reads(field=column, host=owner, reachable=reachable):
                 target = reachable[model_name]
                 if leaf in target.query_local_names:
                     out.extend(await self._field_reads(owner=target, name=leaf))
                 else:
                     out.append(EntityResolution(canonical_forms=[f"{target.data_source}.{target.name}.{leaf}"]))
             return out
-        measure = owner.get_measure(name)
-        if measure is None or not measure.formula:
+        measure = owner.get_metric(name)
+        if measure is None or not measure.expression:
             return []
-        return [r for token in _field_entity_tokens("formula", measure.formula) for r in await self.resolve(token, host=owner)]
+        return [r for token in _field_entity_tokens("expression", measure.expression) for r in await self.resolve(token, host=owner)]
 
 
-async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[SlayerQuery, SlayerModel]:
+async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[SlayerQuery, SlayerDataset]:
     """``query`` with its source model; a rootless query is rooted at the population the engine infers."""
-    src = query.source_model
+    src = query.population
     data_source = None
     if src is None:
         try:
@@ -597,9 +597,9 @@ async def _rooted(query: SlayerQuery, *, storage: StorageBackend) -> tuple[Slaye
                 query=query, storage=storage)
         except PopulationInferenceError as exc:
             raise EntityResolutionError(f"Could not infer the query's population: {exc}") from exc
-        src, data_source = choice.model_name, choice.data_source
-        query = query.model_copy(update={"source_model": src})
-    model = await stored_model(storage, name=src, data_source=data_source)
+        src, data_source = choice.dataset_name, choice.data_source
+        query = query.model_copy(update={"population": src})
+    model = await stored_dataset(storage, name=src, data_source=data_source)
     if model is None:
         raise EntityResolutionError(f"Source model not found: {src!r}.")
     return query, model
@@ -625,17 +625,17 @@ async def extract_entities_from_query(  # NOSONAR(S3776) — straight-line walk 
     # its extensions name.
     query, source_model = await _rooted(query, storage=storage)
     ds = source_model.data_source
-    stored = await _datasource_models(storage, source_model)
-    query_scope = query_scopes([query], models_by_ds={ds: stored}, data_source=ds)[0][0]
+    stored = await _datasource_datasets(storage, source_model)
+    query_scope = query_scopes([query], datasets_by_ds={ds: stored}, data_source=ds)[0][0]
     query = query_scope.query or query
     _add([f"{source_model.data_source}.{source_model.name}"])
-    for name in extension_model_names(query):
-        extended = await storage.get_model(name, data_source=source_model.data_source or None)
+    for name in extension_dataset_names(query):
+        extended = await storage.get_dataset(name, data_source=source_model.data_source or None)
         if extended is not None:
             _add([f"{extended.data_source}.{extended.name}"])
 
     # 2. every field the reads walk enumerates; aggregation arguments and the query's own names are not entities.
-    local_names = {m.name for m in query.measures or [] if m.name} | {
+    local_names = {m.name for m in query.metrics or [] if m.name} | {
         d.name for d in query.dimensions or [] if isinstance(d, ComputedDimension) and d.name
     } | {td.name for td in query.time_dimensions or [] if td.name}
     scope = _ExtensionScope(storage=storage, scope=query_scope, stored=stored)

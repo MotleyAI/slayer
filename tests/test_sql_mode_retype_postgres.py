@@ -40,7 +40,7 @@ async def pg(postgresql, tmp_path):
                                                                   untypeable="same_list"))
 async def test_sql_mode_list_retype(pg: tuple[SlayerQueryEngine, Any], sql: str, column: str, element: DataType) -> None:
     engine, ds = pg
-    await engine.storage.save_model(stale_sql_model(sql=sql, column=column, data_source=ds.name))
+    await engine.storage.save_dataset(stale_sql_model(sql=sql, column=column, data_source=ds.name))
     await check_validation_finding(engine, data_source=ds.name, column=column)
     await check_query_carries_finding(engine, column=column)
     await check_reingest_retypes(engine, datasource=ds, table="contractors", column=column, element=element)

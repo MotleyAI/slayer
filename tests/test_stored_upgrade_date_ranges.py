@@ -67,7 +67,7 @@ async def test_wrong_length_range_is_dropped(tmp_path, shop_ds, date_range):
     qb = query_backed_v10(name="rev_range", stages=[rev_query(time_dimensions=[year_td(date_range)])])
     storage = await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=shop_ds,
                               models=[orders_v10(), customers_v10(), qb])
-    model = await storage.get_model("rev_range", data_source=DS)
+    model = await storage.get_dataset("rev_range", data_source=DS)
     assert model is not None
     [td] = (model.source_queries or [])[0].time_dimensions or []
     assert td.date_range is None
@@ -79,7 +79,7 @@ async def test_unrepairable_bound_still_fails_to_load(tmp_path, shop_ds, bound):
     storage = await raw_store(backend="yaml", base=str(tmp_path / "store"), datasource=shop_ds,
                               models=[orders_v10(), customers_v10(), qb])
     with pytest.raises(ValueError, match="date_range"):
-        await storage.get_model("rev_range", data_source=DS)
+        await storage.get_dataset("rev_range", data_source=DS)
 
 
 @pytest.mark.parametrize("backend", BACKENDS)

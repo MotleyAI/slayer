@@ -51,8 +51,8 @@ GRAND_TOTAL           210.
 from __future__ import annotations
 
 from tests._dev1739_fixtures import (  # noqa: F401 — re-exported fixture surface
-    ColumnRef,
-    ModelMeasure,
+    FieldRef,
+    DatasetMetric,
     SlayerQuery,
     TimeDimension,
     TimeGranularity,
@@ -123,8 +123,8 @@ def q(**kw) -> SlayerQuery:
 
 
 __all__ = [
-    "BAND35", "BAND35_OF", "CITY_TOTAL", "ColumnRef", "GRAND_TOTAL",
-    "ModelMeasure", "RCM_GROUPS", "RC_GROUPS", "REGION_FIRST", "REGION_LAST",
+    "BAND35", "BAND35_OF", "CITY_TOTAL", "FieldRef", "GRAND_TOTAL",
+    "DatasetMetric", "RCM_GROUPS", "RC_GROUPS", "REGION_FIRST", "REGION_LAST",
     "REGION_LAST_AT", "REGION_MONTH_LAST", "REGION_MONTH_TOTAL", "REGION_TOTAL",
     "SlayerQuery", "TRAILING_45D_REGION", "TRAILING_90D_REGION",
     "TimeDimension", "TimeGranularity",

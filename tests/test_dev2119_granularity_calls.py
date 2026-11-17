@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import DateOperandTypeError, TimeDimensionColumnError
+from slayer.core.errors import DateOperandTypeError, TimeDimensionFieldError
 from slayer.engine.query_engine import SlayerResponse
 from tests._dev2119_fixtures import BACKENDS, EFF, engine_for, m, num, q
 
@@ -58,6 +58,6 @@ class TestNonTemporalArgument:
 
     async def test_as_a_dimension_is_a_time_dimension_type_error(self, engine) -> None:
         query = q(dimensions=["date_trunc('month', upper(status))"], measures=[m("count(*)")])
-        with pytest.raises(TimeDimensionColumnError) as ei:
+        with pytest.raises(TimeDimensionFieldError) as ei:
             await engine.execute(query, dry_run=True)
         assert "TEXT" in str(ei.value).upper()

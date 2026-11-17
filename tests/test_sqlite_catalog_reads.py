@@ -8,8 +8,8 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 
-from slayer.core.enums import JoinCardinality
-from slayer.core.models import SlayerModel
+from slayer.core.enums import RelationshipCardinality
+from slayer.core.models import SlayerDataset
 from slayer.database.client import ObjectNotFound, SlayerSQLClient
 from slayer.live_schema import ingestion
 from slayer.sql.dialects import SqliteDialect
@@ -182,20 +182,20 @@ class TestSchemaScoping:
         assert (keys.primary_key, keys.unique_key_sets) == (["id"], [["code"]])
 
 
-def _models(models: list[SlayerModel]) -> dict[str, SlayerModel]:
+def _models(models: list[SlayerDataset]) -> dict[str, SlayerDataset]:
     return {m.name: m for m in models}
 
 
-def _pk(model: SlayerModel) -> list[str]:
-    return [c.name for c in model.columns if c.primary_key]
+def _pk(model: SlayerDataset) -> list[str]:
+    return [c.name for c in model.fields if c.primary_key]
 
 
-def _unique(model: SlayerModel) -> set[str]:
-    return {c.name for c in model.columns if c.unique}
+def _unique(model: SlayerDataset) -> set[str]:
+    return {c.name for c in model.fields if c.unique}
 
 
-def _joins(model: SlayerModel) -> dict[str, tuple[list[list[str]], JoinCardinality | None]]:
-    return {j.target_model: (j.join_pairs, j.cardinality) for j in model.joins}
+def _joins(model: SlayerDataset) -> dict[str, tuple[list[list[str]], RelationshipCardinality | None]]:
+    return {j.to: (j.join_pairs, j.cardinality) for j in model.relationships}
 
 
 class TestIngestion:
@@ -206,12 +206,12 @@ class TestIngestion:
         with statement_errors(engine) as failed:
             report = await ingestion.ingest_datasource_report_async(corpus.datasource, client=client)
         assert failed == []
-        models = _models(report.models)
+        models = _models(report.datasets)
         assert _pk(models["comp_pk"]) == ["a", "b"]
         assert _pk(models["no_rowid"]) == ["k"]
-        assert _joins(models["implicit_child"])["parents"] == ([["parent_id", "id"]], JoinCardinality.MANY_TO_ONE)
-        assert _joins(models["comp_child"])["comp_pk"] == ([["ca", "a"], ["cb", "b"]], JoinCardinality.MANY_TO_ONE)
+        assert _joins(models["implicit_child"])["parents"] == ([["parent_id", "id"]], RelationshipCardinality.MANY_TO_ONE)
+        assert _joins(models["comp_child"])["comp_pk"] == ([["ca", "a"], ["cb", "b"]], RelationshipCardinality.MANY_TO_ONE)
         assert _unique(models["uniq_c"]) == {"email"}
         assert _unique(models["uniq_i"]) == {"code"}
         for keyless in ("keyless", VIEW):
-            assert (_pk(models[keyless]), _unique(models[keyless]), models[keyless].joins) == ([], set(), [])
+            assert (_pk(models[keyless]), _unique(models[keyless]), models[keyless].relationships) == ([], set(), [])

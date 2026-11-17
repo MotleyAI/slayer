@@ -42,13 +42,13 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, OrderItem, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, OrderItem, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 from slayer.storage.sqlite_conn import transaction
@@ -102,52 +102,52 @@ async def engine(tmp_path) -> SlayerQueryEngine:
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="regions",
             sql_table="regions",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="name", datatype=DataType.TEXT),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region_id", type=DataType.INT),
-                Column(name="revenue", type=DataType.DOUBLE),
-                Column(name="signup_at", type=DataType.TIMESTAMP),
-                Column(
-                    name="rev_x2", sql="revenue * 2", type=DataType.DOUBLE,
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="region_id", datatype=DataType.INT),
+                DatasetField(name="revenue", datatype=DataType.DOUBLE),
+                DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
+                DatasetField(
+                    name="rev_x2", sql="revenue * 2", datatype=DataType.DOUBLE,
                 ),
             ],
-            joins=[
-                ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="prod",
             default_time_dimension="created_at",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="created_at", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
             ],
-            joins=[
-                ModelJoin(
-                    target_model="customers", join_pairs=[["customer_id", "id"]],
+            relationships=[
+                DatasetRelationship(
+                    to="customers", join_pairs=[["customer_id", "id"]],
                 ),
             ],
         )
@@ -181,7 +181,7 @@ async def _assert_result_keys(
     )
     # Every declared attribute must be a real projected column (no drift
     # between the two independent key producers).
-    attr_keys = set(resp.attributes.dimensions) | set(resp.attributes.measures)
+    attr_keys = set(resp.attributes.dimensions) | set(resp.attributes.metrics)
     assert attr_keys <= set(resp.columns), (attr_keys, resp.columns)
 
 
@@ -198,11 +198,11 @@ class TestOrdinaryResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="sum(amount)"),
-                    ModelMeasure(formula="count(*)"),
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[
+                    DatasetMetric(expression="sum(amount)"),
+                    DatasetMetric(expression="count(*)"),
                 ],
             ),
             ["orders.status", "orders.amount_sum", "orders._count"],
@@ -214,9 +214,9 @@ class TestOrdinaryResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="sum(amount)", name="revenue")],
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[DatasetMetric(expression="sum(amount)", name="revenue")],
             ),
             ["orders.status", "orders.revenue"],
         )
@@ -229,14 +229,14 @@ class TestOrdinaryResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
+                population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension="created_at",
+                        field="created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                measures=[ModelMeasure(formula="count(*)")],
+                metrics=[DatasetMetric(expression="count(*)")],
             ),
             ["orders.created_at", "orders._count"],
         )
@@ -252,9 +252,9 @@ class TestJoinedDimensionResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="customers.region_id")],
-                measures=[ModelMeasure(formula="count(*)")],
+                population="orders",
+                dimensions=[FieldRef(name="customers.region_id")],
+                metrics=[DatasetMetric(expression="count(*)")],
             ),
             ["orders.customers.region_id", "orders._count"],
         )
@@ -264,9 +264,9 @@ class TestJoinedDimensionResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="customers.regions.name")],
-                measures=[ModelMeasure(formula="count(*)")],
+                population="orders",
+                dimensions=[FieldRef(name="customers.regions.name")],
+                metrics=[DatasetMetric(expression="count(*)")],
             ),
             ["orders.customers.regions.name", "orders._count"],
         )
@@ -277,9 +277,9 @@ class TestJoinedDimensionResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="customers.rev_x2")],
-                measures=[ModelMeasure(formula="count(*)")],
+                population="orders",
+                dimensions=[FieldRef(name="customers.rev_x2")],
+                metrics=[DatasetMetric(expression="count(*)")],
             ),
             ["orders.customers.rev_x2", "orders._count"],
         )
@@ -298,9 +298,9 @@ class TestCrossModelResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="sum(customers.revenue)")],
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[DatasetMetric(expression="sum(customers.revenue)")],
             ),
             ["orders.status", "orders.customers.revenue_sum"],
         )
@@ -311,9 +311,9 @@ class TestCrossModelResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="count(customers.*)")],
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[DatasetMetric(expression="count(customers.*)")],
             ),
             ["orders.status", "orders.customers._count"],
         )
@@ -326,11 +326,11 @@ class TestCrossModelResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="sum(amount)"),
-                    ModelMeasure(formula="sum(customers.revenue)"),
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[
+                    DatasetMetric(expression="sum(amount)"),
+                    DatasetMetric(expression="sum(customers.revenue)"),
                 ],
             ),
             [
@@ -354,14 +354,14 @@ class TestWindowedResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
+                population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension="created_at",
+                        field="created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                measures=[ModelMeasure(formula="sum(amount, window='90d')")],
+                metrics=[DatasetMetric(expression="sum(amount, window='90d')")],
             ),
             ["orders.created_at", "orders.amount_sum_window_90d"],
         )
@@ -374,16 +374,16 @@ class TestWindowedResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
+                population="orders",
                 time_dimensions=[
                     TimeDimension(
-                        dimension="created_at",
+                        field="created_at",
                         granularity=TimeGranularity.MONTH,
                     ),
                 ],
-                measures=[
-                    ModelMeasure(formula="sum(amount, window='90d')"),
-                    ModelMeasure(formula="sum(amount, window='30d')"),
+                metrics=[
+                    DatasetMetric(expression="sum(amount, window='90d')"),
+                    DatasetMetric(expression="sum(amount, window='30d')"),
                 ],
             ),
             [
@@ -408,12 +408,12 @@ class TestHiddenAndOrderOnlySlots:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="count(*)")],
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[DatasetMetric(expression="count(*)")],
                 order=[
                     OrderItem(
-                        column=ColumnRef(name="created_at"), direction="desc",
+                        field=FieldRef(name="created_at"), direction="desc",
                     ),
                 ],
             ),
@@ -432,12 +432,12 @@ class TestHiddenAndOrderOnlySlots:
         """
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="count(*)")],
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[DatasetMetric(expression="count(*)")],
                 order=[
                     OrderItem(
-                        column=ColumnRef(name="created_at"), direction="desc",
+                        field=FieldRef(name="created_at"), direction="desc",
                     ),
                 ],
             )
@@ -457,9 +457,9 @@ class TestParametricResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[ModelMeasure(formula="percentile(amount, p=0.9)")],
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[DatasetMetric(expression="percentile(amount, p=0.9)")],
             ),
             ["orders.status", "orders.amount_percentile_p_0_9"],
         )
@@ -470,11 +470,11 @@ class TestParametricResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="percentile(amount, p=0.5)"),
-                    ModelMeasure(formula="percentile(amount, p=0.9)"),
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[
+                    DatasetMetric(expression="percentile(amount, p=0.5)"),
+                    DatasetMetric(expression="percentile(amount, p=0.9)"),
                 ],
             ),
             [
@@ -499,11 +499,11 @@ class TestParametricResultKeys:
         await _assert_result_keys(
             engine,
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="status")],
-                measures=[
-                    ModelMeasure(formula="percentile(customers.revenue, p=0.5)"),
-                    ModelMeasure(formula="percentile(customers.revenue, p=0.9)"),
+                population="orders",
+                dimensions=[FieldRef(name="status")],
+                metrics=[
+                    DatasetMetric(expression="percentile(customers.revenue, p=0.5)"),
+                    DatasetMetric(expression="percentile(customers.revenue, p=0.9)"),
                 ],
             ),
             [
@@ -530,12 +530,12 @@ class TestIdentifierSeparation:
     ) -> None:
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
+                population="orders",
                 dimensions=[
-                    ColumnRef(name="customers.regions.name"),
-                    ColumnRef(name="customers.rev_x2"),
+                    FieldRef(name="customers.regions.name"),
+                    FieldRef(name="customers.rev_x2"),
                 ],
-                measures=[ModelMeasure(formula="sum(customers.revenue)")],
+                metrics=[DatasetMetric(expression="sum(customers.revenue)")],
             )
         )
         for key in list(resp.columns) + list(resp.data[0].keys()):
@@ -546,9 +546,9 @@ class TestIdentifierSeparation:
         AND its flattened twin is absent."""
         resp = await engine.execute(
             SlayerQuery(
-                source_model="orders",
-                dimensions=[ColumnRef(name="customers.regions.name")],
-                measures=[ModelMeasure(formula="count(*)")],
+                population="orders",
+                dimensions=[FieldRef(name="customers.regions.name")],
+                metrics=[DatasetMetric(expression="count(*)")],
             )
         )
         assert "orders.customers.regions.name" in resp.columns

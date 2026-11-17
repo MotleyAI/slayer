@@ -17,7 +17,7 @@ from slayer.api.server import create_app
 from slayer.async_utils import run_sync
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.errors import SlayerError
-from slayer.core.models import DatasourceConfig, ModelMeasure
+from slayer.core.models import DatasourceConfig, DatasetMetric
 from slayer.engine.cache import CacheConfig
 from slayer.engine.cardinality.inference import CardinalityVerdict
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -113,7 +113,7 @@ class TestStatementsReachTheFactoryClient:
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
         with no_direct_access(backends=[backend_of(shop.datasource)]) as guard:
-            report = await engine.detect_join_cardinality(data_source=DS_NAME)
+            report = await engine.detect_relationship_cardinality(data_source=DS_NAME)
         assert guard.attempts == []
         assert report.findings
         assert all(f.verdict is not CardinalityVerdict.SCAN_FAILED for f in report.findings), report.findings
@@ -144,7 +144,7 @@ class TestStatementsReachTheFactoryClient:
 
 _PUSHED = q(
     dimensions=["customers.tier"],
-    measures=[ModelMeasure(formula="sum(amount)", name="m"), ModelMeasure(formula="sum(customers.spend)", name="cm")],
+    measures=[DatasetMetric(expression="sum(amount)", name="m"), DatasetMetric(expression="sum(customers.spend)", name="cm")],
     filters=["channel = 'app'"],
 )
 
@@ -153,7 +153,7 @@ async def _clickhouse_engine(tmp_path: Path, *, profile: ServerProfile, built: l
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(DatasourceConfig(name="test", type="clickhouse"))
     for model in dev1840_models():
-        await storage.save_model(model, _validate=False)
+        await storage.save_dataset(model, _validate=False)
 
     def factory(datasource: DatasourceConfig) -> ProfileClient:
         built.append(ProfileClient(datasource=datasource, profile=profile))
@@ -205,7 +205,7 @@ class TestOneConstructionPoint:
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
         with no_direct_access(backends=[backend_of(shop.datasource)]) as guard:
-            await engine.validate_models(DS_NAME)
+            await engine.validate_datasets(DS_NAME)
             response = await engine.execute(COUNT_ORDERS)
         assert guard.attempts == []
         assert isinstance(engine.client_for(shop.datasource), RecordingClient)
@@ -218,8 +218,8 @@ class TestOneConstructionPoint:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         for name, db in (("shop", first_db), ("twin1", twin_db), ("twin2", twin_db)):
             await storage.save_datasource(shop_datasource(db, name=name))
-            await storage.save_model(orders_model(data_source=name), _validate=False)
-            await storage.save_model(customers_model(data_source=name), _validate=False)
+            await storage.save_dataset(orders_model(data_source=name), _validate=False)
+            await storage.save_dataset(customers_model(data_source=name), _validate=False)
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=storage, client_factory=factory)
         for _ in range(3):
@@ -233,7 +233,7 @@ class TestOneConstructionPoint:
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
         with no_direct_access(backends=[backend_of(shop.datasource)]) as guard:
             response = await engine.execute(COUNT_ORDERS)
-            entries = await engine.validate_models(DS_NAME)
+            entries = await engine.validate_datasets(DS_NAME)
         assert guard.attempts == []
         assert _n(response) == 4
         assert entries == []
@@ -246,7 +246,7 @@ class TestEngineOwnsItsClients:
     async def test_join_profiling_leaves_the_shared_client_open(self, shop: Shop) -> None:
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
-        await engine.detect_join_cardinality(data_source=DS_NAME)
+        await engine.detect_relationship_cardinality(data_source=DS_NAME)
         assert len(factory.clients) == 1
         client = factory.clients[0]
         assert (client.acloses, client.closes) == (0, 0)
@@ -258,7 +258,7 @@ class TestEngineOwnsItsClients:
         twin_db = str(tmp_path / "twin.db")
         shutil.copy(shop.db, twin_db)
         await shop.storage.save_datasource(shop_datasource(twin_db, name="twin"))
-        await shop.storage.save_model(orders_model(data_source="twin"), _validate=False)
+        await shop.storage.save_dataset(orders_model(data_source="twin"), _validate=False)
         factory = GatewayFactory()
         engine = SlayerQueryEngine(storage=shop.storage, client_factory=factory)
         await engine.execute(COUNT_ORDERS, data_source=DS_NAME)
@@ -318,7 +318,7 @@ class TestEngineOwnsItsClients:
         twin_db = str(tmp_path / "twin.db")
         shutil.copy(shop.db, twin_db)
         run_sync(shop.storage.save_datasource(shop_datasource(twin_db, name="twin")))
-        run_sync(shop.storage.save_model(orders_model(data_source="twin"), _validate=False))
+        run_sync(shop.storage.save_dataset(orders_model(data_source="twin"), _validate=False))
         released: list[str] = []
 
         async def _release(self: SlayerSQLClient) -> None:
@@ -348,7 +348,7 @@ class TestEngineOwnsItsClients:
 
         monkeypatch.setattr(engine, "release_local_connections", _release)
         try:
-            model = engine.create_model_from_query_sync(REVENUE_BY_STATUS, name="rev_by_status")
+            model = engine.create_dataset_from_query_sync(REVENUE_BY_STATUS, name="rev_by_status")
         finally:
             engine.close()
         assert model.name == "rev_by_status"

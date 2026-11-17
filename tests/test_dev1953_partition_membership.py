@@ -16,7 +16,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 
 from tests._dev1840_fixtures import bundle as orders_bundle, q as orders_q
 from tests._dev1847_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     _SALES_ROWS_WIDE,
     dev1847_models,
     make_exec_engine,
@@ -92,11 +92,11 @@ def _assert_membership_error(msg: str, *, key: str, grain: str, op: str = "rank"
 
 def _sales_bundle() -> ResolvedSourceBundle:
     models = dev1847_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
-def _measure(formula: str) -> ModelMeasure:
-    return ModelMeasure(formula=formula, name="r")
+def _measure(formula: str) -> DatasetMetric:
+    return DatasetMetric(expression=formula, name="r")
 
 
 class TestOracleSelfCheck:
@@ -140,7 +140,7 @@ class TestNonMemberRejected:
 
     async def test_aggregation_parameter(self, engine):
         query = sales_q(dimensions=CRP, measures=[
-            ModelMeasure(formula=f"weighted_avg(amount, weight={NONMEMBER})", name="w")])
+            DatasetMetric(expression=f"weighted_avg(amount, weight={NONMEMBER})", name="w")])
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
         _assert_membership_error(msg=str(ei.value), key="'product'", grain="city, region")

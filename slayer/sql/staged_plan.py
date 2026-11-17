@@ -47,7 +47,7 @@ def base_render_order(
         for s in plan_slots(planned_query)
         if s.stage is not None
         and s.stage.kind is StageKind.BASE
-        and s.needs_column
+        and s.needs_field
         and s.id not in isolated_slot_ids
     }
     order: List[str] = []

@@ -34,16 +34,16 @@ async def engine(request):
 class TestOrderItemField:
     @pytest.mark.parametrize("nulls", ["first", "last"])
     def test_accepted_and_serialised(self, nulls: str) -> None:
-        item = OrderItem.model_validate({"column": "discount", "direction": "desc", "nulls": nulls})
+        item = OrderItem.model_validate({"field": "discount", "direction": "desc", "nulls": nulls})
         assert item.nulls == nulls
         assert OrderItem.model_validate(item.model_dump()).nulls == nulls
 
     def test_default_is_unset(self) -> None:
-        assert OrderItem.model_validate({"column": "discount"}).nulls is None
+        assert OrderItem.model_validate({"field": "discount"}).nulls is None
 
     def test_invalid_policy_names_the_allowed_values(self) -> None:
         with pytest.raises(ValidationError) as info:
-            SlayerQuery.model_validate({"source_model": "orders", "dimensions": ["id"],
+            SlayerQuery.model_validate({"population": "orders", "dimensions": ["id"],
                                         "order": [{"column": "discount", "nulls": "middle"}]})
         msg = str(info.value)
         assert "first" in msg, msg
@@ -56,9 +56,9 @@ class TestOrderItemField:
         assert again.order[0].nulls == "first"
 
     def test_expression_order_item_keeps_the_policy(self) -> None:
-        item = OrderItem.model_validate({"column": "sum(amount) * 2", "nulls": "last"})
+        item = OrderItem.model_validate({"field": "sum(amount) * 2", "nulls": "last"})
         assert item.nulls == "last"
-        assert item.raw_formula == "sum(amount) * 2"
+        assert item.raw_expression == "sum(amount) * 2"
 
 
 class TestExecutedPlacement:
@@ -82,17 +82,17 @@ class TestExecutedPlacement:
         assert resp.columns == ["orders.city"]
 
     async def test_stage_rewrite_keeps_the_policy(self, engine: SlayerQueryEngine) -> None:
-        inner = SlayerQuery.model_validate({"name": "by_city", "source_model": "orders", "dimensions": ["city"],
-                                            "measures": [{"formula": "max(discount)", "name": "md"}]})
-        outer = SlayerQuery.model_validate({"source_model": "by_city", "dimensions": ["city"],
-                                            "measures": [{"formula": "max(md)", "name": "v"}],
+        inner = SlayerQuery.model_validate({"name": "by_city", "population": "orders", "dimensions": ["city"],
+                                            "metrics": [{"formula": "max(discount)", "name": "md"}]})
+        outer = SlayerQuery.model_validate({"population": "by_city", "dimensions": ["city"],
+                                            "metrics": [{"formula": "max(md)", "name": "v"}],
                                             "order": [{"column": "v", "direction": "asc", "nulls": "first"},
                                                       {"column": "city"}]})
         resp = await engine.execute([inner, outer])
         assert [r["by_city.city"] for r in resp.data] == CITY_ORDER[("asc", "first")]
 
     async def test_refinement_keeps_the_policy(self, engine: SlayerQueryEngine) -> None:
-        await engine.create_model_from_query(query=discount_rows_query(direction="desc", nulls="first"),
+        await engine.create_dataset_from_query(query=discount_rows_query(direction="desc", nulls="first"),
                                              name="discount_rows")
         resp = await engine.execute("discount_rows", refine={"filters": ["id <> 2"]})
         id_key = next(c for c in resp.columns if c.endswith(".id"))

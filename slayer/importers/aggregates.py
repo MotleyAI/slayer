@@ -52,10 +52,10 @@ NameTaken = Callable[[str, str], bool]  # (owning_model, name) -> already exists
 IsList = Callable[[Optional[str], str], bool]  # (qualifier, column) -> list-valued?
 
 
-class MaterializedColumn(BaseModel):
-    """A hidden helper Column the converter must create on ``owning_model``."""
+class MaterializedField(BaseModel):
+    """A hidden helper Column the converter must create on ``owning_dataset``."""
 
-    owning_model: str
+    owning_dataset: str
     name: str
     sql: str
     filter: str | None = None
@@ -66,9 +66,9 @@ class ExprResult(BaseModel):
     """Outcome of converting one source expression to a SLayer formula."""
 
     ok: bool
-    formula: str | None = None
+    expression: str | None = None
     reason: str | None = None
-    materialized: list[MaterializedColumn] = []
+    materialized: list[MaterializedField] = []
     warnings: list[str] = []
 
 
@@ -152,7 +152,7 @@ class OperandPolicy:
     sql_residual = False
 
     def __init__(self) -> None:
-        self.materialized: list[MaterializedColumn] = []
+        self.materialized: list[MaterializedField] = []
 
     def operand(self, operand: exp.Expr, *, mask: exp.Expr | None, agg: str) -> str:
         """The reference ``agg`` aggregates: ``operand`` over the rows ``mask`` keeps."""
@@ -196,7 +196,7 @@ class InlineOperands(OperandPolicy):
     def param(self, operand: exp.Expr, *, mask: exp.Expr | None, agg: str) -> str:
         """A parameter binds only a column: a bare one, else a materialized one."""
         if mask is None and isinstance(operand, exp.Column):
-            return self._column_ref(operand.table or None, operand.name)
+            return self._field_ref(operand.table or None, operand.name)
         if mask is not None:
             operand = exp.Case(ifs=[exp.If(this=mask.copy(), true=operand.copy())])
         return self._materialize(operand)
@@ -207,7 +207,7 @@ class InlineOperands(OperandPolicy):
                 raise Unconvertible("FILTER predicate reads a dataset other than the aggregate's")
             operand = exp.Case(ifs=[exp.If(this=mask.copy(), true=operand.copy())])
         if isinstance(operand, exp.Column):
-            return self._column_ref(operand.table or None, operand.name)
+            return self._field_ref(operand.table or None, operand.name)
         try:
             text = self._inline(operand)
             parse_expr(f"count({text})")
@@ -215,13 +215,13 @@ class InlineOperands(OperandPolicy):
             return self._materialize(operand)
         return text
 
-    def _column_ref(self, qualifier: Optional[str], column: str) -> str:
-        owner = self.owner_of(qualifier or None, column)
+    def _field_ref(self, qualifier: Optional[str], field: str) -> str:
+        owner = self.owner_of(qualifier or None, field)
         if owner is None:
-            raise Unconvertible(f"cannot resolve owning dataset for column {column!r}")
-        ref = self.ref_of(owner, column)
+            raise Unconvertible(f"cannot resolve owning dataset for column {field!r}")
+        ref = self.ref_of(owner, field)
         if ref is None:
-            raise Unconvertible(f"column {column!r} on model {owner!r} is not reachable from the anchor")
+            raise Unconvertible(f"field {field!r} on model {owner!r} is not reachable from the anchor")
         return ref
 
     def _owners(self, node: exp.Expr) -> set[str]:
@@ -244,15 +244,15 @@ class InlineOperands(OperandPolicy):
         operand_sql = operand.sql(dialect=self.target)
         name = self._dedup.get((owner, operand_sql))
         if name is None:
-            name = self._fresh_column_name(owner)
+            name = self._fresh_field_name(owner)
             self._dedup[(owner, operand_sql)] = name
-            self.materialized.append(MaterializedColumn(owning_model=owner, name=name, sql=operand_sql))
+            self.materialized.append(MaterializedField(owning_dataset=owner, name=name, sql=operand_sql))
         ref = self.ref_of(owner, name)
         if ref is None:
             raise Unconvertible("materialized operand is not reachable from the anchor")
         return ref
 
-    def _fresh_column_name(self, owner: str) -> str:
+    def _fresh_field_name(self, owner: str) -> str:
         """A hidden-column name that collides with no existing name on ``owner``."""
         while True:
             name = f"_{self.entity_name}_{self._counter}"
@@ -264,7 +264,7 @@ class InlineOperands(OperandPolicy):
 
     def _inline(self, node: exp.Expr) -> str:  # NOSONAR(S3776) — one flat dispatch over SQL node kinds
         if isinstance(node, exp.Column):
-            return self._column_ref(node.table or None, node.name)
+            return self._field_ref(node.table or None, node.name)
         if isinstance(node, exp.Literal):
             return sql_string(node.this) if node.is_string else node.this
         if isinstance(node, exp.Null):
@@ -365,12 +365,12 @@ def dialect_refusal(name: str, *, dialect: SqlDialect | None) -> str | None:
     return None
 
 
-def formula_refusal(formula: str, *, dialect: SqlDialect | None) -> str | None:
-    """Why ``dialect`` cannot compute an aggregation or list function ``formula`` calls, else ``None``."""
+def expression_refusal(expression: str, *, dialect: SqlDialect | None) -> str | None:
+    """Why ``dialect`` cannot compute an aggregation or list function ``expression`` calls, else ``None``."""
     if dialect is None:
         return None
     try:
-        tree = parse_expr(formula)
+        tree = parse_expr(expression)
     except ValueError:
         return None  # not yet parseable (markers still in it); validated once resolved
     names = [n.agg if isinstance(n, AggCall) else n.name for n in walk_parsed(tree) if isinstance(n, (AggCall, ScalarCall))]
@@ -523,7 +523,7 @@ class _Translator:
             formula = self._substitute(new_root.sql(normalize_functions="lower"), ref_by_token)
         except Unconvertible as exc:
             return self._fail(str(exc))
-        return ExprResult(ok=True, formula=formula, materialized=self.policy.materialized, warnings=self.warnings)
+        return ExprResult(ok=True, expression=formula, materialized=self.policy.materialized, warnings=self.warnings)
 
     def _residual_names(self, tree: exp.Expr) -> list[exp.Column]:
         """Columns outside every aggregate that the policy reads as measures."""
@@ -550,7 +550,7 @@ class _Translator:
         return out
 
     def _fail(self, reason: str) -> ExprResult:
-        return ExprResult(ok=False, formula=None, reason=reason, materialized=[], warnings=self.warnings)
+        return ExprResult(ok=False, expression=None, reason=reason, materialized=[], warnings=self.warnings)
 
 
 def convert_aggregates(
@@ -568,8 +568,8 @@ def convert_aggregates(
     else:
         tree = expr.copy()
     result = translator.convert(tree)
-    if result.ok and result.formula is not None and (
-            refusal := formula_refusal(result.formula, dialect=sql_dialect)) is not None:
+    if result.ok and result.expression is not None and (
+            refusal := expression_refusal(result.expression, dialect=sql_dialect)) is not None:
         return translator._fail(refusal)
     return result
 

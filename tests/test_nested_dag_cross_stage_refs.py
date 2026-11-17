@@ -15,11 +15,11 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    SlayerModel,
-    SourceModelOrigin,
+    DatasetRelationship,
+    SlayerDataset,
+    SourceDatasetOrigin,
 )
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -36,60 +36,60 @@ def _ds() -> DatasourceConfig:
     return DatasourceConfig(name="test_ds", type="sqlite", database=":memory:")
 
 
-def _countries_model() -> SlayerModel:
-    return SlayerModel(
+def _countries_model() -> SlayerDataset:
+    return SlayerDataset(
         name="countries",
         sql_table="countries",
         data_source="test_ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
         ],
     )
 
 
-def _regions_model() -> SlayerModel:
-    return SlayerModel(
+def _regions_model() -> SlayerDataset:
+    return SlayerDataset(
         name="regions",
         sql_table="regions",
         data_source="test_ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
-            Column(name="country_id", sql="country_id", type=DataType.DOUBLE),
-            Column(name="last_activity_at", sql="last_activity_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
+            DatasetField(name="country_id", sql="country_id", datatype=DataType.DOUBLE),
+            DatasetField(name="last_activity_at", sql="last_activity_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[ModelJoin(target_model="countries", join_pairs=[["country_id", "id"]])],
+        relationships=[DatasetRelationship(to="countries", join_pairs=[["country_id", "id"]])],
     )
 
 
-def _customers_model() -> SlayerModel:
-    return SlayerModel(
+def _customers_model() -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         sql_table="customers",
         data_source="test_ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="region_id", sql="region_id", type=DataType.DOUBLE),
-            Column(name="revenue", sql="revenue", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="region_id", sql="region_id", datatype=DataType.DOUBLE),
+            DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="test_ds",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
@@ -98,10 +98,10 @@ async def _engine_with_join_chain() -> tuple[SlayerQueryEngine, tempfile.Tempora
     tmp = tempfile.TemporaryDirectory()
     storage = YAMLStorage(base_dir=tmp.name)
     await storage.save_datasource(_ds())
-    await storage.save_model(_countries_model())
-    await storage.save_model(_regions_model())
-    await storage.save_model(_customers_model())
-    await storage.save_model(_orders_model())
+    await storage.save_dataset(_countries_model())
+    await storage.save_dataset(_regions_model())
+    await storage.save_dataset(_customers_model())
+    await storage.save_dataset(_orders_model())
     engine = SlayerQueryEngine(storage=storage)
     return engine, tmp
 
@@ -148,10 +148,10 @@ async def _engine_with_real_sqlite(
     await storage.save_datasource(
         DatasourceConfig(name="test_ds", type="sqlite", database=str(db_path))
     )
-    await storage.save_model(_countries_model())
-    await storage.save_model(_regions_model())
-    await storage.save_model(_customers_model())
-    await storage.save_model(_orders_model())
+    await storage.save_dataset(_countries_model())
+    await storage.save_dataset(_regions_model())
+    await storage.save_dataset(_customers_model())
+    await storage.save_dataset(_orders_model())
     return SlayerQueryEngine(storage=storage)
 
 
@@ -236,14 +236,14 @@ class TestReportedCase:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
+                "population": "s1",
                 "dimensions": ["customers__regions__name"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -279,14 +279,14 @@ class TestReportedCase:
         engine = await _engine_with_real_sqlite(tmp_path)
         inner = SlayerQuery.model_validate({
             "name": "s1",
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.regions.name"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"formula": "count(*)"}],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "s1",
+            "population": "s1",
             "dimensions": ["customers__regions__name"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"formula": "count(*)"}],
         })
         resp = await engine.execute(query=[inner, outer])
         # Three distinct regions in the seed → three rows.
@@ -306,14 +306,14 @@ class TestThreeHopDimension:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.countries.name"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
+                "population": "s1",
                 "dimensions": ["customers__regions__countries__name"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -348,18 +348,18 @@ class TestCrossStageTimeDimension:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "time_dimensions": [TimeDimension(
-                    dimension="customers.regions.last_activity_at",
+                    field="customers.regions.last_activity_at",
                     granularity=TimeGranularity.MONTH,
                 )],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
             })
-            outer = SlayerQuery.model_validate({"source_model": "s1", "time_dimensions": [TimeDimension(
+            outer = SlayerQuery.model_validate({"population": "s1", "time_dimensions": [TimeDimension(
                     # Typed contract: flat downstream alias.
-                    dimension="customers__regions__last_activity_at",
+                    field="customers__regions__last_activity_at",
                     granularity=TimeGranularity.MONTH,
-                )], "measures": [{"formula": "count(*)"}]})
+                )], "metrics": [{"formula": "count(*)"}]})
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
             outer_tables = _outer_tables_referenced(sql)
@@ -391,13 +391,13 @@ class TestCrossStageCrossModelMeasure:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "metrics": [{"formula": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
-                "measures": [{"formula": "sum(customers__revenue_sum)"}],
+                "population": "s1",
+                "metrics": [{"formula": "sum(customers__revenue_sum)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -424,13 +424,13 @@ class TestCrossStageCrossModelMeasure:
         engine = await _engine_with_real_sqlite(tmp_path)
         inner = SlayerQuery.model_validate({
             "name": "s1",
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.regions.name"],
-            "measures": [{"formula": "sum(customers.revenue)"}],
+            "metrics": [{"formula": "sum(customers.revenue)"}],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "s1",
-            "measures": [{"formula": "sum(customers__revenue_sum)"}],
+            "population": "s1",
+            "metrics": [{"formula": "sum(customers__revenue_sum)"}],
         })
         resp = await engine.execute(query=[inner, outer])
         assert resp.row_count == 1, f"got {resp.row_count} rows: {resp.data}"
@@ -459,15 +459,15 @@ class TestCrossStageFilter:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
+                "population": "s1",
                 "dimensions": ["customers__regions__name"],
-                "measures": [{"formula": "count(*)"}],
-                "filters": ["customers__regions__name = 'West'"],
+                "metrics": [{"formula": "count(*)"}],
+                "filter": ["customers__regions__name = 'West'"],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -497,15 +497,15 @@ class TestCrossStageFilter:
         engine = await _engine_with_real_sqlite(tmp_path)
         inner = SlayerQuery.model_validate({
             "name": "s1",
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.regions.name"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"formula": "count(*)"}],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "s1",
+            "population": "s1",
             "dimensions": ["customers__regions__name"],
-            "measures": [{"formula": "count(*)"}],
-            "filters": ["customers__regions__name = 'West'"],
+            "metrics": [{"formula": "count(*)"}],
+            "filter": ["customers__regions__name = 'West'"],
         })
         resp = await engine.execute(query=[inner, outer])
         assert resp.row_count == 1, f"got {resp.row_count} rows: {resp.data}"
@@ -523,14 +523,14 @@ class TestCrossStageOrderBy:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
+                "population": "s1",
                 "dimensions": ["customers__regions__name"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
                 "order": [{"column": "customers__regions__name"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -565,14 +565,14 @@ class TestCrossStageOrderBy:
         engine = await _engine_with_real_sqlite(tmp_path)
         inner = SlayerQuery.model_validate({
             "name": "s1",
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.regions.name"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"formula": "count(*)"}],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "s1",
+            "population": "s1",
             "dimensions": ["customers__regions__name"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"formula": "count(*)"}],
             "order": [{"column": "customers__regions__name"}],
         })
         resp = await engine.execute(query=[inner, outer])
@@ -592,14 +592,14 @@ class TestShortAliasRegression:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
+                "population": "s1",
                 "dimensions": ["customers__regions__name"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -625,9 +625,9 @@ class TestNonVirtualModel:
         engine, tmp = await _engine_with_join_chain()
         try:
             single = SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
             })
             resp = await engine.execute(single, dry_run=True)
             sql = resp.sql or ""
@@ -661,13 +661,13 @@ class TestRenamedInnerMeasureCrossStage:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+                "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "population": "s1",
+                "metrics": [{"formula": "sum(customers.revenue)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             _assert_reads_unrelated_customers(resp)
@@ -683,11 +683,11 @@ class TestRenamedInnerMeasureCrossStage:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+                "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
             })
-            outer = SlayerQuery.model_validate({"source_model": "s1", "measures": [{"formula": "sum(rev)"}]})
+            outer = SlayerQuery.model_validate({"population": "s1", "metrics": [{"formula": "sum(rev)"}]})
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
             outer_select = _outermost_select(sql)
@@ -719,21 +719,21 @@ class TestCrossStageTimeShift:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "time_dimensions": [TimeDimension(
-                    dimension="customers.regions.last_activity_at",
+                    field="customers.regions.last_activity_at",
                     granularity=TimeGranularity.MONTH,
                 )],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
             })
             outer = SlayerQuery(
-                source_model="s1",
+                population="s1",
                 time_dimensions=[TimeDimension(
                     # Typed contract: downstream flat alias.
-                    dimension="customers__regions__last_activity_at",
+                    field="customers__regions__last_activity_at",
                     granularity=TimeGranularity.MONTH,
                 )],
-                measures=[
+                metrics=[
                     {"formula": "count(*)"},
                     {"formula": "time_shift(count(*), -1, 'month')", "name": "prev"},
                 ],
@@ -777,21 +777,21 @@ class TestSerializationRoundtripStripsBreadcrumb:
         tmp = tempfile.TemporaryDirectory()
         storage = YAMLStorage(base_dir=tmp.name)
         await storage.save_datasource(_ds())
-        m = SlayerModel(
+        m = SlayerDataset(
             name="virtual_test",
             sql="SELECT 1 AS one",
             data_source="test_ds",
-            columns=[Column(name="one", sql="one", type=DataType.DOUBLE)],
-            source_model_origin=SourceModelOrigin(
+            fields=[DatasetField(name="one", sql="one", datatype=DataType.DOUBLE)],
+            source_dataset_origin=SourceDatasetOrigin(
                 name="upstream", data_source="test_ds",
             ),
         )
-        await storage.save_model(m)
-        loaded = await storage.get_model("virtual_test", data_source="test_ds")
+        await storage.save_dataset(m)
+        loaded = await storage.get_dataset("virtual_test", data_source="test_ds")
         try:
-            assert loaded.source_model_origin is None, (
+            assert loaded.source_dataset_origin is None, (
                 f"YAML roundtrip must drop source_model_origin. "
-                f"Got: {loaded.source_model_origin}"
+                f"Got: {loaded.source_dataset_origin}"
             )
         finally:
             tmp.cleanup()
@@ -802,20 +802,20 @@ class TestSerializationRoundtripStripsBreadcrumb:
         db_path = tmp_path / "slayer.db"
         storage = SQLiteStorage(db_path=str(db_path))
         await storage.save_datasource(_ds())
-        m = SlayerModel(
+        m = SlayerDataset(
             name="virtual_test",
             sql="SELECT 1 AS one",
             data_source="test_ds",
-            columns=[Column(name="one", sql="one", type=DataType.DOUBLE)],
-            source_model_origin=SourceModelOrigin(
+            fields=[DatasetField(name="one", sql="one", datatype=DataType.DOUBLE)],
+            source_dataset_origin=SourceDatasetOrigin(
                 name="upstream", data_source="test_ds",
             ),
         )
-        await storage.save_model(m)
-        loaded = await storage.get_model("virtual_test", data_source="test_ds")
-        assert loaded.source_model_origin is None, (
+        await storage.save_dataset(m)
+        loaded = await storage.get_dataset("virtual_test", data_source="test_ds")
+        assert loaded.source_dataset_origin is None, (
             f"SQLite roundtrip must drop source_model_origin. "
-            f"Got: {loaded.source_model_origin}"
+            f"Got: {loaded.source_dataset_origin}"
         )
 
 
@@ -827,7 +827,7 @@ class TestNoSpuriousBreadcrumb:
         """A real table-backed `SlayerModel` constructed normally has
         `source_model_origin is None`."""
         m = _orders_model()
-        assert m.source_model_origin is None
+        assert m.source_dataset_origin is None
 
 
 # ===========================================================================
@@ -847,13 +847,13 @@ class TestCrossModelStarCountCrossStage:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "count(customers.*)"}],
+                "metrics": [{"formula": "count(customers.*)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
-                "measures": [{"formula": "sum(customers___count)"}],
+                "population": "s1",
+                "metrics": [{"formula": "sum(customers___count)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -902,13 +902,13 @@ class TestCrossModelInterceptSemanticsGate:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "avg(customers.revenue)"}],
+                "metrics": [{"formula": "avg(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
-                "measures": [{"formula": "avg(customers.revenue)"}],
+                "population": "s1",
+                "metrics": [{"formula": "avg(customers.revenue)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             _assert_reads_unrelated_customers(resp)
@@ -922,13 +922,13 @@ class TestCrossModelInterceptSemanticsGate:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "count_distinct(customers.revenue)"}],
+                "metrics": [{"formula": "count_distinct(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
-                "measures": [{"formula": "count_distinct(customers.revenue)"}],
+                "population": "s1",
+                "metrics": [{"formula": "count_distinct(customers.revenue)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             _assert_reads_unrelated_customers(resp)
@@ -943,13 +943,13 @@ class TestCrossModelInterceptSemanticsGate:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "metrics": [{"formula": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
-                "measures": [{"formula": "sum(customers__revenue_sum)"}],
+                "population": "s1",
+                "metrics": [{"formula": "sum(customers__revenue_sum)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -981,13 +981,13 @@ class TestCrossModelInterceptRenameBookkeeping:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "metrics": [{"formula": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
-                "measures": [{"formula": "sum(customers__revenue_sum)", "name": "rev"}],
+                "population": "s1",
+                "metrics": [{"formula": "sum(customers__revenue_sum)", "name": "rev"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -1009,14 +1009,14 @@ class TestCrossModelInterceptRenameBookkeeping:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "metrics": [{"formula": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
-                "measures": [{"formula": "sum(customers__revenue_sum)", "name": "rev"}],
-                "filters": ["sum(customers__revenue_sum) > 100"],
+                "population": "s1",
+                "metrics": [{"formula": "sum(customers__revenue_sum)", "name": "rev"}],
+                "filter": ["sum(customers__revenue_sum) > 100"],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             sql = resp.sql or ""
@@ -1078,18 +1078,18 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         try:
             s1 = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "metrics": [{"formula": "sum(customers.revenue)"}],
             })
             s2 = SlayerQuery.model_validate({
                 "name": "s2",
-                "source_model": "s1",
-                "measures": [{"formula": "sum(customers__revenue_sum)"}],
+                "population": "s1",
+                "metrics": [{"formula": "sum(customers__revenue_sum)"}],
             })
             s3 = SlayerQuery.model_validate({
-                "source_model": "s2",
-                "measures": [{"formula": "sum(customers__revenue_sum_sum)"}],
+                "population": "s2",
+                "metrics": [{"formula": "sum(customers__revenue_sum_sum)"}],
             })
             resp = await engine.execute(query=[s1, s2, s3], dry_run=True)
             assert resp.sql is not None, "3-stage DAG must render SQL"
@@ -1129,9 +1129,9 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
             # `sum(customers.revenue)` cross-model measure projected.
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "sum(amount)", "name": "customers__revenue_sum"}],
+                "metrics": [{"formula": "sum(amount)", "name": "customers__revenue_sum"}],
             })
             # Outer references `sum(customers.revenue)` — the intercept
             # candidate computes `customers__revenue_sum` and the
@@ -1140,8 +1140,8 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
             # measure). The intercept must skip it: `customers`, which no
             # join path reaches from s1, is aggregated over its own rows.
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "population": "s1",
+                "metrics": [{"formula": "sum(customers.revenue)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             _assert_reads_unrelated_customers(resp)
@@ -1165,14 +1165,14 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "metrics": [{"formula": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
-                "measures": [{"formula": "sum(customers.revenue)"}],
-                "filters": ["sum(customers.revenue) > 100"],
+                "population": "s1",
+                "metrics": [{"formula": "sum(customers.revenue)"}],
+                "filter": ["sum(customers.revenue) > 100"],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
             _assert_reads_unrelated_customers(resp)
@@ -1192,14 +1192,14 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "metrics": [{"formula": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
+                "population": "s1",
                 "dimensions": ["customers__regions__name"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
                 "order": [{"column": "max(customers__revenue_sum)"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -1247,14 +1247,14 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "metrics": [{"formula": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery.model_validate({
-                "source_model": "s1",
+                "population": "s1",
                 "dimensions": ["customers__regions__name"],
-                "measures": [{"formula": "count(*)"}],
+                "metrics": [{"formula": "count(*)"}],
                 "order": [{"column": "customers__revenue_sum"}],
             })
             resp = await engine.execute(query=[inner, outer], dry_run=True)
@@ -1282,12 +1282,12 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "metrics": [{"formula": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery(
-                source_model="s1",
+                population="s1",
                 dimensions=["customers__regions__name"],
                 distinct_dimension_values=False,
                 order=[{"column": "customers__revenue_sum"}],
@@ -1324,12 +1324,12 @@ class TestCrossModelInterceptDuplicateQfieldGuard:
         try:
             inner = SlayerQuery.model_validate({
                 "name": "s1",
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.regions.name"],
-                "measures": [{"formula": "sum(customers.revenue)"}],
+                "metrics": [{"formula": "sum(customers.revenue)"}],
             })
             outer = SlayerQuery(
-                source_model="s1",
+                population="s1",
                 dimensions=["customers__regions__name"],
                 distinct_dimension_values=False,
                 order=[{"column": "s1.customers__revenue_sum"}],
@@ -1392,13 +1392,13 @@ class TestInterceptRename:
         engine = await _engine_with_real_sqlite(tmp_path)
         inner = SlayerQuery.model_validate({
             "name": "s1",
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.regions.name"],
-            "measures": [{"formula": "sum(customers.revenue)"}],
+            "metrics": [{"formula": "sum(customers.revenue)"}],
         })
         outer = SlayerQuery(
-            source_model="s1",
-            measures=[
+            population="s1",
+            metrics=[
                 {"formula": "sum(customers__revenue_sum) / count(*)", "name": "avg_rev"},
                 {"formula": "sum(customers__revenue_sum)", "name": "cust_rev"},
             ],

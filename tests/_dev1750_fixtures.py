@@ -32,12 +32,12 @@ from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._engine_helpers import seeded_exec_engine
 
@@ -48,81 +48,81 @@ from tests._engine_helpers import _engine_generate, _extract_cte_body
 # --------------------------------------------------------------------------- #
 # Models — orders (host) → customers → regions.
 # --------------------------------------------------------------------------- #
-def regions_model() -> SlayerModel:
-    return SlayerModel(
+def regions_model() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="weight", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="weight", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def customers_model() -> SlayerModel:
+def customers_model() -> SlayerDataset:
     """``customers`` carries ``spend`` (the target-grain measure for shape (c))
     and a ``signup_at`` a first/last explicit time arg can rank by."""
-    return SlayerModel(
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="spend", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])],
+        relationships=[DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])],
     )
 
 
-def line_items_model() -> SlayerModel:
+def line_items_model() -> SlayerDataset:
     """A 1:N child of ``orders`` (each order has several line items). The
     ``liscaled_sum`` fragment crosses this ONE-TO-MANY join, so a wrong host-base
     isolation would fan the join out and MULTIPLY sibling measures — which is
     what the sibling-protection execution test detects (Codex F1)."""
-    return SlayerModel(
+    return SlayerDataset(
         name="line_items", data_source="test", sql_table="line_items",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="order_id", type=DataType.INT),
-            Column(name="factor", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INT),
+            DatasetField(name="factor", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def orders_model() -> SlayerModel:
+def orders_model() -> SlayerDataset:
     """Host model. ``wscaled_sum`` is declared HERE with a default param crossing
     two hops (``customers__regions.weight``), so ``wscaled_sum(amount)`` is the
     host-rooted crossing-fragment aggregate (shape (b)). ``liscaled_sum`` crosses
     the 1:N ``line_items`` join for the sibling-protection fan-out proof."""
-    return SlayerModel(
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
-            ModelJoin(target_model="line_items", join_pairs=[["id", "order_id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
+            DatasetRelationship(to="line_items", join_pairs=[["id", "order_id"]]),
         ],
         aggregations=[
             Aggregation(
-                name="wscaled_sum", formula="SUM({value} * {w})",
+                name="wscaled_sum", expression="SUM({value} * {w})",
                 params=[AggregationParam(
                     name="w", sql="customers.regions.weight",
                 )],
             ),
             Aggregation(
-                name="liscaled_sum", formula="SUM({value} * {f})",
+                name="liscaled_sum", expression="SUM({value} * {f})",
                 params=[AggregationParam(name="f", sql="line_items.factor")],
             ),
         ],
     )
 
 
-def dev1750_models() -> List[SlayerModel]:
+def dev1750_models() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
     return [orders_model(), customers_model(), regions_model(), line_items_model()]
 
@@ -140,7 +140,7 @@ async def gen(query: SlayerQuery, *, dialect: str = "duckdb") -> str:
 
 def month_td(column: str = "ordered_at") -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=column,
+        field=column,
         granularity=TimeGranularity.MONTH,
     )]
 
@@ -292,6 +292,6 @@ def rows_by(resp, *keys) -> dict:
 __all__ = [
     "orders_model", "customers_model", "regions_model", "dev1750_models",
     "gen", "month_td", "shifted_cte_body", "shifted_relation", "base_cte_body", "cte_names",
-    "make_exec_engine", "month_key", "rows_by", "SlayerQuery", "ModelMeasure",
-    "ColumnRef", "TimeDimension", "TimeGranularity",
+    "make_exec_engine", "month_key", "rows_by", "SlayerQuery", "DatasetMetric",
+    "FieldRef", "TimeDimension", "TimeGranularity",
 ]

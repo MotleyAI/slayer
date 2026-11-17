@@ -9,19 +9,19 @@ from pydantic import ValidationError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import AggregationNotAllowedError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.plan import plan_query
 from slayer.engine.profiling import (
     _is_sample_cached,
     ensure_samples_fresh,
-    refresh_table_backed_model_sampled,
+    refresh_table_backed_dataset_sampled,
 )
 from slayer.facade.catalog import _eligible_aggregations
-from slayer.inspect.model_render import (
+from slayer.inspect.dataset_render import (
     _build_sample_query_args,
     _choose_sample_dims,
-    render_model_inspection,
+    render_dataset_inspection,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.storage.migrations import CURRENT_VERSIONS
@@ -32,46 +32,46 @@ from slayer.engine.query_engine import SlayerQueryEngine
 COMPOSITE_MEMBERS = {"order_id", "line_no", "status"}
 
 
-def order_lines(*, line_no_aggs=None) -> SlayerModel:
+def order_lines(*, line_no_aggs=None) -> SlayerDataset:
     """Composite primary key ``(order_id, line_no, status)`` over the seeded ``orders`` table."""
-    return SlayerModel(
+    return SlayerDataset(
         name="order_lines", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="order_id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="line_no", sql="customer_id", type=DataType.INT, primary_key=True,
+        fields=[
+            DatasetField(name="order_id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="line_no", sql="customer_id", datatype=DataType.INT, primary_key=True,
                    allowed_aggregations=line_no_aggs),
-            Column(name="status", type=DataType.TEXT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def codes() -> SlayerModel:
+def codes() -> SlayerDataset:
     """Sole TEXT primary key ``code``."""
-    return SlayerModel(
+    return SlayerDataset(
         name="codes", data_source="test", sql_table="segments",
-        columns=[
-            Column(name="code", type=DataType.TEXT, primary_key=True),
-            Column(name="label", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="code", datatype=DataType.TEXT, primary_key=True),
+            DatasetField(name="label", datatype=DataType.TEXT),
         ],
     )
 
 
-def _plan(*, model: SlayerModel, formula: str) -> None:
+def _plan(*, model: SlayerDataset, formula: str) -> None:
     query = SlayerQuery.model_validate({
-        "source_model": model.name, "measures": [{"formula": formula, "name": "m"}],
+        "population": model.name, "metrics": [{"formula": formula, "name": "m"}],
     })
-    plan_query(query=query, bundle=ResolvedSourceBundle(source_model=model, referenced_models=[model], dialect="postgres"))
+    plan_query(query=query, bundle=ResolvedSourceBundle(population=model, referenced_datasets=[model], dialect="postgres"))
 
 
-def _col(*, model: SlayerModel, name: str) -> Column:
-    return next(c for c in model.columns if c.name == name)
+def _col(*, model: SlayerDataset, name: str) -> DatasetField:
+    return next(c for c in model.fields if c.name == name)
 
 
-async def _sampled(*, model: SlayerModel, engine, names: tuple[str, ...] | None = None) -> dict[str, str | None]:
+async def _sampled(*, model: SlayerDataset, engine, names: tuple[str, ...] | None = None) -> dict[str, str | None]:
     """Profile ``model`` (or just ``names``) through the owner; ``{column: sampled}``."""
-    cols = [c for c in model.columns if names is None or c.name in names]
-    outcome = await ensure_samples_fresh(model=model, columns=cols, engine=engine, storage=engine.storage)
+    cols = [c for c in model.fields if names is None or c.name in names]
+    outcome = await ensure_samples_fresh(dataset=model, fields=cols, engine=engine, storage=engine.storage)
     return {c.name: c.sampled for c in outcome.columns}
 
 
@@ -100,16 +100,16 @@ class TestAllowedAggregationsValidator:
         assert _col(model=order_lines(line_no_aggs=["sum"]), name="line_no").allowed_aggregations == ["sum"]
 
     def test_sole_primary_key_may_declare_max(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t", data_source="test", sql_table="t",
-            columns=[Column(name="id", type=DataType.INT, primary_key=True, allowed_aggregations=["max"])],
+            fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True, allowed_aggregations=["max"])],
         )
         assert _col(model=model, name="id").allowed_aggregations == ["max"]
 
     def test_sole_primary_key_still_refuses_sum(self) -> None:
-        columns = [Column(name="id", type=DataType.INT, primary_key=True, allowed_aggregations=["sum"])]
+        columns = [DatasetField(name="id", datatype=DataType.INT, primary_key=True, allowed_aggregations=["sum"])]
         with pytest.raises(ValidationError):
-            SlayerModel(name="t", data_source="test", sql_table="t", columns=columns)
+            SlayerDataset(name="t", data_source="test", sql_table="t", fields=columns)
 
     @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
     async def test_sole_primary_key_may_declare_collect(self, tmp_path, backend: str) -> None:
@@ -118,29 +118,29 @@ class TestAllowedAggregationsValidator:
                             "allowed_aggregations": ["count", "collect"]}]}
         storage = await raw_store(backend=backend, base=str(tmp_path), models=[doc],
                                   datasource=DatasourceConfig(name=DS, type="duckdb", database=":memory:"))
-        loaded = await storage.get_model("stored", data_source=DS)
+        loaded = await storage.get_dataset("stored", data_source=DS)
         assert loaded is not None
         assert _col(model=loaded, name="id").allowed_aggregations == ["count", "collect"]
-        saved = SlayerModel(name="saved", data_source=DS, sql_table="t", columns=[
-            Column(name="id", type=DataType.INT, primary_key=True, allowed_aggregations=["count", "collect"])])
-        await storage.save_model(saved)
-        assert await storage.get_model("saved", data_source=DS) is not None
+        saved = SlayerDataset(name="saved", data_source=DS, sql_table="t", fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True, allowed_aggregations=["count", "collect"])])
+        await storage.save_dataset(saved)
+        assert await storage.get_dataset("saved", data_source=DS) is not None
 
 
 class TestCatalogEligibility:
     def test_composite_member_gets_type_defaults(self) -> None:
         model = order_lines()
-        assert "sum" in _eligible_aggregations(column=_col(model=model, name="line_no"), model=model)
+        assert "sum" in _eligible_aggregations(field=_col(model=model, name="line_no"), dataset=model)
 
     def test_sole_primary_key_gets_count_family_and_min_max(self) -> None:
         model = orders_model()
-        eligible = _eligible_aggregations(column=_col(model=model, name="id"), model=model)
+        eligible = _eligible_aggregations(field=_col(model=model, name="id"), dataset=model)
         assert {"count", "count_distinct", "min", "max"} <= eligible
         assert "sum" not in eligible
 
     def test_sole_primary_key_gets_collect(self) -> None:
         model = orders_model()
-        assert "collect" in _eligible_aggregations(column=_col(model=model, name="id"), model=model)
+        assert "collect" in _eligible_aggregations(field=_col(model=model, name="id"), dataset=model)
 
 
 class TestInspectSampling:
@@ -153,27 +153,27 @@ class TestInspectSampling:
         assert dims == [{"name": "label"}]
 
     def test_composite_members_are_sample_measures(self) -> None:
-        formulas = [m["formula"] for m in _build_sample_query_args(model=order_lines(), num_rows=3)["measures"]]
+        formulas = [m["formula"] for m in _build_sample_query_args(dataset=order_lines(), num_rows=3)["measures"]]
         assert any("(order_id)" in f for f in formulas)
         assert any("(line_no)" in f for f in formulas)
 
     def test_sole_primary_key_is_not_a_sample_measure(self) -> None:
-        formulas = [m["formula"] for m in _build_sample_query_args(model=orders_model(), num_rows=3)["measures"]]
+        formulas = [m["formula"] for m in _build_sample_query_args(dataset=orders_model(), num_rows=3)["measures"]]
         assert not any("(id)" in f for f in formulas)
 
     def test_composite_member_sample_cache_is_checked(self) -> None:
         model = order_lines()
-        assert not _is_sample_cached(column=_col(model=model, name="status"), model=model)
+        assert not _is_sample_cached(field=_col(model=model, name="status"), dataset=model)
 
     def test_sole_primary_key_counts_as_cached(self) -> None:
         model = codes()
-        assert _is_sample_cached(column=_col(model=model, name="code"), model=model)
+        assert _is_sample_cached(field=_col(model=model, name="code"), dataset=model)
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
 async def engine(request):
     async for eng in make_exec_engine(request):
-        await eng.storage.save_model(order_lines(), _validate=False)
+        await eng.storage.save_dataset(order_lines(), _validate=False)
         yield eng
 
 
@@ -212,20 +212,20 @@ class TestProbingAndProfiling:
         assert profile["id"] is None
 
     async def test_refresh_samples_composite_members(self, engine: SlayerQueryEngine) -> None:
-        errors = await refresh_table_backed_model_sampled(
-            model=order_lines(), engine=engine, storage=engine.storage,
+        errors = await refresh_table_backed_dataset_sampled(
+            dataset=order_lines(), engine=engine, storage=engine.storage,
         )
         assert errors == []
-        stored = await engine.storage.get_model("order_lines")
+        stored = await engine.storage.get_dataset("order_lines")
         assert stored is not None
         assert all(_col(model=stored, name=n).sampled is not None for n in COMPOSITE_MEMBERS)
 
     async def test_refresh_skips_sole_primary_key(self, engine: SlayerQueryEngine) -> None:
-        errors = await refresh_table_backed_model_sampled(
-            model=orders_model(), engine=engine, storage=engine.storage,
+        errors = await refresh_table_backed_dataset_sampled(
+            dataset=orders_model(), engine=engine, storage=engine.storage,
         )
         assert errors == []
-        stored = await engine.storage.get_model("orders")
+        stored = await engine.storage.get_dataset("orders")
         assert stored is not None
         assert _col(model=stored, name="id").sampled is None
         assert _col(model=stored, name="amount").sampled is not None
@@ -233,8 +233,8 @@ class TestProbingAndProfiling:
     async def test_inspect_samples_composite_members_not_sole_primary_key(self, engine) -> None:
         rendered = {}
         for model in (order_lines(), orders_model()):
-            out = await render_model_inspection(
-                model=model, storage=engine.storage, engine=engine, format="json",
+            out = await render_dataset_inspection(
+                dataset=model, storage=engine.storage, engine=engine, format="json",
             )
             rendered[model.name] = {c["name"]: c["sampled"] for c in json.loads(out)["columns"]}
         assert all(rendered["order_lines"][n] is not None for n in COMPOSITE_MEMBERS)

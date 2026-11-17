@@ -11,13 +11,13 @@ import pytest
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    SlayerModel,
+    DatasetRelationship,
+    SlayerDataset,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.live_schema.schema_drift import DriftReportEntry, EditModelDelete, WholeModelDelete
+from slayer.live_schema.schema_drift import DriftReportEntry, EditDatasetDelete, WholeDatasetDelete
 from slayer.storage.yaml_storage import YAMLStorage
 from typing import Any
 
@@ -76,61 +76,61 @@ def duckdb_drift_env(tmp_path):
         )
     )
     run_sync(
-        storage.save_model(
-            SlayerModel(
+        storage.save_dataset(
+            SlayerDataset(
                 name="customers",
                 sql_table="customers",
                 data_source="dduckdb",
-                columns=[
-                    Column(
-                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+                fields=[
+                    DatasetField(
+                        name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
                     ),
-                    Column(name="region", sql="region", type=DataType.TEXT),
+                    DatasetField(name="region", sql="region", datatype=DataType.TEXT),
                 ],
             )
         )
     )
     run_sync(
-        storage.save_model(
-            SlayerModel(
+        storage.save_dataset(
+            SlayerDataset(
                 name="products",
                 sql_table="products",
                 data_source="dduckdb",
-                columns=[
-                    Column(
-                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+                fields=[
+                    DatasetField(
+                        name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
                     ),
-                    Column(name="sku", sql="sku", type=DataType.TEXT),
-                    Column(
+                    DatasetField(name="sku", sql="sku", datatype=DataType.TEXT),
+                    DatasetField(
                         name="description",
                         sql="description",
-                        type=DataType.TEXT,
+                        datatype=DataType.TEXT,
                     ),
                 ],
             )
         )
     )
     run_sync(
-        storage.save_model(
-            SlayerModel(
+        storage.save_dataset(
+            SlayerDataset(
                 name="orders",
                 sql_table="orders",
                 data_source="dduckdb",
-                columns=[
-                    Column(
-                        name="id", sql="id", type=DataType.DOUBLE, primary_key=True
+                fields=[
+                    DatasetField(
+                        name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True
                     ),
-                    Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                    Column(name="status", sql="status", type=DataType.TEXT),
-                    Column(
+                    DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                    DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                    DatasetField(
                         name="customer_id",
                         sql="customer_id",
-                        type=DataType.DOUBLE,
+                        datatype=DataType.DOUBLE,
                     ),
                 ],
-                joins=[
-                    ModelJoin(
-                        target_model="customers",
+                relationships=[
+                    DatasetRelationship(
+                        to="customers",
                         join_pairs=[["customer_id", "id"]],
                     ),
                 ],
@@ -143,14 +143,14 @@ def duckdb_drift_env(tmp_path):
 
 def _find(name: str, entries: list[DriftReportEntry]) -> DriftReportEntry | None:
     for e in entries:
-        if e.model_name == name:
+        if e.dataset_name == name:
             return e
     return None
 
 
 async def test_no_drift_returns_empty(duckdb_drift_env: tuple[SlayerQueryEngine, Any]) -> None:
     engine, _ = duckdb_drift_env
-    result = await engine.validate_models(data_source="dduckdb")
+    result = await engine.validate_datasets(data_source="dduckdb")
     assert result == []
 
 
@@ -158,8 +158,8 @@ async def test_sql_model_typed_columns_do_not_report_false_drift(
     duckdb_drift_env: tuple[SlayerQueryEngine, Any],
 ) -> None:
     engine, _ = duckdb_drift_env
-    await engine.storage.save_model(
-        SlayerModel(
+    await engine.storage.save_dataset(
+        SlayerDataset(
             name="typed_sql",
             data_source="dduckdb",
             sql=(
@@ -167,16 +167,16 @@ async def test_sql_model_typed_columns_do_not_report_false_drift(
                 "TIMESTAMP '2026-01-02 03:04:05' AS occurred_at, "
                 "'ok'::VARCHAR AS label"
             ),
-            columns=[
-                Column(name="qty", type=DataType.INT),
-                Column(name="active", type=DataType.BOOLEAN),
-                Column(name="occurred_at", type=DataType.TIMESTAMP),
-                Column(name="label", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="qty", datatype=DataType.INT),
+                DatasetField(name="active", datatype=DataType.BOOLEAN),
+                DatasetField(name="occurred_at", datatype=DataType.TIMESTAMP),
+                DatasetField(name="label", datatype=DataType.TEXT),
             ],
         )
     )
 
-    result = await engine.validate_models(data_source="dduckdb")
+    result = await engine.validate_datasets(data_source="dduckdb")
 
     assert result == []
 
@@ -190,10 +190,10 @@ async def test_drop_column_yields_edit_model_delete(duckdb_drift_env: tuple[Slay
     conn.execute("ALTER TABLE products DROP COLUMN description")
     conn.close()
 
-    result = await engine.validate_models(data_source="dduckdb")
+    result = await engine.validate_datasets(data_source="dduckdb")
     entry = _find("products", result)
-    assert isinstance(entry, EditModelDelete)
-    assert "description" in entry.remove.columns
+    assert isinstance(entry, EditDatasetDelete)
+    assert "description" in entry.remove.fields
 
 
 async def test_drop_table_yields_whole_model_delete(duckdb_drift_env: tuple[SlayerQueryEngine, Any]) -> None:
@@ -202,6 +202,6 @@ async def test_drop_table_yields_whole_model_delete(duckdb_drift_env: tuple[Slay
     conn.execute("DROP TABLE products")
     conn.close()
 
-    result = await engine.validate_models(data_source="dduckdb")
+    result = await engine.validate_datasets(data_source="dduckdb")
     entry = _find("products", result)
-    assert isinstance(entry, WholeModelDelete)
+    assert isinstance(entry, WholeDatasetDelete)

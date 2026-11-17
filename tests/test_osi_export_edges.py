@@ -58,4 +58,4 @@ async def test_single_field_unique_key_marks_the_column_unique(env) -> None:
     doc = flat([ds("customers", fields=[f("id", "c_custkey"), f("email"), f("segment")], primary_key=["id"],
                    unique_keys=[["email"], ["segment", "email"]])])
     imported = by_name(convert_document(env, doc))["customers"]
-    assert {c.name: c.unique for c in imported.columns} == {"id": False, "email": True, "segment": False}
+    assert {c.name: c.unique for c in imported.fields} == {"id": False, "email": True, "segment": False}

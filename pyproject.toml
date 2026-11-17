@@ -169,7 +169,7 @@ typeCheckingMode = "basic"
 pythonVersion = "3.11"
 reportDeprecated = "error"
 include = ["slayer", "tests"]
-exclude = ["slayer/flight/_flight_sql_pb2.py"]
+exclude = ["slayer/flight/_flight_sql_pb2.py", "tests/fixtures/upgrade/*/generate.py"]
 
 [tool.ruff]
 target-version = "py311"

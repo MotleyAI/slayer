@@ -13,8 +13,8 @@ import pytest
 from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
-from slayer.core.errors import AmbiguousModelError
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.errors import AmbiguousDatasetError
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.embeddings import client as embedding_client
 from slayer.engine.population.inference import infer_population
@@ -124,25 +124,25 @@ class TestInspect:
 class TestJoinPruning:
     @pytest.mark.parametrize("name", ["fin", "pub_link"])
     async def test_join_to_hidden_model_is_omitted(self, pair: Pair, name: str) -> None:
-        pruned = await pair.fin.get_model(name, data_source=DS)
-        full = await pair.everything.get_model(name, data_source=DS)
+        pruned = await pair.fin.get_dataset(name, data_source=DS)
+        full = await pair.everything.get_dataset(name, data_source=DS)
         assert pruned is not None
         assert full is not None
-        assert [j.target_model for j in full.joins] == ["hr"]
-        assert pruned.joins == []
+        assert [j.to for j in full.relationships] == ["hr"]
+        assert pruned.relationships == []
 
     async def test_pruning_does_not_change_the_stored_model(self, pair: Pair) -> None:
-        await pair.fin.get_model("fin", data_source=DS)
-        stored = await pair.full.storage.get_model("fin", data_source=DS)
+        await pair.fin.get_dataset("fin", data_source=DS)
+        stored = await pair.full.storage.get_dataset("fin", data_source=DS)
         assert stored is not None
-        assert [j.target_model for j in stored.joins] == ["hr"]
+        assert [j.to for j in stored.relationships] == ["hr"]
 
     async def test_dangling_join_is_kept(self, pair: Pair) -> None:
-        pruned = await pair.fin.get_model("dangling", data_source=DS)
-        full = await pair.everything.get_model("dangling", data_source=DS)
+        pruned = await pair.fin.get_dataset("dangling", data_source=DS)
+        full = await pair.everything.get_dataset("dangling", data_source=DS)
         assert pruned is not None
         assert pruned == full
-        assert [j.target_model for j in pruned.joins] == ["ghost"]
+        assert [j.to for j in pruned.relationships] == ["ghost"]
 
     async def test_dangling_join_inspects_as_for_bypass(self, pair: Pair) -> None:
         def inspect(storage):
@@ -230,7 +230,7 @@ class TestQueries:
 class TestRootInference:
     async def test_population_inference_picks_visible_root(self, pair: Pair) -> None:
         choice = await infer_population(query=SlayerQuery.model_validate({"dimensions": ["fin.staff_id"]}), storage=pair.fin)
-        assert choice.model_name == "fin"
+        assert choice.dataset_name == "fin"
 
     @pytest.mark.parametrize("dimensions", [["hr.dept"], ["fin.staff_id", "hr.dept"]])
     async def test_population_inference_through_hidden_model_fails_like_deleted(
@@ -244,7 +244,7 @@ class TestRootInference:
     async def test_recommend_root_never_names_hr(self, pair: Pair) -> None:
         engine = SlayerQueryEngine(storage=pair.fin)
         try:
-            rec = await engine.recommend_root_model(items=["fin.amount", "pub.label"])
+            rec = await engine.recommend_population(items=["fin.amount", "pub.label"])
         finally:
             engine.close()
         assert leaks(rec.model_dump_json()) == []
@@ -254,7 +254,7 @@ class TestRootInference:
         async def recommend(storage):
             engine = SlayerQueryEngine(storage=storage)
             try:
-                return await engine.recommend_root_model(items=items)
+                return await engine.recommend_population(items=items)
             finally:
                 engine.close()
 
@@ -278,7 +278,7 @@ class TestValidateModels:
     async def test_view_reports_no_hidden_drift(self, pair: Pair) -> None:
         engine = SlayerQueryEngine(storage=pair.fin)
         try:
-            entries = await engine.validate_models(data_source=DS)
+            entries = await engine.validate_datasets(data_source=DS)
         finally:
             engine.close()
         dumped = json.dumps([e.model_dump(mode="json") for e in entries])
@@ -295,17 +295,17 @@ class TestBareNameAmbiguity:
             for ds in ("east", "west"):
                 await storage.save_datasource(DatasourceConfig(name=ds, type="sqlite", database=os.path.join(tmp, "x.db")))
             for ds, tags in (("east", []), ("west", ["hr"])):
-                await storage.save_model(SlayerModel(
+                await storage.save_dataset(SlayerDataset(
                     name="shared", sql_table="t", data_source=ds, access_tags=tags,
-                    columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+                    fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
                 ), _validate=False)
             yield storage
 
     async def test_name_resolves_to_the_visible_copy(self, two_datasources: YAMLStorage) -> None:
-        with pytest.raises(AmbiguousModelError):
-            await two_datasources.resolve_model_identity("shared")
+        with pytest.raises(AmbiguousDatasetError):
+            await two_datasources.resolve_dataset_identity("shared")
         fin = AccessFilteredStorage(two_datasources, tags={"fin"}, bypass=False)
-        assert await fin.resolve_model_identity("shared") == ("east", "shared")
-        model = await fin.get_model("shared")
+        assert await fin.resolve_dataset_identity("shared") == ("east", "shared")
+        model = await fin.get_dataset("shared")
         assert model is not None
         assert model.data_source == "east"

@@ -9,16 +9,16 @@ from typing import List, Optional, Tuple
 from slayer.core.enums import UNIT_MONTHS, UNIT_SECONDS, TimeGranularity
 from slayer.core.granularity import Granularity, granularity_parts, nests_into, resolve_granularity
 from slayer.core.keys import (
-    AggregateKey, ArithmeticKey, ColumnKey, ColumnSqlKey, LiteralKey, TimeTruncKey, ValueKey, source_anchor_path, split_top_level_and,
-    column_leaf, walk_value_keys,
+    AggregateKey, ArithmeticKey, FieldKey, FieldSqlKey, LiteralKey, TimeTruncKey, ValueKey, source_anchor_path, split_top_level_and,
+    field_leaf, walk_value_keys,
 )
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.refs import bucket_remedy, key_display
 from slayer.core.time_bounds import is_frame_bound, strip_frame_bounds
 from slayer.core.time_points import add_units, floor_to
-from slayer.core.time_spine import TIME_SPINE_COLUMN, TIME_SPINE_MODEL, is_spine
+from slayer.core.time_spine import TIME_SPINE_FIELD, TIME_SPINE_DATASET, is_spine
 from slayer.engine.elaborate_env import (
-    check_time_dimension_column,
+    check_time_dimension_field,
     check_spine_aggregation,
     check_spine_filter,
     check_spine_lower_bound,
@@ -34,22 +34,22 @@ _MIRROR = {"<": ">", "<=": ">=", ">": "<", ">=": "<="}
 _SERIES_FALLBACKS = (TimeGranularity.DAY, TimeGranularity.HOUR, TimeGranularity.MINUTE, TimeGranularity.SECOND)
 
 
-def spine_column(model: Optional[SlayerModel]) -> Optional[ColumnKey]:
+def spine_field(dataset: Optional[SlayerDataset]) -> Optional[FieldKey]:
     """The spine column as the host reads it: its own column, or across the product hop."""
-    if model is None:
+    if dataset is None:
         return None
-    if is_spine(model):
-        return ColumnKey(path=(), leaf=TIME_SPINE_COLUMN)
-    if model.population_spine:
-        return ColumnKey(path=(TIME_SPINE_MODEL,), leaf=TIME_SPINE_COLUMN)
+    if is_spine(dataset):
+        return FieldKey(path=(), leaf=TIME_SPINE_FIELD)
+    if dataset.population_spine:
+        return FieldKey(path=(TIME_SPINE_DATASET,), leaf=TIME_SPINE_FIELD)
     return None
 
 
-def _mentions(key: ValueKey, spine: ColumnKey) -> bool:
+def _mentions(key: ValueKey, spine: FieldKey) -> bool:
     return any(k == spine for k in walk_value_keys(key))
 
 
-def _bare(key: ValueKey, spine: ColumnKey) -> bool:
+def _bare(key: ValueKey, spine: FieldKey) -> bool:
     """``spine`` occurs outside a bucket of it."""
     if isinstance(key, TimeTruncKey) and key.source == spine:
         return False
@@ -57,12 +57,12 @@ def _bare(key: ValueKey, spine: ColumnKey) -> bool:
 
 
 def _spine_aggregate(
-    key: ValueKey, *, spine: ColumnKey, host: SlayerModel, bundle: ResolvedSourceBundle,
+    key: ValueKey, *, spine: FieldKey, host: SlayerDataset, bundle: ResolvedSourceBundle,
 ) -> Optional[AggregateKey]:
     for k in walk_value_keys(key):
         if not isinstance(k, AggregateKey):
             continue
-        home = walk_key_path(model=host, path=source_anchor_path(k.source), bundle=bundle)
+        home = walk_key_path(dataset=host, path=source_anchor_path(k.source), bundle=bundle)
         if _mentions(k.source, spine) or (home is not None and is_spine(home)):
             return k
     return None
@@ -75,7 +75,7 @@ def _as_datetime(value: object) -> datetime:
     return datetime(value.year, value.month, value.day)
 
 
-def _bound(conjunct: ArithmeticKey, spine: ColumnKey) -> Tuple[str, datetime]:
+def _bound(conjunct: ArithmeticKey, spine: FieldKey) -> Tuple[str, datetime]:
     """``("lower" | "upper", instant)`` of one frame bound; an upper instant is exclusive."""
     column, literal = conjunct.operands
     op = conjunct.op
@@ -109,7 +109,7 @@ def _series_size(*, granularity: Granularity, lower: datetime, upper: datetime) 
 
 
 def plan_spine(
-    *, prebound: PreboundQuery, host: SlayerModel, spine: ColumnKey, bundle: ResolvedSourceBundle,
+    *, prebound: PreboundQuery, host: SlayerDataset, spine: FieldKey, bundle: ResolvedSourceBundle,
 ) -> SpineFactor:
     """The host's bucket series, after checking every position the spine column appears in."""
     check_spine_raw_rows(raw_rows=not prebound.distinct_dimension_values)
@@ -126,23 +126,23 @@ def plan_spine(
 
 
 def _checked_spine_time_dimensions(
-    *, prebound: PreboundQuery, host: SlayerModel, spine: ColumnKey, bundle: ResolvedSourceBundle,
+    *, prebound: PreboundQuery, host: SlayerDataset, spine: FieldKey, bundle: ResolvedSourceBundle,
 ) -> List[TimeTruncKey]:
     """The spine time dimensions, after checking the dimension, measure and order positions."""
     n_dims, n_tds = prebound.n_dims, prebound.n_time_dimensions
-    for dm in prebound.declared_measures[:n_dims]:
+    for dm in prebound.declared_metrics[:n_dims]:
         key = dm.bound.value_key
         check_spine_plain_use(
             offender=dm.declared_name if _mentions(key, spine) else None, position="dimension",
             remedy=bucket_remedy(key),
         )
-    for dm in prebound.declared_measures[n_dims + n_tds:]:
+    for dm in prebound.declared_metrics[n_dims + n_tds:]:
         key = dm.bound.value_key
         agg = _spine_aggregate(key, spine=spine, host=host, bundle=bundle)
         check_spine_aggregation(offender=key_display(agg) if agg is not None else None)
-        check_spine_plain_use(offender=dm.declared_name if _bare(key, spine) else None, position="measure")
+        check_spine_plain_use(offender=dm.declared_name if _bare(key, spine) else None, position="metric")
     spine_tds = [
-        dm.bound.value_key for dm in prebound.declared_measures[n_dims:n_dims + n_tds]
+        dm.bound.value_key for dm in prebound.declared_metrics[n_dims:n_dims + n_tds]
         if isinstance(dm.bound.value_key, TimeTruncKey) and dm.bound.value_key.source == spine
     ]
     projected = set(spine_tds)
@@ -156,7 +156,7 @@ def _checked_spine_time_dimensions(
 
 
 def _spine_bounds(
-    *, prebound: PreboundQuery, host: SlayerModel, spine: ColumnKey, bundle: ResolvedSourceBundle,
+    *, prebound: PreboundQuery, host: SlayerDataset, spine: FieldKey, bundle: ResolvedSourceBundle,
 ) -> Tuple[List[datetime], List[datetime]]:
     """``(lowers, uppers)`` of the filters' spine frame bounds; any other spine conjunct fails."""
     lowers: List[datetime] = []
@@ -164,7 +164,7 @@ def _spine_bounds(
     texts = list(prebound.bound_filter_texts) + [None] * len(prebound.bound_filters)
     for bf, text in zip(prebound.bound_filters, texts):
         for conjunct in split_top_level_and(bf.value_key):
-            if is_frame_bound(key=conjunct, time_columns={spine}):
+            if is_frame_bound(key=conjunct, time_fields={spine}):
                 assert isinstance(conjunct, ArithmeticKey)
                 kind, value = _bound(conjunct, spine)
                 (lowers if kind == "lower" else uppers).append(value)
@@ -179,45 +179,45 @@ def check_off_spine_order_keys(prebound: PreboundQuery) -> None:
     """Outside a spine population no bucket of the spine is projected, so no order key may read it."""
     for spec in prebound.order_specs:
         key = spec.bound.value_key
-        reads = any(isinstance(k, ColumnKey) and TIME_SPINE_MODEL in k.path for k in walk_value_keys(key))
+        reads = any(isinstance(k, FieldKey) and TIME_SPINE_DATASET in k.path for k in walk_value_keys(key))
         check_spine_plain_use(offender=key_display(key) if reads else None, position="order key")
 
 
-def is_spine_bound(key: ValueKey, *, spine: Optional[ColumnKey]) -> bool:
-    return spine is not None and is_frame_bound(key=key, time_columns={spine})
+def is_spine_bound(key: ValueKey, *, spine: Optional[FieldKey]) -> bool:
+    return spine is not None and is_frame_bound(key=key, time_fields={spine})
 
 
-def host_mask(key: ValueKey, *, spine: Optional[ColumnKey]) -> Optional[ValueKey]:
+def host_mask(key: ValueKey, *, spine: Optional[FieldKey]) -> Optional[ValueKey]:
     """A host filter without its spine bounds (they decide bucket existence, not host rows)."""
-    return key if spine is None else strip_frame_bounds(key=key, time_columns={spine})
+    return key if spine is None else strip_frame_bounds(key=key, time_fields={spine})
 
 
 def check_axis_rebucket(
-    *, host_key: ValueKey, rerooted: ValueKey, host: SlayerModel, root: SlayerModel,
+    *, host_key: ValueKey, rerooted: ValueKey, host: SlayerDataset, root: SlayerDataset,
     bundle: ResolvedSourceBundle,
 ) -> None:
     """A spine bucket attributed through a fact's axis obeys that axis column's recorded granularity."""
-    spine = spine_column(host)
+    spine = spine_field(host)
     if not (isinstance(host_key, TimeTruncKey) and host_key.source == spine and isinstance(rerooted, TimeTruncKey)):
         return
     column = rerooted.source
-    if not isinstance(column, (ColumnKey, ColumnSqlKey)):
+    if not isinstance(column, (FieldKey, FieldSqlKey)):
         return
-    owner = walk_key_path(model=root, path=tuple(column.path), bundle=bundle)
-    leaf = column_leaf(column)
-    col = owner.get_column(leaf) if owner is not None else None
+    owner = walk_key_path(dataset=root, path=tuple(column.path), bundle=bundle)
+    leaf = field_leaf(column)
+    col = owner.get_field(leaf) if owner is not None else None
     if col is None or col.granularity is None:
         return
     name = ".".join((*column.path, leaf))
     upstream = resolve_granularity(col.granularity, defined=bundle.granularities)
-    check_time_dimension_column(
-        name=name, column_type=col.type, requested_granularity=rerooted.granularity,
+    check_time_dimension_field(
+        name=name, field_type=col.datatype, requested_granularity=rerooted.granularity,
         bucketed_leaves=() if upstream is None else ((name, upstream),),
     )
 
 
 def shifted_spine_bounds(
-    *, prebound: PreboundQuery, spine: Optional[ColumnKey], periods: int, unit: Granularity,
+    *, prebound: PreboundQuery, spine: Optional[FieldKey], periods: int, unit: Granularity,
 ) -> List[BoundFilter]:
     """The host's spine bounds moved by ``periods`` ``unit`` steps: the range a shifted
     producer reads its buckets from."""
@@ -226,7 +226,7 @@ def shifted_spine_bounds(
     out: List[BoundFilter] = []
     for bf in prebound.bound_filters:
         for conjunct in split_top_level_and(bf.value_key):
-            if not is_frame_bound(key=conjunct, time_columns={spine}):
+            if not is_frame_bound(key=conjunct, time_fields={spine}):
                 continue
             assert isinstance(conjunct, ArithmeticKey)
             kind, value = _bound(conjunct, spine)

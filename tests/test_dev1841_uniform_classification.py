@@ -18,7 +18,7 @@ from tests._dev1841_fixtures import (
     ASSOC_LOCAL_SPEND_BY_STATUS,
     LOCAL_OK_FAN_DEFECT,
     LOCAL_SPEND_TOTAL,
-    ModelMeasure,
+    DatasetMetric,
     associated_warnings,
     broadcast_warnings,
     cust_q,
@@ -26,7 +26,7 @@ from tests._dev1841_fixtures import (
     status_key,
 )
 
-SP = ModelMeasure(formula="sum(spend)", name="sp")
+SP = DatasetMetric(expression="sum(spend)", name="sp")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -84,7 +84,7 @@ class TestEveryConsumerRoleAvoidsTheFan:
 
     async def test_arithmetic_composite_leaf(self, exec_backend):
         _, engine = exec_backend
-        composite = ModelMeasure(formula="sum(spend) + 1", name="sp1")
+        composite = DatasetMetric(expression="sum(spend) + 1", name="sp1")
         resp = await engine.execute(
             cust_q(dimensions=["orders.status"], measures=[composite],
                    to_many_handling="associate"))
@@ -99,7 +99,7 @@ class TestEveryConsumerRoleAvoidsTheFan:
         threshold sees 420, not the fanned 520 that would keep ok anyway — a
         threshold BELOW the fan but ABOVE the true value discriminates."""
         _, engine = exec_backend
-        star = ModelMeasure(formula="count(*)", name="n")
+        star = DatasetMetric(expression="count(*)", name="n")
         resp = await engine.execute(
             cust_q(dimensions=["orders.status"], measures=[star],
                    filters=["sum(spend) > 450"],
@@ -114,7 +114,7 @@ class TestEveryConsumerRoleAvoidsTheFan:
         _, engine = exec_backend
         resp = await engine.execute(
             cust_q(dimensions=["orders.status"], measures=[SP],
-                   order=[OrderItem.model_validate({"column": "sum(spend)", "direction": "desc"})],
+                   order=[OrderItem.model_validate({"field": "sum(spend)", "direction": "desc"})],
                    to_many_handling="associate"))
         # ok / new / a NULL-status cell for orderless c7 (rooted at customers).
         assert len(resp.data) == 3

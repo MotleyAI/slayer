@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousJoinPathError, SlayerError
+from slayer.core.errors import AmbiguousRelationshipPathError, SlayerError
 
 from tests._dev1840_fixtures import ambiguity_models
 from tests._dev1841_fixtures import (
     BCAST_SPEND_CROSS,
-    ModelMeasure,
+    DatasetMetric,
     SlayerQuery,
     bcast_q,
     cust_q,
@@ -24,10 +24,10 @@ from tests._dev1841_fixtures import (
     rows_by,
 )
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
-SM = ModelMeasure(formula="sum(agents.score)", name="sm")
-SP = ModelMeasure(formula="sum(spend)", name="sp")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+SM = DatasetMetric(expression="sum(agents.score)", name="sm")
+SP = DatasetMetric(expression="sum(spend)", name="sp")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -82,7 +82,7 @@ class TestErrorModeRefusesExcludedFilters:
         error-mode concern, but it must not be masked by it."""
         _, engine = exec_backend_amb
         query = error_q(source_model="tickets", measures=[SM], filters=["effort > 2"])
-        with pytest.raises(AmbiguousJoinPathError):
+        with pytest.raises(AmbiguousRelationshipPathError):
             await engine.execute(query)
 
 
@@ -114,8 +114,8 @@ class TestErrorModePasses:
         _, engine = exec_backend
         resp = await engine.execute(error_q(
             dimensions=["status"],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, partition_by=[])", name="total")]))
+            measures=[DatasetMetric(
+                expression="sum(customers.spend, partition_by=[])", name="total")]))
         for row in resp.data:
             assert float(row["orders.total"]) == pytest.approx(BCAST_SPEND_CROSS)
 
@@ -138,9 +138,9 @@ class TestStrictParity:
         on a broadcast, closing the migration→execution loop."""
         _, engine = exec_backend
         migrated = SlayerQuery.model_validate({
-            "version": 3, "source_model": "orders", "strict": True,
+            "version": 3, "population": "orders", "strict": True,
             "dimensions": ["status"],
-            "measures": [{"formula": "sum(customers.spend)", "name": "cm"}],
+            "metrics": [{"formula": "sum(customers.spend)", "name": "cm"}],
         })
         assert migrated.to_many_handling == "error"
         with pytest.raises((SlayerError, ValueError)):

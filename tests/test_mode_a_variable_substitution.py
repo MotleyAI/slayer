@@ -18,21 +18,21 @@ from sqlglot import exp
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import (
-    ColumnRef,
+    FieldRef,
     SlayerQuery,
 )
 from slayer.engine.query_engine import (
     SlayerQueryEngine,
-    _render_probe_model,
-    _substitute_model_sql_surfaces,
+    _render_probe_dataset,
+    _substitute_dataset_sql_surfaces,
 )
-from slayer.inspect.model_render import render_model_inspection
+from slayer.inspect.dataset_render import render_dataset_inspection
 from slayer.sql.dialects import _ALL_DIALECTS, MysqlDialect, SqliteDialect
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -69,7 +69,7 @@ def _seed_orders_db_at(db_path) -> None:
         cur.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", rows)
 
 
-async def _engine_with(*models: SlayerModel) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
+async def _engine_with(*models: SlayerDataset) -> tuple[SlayerQueryEngine, tempfile.TemporaryDirectory]:
     """Build a real SQLite datasource + YAML storage with the given models
     saved. Returns (engine, tmpdir_handle); caller keeps the tmpdir alive.
     """
@@ -81,7 +81,7 @@ async def _engine_with(*models: SlayerModel) -> tuple[SlayerQueryEngine, tempfil
         DatasourceConfig(name="ds", type="sqlite", database=db_path)
     )
     for m in models:
-        await storage.save_model(m)
+        await storage.save_dataset(m)
     return SlayerQueryEngine(storage=storage), tmp
 
 
@@ -95,17 +95,17 @@ def _sum(resp, alias: str) -> float:
 # ---------------------------------------------------------------------------
 
 class TestModelFiltersSubstitution:
-    def _model(self, **kw) -> SlayerModel:
-        return SlayerModel(
+    def _model(self, **kw) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["region = '{region}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
             **kw,
         )
@@ -114,8 +114,8 @@ class TestModelFiltersSubstitution:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"region": "EU"},
             })
             resp = await engine.execute(q)
@@ -127,8 +127,8 @@ class TestModelFiltersSubstitution:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"region": "US"},
             })
             resp = await engine.execute(q)
@@ -142,15 +142,15 @@ class TestModelFiltersSubstitution:
 # ---------------------------------------------------------------------------
 
 class TestColumnSqlSubstitution:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _model(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.DOUBLE),
             ],
         )
 
@@ -158,8 +158,8 @@ class TestColumnSqlSubstitution:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(scaled)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(scaled)"}],
                 "variables": {"mult": 2},
             })
             resp = await engine.execute(q)
@@ -171,8 +171,8 @@ class TestColumnSqlSubstitution:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(scaled)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(scaled)"}],
                 "variables": {"mult": 1},
             })
             resp = await engine.execute(q)
@@ -186,19 +186,19 @@ class TestColumnSqlSubstitution:
 # ---------------------------------------------------------------------------
 
 class TestColumnFilterSubstitution:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _model(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(
                     name="region_amount",
                     sql="amount",
                     filter="region = '{region}'",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
             ],
         )
@@ -207,8 +207,8 @@ class TestColumnFilterSubstitution:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(region_amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(region_amount)"}],
                 "variables": {"region": "US"},
             })
             resp = await engine.execute(q)
@@ -223,19 +223,19 @@ class TestColumnFilterSubstitution:
 # ---------------------------------------------------------------------------
 
 class TestModelSqlSubstitution:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _model(self) -> SlayerDataset:
+        return SlayerDataset(
             name="floored",
             data_source="ds",
             sql=(
                 "SELECT id, region, amount, {floor} AS floor_val "
                 "FROM orders WHERE amount >= {floor}"
             ),
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="floor_val", sql="floor_val", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="floor_val", sql="floor_val", datatype=DataType.DOUBLE),
             ],
         )
 
@@ -243,8 +243,8 @@ class TestModelSqlSubstitution:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "floored",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "floored",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"floor": 100},
             })
             resp = await engine.execute(q)
@@ -257,8 +257,8 @@ class TestModelSqlSubstitution:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery(
-                source_model="floored",
-                dimensions=[ColumnRef(name="floor_val")],
+                population="floored",
+                dimensions=[FieldRef(name="floor_val")],
                 variables={"floor": 100},
             )
             resp = await engine.execute(q)
@@ -273,24 +273,24 @@ class TestModelSqlSubstitution:
 # ---------------------------------------------------------------------------
 
 class TestPrecedence:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _model(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["region = '{region}'"],
             query_variables={"region": "US"},  # lowest-priority default
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
 
     async def test_model_default_used_when_nothing_supplied(self) -> None:
         engine, tmp = await _engine_with(self._model())
         try:
-            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(amount)"}]})
             resp = await engine.execute(q)
             assert _sum(resp, "orders.amount_sum") == 160.0  # US default
         finally:
@@ -300,8 +300,8 @@ class TestPrecedence:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"region": "EU"},
             })
             resp = await engine.execute(q)
@@ -313,8 +313,8 @@ class TestPrecedence:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"region": "EU"},
             })
             resp = await engine.execute(q, variables={"region": "CA"})
@@ -328,16 +328,16 @@ class TestPrecedence:
 # ---------------------------------------------------------------------------
 
 class TestMissingVariable:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _model(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["region = '{region}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
 
@@ -346,8 +346,8 @@ class TestMissingVariable:
         try:
             # Non-empty var set (so the guard runs) but lacking 'region'.
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'region'"):
@@ -359,8 +359,8 @@ class TestMissingVariable:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'region'"):
@@ -382,7 +382,7 @@ _TRICKY_ROWS = [
 ]
 
 
-async def _engine_with_tricky_status(model: SlayerModel) -> tuple:
+async def _engine_with_tricky_status(model: SlayerDataset) -> tuple:
     tmp = tempfile.TemporaryDirectory()
     db_path = f"{tmp.name}/tricky.db"
     with transaction(db_path) as conn:
@@ -398,7 +398,7 @@ async def _engine_with_tricky_status(model: SlayerModel) -> tuple:
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_path)
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage), tmp
 
 
@@ -412,22 +412,22 @@ class TestEscapingEndToEnd:
         self, value: str, expected: float
     ) -> None:
         # Mode-A: SlayerModel.filters.
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t",
             sql_table="t",
             data_source="ds",
             filters=["status = '{v}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
         engine, tmp = await _engine_with_tricky_status(model)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "t",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "t",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"v": value},
             })
             resp = await engine.execute(q)
@@ -437,22 +437,22 @@ class TestEscapingEndToEnd:
 
     async def test_backslash_value_sqlite_roundtrip(self) -> None:
         """A backslash in a string value round-trips through SQLite."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="t",
             sql_table="t",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
         engine, tmp = await _engine_with_tricky_status(model)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "t",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["status = '{v}'"],
+                "population": "t",
+                "metrics": [{"formula": "sum(amount)"}],
+                "filter": ["status = '{v}'"],
                 "variables": {"v": "a\\b"},
             })
             resp = await engine.execute(q)
@@ -465,23 +465,23 @@ class TestEscapingEndToEnd:
     async def test_mode_b_query_filter_matches_only_its_row(
         self, value: str, expected: float
     ) -> None:
-        # Mode-B: SlayerQuery.filters bind the value as a literal; quote values round-trip.
-        model = SlayerModel(
+        # Mode-B: SlayerQuery.filter bind the value as a literal; quote values round-trip.
+        model = SlayerDataset(
             name="t",
             sql_table="t",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
         engine, tmp = await _engine_with_tricky_status(model)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "t",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["status = '{v}'"],
+                "population": "t",
+                "metrics": [{"formula": "sum(amount)"}],
+                "filter": ["status = '{v}'"],
                 "variables": {"v": value},
             })
             resp = await engine.execute(q)
@@ -492,22 +492,22 @@ class TestEscapingEndToEnd:
 
 class TestEscaping:
     async def test_single_quote_value_escaped_and_matches(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["status = '{status}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"status": "O'Brien"},
             })
             resp = await engine.execute(q)
@@ -525,18 +525,18 @@ class TestBraceLiterals:
     async def test_no_variable_model_brace_literal_untouched(self) -> None:
         """A model that uses NO variables must be left untouched, so a raw
         brace literal (Postgres-array-style) survives to the DB verbatim."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="j", sql="'{1,2,3}'", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="j", sql="'{1,2,3}'", datatype=DataType.TEXT),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
-            q = SlayerQuery(source_model="orders", dimensions=[ColumnRef(name="j")])
+            q = SlayerQuery(population="orders", dimensions=[FieldRef(name="j")])
             resp = await engine.execute(q)
             assert {row["orders.j"] for row in resp.data} == {"{1,2,3}"}
         finally:
@@ -553,21 +553,21 @@ class TestBraceLiterals:
         so SUM is NULL; the point is that it executes cleanly (literal), and a
         subsequent query that DOES supply a variable would raise on a missing
         one (covered by TestMissingVariable)."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["status = '{status}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             resp = await engine.execute(
-                SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+                SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(amount)"}]})
             )
             # No raise (literal, not a missing-variable error); no row has the
             # literal status '{status}', so the aggregate is NULL.
@@ -577,24 +577,24 @@ class TestBraceLiterals:
 
     async def test_escaped_braces_render_single_alongside_var(self) -> None:
         """{{tag}} escapes to a literal {tag} while {floor} substitutes."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="floored",
             data_source="ds",
             sql=(
                 "SELECT id, amount, '{{tag}}' AS tag_val "
                 "FROM orders WHERE amount >= {floor}"
             ),
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="tag_val", sql="tag_val", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="tag_val", sql="tag_val", datatype=DataType.TEXT),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             q = SlayerQuery(
-                source_model="floored",
-                dimensions=[ColumnRef(name="tag_val")],
+                population="floored",
+                dimensions=[FieldRef(name="tag_val")],
                 variables={"floor": 100},
             )
             resp = await engine.execute(q)
@@ -609,28 +609,28 @@ class TestBraceLiterals:
 # ---------------------------------------------------------------------------
 
 class TestCrossModelConsistency:
-    def _models(self) -> list[SlayerModel]:
+    def _models(self) -> list[SlayerDataset]:
         # No declared reverse join: the orders → customers edge traverses both ways.
-        customers = SlayerModel(
+        customers = SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="name", sql="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
             ],
         )
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["amount >= {floor}"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
-            joins=[{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}],
+            relationships=[{"to": "customers", "join_pairs": [["customer_id", "id"]]}],
         )
         return [customers, orders]
 
@@ -656,7 +656,7 @@ class TestCrossModelConsistency:
             DatasourceConfig(name="ds", type="sqlite", database=db_path)
         )
         for m in self._models():
-            await storage.save_model(m)
+            await storage.save_dataset(m)
         return SlayerQueryEngine(storage=storage), tmp
 
     async def test_source_model_filter_var_applies_to_reroot(self) -> None:
@@ -665,8 +665,8 @@ class TestCrossModelConsistency:
         engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
-                source_model="orders",
-                measures=[
+                population="orders",
+                metrics=[
                     {"formula": "sum(amount)"},
                     {"formula": "count(customers.id)"},
                 ],
@@ -684,8 +684,8 @@ class TestCrossModelConsistency:
         engine, tmp = await self._engine()
         try:
             q = SlayerQuery(
-                source_model="orders",
-                measures=[
+                population="orders",
+                metrics=[
                     {"formula": "sum(amount)"},
                     {"formula": "count(customers.id)"},
                 ],
@@ -713,27 +713,27 @@ class TestDeferredScope:
         the enclosing query's variable does
         not reach it, so the stray {var} surfaces an error rather than being
         silently filled. Stable boundary pin (holds before AND after)."""
-        customers = SlayerModel(
+        customers = SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="name", sql="name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="name", sql="name", datatype=DataType.TEXT),
                 # join-target Column.sql var — not substituted → unsupported
-                Column(name="scaled", sql="id * {mult}", type=DataType.DOUBLE),
+                DatasetField(name="scaled", sql="id * {mult}", datatype=DataType.DOUBLE),
             ],
         )
-        orders = SlayerModel(
+        orders = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="customer_id", sql="customer_id", type=DataType.DOUBLE),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="customer_id", sql="customer_id", datatype=DataType.DOUBLE),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
-            joins=[{"target_model": "customers", "join_pairs": [["customer_id", "id"]]}],
+            relationships=[{"to": "customers", "join_pairs": [["customer_id", "id"]]}],
         )
         tmp = tempfile.TemporaryDirectory()
         db_path = f"{tmp.name}/orders.db"
@@ -751,13 +751,13 @@ class TestDeferredScope:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type="sqlite", database=db_path)
         )
-        await storage.save_model(customers)
-        await storage.save_model(orders)
+        await storage.save_dataset(customers)
+        await storage.save_dataset(orders)
         engine = SlayerQueryEngine(storage=storage)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(customers.scaled)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(customers.scaled)"}],
                 "variables": {"mult": 2},
             })
             # The failure must be about the stray, unsubstituted {mult}: it is
@@ -779,21 +779,21 @@ class TestDeferredScope:
 class TestInspectShowsTemplate:
     async def test_inspect_model_shows_literal_var(self) -> None:
 
-        model = SlayerModel(
+        model = SlayerDataset(
             name="floored",
             data_source="ds",
             sql="SELECT id, amount FROM orders WHERE amount >= {floor}",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
-            stored = await engine.storage.get_model("floored")
+            stored = await engine.storage.get_dataset("floored")
             assert stored is not None
-            out = await render_model_inspection(
-                model=stored,
+            out = await render_dataset_inspection(
+                dataset=stored,
                 storage=engine.storage,
                 engine=None,
                 show_sql=True,
@@ -809,15 +809,15 @@ class TestInspectShowsTemplate:
 
 def _bind(*, template: str, variables: dict, dialect=None) -> str:
     """``template`` as a model filter, bound by the engine entry; returns the bound filter."""
-    model = SlayerModel(name="m", sql_table="t", data_source="ds", filters=[template])
-    out = _substitute_model_sql_surfaces(
-        model=model, variables=variables, dialect=dialect or SqliteDialect()
+    model = SlayerDataset(name="m", sql_table="t", data_source="ds", filters=[template])
+    out = _substitute_dataset_sql_surfaces(
+        dataset=model, variables=variables, dialect=dialect or SqliteDialect()
     )
     return out.filters[0]
 
 
-def _col(model: SlayerModel, name: str) -> Column:
-    col = model.get_column(name)
+def _col(model: SlayerDataset, name: str) -> DatasetField:
+    col = model.get_field(name)
     assert col is not None, name
     return col
 
@@ -913,33 +913,33 @@ class TestSubstituteVariablesHardened:
 
 class TestSubstituteHelperScope:
     def test_only_mode_a_surfaces_substituted(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             data_source="ds",
             sql="SELECT * FROM t WHERE r = '{region}'",
             filters=["a >= {floor}"],
-            columns=[
-                Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE),
-                Column(
+            fields=[
+                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.DOUBLE),
+                DatasetField(
                     name="flt",
                     sql="amount",
                     filter="r = '{region}'",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
                 # Hidden column is still a Mode-A surface — it IS substituted
                 # (the helper iterates all columns, visible or not).
-                Column(
-                    name="hid", sql="amount * {mult}", type=DataType.DOUBLE, hidden=True
+                DatasetField(
+                    name="hid", sql="amount * {mult}", datatype=DataType.DOUBLE, hidden=True
                 ),
             ],
             # Saved measure formula: substituted under the Mode-B regime.
-            measures=[ModelMeasure(name="rev", formula="sum(amount) + {mult}")],
-            # Aggregation.formula uses its OWN {expr}/{param} fill mechanism —
+            metrics=[DatasetMetric(name="rev", expression="sum(amount) + {mult}")],
+            # Aggregation.expression uses its OWN {expr}/{param} fill mechanism —
             # a query-variable pass must never touch it.
-            aggregations=[Aggregation(name="agg", formula="SUM({expr}) * {mult}")],
+            aggregations=[Aggregation(name="agg", expression="SUM({expr}) * {mult}")],
         )
-        out = _substitute_model_sql_surfaces(
-            model=model, variables={"region": "US", "floor": 5, "mult": 2},
+        out = _substitute_dataset_sql_surfaces(
+            dataset=model, variables={"region": "US", "floor": 5, "mult": 2},
             dialect=SqliteDialect(),
         )
         # The four Mode-A surfaces are substituted (hidden column included):
@@ -949,49 +949,49 @@ class TestSubstituteHelperScope:
         assert _literals(_col(out, "scaled").sql) == [2]
         assert _literals(_col(out, "flt").filter) == ["US"]
         assert _literals(_col(out, "hid").sql) == [2]
-        # Saved measure formulas substitute (Mode-B regime); Aggregation.formula never does:
-        assert _literals(out.measures[0].formula) == [2]
-        assert out.aggregations[0].formula == "SUM({expr}) * {mult}"
+        # Saved measure formulas substitute (Mode-B regime); Aggregation.expression never does:
+        assert _literals(out.metrics[0].expression) == [2]
+        assert out.aggregations[0].expression == "SUM({expr}) * {mult}"
         # Input model is NOT mutated — every Mode-A surface stays templated:
         assert model.sql == "SELECT * FROM t WHERE r = '{region}'"
         assert model.filters == ["a >= {floor}"]
-        assert model.get_column("scaled").sql == "amount * {mult}"
-        assert model.get_column("flt").filter == "r = '{region}'"
-        assert model.get_column("hid").sql == "amount * {mult}"
+        assert model.get_field("scaled").sql == "amount * {mult}"
+        assert model.get_field("flt").filter == "r = '{region}'"
+        assert model.get_field("hid").sql == "amount * {mult}"
 
     def test_empty_variables_is_noop(self) -> None:
 
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             sql_table="t",
             data_source="ds",
-            columns=[Column(name="j", sql="json_extract(x, '$.a')", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="j", sql="json_extract(x, '$.a')", datatype=DataType.DOUBLE)],
         )
-        out = _substitute_model_sql_surfaces(
-            model=model, variables={}, dialect=SqliteDialect()
+        out = _substitute_dataset_sql_surfaces(
+            dataset=model, variables={}, dialect=SqliteDialect()
         )
         assert _parse(_col(out, "j").sql) == _parse("json_extract(x, '$.a')")
 
     def test_list_value_substituted_on_all_four_mode_a_surfaces(self) -> None:
         """One list variable bound into each of the four Mode-A surfaces."""
 
-        model = SlayerModel(
+        model = SlayerDataset(
             name="m",
             data_source="ds",
             sql="SELECT * FROM t WHERE region IN ({regions})",
             filters=["region IN ({regions})"],
-            columns=[
-                Column(name="in_flag", sql="region IN ({regions})", type=DataType.BOOLEAN),
-                Column(
+            fields=[
+                DatasetField(name="in_flag", sql="region IN ({regions})", datatype=DataType.BOOLEAN),
+                DatasetField(
                     name="amt",
                     sql="amount",
                     filter="region IN ({regions})",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
             ],
         )
-        out = _substitute_model_sql_surfaces(
-            model=model, variables={"regions": ["US", "CA"]}, dialect=SqliteDialect()
+        out = _substitute_dataset_sql_surfaces(
+            dataset=model, variables={"regions": ["US", "CA"]}, dialect=SqliteDialect()
         )
         assert _in_values(out.sql) == ["US", "CA"]
         assert len(out.filters) == 1
@@ -1004,16 +1004,16 @@ class TestSubstituteHelperScope:
 # ---------------------------------------------------------------------------
 
 class TestQueryFilterRegression:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _model(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
 
@@ -1021,9 +1021,9 @@ class TestQueryFilterRegression:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["region = '{region}'"],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
+                "filter": ["region = '{region}'"],
                 "variables": {"region": "EU"},
             })
             resp = await engine.execute(q)
@@ -1035,9 +1035,9 @@ class TestQueryFilterRegression:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["status = '{status}'"],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
+                "filter": ["status = '{status}'"],
                 "variables": {"status": "O'Brien"},
             })
             resp = await engine.execute(q)
@@ -1056,30 +1056,30 @@ class TestModelImmutabilityAcrossExecutes:
         yields different results (proving per-call substitution) AND the stored
         model still holds the literal {var} template afterwards (no mutation of
         the shared cached object)."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["region = '{region}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             r_eu = await engine.execute(
                 SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"formula": "sum(amount)"}],
                     "variables": {"region": "EU"},
                 })
             )
             r_ca = await engine.execute(
                 SlayerQuery.model_validate({
-                    "source_model": "orders",
-                    "measures": [{"formula": "sum(amount)"}],
+                    "population": "orders",
+                    "metrics": [{"formula": "sum(amount)"}],
                     "variables": {"region": "CA"},
                 })
             )
@@ -1089,14 +1089,14 @@ class TestModelImmutabilityAcrossExecutes:
             # a subsequent missing-var call raises cleanly. Build the query
             # outside the block so only execute() can throw inside it.
             missing_var_q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'region'"):
                 await engine.execute(missing_var_q)
             # The stored model is untouched — reloading shows the template.
-            reloaded = await engine.storage.get_model("orders")
+            reloaded = await engine.storage.get_dataset("orders")
             assert reloaded is not None
             assert reloaded.filters == ["region = '{region}'"]
         finally:
@@ -1109,22 +1109,22 @@ class TestModelImmutabilityAcrossExecutes:
 
 class TestMissingVariablePerSurface:
     async def test_missing_var_in_column_sql_raises(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.DOUBLE),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             # Non-empty var set (guard runs) but lacking 'mult'.
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(scaled)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(scaled)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'mult'"):
@@ -1133,20 +1133,20 @@ class TestMissingVariablePerSurface:
             tmp.cleanup()
 
     async def test_missing_var_in_model_sql_raises(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="floored",
             data_source="ds",
             sql="SELECT id, amount FROM orders WHERE amount >= {floor}",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
         engine, tmp = await _engine_with(model)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "floored",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "floored",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"other": "x"},
             })
             with pytest.raises(ValueError, match="Undefined variable 'floor'"):
@@ -1164,15 +1164,15 @@ class TestGetResultColumnTypesDefaults:
         """A Mode-A {var} column with a complete model default resolves at the
         type-probe path (get_result_column_types), returning real types instead of the
         {} degradation."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             query_variables={"mult": 2},
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.DOUBLE),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1186,14 +1186,14 @@ class TestGetResultColumnTypesDefaults:
     async def test_undefaulted_var_degrades_to_empty(self) -> None:
         """No default for the {var} → probe cannot render → graceful {} (the
         pre-existing degradation is preserved, not a raise)."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.DOUBLE),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1207,16 +1207,16 @@ class TestGetResultColumnTypesDefaults:
         """Two placeholders, only one defaulted → substitution activates and
         raises on the missing one, but that must stay inside the probe's
         graceful-failure boundary so the public result is still {} (F1)."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             query_variables={"mult": 2},  # 'floor' intentionally missing
             filters=["amount >= {floor}"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
-                Column(name="scaled", sql="amount * {mult}", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="scaled", sql="amount * {mult}", datatype=DataType.DOUBLE),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1230,16 +1230,16 @@ class TestGetResultColumnTypesDefaults:
         """A Mode-A ``IN ({var})`` filter with a LIST default in
         ``query_variables`` renders cleanly at the type-probe path, so the probe
         returns real column types instead of the ``{}`` degradation."""
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             query_variables={"regions": ["US", "CA"]},
             filters=["region IN ({regions})"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
         engine, tmp = await _engine_with(model)
@@ -1351,16 +1351,16 @@ class TestListValueRenderingErrors:
 
 
 class TestListModeAEndToEnd:
-    def _model(self, **kw) -> SlayerModel:
-        return SlayerModel(
+    def _model(self, **kw) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["region IN ({regions})"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
             **kw,
         )
@@ -1369,8 +1369,8 @@ class TestListModeAEndToEnd:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"regions": ["US", "CA"]},
             })
             resp = await engine.execute(q)
@@ -1383,8 +1383,8 @@ class TestListModeAEndToEnd:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"regions": ["EU"]},
             })
             resp = await engine.execute(q)
@@ -1397,7 +1397,7 @@ class TestListModeAEndToEnd:
             self._model(query_variables={"regions": ["EU", "CA"]})
         )
         try:
-            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(amount)"}]})
             resp = await engine.execute(q)
             # EU=275, CA=300 → 575.
             assert _sum(resp, "orders.amount_sum") == 575.0
@@ -1411,8 +1411,8 @@ class TestListModeAEndToEnd:
         )
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"regions": ["US"]},
             })
             resp = await engine.execute(q)
@@ -1426,7 +1426,7 @@ class TestListModeAEndToEnd:
             self._model(query_variables={"regions": ["EU", "CA"]})
         )
         try:
-            q = SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": "sum(amount)"}]})
+            q = SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": "sum(amount)"}]})
             resp = await engine.execute(q, variables={"regions": ["US"]})
             # Runtime ['US'] wins over default ['EU','CA'] → 160.
             assert _sum(resp, "orders.amount_sum") == 160.0
@@ -1437,8 +1437,8 @@ class TestListModeAEndToEnd:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"regions": ["x') OR ('1'='1"]},
             })
             resp = await engine.execute(q)
@@ -1456,16 +1456,16 @@ class TestListModeAEndToEnd:
 
 
 class TestListModeBEndToEnd:
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _model(self) -> SlayerDataset:
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="region", sql="region", type=DataType.TEXT),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="region", sql="region", datatype=DataType.TEXT),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
 
@@ -1473,9 +1473,9 @@ class TestListModeBEndToEnd:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["region in ({regions})"],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
+                "filter": ["region in ({regions})"],
                 "variables": {"regions": ["US", "CA"]},
             })
             resp = await engine.execute(q)
@@ -1489,9 +1489,9 @@ class TestListModeBEndToEnd:
             # The trailing-comma render (('EU',)) is what keeps a 1-element list
             # a tuple through the Python-AST parser rather than a bare string.
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["region in ({regions})"],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
+                "filter": ["region in ({regions})"],
                 "variables": {"regions": ["EU"]},
             })
             resp = await engine.execute(q)
@@ -1503,9 +1503,9 @@ class TestListModeBEndToEnd:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["region not in ({regions})"],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
+                "filter": ["region not in ({regions})"],
                 "variables": {"regions": ["US"]},
             })
             resp = await engine.execute(q)
@@ -1520,9 +1520,9 @@ class TestListModeBEndToEnd:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["region in ({regions})"],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
+                "filter": ["region in ({regions})"],
                 "variables": {"regions": ["EU", "CA"]},
             })
             resp = await engine.execute(q, variables={"regions": ["US"]})
@@ -1536,9 +1536,9 @@ class TestListModeBEndToEnd:
         engine, tmp = await _engine_with(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["status in ({statuses})"],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
+                "filter": ["status in ({statuses})"],
                 "variables": {"statuses": ["O'Brien"]},
             })
             resp = await engine.execute(q)
@@ -1671,26 +1671,26 @@ class TestEscapingRegimeDialectMatrix:
 class TestSubstituteModelSqlSurfacesDialect:
     """``_substitute_model_sql_surfaces`` requires a dialect and binds for it."""
 
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _model(self) -> SlayerDataset:
+        return SlayerDataset(
             name="m",
             data_source="ds",
             sql="SELECT * FROM t WHERE r = '{region}'",
-            columns=[Column(name="a", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="a", sql="amount", datatype=DataType.DOUBLE)],
         )
 
     def test_backslash_dialect_value_roundtrips(self) -> None:
 
         d = MysqlDialect()
-        out = _substitute_model_sql_surfaces(
-            model=self._model(), variables={"region": "a\\'b"}, dialect=d,
+        out = _substitute_dataset_sql_surfaces(
+            dataset=self._model(), variables={"region": "a\\'b"}, dialect=d,
         )
         assert _literals(out.sql, dialect=d) == ["a\\'b"]
 
     def test_standard_dialect_value_roundtrips(self) -> None:
 
-        out = _substitute_model_sql_surfaces(
-            model=self._model(), variables={"region": "a\\'b"},
+        out = _substitute_dataset_sql_surfaces(
+            dataset=self._model(), variables={"region": "a\\'b"},
             dialect=SqliteDialect(),
         )
         assert _literals(out.sql) == ["a\\'b"]
@@ -1701,7 +1701,7 @@ class TestSubstituteModelSqlSurfacesDialect:
         # (missing the required `dialect`) can raise (Sonar S5778).
         model = self._model()
         with pytest.raises(TypeError):
-            _substitute_model_sql_surfaces(model=model, variables={"region": "x"})
+            _substitute_dataset_sql_surfaces(dataset=model, variables={"region": "x"})
 
 
 def _status_literal_from_sql(sql: str, dialect_name: str):
@@ -1735,23 +1735,23 @@ class TestEngineDialectThreadingEndToEnd:
         await storage.save_datasource(
             DatasourceConfig(name="ds", type=ds_type, database=db_path)
         )
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="ds",
             filters=["status = '{v}'"],
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         engine = SlayerQueryEngine(storage=storage)
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "sum(amount)"}],
+                "population": "orders",
+                "metrics": [{"formula": "sum(amount)"}],
                 "variables": {"v": value},
             })
             result = await engine.execute(q, dry_run=True)
@@ -1779,24 +1779,24 @@ class TestProbeModelDialectThreading:
     """``_render_probe_model`` threads the dialect into the Mode-A surfaces it
     renders from the model's own defaults."""
 
-    def _template_model(self) -> SlayerModel:
-        return SlayerModel(
+    def _template_model(self) -> SlayerDataset:
+        return SlayerDataset(
             name="m",
             data_source="ds",
             sql="SELECT * FROM t WHERE r = '{region}'",
             query_variables={"region": "a\\'b"},
-            columns=[Column(name="a", sql="amount", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="a", sql="amount", datatype=DataType.DOUBLE)],
         )
 
     def test_probe_uses_backslash_dialect(self) -> None:
 
         d = MysqlDialect()
-        out = _render_probe_model(self._template_model(), dialect=d)
+        out = _render_probe_dataset(self._template_model(), dialect=d)
         assert _literals(out.sql, dialect=d) == ["a\\'b"]
 
     def test_probe_uses_standard_dialect(self) -> None:
 
-        out = _render_probe_model(self._template_model(), dialect=SqliteDialect())
+        out = _render_probe_dataset(self._template_model(), dialect=SqliteDialect())
         assert _literals(out.sql) == ["a\\'b"]
 
     def test_probe_dialect_required(self) -> None:
@@ -1805,14 +1805,14 @@ class TestProbeModelDialectThreading:
         # (missing the required `dialect`) can raise (Sonar S5778).
         model = self._template_model()
         with pytest.raises(TypeError):
-            _render_probe_model(model)
+            _render_probe_dataset(model)
 
 
 # ---------------------------------------------------------------------------
 # 24. Mode-B end-to-end: control-char values round-trip through the parser
 # ---------------------------------------------------------------------------
 
-async def _engine_with_ctrl_status(model: SlayerModel) -> tuple:
+async def _engine_with_ctrl_status(model: SlayerDataset) -> tuple:
     """Seed a table whose status column carries control-char values, so a
     Mode-B (python-escaped) query filter can be shown to match end-to-end."""
     tmp = tempfile.TemporaryDirectory()
@@ -1830,7 +1830,7 @@ async def _engine_with_ctrl_status(model: SlayerModel) -> tuple:
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_path)
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage), tmp
 
 
@@ -1839,15 +1839,15 @@ class TestModeBControlCharsEndToEnd:
     a Mode-B query filter must parse (no ast.parse SyntaxError) and match ONLY
     its row through the real SQLite pipeline."""
 
-    def _model(self) -> SlayerModel:
-        return SlayerModel(
+    def _model(self) -> SlayerDataset:
+        return SlayerDataset(
             name="t",
             sql_table="t",
             data_source="ds",
-            columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
-                Column(name="amount", sql="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
             ],
         )
 
@@ -1861,9 +1861,9 @@ class TestModeBControlCharsEndToEnd:
         engine, tmp = await _engine_with_ctrl_status(self._model())
         try:
             q = SlayerQuery.model_validate({
-                "source_model": "t",
-                "measures": [{"formula": "sum(amount)"}],
-                "filters": ["status = '{v}'"],
+                "population": "t",
+                "metrics": [{"formula": "sum(amount)"}],
+                "filter": ["status = '{v}'"],
                 "variables": {"v": value},
             })
             resp = await engine.execute(q)

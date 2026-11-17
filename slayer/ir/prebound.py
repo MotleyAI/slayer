@@ -13,7 +13,7 @@ keys re-roots them structurally and hands them straight back — no text in the
 loop.
 
 ``StrictQueryCarrier`` closes the second half. The compiler reads a handful
-of query-level scalars that are not bind products (``source_model``,
+of query-level scalars that are not bind products (``population``,
 ``name``); a pre-bound caller that forgot one would silently inherit a Pydantic
 default and plan the wrong thing. The carrier approves exactly those two and
 raises on everything else, so a new post-bind ``query.*`` read fails loudly
@@ -26,17 +26,17 @@ from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from slayer.core.join_walker import resolved_terminal
+from slayer.core.relationship_walker import resolved_terminal
 from slayer.core.keys import TimeTruncKey
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.warnings import DateOnlyMidnightWarning
-from slayer.ir.bound import BoundFilter, DeclaredMeasure, GranularityConflict, OrderSpec, WholeListRead
+from slayer.ir.bound import BoundFilter, DeclaredMetric, GranularityConflict, OrderSpec, WholeListRead
 
 __all__ = [
     "ModePolicy",
     "PreboundQuery",
     "StrictQueryCarrier",
-    "partition_declared_measures",
+    "partition_declared_metrics",
     "walk_key_path",
 ]
 
@@ -66,20 +66,20 @@ class ModePolicy(BaseModel):
         return self.mode == "error"
 
 
-def partition_declared_measures(
+def partition_declared_metrics(
     *,
-    declared_measures: List[DeclaredMeasure],
+    declared_metrics: List[DeclaredMetric],
     n_dims: int,
     n_time_dimensions: int,
-) -> Tuple[List[DeclaredMeasure], List[DeclaredMeasure], List[DeclaredMeasure]]:
-    """Split ``declared_measures`` into its (dims, time_dims, aggregates) prefix
+) -> Tuple[List[DeclaredMetric], List[DeclaredMetric], List[DeclaredMetric]]:
+    """Split ``declared_metrics`` into its (dims, time_dims, aggregates) prefix
     partition — the slice arithmetic the planners used to inline. ``n_dims`` /
     ``n_time_dimensions`` are the grain prefix lengths (see ``PreboundQuery``)."""
     grain = n_dims + n_time_dimensions
     return (
-        declared_measures[:n_dims],
-        declared_measures[n_dims:grain],
-        declared_measures[grain:],
+        declared_metrics[:n_dims],
+        declared_metrics[n_dims:grain],
+        declared_metrics[grain:],
     )
 
 
@@ -88,13 +88,13 @@ class PreboundQuery(BaseModel):
 
     Everything downstream of binding reads from here, so a caller that already
     holds bound keys can plan without a parser. The ``n_*`` counts are the
-    dimension / time-dimension prefix lengths of ``declared_measures``, which
+    dimension / time-dimension prefix lengths of ``declared_metrics``, which
     the projection and partition-key passes slice by.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    declared_measures: List[DeclaredMeasure] = Field(default_factory=list)
+    declared_metrics: List[DeclaredMetric] = Field(default_factory=list)
     bound_filters: List[BoundFilter] = Field(default_factory=list)
     # Parallel to ``bound_filters``: the originating user-filter text, or
     # ``None`` for a synthesized date-range bound. Carried so the cross-model
@@ -142,26 +142,26 @@ class PreboundQuery(BaseModel):
                 f"{len(self.bound_filters)} bound filters it slices.",
             )
         # ``n_dims`` and ``n_time_dimensions`` are the DIMENSION prefix lengths
-        # of ``declared_measures``; the rest of the list is measures. Python
+        # of ``declared_metrics``; the rest of the list is measures. Python
         # slicing past the end returns a SHORTER list rather than raising, so
         # an over-count silently plans fewer dimensions than the caller
         # declared — and the measures it does reach are misclassified as
         # dimensions on the way (CodeRabbit).
         grain = self.n_dims + self.n_time_dimensions
-        if grain > len(self.declared_measures):
+        if grain > len(self.declared_metrics):
             raise ValueError(
                 f"PreboundQuery declares {self.n_dims} dimensions + "
                 f"{self.n_time_dimensions} time dimensions = {grain} grain "
-                f"members, but carries only {len(self.declared_measures)} "
+                f"members, but carries only {len(self.declared_metrics)} "
                 f"declared measures for them to be a prefix of.",
             )
         return self
 
     @property
-    def grain_declared_measures(self) -> List[DeclaredMeasure]:
-        """The dimension + time-dimension grain prefix of ``declared_measures``."""
-        dims, time_dims, _ = partition_declared_measures(
-            declared_measures=self.declared_measures,
+    def grain_declared_metrics(self) -> List[DeclaredMetric]:
+        """The dimension + time-dimension grain prefix of ``declared_metrics``."""
+        dims, time_dims, _ = partition_declared_metrics(
+            declared_metrics=self.declared_metrics,
             n_dims=self.n_dims,
             n_time_dimensions=self.n_time_dimensions,
         )
@@ -178,7 +178,7 @@ class StrictQueryCarrier(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    source_model: Optional[str] = None
+    population: Optional[str] = None
     name: Optional[str] = None
     prebound: Optional[PreboundQuery] = None
 
@@ -195,7 +195,7 @@ class StrictQueryCarrier(BaseModel):
 
 
 def walk_key_path(
-    *, model: SlayerModel, path: Tuple[str, ...], bundle,
-) -> Optional[SlayerModel]:
-    """The terminal model of a bound (possibly composed) key ``path`` from ``model``; ``None`` on any miss."""
-    return resolved_terminal(root=model, path=path, models_by_name=bundle.models_by_name)
+    *, dataset: SlayerDataset, path: Tuple[str, ...], bundle,
+) -> Optional[SlayerDataset]:
+    """The terminal model of a bound (possibly composed) key ``path`` from ``dataset``; ``None`` on any miss."""
+    return resolved_terminal(root=dataset, path=path, datasets_by_name=bundle.datasets_by_name)

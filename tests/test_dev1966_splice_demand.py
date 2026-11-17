@@ -14,7 +14,7 @@ import sqlglot
 
 from slayer.core.enums import DataType
 from slayer.core.errors import QueryBackedCycleError
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.sql.render.cte_assembly import CteEntry, reachable_cte_entries
 from tests._dev1966_fixtures import (
     AMOUNT_BY_STATUS,
@@ -33,13 +33,13 @@ from tests._dev1966_fixtures import (
 )
 
 
-def _qb(name: str, *stages: Any) -> SlayerModel:
-    return SlayerModel(name=name, data_source="test", source_queries=list(stages))
+def _qb(name: str, *stages: Any) -> SlayerDataset:
+    return SlayerDataset(name=name, data_source="test", source_queries=list(stages))
 
 
-def _joined(model: SlayerModel, *targets: "tuple[str, List[List[str]]]") -> SlayerModel:
-    return model.model_copy(update={"joins": [
-        *model.joins, *(ModelJoin(target_model=t, join_pairs=p) for t, p in targets)]})
+def _joined(model: SlayerDataset, *targets: "tuple[str, List[List[str]]]") -> SlayerDataset:
+    return model.model_copy(update={"relationships": [
+        *model.relationships, *(DatasetRelationship(to=t, join_pairs=p) for t, p in targets)]})
 
 
 STATUS_REV = _qb("status_rev", query(
@@ -53,7 +53,7 @@ BAD_SELF = _qb("bad_self", query(
     source_model="orders", dimensions=["status"], measures=[m("sum(nope)", "a")]))
 
 
-def _orders_joining(*names: str) -> SlayerModel:
+def _orders_joining(*names: str) -> SlayerDataset:
     return _joined(orders_model(), *((n, [["status", "status"]]) for n in names))
 
 
@@ -111,8 +111,8 @@ class TestStoredJoinReads:
 
     async def test_a_derived_column_definition(self, dialect) -> None:
         clients = clients_model()
-        clients = clients.model_copy(update={"columns": [
-            *clients.columns, Column(name="top2", sql="cust_rev.top * 2", type=DataType.DOUBLE)]})
+        clients = clients.model_copy(update={"fields": [
+            *clients.fields, DatasetField(name="top2", sql="cust_rev.top * 2", datatype=DataType.DOUBLE)]})
         models = [orders_model(), customers_model(), clients, cust_rev_model()]
         async with dev1966_engine(dialect, models=models) as e:
             resp = await e.execute(query(source_model="clients", dimensions=["id", "top2"]))
@@ -156,22 +156,22 @@ class TestPruning:
         assert [e.name for e in kept] == ["_cm_p", "__slayer_stage_u"]
 
 
-def _floored() -> SlayerModel:
+def _floored() -> SlayerDataset:
     """``sql``-backed over ``orders`` with a ``{floor}`` threshold (default 0)."""
-    return SlayerModel(
+    return SlayerDataset(
         name="floored", data_source="test", query_variables={"floor": 0},
         sql="SELECT id, customer_id, amount FROM orders WHERE amount >= {floor}",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="customer_id", type=DataType.INT),
-                 Column(name="amount", type=DataType.DOUBLE)])
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                 DatasetField(name="customer_id", datatype=DataType.INT),
+                 DatasetField(name="amount", datatype=DataType.DOUBLE)])
 
 
 FLOORED_REV = _qb("floored_rev", query(
     source_model="floored", dimensions=["customer_id"], measures=[m("sum(amount)", "rev")]))
 
 
-def _wrap(name: str, floor: int) -> SlayerModel:
-    return SlayerModel(name=name, data_source="test", query_variables={"floor": floor},
+def _wrap(name: str, floor: int) -> SlayerDataset:
+    return SlayerDataset(name=name, data_source="test", query_variables={"floor": floor},
                        source_queries=[query(source_model="floored_rev", dimensions=["customer_id"],
                                              measures=[m("sum(rev)", "r")])])
 

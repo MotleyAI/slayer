@@ -30,13 +30,13 @@ class TestConstruction:
     def test_literal_placeholder_accepted(self, entry: Any) -> None:
         query = _query(time_dimensions=[entry])
         assert query.time_dimensions is not None
-        assert query.time_dimensions[0].dimension == SHIFTED
+        assert query.time_dimensions[0].field == SHIFTED
 
     def test_functional_form_in_dimensions_moves_to_time_dimensions(self) -> None:
         query = _query(dimensions=[f"date_trunc('month', {SHIFTED})"])
         assert query.dimensions is None
         assert query.time_dimensions is not None
-        assert query.time_dimensions[0].dimension == SHIFTED
+        assert query.time_dimensions[0].field == SHIFTED
 
     def test_placeholder_names_include_the_expression(self) -> None:
         assert extract_placeholder_names(_query(time_dimensions=[td(SHIFTED)])) == {"days"}

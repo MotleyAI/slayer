@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.query import (
-    ModelMeasure,
+    DatasetMetric,
     SlayerQuery,
     TimeDimension,
 )
@@ -41,7 +41,7 @@ class TestMultiOutputProducerValues:
                 "AND count(amount, partition_by=city) > 1 THEN 1 ELSE 0 END")
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -57,7 +57,7 @@ class TestMultiOutputProducerValues:
                 {"expression": "CASE WHEN count(amount, partition_by=city) > 1 "
                                "THEN 1 ELSE 0 END", "name": "band_n"},
             ],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band_hi"]), int(r["orders.band_n"])):
               float(r["orders.s"]) for r in resp.data}
@@ -74,7 +74,7 @@ class TestNotFilterOnComputedDim:
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             filters=["not (band == 1)"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -89,14 +89,14 @@ class TestDateRangeReachesProducer:
         # (5000, not > 5000) bands to 0. Every Jan city total is <= 5000 -> all
         # band 0, distinguishing the two behaviours by VALUE.
         jan = [TimeDimension(
-            dimension="ordered_at",
+            field="ordered_at",
             granularity=TimeGranularity.MONTH,
             date_range=["2024-01-01", "2024-01-31"],
         )]
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             time_dimensions=jan,
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], month_key(r["orders.ordered_at"]),
                int(r["orders.band"])): float(r["orders.s"]) for r in resp.data}
@@ -110,7 +110,7 @@ class TestOrderByComputedDimDescending:
     async def test_order_by_band_desc(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
             order=[{"column": "band", "direction": "desc"}],
         ))
         bands = [int(r["orders.band"]) for r in resp.data]

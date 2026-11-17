@@ -13,17 +13,17 @@ from sqlglot.expressions.query import Query
 
 from slayer.core.enums import AggregationValueClass, DataType, classify_aggregation
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.join_walker import model_column_type, resolved_terminal
+from slayer.core.relationship_walker import dataset_field_type, resolved_terminal
 from slayer.core.keys import (
     AggregateKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     Phase,
     StarKey,
     TimeTruncKey,
     aggregation_source_type,
 )
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
 from slayer.ir.planned import PlannedQuery, ValueSlot
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -37,22 +37,22 @@ class FieldMetadata(BaseModel):
 
 class ResponseAttributes(BaseModel):
     dimensions: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
-    measures: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
+    metrics: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
 
-    def get(self, column: str) -> Optional[FieldMetadata]:
-        return self.dimensions.get(column) or self.measures.get(column)
+    def get(self, field: str) -> Optional[FieldMetadata]:
+        return self.dimensions.get(field) or self.metrics.get(field)
 
 
 def _infer_aggregated_format(
-    model: SlayerModel,
-    measure_name: str,
+    dataset: SlayerDataset,
+    metric_name: str,
     aggregation: str,
     source_type: Optional[DataType] = None,
 ) -> Optional[NumberFormat]:
     """Display NumberFormat for an aggregated measure; ``source_type`` defaults to the column's type."""
-    source_col = model.get_column(measure_name)
-    source_type = source_type or (source_col.type if source_col is not None else None)
-    cls = classify_aggregation(measure_name=measure_name, aggregation=aggregation, source_type=source_type)
+    source_col = dataset.get_field(metric_name)
+    source_type = source_type or (source_col.datatype if source_col is not None else None)
+    cls = classify_aggregation(metric_name=metric_name, aggregation=aggregation, source_type=source_type)
     if cls is AggregationValueClass.COUNT:
         return NumberFormat(type=NumberFormatType.INTEGER)
     if cls is AggregationValueClass.FLOAT_PLAIN:
@@ -92,45 +92,45 @@ def projection_result_keys(*, root_planned: PlannedQuery) -> List[str]:
     return [rk for _, rk in _projected_slot_keys(root_planned=root_planned)]
 
 
-def _model_for_path(
+def _dataset_for_path(
     *, bundle: ResolvedSourceBundle, path: Tuple[str, ...]
-) -> Optional[SlayerModel]:
+) -> Optional[SlayerDataset]:
     """The model a bound (possibly composed) join ``path`` lands on; the host source model
     for an empty or unresolvable path."""
-    current = bundle.source_model
+    current = bundle.population
     if not path or current is None:
         return current
-    return resolved_terminal(root=current, path=path, models_by_name=bundle.models_by_name) or current
+    return resolved_terminal(root=current, path=path, datasets_by_name=bundle.datasets_by_name) or current
 
 
-def _column_for_row_slot(
+def _field_for_row_slot(
     *, slot: ValueSlot, bundle: ResolvedSourceBundle
-) -> Optional[Column]:
+) -> Optional[DatasetField]:
     """The source ``Column`` backing a ROW slot, for label / format lookup."""
     key = slot.key
     if isinstance(key, TimeTruncKey):
         key = key.source
-    if isinstance(key, ColumnKey):
-        model = _model_for_path(bundle=bundle, path=key.path)
+    if isinstance(key, FieldKey):
+        model = _dataset_for_path(bundle=bundle, path=key.path)
         leaf = key.leaf
-    elif isinstance(key, ColumnSqlKey):
-        model = bundle.get_referenced_model(key.model) or bundle.source_model
-        leaf = key.column_name
+    elif isinstance(key, FieldSqlKey):
+        model = bundle.get_referenced_dataset(key.dataset) or bundle.population
+        leaf = key.field_name
     else:
         return None
     if model is None:
         return None
-    return model.get_column(leaf)
+    return model.get_field(leaf)
 
 
-def _owning_model_for_agg_source(*, src, bundle: ResolvedSourceBundle):
+def _owning_dataset_for_agg_source(*, src, bundle: ResolvedSourceBundle):
     """The model that owns an aggregate's source column."""
-    if isinstance(src, ColumnSqlKey):
-        return bundle.get_referenced_model(src.model) or bundle.source_model
-    return _model_for_path(bundle=bundle, path=getattr(src, "path", ()))
+    if isinstance(src, FieldSqlKey):
+        return bundle.get_referenced_dataset(src.dataset) or bundle.population
+    return _dataset_for_path(bundle=bundle, path=getattr(src, "path", ()))
 
 
-def _measure_format(
+def _metric_format(
     *, slot: ValueSlot, bundle: ResolvedSourceBundle
 ) -> Optional[NumberFormat]:
     """Number format for a measure slot; non-aggregate slots default to FLOAT."""
@@ -146,21 +146,21 @@ def _measure_format(
             measure_name = expression_source_leaf(src)
         else:
             measure_name = getattr(src, "leaf", None) or getattr(
-                src, "column_name", None
+                src, "field_name", None
             )
-        model = _owning_model_for_agg_source(src=src, bundle=bundle)
+        model = _owning_dataset_for_agg_source(src=src, bundle=bundle)
         if measure_name is None or model is None:
             return NumberFormat(type=NumberFormatType.FLOAT)
-        root = bundle.source_model
-        column_type = model_column_type(model=root, models_by_name=bundle.models_by_name) if root else None
+        root = bundle.population
+        column_type = dataset_field_type(dataset=root, datasets_by_name=bundle.datasets_by_name) if root else None
         return _infer_aggregated_format(
-            model=model, measure_name=measure_name, aggregation=key.agg,
-            source_type=aggregation_source_type(src, column_type=column_type) if column_type else None,
+            dataset=model, metric_name=measure_name, aggregation=key.agg,
+            source_type=aggregation_source_type(src, field_type=column_type) if column_type else None,
         )
     return NumberFormat(type=NumberFormatType.FLOAT)
 
 
-def _measure_label(
+def _metric_label(
     *, slot: ValueSlot, bundle: ResolvedSourceBundle
 ) -> Optional[str]:
     """Label for a measure slot; inherits the source column's label when the slot has none."""
@@ -169,13 +169,13 @@ def _measure_label(
     key = slot.key
     if isinstance(key, AggregateKey):
         src = key.source
-        if isinstance(src, (ColumnKey, ColumnSqlKey)):
-            model = _owning_model_for_agg_source(src=src, bundle=bundle)
+        if isinstance(src, (FieldKey, FieldSqlKey)):
+            model = _owning_dataset_for_agg_source(src=src, bundle=bundle)
             leaf = getattr(src, "leaf", None) or getattr(
-                src, "column_name", None,
+                src, "field_name", None,
             )
             if model is not None and leaf is not None:
-                col = model.get_column(leaf)
+                col = model.get_field(leaf)
                 if col is not None:
                     return col.label
     return None
@@ -197,7 +197,7 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
     public_keys = set(expected_columns)
 
     dim_meta: Dict[str, FieldMetadata] = {}
-    measure_meta: Dict[str, FieldMetadata] = {}
+    metric_meta: Dict[str, FieldMetadata] = {}
 
     # A combined regroup attach substitutes each consumed aggregate for a
     # reserved-leaf placeholder; map it back so its label/format resolve.
@@ -215,7 +215,7 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
         original = placeholder_original.get(slot.key)
         is_combined_placeholder = original is not None
         if slot.phase == Phase.ROW and not is_combined_placeholder:
-            col = _column_for_row_slot(slot=slot, bundle=bundle)
+            col = _field_for_row_slot(slot=slot, bundle=bundle)
             label = slot.label or (col.label if col else None)
             if isinstance(slot.key, TimeTruncKey):
                 # Time dimensions carry a label only.
@@ -230,9 +230,9 @@ def build_response_metadata(  # NOSONAR(S3776) — flat per-slot metadata classi
                 slot.model_copy(update={"key": original})
                 if is_combined_placeholder else slot
             )
-            fmt = _measure_format(slot=measure_slot, bundle=bundle)
-            label = _measure_label(slot=measure_slot, bundle=bundle)
+            fmt = _metric_format(slot=measure_slot, bundle=bundle)
+            label = _metric_label(slot=measure_slot, bundle=bundle)
             if label or fmt:
-                measure_meta[rk] = FieldMetadata(label=label, format=fmt)
+                metric_meta[rk] = FieldMetadata(label=label, format=fmt)
 
-    return ResponseAttributes(dimensions=dim_meta, measures=measure_meta), expected_columns
+    return ResponseAttributes(dimensions=dim_meta, metrics=metric_meta), expected_columns

@@ -13,7 +13,7 @@ _CANNOT_NAME = re.compile(r"can(?:'|no)t name")
 
 
 def build(**kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "orders", **kw})
+    return SlayerQuery.model_validate({"population": "orders", **kw})
 
 
 def test_string_dimension_with_placeholder() -> None:
@@ -24,7 +24,7 @@ def test_string_dimension_with_placeholder() -> None:
 def test_order_expression_with_placeholder() -> None:
     q = build(order=[{"column": "sum(amount) * {k}", "direction": "desc"}])
     assert q.order is not None
-    assert q.order[0].raw_formula == "sum(amount) * {k}"
+    assert q.order[0].raw_expression == "sum(amount) * {k}"
     assert q.order[0].direction == "desc"
 
 

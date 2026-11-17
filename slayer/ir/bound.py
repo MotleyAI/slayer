@@ -48,14 +48,14 @@ class BoundExpr(BaseModel):
 
 class BoundTimeDimension(BaseModel):
     """A bound time dimension: the wrapped ``BoundExpr`` (``bound``) plus the facts the
-    checker judges — a column's ``column_type`` (an expression is typed by the checker)
+    checker judges — a column's ``field_type`` (an expression is typed by the checker)
     and ``(leaf, granularity)`` per temporal leaf a bucketed stage column or a model
     ``Column``'s ``granularity`` records."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     bound: BoundExpr
-    column_type: Optional[DataType] = None
+    field_type: Optional[DataType] = None
     bucketed_leaves: Tuple[Tuple[str, Granularity], ...] = ()
     is_expression: bool = False
 
@@ -72,8 +72,8 @@ def row_restriction_from_key(vk: ValueKey) -> BoundFilter:
     return bound_filter_from_key(vk).model_copy(update={"row_restriction": True})
 
 
-class DeclaredMeasure(BaseModel):
-    """One declared measure; ``type`` follows the aggregation (count → INT, avg → DOUBLE, else source type)."""
+class DeclaredMetric(BaseModel):
+    """One declared measure; ``datatype`` follows the aggregation (count → INT, avg → DOUBLE, else source type)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -83,7 +83,7 @@ class DeclaredMeasure(BaseModel):
     label: Optional[str] = None
     canonical_alias: Optional[str] = None
     name_is_explicit: bool = False
-    type: Optional[DataType] = None
+    datatype: Optional[DataType] = None
     element_type: Optional[DataType] = None
     type_is_explicit: bool = False
     preserve_native_type: bool = False
@@ -109,7 +109,7 @@ class GranularityConflict(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    column: str
+    field: str
     granularities: Tuple[Granularity, Granularity]
 
 

@@ -79,7 +79,7 @@ class TestWholePeriodsOnly:
 
     async def test_snapping_to_custom_boundaries(self, cg) -> None:
         resp = await cg.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [m("sum(amount)", "s")], "whole_periods_only": True,
+            "population": "orders", "metrics": [m("sum(amount)", "s")], "whole_periods_only": True,
             "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year",
                                  "date_range": ["2024-05-01", "2025-12-31"]}],
         }))
@@ -89,10 +89,10 @@ class TestWholePeriodsOnly:
 
     async def test_month_with_a_mid_month_custom_granularity_warns(self, cg) -> None:
         resp = await cg.execute(SlayerQuery.model_validate({
-            "source_model": "events", "measures": [m("sum(amount)", "s")], "whole_periods_only": True,
+            "population": "events", "metrics": [m("sum(amount)", "s")], "whole_periods_only": True,
             "time_dimensions": [{"dimension": "ts", "granularity": "month"},
                                 {"dimension": "ts", "granularity": "billing_month"}],
-            "filters": ["ts >= '2025-01-01'"],
+            "filter": ["ts >= '2025-01-01'"],
         }))
         assert resp.data
         dumps = [w.model_dump_json() for w in resp.warnings]

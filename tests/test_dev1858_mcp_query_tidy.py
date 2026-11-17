@@ -13,7 +13,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.sqlite_conn import transaction
@@ -72,21 +72,21 @@ async def orders_server(tmp_path):
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_path)
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="status", sql="status", type=DataType.TEXT, label="Order Status"),
-            Column(name="amount", sql="amount", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="status", sql="status", datatype=DataType.TEXT, label="Order Status"),
+            DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
         ],
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="qb_by_status", data_source="ds",
         source_queries=[SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["status"],
-            "measures": [{"formula": "sum(amount)"}],
+            "metrics": [{"formula": "sum(amount)"}],
         })],
     ))
     return create_mcp_server(storage=storage)

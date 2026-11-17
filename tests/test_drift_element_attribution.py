@@ -16,11 +16,11 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SchemaDriftError
-from slayer.core.join_edges import JoinEdgeRef
-from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.relationship_edges import RelationshipEdgeRef
+from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.live_schema import schema_drift
 from slayer.engine.query_engine import SlayerQueryEngine
-from slayer.live_schema.schema_drift import DeleteReason, EditModelDelete, RemoveSpec, RetypeFinding, WholeModelDelete
+from slayer.live_schema.schema_drift import DeleteReason, EditDatasetDelete, RemoveSpec, RetypeFinding, WholeDatasetDelete
 from slayer.database import engine_factory
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.yaml_storage import YAMLStorage
@@ -39,33 +39,33 @@ _DB_FAILURE = {"source_model": "t", "measures": [{"formula": "sum(bad)"}]}
 
 
 def _t(*, ts: DataType = DataType.TEXT, filters: list[str] | None = None,
-       measures: list[ModelMeasure] | None = None) -> SlayerModel:
-    return SlayerModel(
+       measures: list[DatasetMetric] | None = None) -> SlayerDataset:
+    return SlayerDataset(
         name="t", sql_table="t", data_source="ds",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="x", type=DataType.DOUBLE),
-            Column(name="s", type=DataType.TEXT),
-            Column(name="ts", type=ts),
-            Column(name="y", sql="x * 2", type=DataType.DOUBLE),
-            Column(name="bad", sql="no_such_fn(x)", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="x", datatype=DataType.DOUBLE),
+            DatasetField(name="s", datatype=DataType.TEXT),
+            DatasetField(name="ts", datatype=ts),
+            DatasetField(name="y", sql="x * 2", datatype=DataType.DOUBLE),
+            DatasetField(name="bad", sql="no_such_fn(x)", datatype=DataType.DOUBLE),
         ],
         filters=filters or [],
-        measures=measures or [],
+        metrics=measures or [],
     )
 
 
-def _shop() -> list[SlayerModel]:
+def _shop() -> list[SlayerDataset]:
     return [
-        SlayerModel(name="customers", sql_table="customers", data_source="ds", columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT)]),
-        SlayerModel(name="orders", sql_table="orders", data_source="ds", columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="bad", sql="no_such_fn(id)", type=DataType.DOUBLE)],
-            joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])]),
+        SlayerDataset(name="customers", sql_table="customers", data_source="ds", fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region", datatype=DataType.TEXT)]),
+        SlayerDataset(name="orders", sql_table="orders", data_source="ds", fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="bad", sql="no_such_fn(id)", datatype=DataType.DOUBLE)],
+            relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])]),
     ]
 
 
@@ -80,14 +80,14 @@ class _Env:
 
 
 @contextlib.asynccontextmanager
-async def _env(tmp: Path, *models: SlayerModel) -> AsyncGenerator[_Env]:
+async def _env(tmp: Path, *models: SlayerDataset) -> AsyncGenerator[_Env]:
     db_path = str(tmp / "live.db")
     with transaction(db_path) as conn:
         conn.executescript(_SCHEMA)
     storage = YAMLStorage(base_dir=str(tmp / "storage"))
     await storage.save_datasource(DatasourceConfig(name="ds", type="sqlite", database=db_path))
     for m in models:
-        await storage.save_model(m)
+        await storage.save_dataset(m)
     engine = SlayerQueryEngine(storage=storage)
     try:
         yield _Env(engine=engine, db_path=db_path)
@@ -109,7 +109,7 @@ async def _wrapped(engine: SlayerQueryEngine, query: Any) -> SchemaDriftError:
 
 
 def _removes(err: SchemaDriftError, *, model: str, column: str) -> bool:
-    return any(isinstance(e, EditModelDelete) and e.model_name == model and column in e.remove.columns
+    return any(isinstance(e, EditDatasetDelete) and e.dataset_name == model and column in e.remove.fields
                for e in err.to_delete)
 
 
@@ -120,14 +120,14 @@ class TestUnreadDriftLeavesTheError:
         assert "no_such_fn" in str(err).lower(), err
 
     async def test_unread_dropped_column_and_its_measure(self, tmp_path: Path) -> None:
-        model = _t(measures=[ModelMeasure(name="n_s", formula="count_distinct(s)")])
+        model = _t(measures=[DatasetMetric(name="n_s", expression="count_distinct(s)")])
         async with _env(tmp_path, model) as env:
             env.live("ALTER TABLE t DROP COLUMN s")
             await _unwrapped(env.engine, _DB_FAILURE)
 
     async def test_a_host_column_named_like_a_producer_column(self, tmp_path: Path) -> None:
         customers, orders = _shop()
-        stale = customers.model_copy(update={"columns": [*customers.columns, Column(name="amount", type=DataType.DOUBLE)]})
+        stale = customers.model_copy(update={"fields": [*customers.fields, DatasetField(name="amount", datatype=DataType.DOUBLE)]})
         async with _env(tmp_path, stale, orders) as env:
             err = await _unwrapped(env.engine, {"source_model": "customers", "dimensions": ["region"], "measures": [
                 {"formula": "orders.sum(amount)", "name": "total"}, {"formula": "orders.sum(bad)", "name": "b"}]})
@@ -173,7 +173,7 @@ class TestReadDriftWraps:
         assert _removes(err, model="orders", column="amount"), err.to_delete
 
     async def test_a_used_model_measure(self, tmp_path: Path) -> None:
-        model = _t(measures=[ModelMeasure(name="total", formula="sum(x)")])
+        model = _t(measures=[DatasetMetric(name="total", expression="sum(x)")])
         async with _env(tmp_path, model) as env:
             env.live("ALTER TABLE t DROP COLUMN x")
             await _wrapped(env.engine, {"source_model": "t", "measures": ["total"]})
@@ -187,11 +187,11 @@ class TestReadDriftWraps:
 _ORDERS_BAD = {"source_model": "orders", "measures": [{"formula": "sum(bad)"}]}
 
 
-def _instrumented_orders() -> SlayerModel:
+def _instrumented_orders() -> SlayerDataset:
     orders = _shop()[1]
     return orders.model_copy(update={
-        "measures": [ModelMeasure(name="m_bad", formula="sum(bad)")],
-        "aggregations": [Aggregation(name="wbad", formula="SUM({value})")],
+        "metrics": [DatasetMetric(name="m_bad", expression="sum(bad)")],
+        "aggregations": [Aggregation(name="wbad", expression="SUM({value})")],
     })
 
 
@@ -202,7 +202,7 @@ def _inject(remove: RemoveSpec) -> Any:
     async def _with_entry(**kwargs: Any) -> list[Any]:
         entries = await real(**kwargs)
         if any(m.name == "orders" for m in kwargs["models"]):
-            entries = [*entries, EditModelDelete(model_name="orders", data_source="ds", remove=remove,
+            entries = [*entries, EditDatasetDelete(dataset_name="orders", data_source="ds", remove=remove,
                                                  reasons=[DeleteReason(target="injected", reason="injected")])]
         return entries
 
@@ -210,8 +210,8 @@ def _inject(remove: RemoveSpec) -> Any:
 
 
 def _join_removal() -> RemoveSpec:
-    join = _shop()[1].joins[0]
-    return RemoveSpec(join_edges=[JoinEdgeRef.of(join)])
+    join = _shop()[1].relationships[0]
+    return RemoveSpec(relationship_edges=[RelationshipEdgeRef.of(join)])
 
 
 class TestInjectedRemovals:
@@ -227,12 +227,12 @@ class TestInjectedRemovals:
 
     async def test_a_measure_used_by_name(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _shop()[0], _instrumented_orders()) as env:
-            with _inject(RemoveSpec(measures=["m_bad"])):
+            with _inject(RemoveSpec(metrics=["m_bad"])):
                 await _wrapped(env.engine, {"source_model": "orders", "measures": ["m_bad"]})
 
     async def test_an_unused_measure(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _shop()[0], _instrumented_orders()) as env:
-            with _inject(RemoveSpec(measures=["m_bad"])):
+            with _inject(RemoveSpec(metrics=["m_bad"])):
                 await _unwrapped(env.engine, _ORDERS_BAD)
 
     async def test_a_used_aggregation(self, tmp_path: Path) -> None:
@@ -248,39 +248,39 @@ class TestInjectedRemovals:
 
 class TestInvalidSqlModel:
     async def test_its_own_invalid_sql_drop_is_no_evidence(self, tmp_path: Path) -> None:
-        broken = SlayerModel(name="sq_broken", data_source="ds",
-                             sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders", columns=[
-                                 Column(name="id", type=DataType.TEXT, primary_key=True),
-                                 Column(name="amount", type=DataType.DOUBLE)])
+        broken = SlayerDataset(name="sq_broken", data_source="ds",
+                             sql="SELECT id, NO_SUCH_FUNCTION(amount) AS amount FROM orders", fields=[
+                                 DatasetField(name="id", datatype=DataType.TEXT, primary_key=True),
+                                 DatasetField(name="amount", datatype=DataType.DOUBLE)])
         async with _env(tmp_path, *_shop(), broken) as env:
-            entries = [e for e in await env.engine.validate_models(data_source="ds") if e.model_name == "sq_broken"]
+            entries = [e for e in await env.engine.validate_datasets(data_source="ds") if e.dataset_name == "sq_broken"]
             err = await _unwrapped(env.engine, {"source_model": "sq_broken", "measures": [{"formula": "count(*)"}]})
-        assert [(type(e), e.cause if isinstance(e, WholeModelDelete) else None) for e in entries] == [
-            (WholeModelDelete, "invalid_sql")], entries
+        assert [(type(e), e.cause if isinstance(e, WholeDatasetDelete) else None) for e in entries] == [
+            (WholeDatasetDelete, "invalid_sql")], entries
         assert "no_such_function" in str(err).lower(), err
 
 
-def _dated(*, ts: DataType, d: DataType) -> SlayerModel:
-    return SlayerModel(name="t", sql_table="t", data_source="ds", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="x", type=DataType.DOUBLE),
-        Column(name="ts", type=ts),
-        Column(name="d", type=d),
-        Column(name="bad", sql="no_such_fn(x)", type=DataType.DOUBLE)])
+def _dated(*, ts: DataType, d: DataType) -> SlayerDataset:
+    return SlayerDataset(name="t", sql_table="t", data_source="ds", fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="x", datatype=DataType.DOUBLE),
+        DatasetField(name="ts", datatype=ts),
+        DatasetField(name="d", datatype=d),
+        DatasetField(name="bad", sql="no_such_fn(x)", datatype=DataType.DOUBLE)])
 
 
 def _retypes(entries: list[Any]) -> list[tuple[str, DataType, DataType]]:
-    return [(e.column, e.stored_type, e.live_type) for e in entries if isinstance(e, RetypeFinding)]
+    return [(e.field, e.stored_type, e.live_type) for e in entries if isinstance(e, RetypeFinding)]
 
 
-def _deletes(entries: list[Any], column: str) -> list[EditModelDelete]:
-    return [e for e in entries if isinstance(e, EditModelDelete) and column in e.remove.columns]
+def _deletes(entries: list[Any], column: str) -> list[EditDatasetDelete]:
+    return [e for e in entries if isinstance(e, EditDatasetDelete) and column in e.remove.fields]
 
 
 class TestSqliteTemporalOverText:
     async def test_validation_reports_nothing(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _dated(ts=DataType.TIMESTAMP, d=DataType.DATE)) as env:
-            entries = await env.engine.validate_models(data_source="ds")
+            entries = await env.engine.validate_datasets(data_source="ds")
         assert entries == [], entries
 
     async def test_query_time_attribution_does_not_blame_it(self, tmp_path: Path) -> None:
@@ -289,7 +289,7 @@ class TestSqliteTemporalOverText:
 
     async def test_a_non_temporal_declaration_over_text_is_still_drift(self, tmp_path: Path) -> None:
         async with _env(tmp_path, _dated(ts=DataType.INT, d=DataType.DATE)) as env:
-            entries = await env.engine.validate_models(data_source="ds")
+            entries = await env.engine.validate_datasets(data_source="ds")
         assert _retypes(entries) == [("ts", DataType.INT, DataType.TEXT)], entries
         assert not _deletes(entries, "ts"), entries
 
@@ -304,10 +304,10 @@ class TestOtherDialectsKeepTheBucketRule:
             ds = DatasourceConfig(name="ds", type="duckdb", database=db_path)
             storage = YAMLStorage(base_dir=os.path.join(tmp, "store"))
             await storage.save_datasource(ds)
-            await storage.save_model(_dated(ts=DataType.TIMESTAMP, d=DataType.TEXT))
+            await storage.save_dataset(_dated(ts=DataType.TIMESTAMP, d=DataType.TEXT))
             engine = SlayerQueryEngine(storage=storage)
             try:
-                entries = await engine.validate_models(data_source="ds")
+                entries = await engine.validate_datasets(data_source="ds")
             finally:
                 engine.close()
                 engine_factory.invalidate_engine(ds)

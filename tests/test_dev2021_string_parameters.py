@@ -16,7 +16,7 @@ from sqlglot import exp
 
 from slayer.core.enums import DataType
 from slayer.core.errors import UnanalyzableAggregationParameterError
-from slayer.core.models import Aggregation, AggregationParam, Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.database.client import SlayerSQLClient
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -56,30 +56,30 @@ def _seed(db_path: str) -> None:
             cur.executemany(f"INSERT INTO {table} VALUES ({', '.join('?' * len(rows[0]))})", rows)
 
 
-_WSUM = Aggregation(name="wsum", formula="SUM({value} * {w})")
+_WSUM = Aggregation(name="wsum", expression="SUM({value} * {w})")
 # A SQLite-only default (``unicode``), valid Mode A but outside the Mode-B library.
-_USUM = Aggregation(name="usum", formula="SUM({value} * {w})",
+_USUM = Aggregation(name="usum", expression="SUM({value} * {w})",
                     params=[AggregationParam(name="w", sql="unicode(status) - unicode(status) + quantity")])
-_LABEL = Aggregation(name="lbl", formula="MAX(CASE WHEN {value} > 0 THEN '{n}' END)",
+_LABEL = Aggregation(name="lbl", expression="MAX(CASE WHEN {value} > 0 THEN '{n}' END)",
                      params=[AggregationParam(name="n", sql="'x'")])
 
 
-def _models(*aggs: Aggregation) -> list[SlayerModel]:
-    customers = SlayerModel(
+def _models(*aggs: Aggregation) -> list[SlayerDataset]:
+    customers = SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="region_id", type=DataType.INT)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="region_id", datatype=DataType.INT)],
     )
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="quantity", type=DataType.INT),
-            Column(name="created_at", type=DataType.DATE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="quantity", datatype=DataType.INT),
+            DatasetField(name="created_at", datatype=DataType.DATE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
         aggregations=list(aggs),
     )
     return [customers, orders]
@@ -106,7 +106,7 @@ def executed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 def _q(formula: str, **extra: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "orders", "measures": [{"formula": formula, "name": "m"}], **extra})
+    return SlayerQuery.model_validate({"population": "orders", "metrics": [{"formula": formula, "name": "m"}], **extra})
 
 
 async def _value(engine: SlayerQueryEngine, formula: str) -> float:
@@ -175,7 +175,7 @@ class TestQuotedPlaceholder:
     async def test_a_mode_b_string_literal_cannot_escape_the_literal(self, dialect: str) -> None:
         orders = _models(_LABEL)[1]
         sql = await _engine_generate(
-            query=SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=f"lbl(amount, n={_MODE_B_LITERAL})",
+            query=SlayerQuery(population="orders", metrics=[DatasetMetric(expression=f"lbl(amount, n={_MODE_B_LITERAL})",
                                                                             name="m")]),
             model=orders, dialect=dialect, extra_models=[_models()[0]],
         )

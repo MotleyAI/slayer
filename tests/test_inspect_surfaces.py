@@ -23,10 +23,10 @@ from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
@@ -36,24 +36,24 @@ async def _seed(storage: YAMLStorage) -> None:
     await storage.save_datasource(
         DatasourceConfig(name="mydb", type="sqlite", database=":memory:")
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="mydb",
         description="One row per placed order.",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(
-                name="amount", sql="amount", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(
+                name="amount", sql="amount", datatype=DataType.DOUBLE,
                 description="Order total in USD.",
             ),
-            Column(
-                name="customer_id", sql="customer_id", type=DataType.INT,
+            DatasetField(
+                name="customer_id", sql="customer_id", datatype=DataType.INT,
                 description="FK to customers.",
             ),
         ],
-        measures=[ModelMeasure(name="aov", formula="sum(amount) / count(*)")],
-        aggregations=[Aggregation(name="big", formula="MAX({col})")],
+        metrics=[DatasetMetric(name="aov", expression="sum(amount) / count(*)")],
+        aggregations=[Aggregation(name="big", expression="MAX({col})")],
     ))
     await storage.set_datasource_priority(["mydb"])
 

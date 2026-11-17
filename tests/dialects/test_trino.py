@@ -301,7 +301,7 @@ def test_percentile_is_approx_percentile(dialect) -> None:
 # ---------------------------------------------------------------------------
 
 _DATE_QUERY = SlayerQuery.model_validate({
-    "source_model": "dt",
+    "population": "dt",
     "dimensions": [
         "id",
         {"expression": "date_add(d1, 1, 'month')", "name": "a"},

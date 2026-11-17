@@ -24,8 +24,8 @@ import slayer.sql._identifier_fit as fitmod
 import slayer.sql.dialects as dialects_registry
 from slayer.core.enums import DataType
 from slayer.core.errors import IdentifierCollisionError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
-from slayer.core.query import ColumnRef, ModelExtension, ModelMeasure, SlayerQuery
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
+from slayer.core.query import FieldRef, DatasetExtension, DatasetMetric, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql._identifier_fit import SqlLexis, fit_identifier, substitute_quoted
 from slayer.sql.dialects import get_dialect
@@ -92,7 +92,7 @@ COLLIDE_QUERY = q(
         {"expression": RBAND, "name": "rband"},
         {"expression": BAND35, "name": "cband"},
     ],
-    measures=[ModelMeasure(formula="sum(amount)", name="s")],
+    measures=[DatasetMetric(expression="sum(amount)", name="s")],
 )
 
 _GOLDEN_CASES = _cases()
@@ -127,18 +127,18 @@ async def _canonical_internal_aliases() -> list[str]:
     return names
 
 
-async def _dry_run(models: list[SlayerModel], query, *, dialect: str = "postgres"):
+async def _dry_run(models: list[SlayerDataset], query, *, dialect: str = "postgres"):
     with tempfile.TemporaryDirectory() as d:
         storage = YAMLStorage(base_dir=d)
         await storage.save_datasource(DatasourceConfig(name=DS, type=dialect))
         for m in models:
-            await storage.save_model(m, _validate=False)
+            await storage.save_dataset(m, _validate=False)
         resp = await SlayerQueryEngine(storage=storage).execute(query, dry_run=True)
         assert resp.sql is not None
         return resp
 
 
-async def _dry_sql(models: list[SlayerModel], query, *, dialect: str = "postgres") -> str:
+async def _dry_sql(models: list[SlayerDataset], query, *, dialect: str = "postgres") -> str:
     resp = await _dry_run(models, query, dialect=dialect)
     assert resp.sql is not None
     return resp.sql
@@ -209,11 +209,11 @@ class TestNestedAttachEmission:
         """SLayer-generated backing SQL is not a user surface: over-limit
         aliases inside an expanded query-backed model are fitted, not exempted."""
         names = await _canonical_internal_aliases()
-        qb = SlayerModel(name="qb", source_queries=[NESTED], data_source=DS)
+        qb = SlayerDataset(name="qb", source_queries=[NESTED], data_source=DS)
         query = SlayerQuery(
-            source_model="qb",
-            dimensions=[ColumnRef(name="band")],
-            measures=[ModelMeasure(formula="sum(s)", name="t")],
+            population="qb",
+            dimensions=[FieldRef(name="band")],
+            metrics=[DatasetMetric(expression="sum(s)", name="t")],
         )
         sql = await _dry_sql([*dev1824_models(), qb], query)
         over = [n for n in _identifiers(sql, "postgres") if _nbytes(n) > PG_LIMIT]
@@ -302,36 +302,36 @@ class TestForcedLimitExecution:
 
 class TestUserSurfacesExempt:
     @staticmethod
-    def _orders(**kw) -> SlayerModel:
+    def _orders(**kw) -> SlayerDataset:
         cols = [
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
             *kw.pop("extra_columns", []),
         ]
-        return SlayerModel(
+        return SlayerDataset(
             name=kw.pop("name", "orders"), data_source=DS,
-            sql_table=kw.pop("sql_table", "orders"), columns=cols, **kw,
+            sql_table=kw.pop("sql_table", "orders"), fields=cols, **kw,
         )
 
     @staticmethod
     def _query(measure: str) -> SlayerQuery:
         return SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula=measure, name="w")],
+            population="orders",
+            dimensions=[FieldRef(name="region")],
+            metrics=[DatasetMetric(expression=measure, name="w")],
         )
 
     async def test_column_sql_survives(self) -> None:
         model = self._orders(extra_columns=[
-            Column(name="wide", sql=f'"{PHYS_COL}"', type=DataType.DOUBLE),
+            DatasetField(name="wide", sql=f'"{PHYS_COL}"', datatype=DataType.DOUBLE),
         ])
         sql = await _dry_sql([model], self._query("sum(wide)"))
         assert f'"{PHYS_COL}"' in sql
 
     async def test_column_filter_survives(self) -> None:
         model = self._orders(extra_columns=[
-            Column(name="okwide", sql="amount", filter=f'"{PHYS_COL}" > 0', type=DataType.DOUBLE),
+            DatasetField(name="okwide", sql="amount", filter=f'"{PHYS_COL}" > 0', datatype=DataType.DOUBLE),
         ])
         sql = await _dry_sql([model], self._query("sum(okwide)"))
         assert f'"{PHYS_COL}"' in sql
@@ -344,94 +344,94 @@ class TestUserSurfacesExempt:
     async def test_sql_table_survives(self) -> None:
         model = self._orders(name="wtab", sql_table=PHYS_TBL)
         query = SlayerQuery(
-            source_model="wtab",
-            dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            population="wtab",
+            dimensions=[FieldRef(name="region")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         sql = await _dry_sql([model], query)
         assert PHYS_TBL in sql
 
     async def test_extension_measure_survives(self) -> None:
         model = self._orders(extra_columns=[
-            Column(name="wide", sql=f'"{PHYS_COL}"', type=DataType.DOUBLE),
+            DatasetField(name="wide", sql=f'"{PHYS_COL}"', datatype=DataType.DOUBLE),
         ])
-        ext = ModelExtension(
+        ext = DatasetExtension(
             source_name="orders",
-            measures=[ModelMeasure(name="extwide", formula="sum(wide)")],
+            metrics=[DatasetMetric(name="extwide", expression="sum(wide)")],
         )
         query = SlayerQuery(
-            source_model="orders",
+            population="orders",
             extensions=[ext],
-            dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="extwide", name="w")],
+            dimensions=[FieldRef(name="region")],
+            metrics=[DatasetMetric(expression="extwide", name="w")],
         )
         sql = await _dry_sql([model], query)
         assert f'"{PHYS_COL}"' in sql
 
     async def test_non_root_named_stage_model_survives(self) -> None:
         wide_src = self._orders(name="wide_src", extra_columns=[
-            Column(name="wide", sql=f'"{PHYS_COL}"', type=DataType.DOUBLE),
+            DatasetField(name="wide", sql=f'"{PHYS_COL}"', datatype=DataType.DOUBLE),
         ])
         inner = SlayerQuery(
-            name="s1", source_model="wide_src",
-            dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="sum(wide)", name="w")],
+            name="s1", population="wide_src",
+            dimensions=[FieldRef(name="region")],
+            metrics=[DatasetMetric(expression="sum(wide)", name="w")],
         )
         outer = SlayerQuery(
-            source_model="s1",
-            dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="sum(w)", name="tw")],
+            population="s1",
+            dimensions=[FieldRef(name="region")],
+            metrics=[DatasetMetric(expression="sum(w)", name="tw")],
         )
         sql = await _dry_sql([wide_src], [inner, outer])
         assert f'"{PHYS_COL}"' in sql
 
     async def test_model_sql_survives(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="sqlm", data_source=DS,
             sql=f'SELECT id, region, amount, "{PHYS_COL}" AS wide FROM base_orders',
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="wide", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="region", datatype=DataType.TEXT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="wide", datatype=DataType.DOUBLE),
             ],
         )
         query = SlayerQuery(
-            source_model="sqlm",
-            dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="sum(wide)", name="w")],
+            population="sqlm",
+            dimensions=[FieldRef(name="region")],
+            metrics=[DatasetMetric(expression="sum(wide)", name="w")],
         )
         sql = await _dry_sql([model], query)
         assert f'"{PHYS_COL}"' in sql
 
     async def test_inline_model_survives(self) -> None:
         stored = self._orders(name="inline_orders", extra_columns=[
-            Column(name="wide", sql=f'"{PHYS_COL}"', type=DataType.DOUBLE),
+            DatasetField(name="wide", sql=f'"{PHYS_COL}"', datatype=DataType.DOUBLE),
         ])
         query = SlayerQuery(
-            source_model="inline_orders",
-            dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="sum(wide)", name="w")],
+            population="inline_orders",
+            dimensions=[FieldRef(name="region")],
+            metrics=[DatasetMetric(expression="sum(wide)", name="w")],
         )
         sql = await _dry_sql([stored], query)
         assert f'"{PHYS_COL}"' in sql
 
     async def test_referenced_model_column_survives(self) -> None:
-        dims = SlayerModel(
+        dims = SlayerDataset(
             name="dims", data_source=DS, sql_table="dims",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="wide", sql=f'"{PHYS_COL}"', type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="wide", sql=f'"{PHYS_COL}"', datatype=DataType.DOUBLE),
             ],
         )
         host = self._orders(
-            extra_columns=[Column(name="dim_id", type=DataType.INT)],
-            joins=[ModelJoin(target_model="dims", join_pairs=[["dim_id", "id"]])],
+            extra_columns=[DatasetField(name="dim_id", datatype=DataType.INT)],
+            joins=[DatasetRelationship(to="dims", join_pairs=[["dim_id", "id"]])],
         )
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name="region")],
-            measures=[ModelMeasure(formula="sum(dims.wide)", name="w")],
+            population="orders",
+            dimensions=[FieldRef(name="region")],
+            metrics=[DatasetMetric(expression="sum(dims.wide)", name="w")],
         )
         sql = await _dry_sql([host, dims], query)
         assert f'"{PHYS_COL}"' in sql
@@ -440,12 +440,12 @@ class TestUserSurfacesExempt:
         """The bare user column NAME passes through; the SLayer-minted dotted
         alias built FROM it is a different spelling and stays fitted."""
         model = self._orders(extra_columns=[
-            Column(name=LONG_COL_NAME, type=DataType.DOUBLE),
+            DatasetField(name=LONG_COL_NAME, datatype=DataType.DOUBLE),
         ])
         query = SlayerQuery(
-            source_model="orders",
-            dimensions=[ColumnRef(name=LONG_COL_NAME)],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            population="orders",
+            dimensions=[FieldRef(name=LONG_COL_NAME)],
+            metrics=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         sql = await _dry_sql([model], query)
         assert LONG_COL_NAME in sql

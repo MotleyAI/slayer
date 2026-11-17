@@ -12,10 +12,10 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.keys import VALUE_KEY_TYPES, InKey, LiteralKey, ScalarCallKey, _FrozenKey
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import key_display
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -165,11 +165,11 @@ MIXED_DDL = ("CREATE TABLE mixed (id INTEGER, scores INTEGER[], prices DOUBLE[])
              "INSERT INTO mixed VALUES (1, [2, 3], [2.0]), (2, [4], [2.5])")
 
 
-def mixed_model() -> SlayerModel:
-    return SlayerModel(name="mixed", sql_table="mixed", data_source="test", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="scores", type=DataType.ARRAY, element_type=DataType.INT),
-        Column(name="prices", type=DataType.ARRAY, element_type=DataType.DOUBLE),
+def mixed_model() -> SlayerDataset:
+    return SlayerDataset(name="mixed", sql_table="mixed", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INT),
+        DatasetField(name="prices", datatype=DataType.ARRAY, element_type=DataType.DOUBLE),
     ])
 
 
@@ -188,29 +188,29 @@ class TestMixedNumerics:
     async def test_executes_on_duckdb(self, filter_: str) -> None:
         async with seeded_exec_engine(dialect="duckdb", seed=_seed_mixed, models=[mixed_model()]) as (eng, _db):
             resp = await eng.execute(SlayerQuery.model_validate(
-                {"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}))
+                {"population": "mixed", "dimensions": ["id"], "filter": [filter_]}))
         assert {int(r["mixed.id"]) for r in resp.data} == {1}, resp.sql
 
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     @pytest.mark.parametrize("filter_", MIXED_FILTERS)
     async def test_emits(self, dialect: str, filter_: str) -> None:
-        await emit(SlayerQuery.model_validate({"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}),
+        await emit(SlayerQuery.model_validate({"population": "mixed", "dimensions": ["id"], "filter": [filter_]}),
                    dialect=dialect, models=[mixed_model()])
 
     @pytest.mark.parametrize("filter_", ["contains_any(scores, prices)", "contains_any(prices, scores)"])
     async def test_bigquery_overlap_compares_by_equality(self, filter_: str) -> None:
         # BigQuery has no ``FLOAT64 IN UNNEST(ARRAY<INT64>)`` signature.
         sql = await emit(SlayerQuery.model_validate(
-            {"source_model": "mixed", "dimensions": ["id"], "filters": [filter_]}), dialect="bigquery",
+            {"population": "mixed", "dimensions": ["id"], "filter": [filter_]}), dialect="bigquery",
             models=[mixed_model()])
         assert "IN UNNEST" not in sql.upper(), sql
 
 
 def _bind(text: str):
     model = contractors_model()
-    bundle = ResolvedSourceBundle(dialect="duckdb", source_model=model, referenced_models=[])
-    return bind_expr(parse_expr(text), scope=ModelScope(source_model=model), bundle=bundle,
-                     allow_measures=True).value_key
+    bundle = ResolvedSourceBundle(dialect="duckdb", population=model, referenced_datasets=[])
+    return bind_expr(parse_expr(text), scope=DatasetScope(population=model), bundle=bundle,
+                     allow_metrics=True).value_key
 
 
 class TestArrayLiteralKey:
@@ -261,7 +261,7 @@ class TestEmission:
 
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     async def test_date_lists_emit(self, dialect: str) -> None:
-        days = Column(name="days", type=DataType.ARRAY, element_type=DataType.DATE)
-        model = contractors_model().model_copy(update={"columns": [*contractors_model().columns, days]})
+        days = DatasetField(name="days", datatype=DataType.ARRAY, element_type=DataType.DATE)
+        model = contractors_model().model_copy(update={"columns": [*contractors_model().fields, days]})
         await emit_contractors(query(dimensions=["id", {"expression": "contains(days, DATE '2025-01-01')",
                                                         "name": "v"}]), dialect=dialect, models=[model])

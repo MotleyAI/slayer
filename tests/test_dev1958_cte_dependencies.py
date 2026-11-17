@@ -13,7 +13,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.scope_check import assert_dependency_ordered_ctes, assert_scope_closed
 
 from tests._dev1832_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     TimeDimension,
     TimeGranularity,
     degenerate_warnings,
@@ -33,12 +33,12 @@ DEGENERATE_SHARE = "sum(amount) / max(sum(amount, partition_by=[region]), partit
 
 
 def _q(formula: str, *, date_range: bool = False):
-    td = ([TimeDimension(dimension="ordered_at",
+    td = ([TimeDimension(field="ordered_at",
                          granularity=TimeGranularity.MONTH,
                          date_range=["2024-02-01", "2024-03-31"])]
           if date_range else month_td())
     return monthly_q(dimensions=["region"], time_dimensions=td,
-                     measures=[ModelMeasure(formula=f"time_shift({formula}, -1)", name="t")])
+                     measures=[DatasetMetric(expression=f"time_shift({formula}, -1)", name="t")])
 
 
 def _ctes(sql: str) -> list[str]:
@@ -106,7 +106,7 @@ class TestIdentityDeduplicatedTraversal:
         root = next(m for m in models if m.name == "monthly")
         return plan_query(query=_q(formula), bundle=ResolvedSourceBundle(
             dialect="duckdb",
-            source_model=root, referenced_models=[m for m in models if m is not root]))
+            population=root, referenced_datasets=[m for m in models if m is not root]))
 
     def test_carried_attach_yielded_once(self) -> None:
         pq = self._plan(REGION_SHARE)

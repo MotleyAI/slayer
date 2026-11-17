@@ -21,7 +21,7 @@ from tests._dev1847_fixtures import (
     INNER_CR,
     SHAPE_B_BAND_TOTAL,
     SPEND_BAND_EXPR,
-    ModelMeasure,
+    DatasetMetric,
     associated_warnings,
     broadcast_warnings,
     chain_q,
@@ -137,8 +137,8 @@ class TestExpressionGrainNonTransitivity:
         band = {"expression": SPEND_BAND_EXPR, "name": "spend_band"}
         resp = await exec_engine.execute(sales_q(
             dimensions=[band, "region"],
-            measures=[ModelMeasure(
-                formula="avg(sum(amount, partition_by=spend_band))", name="abt")],
+            measures=[DatasetMetric(
+                expression="avg(sum(amount, partition_by=spend_band))", name="abt")],
             to_many_handling="broadcast"))
         by = rows_by(resp, "sales.spend_band", "sales.region")
         for (bandv, _region), cell in by.items():
@@ -155,8 +155,8 @@ class TestJoinedDimensionSeeding:
         silent per-group association (Codex review find)."""
         resp = await exec_engine.execute(chain_q(
             dimensions=["customers.regions.name"],
-            measures=[ModelMeasure(
-                formula="avg(sum(amount, partition_by=amount))", name="a")],
+            measures=[DatasetMetric(
+                expression="avg(sum(amount, partition_by=amount))", name="a")],
             to_many_handling="broadcast"))
         assert len(resp.data) == 2  # one row per region, no hidden duplicates
         vals = {row["corders.customers.regions.name"]: float(row["corders.a"])

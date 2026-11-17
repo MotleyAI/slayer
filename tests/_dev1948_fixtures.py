@@ -7,8 +7,8 @@ from typing import Any, AsyncIterator, Dict, List
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.query import DatasetExtension, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -49,33 +49,33 @@ def _query(**kw) -> SlayerQuery:
     return SlayerQuery.model_validate(kw)
 
 
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_model() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def orders_model() -> SlayerModel:
-    return SlayerModel(
+def orders_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
-def dev1948_models() -> List[SlayerModel]:
+def dev1948_models() -> List[SlayerDataset]:
     return [orders_model(), customers_model()]
 
 
@@ -137,9 +137,9 @@ def stage_c() -> SlayerQuery:
 
 def orders_joined(*targets: str) -> Dict[str, Any]:
     """Query kwargs: ``orders`` extended with a ``customer_id = <target>.id`` join per target."""
-    return {"source_model": "orders", "extensions": [ModelExtension.model_validate({
+    return {"source_model": "orders", "extensions": [DatasetExtension.model_validate({
         "source_name": "orders",
-        "joins": [{"target_model": t, "join_pairs": [["customer_id", "id"]]} for t in targets],
+        "relationships": [{"target_model": t, "join_pairs": [["customer_id", "id"]]} for t in targets],
     })]}
 
 
@@ -161,17 +161,17 @@ def chain_list() -> List[SlayerQuery]:
     return [stage_x(), stage_c(), stage_b(), root_over_b()]
 
 
-def inline_orders(*, joins: List[ModelJoin]) -> SlayerModel:
+def inline_orders(*, joins: List[DatasetRelationship]) -> SlayerDataset:
     """An inline model over the ``orders`` table carrying ``joins``."""
-    return SlayerModel(
+    return SlayerDataset(
         name="orders_inline", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
         ],
-        joins=joins,
+        relationships=joins,
     )
 
 
@@ -180,7 +180,7 @@ def inline_join_list() -> List[SlayerQuery]:
     b = _query(
         name="b",
         source_model=inline_orders(
-            joins=[ModelJoin(target_model="c", join_pairs=[["customer_id", "id"]])]),
+            joins=[DatasetRelationship(to="c", join_pairs=[["customer_id", "id"]])]),
         dimensions=["c.tr"],
         measures=[{"formula": "sum(amount)", "name": "amt"}],
     )
@@ -200,11 +200,11 @@ def three_reads_list() -> List[SlayerQuery]:
     p = _query(
         name="p",
         source_model="c",
-        extensions=[ModelExtension.model_validate({
+        extensions=[DatasetExtension.model_validate({
             "source_name": "c",
-            "joins": [
-                {"target_model": "x", "join_pairs": [["id", "id"]]},
-                {"target_model": "o", "join_pairs": [["id", "customer_id"]]},
+            "relationships": [
+                {"to": "x", "join_pairs": [["id", "id"]]},
+                {"to": "o", "join_pairs": [["id", "customer_id"]]},
             ],
         })],
         dimensions=["id", "x.tier", "o.amt_c"],

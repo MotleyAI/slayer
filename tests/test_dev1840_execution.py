@@ -15,7 +15,7 @@ from sqlglot import exp
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1840_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     RENT_APP,
     RENT_APP_GOLD_SAMEROW,
     RENT_APP_GOLD_SPLIT_DEFECT,
@@ -68,9 +68,9 @@ async def exec_backend_rev(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
-RM = ModelMeasure(formula="sum(stores.rent)", name="rm")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
+RM = DatasetMetric(expression="sum(stores.rent)", name="rm")
 
 
 async def _dry_has_exists_and_closes(engine, query, dialect) -> None:
@@ -314,9 +314,9 @@ class TestProducerKinds:
         query = q(
             dimensions=["customers.tier"],
             measures=[
-                ModelMeasure(formula="first(customers.spend, customers.signup_at)",
+                DatasetMetric(expression="first(customers.spend, customers.signup_at)",
                              name="f"),
-                ModelMeasure(formula="last(customers.spend, customers.signup_at)",
+                DatasetMetric(expression="last(customers.spend, customers.signup_at)",
                              name="l"),
             ],
             filters=["channel = 'app'"],
@@ -339,7 +339,7 @@ class TestProducerKinds:
         _, engine = exec_backend
         resp = await engine.execute(q(
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(formula="sum(customers.spend, window='1y')",
+            measures=[DatasetMetric(expression="sum(customers.spend, window='1y')",
                                    name="w")],
             filters=["channel = 'app'"],
         ))
@@ -357,7 +357,7 @@ class TestProducerKinds:
         dialect, engine = exec_backend
         dry = await engine.execute(query=q(
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(formula="sum(customers.spend, window='1y')",
+            measures=[DatasetMetric(expression="sum(customers.spend, window='1y')",
                                    name="w")],
             filters=["channel = 'app'"],
         ), dry_run=True)
@@ -379,7 +379,7 @@ class TestProducerKinds:
         _, engine = exec_backend
         resp = await engine.execute(query=q(
             time_dimensions=signup_month_td(),
-            measures=[ModelMeasure(formula="sum(customers.spend, window='1y')",
+            measures=[DatasetMetric(expression="sum(customers.spend, window='1y')",
                                    name="w")],
             filters=["status = 'new'"],
         ))

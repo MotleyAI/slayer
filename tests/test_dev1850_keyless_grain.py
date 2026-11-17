@@ -21,14 +21,14 @@ from __future__ import annotations
 import pytest
 
 from slayer.ir.planned import MaskTyping
-from slayer.engine.cardinality.join_safety import crossing_local_root_predicate
+from slayer.engine.cardinality.relationship_safety import crossing_local_root_predicate
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.elaborate_env import type_and_split_filters
 from slayer.ir.source_bundle import resolve_scope
 
 from tests._dev1838_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     SPEND_BAND,
     cte_aliases,
     dev1838_models,
@@ -65,64 +65,64 @@ _COMBINED_CONSUMER_CASES = [
     # today; local twin already clean. (dims, measures, order, filters, key)
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [ModelMeasure(formula=LOCAL_AGG, name="rt")],
+        [DatasetMetric(expression=LOCAL_AGG, name="rt")],
         None, None, "city", id="dual_role_measure-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [ModelMeasure(formula=CM_AGG, name="rt")],
+        [DatasetMetric(expression=CM_AGG, name="rt")],
         None, None, "customers.tier", id="dual_role_measure-cross_model",
     ),
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [ModelMeasure(formula="sum(amount)", name="m")],
+        [DatasetMetric(expression="sum(amount)", name="m")],
         [{"column": LOCAL_AGG, "direction": "asc"}], None, "city",
         id="raw_order_target-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [ModelMeasure(formula="sum(amount)", name="m")],
+        [DatasetMetric(expression="sum(amount)", name="m")],
         [{"column": CM_AGG, "direction": "asc"}], None, "customers.tier",
         id="raw_order_target-cross_model",
     ),
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [ModelMeasure(formula=f"{LOCAL_AGG} + 1", name="rt")],
+        [DatasetMetric(expression=f"{LOCAL_AGG} + 1", name="rt")],
         None, None, "city", id="composite_operand-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [ModelMeasure(formula=f"{CM_AGG} + 1", name="rt")],
+        [DatasetMetric(expression=f"{CM_AGG} + 1", name="rt")],
         None, None, "customers.tier", id="composite_operand-cross_model",
     ),
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [ModelMeasure(formula=f"coalesce({LOCAL_AGG}, 0)", name="rt")],
+        [DatasetMetric(expression=f"coalesce({LOCAL_AGG}, 0)", name="rt")],
         None, None, "city", id="scalar_call_operand-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [ModelMeasure(formula=f"coalesce({CM_AGG}, 0)", name="rt")],
+        [DatasetMetric(expression=f"coalesce({CM_AGG}, 0)", name="rt")],
         None, None, "customers.tier", id="scalar_call_operand-cross_model",
     ),
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
-        [ModelMeasure(formula=f"rank({LOCAL_AGG}, direction='desc')", name="rt")],
+        [DatasetMetric(expression=f"rank({LOCAL_AGG}, direction='desc')", name="rt")],
         None, None, "city", id="transform_input-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
-        [ModelMeasure(formula=f"rank({CM_AGG}, direction='desc')", name="rt")],
+        [DatasetMetric(expression=f"rank({CM_AGG}, direction='desc')", name="rt")],
         None, None, "customers.tier", id="transform_input-cross_model",
     ),
     # Already-clean today (no computed dimension): the aggregate is consumed only
     # as a measure, or only in a filter — a combined position, so it stays rejected.
     pytest.param(
-        ["status"], [ModelMeasure(formula=CM_AGG, name="rt")],
+        ["status"], [DatasetMetric(expression=CM_AGG, name="rt")],
         None, None, "customers.tier", id="measure_only-cross_model",
     ),
     pytest.param(
-        ["status"], [ModelMeasure(formula="sum(amount)", name="m")],
+        ["status"], [DatasetMetric(expression="sum(amount)", name="m")],
         None, [f"{CM_AGG} > 100"], "customers.tier", id="filter_only-cross_model",
     ),
 ]
@@ -159,11 +159,11 @@ async def test_keyless_dual_role_error_shape_matches_local() -> None:
     same wording, differing only in the offending key and the available dims."""
     local_query = q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        measures=[ModelMeasure(formula=LOCAL_AGG, name="rt")],
+        measures=[DatasetMetric(expression=LOCAL_AGG, name="rt")],
     )
     cm_query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[ModelMeasure(formula=CM_AGG, name="rt")],
+        measures=[DatasetMetric(expression=CM_AGG, name="rt")],
     )
     with pytest.raises(ValueError) as local_ei:
         await gen(local_query)
@@ -182,7 +182,7 @@ async def test_keyless_banded_only_executes(exec_backend) -> None:
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[ModelMeasure(formula="sum(amount)", name="m")],
+        measures=[DatasetMetric(expression="sum(amount)", name="m")],
     )
     resp = await engine.execute(query)
     got = {r["orders.sband"]: r["orders.m"] for r in resp.data}
@@ -206,7 +206,7 @@ async def test_keyless_filter_over_own_cross_model_aggregate_row_routes(
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[ModelMeasure(formula="sum(amount)", name="m")],
+        measures=[DatasetMetric(expression="sum(amount)", name="m")],
         filters=[f"{CM_AGG} > 100"],
     )
     resp = await engine.execute(query)
@@ -223,11 +223,11 @@ def test_filter_over_own_cross_model_aggregate_routes_row_not_combined() -> None
     models = dev1838_models()
     bundle = ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=list(models[1:]),
+        population=models[0], referenced_datasets=list(models[1:]),
     )
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[ModelMeasure(formula="sum(amount)", name="m")],
+        measures=[DatasetMetric(expression="sum(amount)", name="m")],
         filters=[f"{CM_AGG} > 100"],
     )
     scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
@@ -247,7 +247,7 @@ async def test_keyless_order_by_dimension_name_cross_model_row_routes(
     dialect, engine = exec_backend
     query = q(
         dimensions=[_dim(SPEND_BAND, "sband")],
-        measures=[ModelMeasure(formula="sum(amount)", name="m")],
+        measures=[DatasetMetric(expression="sum(amount)", name="m")],
         order=[{"column": "sband", "direction": "asc"}],
     )
     resp = await engine.execute(query)
@@ -266,7 +266,7 @@ async def test_keyless_filter_over_own_local_aggregate_row_routes(
     _, engine = exec_backend
     resp = await engine.execute(q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        measures=[ModelMeasure(formula="sum(amount)", name="m")],
+        measures=[DatasetMetric(expression="sum(amount)", name="m")],
         filters=[f"{LOCAL_AGG} > 25"],
     ))
     got = {r["orders.cband"]: r["orders.m"] for r in resp.data}
@@ -279,7 +279,7 @@ async def test_keyless_order_by_dimension_name_local_row_routes(
     _, engine = exec_backend
     resp = await engine.execute(q(
         dimensions=[_dim(LOCAL_BAND, "cband")],
-        measures=[ModelMeasure(formula="sum(amount)", name="m")],
+        measures=[DatasetMetric(expression="sum(amount)", name="m")],
         order=[{"column": "cband", "direction": "asc"}],
     ))
     rows = [(r["orders.cband"], r["orders.m"]) for r in resp.data]

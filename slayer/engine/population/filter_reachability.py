@@ -13,8 +13,8 @@ from typing import List, Optional, Tuple
 
 from sqlglot import exp
 
-from slayer.core.keys import ColumnKey, ColumnSqlKey
-from slayer.core.models import Column, SlayerModel
+from slayer.core.keys import FieldKey, FieldSqlKey
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.reference_closure import (
     UnhandledValueKindError,  # re-exported
     _child_keys,
@@ -34,33 +34,33 @@ __all__ = [
 Path = Tuple[str, ...]
 
 
-def _resolve_key_column(
-    *, key: ColumnSqlKey, anchor_model: SlayerModel | None, bundle: ResolvedSourceBundle,
-) -> tuple[SlayerModel | None, Column | None]:
+def _resolve_key_field(
+    *, key: FieldSqlKey, anchor_dataset: SlayerDataset | None, bundle: ResolvedSourceBundle,
+) -> tuple[SlayerDataset | None, DatasetField | None]:
     """The (model, column) a ``ColumnSqlKey`` names, or ``(None, None)``."""
     model = (
-        anchor_model if key.model == getattr(anchor_model, "name", None)
-        else bundle.get_referenced_model(key.model)
+        anchor_dataset if key.dataset == getattr(anchor_dataset, "name", None)
+        else bundle.get_referenced_dataset(key.dataset)
     )
     if model is None:
         return None, None
     return model, next(
-        (c for c in model.columns if c.name == key.column_name), None,
+        (c for c in model.fields if c.name == key.field_name), None,
     )
 
 
 def _expanded_fragment_ast_uncached(
-    *, fragment: str, model, key_path: Path, anchor_relation: str, bundle,
+    *, fragment: str, dataset, key_path: Path, anchor_relation: str, bundle,
 ):
     alias_path = "__".join(key_path) if key_path else anchor_relation
     expanded = _expand_derived_refs_any_dialect(
-        sql=fragment, model=model, alias_path=alias_path, bundle=bundle,
+        sql=fragment, dataset=dataset, alias_path=alias_path, bundle=bundle,
     )
     return parse_fragment_any_dialect(expanded or fragment)
 
 
 def _expanded_fragment_ast(
-    *, fragment: str, model, column_name: str, key_path: Path,
+    *, fragment: str, dataset, field_name: str, key_path: Path,
     anchor_relation: str, bundle, cache: "Optional[dict]" = None,
 ):
     """A definition fragment (value or filter) expanded + parsed at the column's
@@ -73,13 +73,13 @@ def _expanded_fragment_ast(
     """
     if cache is None:
         return _expanded_fragment_ast_uncached(
-            fragment=fragment, model=model, key_path=key_path,
+            fragment=fragment, dataset=dataset, key_path=key_path,
             anchor_relation=anchor_relation, bundle=bundle,
         )
-    cache_key = (model.name, column_name, key_path, anchor_relation, fragment)
+    cache_key = (dataset.name, field_name, key_path, anchor_relation, fragment)
     if cache_key not in cache:
         cache[cache_key] = _expanded_fragment_ast_uncached(
-            fragment=fragment, model=model, key_path=key_path,
+            fragment=fragment, dataset=dataset, key_path=key_path,
             anchor_relation=anchor_relation, bundle=bundle,
         )
     return cache[cache_key]
@@ -98,7 +98,7 @@ def _fragment_touches_anchor(parsed, *, anchor_relation: str) -> bool:
 
 
 def _derived_def_touches_anchor(
-    *, key: ColumnSqlKey, anchor_model, anchor_relation: str, bundle,
+    *, key: FieldSqlKey, anchor_dataset, anchor_relation: str, bundle,
     cache: "Optional[dict]" = None,
 ) -> bool:
     """Whether a derived column's definition — its ``Column.sql`` VALUE or its
@@ -115,8 +115,8 @@ def _derived_def_touches_anchor(
     fragment falls back to ``col.name`` — an implicit reference at the column's
     own path (host-local for a ``path=()`` column), never dropped.
     """
-    model, col = _resolve_key_column(
-        key=key, anchor_model=anchor_model, bundle=bundle,
+    model, col = _resolve_key_field(
+        key=key, anchor_dataset=anchor_dataset, bundle=bundle,
     )
     if model is None or col is None:
         return True  # nothing resolvable — a bare column name on the anchor
@@ -126,7 +126,7 @@ def _derived_def_touches_anchor(
     return any(
         _fragment_touches_anchor(
             _expanded_fragment_ast(
-                fragment=frag, model=model, column_name=key.column_name,
+                fragment=frag, dataset=model, field_name=key.field_name,
                 key_path=tuple(key.path), anchor_relation=anchor_relation,
                 bundle=bundle, cache=cache,
             ),
@@ -137,7 +137,7 @@ def _derived_def_touches_anchor(
 
 
 def key_has_host_local_ref(
-    *, key, anchor_model, anchor_relation: str, bundle,
+    *, key, anchor_dataset, anchor_relation: str, bundle,
     cache: "Optional[dict]" = None,
 ) -> bool:
     """Whether ``key`` depends on anything anchored AT the host root.
@@ -151,11 +151,11 @@ def key_has_host_local_ref(
     """
 
     def _is_local(node) -> bool:
-        if isinstance(node, ColumnKey):
+        if isinstance(node, FieldKey):
             return not node.path
-        if isinstance(node, ColumnSqlKey):
+        if isinstance(node, FieldSqlKey):
             return not node.path and _derived_def_touches_anchor(
-                key=node, anchor_model=anchor_model,
+                key=node, anchor_dataset=anchor_dataset,
                 anchor_relation=anchor_relation, bundle=bundle, cache=cache,
             )
         return False
@@ -182,7 +182,7 @@ def recompute_filter_reachability(planned_query: PlannedQuery, *, bundle: Resolv
     stored value would still be anchored at the parent root and the two would
     differ.
     """
-    anchor_model = planned_query.render_source_model or bundle.source_model
+    anchor_model = planned_query.render_source_dataset or bundle.population
     anchor_relation = planned_query.source_relation
     slots_by_id = {
         s.id: s
@@ -200,7 +200,7 @@ def recompute_filter_reachability(planned_query: PlannedQuery, *, bundle: Resolv
             filter_id=mask.slot_id,
             has_host_local_ref=key_has_host_local_ref(
                 key=key,
-                anchor_model=anchor_model,
+                anchor_dataset=anchor_model,
                 anchor_relation=anchor_relation,
                 bundle=bundle,
                 cache=cache,

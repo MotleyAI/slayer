@@ -33,7 +33,7 @@ if sys.argv and sys.argv[0].endswith("_dev1836_equiv_driver.py") and len(sys.arg
 
 from slayer.async_utils import run_sync  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
 from slayer.core.enums import DataType  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
-from slayer.core.models import Column, DatasourceConfig, SlayerModel  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
 from slayer.engine.query_engine import SlayerQueryEngine  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
 from slayer.storage.yaml_storage import YAMLStorage  # ALLOW(import-not-top): must follow the sys.path guard (old-worktree resolution)
 
@@ -54,11 +54,11 @@ _SQLITE_TYPE = {
 }
 
 
-def _physical_columns(model: SlayerModel) -> list[Column]:
+def _physical_columns(model: SlayerDataset) -> list[DatasetField]:
     """Only bare/identity columns are real table columns; a ``sql`` expression
     (derived/filtered) or a filter-bearing column is computed by the query."""
-    out: list[Column] = []
-    for c in model.columns:
+    out: list[DatasetField] = []
+    for c in model.fields:
         sql = getattr(c, "sql", None)
         if getattr(c, "filter", None) is not None:
             # a filtered column's PHYSICAL backing (its sql) is a separate col;
@@ -83,18 +83,18 @@ def _rand_value(dtype, rng: random.Random):
     return rng.choice(["a", "b", "c", "web", "app", "ok", "hold", None])
 
 
-def _topo(models: list[SlayerModel]) -> list[SlayerModel]:
+def _topo(models: list[SlayerDataset]) -> list[SlayerDataset]:
     by = {m.name: m for m in models}
     seen: set[str] = set()
-    out: list[SlayerModel] = []
+    out: list[SlayerDataset] = []
 
-    def visit(m: SlayerModel) -> None:
+    def visit(m: SlayerDataset) -> None:
         if m.name in seen:
             return
         seen.add(m.name)
-        for j in m.joins:
-            if j.target_model in by:
-                visit(by[j.target_model])
+        for j in m.relationships:
+            if j.to in by:
+                visit(by[j.to])
         out.append(m)
 
     for m in models:
@@ -102,7 +102,7 @@ def _topo(models: list[SlayerModel]) -> list[SlayerModel]:
     return out
 
 
-def seed_sqlite(models: list[SlayerModel], db_path: str, *, seed: int = 20240501, n_rows: int = 9) -> None:
+def seed_sqlite(models: list[SlayerDataset], db_path: str, *, seed: int = 20240501, n_rows: int = 9) -> None:
     rng = random.Random(seed)
     with transaction(db_path) as con:
         pk_values: dict[str, dict[str, list]] = {}
@@ -112,14 +112,14 @@ def seed_sqlite(models: list[SlayerModel], db_path: str, *, seed: int = 20240501
             cols = _physical_columns(m)
             if not cols:
                 continue
-            coldefs = ", ".join(f'"{c.name}" {_SQLITE_TYPE.get(c.type, "TEXT")}' for c in cols)
+            coldefs = ", ".join(f'"{c.name}" {_SQLITE_TYPE.get(c.datatype, "TEXT")}' for c in cols)
             con.execute(f'CREATE TABLE "{m.sql_table}" ({coldefs})')
             colnames = {c.name for c in cols}
             # FK columns: source-side join cols sample from the target's target-col values.
             fk: dict[str, list] = {}
-            for j in m.joins:
+            for j in m.relationships:
                 for src_col, tgt_col in j.join_pairs:
-                    vals = pk_values.get(j.target_model, {}).get(tgt_col)
+                    vals = pk_values.get(j.to, {}).get(tgt_col)
                     if vals and src_col in colnames:
                         fk[src_col] = vals
             rows = []
@@ -130,9 +130,9 @@ def seed_sqlite(models: list[SlayerModel], db_path: str, *, seed: int = 20240501
                         # repetition -> fan-out; plus an occasional orphan NULL.
                         row[c.name] = rng.choice(fk[c.name] + fk[c.name] + [None])
                     elif c.primary_key or c.unique:
-                        row[c.name] = (i + 1) if c.type == DataType.INT else f"{c.name[:3]}{i + 1}"
+                        row[c.name] = (i + 1) if c.datatype == DataType.INT else f"{c.name[:3]}{i + 1}"
                     else:
-                        row[c.name] = _rand_value(c.type, rng)
+                        row[c.name] = _rand_value(c.datatype, rng)
                 rows.append(row)
             placeholders = ", ".join("?" for _ in cols)
             con.executemany(
@@ -160,7 +160,7 @@ def _build_engine(models, db_path, store_dir):
     # some fixtures use data_source "test"; force it consistently
     for m in models:
         m = m.model_copy(update={"data_source": "test"})
-        run_sync(storage.save_model(m, _validate=False))
+        run_sync(storage.save_dataset(m, _validate=False))
     return SlayerQueryEngine(storage=storage)
 
 

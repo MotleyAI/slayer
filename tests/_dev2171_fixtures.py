@@ -18,7 +18,7 @@ import yaml
 from sqlalchemy import event
 
 from slayer.cli import main as cli_main
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.syntax import AggCall, Ref, parse_expr
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeProject
@@ -143,34 +143,34 @@ def convert_osi(docs: list[OSIDocument], *, db: Path, target_dialect: str = "duc
 
 # ── model inspection ──────────────────────────────────────────────────────
 
-def models_of(result: CubeConversionResult | ConversionResult) -> dict[str, SlayerModel]:
-    return {m.name: m for m in result.models}
+def models_of(result: CubeConversionResult | ConversionResult) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in result.datasets}
 
 
-def column(model: SlayerModel, name: str) -> Column:
-    col = model.get_column(name)
-    assert col is not None, f"column {name!r} missing on {model.name}: {[c.name for c in model.columns]}"
+def column(model: SlayerDataset, name: str) -> DatasetField:
+    col = model.get_field(name)
+    assert col is not None, f"column {name!r} missing on {model.name}: {[c.name for c in model.fields]}"
     return col
 
 
-def source_column(model: SlayerModel, measure: str) -> Column:
+def source_column(model: SlayerDataset, measure: str) -> DatasetField:
     """The column a single-aggregation measure aggregates."""
-    found = model.get_measure(measure)
+    found = model.get_metric(measure)
     assert found is not None, f"measure {measure!r} missing on {model.name}"
-    parsed = parse_expr(found.formula)
-    assert isinstance(parsed, AggCall), found.formula
-    assert isinstance(parsed.source, Ref), found.formula
+    parsed = parse_expr(found.expression)
+    assert isinstance(parsed, AggCall), found.expression
+    assert isinstance(parsed.source, Ref), found.expression
     return column(model, parsed.source.name)
 
 
 def has_measure(result: CubeConversionResult | ConversionResult, model: str, measure: str) -> bool:
     found = models_of(result).get(model)
-    return found is not None and found.get_measure(measure) is not None
+    return found is not None and found.get_metric(measure) is not None
 
 
 def has_column(result: CubeConversionResult | ConversionResult, model: str, name: str) -> bool:
     found = models_of(result).get(model)
-    return found is not None and found.get_column(name) is not None
+    return found is not None and found.get_field(name) is not None
 
 
 def cube_issues(result: CubeConversionResult, name: str, *, severity: str | None = None) -> list[CubeConversionIssue]:
@@ -192,12 +192,12 @@ def typing_notes(messages: Iterable[str]) -> list[str]:
 
 # ── execution ─────────────────────────────────────────────────────────────
 
-def _save_order(models: Iterable[SlayerModel]) -> list[SlayerModel]:
+def _save_order(models: Iterable[SlayerDataset]) -> list[SlayerDataset]:
     """Join targets before the models joining them, cube views last."""
-    return sorted(models, key=lambda m: ((m.meta or {}).get("cube_kind") == "view", bool(m.joins)))
+    return sorted(models, key=lambda m: ((m.meta or {}).get("cube_kind") == "view", bool(m.relationships)))
 
 
-async def rows(*, models: Iterable[SlayerModel], db: Path, payload: dict[str, Any]) -> list[dict[str, Any]]:
+async def rows(*, models: Iterable[SlayerDataset], db: Path, payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Save ``models`` (validated) over ``db`` and run one query, disposing every engine."""
     engine = await build_exec_engine(str(db), dialect="duckdb", models=_save_order(models), datasource=DS,
                                      validate=True)
@@ -208,7 +208,7 @@ async def rows(*, models: Iterable[SlayerModel], db: Path, payload: dict[str, An
         engine_factory.invalidate_engine(DatasourceConfig(name=DS, type="duckdb", database=str(db)))
 
 
-async def value(*, models: Iterable[SlayerModel], db: Path, model: str, formula: str,
+async def value(*, models: Iterable[SlayerDataset], db: Path, model: str, formula: str,
                 variables: dict[str, Any] | None = None) -> Any:
     """The single value of ``formula`` over ``model``."""
     payload: dict[str, Any] = {"source_model": model, "measures": [{"formula": formula, "name": "v"}]}
@@ -218,7 +218,7 @@ async def value(*, models: Iterable[SlayerModel], db: Path, model: str, formula:
     return row[f"{model}.v"]
 
 
-async def counts_by(*, models: Iterable[SlayerModel], db: Path, model: str, dimension: str,
+async def counts_by(*, models: Iterable[SlayerDataset], db: Path, model: str, dimension: str,
                     variables: dict[str, Any] | None = None) -> dict[Any, int]:
     """Row counts of ``model`` grouped by ``dimension``."""
     payload: dict[str, Any] = {"source_model": model, "dimensions": [dimension],
@@ -229,23 +229,23 @@ async def counts_by(*, models: Iterable[SlayerModel], db: Path, model: str, dime
     return {r[f"{model}.{dimension}"]: r[f"{model}.n"] for r in out}
 
 
-async def by_id(*, models: Iterable[SlayerModel], db: Path, model: str, dimension: str) -> list[Any]:
+async def by_id(*, models: Iterable[SlayerDataset], db: Path, model: str, dimension: str) -> list[Any]:
     """``dimension`` per row of ``model``, ordered by ``id``."""
     out = await rows(models=models, db=db, payload={
         "source_model": model, "dimensions": ["id", dimension], "order": [{"column": "id"}]})
     return [r[f"{model}.{dimension}"] for r in out]
 
 
-async def drift_entries(*, models: Iterable[SlayerModel], db: Path, base_dir: Path) -> list[dict[str, Any]]:
+async def drift_entries(*, models: Iterable[SlayerDataset], db: Path, base_dir: Path) -> list[dict[str, Any]]:
     """``validate_models`` findings for ``models`` saved over ``db``."""
     ds = DatasourceConfig(name=DS, type="duckdb", database=str(db))
     storage = YAMLStorage(base_dir=str(base_dir))
     await storage.save_datasource(ds)
     for model in _save_order(models):
-        await storage.save_model(model)
+        await storage.save_dataset(model)
     engine = SlayerQueryEngine(storage=storage)
     try:
-        return [e.model_dump(mode="json") for e in await engine.validate_models(data_source=DS)]
+        return [e.model_dump(mode="json") for e in await engine.validate_datasets(data_source=DS)]
     finally:
         engine.close()
         engine_factory.invalidate_engine(ds)
@@ -283,8 +283,8 @@ def save_datasource(store: Path, *, name: str = DS, database: Path) -> None:
         DatasourceConfig(name=name, type="duckdb", database=str(database))))
 
 
-def stored_model(store: Path, name: str) -> SlayerModel:
-    model = asyncio.run(YAMLStorage(base_dir=str(store)).get_model(name))
+def stored_model(store: Path, name: str) -> SlayerDataset:
+    model = asyncio.run(YAMLStorage(base_dir=str(store)).get_dataset(name))
     assert model is not None, f"model {name!r} not saved under {store}"
     return model
 

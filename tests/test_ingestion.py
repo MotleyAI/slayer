@@ -34,7 +34,7 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormatType
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.live_schema import ingestion
 from slayer.live_schema.schema_drift import _live_schema_for_datasource
 from slayer.live_schema.ingestion import (
@@ -151,7 +151,7 @@ async def _client(ds: DatasourceConfig) -> AsyncGenerator[SlayerSQLClient, None]
         client.close()
 
 
-async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerModel]:
+async def _ingest(ds: DatasourceConfig, **kwargs: Any) -> list[SlayerDataset]:
     async with _client(ds) as client:
         return await ingestion.ingest_datasource_async(ds, client=client, **kwargs)
 
@@ -421,7 +421,7 @@ class TestGenerateJoinsDedup:
         ds = DatasourceConfig(name="ds", type="sqlite", database=db)
         async with _client(ds) as client:
             report = await ingestion.ingest_datasource_report_async(datasource=ds, client=client)
-        return next(m for m in report.models if m.name == "orders").joins
+        return next(m for m in report.datasets if m.name == "orders").relationships
 
     async def test_multiple_fks_to_same_target_preserved(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         """Two distinct FKs to the same target table should both produce joins."""
@@ -556,7 +556,7 @@ class TestSqliteKeyReads:
 
 class TestSaTypeToDataTypeIntDouble:
     """``_sa_type_to_data_type`` distinguishes INT from DOUBLE so the ingested
-    ``Column.type`` carries the precise type instead of a coarse ``NUMBER``."""
+    ``Column.datatype`` carries the precise type instead of a coarse ``NUMBER``."""
 
     @pytest.mark.parametrize("sa_type", [
         sa.Integer(),
@@ -721,24 +721,24 @@ class TestUnmappedTypeBecomesOpaque:
 
             ds = DatasourceConfig(name="opaque_ds", type="sqlite", database=db_path)
             model = next(m for m in await _ingest(ds) if m.name == "t")
-            by_name = {c.name: c for c in model.columns}
+            by_name = {c.name: c for c in model.fields}
 
             # Opaque: explicit UNKNOWN + raw DB type retained.
-            assert by_name["payload"].type is DataType.UNKNOWN
+            assert by_name["payload"].datatype is DataType.UNKNOWN
             assert by_name["payload"].db_type == "JSON"
 
             # Exact NUMERIC is represented by logical DOUBLE, so retain the
             # physical type needed to avoid lossy inferred aggregate casts.
-            assert by_name["amount"].type is DataType.DOUBLE
+            assert by_name["amount"].datatype is DataType.DOUBLE
             assert by_name["amount"].db_type == "NUMERIC(18, 2)"
 
             # Fully represented mapped types carry no db_type.
-            assert by_name["name"].type is DataType.TEXT
+            assert by_name["name"].datatype is DataType.TEXT
             assert by_name["name"].db_type is None
-            assert by_name["id"].type is DataType.INT
+            assert by_name["id"].datatype is DataType.INT
             assert by_name["id"].db_type is None
             # bytea/BLOB is comparable — it must NOT be marked opaque.
-            assert by_name["blob_col"].type is DataType.TEXT
+            assert by_name["blob_col"].datatype is DataType.TEXT
             assert by_name["blob_col"].db_type is None
 
 
@@ -808,8 +808,8 @@ class TestSqliteIngestionProbe:
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
             models = await _ingest(ds)
             model = next(m for m in models if m.name == "sensordata")
-            col = next(c for c in model.columns if c.name == "tempstabidx")
-            assert col.type is DataType.DOUBLE
+            col = next(c for c in model.fields if c.name == "tempstabidx")
+            assert col.datatype is DataType.DOUBLE
             assert col.format is not None
             assert col.format.type is NumberFormatType.FLOAT
 
@@ -827,8 +827,8 @@ class TestSqliteIngestionProbe:
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
             models = await _ingest(ds)
             model = next(m for m in models if m.name == "t")
-            col = next(c for c in model.columns if c.name == "qty")
-            assert col.type is DataType.INT
+            col = next(c for c in model.fields if c.name == "qty")
+            assert col.datatype is DataType.INT
             assert col.format is not None
             assert col.format.type is NumberFormatType.INTEGER
 
@@ -846,8 +846,8 @@ class TestSqliteIngestionProbe:
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
             models = await _ingest(ds)
             model = next(m for m in models if m.name == "t")
-            col = next(c for c in model.columns if c.name == "status")
-            assert col.type is DataType.TEXT
+            col = next(c for c in model.fields if c.name == "status")
+            assert col.datatype is DataType.TEXT
             assert col.format is None
 
     async def test_widens_int_to_double_on_coercible_text_storage(self) -> None:
@@ -864,8 +864,8 @@ class TestSqliteIngestionProbe:
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
             models = await _ingest(ds)
             model = next(m for m in models if m.name == "t")
-            col = next(c for c in model.columns if c.name == "v")
-            assert col.type is DataType.DOUBLE
+            col = next(c for c in model.fields if c.name == "v")
+            assert col.datatype is DataType.DOUBLE
             assert col.format is not None
             assert col.format.type is NumberFormatType.FLOAT
 
@@ -925,8 +925,8 @@ class TestSqliteIngestionProbe:
                             f"(catch + warn + keep declared INT). Got: {exc}"
                         )
             model = next(m for m in models if m.name == "t")
-            col = next(c for c in model.columns if c.name == "qty")
-            assert col.type is DataType.INT
+            col = next(c for c in model.fields if c.name == "qty")
+            assert col.datatype is DataType.INT
             warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
             assert any("probe" in r.getMessage().lower() for r in warnings)
 
@@ -956,7 +956,7 @@ class TestSqliteIngestionProbe:
                 await _sqlite_probe_integer_columns(
                     client=client,
                     sql_table="t",
-                    columns=columns,
+                    fields=columns,
                 )
 
             # The dotted alias must never be passed to the probe.
@@ -993,15 +993,15 @@ class TestSqliteIngestionProbe:
             ds = DatasourceConfig(name="ds", type="sqlite", database=db_path)
             models = await _ingest(ds)
             measurements = next(m for m in models if m.name == "measurements")
-            weight_col = next(c for c in measurements.columns if c.name == "weight")
+            weight_col = next(c for c in measurements.fields if c.name == "weight")
             # FK target's own model carries the probed type.
-            assert weight_col.type is DataType.DOUBLE
+            assert weight_col.datatype is DataType.DOUBLE
 
 
 class TestCountColumnRenameInJoinKeys:
     """Ingestion's ``_count`` → ``count_col`` rename applies to join keys too."""
 
-    async def _ingest(self, ddl: list[str]) -> dict[str, SlayerModel]:
+    async def _ingest(self, ddl: list[str]) -> dict[str, SlayerDataset]:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = os.path.join(tmpdir, "cnt.db")
             with disposable_engine(f"sqlite:///{db_path}") as engine:
@@ -1019,10 +1019,10 @@ class TestCountColumnRenameInJoinKeys:
             "_count INTEGER REFERENCES parents(id))",
         ])
         children = models["children"]
-        col = children.get_column("count_col")
+        col = children.get_field("count_col")
         assert col is not None
         assert col.sql == "_count"
-        (join,) = children.joins
+        (join,) = children.relationships
         assert join.join_pairs == [["count_col", "id"]]
 
     async def test_target_key_named_count(self) -> None:
@@ -1031,5 +1031,5 @@ class TestCountColumnRenameInJoinKeys:
             "CREATE TABLE events (id INTEGER PRIMARY KEY, "
             "tally INTEGER REFERENCES tallies(_count))",
         ])
-        (join,) = models["events"].joins
+        (join,) = models["events"].relationships
         assert join.join_pairs == [["tally", "count_col"]]

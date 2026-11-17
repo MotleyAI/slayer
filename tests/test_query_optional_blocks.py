@@ -9,8 +9,8 @@ classifier that backs inspect discoverability.
 
 import pytest
 
-from slayer.core.models import Column, SlayerModel
-from slayer.core.query import extract_model_variables
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.core.query import extract_dataset_variables
 from slayer.sql.dialects import SqliteDialect
 from slayer.sql.mode_a_variables import bind_mode_a
 
@@ -107,15 +107,15 @@ def test_block_with_no_variables_raises():
 # ── extract_model_variables ─────────────────────────────────────────────────
 
 
-def _sql_model(**kw) -> SlayerModel:
+def _sql_model(**kw) -> SlayerDataset:
     kw.setdefault("name", "m")
     kw.setdefault("data_source", "ds")
-    return SlayerModel(**kw)
+    return SlayerDataset(**kw)
 
 
 def test_extract_bare_var_without_default_is_required():
     model = _sql_model(sql="SELECT * FROM t WHERE d >= '{d_from}'")
-    v = extract_model_variables(model)
+    v = extract_dataset_variables(model)
     assert v.required == ["d_from"]
     assert v.optional == []
 
@@ -125,14 +125,14 @@ def test_extract_bare_var_with_default_is_optional():
         sql="SELECT * FROM t WHERE region = '{region}'",
         query_variables={"region": "EU"},
     )
-    v = extract_model_variables(model)
+    v = extract_dataset_variables(model)
     assert v.required == []
     assert v.optional == ["region"]
 
 
 def test_extract_in_block_var_is_optional():
     model = _sql_model(sql="SELECT * FROM t WHERE 1=1 AND {? brand IN ({brand}) ?}")
-    v = extract_model_variables(model)
+    v = extract_dataset_variables(model)
     assert v.required == []
     assert v.optional == ["brand"]
 
@@ -142,7 +142,7 @@ def test_extract_bare_occurrence_wins_over_in_block():
     model = _sql_model(
         sql="SELECT '{x}' AS a, CASE WHEN 1=1 THEN {? y = {x} ?} END FROM t"
     )
-    v = extract_model_variables(model)
+    v = extract_dataset_variables(model)
     assert "x" in v.required
     assert "x" not in v.optional
 
@@ -152,11 +152,11 @@ def test_extract_walks_all_four_mode_a_surfaces():
         sql="SELECT * FROM t WHERE {? a IN ({a}) ?}",
         filters=["b >= '{b_from}'"],
         columns=[
-            Column(name="c1", sql="CASE WHEN {? c IN ({c}) ?} THEN 1 END"),
-            Column(name="c2", sql="x", filter="d = '{d}'"),
+            DatasetField(name="c1", sql="CASE WHEN {? c IN ({c}) ?} THEN 1 END"),
+            DatasetField(name="c2", sql="x", filter="d = '{d}'"),
         ],
     )
-    v = extract_model_variables(model)
+    v = extract_dataset_variables(model)
     assert set(v.optional) == {"a", "c"}
     assert set(v.required) == {"b_from", "d"}
 
@@ -166,15 +166,15 @@ def test_extract_on_malformed_block_does_not_raise():
     # *looks* like a block (a literal '?}' e.g. inside a regex/JSON path). It is
     # classified as block-free; execution still raises.
     model = _sql_model(sql="SELECT * FROM t WHERE tag ~ 'a?}' AND x = '{y}'")
-    v = extract_model_variables(model)
+    v = extract_dataset_variables(model)
     assert v.required == ["y"]
 
 
 def test_extract_dedupes_and_sorts():
     model = _sql_model(
         sql="WHERE {? a IN ({a}) ?} AND {? a IN ({a}) ?}",
-        columns=[Column(name="c", sql="z >= '{z_from}'")],
+        columns=[DatasetField(name="c", sql="z >= '{z_from}'")],
     )
-    v = extract_model_variables(model)
+    v = extract_dataset_variables(model)
     assert v.optional == ["a"]
     assert v.required == ["z_from"]

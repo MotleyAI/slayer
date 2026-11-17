@@ -8,11 +8,11 @@ from typing import Literal
 
 import pytest
 
-from slayer.core.errors import DuplicateMeasureNameError, NameCollisionError
+from slayer.core.errors import DuplicateMetricNameError, NameCollisionError
 from slayer.core.keys import (
     AggregateKey,
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     Grain,
     LiteralKey,
     Phase,
@@ -185,22 +185,22 @@ async def test_equal_and_not_equal_date_comparisons_collide_loudly(engine) -> No
 
 def _outer_over_inner(*, locus: Literal["target", "host"]) -> AggregateKey:
     inner = AggregateKey(
-        source=ColumnKey(leaf="amount"), agg="sum", locus=locus,
-        partition_keys=Grain.of([ColumnKey(leaf="status")]),
+        source=FieldKey(leaf="amount"), agg="sum", locus=locus,
+        partition_keys=Grain.of([FieldKey(leaf="status")]),
     )
-    return AggregateKey(source=ArithmeticKey(op="*", operands=(ColumnKey(leaf="amount"), inner)), agg="sum")
+    return AggregateKey(source=ArithmeticKey(op="*", operands=(FieldKey(leaf="amount"), inner)), agg="sum")
 
 
 def test_constituents_differing_only_in_locus_never_share_a_slot() -> None:
     target, host = _outer_over_inner(locus="target"), _outer_over_inner(locus="host")
     assert target != host
-    alias = canonical_aggregate_alias(target, profile="stage_formula")
-    assert alias == canonical_aggregate_alias(host, profile="stage_formula")
+    alias = canonical_aggregate_alias(target, profile="stage_expression")
+    assert alias == canonical_aggregate_alias(host, profile="stage_expression")
     assert alias is not None
 
     public = ValueRegistry()
     public.intern(key=target, declared_name=alias, public_name=alias, phase=Phase.AGGREGATE)
-    with pytest.raises(DuplicateMeasureNameError):
+    with pytest.raises(DuplicateMetricNameError):
         public.intern(key=host, declared_name=alias, public_name=alias, phase=Phase.AGGREGATE)
 
     hidden = ValueRegistry()
@@ -242,7 +242,7 @@ def _rows(resp, *, root: str, dim: str, key: str) -> list:
 @pytest.mark.parametrize(("query", "dim", "key", "values"), _REFERENCED)
 async def test_derived_key_in_filter(engine, query, dim, key, values) -> None:
     root, top = query["source_model"], max(values.values())
-    resp = await engine.execute(SlayerQuery.model_validate({**query, "filters": [f"{key} >= {top}"]}))
+    resp = await engine.execute(SlayerQuery.model_validate({**query, "filter": [f"{key} >= {top}"]}))
     assert _rows(resp, root=root, dim=dim, key=key) == [(k, v) for k, v in values.items() if v == top]
 
 
@@ -262,7 +262,7 @@ async def test_derived_key_in_order(engine, query, dim, key, values) -> None:
 async def test_derived_key_from_a_downstream_stage(engine, query, dim, key, values) -> None:
     flat_dim, flat_key = dim.replace(".", "__"), key.replace(".", "__")
     inner = SlayerQuery.model_validate({**query, "name": "s"})
-    outer = SlayerQuery.model_validate({"source_model": "s", "dimensions": [flat_dim], "measures": [f"max({flat_key})"]})
+    outer = SlayerQuery.model_validate({"population": "s", "dimensions": [flat_dim], "metrics": [f"max({flat_key})"]})
     resp = await engine.execute([inner, outer])
     assert {r[f"s.{flat_dim}"]: r[f"s.{flat_key}_max"] for r in resp.data} == values
 
@@ -271,13 +271,13 @@ async def test_derived_key_from_a_downstream_stage(engine, query, dim, key, valu
 @pytest.mark.parametrize("spelling", ["buyer__spend_1_sum", "customers__spend_1_sum"])
 async def test_derived_key_over_a_named_edge_from_a_downstream_stage(dialect, spelling) -> None:
     models = dev2070_models()
-    models[0].joins[0].name = "buyer"
+    models[0].relationships[0].name = "buyer"
     inner = SlayerQuery.model_validate({
-        "source_model": "orders", "name": "s",
-        "dimensions": ["buyer.regions.name"], "measures": ["sum(buyer.spend - 1)"],
+        "population": "orders", "name": "s",
+        "dimensions": ["buyer.regions.name"], "metrics": ["sum(buyer.spend - 1)"],
     })
     outer = SlayerQuery.model_validate({
-        "source_model": "s", "dimensions": ["buyer__regions__name"], "measures": [f"max({spelling})"],
+        "population": "s", "dimensions": ["buyer__regions__name"], "metrics": [f"max({spelling})"],
     })
     async for e in make_exec_engine(dialect, models=models):
         resp = await e.execute([inner, outer])
@@ -287,8 +287,8 @@ async def test_derived_key_over_a_named_edge_from_a_downstream_stage(dialect, sp
 # --------------------------------------------------------------------------- #
 # The leaf derivation
 # --------------------------------------------------------------------------- #
-def _col(*path: str) -> ColumnKey:
-    return ColumnKey(path=tuple(path[:-1]), leaf=path[-1])
+def _col(*path: str) -> FieldKey:
+    return FieldKey(path=tuple(path[:-1]), leaf=path[-1])
 
 
 class _AlienKey(_FrozenKey, frozen=True):

@@ -31,24 +31,24 @@ class CandidateCoverage(BaseModel):
     """A partial-root candidate for the no-common-root diagnostic: which
     input items it can reach and which it cannot."""
 
-    model_name: str
+    dataset_name: str
     reachable_items: list[str]
     unreachable_items: list[str]
 
 
-class RootModelRecommendation(BaseModel):
-    """Outcome of :meth:`SlayerQueryEngine.recommend_root_model`.
+class PopulationRecommendation(BaseModel):
+    """Outcome of :meth:`SlayerQueryEngine.recommend_population`.
 
-    When ``reachable`` is ``True``, ``root_model`` names the recommended
+    When ``reachable`` is ``True``, ``population`` names the recommended
     ``source_model`` and ``item_paths`` gives every item's path from it.
-    When ``False``, no single model reaches all items: ``root_model`` is
+    When ``False``, no single model reaches all items: ``population`` is
     ``None``, ``item_paths`` is empty, and ``coverage`` lists the Pareto
     frontier of partial roots so the caller can split the work into a
     multi-stage query.
     """
 
     data_source: str
-    root_model: str | None
+    population: str | None
     reachable: bool
     item_paths: list[ItemPath] = []
     coverage: list[CandidateCoverage] = []
@@ -56,9 +56,9 @@ class RootModelRecommendation(BaseModel):
     warnings: list[str] = []
 
 
-def _render_item_paths(rec: RootModelRecommendation) -> list[str]:
+def _render_item_paths(rec: PopulationRecommendation) -> list[str]:
     lines = [
-        f"Recommended root model: `{rec.root_model}`",
+        f"Recommended root model: `{rec.population}`",
         "",
         "| Input item | Path from root |",
         "|------------|----------------|",
@@ -69,7 +69,7 @@ def _render_item_paths(rec: RootModelRecommendation) -> list[str]:
     return lines
 
 
-def _render_coverage(rec: RootModelRecommendation) -> list[str]:
+def _render_coverage(rec: PopulationRecommendation) -> list[str]:
     lines = ["Recommended root model: _none_ — no single model reaches every item."]
     if rec.message:
         lines.extend(["", rec.message])
@@ -84,14 +84,14 @@ def _render_coverage(rec: RootModelRecommendation) -> list[str]:
     for c in rec.coverage:
         reaches = ", ".join(f"`{i}`" for i in c.reachable_items) or "_(none)_"
         misses = ", ".join(f"`{i}`" for i in c.unreachable_items) or "_(none)_"
-        lines.append(f"| `{c.model_name}` | {reaches} | {misses} |")
+        lines.append(f"| `{c.dataset_name}` | {reaches} | {misses} |")
     return lines
 
 
-def render_recommendation_markdown(rec: RootModelRecommendation) -> str:
+def render_recommendation_markdown(rec: PopulationRecommendation) -> str:
     """Render a recommendation as human-readable markdown (MCP / CLI)."""
     lines = [f"Datasource: `{rec.data_source}`"]
-    if rec.reachable and rec.root_model is not None:
+    if rec.reachable and rec.population is not None:
         lines.extend(_render_item_paths(rec))
     else:
         lines.extend(_render_coverage(rec))

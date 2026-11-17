@@ -34,8 +34,8 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import ModelMeasure
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetMetric
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.sql import generator as generator_mod
 from slayer.sql.naming import assert_unique_cte_names
 from slayer.sql.render.cte_assembly import CteEntry, assemble_with_chain, cte_entry
@@ -48,9 +48,9 @@ DIALECTS = ["postgres", "sqlite", "duckdb", "tsql", "bigquery"]
 
 def _cross_model_query() -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="customers_v2.status")],
-        measures=[ModelMeasure(formula="sum(customers_v2.lifetime_value)")],
+        population="orders_x",
+        dimensions=[FieldRef(name="customers_v2.status")],
+        metrics=[DatasetMetric(expression="sum(customers_v2.lifetime_value)")],
     )
 
 
@@ -58,39 +58,39 @@ def _two_cross_model_measures_query() -> SlayerQuery:
     """Two independent ``_cm_`` CTEs — neither depends on the other, so their
     relative order is decided purely by the declaration-order tiebreak."""
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="customers_v2.status")],
-        measures=[
-            ModelMeasure(formula="sum(customers_v2.lifetime_value)", name="ltv"),
-            ModelMeasure(formula="avg(customers_v2.lifetime_value)", name="ltv_avg"),
+        population="orders_x",
+        dimensions=[FieldRef(name="customers_v2.status")],
+        metrics=[
+            DatasetMetric(expression="sum(customers_v2.lifetime_value)", name="ltv"),
+            DatasetMetric(expression="avg(customers_v2.lifetime_value)", name="ltv_avg"),
         ],
     )
 
 
 def _windowed_query() -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="status")],
+        population="orders_x",
+        dimensions=[FieldRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[ModelMeasure(formula="sum(amount, window='90d')", name="rev_w")],
+        metrics=[DatasetMetric(expression="sum(amount, window='90d')", name="rev_w")],
     )
 
 
 def _mixed_query() -> SlayerQuery:
     """Cross-model AND windowed in one query — the mix §5.6 names."""
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="status")],
+        population="orders_x",
+        dimensions=[FieldRef(name="status")],
         time_dimensions=[TimeDimension(
-            dimension="created_at",
+            field="created_at",
             granularity=TimeGranularity.MONTH,
         )],
-        measures=[
-            ModelMeasure(formula="sum(amount, window='90d')", name="rev_w"),
-            ModelMeasure(formula="sum(customers_v2.lifetime_value)", name="ltv"),
+        metrics=[
+            DatasetMetric(expression="sum(amount, window='90d')", name="rev_w"),
+            DatasetMetric(expression="sum(customers_v2.lifetime_value)", name="ltv"),
         ],
     )
 

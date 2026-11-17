@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.errors import AmbiguousJoinPathError
+from slayer.core.errors import AmbiguousRelationshipPathError
 from slayer.engine.plan import plan_query
 
 from tests._dev1840_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     SPEND_ALL_BY_TIER,
     SPEND_BASIC_BY_TIER,
     ambiguity_models,
@@ -37,8 +37,8 @@ async def exec_backend_amb(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 
 
 class TestGraphExecutes:
@@ -72,13 +72,13 @@ class TestGraphExecutes:
         fails closed. DEV-1853 divergences.md class (d)."""
         _, engine = exec_backend_amb
         resp = await engine.execute(
-            tq(measures=[ModelMeasure(formula="sum(reviews.stars)", name="rv")]),
+            tq(measures=[DatasetMetric(expression="sum(reviews.stars)", name="rv")]),
         )
         assert float(resp.data[0]["tickets.rv"]) == pytest.approx(11.0)
         ambiguous = tq(
-            measures=[ModelMeasure(formula="sum(agents.score)", name="sm")],
+            measures=[DatasetMetric(expression="sum(agents.score)", name="sm")],
         )
-        with pytest.raises(AmbiguousJoinPathError):
+        with pytest.raises(AmbiguousRelationshipPathError):
             await engine.execute(ambiguous)
 
 
@@ -89,4 +89,4 @@ def test_planner_entry_point_builds_the_producer() -> None:
         bundle=bundle(),
     )
     assert len(planned.regroup_attach_plans) == 1
-    assert planned.regroup_attach_plans[0].producer_root_model == "customers"
+    assert planned.regroup_attach_plans[0].producer_root_dataset == "customers"

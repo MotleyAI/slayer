@@ -25,11 +25,11 @@ from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.names import name_taken
 from slayer.core.models import (
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
-    is_base_column_sql,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
+    is_base_field_sql,
     physical_column_sql,
 )
 from slayer.core.refs import IDENTIFIER_RE as _IDENTIFIER_RE, functional_agg_text
@@ -52,7 +52,7 @@ from slayer.dbt.models import (
 )
 from slayer.dbt.relations import RelationNames
 from slayer.dbt.sql_resolver import JINJA_RE, referenced_models, resolve_refs, strip_config
-from slayer.live_schema.ingestion import introspect_table_to_model
+from slayer.live_schema.ingestion import introspect_table_to_dataset
 from slayer.live_schema.schema_scope import requested_schema_ref
 from slayer.importers.aggregates import dialect_refusal
 from slayer.importers.column_types import (
@@ -68,8 +68,8 @@ from slayer.importers.column_types import (
     refused_over_list,
     untyped_message,
 )
-from slayer.importers.measures import measure_problems
-from slayer.importers.physical import UndecidableIdentifierCaseError, physical_identifier, unreadable_columns
+from slayer.importers.metrics import metric_problems
+from slayer.importers.physical import UndecidableIdentifierCaseError, physical_identifier, unreadable_fields
 from slayer.database.client import SqlClient
 # The conversion-report types are shared with the OSI importer. They
 # live in the neutral ``slayer.ingest_report`` module and are re-exported here so
@@ -115,7 +115,7 @@ _STANDARD_GRAINS: frozenset = frozenset({
 
 # Shared workaround text for an unreachable cross-model filter (used by the
 # simple / ratio / derived push-down paths).
-_JOIN_REACHABILITY_SUGGESTION = "Add the required join, or filter on a local dimension."
+_RELATIONSHIP_REACHABILITY_SUGGESTION = "Add the required join, or filter on a local dimension."
 
 
 class DbtConversionError(Exception):
@@ -142,26 +142,26 @@ def _is_simple_identifier(s: str) -> bool:
 
 def _entity_column(expr: str) -> str | None:
     """The physical column a bare or double-quoted entity ``expr`` names, else ``None``."""
-    return physical_column_sql(sql=expr, name=expr) if is_base_column_sql(expr) else None
+    return physical_column_sql(sql=expr, name=expr) if is_base_field_sql(expr) else None
 
 
-def _key_column(*, expr: str, cols: list[Column]) -> Column | None:
+def _key_field(*, expr: str, cols: list[DatasetField]) -> DatasetField | None:
     """The unfiltered base column reading the column entity ``expr`` names (a same-named one first)."""
     phys = _entity_column(expr)
     owners = [c for c in cols if c.is_base and c.filter is None and c.physical_name == phys]
     return next((c for c in owners if c.name == phys), owners[0] if owners else None)
 
 
-def _free_key_name(*, expr: str, cols: list[Column], taken: set) -> str | None:
+def _free_key_name(*, expr: str, cols: list[DatasetField], taken: set) -> str | None:
     """The name for a new column reading entity ``expr``, unless non-bare or already taken."""
     phys = _entity_column(expr)
     return phys if phys and not name_taken(phys, [*taken, *(c.name for c in cols)]) else None
 
 
-def _aggregated_column(formula: str) -> tuple[str, str] | None:
+def _aggregated_field(expression: str) -> tuple[str, str] | None:
     """``(column, aggregation)`` of a single-aggregation formula over one column."""
     try:
-        parsed = parse_expr(formula)
+        parsed = parse_expr(expression)
     except ValueError:
         return None
     if isinstance(parsed, AggCall) and isinstance(parsed.source, Ref):
@@ -176,7 +176,7 @@ def _meta_of(config: DbtConfig | None) -> dict[str, Any] | None:
     return None
 
 
-def _convert_dimension(dim: DbtDimension) -> Column:
+def _convert_dimension(dim: DbtDimension) -> DatasetField:
     """Convert a dbt dimension to a SLayer column."""
     if dim.type == "time":
         data_type = DataType.TIMESTAMP
@@ -185,17 +185,17 @@ def _convert_dimension(dim: DbtDimension) -> Column:
 
     sql = dim.expr if dim.expr and dim.expr != dim.name else None
 
-    return Column(
+    return DatasetField(
         name=dim.name,
         sql=sql,
-        type=data_type,
+        datatype=data_type,
         description=dim.description,
         label=dim.label,
         meta=_meta_of(dim.config),
     )
 
 
-def _alloc_column_name(base: str, *, taken: set[str]) -> str:
+def _alloc_field_name(base: str, *, taken: set[str]) -> str:
     """``base`` suffixed with ``_col`` until free of ``taken``, then claimed."""
     name = base
     while name_taken(name, taken):
@@ -204,12 +204,12 @@ def _alloc_column_name(base: str, *, taken: set[str]) -> str:
     return name
 
 
-def _declare_primary_entity(*, sm: DbtSemanticModel, primary_entity: str, cols: list[Column]) -> None:
+def _declare_primary_entity(*, sm: DbtSemanticModel, primary_entity: str, cols: list[DatasetField]) -> None:
     """Mark the column reading ``sm``'s primary entity as PK, adding one when the name is free."""
     pe_expr = next((e.expr or e.name for e in sm.entities if e.name == primary_entity), primary_entity)
-    pk = _key_column(expr=pe_expr, cols=cols)
+    pk = _key_field(expr=pe_expr, cols=cols)
     if pk is None and (name := _free_key_name(expr=pe_expr, cols=cols, taken=set())):
-        pk = Column(name=name, type=DataType.DOUBLE)
+        pk = DatasetField(name=name, datatype=DataType.DOUBLE)
         cols.append(pk)
     if pk is not None:
         pk.primary_key = True
@@ -223,15 +223,15 @@ class DbtToSlayerConverter:
         project: DbtProject,
         data_source: str,
         *,
-        include_hidden_models: bool = False,
+        include_hidden_datasets: bool = False,
         target_dialect: str | None = None,
         offline_reason: str | None = None,
     ) -> None:
         self.project = project
         self.data_source = data_source
-        self.include_hidden_models = include_hidden_models
+        self.include_hidden_models = include_hidden_datasets
         # Regular-model tables read by ``collect_metadata``: the model, or why it could not be read.
-        self._introspected: dict[str, SlayerModel | str] | None = None
+        self._introspected: dict[str, SlayerDataset | str] | None = None
         # When set to a dialect that lacks percentile/median
         # (mysql / tsql), the converter emits info caveats for those measures.
         self.target_dialect = target_dialect
@@ -246,7 +246,7 @@ class DbtToSlayerConverter:
         self._warnings: list[ConversionWarning] = []
         self._unconverted: list[ConversionWarning] = []
         # {model_name: SlayerModel} for metric resolution
-        self._models_by_name: dict[str, SlayerModel] = {}
+        self._datasets_by_name: dict[str, SlayerDataset] = {}
         # {model_name: DbtSemanticModel} for looking up entities
         self._dbt_models_by_name: dict[str, DbtSemanticModel] = {}
         # Filtered-column dedup: {(model, column_expr, normalized_filter): col_name}
@@ -277,15 +277,15 @@ class DbtToSlayerConverter:
         ``client`` (in its datasource's dialect when none was given); ``convert`` then needs no database."""
         if self._sql_dialect is None and not self._folded:
             self._use_dialect(dialect_for_ds_type(client.datasource.type))
-        introspected: dict[str, SlayerModel | str] = {}
+        introspected: dict[str, SlayerDataset | str] = {}
         for rm in self.project.regular_models if self.include_hidden_models else []:
             table_name = rm.alias or rm.name
             schema = self._relations.live_name("schema", rm.schema_name) if rm.schema_name else None
             try:
-                introspected[rm.name] = await introspect_table_to_model(
+                introspected[rm.name] = await introspect_table_to_dataset(
                     client=client, table_name=self._relations.live_name("identifier", table_name),
                     ref=requested_schema_ref(schema, client=client), data_source=self.data_source,
-                    model_name=rm.name,
+                    dataset_name=rm.name,
                 )
             except Exception as exc:  # noqa: BLE001 — one table's failure becomes a conversion warning
                 introspected[rm.name] = (
@@ -305,7 +305,7 @@ class DbtToSlayerConverter:
         self.entity_registry = EntityRegistry()
         self._warnings = []
         self._unconverted = []
-        self._models_by_name = {}
+        self._datasets_by_name = {}
         self._dbt_models_by_name = {}
         self._filtered_columns = {}
 
@@ -320,24 +320,24 @@ class DbtToSlayerConverter:
         for sm in self.project.semantic_models:
             self._dbt_models_by_name[sm.name] = sm
 
-        models: list[SlayerModel] = []
+        datasets: list[SlayerDataset] = []
         for sm in self.project.semantic_models:
             model = self._convert_semantic_model(sm)
-            models.append(model)
-            self._models_by_name[model.name] = model
+            datasets.append(model)
+            self._datasets_by_name[model.name] = model
         self._resolve_target_keys()
 
         for metric in self.project.metrics:
             self._convert_metric(metric)
 
-        self._prune_dangling_measures()
+        self._prune_dangling_metrics()
 
         if self.include_hidden_models and self.project.regular_models:
             wrapped = {sm.model or sm.name for sm in self.project.semantic_models}
-            models.extend(self._convert_regular_models(existing_names={m.name for m in models} | wrapped))
+            datasets.extend(self._convert_regular_models(existing_names={m.name for m in datasets} | wrapped))
 
         return ConversionResult(
-            models=models,
+            datasets=datasets,
             unconverted_metrics=self._unconverted,
             warnings=self._warnings,
         )
@@ -361,7 +361,7 @@ class DbtToSlayerConverter:
         for rm in self.project.regular_models:
             if rm.config_quoting:
                 self._fold_warnings.append(ConversionWarning(
-                    model_name=rm.name, category="quoting", severity="info",
+                    dataset_name=rm.name, category="quoting", severity="info",
                     message=f"Model {rm.name!r} sets config(quoting=…), which is not applied; its relations follow "
                             f"the project's quoting policy."))
         semantic_models: list[DbtSemanticModel] = []
@@ -371,7 +371,7 @@ class DbtToSlayerConverter:
                       if ref_name in self._regular_models_sql else set())
             if bad := sorted(source & unreadable_sql):
                 self._fold_warnings.append(ConversionWarning(
-                    model_name=sm.name, category="sql_inline", severity="dropped",
+                    dataset_name=sm.name, category="sql_inline", severity="dropped",
                     message=f"Semantic model {sm.name!r} dropped: the SQL of {bad} does not parse, so its "
                             f"identifiers could not be read with the source's meaning."))
                 continue
@@ -430,7 +430,7 @@ class DbtToSlayerConverter:
                 folded = fold(member.expr)
                 if folded is None:
                     self._fold_warnings.append(ConversionWarning(
-                        model_name=sm.name, category="expression", severity="dropped",
+                        dataset_name=sm.name, category="expression", severity="dropped",
                         message=f"{kind} {member.name!r} on {sm.name!r} dropped: its SQL {member.expr!r} does not "
                                 f"parse, so its identifiers could not be read with the source's meaning."))
                     continue
@@ -441,7 +441,7 @@ class DbtToSlayerConverter:
             "dimensions": kept("Dimension", sm.dimensions), "measures": kept("Measure", sm.measures),
             "entities": kept("Entity", sm.entities)})
 
-    def _prune_dangling_measures(self) -> None:
+    def _prune_dangling_metrics(self) -> None:
         """Drop+report any ``ModelMeasure`` whose formula references a name that
         does not resolve on its model (robust validation pass).
 
@@ -454,27 +454,27 @@ class DbtToSlayerConverter:
         can't resolve — running to a fixpoint so a measure depending on a
         just-dropped one is dropped too.
         """
-        for model in self._models_by_name.values():
-            self._prune_model_measures(model)
+        for model in self._datasets_by_name.values():
+            self._prune_dataset_metrics(model)
 
-    def _prune_model_measures(self, model: SlayerModel) -> None:
-        problems = measure_problems(model, models_by_name=self._models_by_name, dialect=self._sql_dialect)
-        for m, problem in zip(model.measures, problems):
+    def _prune_dataset_metrics(self, dataset: SlayerDataset) -> None:
+        problems = metric_problems(dataset, datasets_by_name=self._datasets_by_name, dialect=self._sql_dialect)
+        for m, problem in zip(dataset.metrics, problems):
             if problem is not None:
                 self._unconverted.append(ConversionWarning(
-                    model_name=model.name,
+                    dataset_name=dataset.name,
                     metric_name=m.name,
                     category="dangling_reference",
                     severity="dropped",
                     message=(
                         f"Measure '{m.name}' references a name that does not resolve "
-                        f"on model '{model.name}' and was dropped: {problem}"
+                        f"on model '{dataset.name}' and was dropped: {problem}"
                     ),
                     suggestion="Ensure every referenced metric/measure converts successfully.",
                 ))
-        model.measures = [m for m, problem in zip(model.measures, problems) if problem is None]
+        dataset.metrics = [m for m, problem in zip(dataset.metrics, problems) if problem is None]
 
-    def _convert_regular_models(self, existing_names: set) -> list[SlayerModel]:
+    def _convert_regular_models(self, existing_names: set) -> list[SlayerDataset]:
         """Convert orphan dbt models (not wrapped by semantic_models) to hidden SLayer models."""
         if self._introspected is None:
             self._warnings.append(ConversionWarning(
@@ -487,7 +487,7 @@ class DbtToSlayerConverter:
             ))
             return []
 
-        results: list[SlayerModel] = []
+        results: list[SlayerDataset] = []
         for rm in self.project.regular_models:
             if rm.name in existing_names:
                 continue
@@ -497,14 +497,14 @@ class DbtToSlayerConverter:
                 existing_names.add(converted.name)
         return results
 
-    def _convert_regular_model(self, rm: DbtRegularModel) -> SlayerModel | None:
+    def _convert_regular_model(self, rm: DbtRegularModel) -> SlayerDataset | None:
         """Wrap a regular dbt model's introspected table as a hidden SlayerModel."""
         assert self._introspected is not None
         introspected = self._introspected.get(rm.name)
-        if not isinstance(introspected, SlayerModel):
+        if not isinstance(introspected, SlayerDataset):
             if introspected is not None:
                 self._warnings.append(ConversionWarning(
-                    model_name=rm.name, category="hidden_models", severity="info", message=introspected,
+                    dataset_name=rm.name, category="hidden_models", severity="info", message=introspected,
                 ))
             return None
 
@@ -518,14 +518,14 @@ class DbtToSlayerConverter:
         # no persisted user edits exist yet).
         col_descriptions = {c.name: c.description for c in rm.columns if c.description}
         if col_descriptions:
-            for c in model.columns:
+            for c in model.fields:
                 desc = col_descriptions.get(c.name)
                 if desc:
                     c.description = desc
 
         return model
 
-    def _convert_semantic_model(self, sm: DbtSemanticModel) -> SlayerModel:
+    def _convert_semantic_model(self, sm: DbtSemanticModel) -> SlayerDataset:
         """Convert a single dbt semantic model to a SlayerModel.
 
         Hard-fails (DbtConversionError) when the same name appears as both a
@@ -562,31 +562,31 @@ class DbtToSlayerConverter:
         measure_cols, measures = self._convert_measures(
             dbt_measures=sm.measures,
             sm_name=sm.name,
-            existing_column_names={c.name for c in cols},
-            model_meta=model_meta,
+            existing_field_names={c.name for c in cols},
+            dataset_meta=model_meta,
         )
         cols.extend(measure_cols)
-        cols, measures = self._settle_columns(sm=sm, cols=cols, measures=measures, live=live)
+        cols, measures = self._settle_fields(sm=sm, cols=cols, metrics=measures, live=live)
 
         joins = self._declare_join_keys(
-            sm_name=sm.name, cols=cols, measure_names={m.name for m in measures},
-            joins=self.entity_registry.resolve_joins_for_model(sm),
+            sm_name=sm.name, cols=cols, metric_names={m.name for m in measures},
+            joins=self.entity_registry.resolve_relationships_for_model(sm),
             unkeyable=[
                 e.expr for e in sm.entities
-                if e.type == "foreign" and e.expr and not is_base_column_sql(e.expr)
+                if e.type == "foreign" and e.expr and not is_base_field_sql(e.expr)
             ],
         )
 
-        return SlayerModel(
+        return SlayerDataset(
             name=sm.name,
             sql_table=sql_table,
             sql=sql_source,
             data_source=self.data_source,
             description=sm.description,
             default_time_dimension=default_time_dim or None,
-            columns=cols,
-            measures=measures,
-            joins=joins,
+            fields=cols,
+            metrics=measures,
+            relationships=joins,
             meta=model_meta or None,
         )
 
@@ -600,46 +600,46 @@ class DbtToSlayerConverter:
             self._warnings.append(ConversionWarning(category="typing", severity="info", message=offline_note(live)))
         return None
 
-    def _settle_columns(
-        self, *, sm: DbtSemanticModel, cols: list[Column], measures: list[ModelMeasure], live: LiveSource | None,
-    ) -> tuple[list[Column], list[ModelMeasure]]:
+    def _settle_fields(
+        self, *, sm: DbtSemanticModel, cols: list[DatasetField], metrics: list[DatasetMetric], live: LiveSource | None,
+    ) -> tuple[list[DatasetField], list[DatasetMetric]]:
         """Drop columns reading a masked physical column, type the rest, and drop measures SLayer cannot read."""
         cols = self._drop_masked(sm, cols, live=live)
         dbt_aggs = {m.name: m.agg.lower() for m in sm.measures}
-        sources = {m.name or "": src for m in measures if (src := _aggregated_column(m.formula)) is not None}
+        sources = {m.name or "": src for m in metrics if (src := _aggregated_field(m.expression)) is not None}
         aggs_of: dict[str, list[str]] = defaultdict(list)
         for name, (col_name, agg) in sources.items():
             aggs_of[col_name].append("sum_boolean" if dbt_aggs.get(name) == "sum_boolean" else agg)
         dims = {d.name for d in sm.dimensions}
-        untyped = {c.name for c in cols if not self._type_column(
+        untyped = {c.name for c in cols if not self._type_field(
             sm=sm, col=c, live=live, aggs=aggs_of.get(c.name, []), dimension=c.name in dims)}
-        kept: list[ModelMeasure] = []
-        for m in measures:
+        kept: list[DatasetMetric] = []
+        for m in metrics:
             name = m.name or ""
             col_name, agg = sources.get(name, (None, ""))
             col = next((c for c in cols if c.name == col_name), None)
-            if col is not None and col.type is DataType.ARRAY and refused_over_list(agg):
-                problem = list_refusal(name, agg=agg, column=col.name)
+            if col is not None and col.datatype is DataType.ARRAY and refused_over_list(agg):
+                problem = list_refusal(name, agg=agg, field=col.name)
             elif col_name in untyped and implied_type(agg) is None:
-                problem = untyped_message(name, agg=agg, column=col_name)
+                problem = untyped_message(name, agg=agg, field=col_name)
             else:
                 kept.append(m)
                 continue
             self._unconverted.append(ConversionWarning(
-                model_name=sm.name, metric_name=m.name, category="typing", severity="dropped", message=problem))
+                dataset_name=sm.name, metric_name=m.name, category="typing", severity="dropped", message=problem))
         used = {sources[m.name][0] for m in kept if m.name in sources}
         return [c for c in cols if c.name not in untyped or c.name in used], kept
 
-    def _drop_masked(self, sm: DbtSemanticModel, cols: list[Column], *, live: LiveSource | None) -> list[Column]:
+    def _drop_masked(self, sm: DbtSemanticModel, cols: list[DatasetField], *, live: LiveSource | None) -> list[DatasetField]:
         """``cols`` without those reading a physical column another column's name holds (or their own name)."""
-        dropped = unreadable_columns(cols, dialect=self._dialect, live=live.names if live is not None else ())
+        dropped = unreadable_fields(cols, dialect=self._dialect, live=live.names if live is not None else ())
         for name, problem in dropped.items():
             self._warnings.append(ConversionWarning(
-                model_name=sm.name, category="masked_column", severity="dropped",
+                dataset_name=sm.name, category="masked_column", severity="dropped",
                 message=f"Column {name!r} on '{sm.name}' dropped: {problem}."))
         return [c for c in cols if c.name not in dropped]
 
-    def _type_column(self, *, sm: DbtSemanticModel, col: Column, live: LiveSource | None, aggs: list[str],
+    def _type_field(self, *, sm: DbtSemanticModel, col: DatasetField, live: LiveSource | None, aggs: list[str],
                      dimension: bool) -> bool:
         """Type ``col`` from the database, then its declared ``data_type``, then its aggregations; ``False`` if none."""
         physical = col.physical_name if col.is_base else None
@@ -647,20 +647,20 @@ class DbtToSlayerConverter:
             return True  # our own CASE WHEN … THEN 1 ELSE 0 END
         found: Typed | None = None
         if live is not None:
-            found = (live.column(physical_identifier(col, dialect=self._dialect)) if physical is not None
+            found = (live.field(physical_identifier(col, dialect=self._dialect)) if physical is not None
                      else live.probe(col.sql or col.name))
         declared = self._declared_type(sm=sm, physical=physical)
         if found is not None and declared is not None and contradicts(declared, found):
             self._warnings.append(ConversionWarning(
-                model_name=sm.name, category="typing", severity="info",
+                dataset_name=sm.name, category="typing", severity="info",
                 message=contradiction_note(col.name, declared=declared, live=found)))
         found = found or declared or next((t for a in aggs if (t := implied_type(a)) is not None and
                                            t[0] is not DataType.TEXT), None) or next(
             (t for a in aggs if (t := implied_type(a)) is not None), None)
         if found is None:
             return dimension or not aggs
-        col.type, col.element_type = found
-        if col.type not in (DataType.INT, DataType.DOUBLE):
+        col.datatype, col.element_type = found
+        if col.datatype not in (DataType.INT, DataType.DOUBLE):
             col.format = None
         return True
 
@@ -674,7 +674,7 @@ class DbtToSlayerConverter:
         found = declared_type(raw, dialect=self._dialect)
         if found is None:
             self._warnings.append(ConversionWarning(
-                model_name=sm.name, category="typing", severity="info",
+                dataset_name=sm.name, category="typing", severity="info",
                 message=f"Column {physical!r} declares data_type {raw!r}, which has no SLayer type; ignoring it."))
         return found
 
@@ -686,71 +686,71 @@ class DbtToSlayerConverter:
         resolved, warnings = resolve_refs(self._regular_models_sql[ref_name], self._regular_models_sql,
                                           relation=self._relations.ref, source_relation=self._relations.source)
         self._fold_warnings.extend(
-            ConversionWarning(model_name=sm.name, category="sql_inline", severity="info", message=message)
+            ConversionWarning(dataset_name=sm.name, category="sql_inline", severity="info", message=message)
             for message in warnings
         )
         return None, resolved
 
     def _declare_join_keys(
-        self, *, sm_name: str, cols: list[Column], measure_names: set,
-        joins: list[ModelJoin], unkeyable: list[str],
-    ) -> list[ModelJoin]:
+        self, *, sm_name: str, cols: list[DatasetField], metric_names: set,
+        joins: list[DatasetRelationship], unkeyable: list[str],
+    ) -> list[DatasetRelationship]:
         """Keep joins whose source keys are base columns, synthesising a hidden one for an uncovered foreign entity."""
         for expr in unkeyable:
             self._warnings.append(ConversionWarning(
-                model_name=sm_name, category="join", severity="dropped",
+                dataset_name=sm_name, category="join", severity="dropped",
                 message=f"Foreign entity expr {expr!r} is not a single column identifier; its join is skipped.",
                 suggestion="Expose the key as a column and name that column in the entity expr.",
             ))
-        kept: list[ModelJoin] = []
+        kept: list[DatasetRelationship] = []
         for join in joins:
-            srcs = [self._declare_key(key=src, cols=cols, measure_names=measure_names)
+            srcs = [self._declare_key(key=src, cols=cols, metric_names=metric_names)
                     for src, _ in join.join_pairs]
             bad = next((src for (src, _), name in zip(join.join_pairs, srcs) if name is None), None)
             if bad is None:
                 kept.append(join.model_copy(update={"join_pairs": [
                     [name, tgt] for name, (_, tgt) in zip(srcs, join.join_pairs)]}))
                 continue
-            self._warn_dropped_join(model_name=sm_name, target=join.target_model, key=bad)
+            self._warn_dropped_relationship(dataset_name=sm_name, target=join.to, key=bad)
         return kept
 
     def _resolve_target_keys(self) -> None:
         """Rewrite each join's physical target key to the target column's name, dropping unresolvable joins."""
-        for model in self._models_by_name.values():
-            kept: list[ModelJoin] = []
-            for join in model.joins:
-                target = self._models_by_name[join.target_model]
-                tgts = [col.name if (col := _key_column(expr=tgt, cols=target.columns)) else None
+        for model in self._datasets_by_name.values():
+            kept: list[DatasetRelationship] = []
+            for join in model.relationships:
+                target = self._datasets_by_name[join.to]
+                tgts = [col.name if (col := _key_field(expr=tgt, cols=target.fields)) else None
                         for _, tgt in join.join_pairs]
                 bad = next((tgt for (_, tgt), name in zip(join.join_pairs, tgts) if name is None), None)
                 if bad is None:
                     kept.append(join.model_copy(update={"join_pairs": [
                         [src, name] for (src, _), name in zip(join.join_pairs, tgts)]}))
                     continue
-                self._warn_dropped_join(model_name=model.name, target=target.name, key=bad)
-            model.joins = kept
+                self._warn_dropped_relationship(dataset_name=model.name, target=target.name, key=bad)
+            model.relationships = kept
 
-    def _warn_dropped_join(self, *, model_name: str, target: str, key: str) -> None:
+    def _warn_dropped_relationship(self, *, dataset_name: str, target: str, key: str) -> None:
         self._warnings.append(ConversionWarning(
-            model_name=model_name, category="join", severity="dropped",
+            dataset_name=dataset_name, category="join", severity="dropped",
             message=(f"Join to '{target}' skipped: key {key!r} is not read by a base "
                      f"column of its model."),
         ))
 
-    def _declare_primary_key(self, *, sm_name: str, entity, cols: list[Column]) -> None:
+    def _declare_primary_key(self, *, sm_name: str, entity, cols: list[DatasetField]) -> None:
         """Mark the column reading the entity's physical column as PK, adding one when the name is free."""
         expr = entity.expr or entity.name
-        col = _key_column(expr=expr, cols=cols)
+        col = _key_field(expr=expr, cols=cols)
         if col is None:
             name = _free_key_name(expr=expr, cols=cols, taken=set())
             if name is None:
                 self._warnings.append(ConversionWarning(
-                    model_name=sm_name, category="join", severity="dropped",
+                    dataset_name=sm_name, category="join", severity="dropped",
                     message=(f"Entity '{entity.name}' expr {expr!r} is not a free column "
                              f"identifier; no primary key declared."),
                 ))
                 return
-            col = Column(name=name, type=DataType.DOUBLE)
+            col = DatasetField(name=name, datatype=DataType.DOUBLE)
             cols.append(col)
         col.primary_key = True
         # Keep what the column already has.
@@ -763,14 +763,14 @@ class DbtToSlayerConverter:
             col.meta = {**entity_meta, **(col.meta or {})}
 
     @staticmethod
-    def _declare_key(*, key: str, cols: list[Column], measure_names: set) -> str | None:
+    def _declare_key(*, key: str, cols: list[DatasetField], metric_names: set) -> str | None:
         """The name of the column reading physical ``key``, adding a hidden one when the name is free."""
-        col = _key_column(expr=key, cols=cols)
+        col = _key_field(expr=key, cols=cols)
         if col is not None:
             return col.name
-        name = _free_key_name(expr=key, cols=cols, taken=measure_names)
+        name = _free_key_name(expr=key, cols=cols, taken=metric_names)
         if name is not None:
-            cols.append(Column(name=name, type=DataType.DOUBLE, hidden=True))
+            cols.append(DatasetField(name=name, datatype=DataType.DOUBLE, hidden=True))
         return name
 
     @staticmethod
@@ -789,9 +789,9 @@ class DbtToSlayerConverter:
         dbt_measures: list[DbtMeasure],
         *,
         sm_name: str,
-        existing_column_names: set,
-        model_meta: dict[str, Any],
-    ) -> tuple[list[Column], list[ModelMeasure]]:
+        existing_field_names: set,
+        dataset_meta: dict[str, Any],
+    ) -> tuple[list[DatasetField], list[DatasetMetric]]:
         """Convert dbt measures into a (Columns, ModelMeasures) pair.
 
         Each unique measure expression yields a single ``Column``; each dbt
@@ -804,55 +804,55 @@ class DbtToSlayerConverter:
           value is absent or discrete/approximate flags are set.
         * ``non_additive_dimension`` (semi-additive) → clean-fail.
         """
-        columns: list[Column] = []
-        measures: list[ModelMeasure] = []
-        taken = set(existing_column_names) | {m.name for m in dbt_measures}
+        fields: list[DatasetField] = []
+        metrics: list[DatasetMetric] = []
+        taken = set(existing_field_names) | {m.name for m in dbt_measures}
 
         groups: dict[str, list[DbtMeasure]] = defaultdict(list)
         for m in dbt_measures:
             if m.non_additive_dimension is not None:
-                self._fail_semi_additive(m, sm_name=sm_name, model_meta=model_meta)
+                self._fail_semi_additive(m, sm_name=sm_name, dataset_meta=dataset_meta)
             elif m.agg.lower() == "sum_boolean":
-                col_name = _alloc_column_name(f"{m.name}_col", taken=taken)
-                columns.append(Column(
+                col_name = _alloc_field_name(f"{m.name}_col", taken=taken)
+                fields.append(DatasetField(
                     name=col_name,
                     sql=f"CASE WHEN ({m.expr or m.name}) THEN 1 ELSE 0 END",
-                    type=DataType.INT,
+                    datatype=DataType.INT,
                     meta=_meta_of(m.config),
                 ))
-                self._emit_model_measure(
-                    measures, m, functional_agg_text(source=col_name, suffix="sum"), sm_name)
+                self._emit_dataset_metric(
+                    metrics, m, functional_agg_text(source=col_name, suffix="sum"), sm_name)
             else:
                 groups[m.expr or m.name].append(m)
 
         for expr_key, group in groups.items():
-            col_name = _alloc_column_name(
+            col_name = _alloc_field_name(
                 expr_key if _is_simple_identifier(expr_key) else f"{group[0].name}_col", taken=taken,
             )
-            columns.append(Column(
+            fields.append(DatasetField(
                 name=col_name,
                 sql=expr_key if expr_key != col_name else None,
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
                 format=_FLOAT_FORMAT,
             ))
-            self._emit_group_measures(group, col_name=col_name, sm_name=sm_name, model_meta=model_meta,
-                                      measures=measures)
+            self._emit_group_metrics(group, col_name=col_name, sm_name=sm_name, dataset_meta=dataset_meta,
+                                      metrics=metrics)
 
-        return columns, measures
+        return fields, metrics
 
-    def _emit_group_measures(
-        self, group: list[DbtMeasure], *, col_name: str, sm_name: str, model_meta: dict[str, Any],
-        measures: list[ModelMeasure],
+    def _emit_group_metrics(
+        self, group: list[DbtMeasure], *, col_name: str, sm_name: str, dataset_meta: dict[str, Any],
+        metrics: list[DatasetMetric],
     ) -> None:
         for m in group:
-            formula = self._measure_formula(m, col_name, sm_name, model_meta)
+            formula = self._measure_expression(m, col_name, sm_name, dataset_meta)
             if formula is not None:
-                self._emit_model_measure(measures, m, formula, sm_name)
+                self._emit_dataset_metric(metrics, m, formula, sm_name)
 
-    def _fail_semi_additive(self, m: DbtMeasure, *, sm_name: str, model_meta: dict[str, Any]) -> None:
+    def _fail_semi_additive(self, m: DbtMeasure, *, sm_name: str, dataset_meta: dict[str, Any]) -> None:
         assert m.non_additive_dimension is not None
         self._fail_measure(
-            m, sm_name, model_meta,
+            m, sm_name, dataset_meta,
             category="non_additive_dimension", severity="dropped",
             message=(
                 f"Measure '{m.name}' uses a non_additive_dimension "
@@ -865,8 +865,8 @@ class DbtToSlayerConverter:
             raw={"non_additive_dimension": m.non_additive_dimension.model_dump()},
         )
 
-    def _measure_formula(
-        self, m: DbtMeasure, col_name: str, sm_name: str, model_meta: dict[str, Any]
+    def _measure_expression(
+        self, m: DbtMeasure, col_name: str, sm_name: str, dataset_meta: dict[str, Any]
     ) -> str | None:
         """Build the ``<agg>(<col>)`` formula for a dbt measure, or ``None`` if
         it clean-fails (percentile without a value / discrete-approx flags)."""
@@ -876,7 +876,7 @@ class DbtToSlayerConverter:
             ap = m.agg_params
             if ap is None or ap.percentile is None:
                 self._fail_measure(
-                    m, sm_name, model_meta,
+                    m, sm_name, dataset_meta,
                     category="percentile", severity="dropped",
                     message=f"Measure '{m.name}' is a percentile aggregation with no percentile value.",
                     suggestion="Set agg_params.percentile (continuous, in [0, 1]).",
@@ -885,7 +885,7 @@ class DbtToSlayerConverter:
                 return None
             if ap.use_discrete_percentile or ap.use_approximate_percentile:
                 self._fail_measure(
-                    m, sm_name, model_meta,
+                    m, sm_name, dataset_meta,
                     category="percentile", severity="dropped",
                     message=(
                         f"Measure '{m.name}' uses discrete/approximate percentile; "
@@ -897,26 +897,26 @@ class DbtToSlayerConverter:
                 return None
             suffix = f"percentile(p={ap.percentile})"
         if (refusal := dialect_refusal(mapped, dialect=self._sql_dialect)) is not None:
-            self._fail_measure(m, sm_name, model_meta, category="percentile", severity="dropped",
+            self._fail_measure(m, sm_name, dataset_meta, category="percentile", severity="dropped",
                                message=f"Measure '{m.name}' dropped: {refusal}", raw={"agg": m.agg})
             return None
         return functional_agg_text(source=col_name, suffix=suffix)
 
-    def _emit_model_measure(
-        self, measures: list[ModelMeasure], m: DbtMeasure, formula: str, sm_name: str
+    def _emit_dataset_metric(
+        self, metrics: list[DatasetMetric], m: DbtMeasure, expression: str, sm_name: str
     ) -> None:
         """Append a ``ModelMeasure`` for a dbt measure, routing validation failures to the report."""
         try:
-            measures.append(ModelMeasure(
+            metrics.append(DatasetMetric(
                 name=m.name,
-                formula=formula,
+                expression=expression,
                 label=m.label,
                 description=m.description,
                 meta=_meta_of(m.config),
             ))
         except ValueError as exc:
             self._unconverted.append(ConversionWarning(
-                model_name=sm_name,
+                dataset_name=sm_name,
                 metric_name=m.name,
                 category="measure",
                 severity="unconverted",
@@ -932,7 +932,7 @@ class DbtToSlayerConverter:
         self,
         m: DbtMeasure,
         sm_name: str,
-        model_meta: dict[str, Any],
+        dataset_meta: dict[str, Any],
         *,
         category: str,
         severity: Literal["unconverted", "dropped", "info"],
@@ -942,7 +942,7 @@ class DbtToSlayerConverter:
     ) -> None:
         """Route a measure-level clean-fail to the report + stash raw into meta."""
         self._unconverted.append(ConversionWarning(
-            model_name=sm_name,
+            dataset_name=sm_name,
             metric_name=m.name,
             category=category,
             severity=severity,
@@ -950,7 +950,7 @@ class DbtToSlayerConverter:
             suggestion=suggestion,
         ))
         if raw is not None:
-            self._stash_meta(model_meta, m.name, category, raw)
+            self._stash_meta(dataset_meta, m.name, category, raw)
 
     def _fail_metric(
         self,
@@ -961,11 +961,11 @@ class DbtToSlayerConverter:
         message: str,
         suggestion: str | None = None,
         raw: dict[str, Any] | None = None,
-        model_name: str | None = None,
+        dataset_name: str | None = None,
     ) -> None:
         """Route a metric-level clean-fail to the report + best-effort meta stash."""
         self._unconverted.append(ConversionWarning(
-            model_name=model_name,
+            dataset_name=dataset_name,
             metric_name=metric.name,
             category=category,
             severity=severity,
@@ -974,7 +974,7 @@ class DbtToSlayerConverter:
         ))
         if raw is not None:
             src = self._find_metric_source_model(metric)
-            slayer_model = self._models_by_name.get(src) if src else None
+            slayer_model = self._datasets_by_name.get(src) if src else None
             if slayer_model is not None:
                 if slayer_model.meta is None:
                     slayer_model.meta = {}
@@ -1033,31 +1033,31 @@ class DbtToSlayerConverter:
                 message=f"Unknown metric type '{metric.type}' for metric '{metric.name}'.",
             )
 
-    def _add_model_measure(
+    def _add_dataset_metric(
         self,
         *,
-        slayer_model: SlayerModel,
+        slayer_dataset: SlayerDataset,
         metric: DbtMetric,
-        formula: str,
+        expression: str,
     ) -> None:
-        """Append a ``ModelMeasure`` to ``slayer_model``.
+        """Append a ``ModelMeasure`` to ``slayer_dataset``.
 
         Routes validation failures to ``unconverted_metrics``; skips with a
         warning if the name collides with a column or measure on the model.
         """
-        if self._metric_name_collides(metric.name, slayer_model):
+        if self._metric_name_collides(metric.name, slayer_dataset):
             return
         try:
-            slayer_model.measures.append(ModelMeasure(
+            slayer_dataset.metrics.append(DatasetMetric(
                 name=metric.name,
-                formula=formula,
+                expression=expression,
                 label=metric.label,
                 description=metric.description,
                 meta=_meta_of(metric.config),
             ))
         except ValueError as exc:
             self._unconverted.append(ConversionWarning(
-                model_name=slayer_model.name,
+                dataset_name=slayer_dataset.name,
                 metric_name=metric.name,
                 category="metric",
                 severity="unconverted",
@@ -1067,20 +1067,20 @@ class DbtToSlayerConverter:
                 ),
             ))
 
-    def _metric_name_collides(self, name: str, slayer_model: SlayerModel) -> bool:
-        """Whether ``name`` collides with a column/measure on ``slayer_model``.
+    def _metric_name_collides(self, name: str, slayer_dataset: SlayerDataset) -> bool:
+        """Whether ``name`` collides with a column/measure on ``slayer_dataset``.
         Emits a collision warning when it does."""
-        existing_names = {c.name for c in slayer_model.columns}
-        existing_names.update(m.name for m in slayer_model.measures if m.name is not None)
+        existing_names = {c.name for c in slayer_dataset.fields}
+        existing_names.update(m.name for m in slayer_dataset.metrics if m.name is not None)
         if name_taken(name, existing_names):
             self._warnings.append(ConversionWarning(
-                model_name=slayer_model.name,
+                dataset_name=slayer_dataset.name,
                 metric_name=name,
                 category="collision",
                 severity="info",
                 message=(
                     f"Metric '{name}' collides with an existing column or "
-                    f"measure on model '{slayer_model.name}'. Skipped."
+                    f"measure on model '{slayer_dataset.name}'. Skipped."
                 ),
             ))
             return True
@@ -1127,8 +1127,8 @@ class DbtToSlayerConverter:
         return mref.fill_nulls_with if mref is not None else None
 
     @staticmethod
-    def _with_fill(formula: str, fill: int | None) -> str:
-        return formula if fill is None else f"coalesce({formula}, {fill})"
+    def _with_fill(expression: str, fill: int | None) -> str:
+        return expression if fill is None else f"coalesce({expression}, {fill})"
 
     def _convert_simple_metric(self, metric: DbtMetric) -> None:
         """A simple metric is a (filtered) re-aggregation of a single measure.
@@ -1149,9 +1149,9 @@ class DbtToSlayerConverter:
             self._note_time_spine(metric)
         raw_filter = self._combine_filters(metric.filter, mref.filter if mref else None)
         if raw_filter:
-            self._convert_filtered_simple_metric(metric, measure_name=measure_name, raw_filter=raw_filter, fill=fill)
+            self._convert_filtered_simple_metric(metric, metric_name=measure_name, raw_filter=raw_filter, fill=fill)
         elif fill is not None or spine:
-            self._add_unfiltered_metric(metric, measure_name=measure_name, fill=fill)
+            self._add_unfiltered_metric(metric, metric_name=measure_name, fill=fill)
 
     def _simple_metric_measure_name(self, metric: DbtMetric, tp: DbtMetricTypeParams | None) -> str | None:
         """The measure a simple metric re-aggregates; ``None`` after reporting an unsupported shape."""
@@ -1169,15 +1169,15 @@ class DbtToSlayerConverter:
         return measure_name
 
     def _convert_filtered_simple_metric(
-        self, metric: DbtMetric, *, measure_name: str, raw_filter: str, fill: int | None,
+        self, metric: DbtMetric, *, metric_name: str, raw_filter: str, fill: int | None,
     ) -> None:
-        source_sm = self._find_measure_model(measure_name)
+        source_sm = self._find_measure_model(metric_name)
         if source_sm is None:
             self._fail_metric(
                 metric,
                 category="simple_metric",
                 severity="unconverted",
-                message=f"Cannot find measure '{measure_name}' in any semantic model.",
+                message=f"Cannot find measure '{metric_name}' in any semantic model.",
             )
             return
 
@@ -1188,40 +1188,40 @@ class DbtToSlayerConverter:
                 category="cross_model_filter",
                 severity="dropped",
                 message=f"Metric '{metric.name}': {reason}.",
-                suggestion=_JOIN_REACHABILITY_SUGGESTION,
+                suggestion=_RELATIONSHIP_REACHABILITY_SUGGESTION,
             )
             return
 
-        dbt_measure = next((m for m in source_sm.measures if m.name == measure_name), None)
-        slayer_model = self._models_by_name.get(source_sm.name)
+        dbt_measure = next((m for m in source_sm.measures if m.name == metric_name), None)
+        slayer_model = self._datasets_by_name.get(source_sm.name)
         if dbt_measure is None or slayer_model is None or self._metric_name_collides(metric.name, slayer_model):
             return
 
         leaf_ref = self._filtered_leaf_ref(
             metric=metric,
-            slayer_model=slayer_model,
+            slayer_dataset=slayer_model,
             source_sm=source_sm,
             dbt_measure=dbt_measure,
             raw_filter=raw_filter,
         )
         if leaf_ref is None:
             return  # clean-failed (e.g. filtered percentile without a value)
-        self._add_model_measure(slayer_model=slayer_model, metric=metric, formula=self._with_fill(leaf_ref, fill))
+        self._add_dataset_metric(slayer_dataset=slayer_model, metric=metric, expression=self._with_fill(leaf_ref, fill))
 
-    def _add_unfiltered_metric(self, metric: DbtMetric, *, measure_name: str, fill: int | None) -> None:
+    def _add_unfiltered_metric(self, metric: DbtMetric, *, metric_name: str, fill: int | None) -> None:
         """A simple metric materialized under its own name: its measure's aggregate, filled."""
-        source_sm = self._find_measure_model(measure_name)
-        slayer_model = self._models_by_name.get(source_sm.name) if source_sm is not None else None
+        source_sm = self._find_measure_model(metric_name)
+        slayer_model = self._datasets_by_name.get(source_sm.name) if source_sm is not None else None
         base = next(
-            (m.formula for m in slayer_model.measures if m.name == measure_name), None,
+            (m.expression for m in slayer_model.metrics if m.name == metric_name), None,
         ) if slayer_model is not None else None
         if slayer_model is None or base is None:
             self._fail_metric(
                 metric, category="simple_metric", severity="unconverted",
-                message=f"Cannot find measure '{measure_name}' in any semantic model.",
+                message=f"Cannot find measure '{metric_name}' in any semantic model.",
             )
             return
-        self._add_model_measure(slayer_model=slayer_model, metric=metric, formula=self._with_fill(base, fill))
+        self._add_dataset_metric(slayer_dataset=slayer_model, metric=metric, expression=self._with_fill(base, fill))
 
     def _convert_derived_metric(self, metric: DbtMetric) -> None:
         """A derived metric expresses a formula over other metrics/measures.
@@ -1267,7 +1267,7 @@ class DbtToSlayerConverter:
             )
             return
 
-        slayer_model = self._models_by_name.get(source_model_name)
+        slayer_model = self._datasets_by_name.get(source_model_name)
         if slayer_model is None:
             self._fail_metric(
                 metric, category="derived_metric", severity="unconverted",
@@ -1278,7 +1278,7 @@ class DbtToSlayerConverter:
             )
             return
 
-        self._add_model_measure(slayer_model=slayer_model, metric=metric, formula=formula)
+        self._add_dataset_metric(slayer_dataset=slayer_model, metric=metric, expression=formula)
 
     def _substitute_derived_inputs(
         self, metric: DbtMetric, tp: DbtMetricTypeParams, expr: str
@@ -1422,7 +1422,7 @@ class DbtToSlayerConverter:
     def _pushed_input_ref(
         self, metric: DbtMetric, *, input_name: str, raw_filter: str,
         leaf: tuple[DbtSemanticModel, DbtMeasure, str | None],
-        kind: str, slayer_model: SlayerModel | None = None,
+        kind: str, slayer_dataset: SlayerDataset | None = None,
     ) -> str | None:
         """A filtered input pushed into its leaf, filled like the input metric; ``None`` on clean-fail."""
         source_sm, dbt_measure, chain_filter = leaf
@@ -1434,15 +1434,15 @@ class DbtToSlayerConverter:
             self._fail_metric(
                 metric, category="cross_model_filter", severity="dropped",
                 message=f"{kind} metric '{metric.name}': {reason}.",
-                suggestion=_JOIN_REACHABILITY_SUGGESTION,
+                suggestion=_RELATIONSHIP_REACHABILITY_SUGGESTION,
             )
             return None
-        target = slayer_model or self._models_by_name.get(source_sm.name)
+        target = slayer_dataset or self._datasets_by_name.get(source_sm.name)
         if target is None:
             return None
         ref = self._filtered_leaf_ref(
             metric=metric,
-            slayer_model=target,
+            slayer_dataset=target,
             source_sm=source_sm,
             dbt_measure=dbt_measure,
             raw_filter=combined,
@@ -1476,7 +1476,7 @@ class DbtToSlayerConverter:
             )
             return
 
-        slayer_model = self._models_by_name.get(source_model_name)
+        slayer_model = self._datasets_by_name.get(source_model_name)
         if slayer_model is None:
             self._fail_metric(
                 metric, category="ratio_metric", severity="unconverted",
@@ -1494,14 +1494,14 @@ class DbtToSlayerConverter:
         if den_ref is None:
             return
 
-        self._add_model_measure(
-            slayer_model=slayer_model,
+        self._add_dataset_metric(
+            slayer_dataset=slayer_model,
             metric=metric,
-            formula=f"{num_ref} / nullif({den_ref}, 0)",
+            expression=f"{num_ref} / nullif({den_ref}, 0)",
         )
 
     def _ratio_side_ref(
-        self, metric: DbtMetric, side: DbtMetricInput, slayer_model: SlayerModel
+        self, metric: DbtMetric, side: DbtMetricInput, slayer_dataset: SlayerDataset
     ) -> str | None:
         """Resolve one ratio side to a formula reference, pushing down the
         combined (metric-level + per-input) filter into a leaf when present."""
@@ -1526,7 +1526,7 @@ class DbtToSlayerConverter:
 
         return self._pushed_input_ref(
             metric, input_name=side.name, raw_filter=raw_filter, leaf=leaf, kind="Ratio",
-            slayer_model=slayer_model,
+            slayer_dataset=slayer_dataset,
         )
 
     def _convert_cumulative_metric(self, metric: DbtMetric) -> None:
@@ -1573,25 +1573,25 @@ class DbtToSlayerConverter:
             )
             return
 
-        slayer_model = self._cumulative_source_model(metric, measure_name)
+        slayer_model = self._cumulative_source_dataset(metric, measure_name)
         if slayer_model is None:
             return
 
-        self._add_model_measure(
-            slayer_model=slayer_model,
+        self._add_dataset_metric(
+            slayer_dataset=slayer_model,
             metric=metric,
-            formula=f"cumsum({measure_ref})",
+            expression=f"cumsum({measure_ref})",
         )
 
-    def _cumulative_source_model(
-        self, metric: DbtMetric, measure_name: str
-    ) -> SlayerModel | None:
+    def _cumulative_source_dataset(
+        self, metric: DbtMetric, metric_name: str
+    ) -> SlayerDataset | None:
         """Resolve the SlayerModel a cumulative metric folds into, routing the
         not-found / not-converted cases to the report (returns ``None``)."""
         source_model_name = self._find_metric_source_model(metric)
         if source_model_name is None:
             # measure lives on exactly one model — fall back to that.
-            sm = self._find_measure_model(measure_name)
+            sm = self._find_measure_model(metric_name)
             source_model_name = sm.name if sm else None
         if source_model_name is None:
             self._fail_metric(
@@ -1599,7 +1599,7 @@ class DbtToSlayerConverter:
                 message=f"Could not determine source model for cumulative metric '{metric.name}'.",
             )
             return None
-        slayer_model = self._models_by_name.get(source_model_name)
+        slayer_model = self._datasets_by_name.get(source_model_name)
         if slayer_model is None:
             self._fail_metric(
                 metric, category="cumulative_metric", severity="unconverted",
@@ -1678,9 +1678,9 @@ class DbtToSlayerConverter:
         sm_by_name = {sm.name: sm for sm in self.project.semantic_models}
         return convert_dbt_filter(
             filter_str=raw,
-            source_model_name=source_sm.name,
+            population_name=source_sm.name,
             entity_registry=self.entity_registry,
-            model_entity_names=model_entities,
+            dataset_entity_names=model_entities,
             all_semantic_models=sm_by_name,
         )
 
@@ -1753,7 +1753,7 @@ class DbtToSlayerConverter:
             return True, None  # one-hop join → <owner>.<dim>
         return False, (
             f"filter dimension '{entity_name}__{dim_name}' is not reachable from "
-            f"model '{source_sm.name}' via a direct join (multi-hop cross-model "
+            f"dataset '{source_sm.name}' via a direct join (multi-hop cross-model "
             f"filters are not exactly expressible)"
         )
 
@@ -1761,7 +1761,7 @@ class DbtToSlayerConverter:
         self,
         *,
         metric: DbtMetric,
-        slayer_model: SlayerModel,
+        slayer_dataset: SlayerDataset,
         source_sm: DbtSemanticModel,
         dbt_measure: DbtMeasure,
         raw_filter: str,
@@ -1777,7 +1777,7 @@ class DbtToSlayerConverter:
         aggregates with ``sum``; ``percentile`` keeps its ``p=`` argument
         (and clean-fails on a missing value / discrete / approximate flags).
         """
-        base = slayer_model.get_measure(dbt_measure.name)
+        base = slayer_dataset.get_metric(dbt_measure.name)
         if base is None:
             self._fail_metric(metric, category="typing", severity="dropped",
                               message=f"Filtered metric '{metric.name}' wraps measure '{dbt_measure.name}', "
@@ -1787,20 +1787,20 @@ class DbtToSlayerConverter:
         if leaf is None:
             return None  # clean-failed inside _filtered_leaf_spec
         column_expr, col_type, col_format, agg_call = leaf
-        source = _aggregated_column(base.formula)
-        typed = slayer_model.get_column(source[0]) if source is not None and col_type is not DataType.INT else None
+        source = _aggregated_field(base.expression)
+        typed = slayer_dataset.get_field(source[0]) if source is not None and col_type is not DataType.INT else None
         element_type = typed.element_type if typed is not None else None
-        col_type = typed.type if typed is not None else col_type
+        col_type = typed.datatype if typed is not None else col_type
 
         slayer_filter = self._convert_filter(raw_filter, source_sm)
-        key = (slayer_model.name, column_expr, slayer_filter)
+        key = (slayer_dataset.name, column_expr, slayer_filter)
         col_name = self._filtered_columns.get(key)
         if col_name is None:
-            col_name = self._alloc_column_name(slayer_model, f"{dbt_measure.name}_filtered")
-            slayer_model.columns.append(Column(
+            col_name = self._alloc_field_name(slayer_dataset, f"{dbt_measure.name}_filtered")
+            slayer_dataset.fields.append(DatasetField(
                 name=col_name,
                 sql=column_expr,
-                type=col_type,
+                datatype=col_type,
                 element_type=element_type,
                 format=col_format if col_type in (DataType.INT, DataType.DOUBLE) else None,
                 filter=slayer_filter,
@@ -1859,9 +1859,9 @@ class DbtToSlayerConverter:
         return column_expr, DataType.DOUBLE, _FLOAT_FORMAT, mapped
 
     @staticmethod
-    def _alloc_column_name(slayer_model: SlayerModel, base: str) -> str:
-        used = {c.name for c in slayer_model.columns}
-        used |= {m.name for m in slayer_model.measures if m.name}
+    def _alloc_field_name(slayer_dataset: SlayerDataset, base: str) -> str:
+        used = {c.name for c in slayer_dataset.fields}
+        used |= {m.name for m in slayer_dataset.metrics if m.name}
         name = base
         while name_taken(name, used):
             name = f"{name}_col"
@@ -1869,11 +1869,11 @@ class DbtToSlayerConverter:
 
     # ── Resolution helpers ────────────────────────────────────────────
 
-    def _find_measure_model(self, measure_name: str) -> DbtSemanticModel | None:
+    def _find_measure_model(self, metric_name: str) -> DbtSemanticModel | None:
         """Find which dbt semantic model contains a given measure."""
         for sm in self.project.semantic_models:
             for m in sm.measures:
-                if m.name == measure_name:
+                if m.name == metric_name:
                     return sm
         return None
 
@@ -1974,11 +1974,11 @@ class DbtToSlayerConverter:
                 sources |= self._collect_metric_sources(side.name, _seen=seen)
         return sources
 
-    def _add_measure_source(self, sources: set, measure_name: str | None) -> None:
+    def _add_measure_source(self, sources: set, metric_name: str | None) -> None:
         """Resolve a measure name to its owning model and add it to ``sources``."""
-        if not measure_name:
+        if not metric_name:
             return
-        sm = self._find_measure_model(measure_name)
+        sm = self._find_measure_model(metric_name)
         if sm:
             sources.add(sm.name)
 
@@ -2032,15 +2032,15 @@ class DbtToSlayerConverter:
             return False
         return True
 
-    def _resolve_measure_to_name(self, measure_name: str) -> str | None:
+    def _resolve_measure_to_name(self, metric_name: str) -> str | None:
         """Resolve a dbt measure name to a formula reference (bare name)."""
-        sm = self._find_measure_model(measure_name)
+        sm = self._find_measure_model(metric_name)
         if sm is None:
             return None
-        slayer_model = self._models_by_name.get(sm.name)
+        slayer_model = self._datasets_by_name.get(sm.name)
         if slayer_model is None:
             return None
-        for m in slayer_model.measures:
-            if m.name == measure_name:
-                return measure_name
+        for m in slayer_model.metrics:
+            if m.name == metric_name:
+                return metric_name
         return None

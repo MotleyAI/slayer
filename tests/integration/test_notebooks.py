@@ -66,10 +66,10 @@ def _jaffle_models_template(_ensure_jaffle_db, tmp_path_factory) -> Path:
         storage,
         storage_path=str(JAFFLE_DATA_DIR),
         years=NOTEBOOK_DEMO_YEARS,
-        ingest_models=True,
+        ingest_datasets=True,
         assume_yes=True,
     )
-    present = set(run_sync(storage.list_models(data_source=DEMO_NAME)))
+    present = set(run_sync(storage.list_datasets(data_source=DEMO_NAME)))
     missing = [t for t in TABLE_NAMES if t not in present]
     if missing:
         pytest.skip(f"Jaffle models template incomplete: missing {missing}")

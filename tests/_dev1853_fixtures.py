@@ -29,8 +29,8 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-from slayer.core.enums import DataType, JoinCardinality, JoinType, invert_cardinality
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality, JoinType, invert_cardinality
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 
@@ -40,13 +40,13 @@ from tests._engine_helpers import make_seeded_sqlite_engine
 # --------------------------------------------------------------------------- #
 # Chain graph builders.
 # --------------------------------------------------------------------------- #
-def regions_model() -> SlayerModel:
-    return SlayerModel(
+def regions_model() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="pop", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="pop", datatype=DataType.DOUBLE),
         ],
     )
 
@@ -54,10 +54,10 @@ def regions_model() -> SlayerModel:
 def chain_models(
     *,
     join_type: JoinType = JoinType.LEFT,
-    cardinality: JoinCardinality | None = JoinCardinality.MANY_TO_ONE,
+    cardinality: RelationshipCardinality | None = RelationshipCardinality.MANY_TO_ONE,
     declare: Literal["forward", "reverse"] = "forward",
     customers_id_pk: bool = True,
-) -> list[SlayerModel]:
+) -> list[SlayerDataset]:
     """regions/customers/orders with ONE orders↔customers edge.
 
     ``cardinality`` is read in the orders→customers orientation regardless of
@@ -65,41 +65,41 @@ def chain_models(
     with swapped pairs and inverted cardinality.
     """
     customer_joins = [
-        ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
+        DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
     ]
     order_joins = []
     if declare == "forward":
-        order_joins.append(ModelJoin(
-            target_model="customers", join_pairs=[["customer_id", "id"]],
+        order_joins.append(DatasetRelationship(
+            to="customers", join_pairs=[["customer_id", "id"]],
             join_type=join_type, cardinality=cardinality,
         ))
     else:
-        customer_joins.append(ModelJoin(
-            target_model="orders", join_pairs=[["id", "customer_id"]],
+        customer_joins.append(DatasetRelationship(
+            to="orders", join_pairs=[["id", "customer_id"]],
             join_type=join_type, cardinality=invert_cardinality(cardinality),
         ))
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=customers_id_pk),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=customers_id_pk),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=customer_joins,
+        relationships=customer_joins,
     )
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=order_joins,
+        relationships=order_joins,
     )
     return [orders, customers, regions_model()]
 
@@ -139,52 +139,52 @@ def seed_chain(db_path: str) -> None:
 # --------------------------------------------------------------------------- #
 # Parallel-edge graph builders.
 # --------------------------------------------------------------------------- #
-def parallel_models(*, named: bool) -> list[SlayerModel]:
+def parallel_models(*, named: bool) -> list[SlayerDataset]:
     """orders with billing + shipping edges onto customers (+ regions chain)."""
     order_columns = [
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="billing_customer_id", type=DataType.INT),
-        Column(name="shipping_customer_id", type=DataType.INT),
-        Column(name="status", type=DataType.TEXT),
-        Column(name="amount", type=DataType.DOUBLE),
-        Column(name="ordered_at", type=DataType.TIMESTAMP),
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="billing_customer_id", datatype=DataType.INT),
+        DatasetField(name="shipping_customer_id", datatype=DataType.INT),
+        DatasetField(name="status", datatype=DataType.TEXT),
+        DatasetField(name="amount", datatype=DataType.DOUBLE),
+        DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
     ]
     if named:
         # Mode-A probe over a named edge (planned only when referenced).
         order_columns.append(
-            Column(name="bill_tier", type=DataType.TEXT,
+            DatasetField(name="bill_tier", datatype=DataType.TEXT,
                    sql="billing_customer.tier"))
-    orders = SlayerModel(
+    orders = SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=order_columns,
-        joins=[
-            ModelJoin(
-                target_model="customers",
+        fields=order_columns,
+        relationships=[
+            DatasetRelationship(
+                to="customers",
                 join_pairs=[["billing_customer_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
                 name="billing_customer" if named else None,
             ),
-            ModelJoin(
-                target_model="customers",
+            DatasetRelationship(
+                to="customers",
                 join_pairs=[["shipping_customer_id", "id"]],
-                cardinality=JoinCardinality.MANY_TO_ONE,
+                cardinality=RelationshipCardinality.MANY_TO_ONE,
                 name="shipping_customer" if named else None,
             ),
         ],
     )
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="tier", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="tier", datatype=DataType.TEXT),
             # Labels feed response metadata — the D5 terminal-model probe.
-            Column(name="spend", type=DataType.DOUBLE, label="Customer spend"),
-            Column(name="signup_at", type=DataType.TIMESTAMP,
+            DatasetField(name="spend", datatype=DataType.DOUBLE, label="Customer spend"),
+            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP,
                    label="Signup date"),
         ],
-        joins=[ModelJoin(target_model="regions",
+        relationships=[DatasetRelationship(to="regions",
                          join_pairs=[["region_id", "id"]])],
     )
     return [orders, customers, regions_model()]

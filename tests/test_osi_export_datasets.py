@@ -8,7 +8,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.osi.source import parse_source
 from slayer.database import engine_factory
@@ -89,7 +89,7 @@ async def test_unsaved_query_backed_model_expands_through_the_priority_list(env,
     await storage.set_datasource_priority(["aaa", env.datasource])
     engine = SlayerQueryEngine(storage=storage)
     try:
-        expanded = await engine.expand_query_backed_model(monthly_revenue().model_copy(update={"data_source": ""}))
+        expanded = await engine.expand_query_backed_dataset(monthly_revenue().model_copy(update={"data_source": ""}))
     finally:
         engine.close()
         engine_factory.invalidate_engine(env.config)
@@ -175,7 +175,7 @@ _DATATYPES = [
 ]
 
 
-def _one_column_orders(column: Column) -> Any:
+def _one_column_orders(column: DatasetField) -> Any:
     return orders(columns=[col("id", DataType.INT, "o_orderkey", primary_key=True), column], joins=[],
                   measures=[], default_time_dimension=None)
 
@@ -250,7 +250,7 @@ async def test_unique_keys_deduplicated(env) -> None:
 
 async def test_key_on_filtered_column_is_reported(env) -> None:
     model = customers(meta={"osi_unique_keys": [["masked_email"]]})
-    model.columns.append(col("masked_email", DataType.TEXT, "email", filter="segment = 'b2b'"))
+    model.fields.append(col("masked_email", DataType.TEXT, "email", filter="segment = 'b2b'"))
     result = await export_models(env, model)
     cust = dataset(result.document, "customers")
     assert ["masked_email"] not in cust.get("unique_keys", [])
@@ -260,7 +260,7 @@ async def test_key_on_filtered_column_is_reported(env) -> None:
 
 async def test_key_on_slayer_only_column_is_reported(env) -> None:
     model = orders(measures=BASIC_MEASURES, meta={"osi_unique_keys": [["id", "segment"]]})
-    model.columns.append(col("segment", DataType.TEXT, "customers.segment"))
+    model.fields.append(col("segment", DataType.TEXT, "customers.segment"))
     result = await export_models(env, customers(), model)
     assert ["id", "segment"] not in dataset(result.document, "orders").get("unique_keys", [])
     assert mentions(result, "segment", severity="dropped")

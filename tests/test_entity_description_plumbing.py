@@ -25,15 +25,15 @@ from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.search import index as index_mod
 from slayer.search.render import (
     RenderedEntity,
-    collect_model_entity_pairs,
+    collect_dataset_entity_pairs,
     render_datasource_pair,
 )
 from slayer.search.service import LookupFound, SearchService
@@ -56,28 +56,28 @@ async def storage_rich() -> AsyncIterator[StorageBackend]:
             name="warehouse", type="sqlite", database=":memory:",
             description="Warehouse top-level ds desc.",
         ))
-        await s.save_model(SlayerModel(
+        await s.save_dataset(SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="warehouse",
             description="Orders table desc.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount_paid", type=DataType.DOUBLE,
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="amount_paid", datatype=DataType.DOUBLE,
                        description="amount_paid column desc."),
-                Column(name="status", type=DataType.TEXT),  # no description
+                DatasetField(name="status", datatype=DataType.TEXT),  # no description
             ],
-            measures=[
-                ModelMeasure(
+            metrics=[
+                DatasetMetric(
                     name="revenue",
-                    formula="sum(amount_paid)",
+                    expression="sum(amount_paid)",
                     description="revenue measure desc.",
                 ),
             ],
             aggregations=[
                 Aggregation(
                     name="wavg",
-                    formula="SUM({sql} * {weight}) / NULLIF(SUM({weight}), 0)",
+                    expression="SUM({sql} * {weight}) / NULLIF(SUM({weight}), 0)",
                     description="weighted average agg desc.",
                     params=[AggregationParam(name="weight", sql="qty")],
                 ),
@@ -98,7 +98,7 @@ def test_rendered_entity_has_description_field() -> None:
 def test_render_datasource_pair_propagates_description() -> None:
     pair = render_datasource_pair(
         name="warehouse",
-        models=[SlayerModel(name="orders", sql_table="t", data_source="warehouse")],
+        datasets=[SlayerDataset(name="orders", sql_table="t", data_source="warehouse")],
     )
     # render_datasource_pair does not take an explicit description arg,
     # so this test pins the helper's behaviour: it must surface the
@@ -112,9 +112,9 @@ def test_render_datasource_pair_propagates_description() -> None:
 async def test_collect_model_entity_pairs_propagates_each_kind(
     storage_rich: StorageBackend,
 ) -> None:
-    model = await storage_rich.get_model("orders", data_source="warehouse")
+    model = await storage_rich.get_dataset("orders", data_source="warehouse")
     assert model is not None
-    pairs = collect_model_entity_pairs(model=model)
+    pairs = collect_dataset_entity_pairs(dataset=model)
     by_id = {p.canonical_id: p for p in pairs}
 
     # Model node.
@@ -158,15 +158,15 @@ async def test_corpus_canonical_to_description_populated_for_every_kind(
 ) -> None:
     memories = await storage_rich.list_memories(entities=None)
     models = []
-    for name in await storage_rich.list_models(data_source="warehouse"):
-        m = await storage_rich.get_model(name, data_source="warehouse")
+    for name in await storage_rich.list_datasets(data_source="warehouse"):
+        m = await storage_rich.get_dataset(name, data_source="warehouse")
         if m is not None:
             models.append(m)
     ds_cfg = await storage_rich.get_datasource("warehouse")
     assert ds_cfg is not None
     corpus = index_mod.build_in_memory_corpus(
         memories=memories,
-        models=models,
+        datasets=models,
         datasources=["warehouse"],
         datasource_descriptions={"warehouse": ds_cfg.description},
     )

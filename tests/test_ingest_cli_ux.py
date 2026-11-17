@@ -22,7 +22,7 @@ from slayer.live_schema.ingestion import (
 from slayer.live_schema.schema_drift import (
     IdempotentIngestResult,
     IngestionError,
-    ModelAddition,
+    DatasetAddition,
 )
 from slayer.database.client import SlayerSQLClient
 from slayer.storage.sqlite_conn import open_connection
@@ -89,9 +89,9 @@ class TestIngestExitCodes:
             monkeypatch,
             IdempotentIngestResult(
                 additions=[
-                    ModelAddition(
-                        model_name="orders", data_source="ds", created=True,
-                        new_columns=["id"],
+                    DatasetAddition(
+                        dataset_name="orders", data_source="ds", created=True,
+                        new_fields=["id"],
                     )
                 ],
                 to_delete=[],
@@ -121,9 +121,9 @@ class TestIngestExitCodes:
             monkeypatch,
             IdempotentIngestResult(
                 additions=[
-                    ModelAddition(
-                        model_name="orders", data_source="ds", created=True,
-                        new_columns=["id"],
+                    DatasetAddition(
+                        dataset_name="orders", data_source="ds", created=True,
+                        new_fields=["id"],
                     )
                 ],
                 to_delete=[],
@@ -185,7 +185,7 @@ class TestIngestExitCodes:
                 to_delete=[],
                 errors=[
                     IngestionError(
-                        model_name="orders", data_source="ds", error="boom"
+                        dataset_name="orders", data_source="ds", error="boom"
                     )
                 ],
                 skipped=[],
@@ -233,7 +233,7 @@ class TestRenderers:
             to_delete=[],
             errors=[
                 IngestionError(
-                    model_name="orders", data_source="ds", error="disk full"
+                    dataset_name="orders", data_source="ds", error="disk full"
                 )
             ],
             skipped=[SkippedTable(table_name="a__b", reason="name collision")],
@@ -280,9 +280,9 @@ class TestRestExitSemantics:
         async def _fake(**_kwargs):
             return IdempotentIngestResult(
                 additions=[
-                    ModelAddition(
-                        model_name="orders", data_source="ds", created=True,
-                        new_columns=["id"],
+                    DatasetAddition(
+                        dataset_name="orders", data_source="ds", created=True,
+                        new_fields=["id"],
                     )
                 ],
                 to_delete=[],
@@ -318,7 +318,7 @@ class TestRestExitSemantics:
                 to_delete=[],
                 errors=[
                     IngestionError(
-                        model_name="orders", data_source="ds", error="boom"
+                        dataset_name="orders", data_source="ds", error="boom"
                     )
                 ],
                 skipped=[],

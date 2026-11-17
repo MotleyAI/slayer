@@ -61,7 +61,7 @@ _PHYSICAL = {
 async def _generate_one(case, dialect: str):
     models = renamed_graph(**case["graph"])
     try:
-        query = SlayerQuery(source_model=case["source"], **case["kw"])
+        query = SlayerQuery(population=case["source"], **case["kw"])
         return await _engine_generate(
             query=query, model=models[0], extra_models=models[1:],
             dialect=dialect, validate=False)

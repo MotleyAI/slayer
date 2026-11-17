@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import List
 
-from slayer.core.models import Aggregation, AggregationParam, Column, SlayerModel
+from slayer.core.models import Aggregation, AggregationParam, DatasetField, SlayerDataset
 from slayer.core.warnings import AssociatedWarningPayload, SemiJoinPushedWarningPayload
 from slayer.engine.query_engine import SlayerResponse
 
@@ -23,10 +23,10 @@ from tests._dev1836_fixtures import (
     rows_by,
 )
 from tests._dev1840_fixtures import (
-    ColumnRef,
+    FieldRef,
     DataType,
-    ModelJoin,
-    ModelMeasure,
+    DatasetRelationship,
+    DatasetMetric,
     SlayerQuery,
     TimeDimension,
     TimeGranularity,
@@ -36,47 +36,47 @@ from tests._dev1840_fixtures import (
 )
 
 
-def _customers(models: List[SlayerModel]) -> SlayerModel:
+def _customers(models: List[SlayerDataset]) -> SlayerDataset:
     return next(m for m in models if m.name == "customers")
 
 
-def dev1841_models(**kw) -> List[SlayerModel]:
+def dev1841_models(**kw) -> List[SlayerDataset]:
     """The ``_dev1840_fixtures`` graph plus a measure-local filtered column on customers:
     ``gold_spend`` = ``spend`` restricted (inside the aggregate) to gold tier."""
     models = dev1840_models(**kw)
-    _customers(models).columns.append(
-        Column(name="gold_spend", type=DataType.DOUBLE, sql="spend",
+    _customers(models).fields.append(
+        DatasetField(name="gold_spend", datatype=DataType.DOUBLE, sql="spend",
                filter="tier = 'gold'"),
     )
     return models
 
 
-def keyless_root_models() -> List[SlayerModel]:
+def keyless_root_models() -> List[SlayerDataset]:
     """The graph with customers stripped of its unique key (associated by row identity)."""
     models = dev1840_models()
     cust = _customers(models)
-    cust.columns = [
+    cust.fields = [
         (c.model_copy(update={"primary_key": False}) if c.name == "id" else c)
-        for c in cust.columns
+        for c in cust.fields
     ]
     return models
 
 
-def crossing_input_models() -> List[SlayerModel]:
+def crossing_input_models() -> List[SlayerDataset]:
     """Graph + a customers column filtering across the fanning customers→orders hop (an input not constant per customer)."""
     models = dev1840_models()
-    _customers(models).columns.append(
-        Column(name="vip_spend", type=DataType.DOUBLE, sql="spend",
+    _customers(models).fields.append(
+        DatasetField(name="vip_spend", datatype=DataType.DOUBLE, sql="spend",
                filter="orders.status = 'ok'"),
     )
     return models
 
 
-def column_default_agg_models() -> List[SlayerModel]:
+def column_default_agg_models() -> List[SlayerDataset]:
     """Graph + a custom aggregation whose parameter *defaults* to a column (``weight`` → ``spend``)."""
     models = dev1840_models()
     _customers(models).aggregations.append(
-        Aggregation(name="wsum", formula="SUM({value} * {weight})",
+        Aggregation(name="wsum", expression="SUM({value} * {weight})",
                     params=[AggregationParam(name="weight", sql="spend")]),
     )
     return models
@@ -142,8 +142,8 @@ def status_key(resp, root: str = "orders") -> dict:
 
 
 __all__ = [
-    "Column", "DataType", "ModelMeasure", "SlayerQuery", "SlayerModel",
-    "ColumnRef", "TimeDimension", "TimeGranularity", "ModelJoin",
+    "DatasetField", "DataType", "DatasetMetric", "SlayerQuery", "SlayerDataset",
+    "FieldRef", "TimeDimension", "TimeGranularity", "DatasetRelationship",
     "dev1840_models", "dev1841_models", "keyless_root_models",
     "crossing_input_models", "column_default_agg_models",
     "make_exec_engine", "q", "assoc_q", "error_q", "bcast_q", "cust_q",

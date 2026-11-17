@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict
 
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._dev2120_fixtures import (
@@ -37,30 +37,30 @@ TWINS_INSERT = "INSERT INTO twins VALUES ('X', ['go']), ('X', ['go'])"
 EXTRA = (ASSIGNMENTS_DDL, ASSIGNMENTS_INSERT, TWINS_DDL, TWINS_INSERT)
 
 
-def assignments_model(*, data_source: str = "test", sql_table: str = "assignments") -> SlayerModel:
-    return SlayerModel(
+def assignments_model(*, data_source: str = "test", sql_table: str = "assignments") -> SlayerDataset:
+    return SlayerDataset(
         name="assignments", sql_table=sql_table, data_source=data_source,
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="contractor_id", type=DataType.INT)],
-        joins=[ModelJoin(target_model="contractors", join_pairs=[["contractor_id", "id"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                 DatasetField(name="contractor_id", datatype=DataType.INT)],
+        relationships=[DatasetRelationship(to="contractors", join_pairs=[["contractor_id", "id"]])],
     )
 
 
-def twins_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def twins_model(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="twins", sql_table="twins", data_source=data_source,
-        columns=[Column(name="name", type=DataType.TEXT),
-                 Column(name="skills", type=DataType.ARRAY, element_type=DataType.TEXT)],
+        fields=[DatasetField(name="name", datatype=DataType.TEXT),
+                 DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.TEXT)],
     )
 
 
-def all_models(*, data_source: str = "test", keyed: bool = True) -> list[SlayerModel]:
+def all_models(*, data_source: str = "test", keyed: bool = True) -> list[SlayerDataset]:
     return [contractors_model(data_source=data_source, keyed=keyed), assignments_model(data_source=data_source),
             twins_model(data_source=data_source)]
 
 
 @contextlib.asynccontextmanager
-async def list_engine(*, keyed: bool = True, models: Optional[list[SlayerModel]] = None,
+async def list_engine(*, keyed: bool = True, models: Optional[list[SlayerDataset]] = None,
                       backend: str = "duckdb") -> AsyncGenerator[SlayerQueryEngine]:
     """DuckDB (default) holding ``contractors``, ``assignments`` and ``twins``."""
     async with contractors_engine(backend, models=models or all_models(keyed=keyed),
@@ -69,7 +69,7 @@ async def list_engine(*, keyed: bool = True, models: Optional[list[SlayerModel]]
 
 
 def query(**body: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "contractors", **body})
+    return SlayerQuery.model_validate({"population": "contractors", **body})
 
 
 def measure(formula: str, name: str) -> dict[str, str]:
@@ -180,8 +180,8 @@ def list_probes(storage: ListStorage = ListStorage()) -> list[Probe]:
               read=lambda resp: {r["contractors.team"] for r in resp.data},
               expected={t for t in teams if "sql" in team_elements([r for r in rows if r["team"] == t])}),
         Probe(name="through-to-one",
-              query=SlayerQuery.model_validate({"source_model": "assignments", "dimensions": ["id"],
-                                                "filters": ["contractors.skills.value = 'sql'"]}),
+              query=SlayerQuery.model_validate({"population": "assignments", "dimensions": ["id"],
+                                                "filter": ["contractors.skills.value = 'sql'"]}),
               read=lambda resp: {int(r["assignments.id"]) for r in resp.data},
               expected={a for a, c in ASSIGNMENTS if c in sql_ids}),
         Probe(name="elements-filtered-across-another-to-many",
@@ -210,8 +210,8 @@ def list_probes(storage: ListStorage = ListStorage()) -> list[Probe]:
               read=lambda resp: {int(r["contractors.id"]): num(r["contractors.n"]) for r in resp.data},
               expected={i: sum(1 for t in sets.values() if t == s) for i, s in sets.items()}),
         Probe(name="absent-list",
-              query=SlayerQuery.model_validate({"source_model": "assignments", "dimensions": ["contractors.skills"],
-                                                "measures": [measure("count(*)", "n")]}),
+              query=SlayerQuery.model_validate({"population": "assignments", "dimensions": ["contractors.skills"],
+                                                "metrics": [measure("count(*)", "n")]}),
               read=lambda resp: {as_set(r["assignments.contractors.skills"]): num(r["assignments.n"])
                                  for r in resp.data},
               expected=dict(Counter(sets[c] if c in sets else absent for _, c in ASSIGNMENTS))),

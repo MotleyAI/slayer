@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 
 from tests._dev1743_fixtures import (
@@ -43,7 +43,7 @@ class TestModeBOverDunderModels:
         host, dunder = dunder_target_models()
         sql = await _engine_generate(
             query=SlayerQuery(
-                source_model="orders",
+                population="orders",
                 dimensions=["customer__region.label"],
             ),
             model=host,
@@ -64,8 +64,8 @@ class TestModeBOverDunderModels:
         host, dunder = dunder_target_models()
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({
-                "source_model": "orders",
-                "measures": [{"formula": "count(customer__region.*)"}],
+                "population": "orders",
+                "metrics": [{"formula": "count(customer__region.*)"}],
             }),
             model=host,
             extra_models=[dunder],
@@ -86,23 +86,23 @@ class TestModeBOverDunderModels:
         because ``dunder_target()`` raises building ``customer__region`` and,
         post-build, the parser rejects the formula's ``customer__region``.
         """
-        host = SlayerModel(
+        host = SlayerDataset(
             name="orders", data_source=DS, sql_table="orders",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="cr_id", type=DataType.INT),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="cr_id", datatype=DataType.INT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
             ],
-            joins=[
-                ModelJoin(target_model="customer__region",
+            relationships=[
+                DatasetRelationship(to="customer__region",
                           join_pairs=[["cr_id", "id"]]),
             ],
-            measures=[ModelMeasure(name="crc",
-                                   formula="count(customer__region.*)")],
+            metrics=[DatasetMetric(name="crc",
+                                   expression="count(customer__region.*)")],
         )
         dunder = dunder_target()  # raises today — the flip must let it through
         sql = await _engine_generate(
-            query=SlayerQuery(source_model="orders", measures=["crc"]),
+            query=SlayerQuery(population="orders", metrics=["crc"]),
             model=host,
             extra_models=[dunder],
             validate=False,
@@ -123,15 +123,15 @@ class TestModeBOverDunderModels:
         so the carve-out becomes reachable; construction of the column already
         works today (locked in ``test_dev1743_validators.py``).
         """
-        model = SlayerModel(
+        model = SlayerDataset(
             name="stores", data_source=DS, sql_table="stores_t",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="stores__name", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="stores__name", datatype=DataType.TEXT),
             ],
         )
         sql = await _engine_generate(
-            query=SlayerQuery(source_model="stores",
+            query=SlayerQuery(population="stores",
                               dimensions=["stores__name"]),
             model=model,
             validate=False,

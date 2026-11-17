@@ -26,12 +26,12 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import (
     IllegalScopeReferenceError,
-    MeasureCycleError,
-    MeasureRecursionLimitError,
+    MetricCycleError,
+    MetricRecursionLimitError,
 )
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
-from slayer.core.scope import StageColumn, StageSchema
+from slayer.core.scope import StageField, StageSchema
 from slayer.engine.binding import bind_expr
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.core.syntax import parse_expr
@@ -39,30 +39,30 @@ from slayer.core.syntax import parse_expr
 from tests._engine_helpers import _engine_generate
 
 
-def _model(measures) -> SlayerModel:
-    return SlayerModel(
+def _model(measures) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
         ],
-        measures=measures,
+        metrics=measures,
         default_time_dimension="created_at",
     )
 
 
 async def _gen(model, formula, **kw) -> str:
     return await _engine_generate(
-        query=SlayerQuery(source_model="orders",
-                          measures=[{"formula": formula, "name": "x"}], **kw),
+        query=SlayerQuery(population="orders",
+                          metrics=[{"formula": formula, "name": "x"}], **kw),
         model=model, dialect="duckdb", validate=False,
     )
 
 
-_REV = ModelMeasure(name="rev", formula="sum(amount)")
-_CNT = ModelMeasure(name="cnt", formula="count(*)")
-_GRP = ModelMeasure(name="grp", formula="status")
+_REV = DatasetMetric(name="rev", expression="sum(amount)")
+_CNT = DatasetMetric(name="cnt", expression="count(*)")
+_GRP = DatasetMetric(name="grp", expression="status")
 
 
 class TestPositiveResolutionThroughBinder:
@@ -128,17 +128,17 @@ class TestAggregationScopeNotExpanded:
 
 class TestCycleAndDepthThroughBinder:
     async def test_direct_self_cycle(self) -> None:
-        model = _model([ModelMeasure(name="aov", formula="aov + 1")])
-        with pytest.raises((MeasureCycleError, ValueError)) as ei:
+        model = _model([DatasetMetric(name="aov", expression="aov + 1")])
+        with pytest.raises((MetricCycleError, ValueError)) as ei:
             await _gen(model, "aov")
         assert "aov" in str(ei.value)
 
     async def test_cycle_names_the_chain(self) -> None:
         model = _model([
-            ModelMeasure(name="a", formula="b"),
-            ModelMeasure(name="b", formula="a"),
+            DatasetMetric(name="a", expression="b"),
+            DatasetMetric(name="b", expression="a"),
         ])
-        with pytest.raises((MeasureCycleError, ValueError)) as ei:
+        with pytest.raises((MetricCycleError, ValueError)) as ei:
             await _gen(model, "a")
         message = str(ei.value).lower()
         assert "a" in message
@@ -146,19 +146,19 @@ class TestCycleAndDepthThroughBinder:
         assert "cycl" in message or "circular" in message
 
     async def test_depth_limit_exceeded(self) -> None:
-        measures = [ModelMeasure(name="m5", formula="sum(amount)")]
+        measures = [DatasetMetric(name="m5", expression="sum(amount)")]
         for i in range(4, 0, -1):
-            measures.append(ModelMeasure(name=f"m{i}", formula=f"m{i + 1}"))
+            measures.append(DatasetMetric(name=f"m{i}", expression=f"m{i + 1}"))
         model = _model(measures)
         with mock.patch.dict(os.environ, {"SLAYER_MEASURE_EXPANSION_DEPTH": "2"}):
-            with pytest.raises(MeasureRecursionLimitError) as ei:
+            with pytest.raises(MetricRecursionLimitError) as ei:
                 await _gen(model, "m1")
             assert ei.value.limit == 2
 
     async def test_within_depth_resolves(self) -> None:
-        measures = [ModelMeasure(name="m5", formula="sum(amount)")]
+        measures = [DatasetMetric(name="m5", expression="sum(amount)")]
         for i in range(4, 0, -1):
-            measures.append(ModelMeasure(name=f"m{i}", formula=f"m{i + 1}"))
+            measures.append(DatasetMetric(name=f"m{i}", expression=f"m{i + 1}"))
         model = _model(measures)
         assert await _gen(model, "m1") == await _gen(_model([]), "sum(amount)")
 
@@ -188,7 +188,7 @@ class TestStageSchemaScope:
     def test_dotted_ref_in_stage_schema_is_rejected(self) -> None:
         stage = StageSchema(
             relation_name="s",
-            columns=[StageColumn(name="aov", sql_alias="aov", type=DataType.DOUBLE)],
+            fields=[StageField(name="aov", sql_alias="aov", datatype=DataType.DOUBLE)],
         )
         parsed = parse_expr("customers.aov")
         bundle = ResolvedSourceBundle(dialect="duckdb")

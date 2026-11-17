@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.facade.catalog import build_catalog
 from slayer.pg_facade.connection import (
     PUBLIC_SCHEMA,
@@ -24,30 +24,30 @@ from slayer.pg_facade.connection import (
 # --- fixtures ---------------------------------------------------------------
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="jaffle",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="order_date", type=DataType.DATE),
-            Column(name="is_paid", type=DataType.BOOLEAN),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="order_date", datatype=DataType.DATE),
+            DatasetField(name="is_paid", datatype=DataType.BOOLEAN),
         ],
     )
 
 
-def _customers_model() -> SlayerModel:
-    return SlayerModel(
+def _customers_model() -> SlayerDataset:
+    return SlayerDataset(
         name="customers",
         data_source="jaffle",
         sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
 
@@ -55,7 +55,7 @@ def _customers_model() -> SlayerModel:
 @pytest.fixture
 def catalog():
     return build_catalog(
-        models_by_datasource={PUBLIC_SCHEMA: [_orders_model(), _customers_model()]},
+        datasets_by_datasource={PUBLIC_SCHEMA: [_orders_model(), _customers_model()]},
     )
 
 
@@ -546,16 +546,16 @@ def test_case_distinct_collision_keeps_first_and_warns(caplog):
     first entry and warns once."""
     import logging
 
-    model = SlayerModel(
+    model = SlayerDataset(
         name="case_distinct",
         data_source="jaffle",
         sql_table="case_distinct",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="ID", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="ID", datatype=DataType.TEXT),
         ],
     )
-    catalog = build_catalog(models_by_datasource={PUBLIC_SCHEMA: [model]})
+    catalog = build_catalog(datasets_by_datasource={PUBLIC_SCHEMA: [model]})
     with caplog.at_level(logging.WARNING, logger="slayer.pg_facade.connection"):
         idx = _build_column_type_index(catalog=catalog, datasource="jaffle")
     # First-writer-wins: `id` INT is inserted first.

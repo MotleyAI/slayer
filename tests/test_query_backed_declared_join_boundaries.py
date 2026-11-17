@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.errors import UnrelatedDatasetError
-from slayer.core.models import ModelJoin
+from slayer.core.models import DatasetRelationship
 
 from tests._dev1902_fixtures import (
     AMOUNT_BY_CUSTOMER,
@@ -31,12 +31,12 @@ async def engine(request):
 
 
 async def test_join_target_keeps_its_onward_relationship(engine: SlayerQueryEngine):
-    await engine.save_model(_customer_totals())
+    await engine.save_dataset(_customer_totals())
     consumer = orders_model().model_copy(update={
         "name": "consumer",
-        "joins": [ModelJoin(target_model="customer_totals", join_pairs=[["customer_id", "customer_id"]])],
+        "joins": [DatasetRelationship(to="customer_totals", join_pairs=[["customer_id", "customer_id"]])],
     })
-    await engine.save_model(consumer)
+    await engine.save_dataset(consumer)
 
     response = await engine.execute(_query(
         source_model="consumer",
@@ -48,11 +48,11 @@ async def test_join_target_keeps_its_onward_relationship(engine: SlayerQueryEngi
 
 
 async def test_saved_relation_without_outgoing_joins_can_use_incoming_edge(engine: SlayerQueryEngine):
-    await engine.save_model(_customer_totals().model_copy(update={"joins": []}))
+    await engine.save_dataset(_customer_totals().model_copy(update={"joins": []}))
     customers = customers_model()
-    await engine.save_model(customers.model_copy(update={"joins": [
-        *customers.joins,
-        ModelJoin(target_model="customer_totals", join_pairs=[["id", "customer_id"]], name="totals"),
+    await engine.save_dataset(customers.model_copy(update={"relationships": [
+        *customers.relationships,
+        DatasetRelationship(to="customer_totals", join_pairs=[["id", "customer_id"]], name="totals"),
     ]}))
 
     response = await engine.execute(_query(
@@ -66,8 +66,8 @@ async def test_saved_relation_without_outgoing_joins_can_use_incoming_edge(engin
 
 async def test_extension_join_alias_resolves_to_the_named_stored_edge(engine: SlayerQueryEngine):
     totals = _customer_totals()
-    await engine.save_model(totals.model_copy(update={
-        "joins": [totals.joins[0].model_copy(update={"name": "owner"})],
+    await engine.save_dataset(totals.model_copy(update={
+        "relationships": [totals.relationships[0].model_copy(update={"name": "owner"})],
     }))
 
     response = await engine.execute(_query(
@@ -101,10 +101,10 @@ async def test_ordinary_stage_does_not_inherit_backing_source_joins(engine):
 
 
 async def test_legal_stage_named_join_target_is_not_a_synthetic_self_join(engine: SlayerQueryEngine):
-    await engine.save_model(customers_model().model_copy(update={"name": "_stage"}))
+    await engine.save_dataset(customers_model().model_copy(update={"name": "_stage"}))
     totals = _customer_totals()
-    await engine.save_model(totals.model_copy(update={
-        "joins": [totals.joins[0].model_copy(update={"target_model": "_stage"})],
+    await engine.save_dataset(totals.model_copy(update={
+        "relationships": [totals.relationships[0].model_copy(update={"target_model": "_stage"})],
     }))
 
     unjoined = await engine.execute(_query(

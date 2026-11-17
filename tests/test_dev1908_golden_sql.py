@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from slayer.core.models import ModelMeasure
+from slayer.core.models import DatasetMetric
 from slayer.core.query import SlayerQuery
 
 from tests._engine_helpers import _engine_generate
@@ -24,8 +24,8 @@ GOLDEN_PATH = Path(__file__).parent / "golden" / "dev1908_sql_baseline.json"
 DIALECTS = ["postgres", "sqlite", "duckdb", "mysql", "tsql", "bigquery", "snowflake"]
 
 
-def _m(formula: str) -> list[ModelMeasure]:
-    return [ModelMeasure(formula=formula, name="w")]
+def _m(formula: str) -> list[DatasetMetric]:
+    return [DatasetMetric(expression=formula, name="w")]
 
 
 def _cases() -> dict:
@@ -62,7 +62,7 @@ async def _generate_one(case, dialect: str):
     models = dev1908_models()
     try:
         extension = {"extensions": [ship_region_extension()]} if case.get("ext") else {}
-        query = SlayerQuery(source_model="orders", **extension, **case["kw"])
+        query = SlayerQuery(population="orders", **extension, **case["kw"])
         return await _engine_generate(
             query=query, model=models[0], extra_models=models[1:],
             dialect=dialect, validate=False)

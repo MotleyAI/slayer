@@ -43,12 +43,12 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -57,35 +57,35 @@ from tests._engine_helpers import seeded_exec_engine
 # --------------------------------------------------------------------------- #
 # Models — orders (host) → customers.
 # --------------------------------------------------------------------------- #
-def customers_model() -> SlayerModel:
+def customers_model() -> SlayerDataset:
     """``spend`` is the cross-model (target-grain) inner; ``signup_at`` is the
     attributable time axis the inner varies along."""
-    return SlayerModel(
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
         default_time_dimension="signup_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="spend", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
         ],
     )
 
 
-def orders_model() -> SlayerModel:
-    return SlayerModel(
+def orders_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
-def dev1800_models() -> List[SlayerModel]:
+def dev1800_models() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order the engine helpers want."""
     return [orders_model(), customers_model()]
 
@@ -152,7 +152,7 @@ def signup_td() -> List[TimeDimension]:
     """Month time dimension on the customer signup axis (the attributable axis).
     Dotted so it works whether the query is rooted at orders or customers."""
     return [TimeDimension(
-        dimension="customers.signup_at",
+        field="customers.signup_at",
         granularity=TimeGranularity.MONTH,
     )]
 
@@ -195,5 +195,5 @@ __all__ = [
     "AMOUNT_BY_SIGNUP", "CHANGE_AMOUNT_BY_SIGNUP", "CHANGE_PCT_AMOUNT_BY_SIGNUP",
     "SPEND_BY_SIGNUP", "CHANGE_SPEND_BY_SIGNUP",
     "RATIO_BY_SIGNUP", "CHANGE_PCT_RATIO_BY_SIGNUP",
-    "SlayerQuery", "ModelMeasure", "ColumnRef", "TimeDimension", "TimeGranularity",
+    "SlayerQuery", "DatasetMetric", "FieldRef", "TimeDimension", "TimeGranularity",
 ]

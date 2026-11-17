@@ -16,9 +16,9 @@ from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
 from slayer.core.json_path import JsonPathError, parse_json_path
 from slayer.core.keys import CastKey
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -112,9 +112,9 @@ class TestSpellings:
 class TestReturningIsTryCast:
     def test_returning_binds_to_a_try_cast_key(self) -> None:
         model = lib_model()
-        bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
-        key = bind_expr(parse_expr("json_value(payload, '$.qty' RETURNING INT)"), scope=ModelScope(source_model=model),
-                        bundle=bundle, allow_measures=True).value_key
+        bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])
+        key = bind_expr(parse_expr("json_value(payload, '$.qty' RETURNING INT)"), scope=DatasetScope(population=model),
+                        bundle=bundle, allow_metrics=True).value_key
         assert isinstance(key, CastKey), key
         assert key.try_ is True
         assert key.data_type is DataType.INT
@@ -160,7 +160,7 @@ class TestPathSubset:
 
 
 def _measure_query(formula: str, **kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "lib", "measures": [{"formula": formula, "name": "v"}], **kw})
+    return SlayerQuery.model_validate({"population": "lib", "metrics": [{"formula": formula, "name": "v"}], **kw})
 
 
 class TestTyping:
@@ -179,11 +179,11 @@ class TestTyping:
         await _rejected(engine, expr, any_of=("json",))
 
 
-def _json_model(*, db_type: Optional[str], type_: DataType = DataType.TEXT) -> SlayerModel:
+def _json_model(*, db_type: Optional[str], type_: DataType = DataType.TEXT) -> SlayerDataset:
     base = lib_model()
-    columns = [c for c in base.columns if c.name != "payload"]
-    columns.append(Column(name="payload", type=type_, db_type=db_type))
-    return base.model_copy(update={"columns": columns})
+    columns = [c for c in base.fields if c.name != "payload"]
+    columns.append(DatasetField(name="payload", datatype=type_, db_type=db_type))
+    return base.model_copy(update={"fields": columns})
 
 
 JSON_VALUE_Q = lib_query("json_value(payload, '$.a')")
@@ -315,7 +315,7 @@ class TestIngestionKeepsJsonDbType:
                 finally:
                     await ingester.aclose()
                     ingester.close()
-                payload = next(c for c in models[0].columns if c.name == "payload")
+                payload = next(c for c in models[0].fields if c.name == "payload")
                 assert (payload.db_type or "").upper() == "JSON"
                 engine = await build_exec_engine(db_path, dialect="duckdb", models=models)
                 try:

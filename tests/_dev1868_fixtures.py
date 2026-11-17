@@ -14,7 +14,7 @@ from typing import AsyncIterator, Optional
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._engine_helpers import seeded_exec_engine
 from slayer.storage.sqlite_conn import transaction
@@ -115,14 +115,14 @@ SHIFTED_CUMSUM_MONTH_END = {
 }
 
 
-def daily_model() -> SlayerModel:
-    return SlayerModel(
+def daily_model() -> SlayerDataset:
+    return SlayerDataset(
         name="daily", data_source="test", sql_table="daily",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
         ],
     )
 

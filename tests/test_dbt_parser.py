@@ -89,7 +89,7 @@ class TestRegularModelsOptIn:
         with patch(
             "slayer.dbt.parser.load_or_generate_manifest", return_value=None
         ) as mock_load:
-            parse_dbt_project(str(tmp_path), include_regular_models=True)
+            parse_dbt_project(str(tmp_path), include_regular_datasets=True)
 
         mock_load.assert_called_once_with(str(tmp_path))
 
@@ -300,7 +300,7 @@ class TestParseDbtProjectRegularModels:
         # code path; without it, the manifest isn't loaded at all (B6-2).
         # The dbt_project_dir fixture writes YAMLs only — no .sql files — so
         # regular_models stays empty.
-        project = parse_dbt_project(str(dbt_project_dir), include_regular_models=True)
+        project = parse_dbt_project(str(dbt_project_dir), include_regular_datasets=True)
         assert project.regular_models == []
 
     def test_populates_regular_models_from_manifest(self, dbt_project_dir) -> None:
@@ -335,7 +335,7 @@ class TestParseDbtProjectRegularModels:
         }
         (target / "manifest.json").write_text(json.dumps(manifest_payload))
 
-        project = parse_dbt_project(str(dbt_project_dir), include_regular_models=True)
+        project = parse_dbt_project(str(dbt_project_dir), include_regular_datasets=True)
         assert len(project.regular_models) == 1
         rm = project.regular_models[0]
         assert rm.name == "raw_events"

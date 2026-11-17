@@ -29,15 +29,15 @@ from collections.abc import AsyncIterator
 import pytest
 import pytest_asyncio
 
-import slayer.inspect.model_render as mr
+import slayer.inspect.dataset_render as mr
 from slayer.core.enums import DataType
 from slayer.core.query import SlayerQuery
 from slayer.core.models import (
     Aggregation,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.inspect.service import InspectService
@@ -46,8 +46,8 @@ from slayer.storage.base import StorageBackend
 from typing import Any
 
 
-def _stored_col(model: SlayerModel, name: str) -> Column:
-    col = model.get_column(name)
+def _stored_col(model: SlayerDataset, name: str) -> DatasetField:
+    col = model.get_field(name)
     assert col is not None
     return col
 
@@ -83,27 +83,27 @@ async def inspect_setup(tmp_path) -> AsyncIterator[tuple[InspectService, object]
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_file)
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="ds",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE,
                    description="Order total in USD."),
-            Column(name="status", type=DataType.TEXT,
+            DatasetField(name="status", datatype=DataType.TEXT,
                    description="Order lifecycle status."),
-            Column(name="order_date", type=DataType.DATE,
+            DatasetField(name="order_date", datatype=DataType.DATE,
                    description="Date the order was placed."),
-            Column(name="secret", type=DataType.TEXT,
+            DatasetField(name="secret", datatype=DataType.TEXT,
                    description="Hidden but inspectable.", hidden=True),
         ],
-        measures=[
-            ModelMeasure(name="aov", formula="sum(amount) / count(*)",
+        metrics=[
+            DatasetMetric(name="aov", expression="sum(amount) / count(*)",
                          description="Average order value."),
         ],
         aggregations=[
-            Aggregation(name="custom_max", formula="MAX({col})",
+            Aggregation(name="custom_max", expression="MAX({col})",
                         description="A custom aggregation."),
         ],
     ))
@@ -143,9 +143,9 @@ async def test_compact_false_backfills_categorical(inspect_setup: tuple[Any, Sto
     assert "Sample values:" in out
     assert "paid" in out
     # Persisted for later reads.
-    reloaded = await storage.get_model("orders", data_source="ds")
+    reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
-    col = reloaded.get_column("status")
+    col = reloaded.get_field("status")
     assert col is not None
     assert col.sampled_values is not None
     assert "paid" in col.sampled_values
@@ -165,7 +165,7 @@ async def test_compact_false_backfills_numeric(inspect_setup: tuple[Any, Storage
     assert "Sample values:" in out
     # Numeric render is a min .. max range.
     assert ".." in out
-    reloaded = await storage.get_model("orders", data_source="ds")
+    reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
     assert _stored_col(reloaded, "amount").sampled is not None
 
@@ -181,7 +181,7 @@ async def test_compact_false_backfills_temporal(inspect_setup: tuple[Any, Storag
     assert "Sample values:" in out
     assert ".." in out  # min .. max range
     assert "2024-01-01" in out
-    reloaded = await storage.get_model("orders", data_source="ds")
+    reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
     assert _stored_col(reloaded, "order_date").sampled is not None
 
@@ -201,7 +201,7 @@ async def test_compact_true_does_not_refresh(inspect_setup: tuple[Any, StorageBa
     assert "Sample values:" not in out
     assert calls == [], "compact=True must not run a profile query"
     # And nothing was persisted.
-    reloaded = await storage.get_model("orders", data_source="ds")
+    reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
     assert _stored_col(reloaded, "status").sampled_values is None
 
@@ -219,7 +219,7 @@ async def test_compact_true_does_not_refresh_numeric(
     )
     assert "Sample values:" not in out
     assert calls == [], "compact=True must not run a profile query for numeric"
-    reloaded = await storage.get_model("orders", data_source="ds")
+    reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
     assert _stored_col(reloaded, "amount").sampled is None
 
@@ -279,7 +279,7 @@ async def test_engine_none_no_refresh_attempt(inspect_setup: tuple[Any, StorageB
     # Renders the column header but no live samples (uncached + no engine).
     assert "Column: ds.orders.status" in out
     assert "Sample values:" not in out
-    reloaded = await storage.get_model("orders", data_source="ds")
+    reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
     assert _stored_col(reloaded, "status").sampled_values is None
 
@@ -319,8 +319,8 @@ async def test_inspect_model_passes_all_columns_in_one_call(
 async def test_already_cached_does_not_reprofile(inspect_setup: tuple[Any, StorageBackend], monkeypatch: pytest.MonkeyPatch) -> None:
     svc, storage = inspect_setup
     # Pre-populate the structured cache so the column reads as cached.
-    await storage.update_column_sampled(
-        data_source="ds", model_name="orders", column_name="status",
+    await storage.update_field_sampled(
+        data_source="ds", dataset_name="orders", field_name="status",
         sampled="paid, refunded", sampled_values=["paid", "refunded"],
         distinct_count=2,
     )
@@ -364,7 +364,7 @@ async def test_batch_refreshes_both_members(inspect_setup: tuple[Any, StorageBac
     )
     assert "paid" in out          # categorical block
     assert ".." in out            # numeric block (min .. max)
-    reloaded = await storage.get_model("orders", data_source="ds")
+    reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
     assert _stored_col(reloaded, "status").sampled_values is not None
     assert _stored_col(reloaded, "amount").sampled is not None
@@ -386,7 +386,7 @@ async def test_hidden_column_renders_without_refresh(
     )
     assert "Column: ds.orders.secret" in out
     assert calls == [], "hidden columns are never profiled"
-    reloaded = await storage.get_model("orders", data_source="ds")
+    reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
     assert _stored_col(reloaded, "secret").sampled_values is None
 
@@ -425,7 +425,7 @@ async def test_persist_failure_renders_cleanly(inspect_setup: tuple[Any, Storage
     async def boom(**kwargs):  # NOSONAR(S7503)
         raise RuntimeError("disk on fire")
 
-    monkeypatch.setattr(storage, "update_column_sampled", boom)
+    monkeypatch.setattr(storage, "update_field_sampled", boom)
     out = await svc.inspect(
         reference="ds.orders.status", entity_type="column", compact=False,
     )
@@ -446,7 +446,7 @@ async def test_persist_failure_numeric_renders_cleanly(
     async def boom(**kwargs):  # NOSONAR(S7503)
         raise RuntimeError("disk on fire")
 
-    monkeypatch.setattr(storage, "update_column_sampled", boom)
+    monkeypatch.setattr(storage, "update_field_sampled", boom)
     out = await svc.inspect(
         reference="ds.orders.amount", entity_type="column", compact=False,
     )

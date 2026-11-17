@@ -12,23 +12,23 @@ from slayer.core.errors import (
     AccessTagsEditError,
     HiddenContentConflictError,
     MemoryNotFoundError,
-    UnknownJoinTargetError,
+    UnknownRelationshipTargetError,
 )
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
-from slayer.engine.model_reads import Identity, models_read_by, placeholder
+from slayer.engine.dataset_reads import Identity, datasets_read_by, placeholder
 from slayer.memories.models import MEMORY_CANONICAL_PREFIX, Memory
-from slayer.storage.base import StorageBackend, _find_case_colliding_id, check_join_target_spellings
+from slayer.storage.base import StorageBackend, _find_case_colliding_id, check_relationship_target_spellings
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded
 
 
-def can_access(model: SlayerModel, *, tags: Iterable[str]) -> bool:
+def can_access(dataset: SlayerDataset, *, tags: Iterable[str]) -> bool:
     """Untagged, or sharing a tag with the caller."""
-    return not model.access_tags or not set(model.access_tags).isdisjoint(tags)
+    return not dataset.access_tags or not set(dataset.access_tags).isdisjoint(tags)
 
 
-def entity_model(entity: str) -> Identity | None:
+def entity_dataset(entity: str) -> Identity | None:
     """``(data_source, model)`` a ``<ds>.<model>[.<leaf>]`` entity names; ``None`` for datasource and memory refs."""
     if entity.startswith(MEMORY_CANONICAL_PREFIX):
         return None
@@ -49,8 +49,8 @@ class _View(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     identities: list[Identity]
-    models: dict[Identity, SlayerModel]
-    full: dict[Identity, SlayerModel]
+    datasets: dict[Identity, SlayerDataset]
+    full: dict[Identity, SlayerDataset]
     hidden: frozenset[Identity]
     memories: dict[str, Memory]
     hidden_memories: frozenset[str]
@@ -59,7 +59,7 @@ class _View(BaseModel):
     def hides(self, canonical_id: str) -> bool:
         if canonical_id.startswith(MEMORY_CANONICAL_PREFIX):
             return canonical_id[len(MEMORY_CANONICAL_PREFIX):] in self.hidden_memories
-        return entity_model(canonical_id) in self.hidden
+        return entity_dataset(canonical_id) in self.hidden
 
     def hides_under(self, prefix: str) -> bool:
         """Whether a hidden model or memory id is ``prefix`` or descends from it."""
@@ -67,22 +67,22 @@ class _View(BaseModel):
         hidden += [f"{MEMORY_CANONICAL_PREFIX}{m}" for m in self.hidden_memories]
         return any(cid == prefix or cid.startswith(f"{prefix}.") for cid in hidden)
 
-    def pruned(self, model: SlayerModel) -> SlayerModel:
-        joins = [j for j in model.joins if (model.data_source, j.target_model) not in self.hidden]
-        return model if len(joins) == len(model.joins) else model.model_copy(update={"joins": joins})
+    def pruned(self, dataset: SlayerDataset) -> SlayerDataset:
+        joins = [j for j in dataset.relationships if (dataset.data_source, j.to) not in self.hidden]
+        return dataset if len(joins) == len(dataset.relationships) else dataset.model_copy(update={"relationships": joins})
 
 
-def _prior_tags(model: SlayerModel, *, view: _View) -> list[str]:
+def _prior_tags(dataset: SlayerDataset, *, view: _View) -> list[str]:
     """The stored copy's tags; a new model, moved or copied ones included, has none."""
-    stored = view.full.get((model.data_source, model.name))
+    stored = view.full.get((dataset.data_source, dataset.name))
     return stored.access_tags if stored is not None else []
 
 
 def _visible_identities(
-    *, full: dict[Identity, SlayerModel], known: list[SlayerModel], tags: frozenset[str],
+    *, full: dict[Identity, SlayerDataset], known: list[SlayerDataset], tags: frozenset[str],
 ) -> set[Identity]:
     """Accessible models whose reads, resolved over ``known`` (loaded plus placeholders), are all visible, transitively."""
-    reads = {key: models_read_by(m, models=known) - {key} for key, m in full.items()}
+    reads = {key: datasets_read_by(m, datasets=known) - {key} for key, m in full.items()}
     visible = {key for key, m in full.items() if can_access(m, tags=tags)}
     while blocked := {key for key in visible if not reads[key] <= visible}:
         visible -= blocked
@@ -125,23 +125,23 @@ class AccessFilteredStorage(StorageBackend):
 
     async def _build_view(self) -> _View:
         inner = self._inner
-        identities = await inner._list_all_model_identities()
-        loaded, _ = await inner.load_models()
+        identities = await inner._list_all_dataset_identities()
+        loaded, _ = await inner.load_datasets()
         full = {(m.data_source, m.name): m for m in loaded}
         known = [*loaded, *(placeholder(i) for i in identities if i not in full)]
         visible = _visible_identities(full=full, known=known, tags=self._tags)
         hidden = frozenset((set(identities) | set(full)) - visible)
         rows, unloadable = await inner._list_memories_rows(entities=None)
-        query_reads = {m.id: models_read_by(m.query, models=known) if m.query else frozenset() for m in rows}
+        query_reads = {m.id: datasets_read_by(m.query, datasets=known) if m.query else frozenset() for m in rows}
         hidden_memories = {e.name for e in unloadable} | {
             m.id for m in rows
-            if (linked := {i for e in m.entities if (i := entity_model(e))} | query_reads[m.id]) and linked <= hidden
+            if (linked := {i for e in m.entities if (i := entity_dataset(e))} | query_reads[m.id]) and linked <= hidden
         }
         view = _View(
-            identities=[i for i in identities if i in visible], models={}, full={k: full[k] for k in visible},
+            identities=[i for i in identities if i in visible], datasets={}, full={k: full[k] for k in visible},
             hidden=hidden, memories={}, hidden_memories=frozenset(hidden_memories), withheld={},
         )
-        view.models.update((k, view.pruned(full[k])) for k in visible)
+        view.datasets.update((k, view.pruned(full[k])) for k in visible)
         for memory in rows:
             if memory.id in hidden_memories:
                 continue
@@ -174,91 +174,91 @@ class AccessFilteredStorage(StorageBackend):
 
     # ---- models -------------------------------------------------------------
 
-    async def _list_all_model_identities(self) -> list[tuple[str, str]]:
+    async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
         if self._bypass:
-            return await self._inner._list_all_model_identities()
+            return await self._inner._list_all_dataset_identities()
         return list((await self._view()).identities)
 
-    async def get_model(self, name: str, data_source: str | None = None) -> SlayerModel | None:
+    async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
         if self._bypass:
-            return await self._inner.get_model(name, data_source=data_source)
+            return await self._inner.get_dataset(name, data_source=data_source)
         target = await self._resolve_target_or_none(name, data_source=data_source)
-        model = (await self._view()).models.get(target) if target is not None else None
+        model = (await self._view()).datasets.get(target) if target is not None else None
         return model.model_copy(deep=True) if model is not None else None
 
-    async def _load_raw_model_dict(self, *, name: str, data_source: str) -> dict | None:
+    async def _load_raw_dataset_dict(self, *, name: str, data_source: str) -> dict | None:
         if self._bypass:
-            return await self._inner._load_raw_model_dict(name=name, data_source=data_source)
-        return await super()._load_raw_model_dict(name=name, data_source=data_source)
+            return await self._inner._load_raw_dataset_dict(name=name, data_source=data_source)
+        return await super()._load_raw_dataset_dict(name=name, data_source=data_source)
 
-    async def save_model(
-        self, model: SlayerModel, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
+    async def save_dataset(
+        self, dataset: SlayerDataset, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
     ) -> None:
         """Bypass: the inner save. Otherwise validate in the view, then save the model merged onto its full stored copy."""
         if self._bypass:
-            await self._inner.save_model(model, _validate=_validate, failures=failures)
+            await self._inner.save_dataset(dataset, _validate=_validate, failures=failures)
             return
         view = await self._view()
-        if model.access_tags != _prior_tags(model, view=view):
-            raise AccessTagsEditError(model=model.name)
+        if dataset.access_tags != _prior_tags(dataset, view=view):
+            raise AccessTagsEditError(dataset=dataset.name)
         if _validate:
-            names = [n for ds, n in view.identities if ds == model.data_source]
-            check_join_target_spellings(model, names=names, peers={})
-            for join in model.joins:
-                if (model.data_source, join.target_model) not in view.models:
-                    raise UnknownJoinTargetError(model=model.name, target=join.target_model)
-            await self.validate_for_save(model, failures=failures)
-        merged = self._merged(model, view=view)
+            names = [n for ds, n in view.identities if ds == dataset.data_source]
+            check_relationship_target_spellings(dataset, names=names, peers={})
+            for join in dataset.relationships:
+                if (dataset.data_source, join.to) not in view.datasets:
+                    raise UnknownRelationshipTargetError(dataset=dataset.name, target=join.to)
+            await self.validate_for_save(dataset, failures=failures)
+        merged = self._merged(dataset, view=view)
         try:
-            if merged is not model:
-                merged = SlayerModel.model_validate(merged.model_dump())
+            if merged is not dataset:
+                merged = SlayerDataset.model_validate(merged.model_dump())
             # Peers the full store cannot load lie outside the view: skipped unreported.
-            await self._inner.save_model(merged, _validate=_validate, failures=DocumentLoadFailures(report=False))
+            await self._inner.save_dataset(merged, _validate=_validate, failures=DocumentLoadFailures(report=False))
         except ValueError:  # valid in the view, so a full-store rejection stems from hidden parts
-            raise HiddenContentConflictError(kind="model", name=model.name) from None
+            raise HiddenContentConflictError(kind="model", name=dataset.name) from None
 
-    def _merged(self, model: SlayerModel, *, view: _View) -> SlayerModel:
-        key = (model.data_source, model.name)
+    def _merged(self, dataset: SlayerDataset, *, view: _View) -> SlayerDataset:
+        key = (dataset.data_source, dataset.name)
         if key in view.hidden:
-            raise HiddenContentConflictError(kind="model", name=model.name)
+            raise HiddenContentConflictError(kind="model", name=dataset.name)
         stored = view.full.get(key)
         if stored is None:
-            if any(n == model.name and m.joins != view.models[(ds, n)].joins for (ds, n), m in view.full.items()):
-                raise HiddenContentConflictError(kind="model", name=model.name)  # a move would drop its pruned joins
-            return model
-        pruned = [j for j in stored.joins if (model.data_source, j.target_model) in view.hidden]
-        return model.model_copy(update={"joins": [*model.joins, *pruned]}) if pruned else model
+            if any(n == dataset.name and m.relationships != view.datasets[(ds, n)].relationships for (ds, n), m in view.full.items()):
+                raise HiddenContentConflictError(kind="model", name=dataset.name)  # a move would drop its pruned joins
+            return dataset
+        pruned = [j for j in stored.relationships if (dataset.data_source, j.to) in view.hidden]
+        return dataset.model_copy(update={"relationships": [*dataset.relationships, *pruned]}) if pruned else dataset
 
-    async def _save_model_impl(self, model: SlayerModel) -> None:
+    async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
         if self._bypass:
-            await self._inner._save_model_impl(model)
+            await self._inner._save_dataset_impl(dataset)
             return
-        await self.save_model(model, _validate=False)
+        await self.save_dataset(dataset, _validate=False)
 
     async def _visible(self, *, data_source: str, name: str) -> bool:
-        return (data_source, name) in (await self._view()).models
+        return (data_source, name) in (await self._view()).datasets
 
-    async def delete_model(self, name: str, data_source: str | None = None) -> bool:
+    async def delete_dataset(self, name: str, data_source: str | None = None) -> bool:
         if self._bypass:
-            return await self._inner.delete_model(name, data_source=data_source)
+            return await self._inner.delete_dataset(name, data_source=data_source)
         target = await self._resolve_target_or_none(name, data_source=data_source)
         if target is None or not await self._visible(data_source=target[0], name=target[1]):
             return False
-        return await self._inner.delete_model(target[1], data_source=target[0])
+        return await self._inner.delete_dataset(target[1], data_source=target[0])
 
-    async def _delete_model_row(self, *, data_source: str, name: str) -> bool:
+    async def _delete_dataset_row(self, *, data_source: str, name: str) -> bool:
         if not self._bypass and not await self._visible(data_source=data_source, name=name):
             return False
-        return await self._inner._delete_model_row(data_source=data_source, name=name)
+        return await self._inner._delete_dataset_row(data_source=data_source, name=name)
 
-    async def update_column_sampled(
-        self, *, data_source: str, model_name: str, column_name: str,
+    async def update_field_sampled(
+        self, *, data_source: str, dataset_name: str, field_name: str,
         sampled: str | None, sampled_values: list[str] | None, distinct_count: int | None,
     ) -> None:
-        if not self._bypass and not await self._visible(data_source=data_source, name=model_name):
-            raise ValueError(f"update_column_sampled: model {model_name!r} in datasource {data_source!r} not found.")
-        await self._inner.update_column_sampled(
-            data_source=data_source, model_name=model_name, column_name=column_name,
+        if not self._bypass and not await self._visible(data_source=data_source, name=dataset_name):
+            raise ValueError(f"update_field_sampled: model {dataset_name!r} in datasource {data_source!r} not found.")
+        await self._inner.update_field_sampled(
+            data_source=data_source, dataset_name=dataset_name, field_name=field_name,
             sampled=sampled, sampled_values=sampled_values, distinct_count=distinct_count,
         )
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from slayer.core.query import SlayerQuery
-from tests._dev1915_fixtures import ModelMeasure, dev1915_models, month_td
+from tests._dev1915_fixtures import DatasetMetric, dev1915_models, month_td
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise, render_value
 
@@ -28,7 +28,7 @@ FIRST_LAST = {"first", "last", "last_explicit_time", "cross_model_last"}
 
 
 def _cm(formula, name):
-    return [ModelMeasure(formula=formula, name=name)]
+    return [DatasetMetric(expression=formula, name=name)]
 
 
 def _cases() -> dict:
@@ -71,7 +71,7 @@ def _cases() -> dict:
 async def _generate_one(case, dialect: str):
     models = dev1915_models()
     try:
-        query = SlayerQuery(source_model="orders", **case["kw"])
+        query = SlayerQuery(population="orders", **case["kw"])
         return await _engine_generate(
             query=query, model=models[0], extra_models=models[1:],
             dialect=dialect, validate=False,

@@ -36,7 +36,7 @@ async def pg_spine(postgresql, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
     datasources = [with_granularities(base, name=name) for name in ("pg", "pg_ts")]
     async with owned_query_engine(storage=storage, datasources=datasources) as engine:
         for model in (*server_models(data_source="pg"), *server_models_ts(data_source="pg_ts")):
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         yield engine
 
 

@@ -110,15 +110,15 @@ class TestCalendarStreak:
 
     async def test_downstream_stage_time_dimension(self, exec_engine) -> None:
         inner = SlayerQuery.model_validate({
-            "name": "s1", "source_model": "orders",
+            "name": "s1", "population": "orders",
             "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
-            "filters": ["customer_id = 1"],
-            "measures": [{"formula": "sum(amount)", "name": "total"}],
+            "filter": ["customer_id = 1"],
+            "metrics": [{"formula": "sum(amount)", "name": "total"}],
         })
         outer = SlayerQuery.model_validate({
-            "source_model": "s1",
+            "population": "s1",
             "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
-            "measures": [{"formula": "consecutive_periods(sum(total) > 100)", "name": "v"}],
+            "metrics": [{"formula": "consecutive_periods(sum(total) > 100)", "name": "v"}],
         })
         resp = await exec_engine.execute(query=[inner, outer])
         got = _unique([(month_of(r["s1.order_date"]), int(r["s1.v"])) for r in resp.data])

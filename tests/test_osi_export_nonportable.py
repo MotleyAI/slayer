@@ -11,7 +11,7 @@ import yaml
 from ruamel.yaml import YAML
 
 from slayer.core.enums import DataType
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.osi import slayer_extension as ext
 from tests._cli_inprocess import run_cli_in_process
 from tests._osi_export_fixtures import BASIC_MEASURES, col, customers, orders, orders_columns, rich_orders
@@ -79,7 +79,7 @@ async def test_document_level_foreign_extension(env, extensions: bool) -> None:
     validate(document)
 
 
-def _with_semantic(model: SlayerModel, extensions: list[Any]) -> SlayerModel:
+def _with_semantic(model: SlayerDataset, extensions: list[Any]) -> SlayerDataset:
     semantic = {"name": "shop", "description": None, "ai_context": None, "nonportable_extensions": extensions}
     return model.model_copy(update={"meta": {**(model.meta or {}), "osi_semantic_model": semantic}})
 
@@ -93,7 +93,7 @@ def _with_semantic(model: SlayerModel, extensions: list[Any]) -> SlayerModel:
 ])
 async def test_malformed_document_level_entry_is_reported_and_omitted(env, extensions: bool,
                                                                       malformed: dict[str, Any]) -> None:
-    def models(entries: list[Any]) -> list[SlayerModel]:
+    def models(entries: list[Any]) -> list[SlayerDataset]:
         return [_with_semantic(customers(), entries), _with_semantic(orders(measures=BASIC_MEASURES), entries)]
     clean = await export_models(env, *models([ACME]), extensions=extensions)
     result = await export_models(env, *models([malformed, ACME]), extensions=extensions)

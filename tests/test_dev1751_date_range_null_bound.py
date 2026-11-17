@@ -11,30 +11,30 @@ import pydantic
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from tests._engine_helpers import _engine_generate
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
         ],
     )
 
 
-def _daily() -> SlayerModel:
-    return SlayerModel(
+def _daily() -> SlayerDataset:
+    return SlayerDataset(
         name="daily", data_source="test",
         source_queries=[
             SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["created_at"],
-                "measures": [{"formula": "sum(amount)", "name": "rev"}],
+                "metrics": [{"formula": "sum(amount)", "name": "rev"}],
             })
         ],
     )
@@ -42,9 +42,9 @@ def _daily() -> SlayerModel:
 
 def _query(*, source_model: str, measure: str, date_range: list) -> SlayerQuery:
     return SlayerQuery(
-        source_model=source_model,
-        time_dimensions=[TimeDimension(dimension="created_at", granularity="month", date_range=date_range)],
-        measures=[{"formula": measure, "name": "m0"}],
+        population=source_model,
+        time_dimensions=[TimeDimension(field="created_at", granularity="month", date_range=date_range)],
+        metrics=[{"formula": measure, "name": "m0"}],
     )
 
 

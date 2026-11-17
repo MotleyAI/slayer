@@ -23,7 +23,7 @@ async def engine(tmp_path):
 
 async def _statuses(engine: SlayerQueryEngine, *, column: str, direction: str) -> list[str]:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "orders", "dimensions": ["status"], "measures": ["sum(amount)"],
+        "population": "orders", "dimensions": ["status"], "metrics": ["sum(amount)"],
         "order": [{"column": column, "direction": direction}],
     }))
     return [r["orders.status"] for r in resp.data]
@@ -53,7 +53,7 @@ async def test_same_order_as_explicit_extremum(engine: SlayerQueryEngine) -> Non
 
 async def test_grouped_by_non_identifier_dimensions(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": "orders", "dimensions": ["id", "amount"],
+        "population": "orders", "dimensions": ["id", "amount"],
         "order": [{"column": "amount - fee", "direction": "desc"}],
     }))
     assert [r["orders.id"] for r in resp.data] == [2, 3, 1, 4]

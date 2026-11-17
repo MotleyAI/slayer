@@ -22,19 +22,19 @@ from slayer.core.enums import DataType
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.memories.models import Memory
 from slayer.search.render import (
     render_aggregation_text,
-    render_column_text,
+    render_field_text,
     render_datasource_text,
-    render_measure_text,
+    render_metric_text,
     render_memory_text,
-    render_model_text,
+    render_dataset_text,
 )
 
 
@@ -43,44 +43,44 @@ from slayer.search.render import (
 # ---------------------------------------------------------------------------
 
 
-def _make_orders_model() -> SlayerModel:
-    return SlayerModel(
+def _make_orders_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="warehouse",
         description="One row per checkout order.",
-        columns=[
-            Column(
+        fields=[
+            DatasetField(
                 name="id",
-                type=DataType.INT,
+                datatype=DataType.INT,
                 primary_key=True,
                 description="Primary key.",
             ),
-            Column(
+            DatasetField(
                 name="amount",
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
                 description="Net amount in USD.",
                 sampled="0.0 .. 9999.99",
             ),
-            Column(
+            DatasetField(
                 name="status",
-                type=DataType.TEXT,
+                datatype=DataType.TEXT,
                 description="paid|refunded|cancelled.",
                 sampled="paid, refunded, cancelled",
             ),
-            Column(name="customer_id", type=DataType.INT, hidden=True),
+            DatasetField(name="customer_id", datatype=DataType.INT, hidden=True),
         ],
-        measures=[
-            ModelMeasure(
+        metrics=[
+            DatasetMetric(
                 name="aov",
-                formula="sum(amount) / count(*)",
+                expression="sum(amount) / count(*)",
                 description="Average order value.",
             ),
         ],
         aggregations=[
             Aggregation(
                 name="weighted_avg_qty",
-                formula="SUM({col} * {weight}) / SUM({weight})",
+                expression="SUM({col} * {weight}) / SUM({weight})",
                 params=[
                     AggregationParam(name="col", sql="amount"),
                     AggregationParam(name="weight", sql="quantity"),
@@ -88,9 +88,9 @@ def _make_orders_model() -> SlayerModel:
                 description="Quantity-weighted average.",
             ),
         ],
-        joins=[
-            ModelJoin(
-                target_model="customers",
+        relationships=[
+            DatasetRelationship(
+                to="customers",
                 join_pairs=[["customer_id", "id"]],
             ),
         ],
@@ -100,10 +100,10 @@ def _make_orders_model() -> SlayerModel:
 
 def test_datasource_text_includes_name_and_model_mentions() -> None:
     orders = _make_orders_model()
-    customers = SlayerModel(
+    customers = SlayerDataset(
         name="customers", sql_table="public.customers", data_source="warehouse",
     )
-    text = render_datasource_text(name="warehouse", models=[orders, customers])
+    text = render_datasource_text(name="warehouse", datasets=[orders, customers])
     assert "warehouse" in text
     # Named children: model names mentioned by name + kind only.
     assert "orders" in text
@@ -119,7 +119,7 @@ def test_datasource_text_includes_name_and_model_mentions() -> None:
 
 
 def test_model_text_includes_self_metadata() -> None:
-    text = render_model_text(model=_make_orders_model())
+    text = render_dataset_text(dataset=_make_orders_model())
     assert "orders" in text
     assert "warehouse" in text  # datasource-qualified
     assert "checkout order" in text  # description
@@ -127,7 +127,7 @@ def test_model_text_includes_self_metadata() -> None:
 
 
 def test_model_text_mentions_named_children_by_name_and_kind() -> None:
-    text = render_model_text(model=_make_orders_model()).lower()
+    text = render_dataset_text(dataset=_make_orders_model()).lower()
     # Columns mentioned by name; their descriptions stay in their own doc.
     assert "id" in text
     assert "amount" in text
@@ -145,7 +145,7 @@ def test_model_text_mentions_named_children_by_name_and_kind() -> None:
 
 
 def test_model_text_includes_non_named_children_in_full() -> None:
-    text = render_model_text(model=_make_orders_model())
+    text = render_dataset_text(dataset=_make_orders_model())
     # Model-level filters: actual SQL is in.
     assert "status != 'cancelled'" in text
     # Join pairs: source/target spelled out.
@@ -156,19 +156,19 @@ def test_model_text_excludes_meta() -> None:
     """v1: meta is excluded from indexed text (DEV-1377 follow-up)."""
     m = _make_orders_model()
     m.meta = {"owner": "secret-team", "policy": "internal"}
-    text = render_model_text(model=m)
+    text = render_dataset_text(dataset=m)
     assert "secret-team" not in text
     assert "internal" not in text
     assert "owner" not in text or "owner" in text.split("status")[0]  # spurious match in URL etc
 
 
 def test_model_text_includes_sql_block_when_set() -> None:
-    m = SlayerModel(
+    m = SlayerDataset(
         name="custom",
         sql="SELECT * FROM raw_orders WHERE deleted_at IS NULL",
         data_source="warehouse",
     )
-    text = render_model_text(model=m)
+    text = render_dataset_text(dataset=m)
     assert "SELECT * FROM raw_orders WHERE deleted_at IS NULL" in text
 
 
@@ -179,8 +179,8 @@ def test_model_text_includes_sql_block_when_set() -> None:
 
 def test_column_text_includes_parent_and_datasource_in_qualified_name() -> None:
     m = _make_orders_model()
-    col = m.get_column("amount")
-    text = render_column_text(model=m, column=col)
+    col = m.get_field("amount")
+    text = render_field_text(dataset=m, field=col)
     # Searching "orders amount" should hit this doc.
     assert "amount" in text
     assert "orders" in text
@@ -189,8 +189,8 @@ def test_column_text_includes_parent_and_datasource_in_qualified_name() -> None:
 
 def test_column_text_includes_per_field_metadata() -> None:
     m = _make_orders_model()
-    col = m.get_column("amount")
-    text = render_column_text(model=m, column=col)
+    col = m.get_field("amount")
+    text = render_field_text(dataset=m, field=col)
     assert "DOUBLE" in text
     assert "Net amount in USD" in text
 
@@ -200,18 +200,18 @@ def test_column_text_includes_sampled_when_present() -> None:
     the renderer falls back to the persisted text. Used by numeric columns
     and pre-DEV-1480 legacy data."""
     m = _make_orders_model()
-    col = m.get_column("status")
+    col = m.get_field("status")
     assert col is not None
     # Wipe sampled_values to force the fallback path.
     col.sampled_values = None
-    text = render_column_text(model=m, column=col)
+    text = render_field_text(dataset=m, field=col)
     assert "paid, refunded, cancelled" in text
 
 
 def test_column_text_omits_sampled_when_absent() -> None:
     m = _make_orders_model()
-    col = m.get_column("id")
-    text = render_column_text(model=m, column=col)
+    col = m.get_field("id")
+    text = render_field_text(dataset=m, field=col)
     assert "Sample values" not in text
     assert "Distinct count" not in text
     assert "None" not in text
@@ -223,12 +223,12 @@ def test_column_text_omits_sampled_when_empty_string_and_no_list() -> None:
     ``Sample values:`` line for the empty-string fallback so the embedded text
     doesn't get a bare ``Sample values: `` trailer."""
     m = _make_orders_model()
-    col = m.get_column("status")
+    col = m.get_field("status")
     assert col is not None
     col.sampled = ""
     col.sampled_values = None
     col.distinct_count = None
-    text = render_column_text(model=m, column=col)
+    text = render_field_text(dataset=m, field=col)
     assert "Sample values" not in text
 
 
@@ -240,14 +240,14 @@ def test_column_text_renders_full_sampled_values_when_present() -> None:
     CodeRabbit thread 2: the list is JSON-encoded so values containing
     commas survive unambiguously to the consumer."""
     m = _make_orders_model()
-    col = m.get_column("status")
+    col = m.get_field("status")
     assert col is not None
     fifty = [f"v{i:02d}" for i in range(50)]
     # Set ``sampled`` to the legacy 20-truncated text to prove the list wins.
     col.sampled = ", ".join(fifty[:20])
     col.sampled_values = fifty
     col.distinct_count = 50
-    text = render_column_text(model=m, column=col)
+    text = render_field_text(dataset=m, field=col)
     expected_line = f"Sample values: {json.dumps(fifty, ensure_ascii=False)}"
     assert expected_line in text
     # Last value must appear — proves it's not the 20-truncated fallback.
@@ -263,13 +263,13 @@ def test_column_text_overflow_appends_distinct_count_line() -> None:
     renderer emits a follow-up ``Distinct count: N`` line so the agent can
     tell the column has more values than the top-50 we returned."""
     m = _make_orders_model()
-    col = m.get_column("status")
+    col = m.get_field("status")
     assert col is not None
     fifty = [f"v{i:02d}" for i in range(50)]
     col.sampled = "v00, v01, v02 ... (12345 distinct)"
     col.sampled_values = fifty
     col.distinct_count = 12345
-    text = render_column_text(model=m, column=col)
+    text = render_field_text(dataset=m, field=col)
     # All 50 values rendered in the JSON-encoded list form.
     assert json.dumps(fifty, ensure_ascii=False) in text
     # Distinct-count line present.
@@ -283,12 +283,12 @@ def test_column_text_no_distinct_line_when_count_equals_len_sampled_values() -> 
     than ``len(sampled_values)``. Equal means we returned every value; no
     need to hint at more."""
     m = _make_orders_model()
-    col = m.get_column("status")
+    col = m.get_field("status")
     assert col is not None
     col.sampled_values = ["paid", "refunded", "cancelled"]
     col.distinct_count = 3
     col.sampled = "paid, refunded, cancelled"
-    text = render_column_text(model=m, column=col)
+    text = render_field_text(dataset=m, field=col)
     assert 'Sample values: ["paid", "refunded", "cancelled"]' in text
     assert "Distinct count" not in text
 
@@ -296,12 +296,12 @@ def test_column_text_no_distinct_line_when_count_equals_len_sampled_values() -> 
 def test_column_text_no_distinct_line_when_distinct_count_is_none() -> None:
     """DEV-1516: distinct_count line only fires when distinct_count is set."""
     m = _make_orders_model()
-    col = m.get_column("status")
+    col = m.get_field("status")
     assert col is not None
     col.sampled_values = ["paid", "refunded"]
     col.distinct_count = None
     col.sampled = "paid, refunded"
-    text = render_column_text(model=m, column=col)
+    text = render_field_text(dataset=m, field=col)
     assert 'Sample values: ["paid", "refunded"]' in text
     assert "Distinct count" not in text
 
@@ -312,11 +312,11 @@ def test_column_text_sampled_values_with_commas_survive_intact() -> None:
     comma-join to JSON encoding. The structured ``sampled_values`` field is
     the unambiguous channel; the rendered EntityHit.text must preserve it."""
     m = _make_orders_model()
-    col = m.get_column("status")
+    col = m.get_field("status")
     assert col is not None
     col.sampled_values = ["R$ 1,000–3,000", "R$ 3,001–5,000", "Other"]
     col.distinct_count = 3
-    text = render_column_text(model=m, column=col)
+    text = render_field_text(dataset=m, field=col)
     # The literal commas inside each value must appear inside quotes —
     # JSON encoding makes them unambiguous from the list separator.
     assert '"R$ 1,000–3,000"' in text
@@ -333,12 +333,12 @@ def test_column_text_authoritative_empty_list_wins_over_stale_sampled() -> None:
     ``Sample values: `` trailer would leak into the search index and tantivy
     would parse the trailing colon as noise."""
     m = _make_orders_model()
-    col = m.get_column("status")
+    col = m.get_field("status")
     assert col is not None
     col.sampled_values = []
     col.sampled = "stale_value, leftover"  # would-be fallback; must NOT win
     col.distinct_count = 0
-    text = render_column_text(model=m, column=col)
+    text = render_field_text(dataset=m, field=col)
     # Stale text MUST NOT leak.
     assert "stale_value" not in text
     assert "leftover" not in text
@@ -355,12 +355,12 @@ def test_column_text_overflow_legacy_fallback_no_duplicate_distinct_line() -> No
     distinct-count line must NOT fire on that fallback path — it would
     duplicate the suffix."""
     m = _make_orders_model()
-    col = m.get_column("status")
+    col = m.get_field("status")
     assert col is not None
     col.sampled_values = None
     col.sampled = "a, b, c ... (1234 distinct)"
     col.distinct_count = 1234
-    text = render_column_text(model=m, column=col)
+    text = render_field_text(dataset=m, field=col)
     # Fallback line present.
     assert "Sample values: a, b, c ... (1234 distinct)" in text
     # No extra "Distinct count:" line that would double-report 1234.
@@ -372,11 +372,11 @@ def test_column_text_preserves_value_order() -> None:
     already ordered by frequency (most common first) and the agent relies
     on that ordering to identify dominant values."""
     m = _make_orders_model()
-    col = m.get_column("status")
+    col = m.get_field("status")
     assert col is not None
     col.sampled_values = ["z_dominant", "a_minor", "m_middle"]
     col.distinct_count = 3
-    text = render_column_text(model=m, column=col)
+    text = render_field_text(dataset=m, field=col)
     expected = 'Sample values: ["z_dominant", "a_minor", "m_middle"]'
     assert expected in text
 
@@ -386,12 +386,12 @@ def test_column_text_both_none_emits_no_sample_lines() -> None:
     (unprofiled column), the renderer must emit neither the sample-values
     line nor the distinct-count line."""
     m = _make_orders_model()
-    col = m.get_column("status")
+    col = m.get_field("status")
     assert col is not None
     col.sampled = None
     col.sampled_values = None
     col.distinct_count = None
-    text = render_column_text(model=m, column=col)
+    text = render_field_text(dataset=m, field=col)
     assert "Sample values" not in text
     assert "Distinct count" not in text
 
@@ -402,26 +402,26 @@ def test_column_text_includes_overflow_sampled_with_total_legacy_path() -> None:
     carries the ``... (N distinct)`` suffix. Kept to pin the fallback shape
     for pre-DEV-1480 / count_distinct-failed retry rows."""
     m = _make_orders_model()
-    col = m.get_column("status")
+    col = m.get_field("status")
     assert col is not None
     col.sampled_values = None
     col.sampled = "a, b, c ... (1234 distinct)"
-    text = render_column_text(model=m, column=col)
+    text = render_field_text(dataset=m, field=col)
     assert "Sample values: a, b, c ... (1234 distinct)" in text
 
 
 def test_column_text_excludes_meta() -> None:
     m = _make_orders_model()
-    col = m.get_column("amount")
+    col = m.get_field("amount")
     col.meta = {"pii_class": "secret-pii-tag"}
-    text = render_column_text(model=m, column=col)
+    text = render_field_text(dataset=m, field=col)
     assert "secret-pii-tag" not in text
 
 
 def test_column_text_marks_primary_key() -> None:
     m = _make_orders_model()
-    col = m.get_column("id")
-    text = render_column_text(model=m, column=col).lower()
+    col = m.get_field("id")
+    text = render_field_text(dataset=m, field=col).lower()
     assert "primary key" in text
 
 
@@ -432,8 +432,8 @@ def test_column_text_marks_primary_key() -> None:
 
 def test_measure_text_includes_parent_and_formula() -> None:
     m = _make_orders_model()
-    measure = m.get_measure("aov")
-    text = render_measure_text(model=m, measure=measure)
+    measure = m.get_metric("aov")
+    text = render_metric_text(dataset=m, metric=measure)
     assert "aov" in text
     assert "orders" in text
     assert "warehouse" in text
@@ -443,9 +443,9 @@ def test_measure_text_includes_parent_and_formula() -> None:
 
 def test_measure_text_excludes_meta() -> None:
     m = _make_orders_model()
-    measure = m.get_measure("aov")
+    measure = m.get_metric("aov")
     measure.meta = {"audit": "secret-audit-tag"}
-    text = render_measure_text(model=m, measure=measure)
+    text = render_metric_text(dataset=m, metric=measure)
     assert "secret-audit-tag" not in text
 
 
@@ -457,7 +457,7 @@ def test_measure_text_excludes_meta() -> None:
 def test_aggregation_text_includes_formula_and_params() -> None:
     m = _make_orders_model()
     agg = m.get_aggregation("weighted_avg_qty")
-    text = render_aggregation_text(model=m, aggregation=agg)
+    text = render_aggregation_text(dataset=m, aggregation=agg)
     assert "weighted_avg_qty" in text
     assert "orders" in text
     assert "warehouse" in text
@@ -474,7 +474,7 @@ def test_aggregation_text_excludes_meta() -> None:
     m = _make_orders_model()
     agg = m.get_aggregation("weighted_avg_qty")
     agg.meta = {"author": "secret-author-tag"}
-    text = render_aggregation_text(model=m, aggregation=agg)
+    text = render_aggregation_text(dataset=m, aggregation=agg)
     assert "secret-author-tag" not in text
 
 
@@ -512,31 +512,31 @@ def test_memory_text_handles_empty_entities() -> None:
 def test_huge_meta_blob_is_excluded_so_text_size_unaffected() -> None:
     m = _make_orders_model()
     m.meta = {"big": "x" * 10_000}
-    text = render_model_text(model=m)
+    text = render_dataset_text(dataset=m)
     assert len(text) < 5_000  # blob would have made it ~10K+ otherwise
 
 
 def test_non_ascii_identifiers_pass_through() -> None:
-    m = SlayerModel(
+    m = SlayerDataset(
         name="café",
         sql_table="café_table",
         data_source="warehouse",
-        columns=[Column(name="café_id", type=DataType.INT)],
+        fields=[DatasetField(name="café_id", datatype=DataType.INT)],
     )
-    text = render_model_text(model=m)
+    text = render_dataset_text(dataset=m)
     assert "café" in text
 
 
 def test_long_column_sql_block_included() -> None:
     long_sql = "CASE " + " ".join(f"WHEN x = {i} THEN '{i}'" for i in range(100)) + " END"
-    m = SlayerModel(
+    m = SlayerDataset(
         name="big",
         sql_table="big_table",
         data_source="warehouse",
-        columns=[Column(name="cat", sql=long_sql, type=DataType.TEXT)],
+        fields=[DatasetField(name="cat", sql=long_sql, datatype=DataType.TEXT)],
     )
-    col = m.get_column("cat")
-    text = render_column_text(model=m, column=col)
+    col = m.get_field("cat")
+    text = render_field_text(dataset=m, field=col)
     assert long_sql in text
 
 

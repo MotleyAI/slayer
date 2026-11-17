@@ -12,17 +12,17 @@ from __future__ import annotations
 from slayer.ir.planned import OrderEntry
 from slayer.engine.plan import plan_query
 
-from tests._dev1840_fixtures import ModelMeasure as _CM
+from tests._dev1840_fixtures import DatasetMetric as _CM
 from tests._dev1840_fixtures import bundle as _dev1840_bundle
 from tests._dev1840_fixtures import q as _dev1840_q
-from tests._dev1865_fixtures import ModelMeasure, plan, q
+from tests._dev1865_fixtures import DatasetMetric, plan, q
 
-_DEV1840_CM = _CM(formula="sum(customers.spend)", name="cm")
+_DEV1840_CM = _CM(expression="sum(customers.spend)", name="cm")
 
 
 def _dev1840_attach(planned, root):
-    matches = [a for a in planned.regroup_attach_plans if a.producer_root_model == root]
-    assert len(matches) == 1, [a.producer_root_model for a in planned.regroup_attach_plans]
+    matches = [a for a in planned.regroup_attach_plans if a.producer_root_dataset == root]
+    assert len(matches) == 1, [a.producer_root_dataset for a in planned.regroup_attach_plans]
     return matches[0]
 
 
@@ -43,7 +43,7 @@ class TestMaskEntries:
         planned = plan(q(
             dimensions=["region"],
             filters=["sum(amount) > 100", "status = 'ok'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert hasattr(planned, "masks"), "PlannedQuery must carry typed mask entries"
         masks = planned.masks
@@ -59,7 +59,7 @@ class TestMaskEntries:
         planned = plan(q(
             dimensions=["region"],
             filters=["sum(amount) > 100", "status = 'ok'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert hasattr(planned, "masks")
         slots = _slots_by_id(planned)
@@ -72,7 +72,7 @@ class TestMaskEntries:
         query = q(
             dimensions=["region"],
             filters=["sum(amount) > 100", "status = 'ok'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         first, second = plan(query), plan(query)
         assert hasattr(first, "masks")
@@ -82,7 +82,7 @@ class TestMaskEntries:
         planned = plan(q(
             dimensions=["region"],
             filters=["status = 'ok'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         assert hasattr(planned, "masks")
         (mask,) = planned.masks
@@ -112,7 +112,7 @@ class TestDev1840DispositionUnchanged:
             filters=["channel = 'app'"],
         ), bundle=_dev1840_bundle()), "customers")
         (sj,) = att.producer_plan.semi_join_filters
-        assert [h.target_model for h in sj.hops] == ["orders"]
+        assert [h.to for h in sj.hops] == ["orders"]
         assert [tuple(p) for p in sj.hops[0].join_pairs] == [("id", "customer_id")]
         assert len(sj.conjuncts) == 1
         assert any("channel" in (t or "") for t in sj.filter_texts)

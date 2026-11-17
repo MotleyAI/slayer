@@ -117,10 +117,10 @@ def rename_in_query(data: dict, *, renames: Renames) -> dict:
         data["time_dimensions"] = [_renamed_time_dimension(td, renames=renames) for td in data["time_dimensions"]]
     source = data.get("source_model")
     if isinstance(source, dict):
-        data["source_model"] = rename_in_model(source, renames=renames)
+        data["source_model"] = rename_in_dataset(source, renames=renames)
     if isinstance(data.get("extensions"), list):
         data["extensions"] = [
-            rename_in_model(e, renames=renames) if isinstance(e, dict) else e for e in data["extensions"]
+            rename_in_dataset(e, renames=renames) if isinstance(e, dict) else e for e in data["extensions"]
         ]
     return data
 
@@ -139,13 +139,13 @@ def _renamed_time_dimension(item: Any, *, renames: Renames) -> Any:
     return out
 
 
-def _renamed_formula(measure: Any, text: Callable[[str], str]) -> Any:
-    if isinstance(measure, dict) and isinstance(measure.get("formula"), str):
-        return {**measure, "formula": text(measure["formula"])}
-    return measure
+def _renamed_expression(metric: Any, text: Callable[[str], str]) -> Any:
+    if isinstance(metric, dict) and isinstance(metric.get("formula"), str):
+        return {**metric, "formula": text(metric["formula"])}
+    return metric
 
 
-def rename_in_model(data: dict, *, renames: Renames) -> dict:
+def rename_in_dataset(data: dict, *, renames: Renames) -> dict:
     """A stored model or inline extension dict with every granularity reference renamed (column granularities,
     measures, stages)."""
     out = dict(data)
@@ -158,7 +158,7 @@ def rename_in_model(data: dict, *, renames: Renames) -> dict:
             for c in out["columns"]
         ]
     if isinstance(out.get("measures"), list):
-        out["measures"] = [_renamed_formula(m, text) for m in out["measures"]]
+        out["measures"] = [_renamed_expression(m, text) for m in out["measures"]]
     if isinstance(out.get("source_queries"), list):
         out["source_queries"] = [
             rename_in_query(q, renames=renames) if isinstance(q, dict) else q for q in out["source_queries"]
@@ -181,7 +181,7 @@ def renamed_datasource(data: dict, *, renames: Renames) -> dict:
     return {**data, "granularities": granularities}
 
 
-def memory_source_model(data: dict) -> tuple[str | None, str | None]:
+def memory_source_dataset(data: dict) -> tuple[str | None, str | None]:
     """``(inline model's data_source, saved root model name)`` a stored memory's query reads, each if any."""
     query = data.get("query")
     source = query.get("source_model") if isinstance(query, dict) else None

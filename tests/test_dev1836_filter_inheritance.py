@@ -19,7 +19,7 @@ from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER,
-    ModelMeasure,
+    DatasetMetric,
     SPEND_BY_TIER,
     make_exec_engine,
     q,
@@ -33,8 +33,8 @@ async def exec_backend(request):
         yield request.param, engine
 
 
-M = ModelMeasure(formula="sum(amount)", name="m")
-CM = ModelMeasure(formula="sum(customers.spend)", name="cm")
+M = DatasetMetric(expression="sum(amount)", name="m")
+CM = DatasetMetric(expression="sum(customers.spend)", name="cm")
 
 
 class TestAttributableRowFilters:

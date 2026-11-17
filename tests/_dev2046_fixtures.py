@@ -29,7 +29,7 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.format import NumberFormat
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -41,45 +41,45 @@ from slayer.engine.query_engine import SlayerResponse
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
-def orders_model(*, data_source: str = "test", flag_format: Optional[NumberFormat] = None) -> SlayerModel:
-    return SlayerModel(
+def orders_model(*, data_source: str = "test", flag_format: Optional[NumberFormat] = None) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source=data_source,
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.DATE),
-            Column(name="amount", type=DataType.INT),
-            Column(name="flag", type=DataType.BOOLEAN, format=flag_format),
-            Column(name="big_order", type=DataType.BOOLEAN, sql="amount > 15"),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="ordered_at", datatype=DataType.DATE),
+            DatasetField(name="amount", datatype=DataType.INT),
+            DatasetField(name="flag", datatype=DataType.BOOLEAN, format=flag_format),
+            DatasetField(name="big_order", datatype=DataType.BOOLEAN, sql="amount > 15"),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
-def customers_model(*, data_source: str = "test") -> SlayerModel:
-    return SlayerModel(
+def customers_model(*, data_source: str = "test") -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="vip", type=DataType.BOOLEAN),
-            Column(name="score", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="vip", datatype=DataType.BOOLEAN),
+            DatasetField(name="score", datatype=DataType.INT),
         ],
     )
 
 
-def dev2046_models(*, data_source: str = "test") -> List[SlayerModel]:
+def dev2046_models(*, data_source: str = "test") -> List[SlayerDataset]:
     return [orders_model(data_source=data_source), customers_model(data_source=data_source)]
 
 
 # --------------------------------------------------------------------------- #
 # Query shorthands
 # --------------------------------------------------------------------------- #
-def m(formula: str, name: str = "v") -> ModelMeasure:
-    return ModelMeasure(formula=formula, name=name)
+def m(formula: str, name: str = "v") -> DatasetMetric:
+    return DatasetMetric(expression=formula, name=name)
 
 
 def orders_q(**kw) -> SlayerQuery:
@@ -88,7 +88,7 @@ def orders_q(**kw) -> SlayerQuery:
 
 
 def month_td() -> List[TimeDimension]:
-    return [TimeDimension(dimension="ordered_at", granularity=TimeGranularity.MONTH)]
+    return [TimeDimension(field="ordered_at", granularity=TimeGranularity.MONTH)]
 
 
 # --------------------------------------------------------------------------- #

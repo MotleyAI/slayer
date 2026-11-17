@@ -33,7 +33,7 @@ from unittest.mock import patch
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.memories.models import Memory
 from slayer.search.index import Corpus
 from slayer.search.retriever import RetrievalResult, Retriever
@@ -49,11 +49,11 @@ async def seeded_storage() -> AsyncIterator[StorageBackend]:
         await s.save_datasource(DatasourceConfig(
             name="mydb", type="sqlite", database=":memory:",
         ))
-        await s.save_model(SlayerModel(
+        await s.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="mydb",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
             ],
         ))
         for i in range(1, 6):

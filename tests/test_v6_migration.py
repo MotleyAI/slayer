@@ -15,7 +15,7 @@ import tempfile
 import pytest
 import yaml
 
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_conn import transaction
@@ -53,13 +53,13 @@ def test_v5_payload_loads_with_sampled_none() -> None:
         "name": "orders",
         "sql_table": "orders",
         "data_source": "ds",
-        "columns": [
-            {"name": "id", "type": "INT", "primary_key": True},
-            {"name": "amount", "type": "DOUBLE"},
+        "fields": [
+            {"name": "id", "datatype": "INT", "primary_key": True},
+            {"name": "amount", "datatype": "DOUBLE"},
         ],
     }
-    m = SlayerModel.model_validate(raw)
-    for col in m.columns:
+    m = SlayerDataset.model_validate(raw)
+    for col in m.fields:
         assert col.sampled is None
 
 
@@ -72,12 +72,12 @@ def test_v6_payload_round_trips_with_sampled_value() -> None:
         "name": "orders",
         "sql_table": "orders",
         "data_source": "ds",
-        "columns": [
-            {"name": "amount", "type": "DOUBLE", "sampled": "0.0 .. 9999.99"},
+        "fields": [
+            {"name": "amount", "datatype": "DOUBLE", "sampled": "0.0 .. 9999.99"},
         ],
     }
-    m = SlayerModel.model_validate(raw)
-    assert m.columns[0].sampled == "0.0 .. 9999.99"
+    m = SlayerDataset.model_validate(raw)
+    assert m.fields[0].sampled == "0.0 .. 9999.99"
     dumped = m.model_dump(mode="json", exclude_none=True)
     assert dumped["columns"][0]["sampled"] == "0.0 .. 9999.99"
 
@@ -114,12 +114,12 @@ async def test_yaml_round_trips_v5_payload_to_v6_with_sampled_none() -> None:
 
         engine = SlayerQueryEngine(storage=storage)
         try:
-            loaded = await engine.storage.get_model("orders", data_source="ds")
+            loaded = await engine.storage.get_dataset("orders", data_source="ds")
         finally:
             await engine.aclose()
             engine.close()
         assert loaded is not None
-        assert {c.name: c.sampled for c in loaded.columns} == {
+        assert {c.name: c.sampled for c in loaded.fields} == {
             "id": None, "amount": None,
         }
 
@@ -154,12 +154,12 @@ async def test_sqlite_round_trips_v5_payload_to_v6_with_sampled_none() -> None:
 
         engine = SlayerQueryEngine(storage=storage)
         try:
-            loaded = await engine.storage.get_model("orders", data_source="ds")
+            loaded = await engine.storage.get_dataset("orders", data_source="ds")
         finally:
             await engine.aclose()
             engine.close()
         assert loaded is not None
-        assert {c.name: c.sampled for c in loaded.columns} == {
+        assert {c.name: c.sampled for c in loaded.fields} == {
             "id": None, "amount": None,
         }
 

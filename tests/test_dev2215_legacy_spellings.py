@@ -14,8 +14,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
-from slayer.core.models import DatasourceConfig, ModelMeasure, SlayerModel
-from slayer.core.syntax import canonical_measure_text, parse_expr
+from slayer.core.models import DatasourceConfig, DatasetMetric, SlayerDataset
+from slayer.core.syntax import canonical_metric_text, parse_expr
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.facade.catalog import build_catalog
 from slayer.facade.translator import QueryResult, translate
@@ -52,7 +52,7 @@ async def storage(request, tmp_path) -> StorageBackend:
                              else SQLiteStorage(db_path=os.path.join(tmp_path, "store.db")))
     await store.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
     for model in dev2215_models()[1:3]:
-        await store.save_model(model)
+        await store.save_dataset(model)
     return store
 
 
@@ -146,26 +146,26 @@ class TestFreshInput:
     ("customers.count(*)", "count(customers.*)"),
 ])
 async def test_a_save_stores_the_canonical_twin(storage: StorageBackend, written: str, stored: str) -> None:
-    model = orders_model().model_copy(update={"measures": [ModelMeasure(name="paid", formula=written)]})
+    model = orders_model().model_copy(update={"measures": [DatasetMetric(name="paid", expression=written)]})
     with recorded_warnings() as caught:
-        await storage.save_model(model)
-    loaded = await storage.get_model("orders", data_source="test")
+        await storage.save_dataset(model)
+    loaded = await storage.get_dataset("orders", data_source="test")
     assert loaded is not None
-    assert [x.formula for x in loaded.measures] == [stored]
+    assert [x.expression for x in loaded.metrics] == [stored]
     assert future_warnings(caught, SLAYER_3)
 
 
 async def test_a_saved_query_stores_the_canonical_twin(storage: StorageBackend) -> None:
-    await storage.save_model(orders_model())
-    saved = SlayerModel.model_validate({"name": "paid_orders", "data_source": "test", "source_queries": [
+    await storage.save_dataset(orders_model())
+    saved = SlayerDataset.model_validate({"name": "paid_orders", "data_source": "test", "source_queries": [
         {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}],
          "filters": ["status == 'paid' and region is not None"]}]})
-    await storage.save_model(saved)
-    loaded = await storage.get_model("paid_orders", data_source="test")
+    await storage.save_dataset(saved)
+    loaded = await storage.get_dataset("paid_orders", data_source="test")
     assert loaded is not None
     assert loaded.source_queries
     stage = loaded.source_queries[0]
-    assert stage.filters == ["status = 'paid' and region IS NOT NULL"]
+    assert stage.filter == ["status = 'paid' and region IS NOT NULL"]
 
 
 PAID_SPELLINGS = "sum(iif(status == 'paid' AND region is not None, amount, 0))"
@@ -177,33 +177,33 @@ def spelling_payloads(notes: list[Any]) -> list[Any]:
 
 async def test_an_engine_save_returns_one_warning_per_spelling(storage: StorageBackend) -> None:
     engine = SlayerQueryEngine(storage=storage)
-    model = orders_model().model_copy(update={"measures": [ModelMeasure(name="paid", formula=PAID_SPELLINGS)]})
+    model = orders_model().model_copy(update={"measures": [DatasetMetric(name="paid", expression=PAID_SPELLINGS)]})
     notes: list[Any] = []
     try:
         with recorded_warnings() as caught:
-            await engine.save_model(model, warnings_out=notes)
+            await engine.save_dataset(model, warnings_out=notes)
     finally:
         engine.close()
     assert sorted(p.canonical for p in spelling_payloads(notes)) == ["=", "IS NOT NULL"]
     assert len(future_warnings(caught, SLAYER_3)) == 2
-    loaded = await storage.get_model("orders", data_source="test")
+    loaded = await storage.get_dataset("orders", data_source="test")
     assert loaded is not None
-    assert [x.formula for x in loaded.measures] == ["sum(iif(status = 'paid' AND region IS NOT NULL, amount, 0))"]
+    assert [x.expression for x in loaded.metrics] == ["sum(iif(status = 'paid' AND region IS NOT NULL, amount, 0))"]
 
 
 async def test_a_saved_query_save_returns_its_spelling_warnings(engine: SlayerQueryEngine) -> None:
-    saved = SlayerModel.model_validate({"name": "paid_orders", "source_queries": [
+    saved = SlayerDataset.model_validate({"name": "paid_orders", "source_queries": [
         {"source_model": "orders", "measures": [{"formula": "count(*)", "name": "n"}],
          "filters": ["status == 'paid' and region is not None"]}]})
     notes: list[Any] = []
     with recorded_warnings():
-        await engine.save_model(saved, warnings_out=notes)
+        await engine.save_dataset(saved, warnings_out=notes)
     assert sorted(p.canonical for p in spelling_payloads(notes)) == ["=", "IS NOT NULL"]
 
 
 async def test_a_rest_model_save_returns_the_spelling_warning(storage: StorageBackend) -> None:
     client = TestClient(create_app(storage=storage))
-    body = orders_model().model_copy(update={"measures": [ModelMeasure(name="paid", formula=PAID_SPELLINGS)]})
+    body = orders_model().model_copy(update={"measures": [DatasetMetric(name="paid", expression=PAID_SPELLINGS)]})
     with recorded_warnings():
         resp = client.post("/models", json=body.model_dump(mode="json"))
     assert resp.status_code == 200, resp.text
@@ -222,12 +222,12 @@ async def test_an_mcp_model_save_lists_the_spelling_warning(storage: StorageBack
 
 async def test_a_canonical_save_is_silent_and_verbatim(storage: StorageBackend) -> None:
     formula = "sum(iif(status = 'paid' AND region IS NOT NULL, amount, NULL))"
-    model = orders_model().model_copy(update={"measures": [ModelMeasure(name="paid", formula=formula)]})
+    model = orders_model().model_copy(update={"measures": [DatasetMetric(name="paid", expression=formula)]})
     with recorded_warnings() as caught:
-        await storage.save_model(model)
-    loaded = await storage.get_model("orders", data_source="test")
+        await storage.save_dataset(model)
+    loaded = await storage.get_dataset("orders", data_source="test")
     assert loaded is not None
-    assert [x.formula for x in loaded.measures] == [formula]
+    assert [x.expression for x in loaded.metrics] == [formula]
     assert future_warnings(caught, SLAYER_3) == []
 
 
@@ -238,7 +238,7 @@ class TestNeverSelfWarns:
     def test_case_lowering_is_canonical(self) -> None:
         parsed = parse_expr("CASE status WHEN 'a' THEN 1 WHEN 'b' THEN 2 END")
         assert parsed == parse_expr("iif(status = 'a', 1, iif(status = 'b', 2, NULL))")
-        assert canonical_measure_text(parsed) == "iif(status = 'a', 1, iif(status = 'b', 2, NULL))"
+        assert canonical_metric_text(parsed) == "iif(status = 'a', 1, iif(status = 'b', 2, NULL))"
 
     @pytest.mark.parametrize(("text", "canonical"), [
         ("a == 1", "a = 1"),
@@ -248,7 +248,7 @@ class TestNeverSelfWarns:
         ("region in ['EU', 'US']", "region in ('EU', 'US')"),
     ])
     def test_canonical_text_uses_the_canonical_twins(self, text: str, canonical: str) -> None:
-        rendered = canonical_measure_text(parse_expr(text))
+        rendered = canonical_metric_text(parse_expr(text))
         assert rendered == canonical
         assert parse_expr(rendered) == parse_expr(text)
 
@@ -260,7 +260,7 @@ class TestNeverSelfWarns:
         assert warned == []
 
     async def test_facade_query(self, engine: SlayerQueryEngine) -> None:
-        catalog = build_catalog(models_by_datasource={"test": dev2215_models()})
+        catalog = build_catalog(datasets_by_datasource={"test": dev2215_models()})
         result = translate("SELECT status, COUNT(*) FROM orders WHERE region IS NULL OR status IN ('a', 'b') "
                            "OR status <> 'x' GROUP BY status", catalog)
         assert isinstance(result, QueryResult)

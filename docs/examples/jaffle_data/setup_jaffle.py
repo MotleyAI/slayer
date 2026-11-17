@@ -9,7 +9,7 @@ import os
 import warnings
 from typing import List, Tuple
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.demo.jaffle_shop import ensure_demo_datasource
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -22,7 +22,7 @@ MODELS_DIR = os.path.join(_THIS_DIR, "slayer_models")
 
 def ensure_jaffle_shop(
     years: int = 3,
-) -> Tuple[SlayerQueryEngine, YAMLStorage, List[SlayerModel]]:
+) -> Tuple[SlayerQueryEngine, YAMLStorage, List[SlayerDataset]]:
     """Ensure the Jaffle Shop DuckDB and SLayer models exist; return an engine.
 
     On first run, generates ~``years`` of synthetic data with jafgen and ingests
@@ -37,7 +37,7 @@ def ensure_jaffle_shop(
         storage,
         storage_path=_THIS_DIR,
         years=years,
-        ingest_models=True,
+        ingest_datasets=True,
         assume_yes=True,
     )
 

@@ -11,9 +11,9 @@ from sqlglot import exp
 
 from slayer.core.errors import ForcedFilterError
 from slayer.core.policy import (
-    ColumnFilterRuleset,
-    JoinFilterRule,
-    JoinFilterRuleset,
+    FieldFilterRuleset,
+    RelationshipFilterRule,
+    RelationshipFilterRuleset,
     SessionPolicy,
 )
 from slayer.sql.scope_check import assert_scope_closed
@@ -26,7 +26,7 @@ def _apply(sql: str, *, dialect: str, policy: SessionPolicy, has_column) -> str:
     """Scope ``sql`` (a literal) through the statement-tree entry and render it."""
     tree = sqlglot.parse_one(sql, dialect=dialect)
     return apply_session_policy(
-        tree, sql_dialect=get_dialect(dialect), policy=policy, has_column=has_column,
+        tree, sql_dialect=get_dialect(dialect), policy=policy, has_field=has_column,
     ).sql(dialect=dialect)
 
 
@@ -52,7 +52,7 @@ def _boom_probe(scoped, column):
 
 
 def _col_policy(**kw):
-    return SessionPolicy(ruleset=ColumnFilterRuleset(**kw))
+    return SessionPolicy(ruleset=FieldFilterRuleset(**kw))
 
 
 # ===========================================================================
@@ -181,7 +181,7 @@ def test_block_raises_naming_table():
             has_column=has_column,
         )
     assert exc.value.table == "exchange_rates"
-    assert exc.value.column == "org"
+    assert exc.value.field == "org"
     assert "exchange_rates" in str(exc.value)
 
 
@@ -258,14 +258,14 @@ def _join_ruleset(**kw):
         column="organization_uuid",
         value="orgA",
         joins=[
-            JoinFilterRule(
+            RelationshipFilterRule(
                 target_table="orders",
-                join_path=["orders.customer_id = customers.id"],
+                relationship_path=["orders.customer_id = customers.id"],
             )
         ],
     )
     base.update(kw)
-    return JoinFilterRuleset(**base)
+    return RelationshipFilterRuleset(**base)
 
 
 def _jpolicy(**kw):
@@ -328,17 +328,17 @@ def test_both_path_orientations_emit_identical_sql():
     """A path written master-first produces the SAME SQL as target-first."""
     target_first = _jpolicy(
         joins=[
-            JoinFilterRule(
+            RelationshipFilterRule(
                 target_table="orders",
-                join_path=["orders.customer_id = customers.id"],
+                relationship_path=["orders.customer_id = customers.id"],
             )
         ]
     )
     master_first = _jpolicy(
         joins=[
-            JoinFilterRule(
+            RelationshipFilterRule(
                 target_table="orders",
-                join_path=["customers.id = orders.customer_id"],
+                relationship_path=["customers.id = orders.customer_id"],
             )
         ]
     )
@@ -352,9 +352,9 @@ def test_both_path_orientations_emit_identical_sql():
 
 
 def test_multihop_terminal_on_anchor():
-    rule = JoinFilterRule(
+    rule = RelationshipFilterRule(
         target_table="line_items",
-        join_path=[
+        relationship_path=[
             "line_items.order_id = orders.id",
             "orders.customer_id = customers.id",
         ],
@@ -483,14 +483,14 @@ def test_user_sql_containing_rls_alias_still_isolated():
 def test_target_named_like_internal_alias_no_collision():
     """A join target physically named ``_rls_src`` emits ``FROM _rls_src AS _rls_src``,
     which re-parses cleanly and still correlates the base row to the anchor."""
-    ruleset = JoinFilterRuleset(
+    ruleset = RelationshipFilterRuleset(
         table="customers",
-        column="organization_uuid",
+        field="organization_uuid",
         value="orgA",
-        joins=[
-            JoinFilterRule(
+        relationships=[
+            RelationshipFilterRule(
                 target_table="_rls_src",
-                join_path=["_rls_src.customer_id = customers.id"],
+                relationship_path=["_rls_src.customer_id = customers.id"],
             )
         ],
     )
@@ -522,7 +522,7 @@ def test_corrupted_ruleset_terminal_not_anchor_fails_closed():
             has_column=_boom_probe,
         )
     assert exc.value.table == "orders"
-    assert exc.value.column == "organization_uuid"
+    assert exc.value.field == "organization_uuid"
 
 
 def test_corrupted_join_path_valueerror_wrapped_as_forced_filter():
@@ -531,7 +531,7 @@ def test_corrupted_join_path_valueerror_wrapped_as_forced_filter():
     good = SessionPolicy(ruleset=_join_ruleset())  # target orders -> customers
     # Break the path so orders is no longer an endpoint (target_table unchanged);
     # model_copy at each level skips validation.
-    bad_rule = good.ruleset.joins[0].model_copy(
+    bad_rule = good.ruleset.relationships[0].model_copy(
         update={"join_path": ("foo.a = customers.b",)}
     )
     bad_ruleset = good.ruleset.model_copy(update={"joins": (bad_rule,)})
@@ -549,17 +549,17 @@ def test_corrupted_join_path_valueerror_wrapped_as_forced_filter():
 def test_corrupted_qualified_anchor_bare_terminal_fails_closed():
     """Dropping a qualified anchor's terminal to a bare name fails closed, since the
     boundary check is _reaches_anchor rather than plain name matching."""
-    rule = JoinFilterRule(
+    rule = RelationshipFilterRule(
         target_table="public.orders",
-        join_path=["public.orders.customer_id = public.customers.id"],
+        relationship_path=["public.orders.customer_id = public.customers.id"],
     )
     good = SessionPolicy(
-        ruleset=JoinFilterRuleset(
-            table="public.customers", column="organization_uuid", value="orgA",
-            joins=[rule],
+        ruleset=RelationshipFilterRuleset(
+            table="public.customers", field="organization_uuid", value="orgA",
+            relationships=[rule],
         )
     )
-    bad_rule = good.ruleset.joins[0].model_copy(
+    bad_rule = good.ruleset.relationships[0].model_copy(
         update={"join_path": ("public.orders.customer_id = customers.id",)}
     )
     bad_ruleset = good.ruleset.model_copy(update={"joins": (bad_rule,)})
@@ -578,7 +578,7 @@ def test_corrupted_anchor_as_intermediate_fails_closed():
     because _build_exists re-runs the full per-rule validation, not just reachability."""
     good = SessionPolicy(ruleset=_join_ruleset())  # anchor customers, target orders
     # orders -> customers -> x -> customers: anchor 'customers' appears twice.
-    bad_rule = good.ruleset.joins[0].model_copy(
+    bad_rule = good.ruleset.relationships[0].model_copy(
         update={
             "join_path": (
                 "orders.customer_id = customers.id",
@@ -602,7 +602,7 @@ def test_forced_filter_error_has_no_rule_name():
     """ForcedFilterError carries no rule_name param or attribute."""
     with pytest.raises(TypeError):
         ForcedFilterError("boom", rule_name="tenant")
-    err = ForcedFilterError("boom", table="orders", column="org")
+    err = ForcedFilterError("boom", table="orders", field="org")
     assert not hasattr(err, "rule_name")
 
 
@@ -610,8 +610,8 @@ def test_forced_filter_error_has_no_rule_name():
 
 
 def test_anchor_only_ruleset_anchor_passes():
-    ruleset = JoinFilterRuleset(
-        table="customers", column="organization_uuid", value="orgA",
+    ruleset = RelationshipFilterRuleset(
+        table="customers", field="organization_uuid", value="orgA",
         whitelist=["exchange_rates"],
     )
     policy = SessionPolicy(ruleset=ruleset)
@@ -623,8 +623,8 @@ def test_anchor_only_ruleset_anchor_passes():
 
 
 def test_anchor_only_ruleset_whitelist_passes():
-    ruleset = JoinFilterRuleset(
-        table="customers", column="organization_uuid", value="orgA",
+    ruleset = RelationshipFilterRuleset(
+        table="customers", field="organization_uuid", value="orgA",
         whitelist=["exchange_rates"],
     )
     out = _apply(
@@ -637,8 +637,8 @@ def test_anchor_only_ruleset_whitelist_passes():
 
 
 def test_anchor_only_ruleset_unlisted_fails():
-    ruleset = JoinFilterRuleset(
-        table="customers", column="organization_uuid", value="orgA",
+    ruleset = RelationshipFilterRuleset(
+        table="customers", field="organization_uuid", value="orgA",
     )
     policy = SessionPolicy(ruleset=ruleset)
     with pytest.raises(ForcedFilterError):
@@ -750,9 +750,9 @@ _CH_MULTI_HOP = (
     "WHERE _rls_j0.id IS NOT NULL AND _rls_j1.organization_uuid = 'orgA')) AS line_items"
 )
 
-_LINE_ITEMS_RULE = JoinFilterRule(
+_LINE_ITEMS_RULE = RelationshipFilterRule(
     target_table="line_items",
-    join_path=("line_items.order_id = orders.id", "orders.customer_id = customers.id"),
+    relationship_path=("line_items.order_id = orders.id", "orders.customer_id = customers.id"),
 )
 
 
@@ -788,7 +788,7 @@ def test_in_takes_set_key_and_globalness_from_the_dialect():
 
 
 def test_clickhouse_multi_rule_each_target_gets_its_in():
-    rules = [_join_ruleset().joins[0], _LINE_ITEMS_RULE]
+    rules = [_join_ruleset().relationships[0], _LINE_ITEMS_RULE]
     out = _ch(
         "SELECT * FROM orders o JOIN line_items li ON li.order_id = o.id",
         _jpolicy(joins=rules),
@@ -858,7 +858,7 @@ _EXISTS_MULTI_HOP = (
 
 @pytest.mark.parametrize("dialect", ["postgres", "duckdb"])
 def test_other_dialects_keep_correlated_exists_byte_for_byte(dialect):
-    policy = _jpolicy(joins=[_join_ruleset().joins[0], _LINE_ITEMS_RULE])
+    policy = _jpolicy(joins=[_join_ruleset().relationships[0], _LINE_ITEMS_RULE])
     for sql, expected in [
         ("SELECT * FROM orders", _EXISTS_SINGLE_HOP),
         ("SELECT * FROM line_items", _EXISTS_MULTI_HOP),

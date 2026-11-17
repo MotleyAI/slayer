@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.live_schema import ingestion
 from slayer.storage.yaml_storage import YAMLStorage
@@ -59,7 +59,7 @@ async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, Dat
     ds = _datasource(postgresql)
     async with owned_query_engine(storage=storage, datasources=[ds]) as engine:
         for model in dev2215_models(data_source="pg"):
-            await storage.save_model(model, _validate=False)
+            await storage.save_dataset(model, _validate=False)
         yield engine, ds
 
 
@@ -96,15 +96,15 @@ async def test_first_last_partitioned_cross_model(pg: tuple[SlayerQueryEngine, D
 # --------------------------------------------------------------------------- #
 # Ingestion keeps case-only-distinct columns apart
 # --------------------------------------------------------------------------- #
-async def _ingest(engine: SlayerQueryEngine, ds: DatasourceConfig, table: str) -> tuple[SlayerModel, str]:
+async def _ingest(engine: SlayerQueryEngine, ds: DatasourceConfig, table: str) -> tuple[SlayerDataset, str]:
     """The ingested model and the report's structured warnings (everything but the models) as text."""
     report = await ingestion.ingest_datasource_report_async(ds, client=engine.client_for(ds), include_tables=[table])
-    (model,) = [mdl for mdl in report.models if mdl.name == table]
-    return model, json.dumps(report.model_dump(mode="json", exclude={"models"}), default=str)
+    (model,) = [mdl for mdl in report.datasets if mdl.name == table]
+    return model, json.dumps(report.model_dump(mode="json", exclude={"datasets"}), default=str)
 
 
-def _columns(model: SlayerModel) -> list[tuple[str, str | None]]:
-    return [(c.name, c.sql) for c in model.columns]
+def _columns(model: SlayerDataset) -> list[tuple[str, str | None]]:
+    return [(c.name, c.sql) for c in model.fields]
 
 
 async def test_two_case_variants(pg: tuple[SlayerQueryEngine, Any]) -> None:
@@ -116,7 +116,7 @@ async def test_two_case_variants(pg: tuple[SlayerQueryEngine, Any]) -> None:
     assert "foo" in named["foo_2"]
     assert "foo_2" in notes
     assert "foo" in notes
-    await engine.storage.save_model(model)
+    await engine.storage.save_dataset(model)
     resp = await engine.execute(q(source_model="casey", dimensions=["Foo", "foo_2"]))
     assert sorted((r["casey.Foo"], r["casey.foo_2"]) for r in resp.data) == [(1, 10), (2, 20)]
 
@@ -130,6 +130,6 @@ async def test_suffix_already_taken_and_reingestion(pg: tuple[SlayerQueryEngine,
     assert named["foo_3"] is not None
     assert named["foo_3"] != named["foo_2"]
     assert _columns(first) == _columns(again)
-    await engine.storage.save_model(first)
+    await engine.storage.save_dataset(first)
     resp = await engine.execute(q(source_model="casey3", dimensions=["Foo", "foo_3", "foo_2"]))
     assert [(r["casey3.Foo"], r["casey3.foo_3"], r["casey3.foo_2"]) for r in resp.data] == [(1, 10, 100)]

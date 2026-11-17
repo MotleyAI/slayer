@@ -22,7 +22,7 @@ from slayer.api.server import create_app
 from slayer.cli import main
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.mcp.server import create_mcp_server
 from slayer.search.service import SearchHit, SearchResponse, SearchService
 from slayer.storage.base import StorageBackend, resolve_storage
@@ -35,14 +35,14 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = resolve_storage(tmpdir)
         await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="warehouse",
             description="Checkout orders.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount_paid", type=DataType.DOUBLE,
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="amount_paid", datatype=DataType.DOUBLE,
                        description="Net paid in USD."),
             ],
         ))
@@ -166,9 +166,9 @@ def test_rest_post_search_returns_response_shape(tmp_path) -> None:
 
     async def _seed():
         await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="warehouse",
-            columns=[Column(name="amount_paid", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.DOUBLE)],
         ))
         await storage.save_memory(
             learning="amount_paid is net of refunds.",
@@ -247,9 +247,9 @@ def _seed_cli_storage(tmp_path) -> str:
 
     async def _seed():
         await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="warehouse",
-            columns=[Column(name="amount_paid", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.DOUBLE)],
         ))
         await storage.save_memory(
             learning="amount_paid is net of refunds.",
@@ -363,9 +363,9 @@ def test_rest_post_search_accepts_datasource(tmp_path) -> None:
 
     async def _seed():
         await storage.save_datasource(DatasourceConfig(name="warehouse", type="sqlite", database=":memory:"))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders", sql_table="orders", data_source="warehouse",
-            columns=[Column(name="amount_paid", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.DOUBLE)],
         ))
 
     asyncio.run(_seed())

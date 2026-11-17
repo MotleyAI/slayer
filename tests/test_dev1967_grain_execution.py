@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.enums import DataType
 from slayer.core.query import SlayerQuery
-from slayer.core.join_walker import provably_to_one
+from slayer.core.relationship_walker import provably_to_one
 from tests._dev1836_fixtures import (
     AMOUNT_BY_TIER,
     AMOUNT_TOTAL,
@@ -34,8 +34,8 @@ def _by(resp, key: str, value: str) -> dict:
     return out
 
 
-def _flags(model: SlayerModel) -> dict:
-    return {c.name: (c.primary_key, c.unique) for c in model.columns}
+def _flags(model: SlayerDataset) -> dict:
+    return {c.name: (c.primary_key, c.unique) for c in model.fields}
 
 
 C_BY_ID = {
@@ -119,49 +119,49 @@ class TestSiblingJoins:
 
 class TestQueryBacked:
     async def test_composite_grain_member_stays_aggregatable(self, engine: SlayerQueryEngine) -> None:
-        model = await engine.create_model_from_query(SlayerQuery.model_validate({
-            "source_model": "customers", "dimensions": ["id", "tier"],
-            "measures": [{"formula": "sum(spend)", "name": "sp"}],
+        model = await engine.create_dataset_from_query(SlayerQuery.model_validate({
+            "population": "customers", "dimensions": ["id", "tier"],
+            "metrics": [{"formula": "sum(spend)", "name": "sp"}],
         }), "vm_id_tier")
         assert _flags(model) == {"id": (True, False), "tier": (True, False), "sp": (False, False)}
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "vm_id_tier", "measures": [{"formula": "max(tier)", "name": "mt"}],
+            "population": "vm_id_tier", "metrics": [{"formula": "max(tier)", "name": "mt"}],
         }))
         assert resp.data[0]["vm_id_tier.mt"] == "silver"
 
     async def test_single_column_grain_is_unique_not_identifier(self, engine: SlayerQueryEngine) -> None:
-        model = await engine.create_model_from_query(SlayerQuery.model_validate({
-            "source_model": "customers", "dimensions": ["tier"],
-            "measures": [{"formula": "count(*)", "name": "n"}],
+        model = await engine.create_dataset_from_query(SlayerQuery.model_validate({
+            "population": "customers", "dimensions": ["tier"],
+            "metrics": [{"formula": "count(*)", "name": "n"}],
         }), "vm_tier")
         assert _flags(model) == {"tier": (False, True), "n": (False, False)}
-        join = ModelJoin(target_model="vm_tier", join_pairs=[["tier", "tier"]])
-        assert provably_to_one(edge=join, target_model=model)
+        join = DatasetRelationship(to="vm_tier", join_pairs=[["tier", "tier"]])
+        assert provably_to_one(edge=join, target_dataset=model)
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "vm_tier", "measures": [{"formula": "max(tier)", "name": "mt"}],
+            "population": "vm_tier", "metrics": [{"formula": "max(tier)", "name": "mt"}],
         }))
         assert resp.data[0]["vm_tier.mt"] == "silver"
 
     async def test_metric_across_unique_grain_join_is_exact(self, engine: SlayerQueryEngine) -> None:
-        await engine.create_model_from_query(SlayerQuery.model_validate({
-            "source_model": "customers", "dimensions": ["tier"],
-            "measures": [{"formula": "count(*)", "name": "n"}],
+        await engine.create_dataset_from_query(SlayerQuery.model_validate({
+            "population": "customers", "dimensions": ["tier"],
+            "metrics": [{"formula": "count(*)", "name": "n"}],
         }), "vm_tier_n")
         host = customers_model()
         host.name = "customers_t"
-        host.joins.append(ModelJoin(target_model="vm_tier_n", join_pairs=[["tier", "tier"]]))
-        await engine.storage.save_model(host, _validate=False)
+        host.relationships.append(DatasetRelationship(to="vm_tier_n", join_pairs=[["tier", "tier"]]))
+        await engine.storage.save_dataset(host, _validate=False)
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "customers_t", "dimensions": ["tier"],
-            "measures": [{"formula": "sum(vm_tier_n.n)", "name": "n"}],
+            "population": "customers_t", "dimensions": ["tier"],
+            "metrics": [{"formula": "sum(vm_tier_n.n)", "name": "n"}],
         }))
         assert _by(resp, "customers_t.tier", "customers_t.n") == {"gold": 2, "silver": 1, "bronze": 1}
         assert broadcast_warnings(resp) == []
 
     async def test_measure_is_never_stamped(self, engine: SlayerQueryEngine) -> None:
-        model = await engine.create_model_from_query(SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["status", "channel"],
-            "measures": [{"formula": "sum(amount, partition_by=status)", "name": "st"}],
+        model = await engine.create_dataset_from_query(SlayerQuery.model_validate({
+            "population": "orders", "dimensions": ["status", "channel"],
+            "metrics": [{"formula": "sum(amount, partition_by=status)", "name": "st"}],
         }), "vm_st")
         assert _flags(model) == {
             "status": (True, False), "channel": (True, False), "st": (False, False),
@@ -171,33 +171,33 @@ class TestQueryBacked:
 class TestAggregateValuedGrainMember:
     """Grain ``(status, ct)``: a join on ``status`` alone is unproven, never multiplied."""
 
-    async def _model(self, engine: SlayerQueryEngine) -> SlayerModel:
-        return await engine.create_model_from_query(SlayerQuery.model_validate({
-            "source_model": "orders",
+    async def _model(self, engine: SlayerQueryEngine) -> SlayerDataset:
+        return await engine.create_dataset_from_query(SlayerQuery.model_validate({
+            "population": "orders",
             "dimensions": ["status", {"expression": "sum(amount, partition_by=channel)", "name": "ct"}],
         }), "vm_ctot")
 
     async def test_computed_dimension_is_stamped_into_the_grain(self, engine) -> None:
         model = await self._model(engine)
         assert _flags(model) == {"status": (True, False), "ct": (True, False)}
-        join = ModelJoin(target_model="vm_ctot", join_pairs=[["status", "status"]])
-        assert not provably_to_one(edge=join, target_model=model)
+        join = DatasetRelationship(to="vm_ctot", join_pairs=[["status", "status"]])
+        assert not provably_to_one(edge=join, target_dataset=model)
 
     async def test_join_on_status_alone_broadcasts_not_multiplies(self, engine: SlayerQueryEngine) -> None:
         await self._model(engine)
-        host = SlayerModel(
+        host = SlayerDataset(
             name="two_ok", data_source="test",
             sql="SELECT 1 AS id, 'ok' AS status UNION ALL SELECT 2 AS id, 'ok' AS status",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="status", datatype=DataType.TEXT),
             ],
-            joins=[ModelJoin(target_model="vm_ctot", join_pairs=[["status", "status"]])],
+            relationships=[DatasetRelationship(to="vm_ctot", join_pairs=[["status", "status"]])],
         )
-        await engine.storage.save_model(host, _validate=False)
+        await engine.storage.save_dataset(host, _validate=False)
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "two_ok", "dimensions": ["vm_ctot.status"],
-            "measures": [{"formula": "count(*)", "name": "n"}], "to_many_handling": "broadcast",
+            "population": "two_ok", "dimensions": ["vm_ctot.status"],
+            "metrics": [{"formula": "count(*)", "name": "n"}], "to_many_handling": "broadcast",
         }))
         assert len(broadcast_warnings(resp)) == 1
         assert resp.data

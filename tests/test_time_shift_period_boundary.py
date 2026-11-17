@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -36,13 +36,13 @@ def _make_engine(rows: list[tuple[int, float, str]]) -> SlayerQueryEngine:
     storage = YAMLStorage(base_dir=tmp)
     asyncio.run(storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=db_path)))
-    asyncio.run(storage.save_model(SlayerModel(
+    asyncio.run(storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="cost", sql="cost", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="cost", sql="cost", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
         ],
     )))
     return SlayerQueryEngine(storage=storage)

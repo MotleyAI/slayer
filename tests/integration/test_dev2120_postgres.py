@@ -41,11 +41,11 @@ async def pg(postgresql, tmp_path):
                           username=info.user, password="")
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(ds)
-    await storage.save_model(lib_model(data_source="pg"))
+    await storage.save_dataset(lib_model(data_source="pg"))
     engine = SlayerQueryEngine(storage=storage)
     try:
         for model in await engine.ingest(ds, include_tables=["docs", "docs_json"]):
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         yield engine, version_num
     finally:
         await engine.aclose()

@@ -24,7 +24,7 @@ from typing import cast
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, Column, ModelMeasure, SlayerModel
+from slayer.core.models import Aggregation, DatasetField, DatasetMetric, SlayerDataset
 from slayer.embeddings import client as embedding_client
 from slayer.memories.models import Memory
 from slayer.search.index import build_in_memory_corpus
@@ -72,22 +72,22 @@ def recording_embed(monkeypatch: pytest.MonkeyPatch) -> _RecordingEmbedBatch:
     return rec
 
 
-def _make_model() -> SlayerModel:
-    return SlayerModel(
+def _make_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="public.orders",
         data_source="dsx",
         description="orders fact table",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE, description="cents"),
-            Column(name="secret", type=DataType.TEXT, hidden=True),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE, description="cents"),
+            DatasetField(name="secret", datatype=DataType.TEXT, hidden=True),
         ],
-        measures=[
-            ModelMeasure(name="rev", formula="sum(amount)"),
+        metrics=[
+            DatasetMetric(name="rev", expression="sum(amount)"),
         ],
         aggregations=[
-            Aggregation(name="my_agg", formula="SUM({x})"),
+            Aggregation(name="my_agg", expression="SUM({x})"),
         ],
     )
 
@@ -104,7 +104,7 @@ async def test_upsert_memory_silent_when_channel_unavailable(
     the write path — no per-call warning bubbles up for a "feature
     not configured" case."""
     monkeypatch.setattr(embedding_client, "is_available", lambda: False)
-    retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
+    retriever = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
     memory = Memory(id="1", learning="hello", entities=["e1"])
     warnings = await retriever.upsert_memory(memory)
     assert warnings == []
@@ -118,7 +118,7 @@ async def test_upsert_memory_persists_row(
     stub_available: None,
     recording_embed: _RecordingEmbedBatch,
 ) -> None:
-    retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
+    retriever = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
     memory = Memory(id="1", learning="hello world", entities=["e1"])
     warnings = await retriever.upsert_memory(memory)
     assert warnings == []
@@ -138,7 +138,7 @@ async def test_upsert_memory_skips_when_hash_matches(
     stub_available: None,
     recording_embed: _RecordingEmbedBatch,
 ) -> None:
-    retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
+    retriever = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
     memory = Memory(id="42", learning="unchanged", entities=["e1"])
     await retriever.upsert_memory(memory)
     await retriever.upsert_memory(memory)
@@ -150,7 +150,7 @@ async def test_upsert_memory_reembeds_on_text_change(
     stub_available: None,
     recording_embed: _RecordingEmbedBatch,
 ) -> None:
-    retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
+    retriever = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
     memory_a = Memory(id="7", learning="alpha", entities=["e1"])
     memory_b = Memory(id="7", learning="alpha-changed", entities=["e1"])
     await retriever.upsert_memory(memory_a)
@@ -173,9 +173,9 @@ async def test_refresh_model_subtree_batches_all_children(
     stub_available: None,
     recording_embed: _RecordingEmbedBatch,
 ) -> None:
-    retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
+    retriever = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
     model = _make_model()
-    warnings = await retriever.refresh_model_subtree(model)
+    warnings = await retriever.refresh_dataset_subtree(model)
     assert warnings == []
     assert len(recording_embed.calls) == 1
     # model + 2 visible columns + 1 named measure + 1 agg = 5; hidden col skipped.
@@ -197,10 +197,10 @@ async def test_refresh_model_subtree_hash_skips_unchanged(
     stub_available: None,
     recording_embed: _RecordingEmbedBatch,
 ) -> None:
-    retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
+    retriever = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
     model = _make_model()
-    await retriever.refresh_model_subtree(model)
-    await retriever.refresh_model_subtree(model)
+    await retriever.refresh_dataset_subtree(model)
+    await retriever.refresh_dataset_subtree(model)
     assert len(recording_embed.calls) == 1
 
 
@@ -220,9 +220,9 @@ async def test_refresh_model_subtree_per_entry_failure_warns(
     monkeypatch.setattr(
         "slayer.search.retrievers.embeddings.embed_batch", partial_failure,
     )
-    retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
+    retriever = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
     model = _make_model()
-    warnings = await retriever.refresh_model_subtree(model)
+    warnings = await retriever.refresh_dataset_subtree(model)
     assert len(warnings) == 1
     assert "embedding refresh failed" in warnings[0]
     listed = await storage.list_embeddings(embedding_model_name="openai/x")
@@ -234,10 +234,10 @@ async def test_refresh_model_subtree_hidden_model_short_circuits(
     stub_available: None,
     recording_embed: _RecordingEmbedBatch,
 ) -> None:
-    retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
+    retriever = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
     model = _make_model()
     model.hidden = True
-    warnings = await retriever.refresh_model_subtree(model)
+    warnings = await retriever.refresh_dataset_subtree(model)
     assert warnings == []
     assert recording_embed.calls == []
     assert await storage.list_embeddings(
@@ -255,8 +255,8 @@ async def test_fetch_corpus_filters_by_active_model_name(
     stub_available: None,
     recording_embed: _RecordingEmbedBatch,
 ) -> None:
-    retriever_a = EmbeddingRetriever(storage=storage, model_name="openai/a")
-    retriever_b = EmbeddingRetriever(storage=storage, model_name="openai/b")
+    retriever_a = EmbeddingRetriever(storage=storage, dataset_name="openai/a")
+    retriever_b = EmbeddingRetriever(storage=storage, dataset_name="openai/b")
     memory = Memory(id="1", learning="anything", entities=["e1"])
 
     await retriever_a.upsert_memory(memory)
@@ -315,10 +315,10 @@ async def test_apply_pending_uses_batched_storage_calls(
 ) -> None:
     counting = _CountingStorage(storage)
     retriever = EmbeddingRetriever(
-        storage=cast(StorageBackend, counting), model_name="openai/x",
+        storage=cast(StorageBackend, counting), dataset_name="openai/x",
     )
     model = _make_model()
-    await retriever.refresh_model_subtree(model)
+    await retriever.refresh_dataset_subtree(model)
 
     assert counting.get_many_calls == 1
     assert counting.save_many_calls == 1
@@ -341,10 +341,10 @@ async def test_apply_pending_persists_partial_batch_on_some_embed_failures(
     )
     counting = _CountingStorage(storage)
     retriever = EmbeddingRetriever(
-        storage=cast(StorageBackend, counting), model_name="openai/x",
+        storage=cast(StorageBackend, counting), dataset_name="openai/x",
     )
     model = _make_model()
-    warnings = await retriever.refresh_model_subtree(model)
+    warnings = await retriever.refresh_dataset_subtree(model)
 
     assert len(warnings) == 1
     assert counting.save_many_calls == 1
@@ -362,8 +362,8 @@ class _CallCountingEmbeddingRetriever(EmbeddingRetriever):
     ``embed_question`` are invoked. Used to pin the "one of each per
     ``retrieve`` call" contract (Codex Finding 1)."""
 
-    def __init__(self, *, storage, model_name) -> None:
-        super().__init__(storage=storage, model_name=model_name)
+    def __init__(self, *, storage, dataset_name) -> None:
+        super().__init__(storage=storage, dataset_name=dataset_name)
         self.fetch_corpus_calls = 0
         self.embed_question_calls = 0
 
@@ -390,13 +390,13 @@ async def test_retrieve_does_one_fetch_corpus_and_one_embed_question(
     # Pre-populate one memory + one entity row so the channel produces both
     # rankings in a single retrieve call.
     retriever_for_setup = EmbeddingRetriever(
-        storage=storage, model_name="openai/x",
+        storage=storage, dataset_name="openai/x",
     )
     memory = Memory(id="1", learning="hello cents",
                     entities=["dsx.orders.amount"])
     model = _make_model()
     await retriever_for_setup.upsert_memory(memory)
-    await retriever_for_setup.refresh_model_subtree(model)
+    await retriever_for_setup.refresh_dataset_subtree(model)
 
     async def fake_query_embed(question, *, model=None):  # NOSONAR(S7503) — async stub matches the real ``embed_query`` signature being monkeypatched
         return [0.1, 0.2, 0.3]
@@ -407,12 +407,12 @@ async def test_retrieve_does_one_fetch_corpus_and_one_embed_question(
 
     # Now run retrieve and assert call counts.
     retriever = _CallCountingEmbeddingRetriever(
-        storage=storage, model_name="openai/x",
+        storage=storage, dataset_name="openai/x",
     )
     # Minimal corpus with the relevant canonicals so the live-canonical
     # filter inside retrieve does not drop everything.
     corpus = build_in_memory_corpus(
-        memories=[memory], models=[model], datasources=["dsx"],
+        memories=[memory], datasets=[model], datasources=["dsx"],
     )
     result = await retriever.retrieve(
         query_entities=[],
@@ -435,7 +435,7 @@ async def test_retrieve_returns_empty_when_question_blank(
     storage: YAMLStorage,
     stub_available: None,
 ) -> None:
-    retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
+    retriever = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
     for question in (None, "", "   "):
         result = await retriever.retrieve(
             query_entities=[],
@@ -459,7 +459,7 @@ async def test_retrieve_surfaces_dim_mismatch_warning(
     and surfaces a single warning, with no per-partition duplication."""
     # Persist a row with dim=3.
     retriever_for_setup = EmbeddingRetriever(
-        storage=storage, model_name="openai/x",
+        storage=storage, dataset_name="openai/x",
     )
     memory = Memory(id="1", learning="x", entities=[])
     await retriever_for_setup.upsert_memory(memory)
@@ -471,9 +471,9 @@ async def test_retrieve_surfaces_dim_mismatch_warning(
         "slayer.embeddings.client.embed_query", fake_query_embed,
     )
 
-    retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
+    retriever = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
     corpus = build_in_memory_corpus(
-        memories=[memory], models=[], datasources=[],
+        memories=[memory], datasets=[], datasources=[],
     )
     result = await retriever.retrieve(
         query_entities=[],
@@ -504,7 +504,7 @@ async def test_delete_memory_hook_is_no_op_today(
     delete; EmbeddingRetriever.delete_* hooks default to ABC no-op.
     The hooks exist on the ABC for future use (persistent tantivy
     will override) but must not touch storage today."""
-    retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
+    retriever = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
     memory = Memory(id="1", learning="hello", entities=[])
     await retriever.upsert_memory(memory)
     pre = await storage.list_embeddings(embedding_model_name="openai/x")
@@ -523,13 +523,13 @@ async def test_delete_model_hook_is_no_op_today(
 ) -> None:
     """Codex Finding 6 (sister case): delete_model hook leaves
     embedding rows intact — storage owns the cascade."""
-    retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
+    retriever = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
     model = _make_model()
-    await retriever.refresh_model_subtree(model)
+    await retriever.refresh_dataset_subtree(model)
     pre = await storage.list_embeddings(embedding_model_name="openai/x")
     assert len(pre) > 0
 
-    await retriever.delete_model(data_source="dsx", name="orders")
+    await retriever.delete_dataset(data_source="dsx", name="orders")
     post = await storage.list_embeddings(embedding_model_name="openai/x")
     assert {r.canonical_id for r in post} == {r.canonical_id for r in pre}
 
@@ -539,9 +539,9 @@ async def test_delete_datasource_hook_is_no_op_today(
     stub_available: None,
     recording_embed: _RecordingEmbedBatch,
 ) -> None:
-    retriever = EmbeddingRetriever(storage=storage, model_name="openai/x")
+    retriever = EmbeddingRetriever(storage=storage, dataset_name="openai/x")
     model = _make_model()
-    await retriever.refresh_datasource(name="dsx", models=[model])
+    await retriever.refresh_datasource(name="dsx", datasets=[model])
     pre = await storage.list_embeddings(embedding_model_name="openai/x")
     assert len(pre) > 0
 

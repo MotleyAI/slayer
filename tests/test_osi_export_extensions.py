@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from slayer.core.enums import JoinCardinality, JoinType
-from slayer.core.models import DatasourceConfig, ModelJoin
+from slayer.core.enums import RelationshipCardinality, JoinType
+from slayer.core.models import DatasourceConfig, DatasetRelationship
 from slayer.ingest_report import ConversionReport, ConversionResult
 from slayer.osi import slayer_extension as ext
 from slayer.osi.exporter import OsiExportResult
@@ -61,7 +61,7 @@ async def test_slayer_only_measure_travels_in_the_extension(env, name: str) -> N
     model = rich_orders()
     result = await export_models(env, customers(), model)
     assert name not in _metric_names(result.document)
-    formula = next(m.formula for m in model.measures if m.name == name)
+    formula = next(m.expression for m in model.metrics if m.name == name)
     assert carries(dataset(result.document, "orders"), formula)
     [entry] = mentions(result, name, severity="info", category="extension_only")
     assert entry.suggestion
@@ -143,8 +143,8 @@ async def test_inner_join_is_lossy_without_extensions(env) -> None:
 
 
 async def test_one_to_many_join_is_lossy_without_extensions(env) -> None:
-    to_orders = ModelJoin(target_model="orders", join_pairs=[["id", "customer_id"]],
-                          cardinality=JoinCardinality.ONE_TO_MANY)
+    to_orders = DatasetRelationship(to="orders", join_pairs=[["id", "customer_id"]],
+                          cardinality=RelationshipCardinality.ONE_TO_MANY)
     result = await export_models(env, customers(joins=[to_orders]), orders(measures=BASIC_MEASURES, joins=[]),
                                  extensions=False)
     assert len(relationships(result.document)) == 1
@@ -167,14 +167,14 @@ async def test_slayer_only_content_is_dropped_without_extensions(env) -> None:
 # ─────────────────────────────── report ────────────────────────────────────
 
 async def test_complete_report(env) -> None:
-    m2m = ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                    cardinality=JoinCardinality.MANY_TO_MANY)
+    m2m = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+                    cardinality=RelationshipCardinality.MANY_TO_MANY)
     growth = measure("revenue_growth", "change_pct(revenue)")
     result = await export_models(env, customers(), orders(measures=[*BASIC_MEASURES, growth]), visits(joins=[m2m]))
     assert sorted((e.severity, e.category if e.severity == "info" else None) for e in result.entries) == [
         ("dropped", None), ("info", "extension_only")]
     dropped = next(e for e in result.entries if e.severity == "dropped")
-    assert "visits" in (dropped.model_name, dropped.metric_name) or "visits" in dropped.message
+    assert "visits" in (dropped.dataset_name, dropped.metric_name) or "visits" in dropped.message
     assert mentions(result, "revenue_growth", severity="info")
     assert all(e.suggestion for e in result.entries)
 
@@ -185,7 +185,7 @@ async def test_every_entry_has_entity_reason_and_workaround(env, extensions: boo
     result = await export_models(env, customers(), rich_orders(), b2b, visits(), extensions=extensions)
     assert result.entries
     for entry in result.entries:
-        assert entry.model_name or entry.metric_name
+        assert entry.dataset_name or entry.metric_name
         assert entry.message
         assert entry.suggestion
         assert entry.severity in ("dropped", "info")
@@ -210,7 +210,7 @@ async def test_connection_details_memories_and_samples_are_not_exported(env) -> 
     await storage.save_datasource(config.model_copy(update={"username": "u53r", "password": "s3cret"}))
     await storage.save_memory(learning="zzmemory: refunds live in status", entities=["orders.status"])
     model = customers()
-    for c in model.columns:
+    for c in model.fields:
         if c.name == "segment":
             c.sampled, c.sampled_values, c.distinct_count = "zzsampled", ["zzvalue"], 2
     result = await export_models(env, model, orders(measures=BASIC_MEASURES))

@@ -8,8 +8,8 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelJoin, SlayerModel
-from slayer.core.policy import ColumnFilterRuleset, JoinFilterRule, JoinFilterRuleset, SessionPolicy
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
+from slayer.core.policy import FieldFilterRuleset, RelationshipFilterRule, RelationshipFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2210_fixtures import by_id, ids, seed
@@ -25,31 +25,31 @@ DDL = (
     "INSERT INTO returns VALUES (10, 1, 't1'), (11, 2, 't1'), (12, 3, 't2'), (14, 5, 't1')",
 )
 
-COLUMN_POLICY = SessionPolicy(ruleset=ColumnFilterRuleset(column="tenant", value="t1"))
-JOIN_POLICY = SessionPolicy(ruleset=JoinFilterRuleset(
-    table="orders", column="tenant", value="t1",
-    joins=(
-        JoinFilterRule(target_table="shipments", join_path=("shipments.order_ref = orders.id",)),
-        JoinFilterRule(target_table="returns", join_path=("returns.order_id = orders.id",)),
+COLUMN_POLICY = SessionPolicy(ruleset=FieldFilterRuleset(field="tenant", value="t1"))
+JOIN_POLICY = SessionPolicy(ruleset=RelationshipFilterRuleset(
+    table="orders", field="tenant", value="t1",
+    relationships=(
+        RelationshipFilterRule(target_table="shipments", relationship_path=("shipments.order_ref = orders.id",)),
+        RelationshipFilterRule(target_table="returns", relationship_path=("returns.order_id = orders.id",)),
     ),
 ))
 
 
-def _id() -> Column:
-    return Column(name="id", type=DataType.INT, primary_key=True)
+def _id() -> DatasetField:
+    return DatasetField(name="id", datatype=DataType.INT, primary_key=True)
 
 
-def _models() -> list[SlayerModel]:
+def _models() -> list[SlayerDataset]:
     return [
-        SlayerModel(name="shipments", data_source="test", sql_table="shipments", columns=[
-            _id(), Column(name="order_ref", type=DataType.INT), Column(name="carrier", type=DataType.TEXT),
+        SlayerDataset(name="shipments", data_source="test", sql_table="shipments", fields=[
+            _id(), DatasetField(name="order_ref", datatype=DataType.INT), DatasetField(name="carrier", datatype=DataType.TEXT),
         ]),
-        SlayerModel(name="ups_orders", data_source="test", sql_table="orders", columns=[_id()],
-                    joins=[ModelJoin(target_model="shipments", join_pairs=[["id", "order_ref"]])],
+        SlayerDataset(name="ups_orders", data_source="test", sql_table="orders", fields=[_id()],
+                    relationships=[DatasetRelationship(to="shipments", join_pairs=[["id", "order_ref"]])],
                     filters=["shipments.carrier = 'ups'"]),
-        SlayerModel(name="returns", data_source="test", sql_table="returns",
-                    columns=[_id(), Column(name="order_id", type=DataType.INT)],
-                    joins=[ModelJoin(target_model="ups_orders", join_pairs=[["order_id", "id"]])]),
+        SlayerDataset(name="returns", data_source="test", sql_table="returns",
+                    fields=[_id(), DatasetField(name="order_id", datatype=DataType.INT)],
+                    relationships=[DatasetRelationship(to="ups_orders", join_pairs=[["order_id", "id"]])]),
     ]
 
 

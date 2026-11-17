@@ -70,7 +70,7 @@ class TestSpellingCollisionMintsDistinctAliases:
         #   chain_val  (sql=a.b.val)  -> chain host->a->b (alias naturally a__b)
         #   direct_val (sql=a__b.val) -> the direct model literally named a__b
         sql = await _engine_generate(
-            query=SlayerQuery(source_model="host",
+            query=SlayerQuery(population="host",
                               dimensions=["chain_val", "direct_val"]),
             model=host, extra_models=extra,
         )
@@ -93,7 +93,7 @@ class TestLongChainAliasesAreLengthFitted:
         models = long_chain_models()
         host, extra = models[0], models[1:]
         sql = await _engine_generate(
-            query=SlayerQuery(source_model=host.name,
+            query=SlayerQuery(population=host.name,
                               dimensions=[LONG_DOTTED_PATH]),
             model=host, extra_models=extra, dialect="postgres",
         )
@@ -126,9 +126,9 @@ class TestHostGrainOrderWrapUsesEmittedAlias:
         # planner wraps the un-grouped chain column in a host-grain MIN.
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({
-                "source_model": "host",
+                "population": "host",
                 "dimensions": ["direct_val"],
-                "measures": ["count(*)"],
+                "metrics": ["count(*)"],
                 "order": [{"column": "a.b.val", "direction": "asc"}],
             }),
             model=host, extra_models=extra,
@@ -158,7 +158,7 @@ class TestPlainChainSpellingIsStable:
         models = chain_models()
         host, extra = models[0], models[1:]
         sql = await _engine_generate(
-            query=SlayerQuery(source_model="orders",
+            query=SlayerQuery(population="orders",
                               dimensions=["customers.name",
                                           "customers.regions.name"]),
             model=host, extra_models=extra,
@@ -182,9 +182,9 @@ class TestTwoRootsSameSpelling:
         host, extra = models[0], models[1:]
         sql = await _engine_generate(
             query=SlayerQuery.model_validate({
-                "source_model": "host",
+                "population": "host",
                 "dimensions": ["a.b.val"],
-                "measures": ["count(a__b.*)"],
+                "metrics": ["count(a__b.*)"],
             }),
             model=host, extra_models=extra,
         )

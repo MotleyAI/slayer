@@ -59,11 +59,11 @@ import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
 from slayer.core.models import (
-    Column,
-    ModelJoin,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, ComputedDimension, ModelMeasure, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, ComputedDimension, DatasetMetric, SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 from tests._engine_helpers import seeded_exec_engine
@@ -85,31 +85,31 @@ from tests._dev1739_fixtures import (
 # --------------------------------------------------------------------------- #
 # Models — orders (host) → customers → regions.
 # --------------------------------------------------------------------------- #
-def orders_model() -> SlayerModel:
-    return SlayerModel(
+def orders_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="region", type=DataType.TEXT),
-            Column(name="city", type=DataType.TEXT),
-            Column(name="channel", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="region", datatype=DataType.TEXT),
+            DatasetField(name="city", datatype=DataType.TEXT),
+            DatasetField(name="channel", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
             # Filtered column (CASE-WHEN at aggregation time) — for a filtered
             # aggregate reconciliation under the computed dimension.
-            Column(name="ok_amount", type=DataType.DOUBLE, sql="amount",
+            DatasetField(name="ok_amount", datatype=DataType.DOUBLE, sql="amount",
                    filter="status = 'ok'"),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
         ],
     )
 
 
-def dev1740_models() -> List[SlayerModel]:
+def dev1740_models() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
     return [orders_model(), customers_model(), regions_model()]
 
@@ -221,15 +221,15 @@ def two_stage_banding() -> list:
     """The ``[stage1, stage2]`` list from the issue: per-city totals, then a
     row-level CASE band over that total, regrouped by (region, band)."""
     stage1 = SlayerQuery(
-        name="per_city", source_model="orders",
+        name="per_city", population="orders",
         dimensions=["city", "region"],
-        measures=[ModelMeasure(formula="sum(amount)", name="city_total")],
+        metrics=[DatasetMetric(expression="sum(amount)", name="city_total")],
     )
     stage2 = SlayerQuery(
-        source_model="per_city",
-        dimensions=[ColumnRef(name="region"),
+        population="per_city",
+        dimensions=[FieldRef(name="region"),
                     ComputedDimension(expression="CASE WHEN city_total > 5000 THEN 1 ELSE 0 END", name="band")],
-        measures=[ModelMeasure(formula="sum(city_total)", name="band_total")],
+        metrics=[DatasetMetric(expression="sum(city_total)", name="band_total")],
     )
     return [stage1, stage2]
 
@@ -250,5 +250,5 @@ __all__ = [
     "rows_by", "approx_sum",
     "CITY_TOTAL", "BAND_SUM", "BAND_COUNT", "BAND_AVG", "BAND_OK_SUM",
     "BAND_DISTINCT_CUST", "REGION_SUM", "REGION_COUNT", "GRAND_TOTAL",
-    "SlayerQuery", "ModelMeasure", "ColumnRef", "TimeDimension", "TimeGranularity",
+    "SlayerQuery", "DatasetMetric", "FieldRef", "TimeDimension", "TimeGranularity",
 ]

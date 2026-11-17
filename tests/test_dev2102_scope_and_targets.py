@@ -6,8 +6,8 @@ from collections import Counter
 
 import pytest
 
-from slayer.core.errors import ModelNotFoundError, SlayerError, UnknownReferenceError
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.errors import DatasetNotFoundError, SlayerError, UnknownReferenceError
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.stage_ordering import topologically_order_stages
 from slayer.usage_reporting.features import query_features
@@ -41,15 +41,15 @@ def dialect(request) -> str:
     return request.param
 
 
-def _cust_spend() -> SlayerModel:
-    return SlayerModel(name="cust_spend", data_source=DS, source_queries=[SlayerQuery.model_validate({
-        "source_model": "orders", "dimensions": ["customer_id"],
-        "measures": [{"formula": "sum(amount)", "name": "spent"}]})])
+def _cust_spend() -> SlayerDataset:
+    return SlayerDataset(name="cust_spend", data_source=DS, source_queries=[SlayerQuery.model_validate({
+        "population": "orders", "dimensions": ["customer_id"],
+        "metrics": [{"formula": "sum(amount)", "name": "spent"}]})])
 
 
 class TestExtendingAnyModel:
     async def test_extending_a_joined_model_adds_a_dimension(self, dialect) -> None:
-        stored = customers().model_copy(update={"columns": [*customers().columns, Column.model_validate(TIER_LABEL)]})
+        stored = customers().model_copy(update={"columns": [*customers().fields, DatasetField.model_validate(TIER_LABEL)]})
         computed = q(source_model="orders", dimensions=[{"expression": "upper(customers.tier)", "name": "tier_label"}],
                      measures=[AMOUNT])
         async with shop(dialect) as engine:
@@ -123,9 +123,9 @@ class TestScope:
                 await engine.execute([stage, root])
 
     async def test_extension_is_invisible_to_a_stored_query_backed_stage(self, dialect) -> None:
-        qb = SlayerModel(name="tl_rev", data_source=DS, source_queries=[SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["status"],
-            "measures": [{"formula": "customers.credit_total", "name": "a"}]})])
+        qb = SlayerDataset(name="tl_rev", data_source=DS, source_queries=[SlayerQuery.model_validate({
+            "population": "orders", "dimensions": ["status"],
+            "metrics": [{"formula": "customers.credit_total", "name": "a"}]})])
         query = q(source_model="tl_rev", measures=[{"formula": "sum(a)", "name": "t"}],
                   extensions=[ext("customers", measures=[CREDIT_TOTAL])])
         async with shop(dialect, with_models(qb)) as engine:
@@ -134,7 +134,7 @@ class TestScope:
 
     async def test_extension_is_invisible_to_a_saved_measure(self, dialect) -> None:
         stored = orders().model_copy(update={"measures": [
-            ModelMeasure(name="labels", formula="count_distinct(regions.name)")]})
+            DatasetMetric(name="labels", expression="count_distinct(regions.name)")]})
         query = q(source_model="orders", measures=["labels"],
                   extensions=[ext("orders", joins=[join("regions", [["ship_region_id", "id"]])])])
         async with shop(dialect, with_models(stored)) as engine:
@@ -195,7 +195,7 @@ class TestRejectedTargets:
     async def test_unknown_extension_target(self, dialect, extension: dict) -> None:
         async with shop(dialect) as engine:
             query = q(source_model="orders", dimensions=["status"], extensions=[extension])
-            with pytest.raises(ModelNotFoundError, match="nope"):
+            with pytest.raises(DatasetNotFoundError, match="nope"):
                 await engine.execute(query)
 
     async def test_extending_the_time_spine_is_rejected(self, dialect) -> None:
@@ -204,7 +204,7 @@ class TestRejectedTargets:
         async with shop(dialect) as engine:
             with pytest.raises(SlayerError, match="time_spine") as info:
                 await engine.execute(query)
-        assert not isinstance(info.value, ModelNotFoundError)
+        assert not isinstance(info.value, DatasetNotFoundError)
 
 
 class TestSaveTimeRefusal:
@@ -222,8 +222,8 @@ class TestSaveTimeRefusal:
         ]
         async with shop(dialect) as engine:
             with pytest.raises(ValueError) as info:
-                await engine.create_model_from_query(query=stages, name="bad_qb")
-            assert await engine.storage.get_model("bad_qb", data_source=DS) is None
+                await engine.create_dataset_from_query(query=stages, name="bad_qb")
+            assert await engine.storage.get_dataset("bad_qb", data_source=DS) is None
         message = str(info.value)
         assert "conflicted" in message, message
         assert named in message, message

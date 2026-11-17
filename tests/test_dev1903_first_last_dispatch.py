@@ -13,8 +13,8 @@ import re
 import pytest
 from pydantic import BaseModel
 
-from slayer.core.keys import AggregateKey, ColumnKey, TransformKey
-from slayer.core.models import ModelMeasure
+from slayer.core.keys import AggregateKey, FieldKey, TransformKey
+from slayer.core.models import DatasetMetric
 from slayer.core.query import SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.engine.plan import plan_query
@@ -33,24 +33,24 @@ from slayer.core import syntax
 from slayer.engine.query_engine import SlayerQueryEngine
 
 SAVED = [
-    ModelMeasure(formula="sum(revenue)", name="rev"),
-    ModelMeasure(formula="rev * 2", name="rev_twice"),
-    ModelMeasure(formula="cumsum(sum(revenue))", name="cum_rev"),
-    ModelMeasure(formula="sum(revenue) * 2", name="rev2"),
+    DatasetMetric(expression="sum(revenue)", name="rev"),
+    DatasetMetric(expression="rev * 2", name="rev_twice"),
+    DatasetMetric(expression="cumsum(sum(revenue))", name="cum_rev"),
+    DatasetMetric(expression="sum(revenue) * 2", name="rev2"),
 ]
 
 
 def _models():
     sales = sales_model()
-    sales.measures = list(SAVED)
+    sales.metrics = list(SAVED)
     regions = regions_model()
-    regions.measures = [ModelMeasure(formula="sum(factor)", name="tf")]
+    regions.metrics = [DatasetMetric(expression="sum(factor)", name="tf")]
     return [sales, regions]
 
 
 def _bundle() -> ResolvedSourceBundle:
     sales, regions = _models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=sales, referenced_models=[regions])
+    return ResolvedSourceBundle(dialect="postgres", population=sales, referenced_datasets=[regions])
 
 
 def _q(**kw) -> SlayerQuery:
@@ -61,11 +61,11 @@ def _q(**kw) -> SlayerQuery:
 
 def _measure_key(formula: str, **kw):
     env = elaborate_query(
-        query=_q(measures=[ModelMeasure(formula=formula, name="m")], **kw),
+        query=_q(measures=[DatasetMetric(expression=formula, name="m")], **kw),
         bundle=_bundle(),
     )
     assert env.prebound is not None
-    return env.prebound.declared_measures[-1].bound.value_key
+    return env.prebound.declared_metrics[-1].bound.value_key
 
 
 _OP_TOKEN = re.compile(r"(?<=Transform ')(first|last|cumsum)(?=')")
@@ -102,7 +102,7 @@ def _outcome(query: SlayerQuery):
         return ("err", e)
     assert env.prebound is not None
     return ("ok", (
-        *(dm.bound.value_key for dm in env.prebound.declared_measures),
+        *(dm.bound.value_key for dm in env.prebound.declared_metrics),
         *(bf.value_key for bf in env.prebound.bound_filters),
         *(sp.bound.value_key for sp in env.prebound.order_specs),
     ))
@@ -196,7 +196,7 @@ class TestSavedMeasureOperand:
     def test_plans_identically(self, saved, inline):
         def plan(formula):
             return plan_query(
-                query=_q(measures=[ModelMeasure(formula=formula, name="m")]),
+                query=_q(measures=[DatasetMetric(expression=formula, name="m")]),
                 bundle=_bundle())
         assert plan(saved) == plan(inline)
 
@@ -219,9 +219,9 @@ class TestSavedMeasureExecution:
     ])
     async def test_values_match_inline(self, exec_engine: SlayerQueryEngine, saved, inline):
         got = await exec_engine.execute(
-            _q(measures=[ModelMeasure(formula=saved, name="m")]))
+            _q(measures=[DatasetMetric(expression=saved, name="m")]))
         want = await exec_engine.execute(
-            _q(measures=[ModelMeasure(formula=inline, name="m")]))
+            _q(measures=[DatasetMetric(expression=inline, name="m")]))
         assert got.data, "expected monthly rows"
         assert (got.columns, got.data, got.sql, got.warnings) == (
             want.columns, want.data, want.sql, want.warnings)
@@ -229,44 +229,44 @@ class TestSavedMeasureExecution:
 
 #: operand shape id -> query kwargs for ``fn(X)``.
 PARITY = {
-    "local_saved": lambda fn: {"measures": [ModelMeasure(formula=f"{fn}(rev)", name="m")]},
+    "local_saved": lambda fn: {"measures": [DatasetMetric(expression=f"{fn}(rev)", name="m")]},
     "dotted_cross_model_saved": lambda fn: {
-        "measures": [ModelMeasure(formula=f"{fn}(regions.tf)", name="m")]},
+        "measures": [DatasetMetric(expression=f"{fn}(regions.tf)", name="m")]},
     "saved_transform": lambda fn: {
-        "measures": [ModelMeasure(formula=f"{fn}(cum_rev)", name="m")]},
+        "measures": [DatasetMetric(expression=f"{fn}(cum_rev)", name="m")]},
     "saved_composite": lambda fn: {
-        "measures": [ModelMeasure(formula=f"{fn}(rev2)", name="m")]},
+        "measures": [DatasetMetric(expression=f"{fn}(rev2)", name="m")]},
     "recursive_saved": lambda fn: {
-        "measures": [ModelMeasure(formula=f"{fn}(rev_twice)", name="m")]},
+        "measures": [DatasetMetric(expression=f"{fn}(rev_twice)", name="m")]},
     "alias_in_filter": lambda fn: {
-        "measures": [ModelMeasure(formula="sum(revenue)", name="r")],
+        "measures": [DatasetMetric(expression="sum(revenue)", name="r")],
         "filters": [f"{fn}(r) > 0"]},
     "alias_in_order": lambda fn: {
-        "measures": [ModelMeasure(formula="sum(revenue)", name="r")],
+        "measures": [DatasetMetric(expression="sum(revenue)", name="r")],
         "order": [{"column": f"{fn}(r)", "direction": "desc"}]},
     "unselected_saved_in_filter": lambda fn: {
-        "measures": [ModelMeasure(formula="sum(qty)", name="q")],
+        "measures": [DatasetMetric(expression="sum(qty)", name="q")],
         "filters": [f"{fn}(rev) > 0"]},
     "unselected_saved_in_order": lambda fn: {
-        "measures": [ModelMeasure(formula="sum(qty)", name="q")],
+        "measures": [DatasetMetric(expression="sum(qty)", name="q")],
         "order": [{"column": f"{fn}(rev)", "direction": "desc"}]},
     "sibling_wrappers": lambda fn: {
-        "measures": [ModelMeasure(formula="sum(revenue)", name="r"),
-                     ModelMeasure(formula="sum(qty)", name="s")],
+        "measures": [DatasetMetric(expression="sum(revenue)", name="r"),
+                     DatasetMetric(expression="sum(qty)", name="s")],
         "filters": [f"{fn}(r) + {fn}(s) > 0"]},
     "wrapper_of_wrapper": lambda fn: {
-        "measures": [ModelMeasure(formula=f"{fn}({fn}(sum(revenue)))", name="m")]},
+        "measures": [DatasetMetric(expression=f"{fn}({fn}(sum(revenue)))", name="m")]},
     "wrapper_beside_cumsum": lambda fn: {
-        "measures": [ModelMeasure(
-            formula=f"{fn}(sum(revenue)) * 2 + {fn}(sum(revenue)) + cumsum(sum(qty))",
+        "measures": [DatasetMetric(
+            expression=f"{fn}(sum(revenue)) * 2 + {fn}(sum(revenue)) + cumsum(sum(qty))",
             name="m")]},
     "partitioned_operand": lambda fn: {
         "dimensions": ["store"],
-        "measures": [ModelMeasure(formula=f"{fn}(sum(revenue, partition_by=store))", name="m")]},
+        "measures": [DatasetMetric(expression=f"{fn}(sum(revenue, partition_by=store))", name="m")]},
     "cross_model_composite": lambda fn: {
-        "measures": [ModelMeasure(formula=f"{fn}(regions.tf * 2 + rev)", name="m")]},
+        "measures": [DatasetMetric(expression=f"{fn}(regions.tf * 2 + rev)", name="m")]},
     "inner_cumsum_error": lambda fn: {
-        "measures": [ModelMeasure(formula=f"{fn}(cumsum(weight))", name="m")]},
+        "measures": [DatasetMetric(expression=f"{fn}(cumsum(weight))", name="m")]},
 }
 
 
@@ -287,7 +287,7 @@ class TestCumsumParity:
             assert _aligned(got, want, fn=fn), (got, want)
 
     def test_oracle_renames_only_aligned_wrappers(self):
-        x = AggregateKey(agg="sum", source=ColumnKey(leaf="revenue"))
+        x = AggregateKey(agg="sum", source=FieldKey(leaf="revenue"))
         cum = TransformKey(op="cumsum", input=x)
         assert _aligned(TransformKey(op="first", input=cum),
                         TransformKey(op="cumsum", input=cum), fn="first")

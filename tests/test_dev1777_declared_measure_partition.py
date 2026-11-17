@@ -2,14 +2,14 @@
 structural. ``partition_declared_measures`` single-sources the dim / time-dim /
 aggregate slice arithmetic that ``stage_planner`` (and the retired cross-model
 planner) used to inline as ``[:n_dims]`` / ``[n_dims:n_dims+n_tds]`` / ``[n_dims+n_tds:]``;
-``PreboundQuery.grain_declared_measures`` exposes the grain prefix over it.
+``PreboundQuery.grain_declared_metrics`` exposes the grain prefix over it.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from slayer.ir.prebound import PreboundQuery, partition_declared_measures
+from slayer.ir.prebound import PreboundQuery, partition_declared_metrics
 
 # Sentinel elements — partition_declared_measures is pure list slicing, so the
 # element type is irrelevant; strings make the boundaries readable.
@@ -27,8 +27,8 @@ _DMS = ["d0", "d1", "t0", "a0", "a1"]
     ],
 )
 def test_partition_matches_manual_slicing(n_dims, n_tds, dims, tds, aggs) -> None:
-    got_dims, got_tds, got_aggs = partition_declared_measures(
-        declared_measures=_DMS, n_dims=n_dims, n_time_dimensions=n_tds,
+    got_dims, got_tds, got_aggs = partition_declared_metrics(
+        declared_metrics=_DMS, n_dims=n_dims, n_time_dimensions=n_tds,
     )
     assert (got_dims, got_tds, got_aggs) == (dims, tds, aggs)
     # Byte-for-byte the slices the planners used to inline.
@@ -39,8 +39,8 @@ def test_partition_matches_manual_slicing(n_dims, n_tds, dims, tds, aggs) -> Non
 
 
 def test_partition_empty_list() -> None:
-    assert partition_declared_measures(
-        declared_measures=[], n_dims=0, n_time_dimensions=0,
+    assert partition_declared_metrics(
+        declared_metrics=[], n_dims=0, n_time_dimensions=0,
     ) == ([], [], [])
 
 
@@ -48,14 +48,14 @@ def test_grain_accessor_is_dims_plus_time_dims() -> None:
     # model_construct skips validation so the accessor's slicing can be pinned
     # without hand-building heavy DeclaredMeasure / BoundExpr fixtures.
     pq = PreboundQuery.model_construct(
-        declared_measures=_DMS, n_dims=2, n_time_dimensions=1,
+        declared_metrics=_DMS, n_dims=2, n_time_dimensions=1,
     )
-    assert pq.grain_declared_measures == ["d0", "d1", "t0"]
-    assert pq.grain_declared_measures == _DMS[: 2 + 1]
+    assert pq.grain_declared_metrics == ["d0", "d1", "t0"]
+    assert pq.grain_declared_metrics == _DMS[: 2 + 1]
 
 
 def test_grain_accessor_empty_grain() -> None:
     pq = PreboundQuery.model_construct(
-        declared_measures=_DMS, n_dims=0, n_time_dimensions=0,
+        declared_metrics=_DMS, n_dims=0, n_time_dimensions=0,
     )
-    assert pq.grain_declared_measures == []
+    assert pq.grain_declared_metrics == []

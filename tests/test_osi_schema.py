@@ -120,5 +120,5 @@ def test_example_validates_and_imports_without_unconverted_entries(tmp_path: Pat
         OsiToSlayerConverter(documents=parse_osi_path(EXAMPLE), data_source="shop_osi", target_dialect="duckdb"),
         datasource=DatasourceConfig(name="shop_osi", type="duckdb", database=str(db)),
     )
-    assert result.models
+    assert result.datasets
     assert not [e for e in entries(result) if e.severity == "unconverted"]

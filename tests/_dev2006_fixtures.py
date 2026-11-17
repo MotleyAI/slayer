@@ -47,7 +47,7 @@ from typing import AsyncIterator, List, Optional
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.models import Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -60,41 +60,41 @@ from slayer.engine.query_engine import SlayerResponse
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
-def snapshots_model() -> SlayerModel:
-    return SlayerModel(
+def snapshots_model() -> SlayerDataset:
+    return SlayerDataset(
         name="account_snapshots", sql_table="account_snapshots", data_source="test",
         default_time_dimension="snapshot_date",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="account_id", type=DataType.INT),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="snapshot_date", type=DataType.DATE),
-            Column(name="recorded_at", type=DataType.DATE),
-            Column(name="balance", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="account_id", datatype=DataType.INT),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="snapshot_date", datatype=DataType.DATE),
+            DatasetField(name="recorded_at", datatype=DataType.DATE),
+            DatasetField(name="balance", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]])],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])],
     )
 
 
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_model() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
 
 
-def dev2006_models() -> List[SlayerModel]:
+def dev2006_models() -> List[SlayerDataset]:
     return [snapshots_model(), customers_model()]
 
 
 def dev2006_bundle(*, root: str = "account_snapshots") -> ResolvedSourceBundle:
     models = {m.name: m for m in dev2006_models()}
     return ResolvedSourceBundle(
-        dialect="duckdb", source_model=models[root],
-        referenced_models=[m for n, m in models.items() if n != root],
+        dialect="duckdb", population=models[root],
+        referenced_datasets=[m for n, m in models.items() if n != root],
     )
 
 
@@ -112,12 +112,12 @@ def snap_q(**kw) -> SlayerQuery:
     return SlayerQuery(**kw)
 
 
-def m(formula: str, name: str = "v") -> ModelMeasure:
-    return ModelMeasure(formula=formula, name=name)
+def m(formula: str, name: str = "v") -> DatasetMetric:
+    return DatasetMetric(expression=formula, name=name)
 
 
 def month_td(column: str = "snapshot_date") -> List[TimeDimension]:
-    return [TimeDimension(dimension=column, granularity=TimeGranularity.MONTH)]
+    return [TimeDimension(field=column, granularity=TimeGranularity.MONTH)]
 
 
 # --------------------------------------------------------------------------- #

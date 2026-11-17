@@ -62,7 +62,7 @@ _ERROR_TOKENS = {
     "sqlalchemy.exc.SQLAlchemyError": "db_error",
     "slayer.core.errors.SlayerError": "slayer_error",
     "slayer.core.errors.QueryTypeError": "query_type",
-    "slayer.core.errors.AmbiguousModelError": "ambiguous_model",
+    "slayer.core.errors.AmbiguousDatasetError": "ambiguous_dataset",
     "slayer.core.errors.EntityResolutionError": "entity_resolution",
     "slayer.core.errors.MemoryNotFoundError": "memory_not_found",
     "slayer.core.errors.SchemaDriftError": "schema_drift",
@@ -97,7 +97,7 @@ _CLIENT_NAMES = {
     "continue-client": "continue",
 }
 _DATASOURCE_BUCKETS = ((0, "0"), (1, "1"), (5, "2-5"))
-_MODEL_BUCKETS = ((0, "0"), (10, "1-10"), (50, "11-50"), (200, "51-200"))
+_DATASET_BUCKETS = ((0, "0"), (10, "1-10"), (50, "11-50"), (200, "51-200"))
 _QUERY_BUCKETS = ((0, "0"), (1, "1"), (5, "2-5"), (20, "6-20"))
 _SESSION_QUERY_KEY = "mcp:query"
 _FIRST_QUERY_KEYS = frozenset({"mcp:query", "cli:query", "rest:/query", "flight:query", "pg:query"})
@@ -219,7 +219,7 @@ class _Recorder:
         self.queries: Counter[str] = Counter()
         self.datasources: dict[str, str] = {}
         self.storage: str | None = None
-        self.model_count: str | None = None
+        self.dataset_count: str | None = None
         self.demo = False
         self.clients: Counter[tuple[str, int | None]] = Counter()
         self.first: datetime.date | None = None
@@ -260,7 +260,7 @@ class _Recorder:
             },
             "context": {
                 "storage": {self.storage: 1} if self.storage else {},
-                "model_count": {self.model_count: 1} if self.model_count else {},
+                "dataset_count": {self.dataset_count: 1} if self.dataset_count else {},
                 "demo": int(self.demo),
             },
             "mcp_clients": [
@@ -499,11 +499,11 @@ def observe_storage(storage: object) -> None:
 
 
 @_silent
-def observe_model_count(count: int) -> None:
+def observe_dataset_count(count: int) -> None:
     if _recorder.paths is None:
         return
     with _recorder.lock:
-        _recorder.model_count = _bucket(count, _MODEL_BUCKETS, "200+")
+        _recorder.dataset_count = _bucket(count, _DATASET_BUCKETS, "200+")
         _recorder.touch()
 
 

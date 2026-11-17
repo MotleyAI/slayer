@@ -12,7 +12,7 @@ from collections.abc import Generator
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.mcp.server import create_mcp_server
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -44,9 +44,9 @@ async def test_edit_datasource_calls_refresh_datasource_with_new_description(
         database=":memory:",
         description="old description",
     ))
-    await yaml_storage.save_model(SlayerModel(
+    await yaml_storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="warehouse",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     ))
 
     refresh_calls: list = []
@@ -62,7 +62,7 @@ async def test_edit_datasource_calls_refresh_datasource_with_new_description(
             "model_count": len(models),
         })
         return await original(
-            self, name=name, models=models, description=description,
+            self, name=name, datasets=models, description=description,
         )
 
     monkeypatch.setattr(

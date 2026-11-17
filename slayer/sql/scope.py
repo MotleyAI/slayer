@@ -29,14 +29,14 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ModeASqlParseError, UnknownReferenceError, UnreachableDefinitionError
-from slayer.core.join_walker import model_column, model_column_element, model_column_type, resolved_terminal
+from slayer.core.relationship_walker import dataset_field, dataset_field_element, dataset_field_type, resolved_terminal
 from slayer.core.keys import (
     REGROUP_LEAF_PREFIX,
     ArithmeticKey,
     ArrayLiteralKey,
     CastKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     InKey,
     ListSetKey,
     LiteralKey,
@@ -44,10 +44,10 @@ from slayer.core.keys import (
     SqlFragmentKey,
     TimeTruncKey,
 )
-from slayer.core.models import Column, SlayerModel
-from slayer.sql.column_expansion import (
+from slayer.core.models import DatasetField, SlayerDataset
+from slayer.sql.field_expansion import (
     collect_root_scope_joined_paths,
-    expand_column_definition_sync,
+    expand_field_definition_sync,
     expand_derived_refs_sync,
 )
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -75,7 +75,7 @@ _Grammar = Literal["predicate", "expression"]
 # parameter expressions, free Mode-A / predicate text, and row-level expression
 # composites — an aggregate's same-model expression source anchors through the same door.
 Ref = Union[
-    ColumnKey, ColumnSqlKey, SqlFragmentKey, ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, CastKey,
+    FieldKey, FieldSqlKey, SqlFragmentKey, ArithmeticKey, ScalarCallKey, LiteralKey, TimeTruncKey, InKey, CastKey,
     ListSetKey, str,
 ]
 
@@ -123,7 +123,7 @@ class ScopeFrame(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     scope_id: str  # generation-local, ephemeral, never emitted (D-F / Codex L1)
-    root_model: SlayerModel
+    root_dataset: SlayerDataset
     root_relation: str
     bundle: ResolvedSourceBundle
     dialect: SqlDialect
@@ -133,7 +133,7 @@ class ScopeFrame(BaseModel):
     # reserved-leaf placeholder → its rendered column on an attached
     # regroup producer CTE. Resolved by EXACT membership before ordinary column
     # anchoring; a prefixed leaf that misses this registry is fail-closed.
-    attached_columns: Dict[ColumnKey, exp.Expression] = Field(default_factory=dict)
+    attached_fields: Dict[FieldKey, exp.Expression] = Field(default_factory=dict)
     #: Temporal types of placeholders substituted for attached aggregates.
     placeholder_types: Dict[Any, DataType] = Field(default_factory=dict)
     #: Element types of the list-valued ones.
@@ -233,12 +233,12 @@ class ScopeFrame(BaseModel):
         """
         if owner_path:
             owner_model = resolved_terminal(
-                root=self.root_model, path=owner_path,
-                models_by_name=self._models_by_name(),
+                root=self.root_dataset, path=owner_path,
+                datasets_by_name=self._datasets_by_name(),
             )
             assert owner_model is not None, (
                 f"owner_path {owner_path!r} does not resolve from "
-                f"{self.root_model.name!r}"
+                f"{self.root_dataset.name!r}"
             )
             alias_path = self.allocator.alias_for(
                 root=self.root_relation, path=owner_path,
@@ -246,7 +246,7 @@ class ScopeFrame(BaseModel):
             )
             self._register_path_prefixes(owner_path)
         else:
-            owner_model = self.root_model
+            owner_model = self.root_dataset
             alias_path = self.root_relation
         prequoted = prequote_reserved_identifiers(
             sql, dialect=self.dialect.sqlglot_name,
@@ -260,16 +260,16 @@ class ScopeFrame(BaseModel):
         # collected STRUCTURALLY via ``crossed_paths`` rather than by re-scanning
         # the internal-alias output.
         self._register_join_paths(
-            raw_ast, owner_model=owner_model, owner_relation=alias_path,
+            raw_ast, owner_dataset=owner_model, owner_relation=alias_path,
             owner_path=owner_path,
         )
 
         try:
             expanded = expand_derived_refs_sync(
                 sql=prequoted,
-                model=owner_model,
+                dataset=owner_model,
                 alias_path=alias_path,
-                models_by_name=self._models_by_name(),
+                datasets_by_name=self._datasets_by_name(),
                 dialect=self.dialect.sqlglot_name,
                 owner_path=owner_path,
                 alias_resolver=self._alias_resolver(),
@@ -321,11 +321,11 @@ class ScopeFrame(BaseModel):
             ) from exc
 
     def _default_location(self) -> str:
-        return f"Mode-A SQL in scope rooted at model {self.root_model.name!r}"
+        return f"Mode-A SQL in scope rooted at model {self.root_dataset.name!r}"
 
-    def _models_by_name(self) -> dict:
+    def _datasets_by_name(self) -> dict:
         """The bundle's model collection, for the shared bidirectional walker."""
-        return self.bundle.models_by_name
+        return self.bundle.datasets_by_name
 
     def _alias_resolver(self) -> Callable[[Tuple[str, ...]], str]:
         """The WP3 registry-backed alias resolver for this scope:
@@ -340,7 +340,7 @@ class ScopeFrame(BaseModel):
 
     def _register_join_paths(
         self, parsed: exp.Expression, *,  # pyright: ignore[reportPrivateImportUsage]
-        owner_model: Optional[SlayerModel] = None,
+        owner_dataset: Optional[SlayerDataset] = None,
         owner_relation: Optional[str] = None,
         owner_path: Tuple[str, ...] = (),
     ) -> None:
@@ -350,7 +350,7 @@ class ScopeFrame(BaseModel):
         each discovered path with it (root-relative)."""
         for path in collect_root_scope_joined_paths(
             parsed=parsed,
-            source_model=owner_model or self.root_model,
+            source_dataset=owner_dataset or self.root_dataset,
             source_relation=owner_relation or self.root_relation,
             bundle=self.bundle,
         ):
@@ -389,20 +389,20 @@ class ScopeFrame(BaseModel):
         return None if expr is None else expr.sql(dialect=self.dialect.sqlglot_name)
 
     def _anchor(self, ref: Ref) -> exp.Expression:  # NOSONAR(S3776) — flat dispatch over the Ref kinds (ColumnKey / ColumnSqlKey / str); each arm is independently simple and splitting would scatter the one-resolver-per-scope contract
-        if isinstance(ref, ColumnKey):
+        if isinstance(ref, FieldKey):
             # A regroup placeholder resolves from the attach registry
             # by EXACT membership; a reserved-prefix leaf that misses is
             # fail-closed — but ONLY when a regroup is active in this scope
             # (non-empty registry). With nothing attached, a leaf that merely
             # collides with the reserved prefix is an ordinary column: the
             # plan-time prefix fence runs only when a regroup is planned.
-            attached = self.attached_columns.get(ref)
+            attached = self.attached_fields.get(ref)
             if attached is not None:
                 return attached.copy()
-            if self.attached_columns and ref.leaf.startswith(REGROUP_LEAF_PREFIX):
+            if self.attached_fields and ref.leaf.startswith(REGROUP_LEAF_PREFIX):
                 raise ValueError(
                     f"Regroup placeholder {ref.leaf!r} has no attached producer "
-                    f"column in this scope. A __regroup__ leaf must resolve "
+                    f"field in this scope. A __regroup__ leaf must resolve "
                     f"through the attach registry; reaching column anchoring "
                     f"means the placeholder escaped its producer's join scope.",
                 )
@@ -417,14 +417,14 @@ class ScopeFrame(BaseModel):
                 this=exp.to_identifier(ref.leaf),
                 table=exp.to_identifier(alias),
             ))
-            declared = model_column(model=self.root_model, models_by_name=self._models_by_name(), key=ref)
+            declared = dataset_field(dataset=self.root_dataset, datasets_by_name=self._datasets_by_name(), key=ref)
             return self.dialect.read_column(
                 column, zoned=self.dialect.is_zoned_db_type(getattr(declared, "db_type", None)),
             )
-        if isinstance(ref, ColumnSqlKey):
-            model = self._model_for(ref.model)
+        if isinstance(ref, FieldSqlKey):
+            model = self._dataset_for(ref.dataset)
             col = next(
-                (c for c in model.columns if c.name == ref.column_name), None,
+                (c for c in model.fields if c.name == ref.field_name), None,
             )
             # A derived column ON a JOINED model (``path`` non-empty,
             # e.g. ``stores.tier`` where ``tier`` lives on the joined ``stores``)
@@ -444,20 +444,20 @@ class ScopeFrame(BaseModel):
             self._register_path_prefixes(owner_path)
             if col is None:
                 expanded = expand_derived_refs_sync(
-                    sql=ref.column_name, model=model, alias_path=alias_path,
-                    models_by_name=self._models_by_name(),
+                    sql=ref.field_name, dataset=model, alias_path=alias_path,
+                    datasets_by_name=self._datasets_by_name(),
                     dialect=self.dialect.sqlglot_name, owner_path=owner_path,
                     alias_resolver=self._alias_resolver(),
                     crossed_paths=self.join_paths,
                 )
-                return self._parse(expanded or ref.column_name)
+                return self._parse(expanded or ref.field_name)
             # A ``Column.filter`` desugars to CASE WHEN here — the value
             # and filter expand through the same door at ``owner_path``.
-            expanded = expand_column_definition_sync(
-                column=col,
-                model=model,
+            expanded = expand_field_definition_sync(
+                field=col,
+                dataset=model,
                 alias_path=alias_path,
-                models_by_name=self._models_by_name(),
+                datasets_by_name=self._datasets_by_name(),
                 dialect=self.dialect.sqlglot_name,
                 owner_path=owner_path,
                 alias_resolver=self._alias_resolver(),
@@ -475,8 +475,8 @@ class ScopeFrame(BaseModel):
             # leaves anchor recursively through this scope, so join
             # registration and derived expansion apply per leaf.
             return render_row_expression(
-                key=ref, dialect=self.dialect, resolve_column=self._anchor,
-                column_type=self.column_type, column_element=self.column_element,
+                key=ref, dialect=self.dialect, resolve_field=self._anchor,
+                field_type=self.field_type, field_element=self.field_element,
             )
         if isinstance(ref, str):
             prequoted = prequote_reserved_identifiers(
@@ -484,9 +484,9 @@ class ScopeFrame(BaseModel):
             )
             expanded = expand_derived_refs_sync(
                 sql=prequoted,
-                model=self.root_model,
+                dataset=self.root_dataset,
                 alias_path=self.root_relation,
-                models_by_name=self._models_by_name(),
+                datasets_by_name=self._datasets_by_name(),
                 dialect=self.dialect.sqlglot_name,
                 owner_path=(),
                 alias_resolver=self._alias_resolver(),
@@ -497,42 +497,42 @@ class ScopeFrame(BaseModel):
             f"ScopeFrame.resolve does not yet handle ref type {type(ref).__name__}",
         )
 
-    def column_type(self, ref: Ref) -> Optional[DataType]:
+    def field_type(self, ref: Ref) -> Optional[DataType]:
         """The declared ``DataType`` of the column ``ref`` names, or ``None`` when unknown."""
         if ref in self.placeholder_types:
             return self.placeholder_types[ref]
-        return model_column_type(model=self.root_model, models_by_name=self._models_by_name())(ref)
+        return dataset_field_type(dataset=self.root_dataset, datasets_by_name=self._datasets_by_name())(ref)
 
-    def column_element(self, ref: Ref) -> Optional[DataType]:
+    def field_element(self, ref: Ref) -> Optional[DataType]:
         """The element type of the list column ``ref`` names, or ``None`` when unknown."""
         if ref in self.placeholder_types:
             return self.placeholder_elements.get(ref)
-        return model_column_element(model=self.root_model, models_by_name=self._models_by_name())(ref)
+        return dataset_field_element(dataset=self.root_dataset, datasets_by_name=self._datasets_by_name())(ref)
 
-    def column(self, ref: ColumnKey | ColumnSqlKey) -> Optional[Column]:
+    def field(self, ref: FieldKey | FieldSqlKey) -> Optional[DatasetField]:
         """The model column ``ref`` names, or ``None`` when unresolvable."""
-        return model_column(model=self.root_model, models_by_name=self._models_by_name(), key=ref)
+        return dataset_field(dataset=self.root_dataset, datasets_by_name=self._datasets_by_name(), key=ref)
 
-    def _model_for(self, name: str) -> SlayerModel:
+    def _dataset_for(self, name: str) -> SlayerDataset:
         """Resolve a model name against the scope root, then the bundle.
 
         Unresolvable RAISES: the previous ``or self.root_model`` fallback
         expanded the ROOT model's derived SQL instead, turning a wiring bug into
         a wrong answer rather than a failure.
         """
-        if name == self.root_model.name:
-            return self.root_model
-        model = self.bundle.get_referenced_model(name)
+        if name == self.root_dataset.name:
+            return self.root_dataset
+        model = self.bundle.get_referenced_dataset(name)
         if model is None:
             known = sorted(
-                {self.root_model.name}
-                | {m.name for m in self.bundle.referenced_models},
+                {self.root_dataset.name}
+                | {m.name for m in self.bundle.referenced_datasets},
             )
             raise UnknownReferenceError(
                 name=name,
                 scope_kind="ScopeFrame",
                 scope_summary=(
-                    f"scope rooted at model {self.root_model.name!r}; "
+                    f"scope rooted at model {self.root_dataset.name!r}; "
                     f"models resolvable here: {known}"
                 ),
                 suggestion=(

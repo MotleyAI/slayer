@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import ModelMeasure
+from slayer.core.models import DatasetMetric
 from slayer.mcp.server import create_mcp_server
 from slayer.database import engine_factory
 from slayer.storage.yaml_storage import YAMLStorage
@@ -45,8 +45,8 @@ async def store(postgresql, tmp_path) -> AsyncIterator[FacadeStore]:
     await storage.save_datasource(ds)
     async with owned_query_engine(storage=storage) as ingester:
         (model,) = await ingester.ingest(ds, include_tables=["things"])
-    await storage.save_model(model.model_copy(update={"measures": [
-        ModelMeasure(name="uids", formula="collect(uid)"), ModelMeasure(name="prices", formula="collect(price)")]}))
+    await storage.save_dataset(model.model_copy(update={"metrics": [
+        DatasetMetric(name="uids", expression="collect(uid)"), DatasetMetric(name="prices", expression="collect(price)")]}))
     try:
         yield FacadeStore(storage=storage, datasource=ds)
     finally:

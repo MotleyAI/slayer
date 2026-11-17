@@ -120,8 +120,8 @@ def import_cube_lib(
     ).convert()
 
     storage = YAMLStorage(base_dir=str(models_dir))
-    for model in result.models:
-        run_sync(storage.save_model(model))
+    for model in result.datasets:
+        run_sync(storage.save_dataset(model))
     return result
 
 

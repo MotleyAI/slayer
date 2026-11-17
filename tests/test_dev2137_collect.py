@@ -11,7 +11,7 @@ from mcp.types import TextContent
 
 from slayer.core.enums import BUILTIN_AGGREGATIONS, DataType
 from slayer.core.errors import SlayerError
-from slayer.core.models import Aggregation, Column
+from slayer.core.models import Aggregation, DatasetField
 from slayer.mcp.server import create_mcp_server
 from tests._dev2120_fixtures import NATIVE_LIST_DIALECTS, contractors_model, emit_contractors, stored_contractors
 from tests._dev2137_fixtures import all_models, as_list, by, list_engine, measure, query
@@ -57,14 +57,14 @@ class TestValues:
 
 def _typed_model(type_: DataType) -> Any:
     base = contractors_model()
-    extra = Column(name="x", sql="id", type=type_)
-    return base.model_copy(update={"columns": [*base.columns, extra]})
+    extra = DatasetField(name="x", sql="id", datatype=type_)
+    return base.model_copy(update={"fields": [*base.fields, extra]})
 
 
 class TestEligibility:
     def test_is_a_builtin(self) -> None:
         assert "collect" in BUILTIN_AGGREGATIONS
-        assert Aggregation(name="collect").formula is None
+        assert Aggregation(name="collect").expression is None
 
     @pytest.mark.parametrize("type_", ["TEXT", "INT", "DOUBLE", "BOOLEAN", "DATE", "TIMESTAMP"])
     async def test_eligible_on_scalar_columns(self, type_: str) -> None:

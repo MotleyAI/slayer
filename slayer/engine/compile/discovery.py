@@ -14,7 +14,7 @@ from slayer.core.keys import (
     TransformKey,
     ValueKey,
     attached_inputs,
-    is_cross_model_agg,
+    is_cross_dataset_agg,
     is_kernel_requiring,
     is_reaggregation_key,
     is_row_attach_root,
@@ -22,7 +22,7 @@ from slayer.core.keys import (
     source_anchor_path,
     walk_consumer_positions,
 )
-from slayer.core.scope import ModelScope, StageSchema
+from slayer.core.scope import DatasetScope, StageSchema
 from slayer.engine.compile.shift import _series_mode
 from slayer.engine.elaborate_env import (
     ConsumerPosition,
@@ -33,7 +33,7 @@ from slayer.engine.elaborate_env import (
     is_grained_aggregate,
     position_classes,
 )
-from slayer.engine.cardinality.join_safety import (
+from slayer.engine.cardinality.relationship_safety import (
     crossing_local_root_predicate,
     grain_member_attributable,
     reads_population_spine,
@@ -77,7 +77,7 @@ def _is_bare_own_rows_local(k: ValueKey) -> bool:
 def _input_routing(a: ValueKey) -> Routing:
     if is_reaggregation_key(a):
         return "reaggregation_constituent"
-    return "target_rooted" if is_cross_model_agg(a) else "local_producer"
+    return "target_rooted" if is_cross_dataset_agg(a) else "local_producer"
 
 
 def row_attach_inputs(root: ValueKey, *, names: Tuple[str, ...]) -> List[RootDisposition]:
@@ -93,17 +93,17 @@ class _Walker:
     """Classifies each walked node by consumer position; ``out`` in first-seen order."""
 
     def __init__(
-        self, *, prebound: PreboundQuery, scope: Union[ModelScope, StageSchema],
+        self, *, prebound: PreboundQuery, scope: Union[DatasetScope, StageSchema],
         bundle: ResolvedSourceBundle,
     ) -> None:
         self.out: List[RootDisposition] = []
         n_grain = prebound.n_dims + prebound.n_time_dimensions
-        self.classes = position_classes(prebound.declared_measures, n_grain=n_grain)
+        self.classes = position_classes(prebound.declared_metrics, n_grain=n_grain)
         self.row_attach_names: Dict[ValueKey, List[str]] = {}
         self.crossing = crossing_local_root_predicate(scope=scope, bundle=bundle)
-        self.host = scope.source_model if isinstance(scope, ModelScope) else None
+        self.host = scope.population if isinstance(scope, DatasetScope) else None
         self.bundle = bundle
-        self.grain = [dm.bound.value_key for dm in prebound.declared_measures[:n_grain]]
+        self.grain = [dm.bound.value_key for dm in prebound.declared_metrics[:n_grain]]
 
     def emit(self, root: ValueKey, phase: RootPhase, routing: Routing, *,
              names: Tuple[str, ...] = (), declared_type: Optional[DataType] = None,
@@ -119,16 +119,16 @@ class _Walker:
         host = self.host
         if (
             host is None or not isinstance(k, AggregateKey) or is_reaggregation_key(k)
-            or is_cross_model_agg(k) or k.locus == "host" or k.partition_keys is not None
+            or is_cross_dataset_agg(k) or k.locus == "host" or k.partition_keys is not None
             or self.crossing(k) or is_kernel_requiring(k)
         ):
             return False
         # The population's spine is counted over each home's own axis, never the product.
         return any(
             reads_population_spine(g, host=host) or not grain_member_attributable(
-                key=g, target_path=(), root_model=host,
-                models_by_name=self.bundle.models_by_name, bundle=self.bundle,
-                host_model=host, host_name=host.name,
+                key=g, target_path=(), root_dataset=host,
+                datasets_by_name=self.bundle.datasets_by_name, bundle=self.bundle,
+                host_dataset=host, host_name=host.name,
             )
             for g in self.grain
         )
@@ -208,24 +208,24 @@ class _Walker:
 
 def discover_roots(
     prebound: PreboundQuery, *, filter_typings: Sequence[ConjunctTyping],
-    scope: Union[ModelScope, StageSchema], bundle: ResolvedSourceBundle,
+    scope: Union[DatasetScope, StageSchema], bundle: ResolvedSourceBundle,
 ) -> List[RootDisposition]:
     """Every producer root of ``prebound``, one disposition per consumer occurrence."""
     w = _Walker(prebound=prebound, scope=scope, bundle=bundle)
     measure_typed = frozenset(
-        i for i, ct in enumerate(filter_typings) if ct.typing == MaskTyping.MEASURE
+        i for i, ct in enumerate(filter_typings) if ct.typing == MaskTyping.METRIC
     )
     for r in consumer_roots(
-        declared_measures=prebound.declared_measures, order_specs=prebound.order_specs,
-        bound_filters=prebound.bound_filters, measure_typed=measure_typed,
+        declared_metrics=prebound.declared_metrics, order_specs=prebound.order_specs,
+        bound_filters=prebound.bound_filters, metric_typed=measure_typed,
     ):
-        dm = r.measure
-        declared = dm.type if dm is not None and dm.type_is_explicit else None
+        dm = r.metric
+        declared = dm.datatype if dm is not None and dm.type_is_explicit else None
         name = dm.public_name if dm is not None else None
         if r.position == "dimension":
             w.dimension(r.key, name=name, declared=declared)
         else:
             w.consumer(r.key, position=r.position, name=name, declared=declared,
-                       containing=(name,) if r.position == "measure" and name else ())
+                       containing=(name,) if r.position == "metric" and name else ())
     w.inline_row_attach_roots()
     return w.out

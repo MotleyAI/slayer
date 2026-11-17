@@ -131,7 +131,7 @@ def _cases() -> dict:
 
 async def _generate_one(query: SlayerQuery, dialect: str):
     """Emitted SQL, or a structured record of the raised error."""
-    models = dev1846_models() if query.source_model == "sales" else dev1836_models()
+    models = dev1846_models() if query.population == "sales" else dev1836_models()
     try:
         return await _engine_generate(
             query=query, model=models[0], extra_models=models[1:],

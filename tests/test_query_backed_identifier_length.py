@@ -14,7 +14,7 @@ import tempfile
 import sqlglot
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import get_dialect
@@ -40,19 +40,19 @@ GOLDEN_UNDER_LIMIT_PG = (
 )
 
 
-def _long_column(name: str) -> list[Column]:
+def _long_column(name: str) -> list[DatasetField]:
     return [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name=name, sql="amount", type=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+        DatasetField(name=name, sql="amount", datatype=DataType.DOUBLE),
     ]
 
 
 async def _expand(
     *,
     ds_type: str,
-    columns: list[Column],
+    columns: list[DatasetField],
     dimensions: list[str],
-) -> tuple[SlayerModel, str]:
+) -> tuple[SlayerDataset, str]:
     """Expand a one-stage query-backed model; returns (model, backing sql)."""
     tmp = tempfile.TemporaryDirectory()
     try:
@@ -60,14 +60,14 @@ async def _expand(
         await storage.save_datasource(
             DatasourceConfig(name="ds", type=ds_type, database="db")
         )
-        await storage.save_model(SlayerModel(
-            name="orders", sql_table="orders_t", data_source="ds", columns=columns,
+        await storage.save_dataset(SlayerDataset(
+            name="orders", sql_table="orders_t", data_source="ds", fields=columns,
         ))
         engine = SlayerQueryEngine(storage=storage)
-        stage = SlayerQuery(source_model="orders", dimensions=dimensions)
-        model = SlayerModel(name="qb", source_queries=[stage], data_source="ds")
-        expanded = await engine._expand_query_backed_model(
-            model=model, runtime_kwarg=None,
+        stage = SlayerQuery(population="orders", dimensions=dimensions)
+        model = SlayerDataset(name="qb", source_queries=[stage], data_source="ds")
+        expanded = await engine._expand_query_backed_dataset(
+            dataset=model, runtime_kwarg=None,
         )
         assert expanded.sql is not None
         return expanded, expanded.sql
@@ -97,7 +97,7 @@ class TestBackingSqlIsLengthFitted:
         expanded, sql = await _expand(
             ds_type="postgres", columns=_long_column(LONGCOL), dimensions=[LONGCOL],
         )
-        col = next(c for c in expanded.columns if c.name == LONGCOL)
+        col = next(c for c in expanded.fields if c.name == LONGCOL)
         fitted = get_dialect("postgres").fit_alias(LONGCOL)
         assert col.sql == fitted
         assert col.sql != col.name
@@ -110,7 +110,7 @@ class TestBackingSqlIsLengthFitted:
         )
         _assert_within_limit(sql, 128, dialect="tsql")
         assert LONG310 not in sql
-        col = next(c for c in expanded.columns if c.name == LONG310)
+        col = next(c for c in expanded.fields if c.name == LONG310)
         assert col.sql == get_dialect("tsql").fit_alias(LONG310)
 
     async def test_bigquery_mangled_and_fitted(self) -> None:
@@ -119,20 +119,20 @@ class TestBackingSqlIsLengthFitted:
         )
         _assert_within_limit(sql, 300, dialect="bigquery")
         assert LONG310 not in sql
-        col = next(c for c in expanded.columns if c.name == LONG310)
+        col = next(c for c in expanded.fields if c.name == LONG310)
         assert col.sql == get_dialect("bigquery").fit_alias(LONG310)
 
     async def test_under_limit_expansion_is_byte_identical(self) -> None:
         expanded, sql = await _expand(
             ds_type="postgres",
             columns=[
-                Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-                Column(name="status", sql="status", type=DataType.TEXT),
+                DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+                DatasetField(name="status", sql="status", datatype=DataType.TEXT),
             ],
             dimensions=["status"],
         )
         assert sql == GOLDEN_UNDER_LIMIT_PG
-        assert [(c.name, c.sql) for c in expanded.columns] == [("status", "status")]
+        assert [(c.name, c.sql) for c in expanded.fields] == [("status", "status")]
         assert not _FIT_MARKER_RE.search(sql)
 
     async def test_unbounded_dialect_keeps_canonical_aliases(self) -> None:
@@ -141,7 +141,7 @@ class TestBackingSqlIsLengthFitted:
         )
         assert LONGCOL in sql
         assert not _FIT_MARKER_RE.search(sql)
-        col = next(c for c in expanded.columns if c.name == LONGCOL)
+        col = next(c for c in expanded.fields if c.name == LONGCOL)
         assert col.sql == col.name
 
 
@@ -153,17 +153,17 @@ class TestOuterQueryThroughVirtualModel:
             await storage.save_datasource(
                 DatasourceConfig(name="ds", type="postgres", database="db")
             )
-            await storage.save_model(SlayerModel(
+            await storage.save_dataset(SlayerDataset(
                 name="orders", sql_table="orders_t", data_source="ds",
-                columns=_long_column(LONGCOL),
+                fields=_long_column(LONGCOL),
             ))
-            stage = SlayerQuery(source_model="orders", dimensions=[LONGCOL])
-            await storage.save_model(SlayerModel(
+            stage = SlayerQuery(population="orders", dimensions=[LONGCOL])
+            await storage.save_dataset(SlayerDataset(
                 name="qb", source_queries=[stage], data_source="ds",
             ))
             engine = SlayerQueryEngine(storage=storage)
             resp = await engine.execute(
-                query=SlayerQuery(source_model="qb", dimensions=[LONGCOL]),
+                query=SlayerQuery(population="qb", dimensions=[LONGCOL]),
                 dry_run=True,
             )
             assert resp.sql is not None

@@ -1,4 +1,4 @@
-"""``SlayerQuery.source_model`` is a name or None validated at construction, a legacy
+"""``SlayerQuery.population`` is a name or None validated at construction, a legacy
 extension object converting into ``extensions`` and an inline model refused; ``TimeDimension``
 accepts ``column`` as an alias of ``dimension``.
 
@@ -20,8 +20,8 @@ from pydantic import ValidationError
 from slayer.api.server import QueryRequest, create_app
 from slayer.core import query as core_query
 from slayer.core.enums import TimeGranularity
-from slayer.core.models import ModelJoin, ModelMeasure, SlayerModel
-from slayer.core.query import ModelExtension, SlayerQuery, TimeDimension
+from slayer.core.models import DatasetRelationship, DatasetMetric, SlayerDataset
+from slayer.core.query import DatasetExtension, SlayerQuery, TimeDimension
 from slayer.engine.stage_ordering import topologically_order_stages
 from slayer.ir import source_bundle
 from slayer.mcp.server import create_mcp_server
@@ -137,7 +137,7 @@ class TestRejection:
     )
     def test_non_spec_value_is_rejected(self, bad) -> None:
         with pytest.raises(ValidationError):
-            SlayerQuery(source_model=bad)
+            SlayerQuery(population=bad)
 
     @pytest.mark.parametrize("form", ["legacy", "extensions"])
     def test_unknown_extension_key_is_named(self, form: str) -> None:
@@ -160,7 +160,7 @@ class TestRejection:
 
     def test_nested_stage_boundary_rejects_too(self) -> None:
         with pytest.raises(ValidationError, match="filters"):
-            SlayerModel.model_validate({
+            SlayerDataset.model_validate({
                 "name": "qb",
                 "source_queries": [{"source_model": "orders", "extensions": [EXTENSION_WITH_FILTERS],
                                     "measures": ONE_MEASURE}],
@@ -200,41 +200,41 @@ class TestTypedAtConstruction:
                 **EXTENSION_WITH_MEASURES,
                 "joins": [JOIN_TO_CUSTOMERS],
             })
-        assert q.source_model == "orders"
+        assert q.population == "orders"
         (sm,) = q.extensions or []
-        assert isinstance(sm, ModelExtension)
+        assert isinstance(sm, DatasetExtension)
         assert sm.source_name == "orders"
-        assert sm.joins
-        assert sm.measures
-        assert isinstance(sm.joins[0], ModelJoin)
-        assert sm.joins[0].target_model == "customers"
-        assert isinstance(sm.measures[0], ModelMeasure)
+        assert sm.relationships
+        assert sm.metrics
+        assert isinstance(sm.relationships[0], DatasetRelationship)
+        assert sm.relationships[0].to == "customers"
+        assert isinstance(sm.metrics[0], DatasetMetric)
 
     def test_inline_model_object_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="(?i)inline"):
             _query(source_model=INLINE_MODEL)
 
     def test_string_stays_a_string(self) -> None:
-        assert SlayerQuery(source_model="orders").source_model == "orders"
+        assert SlayerQuery(population="orders").population == "orders"
 
     def test_model_instance_is_rejected(self) -> None:
-        model = SlayerModel.model_validate(INLINE_MODEL)
+        model = SlayerDataset.model_validate(INLINE_MODEL)
         with pytest.raises(ValidationError, match="(?i)inline"):
-            SlayerQuery(source_model=model)  # pyright: ignore[reportArgumentType] — the refused form, on purpose
+            SlayerQuery(population=model)  # pyright: ignore[reportArgumentType] — the refused form, on purpose
         with pytest.raises(ValidationError, match="(?i)inline"):
-            QueryRequest(source_model=model)  # pyright: ignore[reportArgumentType] — the refused form, on purpose
+            QueryRequest(population=model)  # pyright: ignore[reportArgumentType] — the refused form, on purpose
 
     def test_rest_body_model_types_the_spec_and_feeds_the_query(self) -> None:
-        req = QueryRequest.model_validate({"source_model": "orders", "extensions": [EXTENSION], "measures": ["sum(amount)"]})
-        assert isinstance((req.extensions or [])[0], ModelExtension)
+        req = QueryRequest.model_validate({"population": "orders", "extensions": [EXTENSION], "metrics": ["sum(amount)"]})
+        assert isinstance((req.extensions or [])[0], DatasetExtension)
         q = SlayerQuery.model_validate(req.model_dump(exclude_none=True))
-        assert (q.source_model, q.extensions) == (req.source_model, req.extensions)
+        assert (q.population, q.extensions) == (req.population, req.extensions)
 
     def test_model_copy_replacement_keeps_the_name_form(self) -> None:
         """``model_copy`` runs no validation, so the engine only ever swaps in a name."""
-        copied = SlayerQuery(source_model="orders").model_copy(update={"source_model": "customers"})
-        assert isinstance(copied.source_model, str)
-        assert copied.source_model_name == "customers"
+        copied = SlayerQuery(population="orders").model_copy(update={"source_model": "customers"})
+        assert isinstance(copied.population, str)
+        assert copied.population_name == "customers"
 
 
 # ---------------------------------------------------------------------------
@@ -251,13 +251,13 @@ class TestRoundTrip:
         q = _query(**raw, measures=["sum(amount)"])
         again = SlayerQuery.model_validate(q.model_dump(mode=mode))
         assert again == q
-        assert type(again.source_model) is type(q.source_model)
-        assert not isinstance(again.source_model, dict)
+        assert type(again.population) is type(q.population)
+        assert not isinstance(again.population, dict)
 
     def test_exclude_none_dump_is_the_minimal_object(self) -> None:
         q = _query(source_model="orders", extensions=[EXTENSION_WITH_MEASURES])
         assert q.model_dump(exclude_none=True)["extensions"] == [EXTENSION_WITH_MEASURES]
-        assert SlayerQuery(source_model="orders").model_dump(exclude_none=True)["source_model"] == "orders"
+        assert SlayerQuery(population="orders").model_dump(exclude_none=True)["source_model"] == "orders"
 
 
 # ---------------------------------------------------------------------------
@@ -272,11 +272,11 @@ class TestSourceModelName:
         ids=["str", "none"],
     )
     def test_property_over_the_two_cases(self, spec, expected) -> None:
-        assert SlayerQuery(source_model=spec).source_model_name == expected
+        assert SlayerQuery(population=spec).population_name == expected
 
     def test_property_over_a_converted_legacy_extension(self) -> None:
         with pytest.warns(FutureWarning):
-            assert SlayerQuery(source_model=EXTENSION).source_model_name == "orders"  # pyright: ignore[reportArgumentType] — the deprecated form, on purpose
+            assert SlayerQuery(population=EXTENSION).population_name == "orders"  # pyright: ignore[reportArgumentType] — the deprecated form, on purpose
 
     async def test_root_qualifier_uses_the_typed_name(self, chain_engine: SlayerQueryEngine) -> None:
         qualified = await chain_engine.execute(_query(
@@ -293,18 +293,18 @@ class TestSourceModelName:
 
 class TestStageOrdering:
     def test_stage_ordering_walks_typed_specs_from_raw_objects(self) -> None:
-        a = SlayerQuery(name="a", source_model="orders")
-        c = SlayerQuery(name="c", source_model="orders")
+        a = SlayerQuery(name="a", population="orders")
+        c = SlayerQuery(name="c", population="orders")
         via_join = SlayerQuery.model_validate({
             "name": "via_join",
-            "source_model": "orders",
+            "population": "orders",
             "extensions": [{
                 "source_name": "orders",
-                "joins": [{"target_model": "c", "join_pairs": [["id", "id"]]}],
+                "relationships": [{"to": "c", "join_pairs": [["id", "id"]]}],
             }],
         })
-        assert isinstance((via_join.extensions or [])[0], ModelExtension)
-        root = SlayerQuery(source_model="via_join")
+        assert isinstance((via_join.extensions or [])[0], DatasetExtension)
+        root = SlayerQuery(population="via_join")
         names = [q.name for q in topologically_order_stages([via_join, a, c, root])]
         assert names.index("c") < names.index("via_join")
 
@@ -321,7 +321,7 @@ class TestTimeDimensionColumnAlias:
             time_dimensions=[{"column": "created_at", "granularity": "month"}],
         )
         assert q.time_dimensions
-        assert q.time_dimensions[0].dimension == "created_at"
+        assert q.time_dimensions[0].field == "created_at"
         dumped = q.model_dump(mode="json", exclude_none=True)["time_dimensions"][0]
         assert dumped == {"dimension": "created_at", "granularity": "month"}
 
@@ -329,19 +329,19 @@ class TestTimeDimensionColumnAlias:
         td = TimeDimension.model_validate({
             "column": {"name": "created_at", "model": "orders"}, "granularity": "day",
         })
-        assert td.dimension == "orders.created_at"
+        assert td.field == "orders.created_at"
 
     def test_dimension_key_and_keyword_still_validate(self) -> None:
         via_key = TimeDimension.model_validate({"dimension": "created_at", "granularity": "month"})
         via_kw = TimeDimension(
-            dimension="created_at", granularity=TimeGranularity.MONTH,
+            field="created_at", granularity=TimeGranularity.MONTH,
         )
         assert via_key == via_kw
-        assert via_kw.dimension == "created_at"
+        assert via_kw.field == "created_at"
 
     def test_dimension_wins_when_both_keys_are_present(self) -> None:
         td = TimeDimension.model_validate({"dimension": "a", "column": "b", "granularity": "month"})
-        assert td.dimension == "a"
+        assert td.field == "a"
 
     def test_schema_advertises_dimension_only(self) -> None:
         props = SlayerQuery.model_json_schema()["$defs"]["TimeDimension"]["properties"]

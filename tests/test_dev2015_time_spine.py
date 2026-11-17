@@ -11,12 +11,12 @@ import yaml
 from slayer.core.errors import (
     QueryTypeError,
     SlayerError,
-    TimeDimensionColumnError,
-    UnresolvableDimensionJoinError,
+    TimeDimensionFieldError,
+    UnresolvableDimensionRelationshipError,
 )
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.enums import DataType
-from slayer.core.policy import JoinFilterRule, JoinFilterRuleset, SessionPolicy
+from slayer.core.policy import RelationshipFilterRule, RelationshipFilterRuleset, SessionPolicy
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.database.client import SlayerSQLClient
@@ -86,19 +86,19 @@ def _data_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 class TestReservedName:
     async def test_save_rejected(self, engine: SlayerQueryEngine) -> None:
-        clash = SlayerModel(name="time_spine", sql_table="customers", data_source="test",
-                            columns=[Column(name="foo", type=DataType.INT, primary_key=True)])
+        clash = SlayerDataset(name="time_spine", sql_table="customers", data_source="test",
+                            fields=[DatasetField(name="foo", datatype=DataType.INT, primary_key=True)])
         with pytest.raises(SlayerError) as exc:
-            await engine.storage.save_model(clash)
+            await engine.storage.save_dataset(clash)
         assert "time_spine" in str(exc.value)
         assert "reserved" in str(exc.value).lower()
-        stored = await engine.storage.get_model("time_spine", data_source="test")
-        assert stored is None or "foo" not in {c.name for c in stored.columns}
+        stored = await engine.storage.get_dataset("time_spine", data_source="test")
+        assert stored is None or "foo" not in {c.name for c in stored.fields}
 
     async def test_stored_clash_fails_closed(self, engine: SlayerQueryEngine) -> None:
-        clash = SlayerModel(name="time_spine", sql_table="customers", data_source="test",
-                            columns=[Column(name="timestamp", type=DataType.DATE, primary_key=True)])
-        await engine.storage._save_model_impl(clash)
+        clash = SlayerDataset(name="time_spine", sql_table="customers", data_source="test",
+                            fields=[DatasetField(name="timestamp", datatype=DataType.DATE, primary_key=True)])
+        await engine.storage._save_dataset_impl(clash)
         query = spine_query(measures=TWO_FACTS)
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute(query, dry_run=True)
@@ -114,9 +114,9 @@ class TestReservedName:
             "version": CURRENT_VERSIONS["SlayerModel"] - 1, "name": "time_spine", "sql_table": "cal",
             "data_source": "test", "columns": [{"name": "day", "type": "date", "primary_key": True}],
         }))
-        loaded = await storage.get_model("time_spine", data_source="test")
+        loaded = await storage.get_dataset("time_spine", data_source="test")
         assert loaded is not None
-        assert [c.name for c in loaded.columns] == ["day"]
+        assert [c.name for c in loaded.fields] == ["day"]
         assert yaml.safe_load(path.read_text())["version"] == CURRENT_VERSIONS["SlayerModel"]
 
 
@@ -136,8 +136,8 @@ class TestAxes:
             resp = await eng.execute(spine_query(measures=[m("sum(shipments.weight)", "w")],
                                                  to_many_handling="broadcast"))
             assert by_bucket(resp, ["w"]) == {k: (7.0,) for k in MONTHS}
-            assert [w.measure for w in broadcast_warnings(resp)]
-            assert "w" in broadcast_warnings(resp)[0].measure
+            assert [w.metric for w in broadcast_warnings(resp)]
+            assert "w" in broadcast_warnings(resp)[0].metric
             strict = spine_query(measures=[m("sum(shipments.weight)", "w")], to_many_handling="error")
             with pytest.raises((SlayerError, ValueError)):
                 await eng.execute(strict)
@@ -147,7 +147,7 @@ class TestAxes:
                             dimensions=["customers.region"], to_many_handling="broadcast")
         resp = await engine.execute(query)
         assert by_bucket(resp, ["c"], by=["region"]) == {(g, k): (1.0,) for g in "NSE" for k in MONTHS[:3]}
-        assert [w.measure for w in broadcast_warnings(resp)] == ["c"]
+        assert [w.metric for w in broadcast_warnings(resp)] == ["c"]
         strict = query.model_copy(update={"to_many_handling": "error"})
         with pytest.raises(SlayerError) as exc:
             await engine.execute(strict, dry_run=True)
@@ -159,7 +159,7 @@ class TestAxes:
                             to_many_handling="broadcast")
         resp = await engine.execute(query)
         assert by_bucket(resp, ["c"]) == {k: (3.0,) for k in MONTHS[:3]}
-        assert [w.measure for w in broadcast_warnings(resp)] == ["c"]
+        assert [w.metric for w in broadcast_warnings(resp)] == ["c"]
         strict = query.model_copy(update={"to_many_handling": "error"})
         with pytest.raises(SlayerError) as exc:
             await engine.execute(strict, dry_run=True)
@@ -171,7 +171,7 @@ class TestAxes:
         default = await engine.execute(query)
         assoc = await engine.execute(query.model_copy(update={"to_many_handling": "associate"}))
         assert sorted(map(str, default.data)) == sorted(map(str, assoc.data))
-        assert [w.measure for w in default.warnings or [] if w.kind == "associated"] == ["c"]
+        assert [w.metric for w in default.warnings or [] if w.kind == "associated"] == ["c"]
         assert not broadcast_warnings(default)
 
     async def test_only_the_routeless_measure_broadcasts_beside_a_fact(self, engine) -> None:
@@ -180,12 +180,12 @@ class TestAxes:
             to_many_handling="broadcast",
         ))
         assert by_bucket(resp, ["o", "c"]) == {k: (TWO_FACT_ROWS[k][0], 3.0) for k in MONTHS[:3]}
-        assert [w.measure for w in broadcast_warnings(resp)] == ["c"]
+        assert [w.metric for w in broadcast_warnings(resp)] == ["c"]
 
     async def test_stage_with_one_temporal_column_is_wired(self, engine) -> None:
         firsts = SlayerQuery.model_validate({
-            "name": "firsts", "source_model": "orders", "dimensions": ["customer_id"],
-            "measures": [m("min(order_date)", "first_order")],
+            "name": "firsts", "population": "orders", "dimensions": ["customer_id"],
+            "metrics": [m("min(order_date)", "first_order")],
         })
         resp = await engine.execute([firsts, spine_query(measures=[m("count(firsts.customer_id)", "c")])])
         assert by_bucket(resp, ["c"]) == {
@@ -195,9 +195,9 @@ class TestAxes:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_stage_propagates_its_sources_default(self, backend) -> None:
         stage = SlayerQuery.model_validate({
-            "name": "ob", "source_model": "orders", "dimensions": ["customer_id"],
+            "name": "ob", "population": "orders", "dimensions": ["customer_id"],
             "time_dimensions": [{"dimension": "order_date", "granularity": "day"}],
-            "measures": [m("sum(amount)", "rev"), m("min(customers.signed_up_at)", "signup")],
+            "metrics": [m("sum(amount)", "rev"), m("min(customers.signed_up_at)", "signup")],
         })
         async with spine_engine(backend, models=spine_models(signed_up_at=True)) as eng:
             resp = await eng.execute([stage, spine_query(measures=[m("sum(ob.rev)", "rev")])])
@@ -207,10 +207,10 @@ class TestAxes:
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_sole_column_default_feeds_transforms(self, backend) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "returns",
+            "population": "returns",
             "time_dimensions": [{"dimension": "return_date", "granularity": "month"},
                                 {"dimension": "customers.signed_up_at", "granularity": "month"}],
-            "measures": [m("cumsum(sum(amount))", "cs")],
+            "metrics": [m("cumsum(sum(amount))", "cs")],
         })
         got = {}
         for default in (None, "return_date"):
@@ -222,7 +222,7 @@ class TestAxes:
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_sole_column_default_feeds_last(self, backend) -> None:
-        query = SlayerQuery.model_validate({"source_model": "returns", "measures": [m("last(amount)", "l")]})
+        query = SlayerQuery.model_validate({"population": "returns", "metrics": [m("last(amount)", "l")]})
         for default in (None, "return_date"):
             async with spine_engine(backend, models=spine_models(returns_default=default)) as eng:
                 resp = await eng.execute(query)
@@ -248,7 +248,7 @@ class TestRouting:
     async def test_equal_length_routes_fail_loudly(self, backend) -> None:
         async with spine_engine(backend, models=spine_models(shipments="two_parents")) as eng:
             query = spine_query(measures=[m("count(shipments.id)", "c")])
-            with pytest.raises(UnresolvableDimensionJoinError) as exc:
+            with pytest.raises(UnresolvableDimensionRelationshipError) as exc:
                 await eng.execute(query)
             assert "shipments.orders" in str(exc.value)
             assert "shipments.returns" in str(exc.value)
@@ -269,9 +269,9 @@ class TestRouting:
 
     async def test_existing_queries_associate_by_default_without_the_spine(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
-            "measures": [m("sum(returns.amount)", "r")],
+            "metrics": [m("sum(returns.amount)", "r")],
         }))
         assert [w for w in resp.warnings or [] if w.kind == "associated"]
         assert "time_spine" not in (resp.sql or "")
@@ -345,7 +345,7 @@ def _monthly_stage(*, measures=None, date_range=JAN_MAR, **extra) -> SlayerQuery
 
 def _over_monthly(**extra) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "source_model": "monthly", "measures": [m("sum(o)", "t"), m("count(*)", "c")], **extra,
+        "population": "monthly", "metrics": [m("sum(o)", "t"), m("count(*)", "c")], **extra,
     })
 
 
@@ -371,10 +371,10 @@ class TestSpineStages:
         ({}, "time_spine", 3.0), ({"dimensions": ["customers.region"]}, "customers", 9.0),
     ], ids=["unit", "per-group"])
     async def test_a_saved_spine_query_read_as_a_source(self, engine: SlayerQueryEngine, extra, pinned, count) -> None:
-        await engine.create_model_from_query(query=_monthly_stage(**extra), name="saved_monthly")
-        stored = await engine.storage.get_model("saved_monthly", data_source="test")
+        await engine.create_dataset_from_query(query=_monthly_stage(**extra), name="saved_monthly")
+        stored = await engine.storage.get_dataset("saved_monthly", data_source="test")
         assert stored is not None and stored.source_queries is not None
-        assert [s.source_model for s in stored.source_queries] == [pinned]
+        assert [s.population for s in stored.source_queries] == [pinned]
         resp = await engine.execute(_over_monthly(source_model="saved_monthly"))
         assert [(num(value(r, "t")), num(value(r, "c"))) for r in resp.data] == [(220.0, count)]
 
@@ -529,7 +529,7 @@ class TestNoCountableRows:
 
     async def test_spine_order_key_outside_a_spine_query(self, engine) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [m("sum(amount)", "s")], "dimensions": ["customer_id"],
+            "population": "orders", "metrics": [m("sum(amount)", "s")], "dimensions": ["customer_id"],
             "order": [{"column": "time_spine.timestamp", "direction": "asc"}],
         })
         with pytest.raises(QueryTypeError) as exc:
@@ -577,7 +577,7 @@ class TestDenseSeries:
 class TestRebucketing:
     async def test_monthly_model_on_a_daily_spine(self, engine) -> None:
         daily = spine_query(measures=[m("sum(monthly.rev)", "rev")], granularity="day")
-        with pytest.raises(TimeDimensionColumnError) as exc:
+        with pytest.raises(TimeDimensionFieldError) as exc:
             await engine.execute(daily, dry_run=True)
         msg = str(exc.value)
         assert "order_date" in msg
@@ -592,11 +592,11 @@ class TestRebucketing:
 # ---------------------------------------------------------------------------
 
 def _region_policy() -> SessionPolicy:
-    return SessionPolicy(ruleset=JoinFilterRuleset(
-        table="customers", column="region", value="N",
-        joins=(
-            JoinFilterRule(target_table="orders", join_path=("orders.customer_id = customers.id",)),
-            JoinFilterRule(target_table="returns", join_path=("returns.customer_id = customers.id",)),
+    return SessionPolicy(ruleset=RelationshipFilterRuleset(
+        table="customers", field="region", value="N",
+        relationships=(
+            RelationshipFilterRule(target_table="orders", relationship_path=("orders.customer_id = customers.id",)),
+            RelationshipFilterRule(target_table="returns", relationship_path=("returns.customer_id = customers.id",)),
         ),
     ))
 
@@ -637,7 +637,7 @@ class TestTenancyAndCache:
 async def test_calendar_model_parity(backend) -> None:
     async with spine_engine(backend, models=calendar_models()) as eng:
         cal = await eng.execute(SlayerQuery.model_validate({
-            "source_model": "calendar", "measures": TWO_FACTS,
+            "population": "calendar", "metrics": TWO_FACTS,
             "time_dimensions": [{"dimension": "date", "granularity": "month", "date_range": JAN_JUN}],
         }))
         spine = await eng.execute(spine_query(measures=TWO_FACTS))

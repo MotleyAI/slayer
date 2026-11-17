@@ -35,10 +35,10 @@ from slayer.core.format import NumberFormat, NumberFormatType
 from slayer.core.models import (
     Aggregation,
     AggregationParam,
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelMeasure,
-    SlayerModel,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.errors import SlayerError
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -54,7 +54,7 @@ DEFAULT_TIME_DIMENSIONS = {
 }
 
 # Monetary columns stored in cents in the jafgen CSVs; converted to dollars on load.
-CENTS_COLUMNS = {
+CENTS_FIELDS = {
     "orders": ["subtotal", "tax_paid", "order_total"],
     "products": ["price"],
     "supplies": ["cost"],
@@ -98,7 +98,7 @@ _ORDER_STATUS_SQL = (
 )
 
 # Columns computed on load from the CSV row: table → {column: SQL expression over the raw columns}.
-DERIVED_COLUMNS = {
+DERIVED_FIELDS = {
     "stores": {"region_id": _store_region_sql()},
     "orders": {"status": _ORDER_STATUS_SQL},
 }
@@ -106,13 +106,13 @@ DERIVED_COLUMNS = {
 # Tables whose CSV column names diverge from our schema. Maps CSV name → SQL
 # column name. Loader uses an explicit column-list INSERT for these tables so
 # the rename is applied without depending on column ordering.
-COLUMN_RENAMES = {
+FIELD_RENAMES = {
     "orders": {"customer": "customer_id"},
 }
 
 # Date columns per table — used to shift jafgen's hard-coded 2018-09-01 epoch
 # forward so the demo data always ends near "today".
-DATE_COLUMNS = {
+DATE_FIELDS = {
     "stores": ["opened_at"],
     "orders": ["ordered_at"],
     "tweets": ["tweeted_at"],
@@ -120,7 +120,7 @@ DATE_COLUMNS = {
 
 # List columns computed on insert from a sibling CSV (table ``source``), per table: column → (source CSV, per-row list).
 _LIST_SOURCE = "source"
-LIST_COLUMNS = {
+LIST_FIELDS = {
     "products": {"ingredients": (
         "supplies", "SELECT list(DISTINCT s.name ORDER BY s.name) FROM source AS s WHERE s.sku = _products_raw.sku",
     )},
@@ -214,7 +214,7 @@ def _percent() -> NumberFormat:
     return NumberFormat(type=NumberFormatType.PERCENT, precision=1)
 
 
-class _ColumnEnrichment(BaseModel):
+class _FieldEnrichment(BaseModel):
     label: str
     description: str | None = None
     format: NumberFormat | None = None
@@ -223,8 +223,8 @@ class _ColumnEnrichment(BaseModel):
 
 class _TableEnrichment(BaseModel):
     description: str | None = None
-    columns: dict[str, _ColumnEnrichment] = Field(default_factory=dict)
-    measures: list[ModelMeasure] = Field(default_factory=list)
+    fields: dict[str, _FieldEnrichment] = Field(default_factory=dict)
+    metrics: list[DatasetMetric] = Field(default_factory=list)
     aggregations: list[Aggregation] = Field(default_factory=list)
 
 
@@ -245,219 +245,219 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                     description="Weighted average defaulting the weight to order subtotal.",
                 ),
             ],
-            columns={
-                "id": _ColumnEnrichment(label="Order ID"),
-                "ordered_at": _ColumnEnrichment(
+            fields={
+                "id": _FieldEnrichment(label="Order ID"),
+                "ordered_at": _FieldEnrichment(
                     label="Order Date", description="When the order was placed."
                 ),
-                "store_id": _ColumnEnrichment(
+                "store_id": _FieldEnrichment(
                     label="Store ID", description="Store where the order was placed."
                 ),
-                "customer_id": _ColumnEnrichment(
+                "customer_id": _FieldEnrichment(
                     label=_CUSTOMER_ID_LABEL, description="Customer who placed the order."
                 ),
-                "subtotal": _ColumnEnrichment(
+                "subtotal": _FieldEnrichment(
                     label="Net Sales",
                     description="Pre-tax order amount, in dollars.",
                     format=_currency(),
                     db_type=MONEY_DB_TYPE,
                 ),
-                "tax_paid": _ColumnEnrichment(
+                "tax_paid": _FieldEnrichment(
                     label="Tax Paid",
                     description="Tax charged on the order, in dollars.",
                     format=_currency(),
                     db_type=MONEY_DB_TYPE,
                 ),
-                "order_total": _ColumnEnrichment(
+                "order_total": _FieldEnrichment(
                     label="Order Total",
                     description="Final order amount including tax, in dollars.",
                     format=_currency(),
                     db_type=MONEY_DB_TYPE,
                 ),
-                "status": _ColumnEnrichment(
+                "status": _FieldEnrichment(
                     label="Status",
                     description=(
                         "Order status: completed, refunded or cancelled. Refunded and "
                         "cancelled orders keep their order_total."
                     ),
                 ),
-                "item_skus": _ColumnEnrichment(
+                "item_skus": _FieldEnrichment(
                     label="Item SKUs",
                     description="The SKU of each item on the order, one entry per unit (repeats kept).",
                 ),
             },
-            measures=[
-                ModelMeasure(
+            metrics=[
+                DatasetMetric(
                     name="total_revenue",
-                    formula="sum(order_total)",
+                    expression="sum(order_total)",
                     label="Total Revenue",
                     description=(
                         "Gross sales including tax, in dollars, counting refunded and "
                         "cancelled orders too."
                     ),
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
-                ModelMeasure(
+                DatasetMetric(
                     name="net_sales",
-                    formula="sum(subtotal)",
+                    expression="sum(subtotal)",
                     label="Net Sales (pre-tax)",
                     description="Sales before tax, in dollars.",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
-                ModelMeasure(
+                DatasetMetric(
                     name="tax_collected",
-                    formula="sum(tax_paid)",
+                    expression="sum(tax_paid)",
                     label="Tax Collected",
                     description="Total tax collected, in dollars.",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
-                ModelMeasure(
+                DatasetMetric(
                     name="order_count",
-                    formula=_ROW_COUNT,
+                    expression=_ROW_COUNT,
                     label="Orders",
                     description="Number of orders.",
-                    type=DataType.INT,
+                    datatype=DataType.INT,
                 ),
-                ModelMeasure(
+                DatasetMetric(
                     name="unique_customers",
-                    formula="count_distinct(customer_id)",
+                    expression="count_distinct(customer_id)",
                     label="Unique Customers",
                     description="Distinct customers who ordered.",
-                    type=DataType.INT,
+                    datatype=DataType.INT,
                 ),
-                ModelMeasure(
+                DatasetMetric(
                     name="avg_order_value",
-                    formula="sum(order_total) / nullif(count(id), 0)",
+                    expression="sum(order_total) / nullif(count(id), 0)",
                     label="Average Order Value",
                     description="Revenue per order, in dollars.",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
-                ModelMeasure(
+                DatasetMetric(
                     name="effective_tax_rate",
-                    formula="sum(tax_paid) / nullif(sum(subtotal), 0)",
+                    expression="sum(tax_paid) / nullif(sum(subtotal), 0)",
                     label="Effective Tax Rate",
                     description="Tax collected as a share of net sales.",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
-                ModelMeasure(
+                DatasetMetric(
                     name="sales_weighted_aov",
-                    formula="weighted_avg(order_total)",
+                    expression="weighted_avg(order_total)",
                     label="Sales-Weighted Avg Order",
                     description=(
                         "Average order total weighted by subtotal (larger orders "
                         "weigh more), in dollars."
                     ),
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
             ],
         ),
         "customers": _TableEnrichment(
             description="Customers of the Jaffle Shop — one row per person.",
-            columns={
-                "id": _ColumnEnrichment(label=_CUSTOMER_ID_LABEL),
-                "name": _ColumnEnrichment(label="Customer", description="Customer name."),
+            fields={
+                "id": _FieldEnrichment(label=_CUSTOMER_ID_LABEL),
+                "name": _FieldEnrichment(label="Customer", description="Customer name."),
             },
-            measures=[
-                ModelMeasure(
+            metrics=[
+                DatasetMetric(
                     name="customer_count",
-                    formula="count_distinct(id)",
+                    expression="count_distinct(id)",
                     label="Customers",
                     description="Number of distinct customers.",
-                    type=DataType.INT,
+                    datatype=DataType.INT,
                 ),
             ],
         ),
         "stores": _TableEnrichment(
             description="Physical Jaffle Shop locations, each in one region.",
-            columns={
-                "id": _ColumnEnrichment(label="Store ID"),
-                "name": _ColumnEnrichment(label="Store", description="Store name."),
-                "opened_at": _ColumnEnrichment(
+            fields={
+                "id": _FieldEnrichment(label="Store ID"),
+                "name": _FieldEnrichment(label="Store", description="Store name."),
+                "opened_at": _FieldEnrichment(
                     label="Opened", description="When the store opened."
                 ),
-                "tax_rate": _ColumnEnrichment(
+                "tax_rate": _FieldEnrichment(
                     label="Tax Rate",
                     description="Local sales-tax rate.",
                     format=_percent(),
                 ),
-                "region_id": _ColumnEnrichment(
+                "region_id": _FieldEnrichment(
                     label="Region ID", description="Region the store belongs to."
                 ),
             },
-            measures=[
-                ModelMeasure(
+            metrics=[
+                DatasetMetric(
                     name="store_count",
-                    formula="count_distinct(id)",
+                    expression="count_distinct(id)",
                     label="Stores",
                     description="Number of stores.",
-                    type=DataType.INT,
+                    datatype=DataType.INT,
                 ),
             ],
         ),
         "regions": _TableEnrichment(
             description="Sales regions grouping the stores — one row per region.",
-            columns={
-                "id": _ColumnEnrichment(label="Region ID"),
-                "name": _ColumnEnrichment(label="Region", description="Region name."),
+            fields={
+                "id": _FieldEnrichment(label="Region ID"),
+                "name": _FieldEnrichment(label="Region", description="Region name."),
             },
         ),
         "products": _TableEnrichment(
             description="Menu items sold at the Jaffle Shop — jaffles and beverages.",
-            columns={
-                "sku": _ColumnEnrichment(label="SKU", description="Product identifier."),
-                "name": _ColumnEnrichment(label="Product", description="Product name."),
-                "type": _ColumnEnrichment(
+            fields={
+                "sku": _FieldEnrichment(label="SKU", description="Product identifier."),
+                "name": _FieldEnrichment(label="Product", description="Product name."),
+                "type": _FieldEnrichment(
                     label="Category", description="Product category (jaffle or beverage)."
                 ),
-                "price": _ColumnEnrichment(
+                "price": _FieldEnrichment(
                     label="Price",
                     description="List price, in dollars.",
                     format=_currency(),
                     db_type=MONEY_DB_TYPE,
                 ),
-                "description": _ColumnEnrichment(
+                "description": _FieldEnrichment(
                     label="Description", description="Product description."
                 ),
-                "ingredients": _ColumnEnrichment(
+                "ingredients": _FieldEnrichment(
                     label="Ingredients",
                     description="The supplies the product is made from, a list sorted by name.",
                 ),
             },
-            measures=[
-                ModelMeasure(
+            metrics=[
+                DatasetMetric(
                     name="product_count",
-                    formula="count_distinct(sku)",
+                    expression="count_distinct(sku)",
                     label="Products",
                     description="Number of distinct products.",
-                    type=DataType.INT,
+                    datatype=DataType.INT,
                 ),
-                ModelMeasure(
+                DatasetMetric(
                     name="avg_price",
-                    formula="avg(price)",
+                    expression="avg(price)",
                     label="Average Price",
                     description="Average list price, in dollars.",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
             ],
         ),
         "items": _TableEnrichment(
             description="Order line items — one row per unit sold on an order.",
-            columns={
-                "id": _ColumnEnrichment(label="Item ID"),
-                "order_id": _ColumnEnrichment(
+            fields={
+                "id": _FieldEnrichment(label="Item ID"),
+                "order_id": _FieldEnrichment(
                     label="Order", description="Order this line belongs to."
                 ),
-                "sku": _ColumnEnrichment(
+                "sku": _FieldEnrichment(
                     label="Product", description="Product sold on this line."
                 ),
             },
-            measures=[
-                ModelMeasure(
+            metrics=[
+                DatasetMetric(
                     name="units_sold",
-                    formula=_ROW_COUNT,
+                    expression=_ROW_COUNT,
                     label="Units Sold",
                     description="Number of item units sold.",
-                    type=DataType.INT,
+                    datatype=DataType.INT,
                 ),
             ],
         ),
@@ -466,58 +466,58 @@ def _build_demo_enrichment() -> dict[str, _TableEnrichment]:
                 "Supplies (ingredients and packaging) used per product, with "
                 "unit costs in dollars."
             ),
-            columns={
-                "id": _ColumnEnrichment(label="Supply ID"),
-                "name": _ColumnEnrichment(label="Supply", description="Supply name."),
-                "cost": _ColumnEnrichment(
+            fields={
+                "id": _FieldEnrichment(label="Supply ID"),
+                "name": _FieldEnrichment(label="Supply", description="Supply name."),
+                "cost": _FieldEnrichment(
                     label="Unit Cost",
                     description="Cost per unit, in dollars.",
                     format=_currency(),
                     db_type=MONEY_DB_TYPE,
                 ),
-                "perishable": _ColumnEnrichment(
+                "perishable": _FieldEnrichment(
                     label="Perishable", description="Whether the supply is perishable."
                 ),
-                "sku": _ColumnEnrichment(
+                "sku": _FieldEnrichment(
                     label="Product", description="Product this supply is used for."
                 ),
             },
-            measures=[
-                ModelMeasure(
+            metrics=[
+                DatasetMetric(
                     name="total_supply_cost",
-                    formula="sum(cost)",
+                    expression="sum(cost)",
                     label="Total Supply Cost",
                     description="Total supply cost, in dollars.",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
-                ModelMeasure(
+                DatasetMetric(
                     name="avg_unit_cost",
-                    formula="avg(cost)",
+                    expression="avg(cost)",
                     label="Avg Unit Cost",
                     description="Average supply unit cost, in dollars.",
-                    type=DataType.DOUBLE,
+                    datatype=DataType.DOUBLE,
                 ),
             ],
         ),
         "tweets": _TableEnrichment(
             description="Synthetic customer tweets mentioning the Jaffle Shop.",
-            columns={
-                "id": _ColumnEnrichment(label="Tweet ID"),
-                "user_id": _ColumnEnrichment(
+            fields={
+                "id": _FieldEnrichment(label="Tweet ID"),
+                "user_id": _FieldEnrichment(
                     label=_CUSTOMER_ID_LABEL, description="Customer who tweeted."
                 ),
-                "tweeted_at": _ColumnEnrichment(
+                "tweeted_at": _FieldEnrichment(
                     label="Tweet Date", description="When the tweet was posted."
                 ),
-                "content": _ColumnEnrichment(label="Tweet", description="Tweet text."),
+                "content": _FieldEnrichment(label="Tweet", description="Tweet text."),
             },
-            measures=[
-                ModelMeasure(
+            metrics=[
+                DatasetMetric(
                     name="tweet_count",
-                    formula=_ROW_COUNT,
+                    expression=_ROW_COUNT,
                     label="Tweets",
                     description="Number of tweets.",
-                    type=DataType.INT,
+                    datatype=DataType.INT,
                 ),
             ],
         ),
@@ -537,24 +537,24 @@ def _is_auto_default_format(fmt: NumberFormat | None) -> bool:
     return fmt.precision is None and fmt.symbol is None
 
 
-def _enrich_column(column: Column, col_spec: _ColumnEnrichment) -> bool:
+def _enrich_field(field: DatasetField, col_spec: _FieldEnrichment) -> bool:
     """Fill unset label / description / db_type / auto-default format on one column."""
     changed = False
-    if column.label is None:
-        column.label = col_spec.label
+    if field.label is None:
+        field.label = col_spec.label
         changed = True
-    if column.description is None and col_spec.description is not None:
-        column.description = col_spec.description
+    if field.description is None and col_spec.description is not None:
+        field.description = col_spec.description
         changed = True
     if (
         col_spec.format is not None
-        and column.format != col_spec.format
-        and _is_auto_default_format(column.format)
+        and field.format != col_spec.format
+        and _is_auto_default_format(field.format)
     ):
-        column.format = col_spec.format.model_copy(deep=True)
+        field.format = col_spec.format.model_copy(deep=True)
         changed = True
-    if col_spec.db_type is not None and not column.db_type:
-        column.db_type = col_spec.db_type
+    if col_spec.db_type is not None and not field.db_type:
+        field.db_type = col_spec.db_type
         changed = True
     return changed
 
@@ -566,44 +566,44 @@ def _new_named_entries(existing: list, additions: list) -> list:
     return [item.model_copy(deep=True) for item in additions if item.name not in taken]
 
 
-def apply_demo_enrichment(model: SlayerModel) -> bool:
+def apply_demo_enrichment(dataset: SlayerDataset) -> bool:
     """Additively apply the curated enrichment to an ingested demo model.
 
     Fills only unset fields and merges measures/aggregations by name, so
     user edits survive and re-runs are no-ops. Skips models not backed by
     ``sql_table``. Returns ``True`` if the model was modified.
     """
-    spec = DEMO_ENRICHMENT.get(model.name)
-    if spec is None or model.sql_table is None:
+    spec = DEMO_ENRICHMENT.get(dataset.name)
+    if spec is None or dataset.sql_table is None:
         return False
 
     changed = False
 
-    if model.description is None and spec.description is not None:
-        model.description = spec.description
+    if dataset.description is None and spec.description is not None:
+        dataset.description = spec.description
         changed = True
 
     if (
-        model.default_time_dimension is None
-        and model.name in DEFAULT_TIME_DIMENSIONS
+        dataset.default_time_dimension is None
+        and dataset.name in DEFAULT_TIME_DIMENSIONS
     ):
-        model.default_time_dimension = DEFAULT_TIME_DIMENSIONS[model.name]
+        dataset.default_time_dimension = DEFAULT_TIME_DIMENSIONS[dataset.name]
         changed = True
 
-    by_name: dict[str, Column] = {c.name: c for c in model.columns}
-    for col_name, col_spec in spec.columns.items():
+    by_name: dict[str, DatasetField] = {c.name: c for c in dataset.fields}
+    for col_name, col_spec in spec.fields.items():
         column = by_name.get(col_name)
-        if column is not None and _enrich_column(column, col_spec):
+        if column is not None and _enrich_field(column, col_spec):
             changed = True
 
-    new_measures = _new_named_entries(model.measures, spec.measures)
+    new_measures = _new_named_entries(dataset.metrics, spec.metrics)
     if new_measures:
-        model.measures = list(model.measures) + new_measures
+        dataset.metrics = list(dataset.metrics) + new_measures
         changed = True
 
-    new_aggs = _new_named_entries(model.aggregations, spec.aggregations)
+    new_aggs = _new_named_entries(dataset.aggregations, spec.aggregations)
     if new_aggs:
-        model.aggregations = list(model.aggregations) + new_aggs
+        dataset.aggregations = list(dataset.aggregations) + new_aggs
         changed = True
 
     return changed
@@ -759,7 +759,7 @@ def shift_dates_to_today(conn: "duckdb.DuckDBPyConnection") -> None:
     if delta_days == 0:
         return
     shift = exp.Interval(this=exp.Literal.string(str(delta_days)), unit=exp.Var(this="DAY"))
-    for table, cols in DATE_COLUMNS.items():
+    for table, cols in DATE_FIELDS.items():
         for col in cols:
             shifted = exp.Add(this=exp.column(col), expression=shift.copy())
             update = exp.Update(this=exp.table_(table), expressions=[exp.column(col).eq(shifted)])
@@ -774,7 +774,7 @@ def _require_store_regions(conn: "duckdb.DuckDBPyConnection", *, view: str) -> N
         raise SlayerError(f"Demo stores without a region assignment: {', '.join(unmapped)}")
 
 
-def _declared_columns(conn: "duckdb.DuckDBPyConnection", table: str) -> set[str]:
+def _declared_fields(conn: "duckdb.DuckDBPyConnection", table: str) -> set[str]:
     return {
         name
         for (name,) in conn.execute(
@@ -792,13 +792,13 @@ def load_data(
 ) -> None:
     """Load jafgen CSVs from ``data_dir`` into the already-created tables.
 
-    Seeds ``REGIONS`` first. Monetary columns listed in ``CENTS_COLUMNS`` are converted exactly
-    from cents to ``DECIMAL(12,2)`` dollars, and the ``DERIVED_COLUMNS`` the schema declares are
+    Seeds ``REGIONS`` first. Monetary columns listed in ``CENTS_FIELDS`` are converted exactly
+    from cents to ``DECIMAL(12,2)`` dollars, and the ``DERIVED_FIELDS`` the schema declares are
     computed on insert; a store missing from ``STORE_REGIONS`` raises ``SlayerError``. After
-    loading, all ``DATE_COLUMNS`` are shifted forward so the latest ``orders.ordered_at`` is today
+    loading, all ``DATE_FIELDS`` are shifted forward so the latest ``orders.ordered_at`` is today
     (see ``shift_dates_to_today``).
     """
-    if _declared_columns(conn, TABLE_NAMES["regions"]):
+    if _declared_fields(conn, TABLE_NAMES["regions"]):
         insert = exp.insert(exp.values(list(REGIONS.items())), TABLE_NAMES["regions"], columns=["id", "name"])
         conn.execute(insert.sql(dialect="duckdb"))
     for csv_name in LOAD_ORDER:
@@ -807,8 +807,8 @@ def load_data(
         if not os.path.exists(csv_path):
             continue
 
-        cents_cols = CENTS_COLUMNS.get(csv_name, [])
-        renames = COLUMN_RENAMES.get(csv_name, {})
+        cents_cols = CENTS_FIELDS.get(csv_name, [])
+        renames = FIELD_RENAMES.get(csv_name, {})
         view = f"_{table}_raw"
         # read_csv_auto takes a SQL string literal, not a bound parameter.
         csv_source = exp.Table(this=exp.Anonymous(this="read_csv_auto", expressions=[exp.Literal.string(csv_path)]))
@@ -830,10 +830,10 @@ def load_data(
                     cents = exp.cast(value, to="DECIMAL(18,0)")
                     value = exp.cast(exp.Mul(this=cents, expression=exp.Literal.number("0.01")), to=MONEY_DB_TYPE)
                 select_parts.append(exp.alias_(value, target_col))
-            declared = _declared_columns(conn, table)
+            declared = _declared_fields(conn, table)
             derived: dict[str, Expr] = {
                 c: sqlglot.parse_one(e, dialect="duckdb")
-                for c, e in DERIVED_COLUMNS.get(csv_name, {}).items() if c in declared
+                for c, e in DERIVED_FIELDS.get(csv_name, {}).items() if c in declared
             }
             derived |= _list_expressions(csv_name, declared=declared, data_dir=data_dir, prefix=prefix)
             for target_col, derived_expr in derived.items():
@@ -853,10 +853,10 @@ def load_data(
 
 
 def _list_expressions(csv_name: str, *, declared: set[str], data_dir: str, prefix: str) -> dict[str, Expr]:
-    """The declared ``LIST_COLUMNS`` of ``csv_name`` whose source CSV exists, as insert expressions (``[]`` for a
+    """The declared ``LIST_FIELDS`` of ``csv_name`` whose source CSV exists, as insert expressions (``[]`` for a
     row with none)."""
     out: dict[str, Expr] = {}
-    for column, (source, values) in LIST_COLUMNS.get(csv_name, {}).items():
+    for column, (source, values) in LIST_FIELDS.get(csv_name, {}).items():
         path = os.path.join(data_dir, f"{prefix}_{source}.csv")
         if column not in declared or not os.path.exists(path):
             continue
@@ -1003,7 +1003,7 @@ def build_jaffle_shop(
     return True
 
 
-def ingest_demo_models(*, storage: StorageBackend, datasource: DatasourceConfig) -> list[SlayerModel]:
+def ingest_demo_datasets(*, storage: StorageBackend, datasource: DatasourceConfig) -> list[SlayerDataset]:
     """Idempotently ingest the demo models, then apply the curated enrichment; returns the stored demo models.
 
     Creates missing models and additively merges existing ones (missing joins
@@ -1015,22 +1015,22 @@ def ingest_demo_models(*, storage: StorageBackend, datasource: DatasourceConfig)
         stored = {
             m.name: m
             for m in DocumentLoadFailures().skip(
-                engine.run_sync(engine.storage.load_models(data_source=datasource.name))
+                engine.run_sync(engine.storage.load_datasets(data_source=datasource.name))
             )
         }
     finally:
         engine.close()
     missing = [t for t in TABLE_NAMES if t not in stored]
     if missing:
-        causes = "; ".join(f"{e.model_name}: {e.error}" for e in result.errors if e.model_name in missing)
+        causes = "; ".join(f"{e.dataset_name}: {e.error}" for e in result.errors if e.dataset_name in missing)
         raise SlayerError(f"Demo setup did not store the models {', '.join(missing)}" + (f" ({causes})" if causes else ""))
-    models: list[SlayerModel] = []
+    datasets: list[SlayerDataset] = []
     for table in TABLE_NAMES:
         model = stored[table]
         if apply_demo_enrichment(model):
-            run_sync(storage.save_model(model))
-        models.append(model)
-    return models
+            run_sync(storage.save_dataset(model))
+        datasets.append(model)
+    return datasets
 
 
 def ensure_demo_datasource(
@@ -1039,16 +1039,16 @@ def ensure_demo_datasource(
     storage_path: str,
     name: str = DEMO_NAME,
     years: int = 2,
-    ingest_models: bool = True,
+    ingest_datasets: bool = True,
     assume_yes: bool = True,
     stream: IO[str] | None = None,
-) -> tuple[DatasourceConfig, list[SlayerModel], bool]:
+) -> tuple[DatasourceConfig, list[SlayerDataset], bool]:
     """Ensure the Jaffle Shop demo is fully set up in ``storage``.
 
     - Builds the DuckDB at ``<storage_base_dir>/demo/jaffle_shop.duckdb`` if missing or stale.
     - Registers a datasource record (``name``, default ``jaffle_shop``); an existing
       record is overwritten only with ``assume_yes``.
-    - Optionally ingests the models through ``ingest_demo_models``.
+    - Optionally ingests the models through ``ingest_demo_datasets``.
 
     Returns ``(datasource, jaffle_models, db_built)``: the Jaffle Shop models now in
     storage, and whether the DuckDB file was generated this call.
@@ -1069,6 +1069,6 @@ def ensure_demo_datasource(
     if existing_ds is None or assume_yes:
         run_sync(storage.save_datasource(ds))
 
-    if not ingest_models:
+    if not ingest_datasets:
         return ds, [], db_built
-    return ds, ingest_demo_models(storage=storage, datasource=ds), db_built
+    return ds, ingest_demo_datasets(storage=storage, datasource=ds), db_built

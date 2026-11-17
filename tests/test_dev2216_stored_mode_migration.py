@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
 from slayer.storage.migrations import CURRENT_VERSIONS
@@ -21,7 +21,7 @@ PREVIOUS_MODEL = 20
 
 
 def _stored(**fields: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"version": PREVIOUS, "source_model": "orders", **fields})
+    return SlayerQuery.model_validate({"version": PREVIOUS, "population": "orders", **fields})
 
 
 def _stage(*, mode: str | None, versioned: bool, name: str | None = None) -> dict:
@@ -47,20 +47,20 @@ class TestQueryDocument:
         assert _stored(to_many_handling=mode).to_many_handling == mode
 
     def test_stored_strict_false_loads_as_the_default(self) -> None:
-        query = SlayerQuery.model_validate({"version": 3, "source_model": "orders", "strict": False})
+        query = SlayerQuery.model_validate({"version": 3, "population": "orders", "strict": False})
         assert query.to_many_handling is None
 
     def test_stored_strict_true_still_means_error(self) -> None:
-        query = SlayerQuery.model_validate({"version": 3, "source_model": "orders", "strict": True})
+        query = SlayerQuery.model_validate({"version": 3, "population": "orders", "strict": True})
         assert query.to_many_handling == "error"
 
     def test_fresh_broadcast_is_kept(self) -> None:
-        query = SlayerQuery.model_validate({"source_model": "orders", "to_many_handling": "broadcast"})
+        query = SlayerQuery.model_validate({"population": "orders", "to_many_handling": "broadcast"})
         assert query.to_many_handling == "broadcast"
 
     def test_current_version_broadcast_is_kept(self) -> None:
         query = SlayerQuery.model_validate({
-            "version": CURRENT_VERSIONS["SlayerQuery"], "source_model": "orders", "to_many_handling": "broadcast"})
+            "version": CURRENT_VERSIONS["SlayerQuery"], "population": "orders", "to_many_handling": "broadcast"})
         assert query.to_many_handling == "broadcast"
 
     def test_memory_query(self) -> None:
@@ -77,7 +77,7 @@ class TestNestedStages:
             _stage(mode="broadcast", versioned=versioned, name="first"),
             {**_stage(mode="broadcast", versioned=versioned), "source_model": "first"},
         ])
-        model = SlayerModel.model_validate(doc)
+        model = SlayerDataset.model_validate(doc)
         assert [s.to_many_handling for s in model.source_queries or []] == [None, None]
 
     def test_other_modes_survive_in_stages(self) -> None:
@@ -85,7 +85,7 @@ class TestNestedStages:
             _stage(mode="error", versioned=False, name="first"),
             {**_stage(mode="associate", versioned=True), "source_model": "first"},
         ])
-        model = SlayerModel.model_validate(doc)
+        model = SlayerDataset.model_validate(doc)
         assert [s.to_many_handling for s in model.source_queries or []] == ["error", "associate"]
 
 
@@ -97,7 +97,7 @@ class TestStorage:
             {**_stage(mode="broadcast", versioned=False), "source_model": "first"},
         ])
         storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=None, models=[doc])
-        model = await storage.get_model("rev_q", data_source=DS)
+        model = await storage.get_dataset("rev_q", data_source=DS)
         assert model is not None
         assert [s.to_many_handling for s in model.source_queries or []] == [None, None]
 
@@ -115,9 +115,9 @@ class TestStorage:
     async def test_a_fresh_save_round_trips(self, tmp_path: Path, backend: str, mode: str | None) -> None:
         storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=None)
         stage = SlayerQuery.model_validate(rev_query(**({"to_many_handling": mode} if mode else {})))
-        await storage.save_model(
-            SlayerModel(name="rev_q", data_source=DS, source_queries=[stage]), _validate=False)
-        model = await storage.get_model("rev_q", data_source=DS)
+        await storage.save_dataset(
+            SlayerDataset(name="rev_q", data_source=DS, source_queries=[stage]), _validate=False)
+        model = await storage.get_dataset("rev_q", data_source=DS)
         assert model is not None
         assert [s.to_many_handling for s in model.source_queries or []] == [mode]
         (raw_stage,) = (await raw_doc(storage, "rev_q"))["source_queries"]

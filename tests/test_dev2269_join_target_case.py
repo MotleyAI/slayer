@@ -12,11 +12,11 @@ from slayer.core.enums import DataType
 from slayer.core.errors import (
     AmbiguousReferenceError,
     HiddenContentConflictError,
-    JoinTargetCaseError,
+    RelationshipTargetCaseError,
     SlayerError,
-    UnknownJoinTargetError,
+    UnknownRelationshipTargetError,
 )
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.database import engine_factory
 from slayer.storage import migrations as mig
 from slayer.storage.access_filtered import AccessFilteredStorage
@@ -71,19 +71,19 @@ def shop_ds(request, tmp_path) -> Iterator[DatasourceConfig]:
         engine_factory.invalidate_engine(ds)
 
 
-def customers(name: str = "Customers", *, data_source: str = "test", tags: tuple[str, ...] = ()) -> SlayerModel:
-    return SlayerModel(
+def customers(name: str = "Customers", *, data_source: str = "test", tags: tuple[str, ...] = ()) -> SlayerDataset:
+    return SlayerDataset(
         name=name, sql_table="customers", data_source=data_source, access_tags=list(tags),
-        columns=[Column(name="id", type=DataType.INT, primary_key=True), Column(name="name", type=DataType.TEXT)],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True), DatasetField(name="name", datatype=DataType.TEXT)],
     )
 
 
-def orders(target: str = "customers", *, tags: tuple[str, ...] = ()) -> SlayerModel:
-    return SlayerModel(
+def orders(target: str = "customers", *, tags: tuple[str, ...] = ()) -> SlayerDataset:
+    return SlayerDataset(
         name="orders", sql_table="orders", data_source="test", access_tags=list(tags),
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="customer_id", type=DataType.INT)],
-        joins=[ModelJoin(target_model=target, name="buyer", join_pairs=[["customer_id", "id"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                 DatasetField(name="customer_id", datatype=DataType.INT)],
+        relationships=[DatasetRelationship(to=target, name="buyer", join_pairs=[["customer_id", "id"]])],
     )
 
 
@@ -92,8 +92,8 @@ def _text(err: pytest.ExceptionInfo[BaseException]) -> str:
 
 
 def test_the_error_is_typed() -> None:
-    assert issubclass(JoinTargetCaseError, SlayerError)
-    assert issubclass(JoinTargetCaseError, ValueError)
+    assert issubclass(RelationshipTargetCaseError, SlayerError)
+    assert issubclass(RelationshipTargetCaseError, ValueError)
 
 
 # --------------------------------------------------------------------------- #
@@ -101,62 +101,62 @@ def test_the_error_is_typed() -> None:
 # --------------------------------------------------------------------------- #
 class TestSaveRefusals:
     async def test_a_case_only_target_is_refused_naming_the_declared_spelling(self, storage: StorageBackend) -> None:
-        await storage.save_model(customers())
+        await storage.save_dataset(customers())
         model = orders()
-        with pytest.raises(JoinTargetCaseError) as err:
-            await storage.save_model(model)
+        with pytest.raises(RelationshipTargetCaseError) as err:
+            await storage.save_dataset(model)
         for needle in ("orders", "buyer", "'customers'", "Customers"):
             assert needle in _text(err)
-        assert await storage.get_model("orders", data_source="test") is None
+        assert await storage.get_dataset("orders", data_source="test") is None
 
     async def test_the_target_saved_second_is_refused(self, storage: StorageBackend) -> None:
-        await storage.save_model(orders())
+        await storage.save_dataset(orders())
         model = customers()
-        with pytest.raises(JoinTargetCaseError) as err:
-            await storage.save_model(model)
+        with pytest.raises(RelationshipTargetCaseError) as err:
+            await storage.save_dataset(model)
         for needle in ("orders", "buyer", "'customers'"):
             assert needle in _text(err)
-        assert await storage.get_model("Customers", data_source="test") is None
+        assert await storage.get_dataset("Customers", data_source="test") is None
 
     async def test_respelling_the_join_first_lets_the_target_save(self, storage: StorageBackend) -> None:
-        await storage.save_model(orders())
-        await storage.save_model(orders("Customers"))
-        await storage.save_model(customers())
-        stored = await storage.get_model("orders", data_source="test")
+        await storage.save_dataset(orders())
+        await storage.save_dataset(orders("Customers"))
+        await storage.save_dataset(customers())
+        stored = await storage.get_dataset("orders", data_source="test")
         assert stored is not None
-        assert [j.target_model for j in stored.joins] == ["Customers"]
+        assert [j.to for j in stored.relationships] == ["Customers"]
 
     @pytest.mark.parametrize("already_stored", [False, True], ids=["new-join", "unchanged-stored-join"])
     async def test_an_ambiguous_target_is_refused(self, storage: StorageBackend, already_stored: bool) -> None:
-        await storage.save_model(customers("Customers"), _validate=False)
-        await storage.save_model(customers("CUSTOMERS"), _validate=False)
+        await storage.save_dataset(customers("Customers"), _validate=False)
+        await storage.save_dataset(customers("CUSTOMERS"), _validate=False)
         if already_stored:
-            await storage.save_model(orders(), _validate=False)
+            await storage.save_dataset(orders(), _validate=False)
         model = orders()
         with pytest.raises(AmbiguousReferenceError) as err:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert {"Customers", "CUSTOMERS"} <= set(err.value.candidates)
 
     async def test_a_unicode_case_fold_is_a_case_only_target(self, storage: StorageBackend) -> None:
-        await storage.save_model(customers("straße"))
+        await storage.save_dataset(customers("straße"))
         model = orders("STRASSE")
-        with pytest.raises(JoinTargetCaseError) as err:
-            await storage.save_model(model)
+        with pytest.raises(RelationshipTargetCaseError) as err:
+            await storage.save_dataset(model)
         assert "STRASSE" in _text(err)
         assert "straße" in _text(err)
 
     async def test_a_dangling_target_is_accepted(self, storage: StorageBackend) -> None:
-        await storage.save_model(orders("suppliers"))
-        stored = await storage.get_model("orders", data_source="test")
+        await storage.save_dataset(orders("suppliers"))
+        stored = await storage.get_dataset("orders", data_source="test")
         assert stored is not None
-        assert [j.target_model for j in stored.joins] == ["suppliers"]
+        assert [j.to for j in stored.relationships] == ["suppliers"]
 
     async def test_a_model_of_another_datasource_is_not_a_target(self, storage: StorageBackend) -> None:
-        await storage.save_model(customers(data_source="other"))
-        await storage.save_model(orders())
-        stored = await storage.get_model("orders", data_source="test")
+        await storage.save_dataset(customers(data_source="other"))
+        await storage.save_dataset(orders())
+        stored = await storage.get_dataset("orders", data_source="test")
         assert stored is not None
-        assert [j.target_model for j in stored.joins] == ["customers"]
+        assert [j.to for j in stored.relationships] == ["customers"]
 
 
 # --------------------------------------------------------------------------- #
@@ -168,33 +168,33 @@ def _as_fin(storage: StorageBackend, *, bypass: bool = False) -> AccessFilteredS
 
 class TestAccessFilteredSaves:
     async def test_the_case_only_error_precedes_the_unknown_target_error(self, storage: StorageBackend) -> None:
-        await storage.save_model(customers())
+        await storage.save_dataset(customers())
         view, model = _as_fin(storage), orders()
-        with pytest.raises(JoinTargetCaseError) as err:
-            await view.save_model(model)
+        with pytest.raises(RelationshipTargetCaseError) as err:
+            await view.save_dataset(model)
         assert "Customers" in _text(err)
 
     async def test_a_hidden_peers_case_only_target_is_not_revealed(self, storage: StorageBackend) -> None:
-        await storage.save_model(orders(tags=("hr",)))
+        await storage.save_dataset(orders(tags=("hr",)))
         view, model = _as_fin(storage), customers()
         with pytest.raises(HiddenContentConflictError) as err:
-            await view.save_model(model)
+            await view.save_dataset(model)
         assert "orders" not in _text(err)
         assert "buyer" not in _text(err)
-        assert await storage.get_model("Customers", data_source="test") is None
+        assert await storage.get_dataset("Customers", data_source="test") is None
 
     async def test_a_hidden_target_is_unknown_to_the_caller(self, storage: StorageBackend) -> None:
-        await storage.save_model(customers(tags=("hr",)))
+        await storage.save_dataset(customers(tags=("hr",)))
         view, model = _as_fin(storage), orders()
-        with pytest.raises(UnknownJoinTargetError) as err:
-            await view.save_model(model)
+        with pytest.raises(UnknownRelationshipTargetError) as err:
+            await view.save_dataset(model)
         assert "Customers" not in _text(err)
 
     async def test_bypass_behaves_as_the_inner_store(self, storage: StorageBackend) -> None:
-        await storage.save_model(customers(tags=("hr",)))
+        await storage.save_dataset(customers(tags=("hr",)))
         view, model = _as_fin(storage, bypass=True), orders()
-        with pytest.raises(JoinTargetCaseError) as err:
-            await view.save_model(model)
+        with pytest.raises(RelationshipTargetCaseError) as err:
+            await view.save_dataset(model)
         assert "Customers" in _text(err)
 
 
@@ -215,9 +215,9 @@ async def _store(tmp_path, *, backend: str, ds: DatasourceConfig | None, docs: l
 
 
 async def _targets(storage: StorageBackend, name: str) -> list[str]:
-    model = await storage.get_model(name, data_source=DS)
+    model = await storage.get_dataset(name, data_source=DS)
     assert model is not None
-    return [j.target_model for j in model.joins]
+    return [j.to for j in model.relationships]
 
 
 class TestStoredUpgrade:
@@ -250,11 +250,11 @@ class TestStoredUpgrade:
         target = _customers_doc()
         target["columns"][0] = {"name": "cid", "sql": "id", "type": "INT", "primary_key": True}
         storage = await _store(tmp_path, backend=backend, ds=shop_ds, docs=[_orders_doc(declare_fk=False), target])
-        model = await storage.get_model("orders", data_source=DS)
+        model = await storage.get_dataset("orders", data_source=DS)
         assert model is not None
-        [join] = model.joins
-        assert (join.target_model, join.join_pairs) == ("Customers", [["customer_id", "cid"]])
-        assert {c.name: c.hidden for c in model.columns}.get("customer_id") is True
+        [join] = model.relationships
+        assert (join.to, join.join_pairs) == ("Customers", [["customer_id", "cid"]])
+        assert {c.name: c.hidden for c in model.fields}.get("customer_id") is True
         resp = await run(storage, REGION_QUERY)
         assert by_dimension(resp, dim_suffix="region") == AMOUNT_BY_REGION
 
@@ -271,9 +271,9 @@ class TestStoredUpgrade:
         target = {**_customers_doc(), "joins": [{"target_model": "addr", "join_pairs": [["id", "id"]]}]}
         storage = await _store(tmp_path, backend=backend, ds=shop_ds,
                                docs=[orders_doc, target, _customers_doc("addr")])
-        model = await storage.get_model("orders", data_source=DS)
+        model = await storage.get_dataset("orders", data_source=DS)
         assert model is not None
-        assert (model.filters, [j.target_model for j in model.joins]) == (
+        assert (model.filters, [j.to for j in model.relationships]) == (
             ["customers.addr.region = 'North'"], ["Customers"])
         resp = await run(storage, {"source_model": "orders", "measures": ["sum(amount)"]})
         assert [float(v) for r in resp.data for v in r.values()] == [AMOUNT_BY_REGION["North"]]
@@ -334,9 +334,9 @@ async def test_a_stored_join_to_the_spine_is_dropped_on_load(tmp_path, shop_ds, 
     spine_join = {"target_model": target, "name": "spine_link", "join_pairs": [["ordered_at", "timestamp"]]}
     storage = await _store(tmp_path, backend=backend, ds=shop_ds, docs=[_ev_doc(joins=[spine_join])])
     with recorded_warnings() as caught:
-        model = await storage.get_model("ev", data_source=DS)
+        model = await storage.get_dataset("ev", data_source=DS)
     assert model is not None
-    assert model.joins == []
+    assert model.relationships == []
     assert [w for w in messages(caught, "spine_link") if "ev" in w]
     doc = await raw_doc(storage, "ev")
     assert (doc["version"], doc.get("joins") or []) == (mig.CURRENT_VERSIONS["SlayerModel"], [])

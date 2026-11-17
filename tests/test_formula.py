@@ -86,14 +86,14 @@ class TestAggregationNameValidation:
 
     def test_rejects_transform_name(self) -> None:
         with pytest.raises(ValueError, match="conflicts with a built-in transform"):
-            Aggregation(name="cumsum", formula="SUM({value})")
+            Aggregation(name="cumsum", expression="SUM({value})")
 
     def test_rejects_time_shift(self) -> None:
         with pytest.raises(ValueError, match="conflicts with a built-in transform"):
-            Aggregation(name="time_shift", formula="SUM({value})")
+            Aggregation(name="time_shift", expression="SUM({value})")
 
     def test_allows_non_conflicting_name(self) -> None:
-        agg = Aggregation(name="rolling_avg", formula="AVG({value})")
+        agg = Aggregation(name="rolling_avg", expression="AVG({value})")
         assert agg.name == "rolling_avg"
 
     def test_allows_builtin_override(self) -> None:
@@ -108,29 +108,29 @@ class TestOrderColumnNormalization:
     def test_funcstyle_sum(self) -> None:
         # The author's functional spelling is preserved — the item
         # carries a placeholder + raw_formula, resolved at binding.
-        item = OrderItem(column="sum(revenue)", direction="desc")
-        assert item.column.name == _FUNCSTYLE_PENDING
-        assert item.raw_formula == "sum(revenue)"
+        item = OrderItem(field="sum(revenue)", direction="desc")
+        assert item.field.name == _FUNCSTYLE_PENDING
+        assert item.raw_expression == "sum(revenue)"
 
     def test_funcstyle_count_star(self) -> None:
-        item = OrderItem(column="count(*)", direction="desc")
-        assert item.column.name == _FUNCSTYLE_PENDING
-        assert item.raw_formula == "count(*)"
+        item = OrderItem(field="count(*)", direction="desc")
+        assert item.field.name == _FUNCSTYLE_PENDING
+        assert item.raw_expression == "count(*)"
 
     def test_plain_name_unchanged(self) -> None:
-        item = OrderItem(column="revenue_sum", direction="desc")
-        assert item.column.name == "revenue_sum"
-        assert item.raw_formula is None
+        item = OrderItem(field="revenue_sum", direction="desc")
+        assert item.field.name == "revenue_sum"
+        assert item.raw_expression is None
 
     def test_parameterized_agg_preserved(self) -> None:
-        item = OrderItem.model_validate({"column": "last(revenue, ordered_at)", "direction": "desc"})
-        assert item.column.name == _FUNCSTYLE_PENDING
-        assert item.raw_formula == "last(revenue, ordered_at)"
+        item = OrderItem.model_validate({"field": "last(revenue, ordered_at)", "direction": "desc"})
+        assert item.field.name == _FUNCSTYLE_PENDING
+        assert item.raw_expression == "last(revenue, ordered_at)"
 
     def test_weighted_avg_args_preserved(self) -> None:
-        item = OrderItem.model_validate({"column": "weighted_avg(price, weight=qty)", "direction": "asc"})
-        assert item.column.name == _FUNCSTYLE_PENDING
-        assert item.raw_formula == "weighted_avg(price, weight=qty)"
+        item = OrderItem.model_validate({"field": "weighted_avg(price, weight=qty)", "direction": "asc"})
+        assert item.field.name == _FUNCSTYLE_PENDING
+        assert item.raw_expression == "weighted_avg(price, weight=qty)"
 
 
 class TestStringHygieneFilters:

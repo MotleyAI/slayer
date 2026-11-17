@@ -34,7 +34,7 @@ import sqlglot
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.bind_inputs import bind_query_inputs
 from slayer.engine.compile import stages
@@ -111,7 +111,7 @@ async def build_exec_engine(
     db_path: str,
     *,
     dialect: str,
-    models: list[SlayerModel],
+    models: list[SlayerDataset],
     datasource: str = "test",
     validate: bool = False,
     clock: Optional[Callable[[], datetime]] = None,
@@ -127,7 +127,7 @@ async def build_exec_engine(
         db_path, dialect=dialect, datasource=datasource, datasource_fields=datasource_fields,
     ))
     for model in models:
-        await storage.save_model(model, _validate=validate)
+        await storage.save_dataset(model, _validate=validate)
     if clock is None:
         return SlayerQueryEngine(storage=storage)
     return SlayerQueryEngine(storage=storage, clock=clock)
@@ -138,7 +138,7 @@ async def seeded_exec_engine(
     *,
     dialect: str,
     seed: Callable[[str], None],
-    models: list[SlayerModel],
+    models: list[SlayerDataset],
     datasource: str = "test",
     validate: bool = False,
     clock: Optional[Callable[[], datetime]] = None,
@@ -154,12 +154,12 @@ async def seeded_exec_engine(
         ds = _seeded_datasource(db_path, dialect=dialect, datasource=datasource, datasource_fields=datasource_fields)
         async with owned_query_engine(storage=storage, datasources=[ds], clock=clock) as engine:
             for model in models:
-                await storage.save_model(model, _validate=validate)
+                await storage.save_dataset(model, _validate=validate)
             yield engine, db_path
 
 
 async def make_seeded_sqlite_engine(
-    *, base_dir: str, db_path: str, models: list[SlayerModel], datasource: str = "test"
+    *, base_dir: str, db_path: str, models: list[SlayerDataset], datasource: str = "test"
 ) -> SlayerQueryEngine:
     """Storage + engine bound to a seeded SQLite file.
 
@@ -177,13 +177,13 @@ async def make_seeded_sqlite_engine(
         DatasourceConfig(name=datasource, type="sqlite", database=db_path),
     )
     for model in models:
-        await storage.save_model(model)
+        await storage.save_dataset(model)
     return SlayerQueryEngine(storage=storage)
 
 
-def models_bundle(models_by_name: dict[str, SlayerModel], *, dialect: str = "postgres") -> ResolvedSourceBundle:
+def models_bundle(models_by_name: dict[str, SlayerDataset], *, dialect: str = "postgres") -> ResolvedSourceBundle:
     """A rootless bundle over a model map, for unit tests over plain keys."""
-    return ResolvedSourceBundle(dialect=dialect, referenced_models=list(models_by_name.values()))
+    return ResolvedSourceBundle(dialect=dialect, referenced_datasets=list(models_by_name.values()))
 
 
 def _assert_valid_sql(sql: str, dialect: str = "postgres") -> None:
@@ -213,7 +213,7 @@ def _assert_valid_sql(sql: str, dialect: str = "postgres") -> None:
 async def _engine_generate(
     *,
     query: SlayerQuery | list[SlayerQuery | dict],
-    model: SlayerModel,
+    model: SlayerDataset,
     dialect: str = "postgres",
     extra_models: Optional[list] = None,
     validate: bool = True,
@@ -239,9 +239,9 @@ async def _engine_generate(
         await storage.save_datasource(DatasourceConfig.model_validate(
             {"name": model.data_source, "type": dialect, **(datasource_fields or {})},
         ))
-        await storage.save_model(model, _validate=validate)
+        await storage.save_dataset(model, _validate=validate)
         for extra in extra_models or []:
-            await storage.save_model(extra, _validate=validate)
+            await storage.save_dataset(extra, _validate=validate)
         async with owned_query_engine(storage=storage, clock=clock) as engine:
             response = await engine.execute(query, dry_run=True)
         sql = response.sql
@@ -369,7 +369,7 @@ def plan_as_producer(*, query: SlayerQuery, bundle):
     scope = resolve_scope(query=query, bundle=bundle, stage_schemas={})
     prebound = bind_query_inputs(query=query, bundle=bundle, scope=scope, stage_schemas={})
     return stages.compile_synthesized(
-        prebound, source_model=query.source_model if isinstance(query.source_model, str) else None,
+        prebound, source_dataset=query.population if isinstance(query.population, str) else None,
         bundle=bundle, scope=scope, stage_schemas={},
         population=stages.NoInheritedPopulation(reason="compiled as a producer by a test"),
     )
@@ -381,20 +381,20 @@ async def orders_agg_sql(
 ) -> str:
     """Whitespace-normalised SQL for one ``formula`` measure over a flat ``orders`` model
     (``amount``, ``quantity``, ``status`` and the masked ``completed_amount``)."""
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="test",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="quantity", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="completed_amount", type=DataType.DOUBLE, sql="amount",
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="quantity", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="completed_amount", datatype=DataType.DOUBLE, sql="amount",
                    filter="status = 'completed'"),
         ],
         aggregations=aggregations or [],
     )
     sql = await _engine_generate(
-        query=SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula)]),
+        query=SlayerQuery(population="orders", metrics=[DatasetMetric(expression=formula)]),
         model=model, dialect=dialect,
     )
     return " ".join(sql.split())

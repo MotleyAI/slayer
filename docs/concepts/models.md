@@ -228,7 +228,7 @@ measures:
 
 ## Measures (named formulas)
 
-A measure is a saved formula. Its shape is identical to an inline `SlayerQuery.measures` entry; the only difference is scope — model-level measures are reusable across queries.
+A measure is a saved formula. Its shape is identical to an inline `SlayerQuery.metrics` entry; the only difference is scope — model-level measures are reusable across queries.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -419,7 +419,7 @@ filters:
 
 They apply wherever the model's rows are read — as a query's source, a join target, a cross-model aggregate or inside another model's filter — before any join, so a LEFT join with no passing match reads as NULL and an INNER join drops the row.
 
-These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`, joined-column references via dotted join paths (`customers.regions.name`). Aggregations and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `ModelMeasure.formula`. See [references.md](references.md) for the full Mode A / Mode B table. Dotted paths stay dotted (no auto-conversion); the legacy `__`-delimited split-alias form (`customers__regions.name`) is a hard error.
+These are SQL-mode expressions (Mode A): any valid SQL the underlying dialect accepts — function calls (`json_extract`, `coalesce`, …), `CASE WHEN`, joined-column references via dotted join paths (`customers.regions.name`). Aggregations and SLayer transforms are rejected here — those are DSL constructs (Mode B) and belong in query-level filters or `ModelMeasure.expression`. See [references.md](references.md) for the full Mode A / Mode B table. Dotted paths stay dotted (no auto-conversion); the legacy `__`-delimited split-alias form (`customers__regions.name`) is a hard error.
 
 ## Query-backed models
 
@@ -526,7 +526,7 @@ Rules:
 
 **Scope:** substitution applies to the **direct source model**, each stage's own source model, and every stage of a query-backed source (spliced into the statement); join-target and cross-model-target models are not yet substituted, so a `{var}` there is left untouched (and surfaces as an error on the stray placeholder).
 
-**Saved measure formulas** (`ModelMeasure.formula`) on those same models take variables too, bound as literals like any Mode-B expression and with no optional blocks, and inspection lists their placeholders as required unless defaulted.
+**Saved measure formulas** (`ModelMeasure.expression`) on those same models take variables too, bound as literals like any Mode-B expression and with no optional blocks, and inspection lists their placeholders as required unless defaulted.
 
 **Literals only.** No value a query, a stage or a `query_variables` default supplies can change the structure of the SQL it binds into. The backslash-dialect escaping assumes the server's **default** string mode — a MySQL server running with `sql_mode=NO_BACKSLASH_ESCAPES` treats backslash as an ordinary char, which the whole sqlglot dialect layer (not just this feature) assumes is off.
 

@@ -2,6 +2,6 @@
 
 from slayer.core.enums import DataType
 
-TIME_SPINE_MODEL = "time_spine"
-TIME_SPINE_COLUMN = "timestamp"
-TIME_SPINE_COLUMN_TYPE = DataType.TIMESTAMP
+TIME_SPINE_DATASET = "time_spine"
+TIME_SPINE_FIELD = "timestamp"
+TIME_SPINE_FIELD_TYPE = DataType.TIMESTAMP

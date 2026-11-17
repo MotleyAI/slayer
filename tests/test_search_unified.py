@@ -31,7 +31,7 @@ from slayer.cli import main
 from slayer.client.slayer_client import SlayerClient
 from slayer.core.enums import DataType
 from slayer.core.errors import SlayerError
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.mcp.server import create_mcp_server
 from slayer.search import graph as _search_graph
@@ -72,16 +72,16 @@ async def storage_with_corpus() -> AsyncIterator[StorageBackend]:
             learning="Example: sum of paid amounts.",
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="sum(amount_paid)")],
+                population="orders",
+                metrics=[DatasetMetric(expression="sum(amount_paid)")],
             ),
         )
         await storage.save_memory(
             learning="Example: count of customers.",
             entities=["warehouse.customers.email"],
             query=SlayerQuery(
-                source_model="customers",
-                measures=[ModelMeasure(formula="count(*)")],
+                population="customers",
+                metrics=[DatasetMetric(expression="count(*)")],
             ),
         )
         yield storage
@@ -506,11 +506,11 @@ def _make_rest_client(tmp_path):
         await storage.save_datasource(
             DatasourceConfig(name="warehouse", type="sqlite", database=":memory:")
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="warehouse",
-            columns=[Column(name="amount_paid", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.DOUBLE)],
         ))
         await storage.save_memory(
             learning="amount_paid is net of refunds.",
@@ -653,11 +653,11 @@ def _seed_cli_storage(tmp_path) -> str:
         await storage.save_datasource(
             DatasourceConfig(name="warehouse", type="sqlite", database=":memory:")
         )
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="warehouse",
-            columns=[Column(name="amount_paid", type=DataType.DOUBLE)],
+            fields=[DatasetField(name="amount_paid", datatype=DataType.DOUBLE)],
         ))
         await storage.save_memory(
             learning="amount_paid is net of refunds.",

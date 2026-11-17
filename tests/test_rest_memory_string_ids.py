@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -35,14 +35,14 @@ def client() -> Iterator[TestClient]:
                 )
             )
             loop.run_until_complete(
-                storage.save_model(
-                    SlayerModel(
+                storage.save_dataset(
+                    SlayerDataset(
                         name="orders",
                         sql_table="orders",
                         data_source="mydb",
-                        columns=[
-                            Column(name="id", sql="id", primary_key=True),
-                            Column(name="amount", sql="amount"),
+                        fields=[
+                            DatasetField(name="id", sql="id", primary_key=True),
+                            DatasetField(name="amount", sql="amount"),
                         ],
                     )
                 )

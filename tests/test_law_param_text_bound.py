@@ -15,7 +15,7 @@ from typing import Iterator, Optional, Tuple
 
 import pytest
 
-from slayer.core.keys import AggregateKey, ColumnKey
+from slayer.core.keys import AggregateKey, FieldKey
 from slayer.core.models import Aggregation
 from slayer.sql.generator import AggRenderSpec, SQLGenerator
 from tests._dev1901_fixtures import dev1901_models
@@ -94,7 +94,7 @@ def test_render_spec_carries_no_definition() -> None:
 
 def test_a_string_kwarg_is_never_rendered_as_sql() -> None:
     orders = next(m for m in dev1901_models() if m.name == "orders")
-    key = AggregateKey(source=ColumnKey(path=(), leaf="amount"), agg="wsum",
+    key = AggregateKey(source=FieldKey(path=(), leaf="amount"), agg="wsum",
                        kwargs=(("weight", "store_no"),))
     with pytest.raises((TypeError, ValueError), match="weight"):
         _render(key, source_model=orders)
@@ -103,5 +103,5 @@ def test_a_string_kwarg_is_never_rendered_as_sql() -> None:
 def _render(key: AggregateKey, *, source_model) -> None:
     gen = SQLGenerator(dialect="postgres")
     gen._build_agg(gen._build_agg_render_spec_from_planned(
-        slot=None, key=key, source_model=source_model, source_relation="orders",
+        slot=None, key=key, source_dataset=source_model, source_relation="orders",
         full_alias="orders.amount_wsum"))

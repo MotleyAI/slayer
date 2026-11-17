@@ -13,7 +13,7 @@ from slayer import cli
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.demo import jaffle_shop
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._cli_inprocess import run_cli_in_process
@@ -188,8 +188,8 @@ class TestEnsureDemoDatasourceScoping:
         storage = YAMLStorage(base_dir=str(tmp_path))
         _setup_demo(storage, tmp_path)
         jaffle_shop.run_sync(
-            storage.save_model(
-                SlayerModel(name="unrelated", sql_table="unrelated", data_source="other_ds")
+            storage.save_dataset(
+                SlayerDataset(name="unrelated", sql_table="unrelated", data_source="other_ds")
             )
         )
 
@@ -202,18 +202,18 @@ class TestEnsureDemoDatasourceScoping:
 
 class TestDemoEnrichment:
     def _orders_model(self):
-        return SlayerModel(
+        return SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="jaffle_shop",
-            columns=[
-                Column(name="id", type=DataType.TEXT, primary_key=True),
-                Column(name="customer_id", type=DataType.TEXT),
-                Column(name="ordered_at", type=DataType.DATE),
-                Column(name="store_id", type=DataType.TEXT),
-                Column(name="subtotal", type=DataType.DOUBLE),
-                Column(name="tax_paid", type=DataType.DOUBLE),
-                Column(name="order_total", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.TEXT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.TEXT),
+                DatasetField(name="ordered_at", datatype=DataType.DATE),
+                DatasetField(name="store_id", datatype=DataType.TEXT),
+                DatasetField(name="subtotal", datatype=DataType.DOUBLE),
+                DatasetField(name="tax_paid", datatype=DataType.DOUBLE),
+                DatasetField(name="order_total", datatype=DataType.DOUBLE),
             ],
         )
 
@@ -226,10 +226,10 @@ class TestDemoEnrichment:
 
         assert model.description is not None
         assert model.default_time_dimension == "ordered_at"
-        by_name = {c.name: c for c in model.columns}
+        by_name = {c.name: c for c in model.fields}
         assert by_name["order_total"].label == "Order Total"
         assert by_name["order_total"].format.type == NumberFormatType.CURRENCY
-        assert "total_revenue" in {m.name for m in model.measures}
+        assert "total_revenue" in {m.name for m in model.metrics}
         assert "weighted_avg" in {a.name for a in model.aggregations}
 
     def test_idempotent_second_run_is_noop(self):
@@ -241,7 +241,7 @@ class TestDemoEnrichment:
 
     def test_preserves_user_edits(self):
         model = self._orders_model()
-        by_name = {c.name: c for c in model.columns}
+        by_name = {c.name: c for c in model.fields}
         by_name["order_total"].label = "My Label"
         model.description = "My description"
         jaffle_shop.apply_demo_enrichment(model)
@@ -252,7 +252,7 @@ class TestDemoEnrichment:
 
     def test_auto_default_format_replaced_custom_format_preserved(self):
         model = self._orders_model()
-        by_name = {c.name: c for c in model.columns}
+        by_name = {c.name: c for c in model.fields}
         # Auto-ingestion stamps a bare FLOAT format on numeric columns — the
         # curated currency format must win over it.
         by_name["order_total"].format = NumberFormat(type=NumberFormatType.FLOAT)
@@ -266,26 +266,26 @@ class TestDemoEnrichment:
 
     def test_duplicate_measure_names_not_added(self):
         model = self._orders_model()
-        model.measures = [ModelMeasure(name="total_revenue", formula="sum(subtotal)")]
+        model.metrics = [DatasetMetric(name="total_revenue", expression="sum(subtotal)")]
         jaffle_shop.apply_demo_enrichment(model)
-        revenue = [m for m in model.measures if m.name == "total_revenue"]
+        revenue = [m for m in model.metrics if m.name == "total_revenue"]
         assert len(revenue) == 1
-        assert revenue[0].formula == "sum(subtotal)"
+        assert revenue[0].expression == "sum(subtotal)"
 
     def test_unknown_model_untouched(self):
-        model = SlayerModel(name="unrelated", sql_table="t", data_source="other")
+        model = SlayerDataset(name="unrelated", sql_table="t", data_source="other")
         assert jaffle_shop.apply_demo_enrichment(model) is False
 
     def test_non_table_backed_model_skipped(self):
         # The curated spec assumes the physical jaffle tables — a demo model
         # redefined as sql-mode or query-backed must be left alone.
-        model = SlayerModel(
+        model = SlayerDataset(
             name="orders",
             sql="SELECT 1 AS id",
             data_source="jaffle_shop",
         )
         assert jaffle_shop.apply_demo_enrichment(model) is False
-        assert model.measures == []
+        assert model.metrics == []
         assert model.description is None
 
     def test_spec_objects_are_copied_not_shared(self):
@@ -294,20 +294,20 @@ class TestDemoEnrichment:
         jaffle_shop.apply_demo_enrichment(model_a)
         jaffle_shop.apply_demo_enrichment(model_b)
 
-        measure_a = next(m for m in model_a.measures if m.name == "total_revenue")
+        measure_a = next(m for m in model_a.metrics if m.name == "total_revenue")
         measure_a.label = "Mutated"
-        measure_b = next(m for m in model_b.measures if m.name == "total_revenue")
+        measure_b = next(m for m in model_b.metrics if m.name == "total_revenue")
         assert measure_b.label == "Total Revenue"
         spec_measure = next(
             m
-            for m in jaffle_shop.DEMO_ENRICHMENT["orders"].measures
+            for m in jaffle_shop.DEMO_ENRICHMENT["orders"].metrics
             if m.name == "total_revenue"
         )
         assert spec_measure.label == "Total Revenue"
 
-        fmt_a = next(c for c in model_a.columns if c.name == "order_total").format
+        fmt_a = next(c for c in model_a.fields if c.name == "order_total").format
         fmt_a.symbol = "€"
-        fmt_b = next(c for c in model_b.columns if c.name == "order_total").format
+        fmt_b = next(c for c in model_b.fields if c.name == "order_total").format
         assert fmt_b.symbol == "$"
 
     def test_setup_saves_enriched_models(self, tmp_path, jaffle_generator):
@@ -315,12 +315,12 @@ class TestDemoEnrichment:
         _setup_demo(storage, tmp_path)
         for table in jaffle_shop.TABLE_NAMES:
             jaffle_shop.run_sync(
-                storage.save_model(
-                    SlayerModel(
+                storage.save_dataset(
+                    SlayerDataset(
                         name=table,
                         sql_table=table,
                         data_source="jaffle_shop",
-                        columns=[Column(name="id", type=DataType.TEXT, primary_key=True)],
+                        fields=[DatasetField(name="id", datatype=DataType.TEXT, primary_key=True)],
                     )
                 )
             )
@@ -330,9 +330,9 @@ class TestDemoEnrichment:
         # Returned models are enriched, and the enrichment was persisted.
         assert all(m.description is not None for m in models)
         stored_orders = jaffle_shop.run_sync(
-            storage.get_model(name="orders", data_source="jaffle_shop")
+            storage.get_dataset(name="orders", data_source="jaffle_shop")
         )
-        assert "order_count" in {m.name for m in stored_orders.measures}
+        assert "order_count" in {m.name for m in stored_orders.metrics}
 
 
 class TestResolveDemoDbPath:

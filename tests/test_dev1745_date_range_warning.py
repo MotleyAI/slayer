@@ -6,7 +6,7 @@ import pydantic
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.warnings import NormalizationWarning
 from slayer.engine.normalization import normalize_query
@@ -14,13 +14,13 @@ from slayer.engine.normalization import normalize_query
 from tests._engine_helpers import _engine_generate
 
 
-def _orders() -> SlayerModel:
-    return SlayerModel(
+def _orders() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
         ],
     )
 
@@ -30,9 +30,9 @@ def _query(date_range) -> SlayerQuery:
     if date_range is not None:
         td["date_range"] = date_range
     return SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "time_dimensions": [td],
-        "measures": [{"formula": "sum(amount)", "name": "m0"}],
+        "metrics": [{"formula": "sum(amount)", "name": "m0"}],
     })
 
 

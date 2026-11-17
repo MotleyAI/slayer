@@ -11,7 +11,7 @@ from typing import get_args
 import pytest
 
 from slayer.core.keys import AggregateKey
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.core.syntax import parse_expr
 from slayer.engine.binding import bind_expr
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -95,9 +95,9 @@ class TestCanonicalAggregateAlias:
     @staticmethod
     def _bound(formula: str) -> AggregateKey:
         orders, *rest = idiom_models()
-        bundle = ResolvedSourceBundle(dialect="postgres", source_model=orders, referenced_models=rest)
-        key = bind_expr(parse_expr(formula), scope=ModelScope(source_model=orders), bundle=bundle,
-                        allow_measures=True).value_key
+        bundle = ResolvedSourceBundle(dialect="postgres", population=orders, referenced_datasets=rest)
+        key = bind_expr(parse_expr(formula), scope=DatasetScope(population=orders), bundle=bundle,
+                        allow_metrics=True).value_key
         assert isinstance(key, AggregateKey), key
         assert key.filter is not None, key
         return key
@@ -107,7 +107,7 @@ class TestCanonicalAggregateAlias:
     def test_filter_changes_the_alias(self, formula: str, profile: AggAliasProfile) -> None:
         filtered = self._bound(formula)
         twin = filtered.model_copy(update={"filter": None})
-        relation = {"source_relation": "orders"} if profile == "cross_model_cte" else {}
+        relation = {"source_relation": "orders"} if profile == "cross_dataset_cte" else {}
         got = canonical_aggregate_alias(filtered, profile=profile, **relation)
         assert got is not None, got
         assert "_filter_" in got, got

@@ -14,7 +14,7 @@ import pytest
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.service import SearchService
 from slayer.storage.base import resolve_storage
@@ -23,8 +23,8 @@ from slayer.storage.base import StorageBackend
 from typing import Any
 
 
-def _stored_col(model: SlayerModel, name: str) -> Column:
-    col = model.get_column(name)
+def _stored_col(model: SlayerDataset, name: str) -> DatasetField:
+    col = model.get_field(name)
     assert col is not None
     return col
 
@@ -47,16 +47,16 @@ async def search_setup(tmp_path) -> AsyncIterator[tuple[SearchService, object]]:
     await storage.save_datasource(
         DatasourceConfig(name="ds", type="sqlite", database=db_file)
     )
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="ds",
         description="Checkout orders.",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE,
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE,
                    description="Order total in USD."),
-            Column(name="status", type=DataType.TEXT,
+            DatasetField(name="status", datatype=DataType.TEXT,
                    description="Order lifecycle status."),
         ],
     ))
@@ -68,7 +68,7 @@ async def search_setup(tmp_path) -> AsyncIterator[tuple[SearchService, object]]:
 async def test_search_backfills_numeric_column_hit_verbose(search_setup: tuple[Any, StorageBackend]) -> None:
     service, storage = search_setup
     # Sanity: the numeric column starts uncached.
-    pre = await storage.get_model("orders", data_source="ds")
+    pre = await storage.get_dataset("orders", data_source="ds")
     assert pre is not None
     assert _stored_col(pre, "amount").sampled is None
 
@@ -81,7 +81,7 @@ async def test_search_backfills_numeric_column_hit_verbose(search_setup: tuple[A
     ]
     assert amount_hits, "expected the amount column as a hit"
     # Persisted min/max range — proof the numeric back-fill fired in search.
-    reloaded = await storage.get_model("orders", data_source="ds")
+    reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
     sampled = _stored_col(reloaded, "amount").sampled
     assert sampled is not None
@@ -108,6 +108,6 @@ async def test_search_backfills_numeric_column_hit_compact(search_setup: tuple[A
     assert amount_hits, "expected the amount column as a hit"
     for h in amount_hits:
         assert h.text == ""
-    reloaded = await storage.get_model("orders", data_source="ds")
+    reloaded = await storage.get_dataset("orders", data_source="ds")
     assert reloaded is not None
     assert _stored_col(reloaded, "amount").sampled is not None

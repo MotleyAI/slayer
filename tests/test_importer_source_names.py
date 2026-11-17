@@ -15,7 +15,7 @@ from sqlglot.errors import ParseError
 
 from slayer.core.enums import DataType
 from slayer.core.errors import NotReadOnlyQueryError
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.models import CubeProject
@@ -176,36 +176,36 @@ def _schemas(live: Live) -> None:
 
 # ── importers ─────────────────────────────────────────────────────────────
 
-def _cube(live: Live, *cubes: dict[str, Any]) -> tuple[dict[str, SlayerModel], list[str]]:
+def _cube(live: Live, *cubes: dict[str, Any]) -> tuple[dict[str, SlayerDataset], list[str]]:
     project = CubeProject.model_validate({"cubes": list(cubes)})
     converter = CubeToSlayerConverter(project=project, data_source=DS)
     collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=live.engine)
     result = converter.convert()
-    return {m.name: m for m in result.models}, [i.message for i in result.report.issues]
+    return {m.name: m for m in result.datasets}, [i.message for i in result.report.issues]
 
 
 def _dbt(live: Live, semantic_models: list[dict[str, Any]],
-         regular_models: Iterable[dict[str, Any]] = ()) -> tuple[dict[str, SlayerModel], list[str]]:
+         regular_models: Iterable[dict[str, Any]] = ()) -> tuple[dict[str, SlayerDataset], list[str]]:
     project = DbtProject.model_validate({"semantic_models": semantic_models, "regular_models": list(regular_models)})
     converter = DbtToSlayerConverter(project=project, data_source=DS, target_dialect=live.engine.dialect.name)
     collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=live.engine)
     result = converter.convert()
-    return {m.name: m for m in result.models}, _messages(result)
+    return {m.name: m for m in result.datasets}, _messages(result)
 
 
-def _osi(live: Live, document: dict[str, Any]) -> tuple[dict[str, SlayerModel], list[str]]:
+def _osi(live: Live, document: dict[str, Any]) -> tuple[dict[str, SlayerDataset], list[str]]:
     converter = OsiToSlayerConverter(documents=[OSIDocument.model_validate(document)], data_source=DS)
     collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=live.engine)
     result = converter.convert()
-    return {m.name: m for m in result.models}, _messages(result)
+    return {m.name: m for m in result.datasets}, _messages(result)
 
 
 def _messages(result: ConversionResult) -> list[str]:
     return [e.message for e in (*result.warnings, *result.unconverted_metrics)]
 
 
-def _typed(model: SlayerModel, name: str) -> DataType:
-    return column(model, name).type
+def _typed(model: SlayerDataset, name: str) -> DataType:
+    return column(model, name).datatype
 
 
 def _probed(live: Live) -> DataType:
@@ -234,17 +234,17 @@ def test_mixed_case_schema_qualified_table(live: Live) -> None:
     assert typing_notes(messages) == []
 
 
-async def _rows(live: Live, tmp_path: Path, models: Iterable[SlayerModel],
+async def _rows(live: Live, tmp_path: Path, models: Iterable[SlayerDataset],
                 payload: dict[str, Any]) -> list[dict[str, Any]]:
     storage = YAMLStorage(base_dir=str(tmp_path / "storage"))
     live.engine.dispose()  # SLayer opens a DuckDB file read-only, which a held read-write connection refuses
     async with owned_query_engine(storage=storage, datasources=[live.datasource]) as engine:
         for model in models:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         return (await engine.execute(SlayerQuery.model_validate(payload))).data
 
 
-async def _grouped(live: Live, tmp_path: Path, models: dict[str, SlayerModel], model: str, dimension: str) -> list[Any]:
+async def _grouped(live: Live, tmp_path: Path, models: dict[str, SlayerDataset], model: str, dimension: str) -> list[Any]:
     rows = await _rows(live, tmp_path, models.values(), {"source_model": model, "dimensions": [dimension]})
     return [r[f"{model}.{dimension}"] for r in rows]
 
@@ -423,7 +423,7 @@ class _Collected:
 
     def column(self, physical: str) -> tuple[DataType, DataType | None] | None:
         found = self._read(None)
-        return found.column(physical) if isinstance(found, LiveSource) else None
+        return found.field(physical) if isinstance(found, LiveSource) else None
 
 
 def _source(live: Live, *, sql_table: str | None = None, sql: str | None = None) -> _Collected:
@@ -478,7 +478,7 @@ def test_unreadable_or_modifying_sql_source_is_refused_before_execution(live: Li
 
 # ── Postgres folds unquoted identifiers (spec: importers/meaning-preservation, importers/dbt-import) ──
 
-def _importer_models(live: Live, importer: str, table: str) -> tuple[dict[str, SlayerModel], str]:
+def _importer_models(live: Live, importer: str, table: str) -> tuple[dict[str, SlayerDataset], str]:
     """``(models, model name)`` of an import whose one model reads ``qty`` from ``table``."""
     if importer == "cube":
         return _cube(live, _qty_cube(table))[0], "items"
@@ -533,7 +533,7 @@ async def test_osi_reference_to_another_datasets_field(pg: Live, tmp_path: Path)
 
 
 def _dbt_files(live: Live, tmp_path: Path, *, quoting: dict[str, Any] | None, include_hidden: bool = False,
-               ) -> dict[str, SlayerModel]:
+               ) -> dict[str, SlayerDataset]:
     root = tmp_path / "dbt"
     write_yaml(root / "dbt_project.yml", {"name": "shop", "version": "1.0", "config-version": 2,
                                           **({"quoting": quoting} if quoting is not None else {})})
@@ -542,10 +542,10 @@ def _dbt_files(live: Live, tmp_path: Path, *, quoting: dict[str, Any] | None, in
                                            "dimensions": [{"name": "qty", "type": "categorical"}]}]}
     write_yaml(root / "models" / "schema.yml", schema)
     converter = DbtToSlayerConverter(project=parse_dbt_project(str(root)), data_source=DS,
-                                     include_hidden_models=include_hidden, target_dialect="postgres")
+                                     include_hidden_datasets=include_hidden, target_dialect="postgres")
     collect_over_engine(collect=lambda client: converter.collect_metadata(client=client), engine=live.engine)
     result = converter.convert()
-    return {m.name: m for m in result.models}
+    return {m.name: m for m in result.datasets}
 
 
 @pytest.mark.parametrize(("quoting", "typed", "value"), [

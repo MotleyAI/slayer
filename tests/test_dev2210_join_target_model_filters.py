@@ -180,14 +180,14 @@ class TestListParentReadsFilteredRows:
 
     async def test_element_count(self, team_a):
         resp = await team_a.execute(SlayerQuery.model_validate({
-            "source_model": "contractors", "measures": [{"formula": "count(skills.*)", "name": "n"}],
+            "population": "contractors", "metrics": [{"formula": "count(skills.*)", "name": "n"}],
         }))
         assert [int(r["contractors.n"]) for r in resp.data] == [4]
 
     async def test_element_values(self, team_a):
         resp = await team_a.execute(SlayerQuery.model_validate({
-            "source_model": "contractors", "dimensions": ["skills.value"],
-            "measures": [{"formula": "count(skills.*)", "name": "n"}],
+            "population": "contractors", "dimensions": ["skills.value"],
+            "metrics": [{"formula": "count(skills.*)", "name": "n"}],
         }))
         assert {r["contractors.skills.value"]: int(r["contractors.n"]) for r in resp.data} == {"go": 2, "sql": 2}
 

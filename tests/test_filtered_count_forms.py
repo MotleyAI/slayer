@@ -25,22 +25,22 @@ from __future__ import annotations
 import re
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 
 from tests._engine_helpers import _engine_generate
 
 
 async def _gen(formula: str) -> str:
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="t",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="amt", sql="amount", type=DataType.DOUBLE, filter="region = 'US'"),
-            Column(name="cust", sql="customer_id", type=DataType.INT, filter="region = 'US'"),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amt", sql="amount", datatype=DataType.DOUBLE, filter="region = 'US'"),
+            DatasetField(name="cust", sql="customer_id", datatype=DataType.INT, filter="region = 'US'"),
         ],
     )
-    q = SlayerQuery(source_model="orders", measures=[ModelMeasure(formula=formula)])
+    q = SlayerQuery(population="orders", metrics=[DatasetMetric(expression=formula)])
     return await _engine_generate(query=q, model=model, dialect="postgres")
 
 

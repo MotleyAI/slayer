@@ -20,7 +20,7 @@ import tempfile
 import pytest
 import yaml
 
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
@@ -59,23 +59,23 @@ def test_v6_payload_loads_with_new_fields_none() -> None:
         "name": "orders",
         "sql_table": "orders",
         "data_source": "ds",
-        "columns": [
-            {"name": "id", "type": "INT", "primary_key": True},
-            {"name": "status", "type": "TEXT", "sampled": "paid, refunded"},
-            {"name": "amount", "type": "DOUBLE", "sampled": "0.0 .. 9999.99"},
+        "fields": [
+            {"name": "id", "datatype": "INT", "primary_key": True},
+            {"name": "status", "datatype": "TEXT", "sampled": "paid, refunded"},
+            {"name": "amount", "datatype": "DOUBLE", "sampled": "0.0 .. 9999.99"},
         ],
     }
-    m = SlayerModel.model_validate(raw)
+    m = SlayerDataset.model_validate(raw)
     # Current-version, not literally 7: the chain now extends to v8.
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
     # The new optional fields default to None — no explicit migration step,
     # just Pydantic field defaults.
-    for col in m.columns:
+    for col in m.fields:
         assert col.sampled_values is None
         assert col.distinct_count is None
     # The existing ``sampled`` text values survive untouched.
-    assert m.get_column("status").sampled == "paid, refunded"
-    assert m.get_column("amount").sampled == "0.0 .. 9999.99"
+    assert m.get_field("status").sampled == "paid, refunded"
+    assert m.get_field("amount").sampled == "0.0 .. 9999.99"
 
 
 def test_v7_payload_round_trips_with_populated_fields() -> None:
@@ -86,19 +86,19 @@ def test_v7_payload_round_trips_with_populated_fields() -> None:
         "name": "orders",
         "sql_table": "orders",
         "data_source": "ds",
-        "columns": [
+        "fields": [
             {
                 "name": "status",
-                "type": "TEXT",
+                "datatype": "TEXT",
                 "sampled": "paid, refunded, cancelled",
                 "sampled_values": ["paid", "refunded", "cancelled"],
                 "distinct_count": 3,
             },
         ],
     }
-    m = SlayerModel.model_validate(raw)
+    m = SlayerDataset.model_validate(raw)
     assert m.version == mig.CURRENT_VERSIONS["SlayerModel"]
-    col = m.columns[0]
+    col = m.fields[0]
     assert col.sampled == "paid, refunded, cancelled"
     assert col.sampled_values == ["paid", "refunded", "cancelled"]
     assert col.distinct_count == 3
@@ -115,18 +115,18 @@ def test_v7_payload_with_overflow_marker_round_trips() -> None:
         "name": "households",
         "sql_table": "households",
         "data_source": "ds",
-        "columns": [
+        "fields": [
             {
                 "name": "city",
-                "type": "TEXT",
+                "datatype": "TEXT",
                 "sampled": "São Paulo, Rio, ... (1234 distinct)",
                 "sampled_values": ["São Paulo", "Rio"],  # truncated to 2 for brevity
                 "distinct_count": 1234,
             },
         ],
     }
-    m = SlayerModel.model_validate(raw)
-    col = m.columns[0]
+    m = SlayerDataset.model_validate(raw)
+    col = m.fields[0]
     assert col.distinct_count == 1234
     assert col.sampled_values == ["São Paulo", "Rio"]
 
@@ -139,18 +139,18 @@ def test_v7_payload_with_empty_list_round_trips() -> None:
         "name": "orders",
         "sql_table": "orders",
         "data_source": "ds",
-        "columns": [
+        "fields": [
             {
                 "name": "notes",
-                "type": "TEXT",
+                "datatype": "TEXT",
                 "sampled": "",
                 "sampled_values": [],
                 "distinct_count": 0,
             },
         ],
     }
-    m = SlayerModel.model_validate(raw)
-    col = m.columns[0]
+    m = SlayerDataset.model_validate(raw)
+    col = m.fields[0]
     assert col.sampled == ""
     assert col.sampled_values == []
     assert col.distinct_count == 0
@@ -186,10 +186,10 @@ async def test_yaml_round_trips_v6_payload_to_v7_with_new_fields_none() -> None:
                 ],
             }, f, sort_keys=False)
 
-        loaded = await storage.get_model("orders", data_source="ds")
+        loaded = await storage.get_dataset("orders", data_source="ds")
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
-        for col in loaded.columns:
+        for col in loaded.fields:
             assert col.sampled_values is None
             assert col.distinct_count is None
 
@@ -222,10 +222,10 @@ async def test_sqlite_round_trips_v6_payload_to_v7_with_new_fields_none() -> Non
                 ("ds", "orders", json.dumps(v6_payload)),
             )
 
-        loaded = await storage.get_model("orders", data_source="ds")
+        loaded = await storage.get_dataset("orders", data_source="ds")
         assert loaded is not None
         assert loaded.version == mig.CURRENT_VERSIONS["SlayerModel"]
-        for col in loaded.columns:
+        for col in loaded.fields:
             assert col.sampled_values is None
             assert col.distinct_count is None
 

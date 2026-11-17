@@ -86,10 +86,10 @@ def association_fallback_hint(reason: str) -> str:
 
 
 class BroadcastGrainWarningPayload(SlayerWarning):
-    """A cross-model aggregate whose implicit grain lost query dimensions to broadcasting; ``measure`` names the metric, ``dimensions`` lists each broadcast dimension and its reason, ``association_unsupported`` why the default mode could not associate."""
+    """A cross-model aggregate whose implicit grain lost query dimensions to broadcasting; ``metric`` names the metric, ``dimensions`` lists each broadcast dimension and its reason, ``association_unsupported`` why the default mode could not associate."""
 
     kind: Literal["broadcast"] = "broadcast"
-    measure: str
+    metric: str
     location: str
     dimensions: list[BroadcastDimension]
     association_unsupported: Optional[str] = None
@@ -104,7 +104,7 @@ class BroadcastGrainWarningPayload(SlayerWarning):
     def human_message(self) -> str:
         dims = ", ".join(f"{d.dimension} ({d.reason})" for d in self.dimensions)
         return (
-            f"metric {self.measure!r} (at {self.location}) broadcast across "
+            f"metric {self.metric!r} (at {self.location}) broadcast across "
             f"unattributable dimension(s): {dims} — {self.hint}"
         )
 
@@ -113,14 +113,14 @@ class AssociatedWarningPayload(SlayerWarning):
     """An aggregate resolved by distinct-entity association over unattributable dimension(s); the cells' entity populations may overlap and are not additive across ``dimensions``."""
 
     kind: Literal["associated"] = "associated"
-    measure: str
+    metric: str
     location: str
     dimensions: list[str]
 
     def human_message(self) -> str:
         dims = ", ".join(self.dimensions)
         return (
-            f"metric {self.measure!r} (at {self.location}) associated over "
+            f"metric {self.metric!r} (at {self.location}) associated over "
             f"unattributable dimension(s) {dims}; cell populations may overlap "
             f"and are not additive across them"
         )
@@ -132,13 +132,13 @@ class UnrelatedDatasetWarningPayload(SlayerWarning):
     kind: Literal["unrelated_dataset"] = "unrelated_dataset"
     dataset: str
     population: str
-    measures: list[str]
+    metrics: list[str]
     location: str
 
     def human_message(self) -> str:
         return (
-            f"{', '.join(repr(m) for m in self.measures)} (at {self.location}) read {self.dataset!r}, which no "
-            f"join path reaches from {self.population!r}: unrelated dataset, aggregated over its own rows and "
+            f"{', '.join(repr(m) for m in self.metrics)} (at {self.location}) read {self.dataset!r}, which no "
+            f"relationship path reaches from {self.population!r}: unrelated dataset, aggregated over its own rows and "
             f"repeated on every row"
         )
 
@@ -147,7 +147,7 @@ class DegenerateReaggregationWarningPayload(SlayerWarning):
     """A second-order aggregation whose operand grain equals the outer grain, so it is the identity; ``operand_grain`` / ``outer_grain`` name the equal grains and ``hint`` the partition_by remedy."""
 
     kind: Literal["degenerate_reaggregation"] = "degenerate_reaggregation"
-    measure: str
+    metric: str
     location: str
     operand_grain: list[str]
     outer_grain: list[str]
@@ -159,28 +159,28 @@ class DegenerateReaggregationWarningPayload(SlayerWarning):
     def human_message(self) -> str:
         og = ", ".join(self.operand_grain) or "<global>"
         return (
-            f"metric {self.measure!r} (at {self.location}) is a degenerate "
+            f"metric {self.metric!r} (at {self.location}) is a degenerate "
             f"re-aggregation: the operand grain ({og}) equals the outer grain, "
             f"so it returns the operand unchanged — {self.hint}"
         )
 
 
 class SemiJoinPushedWarningPayload(SlayerWarning):
-    """A ROW filter pushed as a semi-join (EXISTS): correctly applied, informational only — carried on the response, never a Python warning and never an error. ``measure`` names the affected aggregate, or is ``null`` when the query population itself is restricted."""
+    """A ROW filter pushed as a semi-join (EXISTS): correctly applied, informational only — carried on the response, never a Python warning and never an error. ``metric`` names the affected aggregate, or is ``null`` when the query population itself is restricted."""
 
     kind: Literal["semi_join_pushed"] = "semi_join_pushed"
-    measure: Optional[str] = None
+    metric: Optional[str] = None
     location: str
     filter_text: str
 
     def human_message(self) -> str:
-        if self.measure is None:
+        if self.metric is None:
             return (
                 f"filter {self.filter_text!r} restricts the population "
                 f"(at {self.location}) by semi-join"
             )
         return (
-            f"filter {self.filter_text!r} pushed into metric {self.measure!r} "
+            f"filter {self.filter_text!r} pushed into metric {self.metric!r} "
             f"(at {self.location}) by semi-join"
         )
 
@@ -217,10 +217,10 @@ class StatementTimeoutSkippedWarning(SlayerWarning):
 
 
 class WholePeriodsNonNestingWarningPayload(SlayerWarning):
-    """``whole_periods_only`` over time dimensions on one ``column`` whose ``granularities`` do not nest into each other."""
+    """``whole_periods_only`` over time dimensions on one ``field`` whose ``granularities`` do not nest into each other."""
 
     kind: Literal["whole_periods_non_nesting"] = "whole_periods_non_nesting"
-    column: str
+    field: str
     granularities: list[str]
     location: str
     hint: str = (
@@ -230,7 +230,7 @@ class WholePeriodsNonNestingWarningPayload(SlayerWarning):
 
     def human_message(self) -> str:
         return (
-            f"granularities {' and '.join(self.granularities)} on {self.column!r} "
+            f"granularities {' and '.join(self.granularities)} on {self.field!r} "
             f"(at {self.location}) do not nest — {self.hint}"
         )
 
@@ -239,16 +239,16 @@ def _single_line(text: str) -> str:
     return text.replace("\r", "\\r").replace("\n", "\\n")
 
 
-class ExtensionColumnInlinedWarning(SlayerWarning):
+class ExtensionFieldInlinedWarning(SlayerWarning):
     """A stored query's extension column was inlined where it is used; its text now reads as Mode B."""
 
-    kind: Literal["extension_column_inlined"] = "extension_column_inlined"
+    kind: Literal["extension_field_inlined"] = "extension_field_inlined"
     document: str
-    column: str
+    field: str
 
     def human_message(self) -> str:
         return _single_line(
-            f"stored document {self.document!r}: extension column {self.column!r} was inlined where it is used; "
+            f"stored document {self.document!r}: extension column {self.field!r} was inlined where it is used; "
             f"its text is now read as a SLayer expression"
         )
 
@@ -257,7 +257,7 @@ class UnloadableDocumentWarning(SlayerWarning):
     """A stored model or memory that could not be loaded was skipped; ``data_source`` is ``None`` for a memory."""
 
     kind: Literal["unloadable_document"] = "unloadable_document"
-    document_kind: Literal["model", "memory"]
+    document_kind: Literal["dataset", "memory"]
     data_source: Optional[str] = None
     name: str
     cause: str
@@ -268,56 +268,56 @@ class UnloadableDocumentWarning(SlayerWarning):
 
 
 class NarrowedAccessWarning(SlayerWarning):
-    """Model ``model`` reads tagged models (``narrowed_by``) whose tags do not cover its own, so some of its readers cannot see it."""
+    """Model ``dataset`` reads tagged models (``narrowed_by``) whose tags do not cover its own, so some of its readers cannot see it."""
 
     kind: Literal["narrowed_access"] = "narrowed_access"
     data_source: str
-    model: str
+    dataset: str
     narrowed_by: list[str]
 
     def human_message(self) -> str:
         return (
-            f"narrowed access: model {self.data_source}.{self.model} reads {', '.join(self.narrowed_by)}, "
+            f"narrowed access: model {self.data_source}.{self.dataset} reads {', '.join(self.narrowed_by)}, "
             f"whose access tags do not cover its own; callers lacking those tags cannot see it"
         )
 
 
 class LibraryNameShadowWarning(SlayerWarning):
-    """Model ``model``'s aggregation ``aggregation`` shadows the library function written ``function`` in its own model."""
+    """Model ``dataset``'s aggregation ``aggregation`` shadows the library function written ``function`` in its own model."""
 
     kind: Literal["library_name_shadow"] = "library_name_shadow"
-    model: str
+    dataset: str
     aggregation: str
     function: str
 
     def human_message(self) -> str:
         return (
-            f"model {self.model!r} defines the aggregation {self.aggregation!r}, so {self.function}(…) over its "
+            f"dataset {self.dataset!r} defines the aggregation {self.aggregation!r}, so {self.function}(…) over its "
             f"columns is that aggregation, not the library function {self.function.lower()}()"
         )
 
 
 class BrokenDependentWarning(SlayerWarning):
-    """A re-ingest re-typed ``column`` to a list, and the stored definition ``name`` that planned before it fails
+    """A re-ingest re-typed ``field`` to a list, and the stored definition ``name`` that planned before it fails
     after (``checked=False``: the check could not run, for ``reason``)."""
 
     kind: Literal["broken_dependent"] = "broken_dependent"
-    model: str
+    dataset: str
     data_source: str
-    dependent_kind: Literal["measure", "column", "filter", "saved_query"]
+    dependent_kind: Literal["metric", "field", "filter", "saved_query"]
     name: str
-    column: str
+    field: str
     checked: bool = True
     error_type: Optional[str] = None
     error: Optional[str] = None
     reason: Optional[str] = None
 
     def human_message(self) -> str:
-        where = f"{self.dependent_kind} {self.data_source}.{self.model}.{self.name}"
+        where = f"{self.dependent_kind} {self.data_source}.{self.dataset}.{self.name}"
         if not self.checked:
-            return _single_line(f"{where} reads {self.column}, re-typed to a list, and could not be checked: "
+            return _single_line(f"{where} reads {self.field}, re-typed to a list, and could not be checked: "
                                 f"{self.reason}")
-        return _single_line(f"{where} breaks now that {self.column} is a list: {self.error}")
+        return _single_line(f"{where} breaks now that {self.field} is a list: {self.error}")
 
 
 class WholeListWarning(SlayerWarning):
@@ -349,29 +349,29 @@ class DeprecatedInputWarning(SlayerWarning):
 
 
 class NameCollisionWarning(SlayerWarning):
-    """Stored model ``model`` holds ``names`` in one ``namespace``, differing only in case; each resolves only when
+    """Stored model ``dataset`` holds ``names`` in one ``namespace``, differing only in case; each resolves only when
     spelled exactly (or double-quoted)."""
 
     kind: Literal["name_collision"] = "name_collision"
-    model: str
+    dataset: str
     namespace: str
     names: List[str]
 
     def human_message(self) -> str:
-        return (f"model {self.model!r} declares {' and '.join(repr(n) for n in self.names)} in its {self.namespace}, "
+        return (f"dataset {self.dataset!r} declares {' and '.join(repr(n) for n in self.names)} in its {self.namespace}, "
                 f"differing only in case; spell one exactly or double-quote it, and rename one to remove the "
                 f"ambiguity")
 
 
-class SpineJoinDroppedWarning(SlayerWarning):
-    """A stored join of ``model`` into the built-in spine (``join``, its name or target) was dropped on load."""
+class SpineRelationshipDroppedWarning(SlayerWarning):
+    """A stored join of ``dataset`` into the built-in spine (``relationship``, its name or target) was dropped on load."""
 
-    kind: Literal["spine_join_dropped"] = "spine_join_dropped"
-    model: str
-    join: str
+    kind: Literal["spine_relationship_dropped"] = "spine_relationship_dropped"
+    dataset: str
+    relationship: str
 
     def human_message(self) -> str:
-        return (f"model {self.model!r}: its join {self.join!r} into the built-in time_spine was dropped; the spine "
+        return (f"dataset {self.dataset!r}: its join {self.relationship!r} into the built-in time_spine was dropped; the spine "
                 f"joins each dataset through its time axis, so a declared join to it is never needed")
 
 
@@ -418,7 +418,7 @@ AnySlayerWarning = Annotated[
         StatementTimeoutSkippedWarning,
         WholePeriodsNonNestingWarningPayload,
         UnloadableDocumentWarning,
-        ExtensionColumnInlinedWarning,
+        ExtensionFieldInlinedWarning,
         NarrowedAccessWarning,
         LibraryNameShadowWarning,
         BrokenDependentWarning,
@@ -426,7 +426,7 @@ AnySlayerWarning = Annotated[
         DeprecatedInputWarning,
         DeprecatedSpellingWarning,
         NameCollisionWarning,
-        SpineJoinDroppedWarning,
+        SpineRelationshipDroppedWarning,
         DateOnlyMidnightWarning,
     ],
     Field(discriminator="kind"),
@@ -477,10 +477,10 @@ class SlayerUnloadableDocumentWarning(UserWarning):
         return self.payload.human_message()
 
 
-class SlayerExtensionColumnInlinedWarning(UserWarning):
-    """Carrier ``UserWarning`` for an ``ExtensionColumnInlinedWarning`` payload — one wording on both channels."""
+class SlayerExtensionFieldInlinedWarning(UserWarning):
+    """Carrier ``UserWarning`` for an ``ExtensionFieldInlinedWarning`` payload — one wording on both channels."""
 
-    def __init__(self, payload: ExtensionColumnInlinedWarning) -> None:
+    def __init__(self, payload: ExtensionFieldInlinedWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 
@@ -554,10 +554,10 @@ class SlayerNameCollisionWarning(UserWarning):
         return self.payload.human_message()
 
 
-class SlayerSpineJoinDroppedWarning(UserWarning):
-    """Carrier ``UserWarning`` for a ``SpineJoinDroppedWarning`` payload — one wording on both channels."""
+class SlayerSpineRelationshipDroppedWarning(UserWarning):
+    """Carrier ``UserWarning`` for a ``SpineRelationshipDroppedWarning`` payload — one wording on both channels."""
 
-    def __init__(self, payload: SpineJoinDroppedWarning) -> None:
+    def __init__(self, payload: SpineRelationshipDroppedWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 

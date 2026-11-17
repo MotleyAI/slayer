@@ -27,7 +27,7 @@ from slayer.core.errors import ListTypeError, SlayerError
 from slayer.core.keys import (
     KIND_POLICY,
     VALUE_KEY_TYPES,
-    ColumnKey,
+    FieldKey,
     Phase,
     list_element_type,
     prepend_value_key,
@@ -35,16 +35,16 @@ from slayer.core.keys import (
     substitute_value_keys,
     value_type,
 )
-from slayer.core.models import Aggregation, Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import Aggregation, DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.core.refs import key_display
 from slayer.core.syntax import parse_expr
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
-from slayer.inspect.collection_render import render_models_summary
-from slayer.inspect.model_render import render_model_inspection
+from slayer.inspect.collection_render import render_datasets_summary
+from slayer.inspect.dataset_render import render_dataset_inspection
 from slayer.live_schema.ingestion import ingest_datasource_async
 from slayer.mcp.server import create_mcp_server
-from slayer.search.render import render_column_text
+from slayer.search.render import render_field_text
 from slayer.sql.dialects import get_dialect
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._dev2101_fixtures import emit
@@ -124,34 +124,34 @@ def contractor_statements(backend: str) -> list[str]:
             "INSERT INTO assignments VALUES " + ", ".join(f"({a}, {c})" for a, c in ASSIGNED)]
 
 
-def contractors_model() -> SlayerModel:
-    return SlayerModel(name="contractors", sql_table="contractors", data_source="test", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="name", type=DataType.TEXT),
-        Column(name="team", type=DataType.TEXT),
-        Column(name="rate", type=DataType.INT),
-        Column(name="hired", type=DataType.DATE),
-        Column(name="skills", type=DataType.ARRAY, element_type=DataType.TEXT),
-        Column(name="required", type=DataType.ARRAY, element_type=DataType.TEXT),
-        Column(name="scores", type=DataType.ARRAY, element_type=DataType.INT),
+def contractors_model() -> SlayerDataset:
+    return SlayerDataset(name="contractors", sql_table="contractors", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="name", datatype=DataType.TEXT),
+        DatasetField(name="team", datatype=DataType.TEXT),
+        DatasetField(name="rate", datatype=DataType.INT),
+        DatasetField(name="hired", datatype=DataType.DATE),
+        DatasetField(name="skills", datatype=DataType.ARRAY, element_type=DataType.TEXT),
+        DatasetField(name="required", datatype=DataType.ARRAY, element_type=DataType.TEXT),
+        DatasetField(name="scores", datatype=DataType.ARRAY, element_type=DataType.INT),
     ])
 
 
-def assignments_model() -> SlayerModel:
-    return SlayerModel(
+def assignments_model() -> SlayerDataset:
+    return SlayerDataset(
         name="assignments", sql_table="assignments", data_source="test",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 Column(name="contractor_id", type=DataType.INT)],
-        joins=[ModelJoin(target_model="contractors", join_pairs=[["contractor_id", "id"]])],
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                 DatasetField(name="contractor_id", datatype=DataType.INT)],
+        relationships=[DatasetRelationship(to="contractors", join_pairs=[["contractor_id", "id"]])],
     )
 
 
-def models() -> list[SlayerModel]:
+def models() -> list[SlayerDataset]:
     return [contractors_model(), assignments_model()]
 
 
 @contextlib.asynccontextmanager
-async def duckdb_engine(*, statements: Iterable[str], engine_models: list[SlayerModel],
+async def duckdb_engine(*, statements: Iterable[str], engine_models: list[SlayerDataset],
                         ) -> AsyncGenerator[SlayerQueryEngine]:
     def seed(path: str) -> None:
         with contextlib.closing(duckdb.connect(path)) as con:
@@ -163,7 +163,7 @@ async def duckdb_engine(*, statements: Iterable[str], engine_models: list[Slayer
 
 @contextlib.asynccontextmanager
 async def postgres_engine(conn: Any, base: Path, *, statements: Iterable[str],
-                          engine_models: list[SlayerModel]) -> AsyncGenerator[SlayerQueryEngine]:
+                          engine_models: list[SlayerDataset]) -> AsyncGenerator[SlayerQueryEngine]:
     cur = conn.cursor()
     for stmt in statements:
         cur.execute(stmt)
@@ -549,7 +549,7 @@ class TestRefusals:
 
     async def test_custom_aggregation_over_a_list(self) -> None:
         model = contractors_model().model_copy(update={
-            "aggregations": [Aggregation(name="my_agg", formula="COUNT({value})")]})
+            "aggregations": [Aggregation(name="my_agg", expression="COUNT({value})")]})
         async with duckdb_engine(statements=contractor_statements("duckdb"),
                                  engine_models=[model, assignments_model()]) as e:
             body = query(measures=[measure("my_agg(skills)", "n")])
@@ -686,10 +686,10 @@ class TestStages:
         assert {as_set(cell(r, "skills")): num(cell(r, "n")) for r in resp.data} == dict(GROUPS)
 
     async def test_grouped_list_output_keeps_its_list_type(self, engine: SlayerQueryEngine) -> None:
-        model = await engine.create_model_from_query(query=STAGE, name="per_set")
-        skills = model.get_column("skills")
+        model = await engine.create_dataset_from_query(query=STAGE, name="per_set")
+        skills = model.get_field("skills")
         assert skills is not None
-        assert (skills.type, skills.element_type) == (DataType.ARRAY, DataType.TEXT)
+        assert (skills.datatype, skills.element_type) == (DataType.ARRAY, DataType.TEXT)
 
     async def test_three_stages(self, engine: SlayerQueryEngine) -> None:
         s1 = {"name": "s1", "source_model": "contractors", "dimensions": ["team", "skills"],
@@ -777,10 +777,10 @@ GRIDS = ("CREATE TABLE grids (id INTEGER, grid INTEGER[][])",
          "INSERT INTO grids VALUES (1, [[1, 2], [3]]), (2, NULL), (3, [[1, 2], [3]])")
 
 
-def grids_model() -> SlayerModel:
-    return SlayerModel(name="grids", sql_table="grids", data_source="test", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True),
-        Column(name="grid", type=DataType.ARRAY, element_type=DataType.UNKNOWN)])
+def grids_model() -> SlayerDataset:
+    return SlayerDataset(name="grids", sql_table="grids", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+        DatasetField(name="grid", datatype=DataType.ARRAY, element_type=DataType.UNKNOWN)])
 
 
 @pytest.fixture(scope="module")
@@ -826,25 +826,25 @@ class TestAllowedAggregations:
 
     @pytest.mark.parametrize("allowed", [["count", "count_distinct"], ["count_distinct"], ["count"]])
     def test_count_and_distinct_count_save(self, allowed: list[str]) -> None:
-        SlayerModel.model_validate({"name": "c", "sql_table": "c", "data_source": "test",
-                                    "columns": [_list_column(allowed_aggregations=allowed)]})
+        SlayerDataset.model_validate({"name": "c", "sql_table": "c", "data_source": "test",
+                                    "fields": [_list_column(allowed_aggregations=allowed)]})
 
     @pytest.mark.parametrize("allowed", [["sum"], ["count", "count_distinct", "min"], ["count_distinct_approx"]])
     def test_other_aggregations_fail_to_save(self, allowed: list[str]) -> None:
         data = {"name": "c", "sql_table": "c", "data_source": "test",
-                "columns": [_list_column(allowed_aggregations=allowed)]}
+                "fields": [_list_column(allowed_aggregations=allowed)]}
         with pytest.raises(ValueError, match="skills"):
-            SlayerModel.model_validate(data)
+            SlayerDataset.model_validate(data)
 
     async def test_round_trips_through_storage(self, tmp_path: Path) -> None:
         storage = YAMLStorage(base_dir=str(tmp_path))
         await storage.save_datasource(DatasourceConfig(name="test", type="duckdb", database=":memory:"))
-        model = SlayerModel.model_validate({"name": "c", "sql_table": "c", "data_source": "test", "columns": [
+        model = SlayerDataset.model_validate({"name": "c", "sql_table": "c", "data_source": "test", "fields": [
             _list_column(allowed_aggregations=["count", "count_distinct"])]})
-        await storage.save_model(model)
-        loaded = await storage.get_model("c", data_source="test")
+        await storage.save_dataset(model)
+        loaded = await storage.get_dataset("c", data_source="test")
         assert loaded is not None
-        skills = loaded.get_column("skills")
+        skills = loaded.get_field("skills")
         assert skills is not None
         assert skills.allowed_aggregations == ["count", "count_distinct"]
 
@@ -860,21 +860,21 @@ def _says_set_grouping(text: str) -> bool:
 
 class TestRendering:
     async def test_inspect_model(self, duck: SlayerQueryEngine) -> None:
-        model = await duck.storage.get_model("contractors", data_source="test")
+        model = await duck.storage.get_dataset("contractors", data_source="test")
         assert model is not None
-        out = await render_model_inspection(model=model, storage=duck.storage, engine=duck, format="markdown",
+        out = await render_dataset_inspection(dataset=model, storage=duck.storage, engine=duck, format="markdown",
                                             sections=["columns"])
         assert _says_set_grouping(out), out
 
     def test_search_column_text(self) -> None:
         model = contractors_model()
-        skills = model.get_column("skills")
+        skills = model.get_field("skills")
         assert skills is not None
-        text = render_column_text(model=model, column=skills)
+        text = render_field_text(dataset=model, field=skills)
         assert _says_set_grouping(text), text
 
     def test_models_summary(self) -> None:
-        markdown = render_models_summary(datasource_name="test", models=[contractors_model()], fmt="markdown",
+        markdown = render_datasets_summary(datasource_name="test", datasets=[contractors_model()], fmt="markdown",
                                          compact=False)
         assert _says_set_grouping(markdown), markdown
 
@@ -882,8 +882,8 @@ class TestRendering:
 # --------------------------------------------------------------------------- #
 # The element-set key kind
 # --------------------------------------------------------------------------- #
-SKILLS = ColumnKey(leaf="skills")
-REQUIRED = ColumnKey(leaf="required")
+SKILLS = FieldKey(leaf="skills")
+REQUIRED = FieldKey(leaf="required")
 
 
 def _list_set(source: Any) -> Any:
@@ -891,11 +891,11 @@ def _list_set(source: Any) -> Any:
 
 
 def _column_type(key: Any) -> Optional[DataType]:
-    return DataType.ARRAY if isinstance(key, ColumnKey) and key.leaf in _LISTS else None
+    return DataType.ARRAY if isinstance(key, FieldKey) and key.leaf in _LISTS else None
 
 
 def _column_element(key: Any) -> Optional[DataType]:
-    return DataType.TEXT if isinstance(key, ColumnKey) and key.leaf in ("skills", "required") else None
+    return DataType.TEXT if isinstance(key, FieldKey) and key.leaf in ("skills", "required") else None
 
 
 class TestKeyKind:
@@ -910,12 +910,12 @@ class TestKeyKind:
         assert key.map_children(lambda c: REQUIRED) == _list_set(REQUIRED)
 
     def test_identity(self) -> None:
-        assert _list_set(SKILLS) == _list_set(ColumnKey(leaf="skills"))
-        assert hash(_list_set(SKILLS)) == hash(_list_set(ColumnKey(leaf="skills")))
+        assert _list_set(SKILLS) == _list_set(FieldKey(leaf="skills"))
+        assert hash(_list_set(SKILLS)) == hash(_list_set(FieldKey(leaf="skills")))
         assert _list_set(SKILLS) != SKILLS
 
     def test_reroot_and_prepend(self) -> None:
-        joined = ColumnKey(path=("contractors",), leaf="skills")
+        joined = FieldKey(path=("contractors",), leaf="skills")
         assert reroot_value_key(_list_set(joined), target_path=("contractors",)) == _list_set(SKILLS)
         assert prepend_value_key(_list_set(SKILLS), host_path=("contractors",)) == _list_set(joined)
 
@@ -924,8 +924,8 @@ class TestKeyKind:
 
     def test_typed_as_the_sources_list(self) -> None:
         key = _list_set(SKILLS)
-        assert value_type(key, column_type=_column_type) is DataType.ARRAY
-        assert list_element_type(key, column_type=_column_type, column_element=_column_element) is DataType.TEXT
+        assert value_type(key, field_type=_column_type) is DataType.ARRAY
+        assert list_element_type(key, field_type=_column_type, field_element=_column_element) is DataType.TEXT
 
     def test_phase_is_the_sources(self) -> None:
         assert _list_set(SKILLS).phase is Phase.ROW
@@ -1051,15 +1051,15 @@ async def widths(postgresql: Any, tmp_path: Path) -> AsyncGenerator[SlayerQueryE
         ds = await e.storage.get_datasource("test")
         assert ds is not None
         (model,) = await ingest_datasource_async(ds, client=e.client_for(ds), include_tables=["widths"])
-        await e.storage.save_model(model)
+        await e.storage.save_dataset(model)
         yield e
 
 
-def widths_model() -> SlayerModel:
-    def array(name: str, element: DataType, db_type: str) -> Column:
-        return Column(name=name, type=DataType.ARRAY, element_type=element, db_type=db_type)
-    return SlayerModel(name="widths", sql_table="widths", data_source="test", columns=[
-        Column(name="id", type=DataType.INT, primary_key=True),
+def widths_model() -> SlayerDataset:
+    def array(name: str, element: DataType, db_type: str) -> DatasetField:
+        return DatasetField(name=name, datatype=DataType.ARRAY, element_type=element, db_type=db_type)
+    return SlayerDataset(name="widths", sql_table="widths", data_source="test", fields=[
+        DatasetField(name="id", datatype=DataType.INT, primary_key=True),
         array("v", DataType.TEXT, "VARCHAR[]"), array("t", DataType.TEXT, "TEXT[]"),
         array("s", DataType.INT, "SMALLINT[]"), array("i", DataType.INT, "INTEGER[]"),
         array("b", DataType.INT, "BIGINT[]"), array("r", DataType.DOUBLE, "REAL[]"),
@@ -1069,8 +1069,8 @@ def widths_model() -> SlayerModel:
 @pytest.mark.parametrize("filter_", ["v = t", "t = v", "i = b", "b = i", "r = d", "d = r", "s = i", "i = d",
                                      "d = i", "v = ['a']", "b IN ([1], [2])"])
 async def test_postgres_casts_each_operand_before_unnesting(filter_: str) -> None:
-    sql = await emit(SlayerQuery.model_validate({"source_model": "widths", "dimensions": ["id"],
-                                                 "filters": [filter_]}), dialect="postgres",
+    sql = await emit(SlayerQuery.model_validate({"population": "widths", "dimensions": ["id"],
+                                                 "filter": [filter_]}), dialect="postgres",
                      models=[widths_model()])
     assert len(re.findall(r"UNNEST\(\s*CAST\(", sql.upper())) >= 2, sql
 

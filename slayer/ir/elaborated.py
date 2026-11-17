@@ -15,13 +15,13 @@ from pydantic import BaseModel, ConfigDict, Field as PydanticField
 
 from slayer.core.keys import Grain, ValueKey
 from slayer.core.query import SlayerQuery
-from slayer.core.scope import ModelScope, StageSchema
+from slayer.core.scope import DatasetScope, StageSchema
 from slayer.ir.planned import MaskTyping
 from slayer.ir.prebound import PreboundQuery, StrictQueryCarrier
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.ir.terms import Aggregate, Broadcast, DatasetT, Transform
 
-PositionVerdict = Literal["field", "measure"]
+PositionVerdict = Literal["field", "metric"]
 
 
 class ConjunctTyping(NamedTuple):
@@ -54,7 +54,7 @@ class ElaboratedQuery(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     dimensions: Tuple[ExpressionEntry, ...] = ()
-    measures: Tuple[ExpressionEntry, ...] = ()
+    metrics: Tuple[ExpressionEntry, ...] = ()
     filters: Tuple[ExpressionEntry, ...] = ()
     order: Tuple[ExpressionEntry, ...] = ()
     terms: Dict[ValueKey, Term] = PydanticField(default_factory=dict)
@@ -64,7 +64,7 @@ class ElaboratedQuery(BaseModel):
             return NotImplemented
         return (
             self.dimensions == other.dimensions
-            and self.measures == other.measures
+            and self.metrics == other.metrics
             and self.filters == other.filters
             and self.order == other.order
             and self.terms == other.terms
@@ -76,7 +76,7 @@ class ElaboratedQuery(BaseModel):
 class _CompileInputs(ElaboratedQuery):
     """The typed bound query an environment types — the compiler's inputs."""
 
-    scope: Union[ModelScope, StageSchema] = PydanticField(repr=False)
+    scope: Union[DatasetScope, StageSchema] = PydanticField(repr=False)
     bundle: ResolvedSourceBundle = PydanticField(repr=False)
     stage_schemas: Dict[str, StageSchema] = PydanticField(
         default_factory=dict, repr=False,

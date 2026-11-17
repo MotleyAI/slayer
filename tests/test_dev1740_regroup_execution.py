@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.query import DatasetMetric, SlayerQuery
 
 from tests._dev1740_fixtures import (
     BAND_AVG,
@@ -48,7 +48,7 @@ BAND = "CASE WHEN sum(amount, partition_by=city) > 5000 THEN 1 ELSE 0 END"
 def _flagship(**extra) -> SlayerQuery:
     return _q(
         dimensions=["region", {"expression": BAND, "name": "band"}],
-        measures=[ModelMeasure(formula="sum(amount)", name="band_total")],
+        measures=[DatasetMetric(expression="sum(amount)", name="band_total")],
         **extra,
     )
 
@@ -95,11 +95,11 @@ class TestAggregateOncePerGroup:
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
             measures=[
-                ModelMeasure(formula="sum(amount)", name="s"),
-                ModelMeasure(formula="count(*)", name="n"),
-                ModelMeasure(formula="avg(amount)", name="a"),
-                ModelMeasure(formula="sum(ok_amount)", name="ok"),
-                ModelMeasure(formula="count_distinct(customer_id)", name="cd"),
+                DatasetMetric(expression="sum(amount)", name="s"),
+                DatasetMetric(expression="count(*)", name="n"),
+                DatasetMetric(expression="avg(amount)", name="a"),
+                DatasetMetric(expression="sum(ok_amount)", name="ok"),
+                DatasetMetric(expression="count_distinct(customer_id)", name="cd"),
             ],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): r for r in resp.data}
@@ -113,7 +113,7 @@ class TestAggregateOncePerGroup:
     async def test_row_count_reconciles_across_bands(self, exec_engine) -> None:
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": BAND, "name": "band"}],
-            measures=[ModelMeasure(formula="count(*)", name="n")],
+            measures=[DatasetMetric(expression="count(*)", name="n")],
         ))
         per_region: dict = {}
         for r in resp.data:
@@ -132,7 +132,7 @@ class TestCrossModelPartition:
                 "THEN 1 ELSE 0 END")
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -148,7 +148,7 @@ class TestExtensionColumnPartition:
         band = "CASE WHEN sum(amount * 2, partition_by=city) > 10000 THEN 1 ELSE 0 END"
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -203,7 +203,7 @@ class TestGrandTotalPartitionKey:
         band = "CASE WHEN sum(amount, partition_by=[]) > 20000 THEN 1 ELSE 0 END"
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -219,7 +219,7 @@ class TestTimeBucketPartitionKey:
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], month_key(r["orders.ordered_at"]),
                int(r["orders.band"])): float(r["orders.s"]) for r in resp.data}
@@ -245,7 +245,7 @@ class TestMultipleAggregatesInOneDimension:
                 "AND sum(amount, partition_by=region) > 10000 THEN 1 ELSE 0 END")
         resp = await exec_engine.execute(_q(
             dimensions=["region", {"expression": band, "name": "band"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ))
         by = {(r["orders.region"], int(r["orders.band"])): float(r["orders.s"])
               for r in resp.data}
@@ -266,18 +266,18 @@ def _suffix(row, suffix):
 class TestSiblingStageSource:
     async def test_banding_over_a_prior_stage(self, exec_engine) -> None:
         stage1 = SlayerQuery(
-            name="per_city", source_model="orders",
+            name="per_city", population="orders",
             dimensions=["city", "region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="amt")],
+            metrics=[DatasetMetric(expression="sum(amount)", name="amt")],
         )
         stage2 = SlayerQuery(
-            source_model="per_city",
+            population="per_city",
             dimensions=[
                 "region",
                 {"expression": "CASE WHEN sum(amt, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "name": "band"},
             ],
-            measures=[ModelMeasure(formula="sum(amt)", name="band_total")],
+            metrics=[DatasetMetric(expression="sum(amt)", name="band_total")],
         )
         resp = await exec_engine.execute([stage1, stage2])
         got = {(_suffix(r, ".region"), int(_suffix(r, ".band")),
@@ -294,7 +294,7 @@ class TestCardinalityInvariant:
         banded = await exec_engine.execute(_flagship())
         plain = await exec_engine.execute(_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="band_total")],
+            measures=[DatasetMetric(expression="sum(amount)", name="band_total")],
         ))
         plain_by = {r["orders.region"]: float(r["orders.band_total"]) for r in plain.data}
         summed: dict = {}

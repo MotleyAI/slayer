@@ -52,12 +52,12 @@ class TestExplicitTwinParity:
             chain_engine,
             rootless=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+                "metrics": [{"formula": "sum(orders.amount)", "name": "rev"}],
             }),
             explicit=SlayerQuery.model_validate({
-                "source_model": "customers",
+                "population": "customers",
                 "dimensions": ["customers.region"],
-                "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+                "metrics": [{"formula": "sum(orders.amount)", "name": "rev"}],
             }),
             population="customers",
         )
@@ -67,14 +67,14 @@ class TestExplicitTwinParity:
             chain_engine,
             rootless=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "measures": [{"formula": "sum(amount)", "name": "rev"}],
-                "filters": ["orders.status = 'ok'"],
+                "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+                "filter": ["orders.status = 'ok'"],
             }),
             explicit=SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customers.region"],
-                "measures": [{"formula": "sum(amount)", "name": "rev"}],
-                "filters": ["orders.status = 'ok'"],
+                "metrics": [{"formula": "sum(amount)", "name": "rev"}],
+                "filter": ["orders.status = 'ok'"],
             }),
             population="orders",
         )
@@ -88,7 +88,7 @@ class TestExplicitTwinParity:
             chain_engine,
             rootless=rootless,
             explicit=SlayerQuery(
-                source_model="customers",
+                population="customers",
                 dimensions=["customers.region"],
                 distinct_dimension_values=False,
             ),
@@ -106,9 +106,9 @@ class TestExplicitOverride:
         """Explicit source_model=orders is honored even though inference would
         pick customers — proven by West (a region with no orders) being absent."""
         resp = await chain_engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(amount)", "name": "rev"}],
+            "metrics": [{"formula": "sum(amount)", "name": "rev"}],
         }))
         assert resp.population == "orders"
         assert resp.population_inferred is False
@@ -119,7 +119,7 @@ class TestExplicitOverride:
         """customers owns neither the queried dimension; it's a valid explicit
         bridge, and no inference runs (inference alone would pick regions)."""
         resp = await chain_engine.execute(SlayerQuery(
-            source_model="customers",
+            population="customers",
             dimensions=["regions.name"],
         ))
         assert resp.population == "customers"
@@ -131,7 +131,7 @@ class TestNullAttachment:
     async def test_region_without_orders_attaches_null(self, chain_engine) -> None:
         resp = await chain_engine.execute(SlayerQuery.model_validate({
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(orders.amount)", "name": "rev"}],
+            "metrics": [{"formula": "sum(orders.amount)", "name": "rev"}],
         }))
         assert resp.population == "customers"
         assert resp.population_inferred is True

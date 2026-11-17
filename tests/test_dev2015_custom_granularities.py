@@ -15,9 +15,9 @@ from slayer.core.errors import (
     QueryTypeError,
     RefinementConflictError,
     SlayerError,
-    TimeDimensionColumnError,
+    TimeDimensionFieldError,
 )
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.granularity import CustomGranularity
 from slayer.core.query import QueryRefinement, SlayerQuery, refine_query
 from slayer.sql.dialects import get_dialect
@@ -62,9 +62,9 @@ def _series(resp, *, column: str, width: int = 10) -> dict[str, float]:
 async def _grouped(engine, *, granularity: str, column: str = "ts", model: str = "events",
                    series: str | None = None, width: int = 10) -> dict[str, float]:
     resp = await engine.execute(SlayerQuery.model_validate({
-        "source_model": model, "measures": [m("sum(amount)", "s")],
+        "population": model, "metrics": [m("sum(amount)", "s")],
         "time_dimensions": [{"dimension": column, "granularity": granularity}],
-        "filters": [f"series = '{series}'"] if series else [],
+        "filter": [f"series = '{series}'"] if series else [],
     }))
     return _series(resp, column=column, width=width)
 
@@ -163,11 +163,11 @@ class TestBucketing:
 class TestEveryPosition:
     async def test_functional_form_and_order_key(self, engine) -> None:
         functional = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "dimensions": ["date_trunc('fiscal_year', order_date)"], "measures": [m("sum(amount)", "s")],
+            "population": "orders", "dimensions": ["date_trunc('fiscal_year', order_date)"], "metrics": [m("sum(amount)", "s")],
             "order": [{"column": "date_trunc('fiscal_year', order_date)", "direction": "desc"}],
         }))
         explicit = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [m("sum(amount)", "s")],
+            "population": "orders", "metrics": [m("sum(amount)", "s")],
             "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
             "order": [{"column": "order_date", "direction": "desc"}],
         }))
@@ -177,34 +177,34 @@ class TestEveryPosition:
 
     async def test_time_dimensions_string_entry(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [m("sum(amount)", "s")],
+            "population": "orders", "metrics": [m("sum(amount)", "s")],
             "time_dimensions": ["date_trunc('fiscal_year', order_date)"],
         }))
         assert _series(resp, column="order_date") == FY_ROWS
 
     async def test_filter(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [m("sum(amount)", "s")],
-            "filters": ["date_trunc('fiscal_year', order_date) = '2024-04-01'"],
+            "population": "orders", "metrics": [m("sum(amount)", "s")],
+            "filter": ["date_trunc('fiscal_year', order_date) = '2024-04-01'"],
         }))
         assert float(value(resp.data[0], "s")) == 50.0
 
     async def test_inside_an_expression(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [m("count_distinct(date_trunc('fiscal_year', order_date))", "fys")],
+            "population": "orders", "metrics": [m("count_distinct(date_trunc('fiscal_year', order_date))", "fys")],
         }))
         assert int(value(resp.data[0], "fys")) == 3
 
     async def test_on_the_spine(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "measures": [m("sum(orders.amount)", "s")],
+            "metrics": [m("sum(orders.amount)", "s")],
             "time_dimensions": [spine_td(granularity="fiscal_year", date_range=["2023-04-01", "2026-03-31"])],
         }))
         assert _series(resp, column="time_spine.timestamp") == FY_ROWS
 
     async def test_result_keys_follow_the_built_in_rules(self, engine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [m("sum(amount)", "s")],
+            "population": "orders", "metrics": [m("sum(amount)", "s")],
             "time_dimensions": [{"dimension": "order_date", "granularity": "month"},
                                 {"dimension": "order_date", "granularity": "fiscal_year"}],
         }))
@@ -225,22 +225,22 @@ class TestEveryPosition:
 
     async def test_relative_token_against_a_text_column(self, engine) -> None:
         query = SlayerQuery.model_validate({
-            "source_model": "events", "measures": [m("sum(amount)", "s")], "filters": ["series = 'this fiscal_year'"],
+            "population": "events", "metrics": [m("sum(amount)", "s")], "filter": ["series = 'this fiscal_year'"],
         })
         with pytest.raises(DateOperandTypeError) as exc:
             await engine.execute(query, dry_run=True)
         assert "series" in str(exc.value)
 
     async def test_refining_a_saved_query(self, engine: SlayerQueryEngine) -> None:
-        await engine.create_model_from_query(query=SlayerQuery.model_validate({
-            "source_model": "orders", "measures": [m("sum(amount)", "s")],
+        await engine.create_dataset_from_query(query=SlayerQuery.model_validate({
+            "population": "orders", "metrics": [m("sum(amount)", "s")],
             "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
         }), name="fy")
         window = {"time_dimensions": [{"dimension": "order_date", "granularity": "FISCAL_YEAR",
                                        "date_range": ["2024-04-01", "2025-03-31"]}]}
         resp = await engine.execute("fy", refine=window)
         assert [float(value(r, "s")) for r in resp.data] == [50.0]
-        saved = SlayerQuery.model_validate({"source_model": "orders", **window})
+        saved = SlayerQuery.model_validate({"population": "orders", **window})
         moved = QueryRefinement.model_validate(
             {"time_dimensions": [{**window["time_dimensions"][0], "date_range": ["2025-04-01", None]}]})
         with pytest.raises(RefinementConflictError) as exc:
@@ -252,9 +252,9 @@ class TestEveryPosition:
         assert cfg is not None
         await engine.storage.save_datasource(DatasourceConfig(name="other", type=cfg.type, database=cfg.database))
         other = cg_orders_model().model_copy(update={"name": "orders2", "data_source": "other"})
-        await engine.storage.save_model(other)
+        await engine.storage.save_dataset(other)
         query = SlayerQuery.model_validate({
-            "source_model": "orders2", "measures": [m("sum(amount)", "s")],
+            "population": "orders2", "metrics": [m("sum(amount)", "s")],
             "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
         })
         with pytest.raises(QueryTypeError) as exc:
@@ -267,8 +267,8 @@ class TestEveryPosition:
 # Nesting is boundary containment
 # ---------------------------------------------------------------------------
 
-async def _save(engine: SlayerQueryEngine, model: SlayerModel) -> None:
-    await engine.storage.save_model(model)
+async def _save(engine: SlayerQueryEngine, model: SlayerDataset) -> None:
+    await engine.storage.save_dataset(model)
 
 
 class TestNesting:
@@ -276,29 +276,29 @@ class TestNesting:
         await _save(engine, bucketed_model(name="o_month", source="orders", column="order_date", granularity="month"))
         await _save(engine, bucketed_model(name="o_week", source="orders", column="order_date", granularity="week"))
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "o_month", "measures": [m("sum(rev)", "s")],
+            "population": "o_month", "metrics": [m("sum(rev)", "s")],
             "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
         }))
         assert _series(resp, column="order_date") == FY_ROWS
         weekly = SlayerQuery.model_validate({
-            "source_model": "o_week", "measures": [m("sum(rev)", "s")],
+            "population": "o_week", "metrics": [m("sum(rev)", "s")],
             "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
         })
-        with pytest.raises(TimeDimensionColumnError) as exc:
+        with pytest.raises(TimeDimensionFieldError) as exc:
             await engine.execute(weekly, dry_run=True)
         assert "week" in str(exc.value)
         assert "fiscal_year" in str(exc.value)
 
     async def test_the_fiscal_year_does_not_nest_into_the_calendar_year(self, engine) -> None:
         stage = SlayerQuery.model_validate({
-            "name": "fy", "source_model": "orders", "measures": [m("sum(amount)", "rev")],
+            "name": "fy", "population": "orders", "metrics": [m("sum(amount)", "rev")],
             "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
         })
         main = SlayerQuery.model_validate({
-            "source_model": "fy", "measures": [m("sum(rev)", "s")],
+            "population": "fy", "metrics": [m("sum(rev)", "s")],
             "time_dimensions": [{"dimension": "order_date", "granularity": "year"}],
         })
-        with pytest.raises(TimeDimensionColumnError) as exc:
+        with pytest.raises(TimeDimensionFieldError) as exc:
             await engine.execute([stage, main], dry_run=True)
         assert "fiscal_year" in str(exc.value)
         assert "year" in str(exc.value).replace("fiscal_year", "")
@@ -311,14 +311,14 @@ class TestNesting:
     async def test_minute_multiples(self, engine, stored, requested, ok) -> None:
         await _save(engine, bucketed_model(name="ev_b", source="events", column="ts", granularity=stored))
         query = SlayerQuery.model_validate({
-            "source_model": "ev_b", "measures": [m("sum(rev)", "s")],
+            "population": "ev_b", "metrics": [m("sum(rev)", "s")],
             "time_dimensions": [{"dimension": "ts", "granularity": requested}],
         })
         if ok:
             resp = await engine.execute(query)
             assert sum(float(value(r, "s")) for r in resp.data) == pytest.approx(23.0)
         else:
-            with pytest.raises(TimeDimensionColumnError) as exc:
+            with pytest.raises(TimeDimensionFieldError) as exc:
                 await engine.execute(query, dry_run=True)
             assert stored in str(exc.value)
             assert requested in str(exc.value)
@@ -350,21 +350,21 @@ class TestNesting:
         ("quarter_hour", "quarter_hour", True),
     ])
     async def test_boundary_containment(self, engine, stored, requested, ok) -> None:
-        model = SlayerModel.model_validate({
+        model = SlayerDataset.model_validate({
             "name": "hand", "sql_table": "events", "data_source": "test",
-            "columns": [{"name": "id", "type": "INT", "primary_key": True},
-                        {"name": "ts", "type": "TIMESTAMP", "granularity": stored},
-                        {"name": "amount", "type": "DOUBLE"}],
+            "fields": [{"name": "id", "datatype": "INT", "primary_key": True},
+                        {"name": "ts", "datatype": "TIMESTAMP", "granularity": stored},
+                        {"name": "amount", "datatype": "DOUBLE"}],
         })
         await _save(engine, model)
         query = SlayerQuery.model_validate({
-            "source_model": "hand", "measures": [m("sum(amount)", "s")],
+            "population": "hand", "metrics": [m("sum(amount)", "s")],
             "time_dimensions": [{"dimension": "ts", "granularity": requested}],
         })
         if ok:
             await engine.execute(query, dry_run=True)
         else:
-            with pytest.raises(TimeDimensionColumnError):
+            with pytest.raises(TimeDimensionFieldError):
                 await engine.execute(query, dry_run=True)
 
     @pytest.mark.parametrize("backend", BACKENDS)
@@ -375,15 +375,15 @@ class TestNesting:
                 await _save(eng, bucketed_model(name=f"ev_{stored}", source="events", column="ts",
                                                 granularity=stored))
             ok = await eng.execute(SlayerQuery.model_validate({
-                "source_model": "ev_quarter_hour", "measures": [m("sum(rev)", "s")],
+                "population": "ev_quarter_hour", "metrics": [m("sum(rev)", "s")],
                 "time_dimensions": [{"dimension": "ts", "granularity": "month"}],
             }))
             assert sum(float(value(r, "s")) for r in ok.data) == pytest.approx(23.0)
             query = SlayerQuery.model_validate({
-                "source_model": "ev_five_hours", "measures": [m("sum(rev)", "s")],
+                "population": "ev_five_hours", "metrics": [m("sum(rev)", "s")],
                 "time_dimensions": [{"dimension": "ts", "granularity": "month"}],
             })
-            with pytest.raises(TimeDimensionColumnError) as exc:
+            with pytest.raises(TimeDimensionFieldError) as exc:
                 await eng.execute(query, dry_run=True)
             assert "five_hours" in str(exc.value)
 
@@ -396,19 +396,19 @@ class TestColumnGranularity:
     async def test_custom_value_round_trips_and_rebuckets(self, engine: SlayerQueryEngine) -> None:
         model = cg_orders_model(order_date_granularity="fiscal_year").model_copy(update={"name": "orders_fy"})
         await _save(engine, model)
-        loaded = await engine.storage.get_model("orders_fy", data_source="test")
+        loaded = await engine.storage.get_dataset("orders_fy", data_source="test")
         assert loaded is not None
-        assert str(next(c for c in loaded.columns if c.name == "order_date").granularity) == "fiscal_year"
+        assert str(next(c for c in loaded.fields if c.name == "order_date").granularity) == "fiscal_year"
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "orders_fy", "measures": [m("sum(amount)", "s")],
+            "population": "orders_fy", "metrics": [m("sum(amount)", "s")],
             "time_dimensions": [{"dimension": "order_date", "granularity": "fiscal_year"}],
         }))
         assert _series(resp, column="order_date") == FY_ROWS
         monthly = SlayerQuery.model_validate({
-            "source_model": "orders_fy", "measures": [m("sum(amount)", "s")],
+            "population": "orders_fy", "metrics": [m("sum(amount)", "s")],
             "time_dimensions": [{"dimension": "order_date", "granularity": "month"}],
         })
-        with pytest.raises(TimeDimensionColumnError):
+        with pytest.raises(TimeDimensionFieldError):
             await engine.execute(monthly, dry_run=True)
 
     async def test_undefined_custom_value(self, engine: SlayerQueryEngine) -> None:
@@ -419,12 +419,12 @@ class TestColumnGranularity:
             update={"name": "orders2", "data_source": "other"},
         )
         with pytest.raises(SlayerError) as exc:
-            await engine.storage.save_model(model)
+            await engine.storage.save_dataset(model)
         assert "order_date" in str(exc.value)
         assert "fiscal_year" in str(exc.value)
-        assert await engine.storage.get_model("orders2", data_source="other") is None
-        await engine.storage.save_model(model, _validate=False)
-        query = SlayerQuery.model_validate({"source_model": "orders2", "measures": [m("sum(amount)", "s")]})
+        assert await engine.storage.get_dataset("orders2", data_source="other") is None
+        await engine.storage.save_dataset(model, _validate=False)
+        query = SlayerQuery.model_validate({"population": "orders2", "metrics": [m("sum(amount)", "s")]})
         with pytest.raises(QueryTypeError) as exc:
             await engine.execute(query, dry_run=True)
         assert "fiscal_year" in str(exc.value)

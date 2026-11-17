@@ -59,14 +59,14 @@ from typing import AsyncIterator, List
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality, TimeGranularity
+from slayer.core.enums import DataType, RelationshipCardinality, TimeGranularity
 from slayer.core.models import (
-    Column,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetField,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
-from slayer.core.query import ColumnRef, SlayerQuery, TimeDimension
+from slayer.core.query import FieldRef, SlayerQuery, TimeDimension
 from slayer.core.warnings import BroadcastGrainWarningPayload
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from tests._engine_helpers import seeded_exec_engine
@@ -79,87 +79,87 @@ from tests._engine_helpers import _engine_generate
 # Models — orders (host) → customers → {regions, segments}; the reverse
 # customers → orders direction is the inverted forward edge (DEV-1853).
 # --------------------------------------------------------------------------- #
-def regions_model() -> SlayerModel:
-    return SlayerModel(
+def regions_model() -> SlayerDataset:
+    return SlayerDataset(
         name="regions", data_source="test", sql_table="regions",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="pop", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="pop", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def segments_model() -> SlayerModel:
+def segments_model() -> SlayerDataset:
     # `code` is the join target but carries NO primary_key/unique claim:
     # the customers → segments hop is deliberately unproven.
-    return SlayerModel(
+    return SlayerDataset(
         name="segments", data_source="test", sql_table="segments",
-        columns=[
-            Column(name="code", type=DataType.TEXT),
-            Column(name="label", type=DataType.TEXT),
-            Column(name="discount", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="code", datatype=DataType.TEXT),
+            DatasetField(name="label", datatype=DataType.TEXT),
+            DatasetField(name="discount", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_model() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region_id", type=DataType.INT),
-            Column(name="segment_code", type=DataType.TEXT),
-            Column(name="tier", type=DataType.TEXT),
-            Column(name="spend", type=DataType.DOUBLE),
-            Column(name="signup_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name="segment_code", datatype=DataType.TEXT),
+            DatasetField(name="tier", datatype=DataType.TEXT),
+            DatasetField(name="spend", datatype=DataType.DOUBLE),
+            DatasetField(name="signup_at", datatype=DataType.TIMESTAMP),
             # Target-local filtered column (safe; CASE-WHEN at aggregation time):
-            Column(name="gold_spend", type=DataType.DOUBLE, sql="spend",
+            DatasetField(name="gold_spend", datatype=DataType.DOUBLE, sql="spend",
                    filter="tier = 'gold'"),
             # Unsafe-input probes (only planned when referenced):
-            Column(name="seg_label", type=DataType.TEXT, sql="segments.label"),
-            Column(name="vip_spend", type=DataType.DOUBLE, sql="spend",
+            DatasetField(name="seg_label", datatype=DataType.TEXT, sql="segments.label"),
+            DatasetField(name="vip_spend", datatype=DataType.DOUBLE, sql="spend",
                    filter="segments.label = 'Alpha'"),
         ],
-        joins=[
-            ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
-            ModelJoin(target_model="segments",
+        relationships=[
+            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
+            DatasetRelationship(to="segments",
                       join_pairs=[["segment_code", "code"]]),
         ],
     )
 
 
-def orders_model() -> SlayerModel:
-    return SlayerModel(
+def orders_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders", data_source="test", sql_table="orders",
         default_time_dimension="ordered_at",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="channel", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="channel", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[
-            ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+        relationships=[
+            DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
         ],
     )
 
 
-def inventory_model() -> SlayerModel:
+def inventory_model() -> SlayerDataset:
     """Composite-PK target for the F6 predicate tests (never seeded)."""
-    return SlayerModel(
+    return SlayerDataset(
         name="inventory", data_source="test", sql_table="inventory",
-        columns=[
-            Column(name="wh", type=DataType.TEXT, primary_key=True),
-            Column(name="sku", type=DataType.TEXT, primary_key=True),
-            Column(name="qty", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="wh", datatype=DataType.TEXT, primary_key=True),
+            DatasetField(name="sku", datatype=DataType.TEXT, primary_key=True),
+            DatasetField(name="qty", datatype=DataType.DOUBLE),
         ],
     )
 
 
-def dev1836_models() -> List[SlayerModel]:
+def dev1836_models() -> List[SlayerDataset]:
     """``[host, *referenced]`` in the order ``_engine_generate`` wants."""
     return [orders_model(), customers_model(), regions_model(), segments_model()]
 
@@ -174,7 +174,7 @@ def q(**kw) -> SlayerQuery:
 
 def month_td(column: str = "ordered_at") -> List[TimeDimension]:
     return [TimeDimension(
-        dimension=column,
+        field=column,
         granularity=TimeGranularity.MONTH,
     )]
 
@@ -326,7 +326,7 @@ __all__ = [
     "AMOUNT_BY_BAND", "AMOUNT_BY_LABEL", "GOLD_SPEND_BY_REGION",
     "SPEND_1Y_BY_SIGNUP_MONTH",
     "SPEND_FIRST_BY_TIER", "SPEND_LAST_BY_TIER",
-    "SlayerQuery", "ModelMeasure", "ColumnRef", "TimeDimension",
-    "TimeGranularity", "ModelJoin", "Column", "SlayerModel", "DataType",
-    "JoinCardinality",
+    "SlayerQuery", "DatasetMetric", "FieldRef", "TimeDimension",
+    "TimeGranularity", "DatasetRelationship", "DatasetField", "SlayerDataset", "DataType",
+    "RelationshipCardinality",
 ]

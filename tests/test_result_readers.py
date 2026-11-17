@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column
+from slayer.core.models import DatasetField
 from slayer.database.client import _fetch_rows, _types_from_cursor
 from slayer.sql.dialects import get_dialect
 from slayer.sql.dialects.reflection import is_exact_numeric_db_type
@@ -87,5 +87,5 @@ def test_a_numeric_list_is_not_exact_numeric(name: str) -> None:
 
 
 def test_a_numeric_list_column_is_cast_like_any_list() -> None:
-    col = Column(name="prices", type=DataType.ARRAY, element_type=DataType.DOUBLE, db_type="NUMERIC[]")
+    col = DatasetField(name="prices", datatype=DataType.ARRAY, element_type=DataType.DOUBLE, db_type="NUMERIC[]")
     assert not keeps_native_type(col=col, dialect=get_dialect("postgres"))

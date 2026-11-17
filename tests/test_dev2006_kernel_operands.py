@@ -324,8 +324,8 @@ class TestAssociatedRankedPickStaysTyped:
     KW = {
         "dimensions": ["status"],
         "time_dimensions": [f1841.TimeDimension(
-            dimension="customers.signup_at", granularity=f1841.TimeGranularity.MONTH)],
-        "measures": [f1841.ModelMeasure(formula="last(customers.spend)", name="l")],
+            field="customers.signup_at", granularity=f1841.TimeGranularity.MONTH)],
+        "measures": [f1841.DatasetMetric(expression="last(customers.spend)", name="l")],
     }
 
     async def test_cross_model_last_needing_association(self, dev1841_engine):
@@ -465,4 +465,4 @@ class TestCrossModelKernels:
         [(carrier, ranked)] = _kernel_attaches(pq, RankedProducerKernel)
         assert carrier is not None
         assert carrier.attach_phase == "row"
-        assert ranked.producer_root_model == "account_snapshots"
+        assert ranked.producer_root_dataset == "account_snapshots"

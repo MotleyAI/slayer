@@ -208,7 +208,7 @@ class TestIdentifierLimit:
             storage = YAMLStorage(base_dir=os.path.join(d, "store"))
             await storage.save_datasource(DatasourceConfig(name="test", type="postgres"))
             for model in (orders_model(), customers_model()):
-                await storage.save_model(model, _validate=False)
+                await storage.save_dataset(model, _validate=False)
             engine = SlayerQueryEngine(storage=storage)
             resp = await engine.execute([
                 query(name=long, source_model="orders", dimensions=["status"],

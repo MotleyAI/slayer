@@ -25,7 +25,7 @@ from typing import AsyncIterator, Tuple
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.yaml_storage import YAMLStorage
@@ -63,31 +63,31 @@ async def engine() -> AsyncIterator[Tuple[SlayerQueryEngine, str]]:
     await storage.save_datasource(
         DatasourceConfig(name="prod", type="sqlite", database=db_path)
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="customers",
             sql_table="customers",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="region", type=DataType.TEXT),
-                Column(name="revenue", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="region", datatype=DataType.TEXT),
+                DatasetField(name="revenue", datatype=DataType.DOUBLE),
             ],
         )
     )
-    await storage.save_model(
-        SlayerModel(
+    await storage.save_dataset(
+        SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="prod",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
             ],
-            joins=[
-                ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]]),
+            relationships=[
+                DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]]),
             ],
         )
     )
@@ -119,18 +119,18 @@ async def test_dev1445_alias_filter_matches_dotted_filter(engine: Tuple[SlayerQu
 
     alias = await eng.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
-            "filters": ["rev >= 80"],
+            "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+            "filter": ["rev >= 80"],
         })
     )
     dotted = await eng.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
-            "filters": ["sum(customers.revenue) >= 80"],
+            "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+            "filter": ["sum(customers.revenue) >= 80"],
         })
     )
 
@@ -156,17 +156,17 @@ async def test_dev1445_filter_actually_applies(engine: Tuple[SlayerQueryEngine, 
 
     unfiltered = await eng.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+            "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
         })
     )
     filtered = await eng.execute(
         SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["customers.region"],
-            "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
-            "filters": ["rev >= 80"],
+            "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+            "filter": ["rev >= 80"],
         })
     )
 
@@ -190,10 +190,10 @@ async def test_dev1445_both_filter_forms_share_one_cte(engine: Tuple[SlayerQuery
     """
     eng, _ = engine
     query = SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "dimensions": ["customers.region"],
-        "measures": [{"formula": "sum(customers.revenue)", "name": "rev"}],
-        "filters": ["rev >= 80", "sum(customers.revenue) >= 80"],
+        "metrics": [{"formula": "sum(customers.revenue)", "name": "rev"}],
+        "filter": ["rev >= 80", "sum(customers.revenue) >= 80"],
     })
     # Idempotent: giving both filter forms is the same as giving one.
     both = await eng.execute(query)

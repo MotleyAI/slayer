@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.keys import AggregateKey, ColumnKey, TransformKey
+from slayer.core.keys import AggregateKey, FieldKey, TransformKey
 from slayer.core.keys import Grain
 
 from slayer.ir.terms import (
@@ -17,21 +17,21 @@ from slayer.ir.terms import (
     Broadcast,
     Dataset,
     Field,
-    ModelDataset,
+    StoredDataset,
     StageDataset,
     Transform,
 )
 
-_STATUS = ColumnKey(leaf="status")
-_TIER = ColumnKey(leaf="tier")
+_STATUS = FieldKey(leaf="status")
+_TIER = FieldKey(leaf="tier")
 
 
-def _model_ds() -> "ModelDataset":
-    return ModelDataset(data_source="ds", model_name="orders")
+def _model_ds() -> "StoredDataset":
+    return StoredDataset(data_source="ds", dataset_name="orders")
 
 
 def _recipe() -> AggregateKey:
-    return AggregateKey(source=ColumnKey(leaf="amount"), agg="sum")
+    return AggregateKey(source=FieldKey(leaf="amount"), agg="sum")
 
 
 def _aggregate(*, grain: Grain | None = None) -> "Aggregate":
@@ -43,12 +43,12 @@ def _aggregate(*, grain: Grain | None = None) -> "Aggregate":
 
 class TestDatasetIdentity:
     def test_model_dataset_identity(self) -> None:
-        a = ModelDataset(data_source="ds", model_name="orders")
-        b = ModelDataset(data_source="ds", model_name="orders")
+        a = StoredDataset(data_source="ds", dataset_name="orders")
+        b = StoredDataset(data_source="ds", dataset_name="orders")
         assert a == b
         assert hash(a) == hash(b)
-        assert a != ModelDataset(data_source="ds", model_name="customers")
-        assert a != ModelDataset(data_source="other", model_name="orders")
+        assert a != StoredDataset(data_source="ds", dataset_name="customers")
+        assert a != StoredDataset(data_source="other", dataset_name="orders")
         assert len({a, b}) == 1
 
     def test_stage_dataset_identity(self) -> None:
@@ -108,7 +108,7 @@ class TestConstructionInvariants:
         timeless = TransformKey(op="rank", input=_recipe())
         Transform(input=home, recipe=timeless)
         with_axis = TransformKey(
-            op="cumsum", input=_recipe(), time_key=ColumnKey(leaf="ordered_at"),
+            op="cumsum", input=_recipe(), time_key=FieldKey(leaf="ordered_at"),
         )
         Transform(input=home, recipe=with_axis)
         axisless = TransformKey(op="cumsum", input=_recipe())
@@ -140,4 +140,4 @@ class TestConstructionInvariants:
             term.grain = Grain.EMPTY  # pyright: ignore[reportAttributeAccessIssue] — the frozen violation under test
         dataset = _model_ds()
         with pytest.raises(ValueError):
-            dataset.model_name = "other"  # pyright: ignore[reportAttributeAccessIssue] — the frozen violation under test
+            dataset.dataset_name = "other"  # pyright: ignore[reportAttributeAccessIssue] — the frozen violation under test

@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from slayer.core.errors import DateOperandTypeError, SlayerError, TimeDimensionColumnError, UnknownGranularityError
+from slayer.core.errors import DateOperandTypeError, SlayerError, TimeDimensionFieldError, UnknownGranularityError
 from slayer.core.models import Aggregation
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -46,7 +46,7 @@ def _remedy(text: str) -> str:
 
 
 def _tds(query: SlayerQuery) -> list[tuple[str, str]]:
-    return [(str(t.dimension), str(getattr(t.granularity, "value", t.granularity)))
+    return [(str(t.field), str(getattr(t.granularity, "value", t.granularity)))
             for t in query.time_dimensions or [] if isinstance(t, TimeDimension)]
 
 
@@ -136,7 +136,7 @@ class TestDateTrunc:
             "2023-04-01": 1, "2024-04-01": 4, "2025-04-01": 1}
 
     async def test_unit_never_captured_by_an_aggregation(self) -> None:
-        models = dev2215_models(aggregations=[Aggregation(name="fiscal_year", formula="SUM({value}) * 10")])
+        models = dev2215_models(aggregations=[Aggregation(name="fiscal_year", expression="SUM({value}) * 10")])
         async with dev2215_engine("sqlite", models=models) as eng:
             resp = await eng.execute(q(dimensions=["date_trunc('fiscal_year', order_date)"],
                                        measures=[m("fiscal_year(amount)")]))
@@ -256,7 +256,7 @@ class TestFunctionalTimeDimensions:
 
     async def test_non_temporal_argument(self, engine: SlayerQueryEngine) -> None:
         query = q(dimensions=["date_trunc('month', upper(status))"], measures=COUNT)
-        with pytest.raises(TimeDimensionColumnError, match="TEXT"):
+        with pytest.raises(TimeDimensionFieldError, match="TEXT"):
             await engine.execute(query)
 
     async def test_unknown_single_column_call(self, engine: SlayerQueryEngine) -> None:

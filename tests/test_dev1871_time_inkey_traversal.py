@@ -8,7 +8,7 @@ import pytest
 
 from slayer.core.enums import TimeGranularity
 from slayer.core.keys import (
-    ColumnKey,
+    FieldKey,
     InKey,
     LiteralKey,
     ScalarCallKey,
@@ -18,12 +18,12 @@ from slayer.core.keys import (
 from slayer.engine.bind_inputs import _attach_time_keys
 from slayer.engine.elaborate_env import check_time_transforms_resolved
 
-_TD = TimeTruncKey(source=ColumnKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
+_TD = TimeTruncKey(source=FieldKey(leaf="ordered_at"), granularity=TimeGranularity.MONTH)
 
 
 def _in_scalar_call() -> ScalarCallKey:
-    axisless = TransformKey(op="cumsum", input=ColumnKey(leaf="amount"))
-    membership = InKey(column=axisless, values=(LiteralKey(value=Decimal("1")),))
+    axisless = TransformKey(op="cumsum", input=FieldKey(leaf="amount"))
+    membership = InKey(field=axisless, values=(LiteralKey(value=Decimal("1")),))
     return ScalarCallKey(
         name="iif",
         args=(
@@ -40,8 +40,8 @@ class TestInKeyTimeTraversal:
         assert isinstance(out, ScalarCallKey)
         membership = out.args[0]
         assert isinstance(membership, InKey)
-        assert isinstance(membership.column, TransformKey)
-        assert membership.column.time_key == _TD
+        assert isinstance(membership.field, TransformKey)
+        assert membership.field.time_key == _TD
 
     def test_checker_detects_the_unresolved_op(self) -> None:
         roots = [_in_scalar_call()]

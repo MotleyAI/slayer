@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import yaml
 
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
 from slayer.database import engine_factory
@@ -72,7 +72,7 @@ class TestObjectFormBecomesText:
     def test_stored_query(self, stored: dict, text: str) -> None:
         query = SlayerQuery.model_validate(_query(version=7, tds=[stored]))
         [td] = query.time_dimensions or []
-        assert td.dimension == text
+        assert td.field == text
         assert _dumped_tds(query) == [{"dimension": text, "granularity": "month"}]
 
     def test_migration_rewrites_only_stored_objects(self) -> None:
@@ -84,10 +84,10 @@ class TestObjectFormBecomesText:
 
     def test_model_source_queries(self) -> None:
         stages = [_query(version=None, tds=[_td(SIGNUP_OBJECT)])]
-        model = SlayerModel.model_validate(query_backed_v10(name="rev_q", version=16, stages=stages))
+        model = SlayerDataset.model_validate(query_backed_v10(name="rev_q", version=16, stages=stages))
         [query] = model.source_queries or []
         assert isinstance(query, SlayerQuery)
-        assert [td.dimension for td in query.time_dimensions or []] == [SIGNUP_TEXT]
+        assert [td.field for td in query.time_dimensions or []] == [SIGNUP_TEXT]
         dumped = model.model_dump(mode="json", exclude_none=True)
         assert dumped["source_queries"][0]["time_dimensions"] == [{"dimension": SIGNUP_TEXT, "granularity": "month"}]
 
@@ -95,8 +95,8 @@ class TestObjectFormBecomesText:
         inner = {**_query(version=None, tds=[_td(SIGNUP_OBJECT)]), "name": "s1"}
         outer = {"source_model": "s1", "measures": [{"formula": "sum(rev)", "name": "rev"}],
                  "time_dimensions": [_td({"name": "customers__signed_up_at"}, key="column", granularity="year")]}
-        model = SlayerModel.model_validate(query_backed_v10(name="two", version=16, stages=[inner, outer]))
-        assert [[td.dimension for td in s.time_dimensions or []]
+        model = SlayerDataset.model_validate(query_backed_v10(name="two", version=16, stages=[inner, outer]))
+        assert [[td.field for td in s.time_dimensions or []]
                 for s in model.source_queries or []] == [
             [SIGNUP_TEXT], ["customers__signed_up_at"],
         ]
@@ -126,7 +126,7 @@ class TestStoredDocumentsUpgrade:
         stage = rev_query(time_dimensions=[_td(SIGNUP_OBJECT)])
         storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
                                   models=[orders_v10(), customers_v10(), query_backed_v10(name="rev_q", stages=[stage])])
-        model = await storage.get_model("rev_q", data_source=DS)
+        model = await storage.get_dataset("rev_q", data_source=DS)
         assert model is not None
         [loaded] = model.source_queries or []
         assert _dumped_tds(loaded) == [{"dimension": SIGNUP_TEXT, "granularity": "month"}]
@@ -143,9 +143,9 @@ class TestStoredDocumentsUpgrade:
         base = str(tmp_path / "store")
         storage = await raw_store(backend=backend, base=base, datasource=shop_ds,
                                   models=[orders_v10(), customers_v10(), query_backed_v10(name="rev_q", stages=[stage])])
-        model = await storage.get_model("rev_q", data_source=DS)
+        model = await storage.get_dataset("rev_q", data_source=DS)
         assert model is not None
-        await storage.save_model(model)
+        await storage.save_dataset(model)
         text = stored_bytes(backend=backend, base=base, name="rev_q")
         doc = yaml.safe_load(text) if backend == "yaml" else json.loads(text)
         assert doc["source_queries"][0]["time_dimensions"][0]["dimension"] == SIGNUP_TEXT
@@ -183,8 +183,8 @@ class TestReleasedCorpus:
         try:
             texts: list = []
             keys: list[str] = []
-            for ds, name in sorted(await storage._list_all_model_identities()):
-                model = await storage.get_model(name, data_source=ds)
+            for ds, name in sorted(await storage._list_all_dataset_identities()):
+                model = await storage.get_dataset(name, data_source=ds)
                 assert model is not None
                 for query in model.source_queries or []:
                     if query.time_dimensions:

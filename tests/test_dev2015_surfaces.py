@@ -15,7 +15,7 @@ from slayer import cli
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.errors import DefaultTimeDimensionTypeError
-from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetMetric, SlayerDataset
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.models import DbtMeasure, DbtMetric, DbtProject, DbtSemanticModel
 from slayer.ingest_report import ConversionResult
@@ -36,7 +36,7 @@ async def _spine_storage(base_dir: str) -> YAMLStorage:
     storage = YAMLStorage(base_dir=base_dir)
     await storage.save_datasource(DatasourceConfig(name="test", type="sqlite", database=":memory:"))
     for model in spine_models():
-        await storage.save_model(model, _validate=False)
+        await storage.save_dataset(model, _validate=False)
     return storage
 
 
@@ -116,12 +116,12 @@ class TestSpineListedWithItsWiredModels:
 # fails the same way on every save surface
 # ---------------------------------------------------------------------------
 
-def _bad_default(name: str = "returns_by_amount") -> SlayerModel:
+def _bad_default(name: str = "returns_by_amount") -> SlayerDataset:
     return returns_model(default_time_dimension="amount").model_copy(update={"name": name})
 
 
 def _stored_default(storage: YAMLStorage, name: str) -> Any:
-    model = asyncio.run(storage.get_model(name, data_source="test"))
+    model = asyncio.run(storage.get_dataset(name, data_source="test"))
     return None if model is None else model.default_time_dimension
 
 
@@ -130,22 +130,22 @@ class TestDeclaredDefaultTimeDimensionType:
         storage = await _spine_storage(tempfile.mkdtemp())
         model = _bad_default()
         with pytest.raises(DefaultTimeDimensionTypeError) as exc:
-            await storage.save_model(model)
+            await storage.save_dataset(model)
         assert "returns_by_amount" in str(exc.value)
         assert "amount" in str(exc.value)
-        assert await storage.get_model("returns_by_amount", data_source="test") is None
+        assert await storage.get_dataset("returns_by_amount", data_source="test") is None
 
     async def test_text_rejected_and_temporal_accepted(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
-        text = SlayerModel(name="by_text", sql_table="returns", data_source="test",
-                           default_time_dimension="day_text", columns=[Column(name="day_text")])
+        text = SlayerDataset(name="by_text", sql_table="returns", data_source="test",
+                           default_time_dimension="day_text", fields=[DatasetField(name="day_text")])
         with pytest.raises(DefaultTimeDimensionTypeError):
-            await storage.save_model(text)
+            await storage.save_dataset(text)
         for column_type in (DataType.DATE, DataType.TIMESTAMP):
-            model = SlayerModel(name=f"by_{column_type.value.lower()}", sql_table="returns", data_source="test",
-                                default_time_dimension="day", columns=[Column(name="day", type=column_type)])
-            await storage.save_model(model)
-            stored = await storage.get_model(model.name, data_source="test")
+            model = SlayerDataset(name=f"by_{column_type.value.lower()}", sql_table="returns", data_source="test",
+                                default_time_dimension="day", fields=[DatasetField(name="day", datatype=column_type)])
+            await storage.save_dataset(model)
+            stored = await storage.get_dataset(model.name, data_source="test")
             assert stored is not None
             assert stored.default_time_dimension == "day"
 
@@ -156,7 +156,7 @@ class TestDeclaredDefaultTimeDimensionType:
             "model_name": "returns", "default_time_dimension": "amount",
         })
         assert "amount" in text
-        stored = await storage.get_model("returns", data_source="test")
+        stored = await storage.get_dataset("returns", data_source="test")
         assert stored is not None
         assert stored.default_time_dimension is None
 
@@ -283,9 +283,9 @@ def _dbt_project(field: str, value: Any) -> DbtProject:
     )
 
 
-def _converted_measure(result: ConversionResult, name: str) -> Optional[ModelMeasure]:
-    for model in result.models:
-        for measure in model.measures:
+def _converted_measure(result: ConversionResult, name: str) -> Optional[DatasetMetric]:
+    for model in result.datasets:
+        for measure in model.metrics:
             if measure.name == name:
                 return measure
     return None
@@ -296,14 +296,14 @@ class TestDbtImporter:
         result = DbtToSlayerConverter(project=_dbt_project("fill_nulls_with", 0), data_source="test").convert()
         measure = _converted_measure(result, "gap_filled_rev")
         assert measure is not None
-        assert measure.formula.replace(" ", "") == "coalesce(sum(amount),0)"
+        assert measure.expression.replace(" ", "") == "coalesce(sum(amount),0)"
         assert not any(e.metric_name == "gap_filled_rev" for e in result.unconverted_metrics)
 
     def test_join_to_timespine_is_accepted_with_a_note(self) -> None:
         result = DbtToSlayerConverter(project=_dbt_project("join_to_timespine", True), data_source="test").convert()
         measure = _converted_measure(result, "gap_filled_rev")
         assert measure is not None
-        assert measure.formula.replace(" ", "") == "sum(amount)"
+        assert measure.expression.replace(" ", "") == "sum(amount)"
         notes = [e for e in (*result.unconverted_metrics, *result.warnings) if e.metric_name == "gap_filled_rev"]
         assert notes
         assert all(e.severity == "info" for e in notes)

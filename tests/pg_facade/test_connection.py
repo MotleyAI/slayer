@@ -15,7 +15,7 @@ from typing import List, Tuple
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.pg_facade import protocol as proto
 from slayer.pg_facade.connection import (
@@ -58,16 +58,16 @@ class _FakeStorage:
     async def list_datasources(self) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
         return list(self._models_by_ds)
 
-    async def list_models(self, *, data_source: str) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
+    async def list_datasets(self, *, data_source: str) -> list[str]:  # NOSONAR(S7503) — async to satisfy the awaited interface
         return [m.name for m in self._models_by_ds.get(data_source, [])]
 
-    async def get_model(self, *, name: str, data_source: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
+    async def get_dataset(self, *, name: str, data_source: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
         for m in self._models_by_ds.get(data_source, []):
             if m.name == name:
                 return m
         return None
 
-    async def load_models(self, *, data_source: str, exclude: str | None = None):  # NOSONAR(S7503) — async to satisfy the awaited interface
+    async def load_datasets(self, *, data_source: str, exclude: str | None = None):  # NOSONAR(S7503) — async to satisfy the awaited interface
         return [m for m in self._models_by_ds.get(data_source, []) if m.name != exclude], []
 
     async def get_datasource(self, datasource: str):  # NOSONAR(S7503) — async to satisfy the awaited interface
@@ -88,17 +88,17 @@ class _FakeEngine:
         return types.SimpleNamespace(data=self.data)
 
 
-def _orders_model() -> SlayerModel:
-    return SlayerModel(
+def _orders_model() -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         data_source="jaffle",
         sql_table="orders",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="revenue", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="ordered_at", type=DataType.TIMESTAMP),
-            Column(name="order_date", type=DataType.DATE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="revenue", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="ordered_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name="order_date", datatype=DataType.DATE),
         ],
     )
 
@@ -852,7 +852,7 @@ async def test_text_param_substituted_into_filter() -> None:
     )
     await _run(inp, engine=engine)
     assert engine.last_query is not None
-    assert engine.last_query.filters == ["status = 'completed'"]
+    assert engine.last_query.filter == ["status = 'completed'"]
 
 
 async def test_binary_int_param_substituted_into_filter() -> None:
@@ -872,7 +872,7 @@ async def test_binary_int_param_substituted_into_filter() -> None:
     )
     await _run(inp, engine=engine)
     assert engine.last_query is not None
-    assert engine.last_query.filters == ["id = 5"]
+    assert engine.last_query.filter == ["id = 5"]
 
 
 async def test_string_param_is_quote_escaped() -> None:
@@ -887,7 +887,7 @@ async def test_string_param_is_quote_escaped() -> None:
     )
     await _run(inp, engine=engine)
     assert engine.last_query is not None
-    assert engine.last_query.filters == ["status = 'O''Brien'"]
+    assert engine.last_query.filter == ["status = 'O''Brien'"]
 
 
 # --- portal close / flush / max_rows -----------------------------------------
@@ -2376,11 +2376,11 @@ async def test_bind_empty_string_user_model_int_column() -> None:
 
 
 def _employees_model():
-    return SlayerModel(
+    return SlayerDataset(
         name="employees", data_source="hr", sql_table="employees",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
 

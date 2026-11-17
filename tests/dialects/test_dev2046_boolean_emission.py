@@ -14,7 +14,7 @@ from sqlglot import exp
 from sqlglot.expressions.core import Expr
 
 from slayer.core.enums import DataType
-from slayer.core.models import Aggregation, Column
+from slayer.core.models import Aggregation, DatasetField
 from slayer.sql.dialects import SQLGLOT_NAMES
 
 from tests._dev2046_fixtures import customers_model, m, orders_model, orders_q
@@ -101,7 +101,7 @@ class TestAvgIsFractional:
     async def test_double_input_unchanged(self, db_type: str) -> None:
         """An exact decimal keeps its precision; a float needs no conversion."""
         model = orders_model()
-        model.columns.append(Column(name="price", type=DataType.DOUBLE, db_type=db_type))
+        model.fields.append(DatasetField(name="price", datatype=DataType.DOUBLE, db_type=db_type))
         tree = await _statement("tsql", "avg(price)", model=model)
         (agg,) = _nodes(tree, exp.Avg)
         assert not _float_cast(agg.this), agg.sql(dialect="tsql")
@@ -176,7 +176,7 @@ class TestUnchangedAggregations:
     @pytest.mark.parametrize("dialect", ["postgres", "duckdb", "tsql", "bigquery"])
     async def test_no_integer_cast_around_the_boolean(self, dialect: str) -> None:
         model = orders_model()
-        model.aggregations.append(Aggregation(name="trues", formula="COUNT(CASE WHEN {value} THEN 1 END)"))
+        model.aggregations.append(Aggregation(name="trues", expression="COUNT(CASE WHEN {value} THEN 1 END)"))
         tree = await _statement(
             dialect, "count(flag)", "count_distinct(flag)", "count_distinct_approx(flag)",
             "first(flag)", "last(flag)", "trues(flag)", "sum(flag)", model=model,

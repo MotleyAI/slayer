@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from slayer.core.enums import DataType, JoinCardinality
+from slayer.core.enums import DataType, RelationshipCardinality
 from slayer.core.format import NumberFormat, NumberFormatType
-from slayer.core.models import Aggregation, Column, ModelJoin, ModelMeasure, SlayerModel
+from slayer.core.models import Aggregation, DatasetField, DatasetRelationship, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 
 DATASOURCE = "osids"
@@ -37,21 +37,21 @@ EXPORT_DDL = [
 ]
 
 
-def col(name: str, type_: DataType = DataType.DOUBLE, sql: str | None = None, **extra: Any) -> Column:
-    return Column(name=name, sql=sql, type=type_, **extra)
+def col(name: str, type_: DataType = DataType.DOUBLE, sql: str | None = None, **extra: Any) -> DatasetField:
+    return DatasetField(name=name, sql=sql, datatype=type_, **extra)
 
 
-def measure(name: str, formula: str, **extra: Any) -> ModelMeasure:
-    return ModelMeasure(name=name, formula=formula, **extra)
+def measure(name: str, formula: str, **extra: Any) -> DatasetMetric:
+    return DatasetMetric(name=name, expression=formula, **extra)
 
 
-def to_customers(**extra: Any) -> ModelJoin:
+def to_customers(**extra: Any) -> DatasetRelationship:
     """``orders`` → ``customers`` on ``customer_id = id``, many-to-one unless overridden."""
-    extra.setdefault("cardinality", JoinCardinality.MANY_TO_ONE)
-    return ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]], **extra)
+    extra.setdefault("cardinality", RelationshipCardinality.MANY_TO_ONE)
+    return DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]], **extra)
 
 
-def orders_columns() -> list[Column]:
+def orders_columns() -> list[DatasetField]:
     return [
         col("id", DataType.INT, "o_orderkey", primary_key=True),
         col("customer_id", DataType.INT, "o_custkey"),
@@ -70,41 +70,41 @@ def orders_columns() -> list[Column]:
     ]
 
 
-def orders(*, columns: list[Column] | None = None, measures: list[ModelMeasure] | None = None,
-           joins: list[ModelJoin] | None = None, **extra: Any) -> SlayerModel:
+def orders(*, columns: list[DatasetField] | None = None, measures: list[DatasetMetric] | None = None,
+           joins: list[DatasetRelationship] | None = None, **extra: Any) -> SlayerDataset:
     """The ``orders`` table model; by default joined many-to-one to ``customers``."""
-    return SlayerModel(
+    return SlayerDataset(
         name=extra.pop("name", "orders"), sql_table=extra.pop("sql_table", "orders"), data_source=DATASOURCE,
-        columns=orders_columns() if columns is None else columns,
-        measures=measures or [],
-        joins=[to_customers()] if joins is None else joins,
+        fields=orders_columns() if columns is None else columns,
+        metrics=measures or [],
+        relationships=[to_customers()] if joins is None else joins,
         default_time_dimension=extra.pop("default_time_dimension", "ordered_on"),
         **extra,
     )
 
 
-def customers(*, measures: list[ModelMeasure] | None = None, joins: list[ModelJoin] | None = None,
-              **extra: Any) -> SlayerModel:
-    return SlayerModel(
+def customers(*, measures: list[DatasetMetric] | None = None, joins: list[DatasetRelationship] | None = None,
+              **extra: Any) -> SlayerDataset:
+    return SlayerDataset(
         name="customers", sql_table="customers", data_source=DATASOURCE,
-        columns=[
+        fields=[
             col("id", DataType.INT, "c_custkey", primary_key=True),
             col("segment", DataType.TEXT),
             col("discount"),
             col("rate"),
             col("email", DataType.TEXT, unique=True),
         ],
-        measures=measures or [],
-        joins=joins or [],
+        metrics=measures or [],
+        relationships=joins or [],
         **extra,
     )
 
 
-def visits(**extra: Any) -> SlayerModel:
+def visits(**extra: Any) -> SlayerDataset:
     """A sql-mode model over ``visits``."""
-    return SlayerModel(
+    return SlayerDataset(
         name="visits", sql="SELECT visit_id, status, customer_id FROM visits", data_source=DATASOURCE,
-        columns=[
+        fields=[
             col("visit_id", DataType.INT, primary_key=True),
             col("status", DataType.TEXT),
             col("customer_id", DataType.INT),
@@ -113,15 +113,15 @@ def visits(**extra: Any) -> SlayerModel:
     )
 
 
-def monthly_revenue() -> SlayerModel:
+def monthly_revenue() -> SlayerDataset:
     """A query-backed model with a ``{region}`` variable defaulting to ``US``."""
-    return SlayerModel(
+    return SlayerDataset(
         name="monthly_revenue", data_source=DATASOURCE,
         source_queries=[SlayerQuery.model_validate({
-            "source_model": "orders",
+            "population": "orders",
             "time_dimensions": [{"dimension": "ordered_on", "granularity": "month"}],
-            "measures": [{"formula": "sum(amount)", "name": "revenue"}],
-            "filters": ["region = '{region}'"],
+            "metrics": [{"formula": "sum(amount)", "name": "revenue"}],
+            "filter": ["region = '{region}'"],
         })],
         query_variables={"region": "US"},
     )
@@ -134,7 +134,7 @@ BASIC_MEASURES = [
 ]
 
 
-def rich_orders() -> SlayerModel:
+def rich_orders() -> SlayerDataset:
     """``orders`` exercising every exportable measure family plus SLayer-only attributes."""
     columns = orders_columns()
     for c in columns:
@@ -158,7 +158,7 @@ def rich_orders() -> SlayerModel:
     ]
     return orders(
         columns=columns,
-        aggregations=[Aggregation(name="trimmed_sum", formula="SUM(CASE WHEN {value} < 15 THEN {value} END)")],
+        aggregations=[Aggregation(name="trimmed_sum", expression="SUM(CASE WHEN {value} < 15 THEN {value} END)")],
         measures=[
             *BASIC_MEASURES,
             measure("avg_amount", "avg(amount)", label="Average amount", type=DataType.DOUBLE,

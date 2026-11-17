@@ -12,8 +12,8 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType, TimeGranularity
-from slayer.core.keys import ColumnKey, TimeTruncKey
-from slayer.core.models import Column, SlayerModel
+from slayer.core.keys import FieldKey, TimeTruncKey
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery, TimeDimension
 from slayer.ir.planned import (
     PlainProducerKernel,
@@ -26,7 +26,7 @@ from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1748_fixtures import dev1748_bundle
 from tests._dev1838_fixtures import (
     BAND,
-    ModelMeasure,
+    DatasetMetric,
     dev1838_models,
     month_td,
     q,
@@ -34,14 +34,14 @@ from tests._dev1838_fixtures import (
 from slayer.ir import planned
 from slayer.engine import plan
 
-M = ModelMeasure(formula="sum(amount)", name="m")
+M = DatasetMetric(expression="sum(amount)", name="m")
 
 
 def _bundle() -> ResolvedSourceBundle:
     models = dev1838_models()
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=models[0], referenced_models=models[1:],
+        population=models[0], referenced_datasets=models[1:],
     )
 
 
@@ -59,7 +59,7 @@ class TestKernelSynthesis:
     def test_bare_windowed_attach_carries_trailing_window_kernel(self) -> None:
         planned = _plan(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount, window='90d')", name="w")],
+            measures=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
         ))
         (attach,) = _combined_attaches(planned)
         kern = attach.kernel
@@ -78,8 +78,8 @@ class TestKernelSynthesis:
     def test_plain_partitioned_attaches_default_to_plain_kernel(self) -> None:
         planned = _plan(q(
             dimensions=["status", BAND],
-            measures=[M, ModelMeasure(
-                formula="sum(amount, partition_by=status)", name="rm")],
+            measures=[M, DatasetMetric(
+                expression="sum(amount, partition_by=status)", name="rm")],
         ))
         assert planned.regroup_attach_plans
         for attach in planned.regroup_attach_plans:
@@ -90,7 +90,7 @@ class TestKernelSynthesis:
         partly-frame-bound one keeps its id and gains the population residual."""
         planned = _plan(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount, window='90d')", name="w")],
+            measures=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
             filters=["ordered_at >= '2024-02-01' and status = 'ok'"],
         ))
         (attach,) = _combined_attaches(planned)
@@ -103,7 +103,7 @@ class TestKernelSynthesis:
     def test_wholly_frame_bound_filter_is_excluded_from_src(self) -> None:
         planned = _plan(q(
             dimensions=["region"], time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount, window='90d')", name="w")],
+            measures=[DatasetMetric(expression="sum(amount, window='90d')", name="w")],
             filters=["ordered_at >= '2024-02-01'"],
         ))
         (attach,) = _combined_attaches(planned)
@@ -114,16 +114,16 @@ class TestKernelSynthesis:
         planned = _plan(q(
             dimensions=["customers.tier"],
             time_dimensions=[TimeDimension(
-                dimension="customers.signup_at",
+                field="customers.signup_at",
                 granularity=TimeGranularity.MONTH,
             )],
-            measures=[ModelMeasure(
-                formula="sum(customers.spend, window='1y')", name="w")],
+            measures=[DatasetMetric(
+                expression="sum(customers.spend, window='1y')", name="w")],
         ))
         (attach,) = _combined_attaches(planned)
         kern = attach.kernel
         assert isinstance(kern, TrailingWindowProducerKernel)
-        assert attach.producer_root_model == "customers"
+        assert attach.producer_root_dataset == "customers"
         assert kern.window_parts == [(1, "y")]
         assert kern.bucket_slot_id == (
             attach.producer_plan.active_time_dimension_slot_id
@@ -134,39 +134,39 @@ class TestRankedKernelSynthesis:
     def test_bare_last_attach_carries_ranked_kernel(self) -> None:
         planned = _plan(q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula="last(amount)", name="lb")],
+            measures=[DatasetMetric(expression="last(amount)", name="lb")],
         ))
         (attach,) = _combined_attaches(planned)
         kern = attach.kernel
         assert isinstance(kern, RankedProducerKernel)
         assert kern.agg == "last"
         # No temporal dimension in the grain — the model default wins.
-        assert kern.ranking_time_key == ColumnKey(path=(), leaf="ordered_at")
+        assert kern.ranking_time_key == FieldKey(path=(), leaf="ordered_at")
 
     def test_explicit_ranking_arg_lands_on_the_kernel(self) -> None:
         planned = _plan(q(
             dimensions=["status"],
-            measures=[ModelMeasure(
-                formula="last(amount, customers.signup_at)", name="ls")],
+            measures=[DatasetMetric(
+                expression="last(amount, customers.signup_at)", name="ls")],
         ))
         (attach,) = _combined_attaches(planned)
         kern = attach.kernel
         assert isinstance(kern, RankedProducerKernel)
-        assert kern.ranking_time_key == ColumnKey(
+        assert kern.ranking_time_key == FieldKey(
             path=("customers",), leaf="signup_at",
         )
 
     def test_cross_model_last_attach_carries_ranked_kernel(self) -> None:
         planned = _plan(q(
             dimensions=["customers.tier"],
-            measures=[ModelMeasure(formula="last(customers.spend)", name="sl")],
+            measures=[DatasetMetric(expression="last(customers.spend)", name="sl")],
         ))
         (attach,) = _combined_attaches(planned)
         kern = attach.kernel
         assert isinstance(kern, RankedProducerKernel)
-        assert attach.producer_root_model == "customers"
+        assert attach.producer_root_dataset == "customers"
         # Producer-scope coordinates: the target's own default TD, path-free.
-        assert kern.ranking_time_key == ColumnKey(path=(), leaf="signup_at")
+        assert kern.ranking_time_key == FieldKey(path=(), leaf="signup_at")
 
 
 def _plan48(query):
@@ -188,7 +188,7 @@ def _ranked_kernel_of(planned) -> RankedProducerKernel:
 
 def _ranking_leaf(planned) -> str:
     key = _ranked_kernel_of(planned).ranking_time_key
-    assert isinstance(key, ColumnKey), key
+    assert isinstance(key, FieldKey), key
     return key.leaf
 
 
@@ -225,23 +225,23 @@ class TestRankingKeyPrecedence:
             measures=[{"formula": "last(amount)", "name": "l"}],
         ))
         ranking = _ranked_kernel_of(planned).ranking_time_key
-        assert isinstance(ranking, ColumnKey)
+        assert isinstance(ranking, FieldKey)
         assert ranking.leaf == "created_at"
 
     def test_no_resolvable_ranking_column_raises_the_host_message(self) -> None:
-        model = SlayerModel(
+        model = SlayerDataset(
             name="untimed", sql_table="untimed", data_source="test",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
             ],
         )
-        bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[])
+        bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[])
         query = SlayerQuery.model_validate({
-            "source_model": "untimed",
+            "population": "untimed",
             "dimensions": ["status"],
-            "measures": [{"formula": "last(amount)", "name": "l"}],
+            "metrics": [{"formula": "last(amount)", "name": "l"}],
         })
         with pytest.raises(ValueError) as excinfo:
             plan.plan_query(query=query, bundle=bundle)
@@ -262,10 +262,10 @@ class TestRankingKeyPrecedence:
         ))
         (attach,) = [
             a for a in planned.regroup_attach_plans
-            if a.producer_root_model == "customers"
+            if a.producer_root_dataset == "customers"
         ]
         assert isinstance(attach.kernel, RankedProducerKernel)
-        assert isinstance(attach.kernel.ranking_time_key, ColumnKey)
+        assert isinstance(attach.kernel.ranking_time_key, FieldKey)
         assert attach.kernel.ranking_time_key.leaf == "signup_at"
 
     def test_a_host_column_as_a_target_ranking_key_is_rejected(self) -> None:
@@ -328,7 +328,7 @@ class TestRankedKernelGrain:
         ))
         (attach,) = [
             a for a in planned.regroup_attach_plans
-            if a.producer_root_model == "customers"
+            if a.producer_root_dataset == "customers"
         ]
         assert isinstance(attach.kernel, RankedProducerKernel)
 
@@ -338,8 +338,8 @@ class TestKernelIdentity:
         def windowed_attach(window: str):
             planned = _plan(q(
                 dimensions=["region"], time_dimensions=month_td(),
-                measures=[ModelMeasure(
-                    formula=f"sum(amount, window='{window}')", name="w")],
+                measures=[DatasetMetric(
+                    expression=f"sum(amount, window='{window}')", name="w")],
             ))
             (attach,) = _combined_attaches(planned)
             return attach
@@ -353,8 +353,8 @@ class TestKernelIdentity:
 
 class TestKernelModel:
     def test_default_kernel_is_plain(self) -> None:
-        planned = _plan(q(dimensions=["status"], measures=[M, ModelMeasure(
-            formula="sum(amount, partition_by=status)", name="rm")]))
+        planned = _plan(q(dimensions=["status"], measures=[M, DatasetMetric(
+            expression="sum(amount, partition_by=status)", name="rm")]))
         (attach,) = _combined_attaches(planned)
         assert isinstance(attach.kernel, PlainProducerKernel)
 

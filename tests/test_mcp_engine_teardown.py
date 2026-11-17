@@ -33,7 +33,7 @@ import pytest
 
 import slayer.mcp.server as srv
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.mcp.server import create_mcp_server
 from slayer.database.engine_factory import client_cache_key
@@ -68,19 +68,19 @@ async def _seed_storage(workspace: Path, *, with_sql_mode: bool = False) -> YAML
     db = _make_sqlite_db(workspace)
     storage = YAMLStorage(base_dir=str(workspace / "store"))
     await storage.save_datasource(_lite_datasource(db))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="t", data_source="lite", sql_table="t",
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name="v", sql="v", type=DataType.INT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="v", sql="v", datatype=DataType.INT),
         ],
     ))
     if with_sql_mode:
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="sv", data_source="lite", sql="SELECT id, v FROM t",
-            columns=[
-                Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-                Column(name="v", sql="v", type=DataType.INT),
+            fields=[
+                DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="v", sql="v", datatype=DataType.INT),
             ],
         ))
     return storage

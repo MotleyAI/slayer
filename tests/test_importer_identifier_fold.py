@@ -15,7 +15,7 @@ from sqlalchemy.sql.elements import quoted_name
 from sqlglot import exp
 
 from slayer.core.enums import DataType
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.cube.converter import CubeToSlayerConverter
 from slayer.cube.js_parser import parse_cube_js
@@ -54,8 +54,8 @@ def _cube(*cubes: dict[str, Any], dialect: str | None = "postgres", engine: sa.E
     return converter.convert()
 
 
-def _models(result: CubeConversionResult) -> dict[str, SlayerModel]:
-    return {m.name: m for m in result.models}
+def _models(result: CubeConversionResult) -> dict[str, SlayerDataset]:
+    return {m.name: m for m in result.datasets}
 
 
 def _columns_read(sql: str, *, dialect: str = "postgres") -> set[str]:
@@ -90,7 +90,7 @@ def test_names_local_to_a_source_query() -> None:
     recent = _models(result)["recent"]
     assert recent.sql == ("WITH recent AS (SELECT qty AS total FROM sales.orderitems) "
                           "SELECT total FROM recent ORDER BY total")
-    assert recent.get_column("total") is not None
+    assert recent.get_field("total") is not None
 
 
 def test_calculated_measure_with_a_mixed_case_operand() -> None:
@@ -111,7 +111,7 @@ def test_mixed_case_foreign_physical_join_keys() -> None:
          "dimensions": [{"name": "id", "sql": "{CUBE}.id", "type": "number", "primary_key": True}]},
     )
     models = _models(result)
-    (join,) = models["orders"].joins
+    (join,) = models["orders"].relationships
     ((src, tgt),) = join.join_pairs
     assert column(models["orders"], src).physical_name == "custid"
     assert column(models["customers"], tgt).physical_name == "custid"
@@ -155,8 +155,8 @@ def test_unparseable_mixed_case_dimension_is_dropped() -> None:
         {"name": "id", "sql": "{CUBE}.id", "type": "number", "primary_key": True},
         {"name": "doubled", "sql": "{CUBE}.Amount +* 2", "type": "number"}]})
     orders = _models(result)["orders"]
-    assert orders.get_column("doubled") is None
-    assert orders.get_column("id") is not None
+    assert orders.get_field("doubled") is None
+    assert orders.get_field("id") is not None
     issues = cube_issues(result, "doubled")
     assert [i for i in issues if "Amount +* 2" in i.message and "identifier" in i.message.lower()], issues
 
@@ -188,7 +188,7 @@ def test_unparseable_mixed_case_table_name_drops_its_model() -> None:
 @pytest.mark.parametrize("dialect", ["snowflake", "oracle"])
 async def test_folding_dialect_generates_unquoted_folded_names(dialect: str) -> None:
     items = _models(_cube(ITEMS, dialect=dialect))["items"]
-    sql = await _engine_generate(query=SlayerQuery.model_validate({"source_model": "items", "dimensions": ["amount"]}),
+    sql = await _engine_generate(query=SlayerQuery.model_validate({"population": "items", "dimensions": ["amount"]}),
                                  model=items, dialect=dialect)
     tree = sqlglot.parse_one(sql, read=dialect)
     (table,) = tree.find_all(exp.Table)
@@ -221,7 +221,7 @@ def snowflake_reflection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Ite
 def test_folded_and_exact_live_spellings_on_snowflake(snowflake_reflection: sa.Engine) -> None:
     result = _cube({"name": "t", "sql_table": "t", "dimensions": [{"name": "f", "sql": "{CUBE}.foo", "type": "number"}]},
                    dialect="snowflake", engine=snowflake_reflection)
-    assert _models(result)["t"].get_column("f") is None
+    assert _models(result)["t"].get_field("f") is None
     assert [i for i in cube_issues(result, "f") if "ambiguous" in i.message and "foo" in i.message]
 
 
@@ -280,7 +280,7 @@ def test_declared_type_matches_the_folded_column() -> None:
     result = _dbt({"name": "items", "model": "orders", "dimensions": [{"name": "Qty", "type": "categorical"}]},
                   regular=[{"name": "orders", "columns": [{"name": "Qty", "data_type": "integer"}]}],
                   dialect="postgres").convert()
-    assert column(models_of(result)["items"], "Qty").type is DataType.INT
+    assert column(models_of(result)["items"], "Qty").datatype is DataType.INT
 
 
 def test_source_resolution_report_survives_metadata_collection(tmp_path: Path) -> None:
@@ -316,7 +316,7 @@ def test_offline_mixed_case_cli_import_fails_cleanly(tmp_path: Path, command: st
     assert "OrderItems" in err
     assert command != "import-cube" or "Sales" in err
     assert "Traceback" not in err
-    assert asyncio.run(YAMLStorage(base_dir=str(store)).list_models()) == []
+    assert asyncio.run(YAMLStorage(base_dir=str(store)).list_datasets()) == []
 
 
 @pytest.mark.parametrize("command", ["import-cube", "import-dbt"])
@@ -420,7 +420,7 @@ def test_osi_quoted_lowercase_source_introspects_the_exact_schema_and_table(osi_
                                                                            monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[dict[str, Any]] = []
 
-    def record(**kwargs: Any) -> SlayerModel:
+    def record(**kwargs: Any) -> SlayerDataset:
         seen.append(kwargs)
         raise RuntimeError("recorded")
 

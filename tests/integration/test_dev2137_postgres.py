@@ -32,8 +32,8 @@ async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, Dat
                           username=info.user, password="")
     storage = YAMLStorage(base_dir=str(tmp_path))
     await storage.save_datasource(ds)
-    await storage.save_model(contractors_model(data_source="pg"))
-    await storage.save_model(assignments_model(data_source="pg"))
+    await storage.save_dataset(contractors_model(data_source="pg"))
+    await storage.save_dataset(assignments_model(data_source="pg"))
     engine = SlayerQueryEngine(storage=storage)
     try:
         yield engine, ds
@@ -51,5 +51,5 @@ async def test_lists(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
 @pytest.mark.integration
 async def test_ingested_list_columns(pg: tuple[SlayerQueryEngine, DatasourceConfig]) -> None:
     (model,) = await pg[0].ingest(pg[1], include_tables=["contractors"])
-    typed = {c.name: (c.type, c.element_type) for c in model.columns if c.name in ("skills", "scores")}
+    typed = {c.name: (c.datatype, c.element_type) for c in model.fields if c.name in ("skills", "scores")}
     assert typed == {"skills": (DataType.ARRAY, DataType.TEXT), "scores": (DataType.ARRAY, DataType.INT)}

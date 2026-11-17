@@ -17,7 +17,7 @@ from slayer.core.syntax import (
     UnaryOp,
     parse_expr,
 )
-from slayer.core.scope import ModelScope
+from slayer.core.scope import DatasetScope
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1737_fixtures import PARTS, UNITS, customers_model, orders_model
 
@@ -26,8 +26,8 @@ DATE_NAMES = ("date_part", "date_diff", "date_add", "current_date", "now", "inte
 
 def _bind(text: str):
     model = orders_model()
-    bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[customers_model()])
-    return bind_expr(parse_expr(text), scope=ModelScope(source_model=model), bundle=bundle, allow_measures=True).value_key
+    bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[customers_model()])
+    return bind_expr(parse_expr(text), scope=DatasetScope(population=model), bundle=bundle, allow_metrics=True).value_key
 
 
 def _date_add(ts, n, unit: str) -> ScalarCall:
@@ -204,8 +204,8 @@ class TestIntervalRewrite:
 
     def test_bound_filter_interns(self) -> None:
         model = orders_model()
-        bundle = ResolvedSourceBundle(dialect="postgres", source_model=model, referenced_models=[customers_model()])
-        scope = ModelScope(source_model=model)
+        bundle = ResolvedSourceBundle(dialect="postgres", population=model, referenced_datasets=[customers_model()])
+        scope = DatasetScope(population=model)
 
         def bound(text: str):
             return bind_filter(parse_expr(text), scope=scope, bundle=bundle).value_key

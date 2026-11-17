@@ -10,7 +10,7 @@ from typing import AsyncIterator, List, Optional
 
 import pytest
 
-from slayer.core.models import ModelMeasure, SlayerModel
+from slayer.core.models import DatasetMetric, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
 
@@ -43,7 +43,7 @@ def _append_order(*, dialect: str, db_path: str, row: tuple) -> None:
 
 
 async def make_null_status_engine(
-    request, *, models: Optional[List[SlayerModel]] = None,
+    request, *, models: Optional[List[SlayerDataset]] = None,
 ) -> AsyncIterator[SlayerQueryEngine]:
     """``params=["sqlite", "duckdb"]`` engine — the _dev1900 seed plus c1's
     NULL-status order (appended before the engine opens the db)."""
@@ -56,16 +56,16 @@ async def make_null_status_engine(
         yield engine
 
 
-SPEND_SUM = ModelMeasure(formula="sum(customers.spend)", name="csp")
-AMOUNT_SUM = ModelMeasure(formula="sum(amount)", name="amt")
-LOCAL_SPEND_SUM = ModelMeasure(formula="sum(spend)", name="sp")  # customers-rooted
-REGION_POP_SUM = ModelMeasure(formula="sum(customers.regions.pop)", name="rp")
-STORE_RENT_SUM = ModelMeasure(formula="sum(stores.rent)", name="rent")
+SPEND_SUM = DatasetMetric(expression="sum(customers.spend)", name="csp")
+AMOUNT_SUM = DatasetMetric(expression="sum(amount)", name="amt")
+LOCAL_SPEND_SUM = DatasetMetric(expression="sum(spend)", name="sp")  # customers-rooted
+REGION_POP_SUM = DatasetMetric(expression="sum(customers.regions.pop)", name="rp")
+STORE_RENT_SUM = DatasetMetric(expression="sum(stores.rent)", name="rent")
 # home-determined weight (includes c7) vs a fanning host column across the hop.
-SPEND_WAVG_HOME = ModelMeasure(
-    formula="weighted_avg(customers.spend, weight=customers.spend)", name="wa")
-SPEND_WAVG_AMOUNT = ModelMeasure(
-    formula="weighted_avg(customers.spend, weight=amount)", name="wa")
+SPEND_WAVG_HOME = DatasetMetric(
+    expression="weighted_avg(customers.spend, weight=customers.spend)", name="wa")
+SPEND_WAVG_AMOUNT = DatasetMetric(
+    expression="weighted_avg(customers.spend, weight=amount)", name="wa")
 
 
 def status_vals(resp, measure: str, *, root: str = "orders") -> dict:
@@ -104,7 +104,7 @@ DICE_SLICE_SOUTH = 195.0  # the 230 (South) slice equals filtering bad_pop = 230
 
 
 __all__ = [
-    "ModelMeasure", "SlayerModel",
+    "DatasetMetric", "SlayerDataset",
     "make_null_status_engine", "dev1900_models",
     "orders_q", "cust_q", "rows_by", "bad_pop_vals",
     "associated_warnings", "BAD_POP",

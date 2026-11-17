@@ -16,11 +16,11 @@ from sqlglot.expressions.core import Expr
 
 from slayer.core.enums import DataType
 from slayer.core.errors import ForcedFilterError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.policy import (
-    ColumnFilterRuleset,
-    JoinFilterRule,
-    JoinFilterRuleset,
+    FieldFilterRuleset,
+    RelationshipFilterRule,
+    RelationshipFilterRuleset,
     SessionPolicy,
 )
 from slayer.core.query import SlayerQuery
@@ -57,47 +57,47 @@ ITEMS = [(1, 1, 2.0, "a"), (2, 1, 1.0, "a"), (3, 3, 5.0, "b"), (4, 4, 1.0, "a")]
 ORDER_TOTALS_SQL = "SELECT customer_id, SUM(amount) AS total FROM orders GROUP BY customer_id"
 
 
-def rls_models(*, data_source: str = "test") -> list[SlayerModel]:
+def rls_models(*, data_source: str = "test") -> list[SlayerDataset]:
     """``regions`` ← ``customers`` ← ``orders`` ← ``items``, plus a sql-mode ``order_totals``."""
     return [
-        SlayerModel(name="regions", sql_table="regions", data_source=data_source, columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        SlayerDataset(name="regions", sql_table="regions", data_source=data_source, fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ]),
-        SlayerModel(name="customers", sql_table="customers", data_source=data_source, columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
-            Column(name="region_id", type=DataType.INT),
-            Column(name=TENANT, type=DataType.TEXT),
-        ], joins=[
-            ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]]),
-            ModelJoin(target_model="orders", join_pairs=[["id", "customer_id"]]),
+        SlayerDataset(name="customers", sql_table="customers", data_source=data_source, fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
+            DatasetField(name="region_id", datatype=DataType.INT),
+            DatasetField(name=TENANT, datatype=DataType.TEXT),
+        ], relationships=[
+            DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]]),
+            DatasetRelationship(to="orders", join_pairs=[["id", "customer_id"]]),
         ]),
-        SlayerModel(name="orders", sql_table="orders", data_source=data_source,
-                    default_time_dimension="created_at", columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="status", type=DataType.TEXT),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="created_at", type=DataType.TIMESTAMP),
-            Column(name=TENANT, type=DataType.TEXT),
-            Column(name="tags", type=DataType.ARRAY, element_type=DataType.TEXT),
+        SlayerDataset(name="orders", sql_table="orders", data_source=data_source,
+                    default_time_dimension="created_at", fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="status", datatype=DataType.TEXT),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", datatype=DataType.TIMESTAMP),
+            DatasetField(name=TENANT, datatype=DataType.TEXT),
+            DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.TEXT),
         ]),
-        SlayerModel(name="items", sql_table="items", data_source=data_source, columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="order_id", type=DataType.INT),
-            Column(name="qty", type=DataType.DOUBLE),
-            Column(name=TENANT, type=DataType.TEXT),
-        ], joins=[ModelJoin(target_model="orders", join_pairs=[["order_id", "id"]])]),
-        SlayerModel(name="order_totals", sql=ORDER_TOTALS_SQL, data_source=data_source, columns=[
-            Column(name="customer_id", type=DataType.INT, primary_key=True),
-            Column(name="total", type=DataType.DOUBLE),
+        SlayerDataset(name="items", sql_table="items", data_source=data_source, fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="order_id", datatype=DataType.INT),
+            DatasetField(name="qty", datatype=DataType.DOUBLE),
+            DatasetField(name=TENANT, datatype=DataType.TEXT),
+        ], relationships=[DatasetRelationship(to="orders", join_pairs=[["order_id", "id"]])]),
+        SlayerDataset(name="order_totals", sql=ORDER_TOTALS_SQL, data_source=data_source, fields=[
+            DatasetField(name="customer_id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="total", datatype=DataType.DOUBLE),
         ]),
     ]
 
 
 #: The query-backed model the ``query_backed`` shape reads (saved by the engine builders).
-QUERY_BACKED = SlayerModel.model_validate({
+QUERY_BACKED = SlayerDataset.model_validate({
     "name": "spend", "data_source": "test",
     "source_queries": [{"source_model": "orders", "dimensions": ["customer_id"], "measures": ["sum(amount)"]}],
 })
@@ -161,11 +161,11 @@ def _seed_file(backend: str, db_path: str) -> None:
 
 async def save_models(storage: YAMLStorage, *, data_source: str = "test") -> None:
     for model in rls_models(data_source=data_source):
-        await storage.save_model(model)
+        await storage.save_dataset(model)
 
 
 async def save_query_backed(engine: SlayerQueryEngine) -> None:
-    await engine.save_model(QUERY_BACKED)
+    await engine.save_dataset(QUERY_BACKED)
 
 
 @contextlib.asynccontextmanager
@@ -192,7 +192,7 @@ async def emission_engine(dialect: str) -> AsyncGenerator[tuple[SlayerQueryEngin
         async with owned_query_engine(storage=storage) as engine:
             await save_models(storage)
             # A query-backed model's save-time dry run never connects.
-            await storage.save_model(QUERY_BACKED, _validate=False)
+            await storage.save_dataset(QUERY_BACKED, _validate=False)
             yield engine, ds
 
 
@@ -204,21 +204,21 @@ async def correlating_profile(_self: Any) -> ServerProfile:
 # --------------------------------------------------------------------------- #
 # Policies
 # --------------------------------------------------------------------------- #
-ORDERS_RULE = JoinFilterRule(target_table="orders", join_path=("orders.customer_id = customers.id",))
-ITEMS_RULE = JoinFilterRule(
-    target_table="items", join_path=("items.order_id = orders.id", "orders.customer_id = customers.id"),
+ORDERS_RULE = RelationshipFilterRule(target_table="orders", relationship_path=("orders.customer_id = customers.id",))
+ITEMS_RULE = RelationshipFilterRule(
+    target_table="items", relationship_path=("items.order_id = orders.id", "orders.customer_id = customers.id"),
 )
 
 
-def _join(*, joins: list[JoinFilterRule], whitelist: list[str]) -> SessionPolicy:
-    return SessionPolicy(ruleset=JoinFilterRuleset(
-        table="customers", column=TENANT, value=TENANT_VALUE, joins=tuple(joins), whitelist=tuple(whitelist),
+def _join(*, joins: list[RelationshipFilterRule], whitelist: list[str]) -> SessionPolicy:
+    return SessionPolicy(ruleset=RelationshipFilterRuleset(
+        table="customers", field=TENANT, value=TENANT_VALUE, relationships=tuple(joins), whitelist=tuple(whitelist),
     ))
 
 
 POLICIES: dict[str, SessionPolicy] = {
-    "column_pass": SessionPolicy(ruleset=ColumnFilterRuleset(column=TENANT, value=TENANT_VALUE, on_unapplicable="pass")),
-    "column_block": SessionPolicy(ruleset=ColumnFilterRuleset(column=TENANT, value=TENANT_VALUE)),
+    "column_pass": SessionPolicy(ruleset=FieldFilterRuleset(field=TENANT, value=TENANT_VALUE, on_unapplicable="pass")),
+    "column_block": SessionPolicy(ruleset=FieldFilterRuleset(field=TENANT, value=TENANT_VALUE)),
     "join_one_hop": _join(joins=[ORDERS_RULE], whitelist=["regions", "items"]),
     "join_multi_hop": _join(joins=[ORDERS_RULE, ITEMS_RULE], whitelist=["regions"]),
     "join_whitelist": _join(joins=[], whitelist=["orders", "items", "regions"]),
@@ -281,7 +281,7 @@ def sqlglot_name(dialect: str) -> str:
 def reference_scoped_sql(*, sql: str, dialect: str, policy: SessionPolicy, has_column) -> str:
     """Parse the unscoped render, apply ``policy`` to that tree, render it."""
     tree: Expr = sqlglot.parse_one(sql, read=dialect)
-    scoped = apply_session_policy(tree, sql_dialect=get_dialect(dialect), policy=policy, has_column=has_column)
+    scoped = apply_session_policy(tree, sql_dialect=get_dialect(dialect), policy=policy, has_field=has_column)
     return scoped.sql(dialect=dialect)
 
 
@@ -297,7 +297,7 @@ def normalized(sql: str, *, dialect: str) -> str:
 
 
 def refusal(exc: ForcedFilterError) -> tuple[Optional[str], Optional[str]]:
-    return exc.table, exc.column
+    return exc.table, exc.field
 
 
 def row_values(rows: list[dict[str, Any]]) -> list[tuple]:

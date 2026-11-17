@@ -3,7 +3,7 @@ import pydantic
 import pytest
 
 from slayer.core.enums import TimeGranularity
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.query import FieldRef, SlayerQuery
 from tests import _dev1883_fixtures as fx
 
 GRANULARITIES = [g.value for g in TimeGranularity]
@@ -47,7 +47,7 @@ class TestDimensionsRewrite:
             dimensions=["status", "date_trunc('month', created_at)"],
             measures=[{"formula": "count(*)"}],
         )
-        assert q.dimensions == [ColumnRef(name="status")]
+        assert q.dimensions == [FieldRef(name="status")]
         assert q.time_dimensions == [
             fx.td(dimension="created_at", granularity="month")
         ]
@@ -95,9 +95,9 @@ class TestDimensionsRewrite:
         q = SlayerQuery.model_validate({
             "version": 3,
             "strict": True,
-            "source_model": "orders",
+            "population": "orders",
             "dimensions": ["month(created_at)"],
-            "measures": [{"formula": "count(*)"}],
+            "metrics": [{"formula": "count(*)"}],
         })
         assert q.to_many_handling == "error"
         assert q.time_dimensions == [

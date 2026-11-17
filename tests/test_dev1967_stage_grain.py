@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from slayer.core.enums import DataType
 from slayer.core.query import SlayerQuery
-from slayer.core.scope import StageColumn, StageSchema
+from slayer.core.scope import StageField, StageSchema
 from slayer.engine.plan import plan_query, plan_stages
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from tests._dev1836_fixtures import dev1836_models
@@ -19,11 +19,11 @@ CHANNEL_TOTAL = {"expression": "sum(amount, partition_by=channel)", "name": "ct"
 
 def _bundle() -> ResolvedSourceBundle:
     models = dev1836_models()
-    return ResolvedSourceBundle(source_model=models[0], referenced_models=models, dialect="postgres")
+    return ResolvedSourceBundle(population=models[0], referenced_datasets=models, dialect="postgres")
 
 
 def _grain(**body):
-    query = SlayerQuery.model_validate({"source_model": "orders", **body})
+    query = SlayerQuery.model_validate({"population": "orders", **body})
     schema = plan_query(query=query, bundle=_bundle()).stage_schema
     assert schema is not None
     return schema.grain
@@ -96,12 +96,12 @@ class TestGrainEmission:
 class TestSiblingStageGrain:
     def test_named_sibling_stage_schema_carries_its_grain(self) -> None:
         sibling = SlayerQuery.model_validate({
-            "name": "c", "source_model": "customers", "dimensions": ["id"],
-            "measures": [{"formula": "max(tier)", "name": "tr"}],
+            "name": "c", "population": "customers", "dimensions": ["id"],
+            "metrics": [{"formula": "max(tier)", "name": "tr"}],
         })
         root = SlayerQuery.model_validate({
-            "source_model": "c", "dimensions": ["tr"],
-            "measures": [{"formula": "count(*)", "name": "n"}],
+            "population": "c", "dimensions": ["tr"],
+            "metrics": [{"formula": "count(*)", "name": "n"}],
         })
         customers = next(m for m in dev1836_models() if m.name == "customers")
         bundle = _bundle().model_copy(update={"stage_source_models": {"c": customers}})
@@ -112,14 +112,14 @@ class TestSiblingStageGrain:
 
 class TestGrainValidator:
     def test_grain_member_must_name_a_column(self) -> None:
-        columns = [StageColumn(name="a", sql_alias="a", type=DataType.TEXT)]
+        columns = [StageField(name="a", sql_alias="a", datatype=DataType.TEXT)]
         with pytest.raises(ValidationError):
-            StageSchema(relation_name="s", columns=columns, grain=["b"])
+            StageSchema(relation_name="s", fields=columns, grain=["b"])
 
     def test_grain_members_naming_columns_validate(self) -> None:
         schema = StageSchema(
             relation_name="s",
-            columns=[StageColumn(name="a", sql_alias="a", type=DataType.TEXT)],
+            fields=[StageField(name="a", sql_alias="a", datatype=DataType.TEXT)],
             grain=["a"],
         )
         assert schema.grain == ["a"]

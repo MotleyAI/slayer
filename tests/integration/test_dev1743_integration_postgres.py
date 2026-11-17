@@ -11,7 +11,7 @@ import pytest
 
 from slayer.async_utils import run_sync
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._engine_helpers import owned_query_engine
@@ -52,7 +52,7 @@ def _storage_for(proc, db_name, tmpdir, models) -> YAMLStorage:
         name="testpg", type="postgres", host=proc.host, port=proc.port,
         database=db_name, username=proc.user, password="")))
     for m in models:
-        run_sync(storage.save_model(m))
+        run_sync(storage.save_dataset(m))
     return storage
 
 
@@ -75,16 +75,16 @@ def _dunder_storage(postgresql_proc, tmp_path_factory):
                         [(1, 1, 10), (2, 2, 20), (3, 1, 5)])
         conn.commit()
         models = [
-            SlayerModel(name="customer__region", sql_table="customer_region_dim",
-                        data_source="testpg", columns=[
-                            Column(name="id", type=DataType.DOUBLE, primary_key=True),
-                            Column(name="label", type=DataType.TEXT)]),
-            SlayerModel(name="orders", sql_table="orders", data_source="testpg",
-                        columns=[
-                            Column(name="id", type=DataType.DOUBLE, primary_key=True),
-                            Column(name="cr_id", type=DataType.DOUBLE),
-                            Column(name="amount", type=DataType.DOUBLE)],
-                        joins=[ModelJoin(target_model="customer__region",
+            SlayerDataset(name="customer__region", sql_table="customer_region_dim",
+                        data_source="testpg", fields=[
+                            DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True),
+                            DatasetField(name="label", datatype=DataType.TEXT)]),
+            SlayerDataset(name="orders", sql_table="orders", data_source="testpg",
+                        fields=[
+                            DatasetField(name="id", datatype=DataType.DOUBLE, primary_key=True),
+                            DatasetField(name="cr_id", datatype=DataType.DOUBLE),
+                            DatasetField(name="amount", datatype=DataType.DOUBLE)],
+                        relationships=[DatasetRelationship(to="customer__region",
                                          join_pairs=[["cr_id", "id"]])]),
         ]
         storage = _storage_for(postgresql_proc, db_name,
@@ -100,9 +100,9 @@ class TestDunderModelLiveValues:
     async def test_per_label_sums(self, _dunder_storage) -> None:
         async with owned_query_engine(storage=_dunder_storage) as engine:
             result = await engine.execute(query=SlayerQuery.model_validate({
-                "source_model": "orders",
+                "population": "orders",
                 "dimensions": ["customer__region.label"],
-                "measures": [{"formula": "sum(amount)"}],
+                "metrics": [{"formula": "sum(amount)"}],
             }))
         by_label = {r["orders.customer__region.label"]: r["orders.amount_sum"]
                     for r in result.data}
@@ -139,26 +139,26 @@ def _long_alias_storage(postgresql_proc, tmp_path_factory):
         conn.commit()
 
         def m(name, cols, joins=()):
-            return SlayerModel(name=name, sql_table=name, data_source="testpg",
-                               columns=cols, joins=list(joins))
-        idc = lambda n: Column(name=n, type=DataType.DOUBLE, primary_key=(n == "id"))  # noqa: E731
+            return SlayerDataset(name=name, sql_table=name, data_source="testpg",
+                               fields=cols, relationships=list(joins))
+        idc = lambda n: DatasetField(name=n, datatype=DataType.DOUBLE, primary_key=(n == "id"))  # noqa: E731
         models = [
             m("household_entity_record_north",
-              [idc("id"), Column(name="tag", type=DataType.TEXT)]),
+              [idc("id"), DatasetField(name="tag", datatype=DataType.TEXT)]),
             m("household_entity_record_south",
-              [idc("id"), Column(name="tag", type=DataType.TEXT)]),
+              [idc("id"), DatasetField(name="tag", datatype=DataType.TEXT)]),
             m("consumer_entity_record",
               [idc("id"), idc("north_id"), idc("south_id")],
-              [ModelJoin(target_model="household_entity_record_north",
+              [DatasetRelationship(to="household_entity_record_north",
                          join_pairs=[["north_id", "id"]]),
-               ModelJoin(target_model="household_entity_record_south",
+               DatasetRelationship(to="household_entity_record_south",
                          join_pairs=[["south_id", "id"]])]),
             m("customer_entity_record", [idc("id"), idc("consumer_id")],
-              [ModelJoin(target_model="consumer_entity_record",
+              [DatasetRelationship(to="consumer_entity_record",
                          join_pairs=[["consumer_id", "id"]])]),
             m("subscription_entity",
-              [idc("id"), idc("customer_id"), Column(name="amount", type=DataType.DOUBLE)],
-              [ModelJoin(target_model="customer_entity_record",
+              [idc("id"), idc("customer_id"), DatasetField(name="amount", datatype=DataType.DOUBLE)],
+              [DatasetRelationship(to="customer_entity_record",
                          join_pairs=[["customer_id", "id"]])]),
         ]
         storage = _storage_for(postgresql_proc, db_name,
@@ -178,9 +178,9 @@ class TestLongAliasCollisionLiveValues:
                  "household_entity_record_south.tag")
         async with owned_query_engine(storage=_long_alias_storage) as engine:
             result = await engine.execute(query=SlayerQuery.model_validate({
-                "source_model": "subscription_entity",
+                "population": "subscription_entity",
                 "dimensions": [north, south],
-                "measures": [{"formula": "sum(amount)"}],
+                "metrics": [{"formula": "sum(amount)"}],
             }))
         assert result.row_count == 1
         row = result.data[0]

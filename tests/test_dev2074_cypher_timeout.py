@@ -12,7 +12,7 @@ import pytest
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.search import graph
 from slayer.search.graph import clear_cache, get_filtered_ids, is_available
 from slayer.storage.yaml_storage import YAMLStorage
@@ -28,13 +28,13 @@ DATASOURCES = "MATCH (d:Datasource) RETURN d.id AS id"
 _EDGES = {0: [1], 1: [2, 0], 2: [0, 1]}
 
 
-def _model(i: int) -> SlayerModel:
+def _model(i: int) -> SlayerDataset:
     targets = _EDGES[i]
-    return SlayerModel(
+    return SlayerDataset(
         name=f"m{i}", sql_table=f"m{i}", data_source="shop",
-        columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                 *(Column(name=f"f{j}", type=DataType.INT) for j in range(len(targets)))],
-        joins=[ModelJoin(target_model=f"m{t}", join_pairs=[[f"f{j}", "id"]], name=f"e{i}_{j}")
+        fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                 *(DatasetField(name=f"f{j}", datatype=DataType.INT) for j in range(len(targets)))],
+        relationships=[DatasetRelationship(to=f"m{t}", join_pairs=[[f"f{j}", "id"]], name=f"e{i}_{j}")
                for j, t in enumerate(targets)],
     )
 
@@ -45,7 +45,7 @@ async def cyclic_storage() -> AsyncIterator[YAMLStorage]:
         storage = YAMLStorage(base_dir=tmpdir)
         await storage.save_datasource(DatasourceConfig(name="shop", type="sqlite", database=":memory:"))
         for i in _EDGES:
-            await storage.save_model(_model(i), _validate=False)
+            await storage.save_dataset(_model(i), _validate=False)
         clear_cache()
         yield storage
         clear_cache()

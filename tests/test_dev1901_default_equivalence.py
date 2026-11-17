@@ -14,7 +14,7 @@ from sqlglot import exp
 
 from slayer.core.errors import SlayerError
 from slayer.core.keys import AggregateKey
-from slayer.core.models import ModelMeasure
+from slayer.core.models import DatasetMetric
 from slayer.core.query import SlayerQuery
 from slayer.engine.elaborate import elaborate_query
 from slayer.ir.terms import Aggregate
@@ -86,7 +86,7 @@ def _home_path(formula: str) -> tuple:
     elab = elaborate_query(
         query=orders_q(measures=[{"formula": formula, "name": "m"}]), bundle=bundle1901())
     assert elab.prebound is not None
-    root = elab.prebound.declared_measures[-1].bound.value_key
+    root = elab.prebound.declared_metrics[-1].bound.value_key
     assert isinstance(root, AggregateKey), root
     term = elab.terms[root]
     assert isinstance(term, Aggregate), term
@@ -233,8 +233,8 @@ class TestFailClosed:
 async def _gen(formula: str, *, source_model: str = "orders") -> str:
     models = sorted(dev1901_models(), key=lambda m: m.name != source_model)
     return await _engine_generate(
-        query=SlayerQuery(source_model=source_model,
-                          measures=[ModelMeasure(formula=formula, name="w")]),
+        query=SlayerQuery(population=source_model,
+                          metrics=[DatasetMetric(expression=formula, name="w")]),
         model=models[0], extra_models=models[1:], dialect="sqlite", validate=False)
 
 
@@ -244,7 +244,7 @@ class TestWindowReservedAtSave:
         storage = YAMLStorage(base_dir=str(tmp_path))
         model = window_param_models(placeholder=placeholder)[0]
         with pytest.raises(SlayerError, match="(?s)wwin.*trailing|trailing.*wwin"):
-            await storage.save_model(model)
+            await storage.save_dataset(model)
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])

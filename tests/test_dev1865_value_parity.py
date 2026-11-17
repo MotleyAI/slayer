@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests._dev1865_fixtures import ModelMeasure, month_td, q
+from tests._dev1865_fixtures import DatasetMetric, month_td, q
 
 
 def _rowkey(row, dim_cols):
@@ -25,12 +25,12 @@ async def _twin_query_law(engine, *, dims, value_formula, threshold, td=None):
     base = {"dimensions": dims}
     if td is not None:
         base["time_dimensions"] = td
-    display = [ModelMeasure(formula="sum(amount)", name="s")]
+    display = [DatasetMetric(expression="sum(amount)", name="s")]
     filtered = (await engine.execute(q(
         **base, measures=display, filters=[f"{value_formula} > {threshold}"],
     ))).data
     twin = (await engine.execute(q(
-        **base, measures=display + [ModelMeasure(formula=value_formula, name="e")],
+        **base, measures=display + [DatasetMetric(expression=value_formula, name="e")],
     ))).data
     assert filtered, "threshold kept no rows — the law would be vacuous"
     dim_cols = sorted(set(filtered[0]) - {"orders.s"})
@@ -79,15 +79,15 @@ class TestNullPredicateDropsRow:
         twin = (await exec_engine.execute(q(
             dimensions=["region"],
             measures=[
-                ModelMeasure(formula="sum(amount)", name="s"),
-                ModelMeasure(formula="sum(nomatch)", name="e"),
+                DatasetMetric(expression="sum(amount)", name="s"),
+                DatasetMetric(expression="sum(nomatch)", name="e"),
             ],
         ))).data
         assert twin
         assert all(r["orders.e"] is None for r in twin)
         filtered = (await exec_engine.execute(q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
             filters=["sum(nomatch) > 0"],
         ))).data
         assert filtered == []
@@ -100,18 +100,18 @@ class TestPositionSupportCannotLag:
         expr = "sum(customers.spend, partition_by=customers.regions.name)"
         dims = ["customers.regions.name", "customers.tier"]
         as_measure = (await exec_engine.execute(q(
-            dimensions=dims, measures=[ModelMeasure(formula=expr, name="e")],
+            dimensions=dims, measures=[DatasetMetric(expression=expr, name="e")],
         ))).data
         assert as_measure
         as_filter = (await exec_engine.execute(q(
             dimensions=dims,
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
+            measures=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
             filters=[f"{expr} > 100"],
         ))).data
         assert 0 < len(as_filter) <= len(as_measure)
         ordered = (await exec_engine.execute(q(
             dimensions=dims,
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
+            measures=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
             order=[{"column": expr, "direction": "desc"}],
         ))).data
         assert len(ordered) == len(as_measure)

@@ -80,15 +80,15 @@ class TestFilterValues:
 
     async def test_filtered_last_picks_the_newest_passing_row(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "balances", "dimensions": ["customer_id"],
-            "measures": [{"formula": "last(balance, updated_at) FILTER (WHERE status = 'active')", "name": "v"}],
+            "population": "balances", "dimensions": ["customer_id"],
+            "metrics": [{"formula": "last(balance, updated_at) FILTER (WHERE status = 'active')", "name": "v"}],
         }))
         assert {int(k): num(v) for k, v in by_key(resp, "customer_id", model="balances").items()} == {1: 150.0, 2: 80.0}
 
     async def test_filtered_first_picks_the_oldest_passing_row(self, engine: SlayerQueryEngine) -> None:
         resp = await engine.execute(SlayerQuery.model_validate({
-            "source_model": "balances", "dimensions": ["customer_id"],
-            "measures": [{"formula": "first(balance, updated_at) FILTER (WHERE status = 'inactive')", "name": "v"}],
+            "population": "balances", "dimensions": ["customer_id"],
+            "metrics": [{"formula": "first(balance, updated_at) FILTER (WHERE status = 'inactive')", "name": "v"}],
         }))
         assert {int(k): num(v) for k, v in by_key(resp, "customer_id", model="balances").items()} == {1: 999.0, 2: 70.0}
 

@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.api.server import create_app
 from slayer.core.enums import DataType
 from slayer.core.format import encode_json, encode_text
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.facade.translator import QueryResult
 from slayer.flight.handlers import FlightHandlers
@@ -219,10 +219,10 @@ def pg_binary(value: Any) -> str:
     return raw.decode("utf-8")
 
 
-def _vals_model(column_type: DataType = DataType.TEXT) -> SlayerModel:
-    return SlayerModel(name="vals", sql_table="vals", data_source=DS,
-                       columns=[Column(name="id", type=DataType.INT, primary_key=True),
-                                Column(name="v", type=column_type)])
+def _vals_model(column_type: DataType = DataType.TEXT) -> SlayerDataset:
+    return SlayerDataset(name="vals", sql_table="vals", data_source=DS,
+                       fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                                DatasetField(name="v", datatype=column_type)])
 
 
 def flight_cell(value: Any, *, column_type: DataType = DataType.TEXT) -> Any:

@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from slayer.api.server import create_app
 from slayer.async_utils import run_sync
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.inspect.service import InspectService
 from slayer.storage.base import StorageBackend
 from slayer.storage.migrations import CURRENT_VERSIONS
@@ -48,11 +48,11 @@ async def storage(request) -> AsyncGenerator[StorageBackend]:
 
 
 def test_field_is_gone() -> None:
-    assert "backing_query_sql" not in SlayerModel.model_fields
+    assert "backing_query_sql" not in SlayerDataset.model_fields
 
 
 async def test_v14_model_loads_without_backing_sql(storage: StorageBackend) -> None:
-    model = await storage.get_model("rev", data_source=DS)
+    model = await storage.get_dataset("rev", data_source=DS)
     assert model is not None
     assert "backing_query_sql" not in model.model_dump()
     doc = await raw_doc(storage, "rev")

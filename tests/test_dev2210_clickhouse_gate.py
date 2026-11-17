@@ -17,8 +17,8 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._ch_fake_http import CORRELATED_SETTING, FakeClickHouse, fake_ch_engine, route_engine
 from tests._dev2210_fixtures import table_models
 
-UPS = SlayerQuery.model_validate({"source_model": "ups_orders", "dimensions": ["id"]})
-DONE = SlayerQuery.model_validate({"source_model": "returns", "dimensions": ["id", "done_orders.status"]})
+UPS = SlayerQuery.model_validate({"population": "ups_orders", "dimensions": ["id"]})
+DONE = SlayerQuery.model_validate({"population": "returns", "dimensions": ["id", "done_orders.status"]})
 
 
 @pytest.fixture
@@ -43,7 +43,7 @@ async def engine(tmp_path) -> AsyncIterator[SlayerQueryEngine]:
     storage = YAMLStorage(base_dir=str(tmp_path / "store"))
     await storage.save_datasource(DatasourceConfig(name="test", type="clickhouse"))
     for model in table_models():
-        await storage.save_model(model, _validate=False)
+        await storage.save_dataset(model, _validate=False)
     eng = SlayerQueryEngine(storage=storage)
     try:
         yield eng

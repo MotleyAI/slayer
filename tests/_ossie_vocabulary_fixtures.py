@@ -16,7 +16,7 @@ from typing import Any, Literal
 import pytest
 import yaml
 
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine, SlayerResponse
 from slayer.storage.base import StorageBackend
 from tests._dev1737_fixtures import CUSTOMERS, ORDERS, seed_backend
@@ -190,8 +190,8 @@ def normal(response: SlayerResponse) -> dict[str, Any]:
     return {"keys": keys, "rows": [json.loads(r) for r in rows]}
 
 
-def dataset_of(doc: dict[str, Any]) -> SlayerModel:
-    return SlayerModel.model_validate(fresh(doc))
+def dataset_of(doc: dict[str, Any]) -> SlayerDataset:
+    return SlayerDataset.model_validate(fresh(doc))
 
 
 @asynccontextmanager
@@ -215,7 +215,7 @@ async def refine_vocab_engine(backend: str, *, spelling: Spelling = "new") -> As
     async with seeded_exec_engine(
         dialect=backend, seed=seed, models=[dataset_of(refine_orders_doc(spelling))],
     ) as (engine, _db):
-        await engine.create_model_from_query(query=fresh(MONTHLY_REVENUE[spelling]), name=SAVED_QUERY)
+        await engine.create_dataset_from_query(query=fresh(MONTHLY_REVENUE[spelling]), name=SAVED_QUERY)
         yield engine
 
 

@@ -245,7 +245,7 @@ def _column_specs(table: FacadeTable):
     ``pg_class.relnatts`` advertise only the same-model column list. BI
     tools that flatten the catalog into a column view (Metabase, dbt
     schema scan) discover only base columns and don't issue fingerprint
-    queries that would lead to dotted ``SlayerQuery.measures[*].name``.
+    queries that would lead to dotted ``SlayerQuery.metrics[*].name``.
     """
     for d in local_dimensions(table):
         yield d.name, d.data_type

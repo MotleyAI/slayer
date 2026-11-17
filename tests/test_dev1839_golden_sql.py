@@ -17,7 +17,7 @@ from tests._dev1839_fixtures import (
     KEYLESS_RANK,
     MEASURE_DIFF,
     MIXED_RANK,
-    ModelMeasure,
+    DatasetMetric,
     NESTED_RANK,
     SAMEGRAIN_DIFF,
     SAMEGRAIN_RANK,
@@ -37,7 +37,7 @@ WORKING_PREFIX = "lift/"
 
 
 def _cases() -> dict:
-    s = ModelMeasure(formula="sum(amount)", name="s")
+    s = DatasetMetric(expression="sum(amount)", name="s")
     return {
         "lift/dim_mixed_rank": q(
             dimensions=["region", "city", {"expression": MIXED_RANK, "name": "rr"}],
@@ -67,15 +67,15 @@ def _cases() -> dict:
                 "region", "city", "channel",
                 {"expression": MIXED_RANK, "name": "rr"},
             ],
-            measures=[ModelMeasure(formula=MIXED_RANK, name="rm"), s],
+            measures=[DatasetMetric(expression=MIXED_RANK, name="rm"), s],
         ),
         "lift/measure_mixed_arithmetic": q(
             dimensions=["region", "city"],
-            measures=[ModelMeasure(formula=MEASURE_DIFF, name="d"), s],
+            measures=[DatasetMetric(expression=MEASURE_DIFF, name="d"), s],
         ),
         "lift/measure_same_grain_arithmetic": q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=SAMEGRAIN_DIFF, name="d")],
+            measures=[DatasetMetric(expression=SAMEGRAIN_DIFF, name="d")],
         ),
         "lift/dim_same_grain_rank": q(
             dimensions=["region", {"expression": SAMEGRAIN_RANK, "name": "gr"}],

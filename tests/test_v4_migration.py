@@ -24,7 +24,7 @@ import os
 import pytest
 import yaml
 
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage import migrations as mig
 from slayer.storage.sqlite_conn import transaction
@@ -80,7 +80,7 @@ def test_pydantic_rejects_empty_data_source_at_v4() -> None:
     that bypass the dict converter (e.g., construct SlayerModel directly)
     can't slip an orphan past."""
     with pytest.raises(ValueError, match="data_source"):
-        SlayerModel(name="orders", sql_table="orders", data_source="")
+        SlayerDataset(name="orders", sql_table="orders", data_source="")
 
 
 # --- YAMLStorage layout migration ------------------------------------------
@@ -120,7 +120,7 @@ async def test_yaml_legacy_flat_file_migrates_to_nested(tmp_path) -> None:
     engine = SlayerQueryEngine(storage=YAMLStorage(base_dir=base))
 
     try:
-        loaded = await engine.storage.get_model("orders", data_source="warehouse")
+        loaded = await engine.storage.get_dataset("orders", data_source="warehouse")
     finally:
         await engine.aclose()
         engine.close()
@@ -218,7 +218,7 @@ async def test_yaml_orphan_with_single_datasource_auto_assigned(tmp_path) -> Non
 
     storage = YAMLStorage(base_dir=base)
 
-    loaded = await storage.get_model("orders", data_source="only_ds")
+    loaded = await storage.get_dataset("orders", data_source="only_ds")
     assert loaded is not None
     assert loaded.data_source == "only_ds"
 
@@ -303,11 +303,11 @@ async def test_yaml_already_migrated_layout_is_no_op(tmp_path) -> None:
     storage = YAMLStorage(base_dir=base)
     # Save a datasource and a model so the second open has real state to scan.
     await storage.save_datasource(DatasourceConfig(name="warehouse", type="postgres"))
-    await storage.save_model(SlayerModel(name="orders", sql_table="orders", data_source="warehouse"))
+    await storage.save_dataset(SlayerDataset(name="orders", sql_table="orders", data_source="warehouse"))
 
     # Re-open at the same base dir; should find no flat files, do nothing.
     storage2 = YAMLStorage(base_dir=base)
-    loaded = await storage2.get_model("orders", data_source="warehouse")
+    loaded = await storage2.get_dataset("orders", data_source="warehouse")
     assert loaded is not None
 
 
@@ -343,7 +343,7 @@ async def test_sqlite_legacy_schema_migrates_to_composite_pk(tmp_path) -> None:
 
     storage = SQLiteStorage(db_path=db_path)
 
-    loaded = await storage.get_model("orders", data_source="warehouse")
+    loaded = await storage.get_dataset("orders", data_source="warehouse")
     assert loaded is not None
     assert loaded.data_source == "warehouse"
 
@@ -373,7 +373,7 @@ async def test_sqlite_legacy_schema_orphan_with_single_datasource_auto_assigned(
 
     storage = SQLiteStorage(db_path=db_path)
 
-    loaded = await storage.get_model("orders", data_source="only_ds")
+    loaded = await storage.get_dataset("orders", data_source="only_ds")
     assert loaded is not None
     assert loaded.data_source == "only_ds"
 
@@ -399,8 +399,8 @@ async def test_sqlite_already_migrated_schema_is_no_op(tmp_path) -> None:
     db_path = str(tmp_path / "slayer.db")
     storage = SQLiteStorage(db_path=db_path)
     await storage.save_datasource(DatasourceConfig(name="warehouse", type="postgres"))
-    await storage.save_model(SlayerModel(name="orders", sql_table="orders", data_source="warehouse"))
+    await storage.save_dataset(SlayerDataset(name="orders", sql_table="orders", data_source="warehouse"))
 
     storage2 = SQLiteStorage(db_path=db_path)
-    loaded = await storage2.get_model("orders", data_source="warehouse")
+    loaded = await storage2.get_dataset("orders", data_source="warehouse")
     assert loaded is not None

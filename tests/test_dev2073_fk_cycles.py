@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from slayer.core.models import ModelJoin
+from slayer.core.models import DatasetRelationship
 from slayer.sql.dialects import SqliteDialect
 
 from tests._dev1853_fixtures import rows_set
@@ -51,8 +51,8 @@ class TestCyclesIngestVerbatim:
     async def test_unrelated_chain_is_intact_in_both_directions(self) -> None:
         async with live(TWO_CYCLE) as lv:
             await lv.ingest()
-            sales = await lv.model("sales")
-            assert [j.name for j in sales.joins] == [None]
+            sales = await lv.dataset("sales")
+            assert [j.name for j in sales.relationships] == [None]
             resp = await lv.query(source_model="sales", dimensions=["id", "stores.name"])
             assert rows_set(resp, "sales.id", "sales.stores.name") == {
                 (1, "North"), (2, "North"), (3, "South"),
@@ -99,7 +99,7 @@ class TestOneEdgePerFkRelationship:
         async with live(MUTUAL_PK) as lv:
             result = await lv.ingest()
             assert result.errors == []
-            models = await lv.models()
+            models = await lv.datasets()
             assert {"users", "profiles"} <= set(models)
             # Both halves one_to_one: the deterministic tie-break keeps the profiles half.
             assert set(await lv.edges()) == {("profiles", "users", (("user_id", "id"),))}
@@ -119,8 +119,8 @@ class TestOneEdgePerFkRelationship:
             before = await lv.edges()
             result = await lv.ingest()
             assert result.errors == []
-            assert all(not a.new_joins for a in result.additions)
-            assert {"users", "profiles"} <= set(await lv.models())
+            assert all(not a.new_relationships for a in result.additions)
+            assert {"users", "profiles"} <= set(await lv.datasets())
             assert len(before) == 1
             assert await lv.edges() == before
 
@@ -128,17 +128,17 @@ class TestOneEdgePerFkRelationship:
     async def test_fk_stored_in_reverse_orientation_is_not_readded(self, name: str | None) -> None:
         async with live(CHAIN) as lv:
             await lv.ingest()
-            orders = await lv.model("orders")
-            await lv.storage.save_model(orders.model_copy(update={"joins": []}))
-            customers = await lv.model("customers")
-            reverse = ModelJoin(target_model="orders", join_pairs=[["id", "customer_id"]], name=name)
-            await lv.storage.save_model(customers.model_copy(update={"joins": [reverse]}))
+            orders = await lv.dataset("orders")
+            await lv.storage.save_dataset(orders.model_copy(update={"relationships": []}))
+            customers = await lv.dataset("customers")
+            reverse = DatasetRelationship(to="orders", join_pairs=[["id", "customer_id"]], name=name)
+            await lv.storage.save_dataset(customers.model_copy(update={"relationships": [reverse]}))
 
             result = await lv.ingest()
 
             assert result.errors == []
-            assert (await lv.model("orders")).joins == []
-            assert [(j.target_model, j.name) for j in (await lv.model("customers")).joins] == [("orders", name)]
+            assert (await lv.dataset("orders")).relationships == []
+            assert [(j.to, j.name) for j in (await lv.dataset("customers")).relationships] == [("orders", name)]
 
 
 class TestNestedFieldColumns:
@@ -156,7 +156,7 @@ class TestNestedFieldColumns:
                 result = await lv.ingest()
                 assert result.errors == []
                 assert result.skipped == []
-            assert {c.name for c in (await lv.model("orders")).columns} == {"id", "customer_id", "amount"}
+            assert {c.name for c in (await lv.dataset("orders")).fields} == {"id", "customer_id", "amount"}
 
 
 class TestFkReflectionFailure:
@@ -165,7 +165,7 @@ class TestFkReflectionFailure:
         async with live(CHAIN + SALES_CHAIN) as lv:
             result = await lv.ingest()
             assert all(s.table_name != "orders" for s in result.skipped)
-            orders = await lv.model("orders")
-            assert {c.name for c in orders.columns} >= {"id", "customer_id", "amount"}
-            assert orders.joins == []
+            orders = await lv.dataset("orders")
+            assert {c.name for c in orders.fields} >= {"id", "customer_id", "amount"}
+            assert orders.relationships == []
             assert ("sales", "stores", (("store_id", "id"),)) in await lv.edges()

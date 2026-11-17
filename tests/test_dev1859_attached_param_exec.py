@@ -17,7 +17,7 @@ from slayer.core.errors import SlayerError
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1841_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     assoc_q,
     bcast_q,
     broadcast_warnings,
@@ -103,7 +103,7 @@ class TestAssociateHeadline:
         """Scenario: Associate-mode attached parameter executes."""
         resp = await orders_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula=_HEADLINE, name="w")]))
+            measures=[DatasetMetric(expression=_HEADLINE, name="w")]))
         by = status_key(resp)
         assert set(by) == {("ok",), ("new",)}
         for status, expected in assoc_wavg_region_weight().items():
@@ -115,7 +115,7 @@ class TestAssociateHeadline:
         dropping c4 entirely."""
         resp = await orders_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula=_HEADLINE, name="w")]))
+            measures=[DatasetMetric(expression=_HEADLINE, name="w")]))
         new = float(status_key(resp)[("new",)]["orders.w"])
         assert new == pytest.approx(assoc_wavg_region_weight()["new"])
         assert new != pytest.approx(assoc_wavg_new_without_c4())
@@ -129,7 +129,7 @@ class TestDefaultAndErrorModeTwins:
         warning."""
         resp = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula=_HEADLINE, name="w")]))
+            measures=[DatasetMetric(expression=_HEADLINE, name="w")]))
         by = status_key(resp)
         expected = broadcast_wavg_global()
         for status in ("ok", "new"):
@@ -141,7 +141,7 @@ class TestDefaultAndErrorModeTwins:
         the customers-rooted producer and broadcasts to both cells."""
         resp = await orders_engine.execute(bcast_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula=_TARGET_SIDE, name="w")]))
+            measures=[DatasetMetric(expression=_TARGET_SIDE, name="w")]))
         by = status_key(resp)
         expected = broadcast_wavg_target_side()
         for status in ("ok", "new"):
@@ -152,7 +152,7 @@ class TestDefaultAndErrorModeTwins:
         """Scenario: Default-mode twin — error mode refuses the unattributable
         dimension, never a parameter/determination error."""
         q = error_q(dimensions=["status"],
-                    measures=[ModelMeasure(formula=_HEADLINE, name="w")])
+                    measures=[DatasetMetric(expression=_HEADLINE, name="w")])
         with pytest.raises(SlayerError) as ei:
             await orders_engine.execute(q)
         msg = str(ei.value)
@@ -166,7 +166,7 @@ class TestOrdinaryKernel:
         """Scenario: Ordinary-mode attached parameter executes — a global query
         so per-region weights vary, distinguishable from the plain average."""
         resp = await sales_engine.execute(sales_q(
-            measures=[ModelMeasure(formula=_ORDINARY, name="w")]))
+            measures=[DatasetMetric(expression=_ORDINARY, name="w")]))
         got = float(resp.data[0]["sales.w"])
         assert got == pytest.approx(ordinary_wavg_global())
         assert got != pytest.approx(ordinary_avg_amount_global())
@@ -175,10 +175,10 @@ class TestOrdinaryKernel:
         """Requirement: a parameter may be positional — the second positional arg
         folds onto ``weight`` and equals the keyword spelling."""
         kw = await sales_engine.execute(sales_q(
-            measures=[ModelMeasure(formula=_ORDINARY, name="w")]))
+            measures=[DatasetMetric(expression=_ORDINARY, name="w")]))
         pos = await sales_engine.execute(sales_q(
-            measures=[ModelMeasure(
-                formula="weighted_avg(amount, sum(amount, partition_by=region))",
+            measures=[DatasetMetric(
+                expression="weighted_avg(amount, sum(amount, partition_by=region))",
                 name="w")]))
         assert float(pos.data[0]["sales.w"]) == pytest.approx(
             float(kw.data[0]["sales.w"]))
@@ -190,7 +190,7 @@ class TestMixedPlusParameter:
         constituent and the parameter both row-attach; no placeholder leak."""
         resp = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=_MIXED_PARAM, name="w")]))
+            measures=[DatasetMetric(expression=_MIXED_PARAM, name="w")]))
         _assert_region(_region_vals(resp, "sales.w"), mixed_plus_param_by_region())
 
 
@@ -200,7 +200,7 @@ class TestUngrainedParameterThreeKernels:
         weight=sum(amount)); the weight types at [region] (region total²)."""
         resp = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="wsum(amount, weight=sum(amount))",
+            measures=[DatasetMetric(expression="wsum(amount, weight=sum(amount))",
                                    name="w")]))
         _assert_region(_region_vals(resp, "sales.w"), ungrained_wsum_row_by_region())
 
@@ -209,8 +209,8 @@ class TestUngrainedParameterThreeKernels:
         [status], broadcast onto each distinct customer."""
         resp = await orders_wsum_engine.execute(assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(
-                formula="wsum(customers.spend, weight=sum(amount))", name="w")]))
+            measures=[DatasetMetric(
+                expression="wsum(customers.spend, weight=sum(amount))", name="w")]))
         by = status_key(resp)
         for status, expected in ungrained_wsum_assoc_by_status().items():
             assert float(by[(status,)]["orders.w"]) == pytest.approx(expected)
@@ -220,8 +220,8 @@ class TestUngrainedParameterThreeKernels:
         count(id) types at [region] and is carried onto each city cell."""
         resp = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula=("wsum(sum(amount, partition_by=[city, region]), "
+            measures=[DatasetMetric(
+                expression=("wsum(sum(amount, partition_by=[city, region]), "
                          "weight=count(id))"),
                 name="w")]))
         _assert_region(_region_vals(resp, "sales.w"),
@@ -235,8 +235,8 @@ class TestLiteralSource:
         over an empty grain."""
         resp = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(
-                formula="wsum(1, weight=sum(amount, partition_by=region))",
+            measures=[DatasetMetric(
+                expression="wsum(1, weight=sum(amount, partition_by=region))",
                 name="w")]))
         _assert_region(_region_vals(resp, "sales.w"),
                        literal_source_wsum_by_region())
@@ -248,7 +248,7 @@ class TestCrossModelParameterOnLocalRoot:
         weighted by its customer's region SPEND total, attached per order row."""
         resp = await orders_engine.execute(orders_q(
             dimensions=["status"],
-            measures=[ModelMeasure(formula=_CROSS, name="w")]))
+            measures=[DatasetMetric(expression=_CROSS, name="w")]))
         by = status_key(resp)
         for status, expected in cross_model_param_by_status().items():
             assert float(by[(status,)]["orders.w"]) == pytest.approx(expected)
@@ -260,8 +260,8 @@ class TestCrossModelParameterOnLocalRoot:
         and never wrong values."""
         q = orders_q(
             dimensions=["status"],
-            measures=[ModelMeasure(
-                formula=("weighted_avg(amount, weight="
+            measures=[DatasetMetric(
+                expression=("weighted_avg(amount, weight="
                          "sum(customers.spend, partition_by=customers.plans.level))"),
                 name="w")])
         with pytest.raises((SlayerError, ValueError)) as ei:
@@ -279,8 +279,8 @@ class TestUndeterminedParameterRejected:
         values. Distinct from the cross-model input-safety residue above."""
         q = assoc_q(
             dimensions=["status"],
-            measures=[ModelMeasure(
-                formula=("weighted_avg(customers.spend, "
+            measures=[DatasetMetric(
+                expression=("weighted_avg(customers.spend, "
                          "weight=sum(amount, partition_by=status))"),
                 name="w")])
         with pytest.raises(SlayerError) as ei:
@@ -298,10 +298,10 @@ class TestFilterAndOrderPositions:
         filter types as a measure, pruning rows with survivors unchanged."""
         full = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
+            measures=[DatasetMetric(expression="sum(amount)", name="tot")]))
         pruned = await sales_engine.execute(sales_q(
             dimensions=["region"], filters=[f"{self._FILT} > 10000"],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
+            measures=[DatasetMetric(expression="sum(amount)", name="tot")]))
         kept = {k[0] for k in region_key(pruned)}
         assert kept == {"South", "East"}  # 19600, 32400 > 10000
         full_tot = _region_vals(full, "sales.tot")
@@ -312,7 +312,7 @@ class TestFilterAndOrderPositions:
         """Scenario: ordered by the name of its projected measure."""
         resp = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=_ORDINARY, name="w")],
+            measures=[DatasetMetric(expression=_ORDINARY, name="w")],
             order=[{"column": "w", "direction": "desc"}]))
         order = [r["sales.region"] for r in resp.data if r["sales.w"] is not None]
         by_val = ordinary_wavg_by_region()
@@ -322,7 +322,7 @@ class TestFilterAndOrderPositions:
         """Scenario: appears only as a raw ORDER BY formula (no projection)."""
         resp = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot")],
+            measures=[DatasetMetric(expression="sum(amount)", name="tot")],
             order=[{"column": _ORDINARY, "direction": "desc"}]))
         by_val = ordinary_wavg_by_region()
         present = [r["sales.region"] for r in resp.data
@@ -342,18 +342,18 @@ class TestSqlHygiene:
     async def test_no_placeholder_leak_and_scope_closed(self, sales_engine, formula):
         resp = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula=formula, name="w")]), dry_run=True)
+            measures=[DatasetMetric(expression=formula, name="w")]), dry_run=True)
         assert "__regroup__" not in resp.sql, resp.sql
         assert_scope_closed(resp.sql)
 
     async def test_adding_parameter_measure_is_cardinality_neutral(self, sales_engine):
         base = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot")]))
+            measures=[DatasetMetric(expression="sum(amount)", name="tot")]))
         withp = await sales_engine.execute(sales_q(
             dimensions=["region"],
-            measures=[ModelMeasure(formula="sum(amount)", name="tot"),
-                      ModelMeasure(formula=_ORDINARY, name="w")]))
+            measures=[DatasetMetric(expression="sum(amount)", name="tot"),
+                      DatasetMetric(expression=_ORDINARY, name="w")]))
         assert len(withp.data) == len(base.data)
         a = {k: v["sales.tot"] for k, v in region_key(base).items()}
         b = {k: v["sales.tot"] for k, v in region_key(withp).items()}

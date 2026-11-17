@@ -106,21 +106,21 @@ def migrate_nested(entity: str, data: Any) -> Any:
 
 
 @register_migration("SlayerModel", 9)
-def _model_v9_to_v10(data: dict) -> dict:
+def _dataset_v9_to_v10(data: dict) -> dict:
     """v10: per-doc no-op; the cross-document exact-inverse join dedup runs in
     the storage load path (``_migrate_and_refine_on_load``)."""
     return data
 
 
 @register_migration("SlayerModel", 10)
-def _model_v10_to_v11(data: dict) -> dict:
+def _dataset_v10_to_v11(data: dict) -> dict:
     """v11: per-doc no-op; join-key canonicalisation needs the peer, so it runs
     in the storage load path (``_migrate_and_refine_on_load``)."""
     return data
 
 
 @register_migration(entity="SlayerModel", source_version=24, stored_only=True)
-def _model_v24_to_v25(data: dict) -> dict:
+def _dataset_v24_to_v25(data: dict) -> dict:
     """v25: per-doc no-op; join targets are respelled against their peers in the storage load path."""
     return data
 
@@ -137,7 +137,7 @@ def _blank(v: Any) -> bool:
 
 
 @register_migration(entity="SlayerModel", source_version=11)
-def _model_v11_to_v12(data: dict) -> dict:
+def _dataset_v11_to_v12(data: dict) -> dict:
     """v12: drop blank formulas / param defaults ("absent") and params named `value` (now reserved)."""
     aggs = data.get("aggregations")
     if isinstance(aggs, list):
@@ -146,7 +146,7 @@ def _model_v11_to_v12(data: dict) -> dict:
 
 
 @register_migration(entity="SlayerModel", source_version=14)
-def _model_v14_to_v15(data: dict) -> dict:
+def _dataset_v14_to_v15(data: dict) -> dict:
     """v15: drop the cached ``backing_query_sql`` (a ``dry_run`` query renders it); ``access_tags`` defaults to public."""
     data.pop("backing_query_sql", None)
     return data
@@ -230,7 +230,7 @@ def _owner_extensions(owner: Any) -> Any:
 
 
 @register_migration(entity="SlayerModel", source_version=22, stored_only=True)
-def _model_v22_to_v23(data: dict) -> dict:
+def _dataset_v22_to_v23(data: dict) -> dict:
     """v23: stored Ossie foreign extensions move to ``nonportable_extensions`` with object data."""
     data = _owner_extensions(data)
     for key in ("columns", "measures", "joins"):

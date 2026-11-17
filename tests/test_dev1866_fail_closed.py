@@ -59,7 +59,7 @@ class TestFailClosed:
 
     async def test_empty_determination_set_has_dedicated_error(self, storage) -> None:
         """Only measures, no dims/field-filters ⇒ nothing to infer from."""
-        query = SlayerQuery.model_validate({"measures": [{"formula": "sum(orders.amount)", "name": "rev"}]})
+        query = SlayerQuery.model_validate({"metrics": [{"formula": "sum(orders.amount)", "name": "rev"}]})
         with pytest.raises(PopulationInferenceError) as ei:
             await infer_population(query=query, storage=storage, data_source=DS_CHAIN)
         err = ei.value
@@ -102,7 +102,7 @@ class TestFailClosed:
             storage=storage,
             data_source=DS_WIDGETS_A,
         )
-        assert choice.model_name == "widgets"
+        assert choice.dataset_name == "widgets"
         assert choice.data_source == DS_WIDGETS_A
 
     async def test_sibling_anchored_stage_refs_fail_closed(self, storage) -> None:
@@ -119,7 +119,7 @@ class TestFailClosed:
     async def test_measure_only_without_datasource_is_empty_determination(self, storage) -> None:
         """A measures-only query has nothing to infer from — even with no
         data_source it is EMPTY_DETERMINATION, never a datasource error."""
-        query = SlayerQuery.model_validate({"measures": [{"formula": "sum(orders.amount)", "name": "rev"}]})
+        query = SlayerQuery.model_validate({"metrics": [{"formula": "sum(orders.amount)", "name": "rev"}]})
         with pytest.raises(PopulationInferenceError) as ei:
             await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.EMPTY_DETERMINATION
@@ -128,7 +128,7 @@ class TestFailClosed:
         self, storage
     ) -> None:
         """Aggregate-only filter, no dims, no data_source ⇒ EMPTY_DETERMINATION, not NO_DATASOURCE."""
-        query = SlayerQuery(filters=["sum(orders.amount) > 100"])
+        query = SlayerQuery(filter=["sum(orders.amount) > 100"])
         with pytest.raises(PopulationInferenceError) as ei:
             await infer_population(query=query, storage=storage)
         assert ei.value.reason is PopulationErrorReason.EMPTY_DETERMINATION
@@ -139,12 +139,12 @@ class TestFailClosed:
         choice = await infer_population(
             query=SlayerQuery.model_validate({
                 "dimensions": ["customers.region"],
-                "measures": [{"formula": "sum(s1.total)", "name": "t"}],
+                "metrics": [{"formula": "sum(s1.total)", "name": "t"}],
             }),
             storage=storage,
             sibling_stage_names={"s1"},
         )
-        assert choice.model_name == "customers"
+        assert choice.dataset_name == "customers"
 
     async def test_string_literal_is_not_a_sibling_anchor(self, storage) -> None:
         """A dotted value inside a string literal must not be read as a reference
@@ -152,12 +152,12 @@ class TestFailClosed:
         choice = await infer_population(
             query=SlayerQuery(
                 dimensions=["customers.region"],
-                filters=["customers.region = 's1.total'"],
+                filter=["customers.region = 's1.total'"],
             ),
             storage=storage,
             sibling_stage_names={"s1"},
         )
-        assert choice.model_name == "customers"
+        assert choice.dataset_name == "customers"
 
     async def test_short_form_cross_model_dim_routes_when_rootless(self, storage) -> None:
         """DEV-1856×DEV-1871: rootless inference routes short forms per candidate,
@@ -170,7 +170,7 @@ class TestFailClosed:
             query=SlayerQuery(dimensions=["orders.status", "customers.regions.name"]),
             storage=storage,
         )
-        assert short.model_name == full.model_name == "orders"
+        assert short.dataset_name == full.dataset_name == "orders"
 
     async def test_error_payload_exposes_all_three_fields(self, storage) -> None:
         """reason/candidates/datasources are always present on the typed error."""

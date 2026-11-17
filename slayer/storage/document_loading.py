@@ -14,7 +14,7 @@ Loaded = tuple[list[T], list[StoredDocumentLoadError]]
 
 @contextlib.contextmanager
 def stored_document_boundary(
-    *, kind: Literal["model", "memory"], name: str, data_source: str | None = None,
+    *, kind: Literal["dataset", "memory"], name: str, data_source: str | None = None,
 ) -> Generator[None]:
     """Re-raise any failure inside one stored document's load as a ``StoredDocumentLoadError`` naming it."""
     try:
@@ -44,7 +44,7 @@ class DocumentLoadFailures:
         if not self.report:
             return
         payload = UnloadableDocumentWarning(
-            document_kind="memory" if error.data_source is None else "model",
+            document_kind="memory" if error.data_source is None else "dataset",
             data_source=error.data_source, name=error.name, cause=error.cause_text,
         )
         self.warnings.append(payload)

@@ -24,9 +24,9 @@ from slayer.core.keys import (
     source_row_leaves,
     walk_value_keys,
 )
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.refs import key_display
-from slayer.engine.cardinality.join_safety import attributable_from_root, key_host_path, safe_reachable
+from slayer.engine.cardinality.relationship_safety import attributable_from_root, key_host_path, safe_reachable
 from slayer.engine.reference_closure import key_closure
 from slayer.ir.prebound import walk_key_path
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -80,8 +80,8 @@ def _constituent_grain_paths(
 
 
 def home_path_for(
-    *, agg: AggregateKey, host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    *, agg: AggregateKey, host_dataset: SlayerDataset,
+    datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
     dim_keys: List[ValueKey], td_keys: List[ValueKey],
     active_bucket: Optional[ValueKey],
 ) -> Path:
@@ -114,7 +114,7 @@ def home_path_for(
     )
     for p in candidates:
         if _determines_all(
-            path=p, input_paths=input_paths, host_model=host_model, models_by_name=models_by_name, bundle=bundle,
+            path=p, input_paths=input_paths, host_dataset=host_dataset, datasets_by_name=datasets_by_name, bundle=bundle,
         ):
             return p
     # No valid home: fall to the inputs' common prefix (never deeper than the
@@ -124,8 +124,8 @@ def home_path_for(
 
 
 def resolve_aggregate_homes(
-    *, roots: Iterable[ValueKey], host_model: Optional[SlayerModel],
-    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    *, roots: Iterable[ValueKey], host_dataset: Optional[SlayerDataset],
+    datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
     dim_keys: List[ValueKey], td_keys: List[ValueKey],
     active_bucket: Optional[ValueKey],
 ) -> Dict[AggregateKey, Path]:
@@ -135,51 +135,51 @@ def resolve_aggregate_homes(
     ``dim_keys`` / ``td_keys`` are the query's projected non-time / time
     dimension keys and ``active_bucket`` its main time bucket — an ungrained
     constituent's grain (Axiom 2.3)."""
-    if host_model is None:
+    if host_dataset is None:
         return {}
     homes: Dict[AggregateKey, Path] = {}
     for root in roots:
         for k in walk_value_keys(root):
             if isinstance(k, AggregateKey) and k not in homes:
                 homes[k] = home_path_for(
-                    agg=k, host_model=host_model,
-                    models_by_name=models_by_name, bundle=bundle,
+                    agg=k, host_dataset=host_dataset,
+                    datasets_by_name=datasets_by_name, bundle=bundle,
                     dim_keys=dim_keys, td_keys=td_keys, active_bucket=active_bucket,
                 )
     return homes
 
 
 def _determines_all(
-    *, path: Path, input_paths: List[Path], host_model: SlayerModel,
-    models_by_name: Dict[str, SlayerModel], bundle: ResolvedSourceBundle,
+    *, path: Path, input_paths: List[Path], host_dataset: SlayerDataset,
+    datasets_by_name: Dict[str, SlayerDataset], bundle: ResolvedSourceBundle,
 ) -> bool:
-    model_at_p = walk_key_path(model=host_model, path=path, bundle=bundle)
+    model_at_p = walk_key_path(dataset=host_dataset, path=path, bundle=bundle)
     return model_at_p is not None and all(
         attributable_from_root(
-            host_path=q, target_path=path, root_model=model_at_p,
-            models_by_name=models_by_name, host_name=host_model.name,
+            host_path=q, target_path=path, root_dataset=model_at_p,
+            datasets_by_name=datasets_by_name, host_name=host_dataset.name,
         )
         for q in input_paths
     )
 
 
 def row_expression_crossing(
-    *, source: ValueKey, host_model: SlayerModel, bundle: ResolvedSourceBundle,
+    *, source: ValueKey, host_dataset: SlayerDataset, bundle: ResolvedSourceBundle,
 ) -> Optional[Tuple[str, Optional[str]]]:
     """``(leaf, hop)`` of the first row leaf whose dependency closure crosses an unproven or
     fanning hop from the expression's anchor (Axiom 2.2; ``hop`` ``None`` when the leaf's
     definition cannot be analysed), else ``None``."""
     anchor = source_anchor_path(source)
-    root = walk_key_path(model=host_model, path=anchor, bundle=bundle) or host_model
+    root = walk_key_path(dataset=host_dataset, path=anchor, bundle=bundle) or host_dataset
     for leaf in source_row_leaves(source):
         closure = key_closure(
-            key=reroot_value_key(leaf, target_path=anchor), anchor_model=root,
+            key=reroot_value_key(leaf, target_path=anchor), anchor_dataset=root,
             anchor_relation=root.name, bundle=bundle,
         )
         if closure is None:
             return key_display(leaf), None
         hop = next((p[-1] for p in closure if p and not safe_reachable(
-            root=root, path=p, models_by_name=bundle.models_by_name,
+            root=root, path=p, datasets_by_name=bundle.datasets_by_name,
         )), None)
         if hop is not None:
             return key_display(leaf), hop

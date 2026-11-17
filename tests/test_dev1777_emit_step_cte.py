@@ -21,7 +21,7 @@ from sqlglot.expressions.core import Expression
 from slayer.core.enums import DataType
 from slayer.core.keys import (
     ArithmeticKey,
-    ColumnKey,
+    FieldKey,
     Phase,
     LiteralKey,
     ScalarCallKey,
@@ -42,7 +42,7 @@ def _base_ctes() -> list[CteEntry]:
 
 def _slot(name: str, *, type_: DataType | None = None, public_aliases: list[str] | None = None) -> ValueSlot:
     return ValueSlot(
-        id=name, key=ColumnKey(path=(), leaf=name), declared_name=name,
+        id=name, key=FieldKey(path=(), leaf=name), declared_name=name,
         public_aliases=[name] if public_aliases is None else public_aliases, phase=Phase.ROW,
         type=type_, type_is_explicit=type_ is not None,
     )
@@ -210,11 +210,11 @@ def test_unmaterialised_post_slots_detects_arith_and_scalar_call() -> None:
         stage=derived, needs_column=True,
     )
     scalar = SimpleNamespace(
-        id="scalar", key=ScalarCallKey(name="abs", args=(ColumnKey(leaf="x"),)),
+        id="scalar", key=ScalarCallKey(name="abs", args=(FieldKey(leaf="x"),)),
         stage=derived, needs_column=True,
     )
     transform = SimpleNamespace(
-        id="xf", key=TransformKey(op="cumsum", input=ColumnKey(leaf="x")),
+        id="xf", key=TransformKey(op="cumsum", input=FieldKey(leaf="x")),
     )
     materialised = SimpleNamespace(
         id="done", key=ArithmeticKey(op="+", operands=(LiteralKey(value=Decimal(2)),)),
@@ -223,7 +223,7 @@ def test_unmaterialised_post_slots_detects_arith_and_scalar_call() -> None:
         id="mask", key=ArithmeticKey(op=">", operands=(LiteralKey(value=Decimal(3)),)),
         stage=derived, needs_column=False,
     )
-    column = SimpleNamespace(id="col", key=ColumnKey(leaf="y"))
+    column = SimpleNamespace(id="col", key=FieldKey(leaf="y"))
     pq = SimpleNamespace(
         combined_expression_slots=[arith, scalar, transform, materialised, mask_only, column],
     )

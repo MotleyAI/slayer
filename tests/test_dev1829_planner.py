@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import re
 
-from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, ColumnKey, Grain
-from slayer.core.query import ModelMeasure, SlayerQuery
+from slayer.core.keys import REGROUP_LEAF_PREFIX, AggregateKey, FieldKey, Grain
+from slayer.core.query import DatasetMetric, SlayerQuery
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
 
@@ -29,7 +29,7 @@ from tests._dev1739_fixtures import dev1739_models, gen, month_td
 
 def _bundle() -> ResolvedSourceBundle:
     models = dev1739_models()
-    return ResolvedSourceBundle(dialect="postgres", source_model=models[0], referenced_models=models[1:])
+    return ResolvedSourceBundle(dialect="postgres", population=models[0], referenced_datasets=models[1:])
 
 
 def _q(**kw) -> SlayerQuery:
@@ -55,8 +55,8 @@ class TestCombinedAttachReplacesCrossModelPlan:
         planned = plan_query(
             query=_q(
                 dimensions=["region", "city"],
-                measures=[ModelMeasure(
-                    formula="sum(amount, partition_by=region)", name="region_rev",
+                measures=[DatasetMetric(
+                    expression="sum(amount, partition_by=region)", name="region_rev",
                 )],
             ),
             bundle=_bundle(),
@@ -70,8 +70,8 @@ class TestCombinedAttachReplacesCrossModelPlan:
         planned = plan_query(
             query=_q(
                 dimensions=["region", "city"],
-                measures=[ModelMeasure(
-                    formula="sum(amount, partition_by=region)", name="region_rev",
+                measures=[DatasetMetric(
+                    expression="sum(amount, partition_by=region)", name="region_rev",
                 )],
             ),
             bundle=_bundle(),
@@ -79,8 +79,8 @@ class TestCombinedAttachReplacesCrossModelPlan:
         producer = planned.regroup_attach_plans[0].producer_plan
         # Rooted at the host, a single grouped SELECT — no nested isolation.
         assert producer.source_relation == "orders"
-        assert producer.render_source_model is not None
-        assert producer.render_source_model.name == "orders"
+        assert producer.render_source_dataset is not None
+        assert producer.render_source_dataset.name == "orders"
         assert producer.regroup_attach_plans == []
         assert planned.regroup_attach_plans[0].kernel.kind == "plain"
         assert producer.transform_layers == []
@@ -91,8 +91,8 @@ class TestCombinedAttachReplacesCrossModelPlan:
         planned = plan_query(
             query=_q(
                 dimensions=["region", "city"],
-                measures=[ModelMeasure(
-                    formula="sum(amount, partition_by=region)", name="region_rev",
+                measures=[DatasetMetric(
+                    expression="sum(amount, partition_by=region)", name="region_rev",
                 )],
             ),
             bundle=_bundle(),
@@ -103,10 +103,10 @@ class TestCombinedAttachReplacesCrossModelPlan:
         # original_key is the partitioned aggregate...
         assert isinstance(sub.original_key, AggregateKey)
         assert sub.original_key.partition_keys == Grain.of(
-            {ColumnKey(path=(), leaf="region")}
+            {FieldKey(path=(), leaf="region")}
         )
         # ...swapped for a reserved-leaf placeholder ColumnKey...
-        assert isinstance(sub.placeholder, ColumnKey)
+        assert isinstance(sub.placeholder, FieldKey)
         assert sub.placeholder.path == ()
         assert sub.placeholder.leaf.startswith(REGROUP_LEAF_PREFIX)
         # ...that resolves to an aggregate slot inside the producer.
@@ -117,8 +117,8 @@ class TestCombinedAttachReplacesCrossModelPlan:
         planned = plan_query(
             query=_q(
                 dimensions=["region", "city"],
-                measures=[ModelMeasure(
-                    formula="sum(amount, partition_by=[])", name="g",
+                measures=[DatasetMetric(
+                    expression="sum(amount, partition_by=[])", name="g",
                 )],
             ),
             bundle=_bundle(),
@@ -135,8 +135,8 @@ class TestSamePartitionSetInterning:
             query=_q(
                 dimensions=["region", "city"],
                 measures=[
-                    ModelMeasure(formula="sum(amount, partition_by=region)", name="rsum"),
-                    ModelMeasure(formula="avg(amount, partition_by=region)", name="ravg"),
+                    DatasetMetric(expression="sum(amount, partition_by=region)", name="rsum"),
+                    DatasetMetric(expression="avg(amount, partition_by=region)", name="ravg"),
                 ],
             ),
             bundle=_bundle(),
@@ -152,8 +152,8 @@ class TestSamePartitionSetInterning:
         sql = await gen(_q(
             dimensions=["region", "city"],
             measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rsum"),
-                ModelMeasure(formula="avg(amount, partition_by=region)", name="ravg"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="rsum"),
+                DatasetMetric(expression="avg(amount, partition_by=region)", name="ravg"),
             ],
         ))
         assert _count_isolated_ctes(sql) == 1
@@ -163,8 +163,8 @@ class TestSamePartitionSetInterning:
             query=_q(
                 dimensions=["region", "city"],
                 measures=[
-                    ModelMeasure(formula="sum(amount, partition_by=region)", name="a"),
-                    ModelMeasure(formula="sum(amount, partition_by=region)", name="b"),
+                    DatasetMetric(expression="sum(amount, partition_by=region)", name="a"),
+                    DatasetMetric(expression="sum(amount, partition_by=region)", name="b"),
                 ],
             ),
             bundle=_bundle(),
@@ -179,8 +179,8 @@ class TestSamePartitionSetInterning:
         sql = await gen(_q(
             dimensions=["region", "city"],
             measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="a"),
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="b"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="a"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="b"),
             ],
         ))
         assert _count_isolated_ctes(sql) == 1
@@ -194,9 +194,9 @@ class TestSamePartitionSetInterning:
             query=_q(
                 dimensions=["region", "channel", "city"],
                 measures=[
-                    ModelMeasure(formula="sum(amount, partition_by=region)", name="rr"),
-                    ModelMeasure(
-                        formula="sum(amount, partition_by=[region, channel])", name="rc",
+                    DatasetMetric(expression="sum(amount, partition_by=region)", name="rr"),
+                    DatasetMetric(
+                        expression="sum(amount, partition_by=[region, channel])", name="rc",
                     ),
                 ],
             ),
@@ -221,8 +221,8 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=["region", "city"],
             measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="region_rev"),
-                ModelMeasure(formula="sum(customers.spend)", name="cm"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
+                DatasetMetric(expression="sum(customers.spend)", name="cm"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
@@ -232,7 +232,7 @@ class TestCoexistenceWithIsolatedFamilies:
         assert len(planned.regroup_attach_plans) == 2
         # One local producer (rooted at the consumer → None) + one target-rooted
         # cross-model producer rooted at ``customers``.
-        roots = {rap.producer_root_model for rap in planned.regroup_attach_plans}
+        roots = {rap.producer_root_dataset for rap in planned.regroup_attach_plans}
         assert roots == {None, "customers"}, roots
         assert "__regroup__" not in await gen(q)
 
@@ -240,8 +240,8 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="region_rev"),
-                ModelMeasure(formula="sum(amount, window='90d')", name="w"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
+                DatasetMetric(expression="sum(amount, window='90d')", name="w"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
@@ -259,8 +259,8 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=["region", "city"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="region_rev"),
-                ModelMeasure(formula="last(amount)", name="lst"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
+                DatasetMetric(expression="last(amount)", name="lst"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
@@ -278,8 +278,8 @@ class TestCoexistenceWithIsolatedFamilies:
         q = _q(
             dimensions=["region"], time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="region_rev"),
-                ModelMeasure(formula="cumsum(sum(amount))", name="cs"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="region_rev"),
+                DatasetMetric(expression="cumsum(sum(amount))", name="cs"),
             ],
         )
         planned = plan_query(query=q, bundle=_bundle())
@@ -298,8 +298,8 @@ class TestCoexistenceWithIsolatedFamilies:
                 {"expression": "CASE WHEN sum(amount, partition_by=city) > 5000 "
                                "THEN 1 ELSE 0 END", "name": "band"},
             ],
-            measures=[ModelMeasure(
-                formula="sum(amount, partition_by=region)", name="region_rev",
+            measures=[DatasetMetric(
+                expression="sum(amount, partition_by=region)", name="region_rev",
             )],
         )
         planned = plan_query(query=q, bundle=_bundle())

@@ -40,7 +40,7 @@ from tests._dev1837_fixtures import (
     DIM_FAMILY_DIMS,
     GROUP_M,
     GROUP_M_MONTH,
-    ModelMeasure,
+    DatasetMetric,
     REGION_LAST,
     REGION_TOTAL,
     TD_TRANSFORM_OPS,
@@ -93,9 +93,9 @@ def _needs_td(meas: str) -> bool:
 
 
 def _cell_query(family: str, meas: str, *, include_x: bool = True):
-    measures = [ModelMeasure(formula="sum(amount)", name="m")]
+    measures = [DatasetMetric(expression="sum(amount)", name="m")]
     if include_x:
-        measures.append(ModelMeasure(formula=_formula(meas), name="x"))
+        measures.append(DatasetMetric(expression=_formula(meas), name="x"))
     kwargs = {"dimensions": DIM_FAMILY_DIMS[family], "measures": measures}
     if _needs_td(meas):
         kwargs["time_dimensions"] = month_td()
@@ -223,9 +223,9 @@ class TestCoexistenceTriples:
 
     async def _assert_triple(self, exec_backend, *, family: str, op: str) -> None:
         dialect, engine = exec_backend
-        m = ModelMeasure(formula="sum(amount)", name="m")
-        rt = ModelMeasure(formula="sum(amount, partition_by=region)", name="rt")
-        x = ModelMeasure(formula=TRANSFORM_FORMULAS[op], name="x")
+        m = DatasetMetric(expression="sum(amount)", name="m")
+        rt = DatasetMetric(expression="sum(amount, partition_by=region)", name="rt")
+        x = DatasetMetric(expression=TRANSFORM_FORMULAS[op], name="x")
         query = self._triple_query(family, measures=[m, rt, x])
         m_map = GROUP_M_MONTH[family]
         x_map = with_nulls(m_map.keys(), TRANSFORM_X[(family, op)])
@@ -293,8 +293,8 @@ class TestPartitionedShiftFix:
             dimensions=["region"],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula=TRANSFORM_FORMULAS[op], name="x"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
+                DatasetMetric(expression=TRANSFORM_FORMULAS[op], name="x"),
             ],
         )
         x_map = with_nulls(GROUP_M_MONTH["col"].keys(), TRANSFORM_X[("col", op)])
@@ -318,8 +318,8 @@ class TestPartitionedShiftFix:
             dimensions=["region"],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="sum(amount, partition_by=region)", name="rt"),
-                ModelMeasure(formula="time_shift(sum(amount), -1)", name="prev"),
+                DatasetMetric(expression="sum(amount, partition_by=region)", name="rt"),
+                DatasetMetric(expression="time_shift(sum(amount), -1)", name="prev"),
             ],
         ), dry_run=True)
         body = _extract_cte_body(dry.sql, r"shifted_\w+")
@@ -371,9 +371,9 @@ class TestConsecutivePeriodsReset:
             dimensions=[DIM_FAMILY_DIMS["band"][1]],
             time_dimensions=month_td(),
             measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(
-                    formula="consecutive_periods(sum(amount) != 40)", name="x",
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(
+                    expression="consecutive_periods(sum(amount) != 40)", name="x",
                 ),
             ],
         ))
@@ -397,9 +397,9 @@ class TestExplicitTransformPartition:
         resp = await engine.execute(q(
             dimensions=DIM_FAMILY_DIMS["band"],
             measures=[
-                ModelMeasure(formula="sum(amount)", name="m"),
-                ModelMeasure(
-                    formula="rank(sum(amount), partition_by=region, direction='desc')", name="x",
+                DatasetMetric(expression="sum(amount)", name="m"),
+                DatasetMetric(
+                    expression="rank(sum(amount), partition_by=region, direction='desc')", name="x",
                 ),
             ],
         ))

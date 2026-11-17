@@ -4,7 +4,7 @@ Cycles in derived ``Column.sql`` chains must be detected at
 ``storage.save_model`` time so the broken model never reaches a query.
 Compile-time detection remains as defence in depth.
 
-The validator lives in ``StorageBackend.save_model`` (converted to a
+The validator lives in ``StorageBackend.save_dataset`` (converted to a
 template method) so it fires for every save path uniformly — direct
 ``storage.save_model`` calls, ``engine.save_model``, MCP edit_model, CLI
 create/edit, and the migration write-back (the migration path passes
@@ -18,8 +18,8 @@ import pytest
 import yaml
 
 from slayer.core.enums import DataType
-from slayer.core.errors import ColumnCycleError
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.errors import DatasetFieldCycleError
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
@@ -37,18 +37,18 @@ def _sqlite_storage(tmp_path) -> SQLiteStorage:
 # of two model graphs (A↔B and A→B→C), so the boilerplate is hoisted out.
 
 
-def _model_a_to_b(*, foo_sql: str) -> SlayerModel:
+def _model_a_to_b(*, foo_sql: str) -> SlayerDataset:
     """A model with a single derived column ``foo`` joined to a target B."""
-    return SlayerModel(
+    return SlayerDataset(
         name="A",
         data_source="ds",
         sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
-            Column(name="foo", sql=foo_sql, type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
+            DatasetField(name="foo", sql=foo_sql, datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
+        relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]])],
     )
 
 
@@ -57,7 +57,7 @@ def _abc_chain(
     a_foo_sql: str,
     c_x_sql: str,
     c_joins_back_to_a: bool = False,
-) -> tuple[SlayerModel, SlayerModel, SlayerModel]:
+) -> tuple[SlayerDataset, SlayerDataset, SlayerDataset]:
     """The canonical A → B → C three-model scaffold used by the strict
     alias-walk tests. ``foo`` on A and ``x`` on C are derived; their
     expressions are the per-test variable.
@@ -66,44 +66,44 @@ def _abc_chain(
     closes a back-edge needed to make a cycle through C.x reachable.
     """
     c_columns = [
-        Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-        Column(name="x", sql=c_x_sql, type=DataType.DOUBLE),
+        DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+        DatasetField(name="x", sql=c_x_sql, datatype=DataType.DOUBLE),
     ]
     c_joins = []
     if c_joins_back_to_a:
         c_columns.insert(
-            1, Column(name="a_id", sql="a_id", type=DataType.DOUBLE),
+            1, DatasetField(name="a_id", sql="a_id", datatype=DataType.DOUBLE),
         )
         c_joins.append(
-            ModelJoin(target_model="A", join_pairs=[["a_id", "id"]]),
+            DatasetRelationship(to="A", join_pairs=[["a_id", "id"]]),
         )
-    model_c = SlayerModel(
+    model_c = SlayerDataset(
         name="C",
         data_source="ds",
         sql_table="C",
-        columns=c_columns,
-        joins=c_joins,
+        fields=c_columns,
+        relationships=c_joins,
     )
-    model_b = SlayerModel(
+    model_b = SlayerDataset(
         name="B",
         data_source="ds",
         sql_table="B",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="c_id", sql="c_id", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="c_id", sql="c_id", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="C", join_pairs=[["c_id", "id"]])],
+        relationships=[DatasetRelationship(to="C", join_pairs=[["c_id", "id"]])],
     )
-    model_a = SlayerModel(
+    model_a = SlayerDataset(
         name="A",
         data_source="ds",
         sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
-            Column(name="foo", sql=a_foo_sql, type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
+            DatasetField(name="foo", sql=a_foo_sql, datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
+        relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]])],
     )
     return model_a, model_b, model_c
 
@@ -115,18 +115,18 @@ def _abc_chain(
 
 async def test_save_model_rejects_same_model_cycle(tmp_path) -> None:
     storage = _yaml_storage(tmp_path)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="A",
         data_source="ds",
         sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="c1", sql="c2 + 1", type=DataType.DOUBLE),
-            Column(name="c2", sql="c1 - 1", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.DOUBLE),
         ],
     )
-    with pytest.raises(ColumnCycleError) as exc_info:
-        await storage.save_model(model)
+    with pytest.raises(DatasetFieldCycleError) as exc_info:
+        await storage.save_dataset(model)
     # Backwards compat: still catchable as ValueError.
     assert isinstance(exc_info.value, ValueError)
     msg = str(exc_info.value)
@@ -135,19 +135,19 @@ async def test_save_model_rejects_same_model_cycle(tmp_path) -> None:
 
 async def test_save_model_rejects_three_deep_cycle(tmp_path) -> None:
     storage = _yaml_storage(tmp_path)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="A",
         data_source="ds",
         sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="c1", sql="c2 + 1", type=DataType.DOUBLE),
-            Column(name="c2", sql="c3 + 1", type=DataType.DOUBLE),
-            Column(name="c3", sql="c1 + 1", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="c2", sql="c3 + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="c3", sql="c1 + 1", datatype=DataType.DOUBLE),
         ],
     )
-    with pytest.raises(ColumnCycleError) as exc_info:
-        await storage.save_model(model)
+    with pytest.raises(DatasetFieldCycleError) as exc_info:
+        await storage.save_dataset(model)
     msg = str(exc_info.value)
     for c in ("A.c1", "A.c2", "A.c3"):
         assert c in msg, f"cycle chain missing {c}: {msg}"
@@ -158,17 +158,17 @@ async def test_save_model_rejects_self_referential_derived(tmp_path) -> None:
     is a single-step cycle. Distinct from the trivial base case where sql
     equals the column name verbatim (that's how base columns are written)."""
     storage = _yaml_storage(tmp_path)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="A",
         data_source="ds",
         sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="c1", sql="c1 + 1", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="c1", sql="c1 + 1", datatype=DataType.DOUBLE),
         ],
     )
-    with pytest.raises(ColumnCycleError) as exc_info:
-        await storage.save_model(model)
+    with pytest.raises(DatasetFieldCycleError) as exc_info:
+        await storage.save_dataset(model)
     assert "A.c1" in str(exc_info.value)
 
 
@@ -176,38 +176,38 @@ async def test_save_model_accepts_acyclic_derived_dag(tmp_path) -> None:
     """Diamond DAG (d = b + c, b = a + 1, c = a + 2) is acyclic and must
     save cleanly."""
     storage = _yaml_storage(tmp_path)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="A",
         data_source="ds",
         sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="a", sql="a", type=DataType.DOUBLE),
-            Column(name="b", sql="a + 1", type=DataType.DOUBLE),
-            Column(name="c", sql="a + 2", type=DataType.DOUBLE),
-            Column(name="d", sql="b + c", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="a", sql="a", datatype=DataType.DOUBLE),
+            DatasetField(name="b", sql="a + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="c", sql="a + 2", datatype=DataType.DOUBLE),
+            DatasetField(name="d", sql="b + c", datatype=DataType.DOUBLE),
         ],
     )
-    await storage.save_model(model)
-    reloaded = await storage.get_model("A", data_source="ds")
+    await storage.save_dataset(model)
+    reloaded = await storage.get_dataset("A", data_source="ds")
     assert reloaded is not None
-    assert {c.name for c in reloaded.columns} == {"id", "a", "b", "c", "d"}
+    assert {c.name for c in reloaded.fields} == {"id", "a", "b", "c", "d"}
 
 
 async def test_save_model_accepts_base_columns_only(tmp_path) -> None:
     """Sanity check: a model with no derived columns saves cleanly."""
     storage = _yaml_storage(tmp_path)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="A",
         data_source="ds",
         sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="a", sql="a", type=DataType.DOUBLE),
-            Column(name="b", sql="b", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="a", sql="a", datatype=DataType.DOUBLE),
+            DatasetField(name="b", sql="b", datatype=DataType.DOUBLE),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
 
 
 async def test_save_model_accepts_quoted_self_identity_column(tmp_path) -> None:
@@ -216,18 +216,18 @@ async def test_save_model_accepts_quoted_self_identity_column(tmp_path) -> None:
     physical column on case-folding dialects (Prisma-style camelCase). It must
     NOT be mistaken for a single-step self-cycle."""
     storage = _yaml_storage(tmp_path)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="merchant",
         data_source="ds",
         sql_table="merchant",
-        columns=[
-            Column(name="legalEntityType", sql='"legalEntityType"', type=DataType.TEXT),
+        fields=[
+            DatasetField(name="legalEntityType", sql='"legalEntityType"', datatype=DataType.TEXT),
         ],
     )
-    await storage.save_model(model)
-    reloaded = await storage.get_model("merchant", data_source="ds")
+    await storage.save_dataset(model)
+    reloaded = await storage.get_dataset("merchant", data_source="ds")
     assert reloaded is not None
-    assert {c.name for c in reloaded.columns} == {"legalEntityType"}
+    assert {c.name for c in reloaded.fields} == {"legalEntityType"}
 
 
 # ---------------------------------------------------------------------------
@@ -244,34 +244,34 @@ async def test_save_model_rejects_cross_model_cycle_within_datasource(
     # Seed B first with a back-reference into A — saving B alone succeeds
     # because A doesn't exist yet (best-effort save-time validation; the
     # unresolved A.x ref is silently skipped).
-    model_b = SlayerModel(
+    model_b = SlayerDataset(
         name="B",
         data_source="ds",
         sql_table="B",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="a_id", sql="a_id", type=DataType.DOUBLE),
-            Column(name="y", sql="A.x + 1", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="a_id", sql="a_id", datatype=DataType.DOUBLE),
+            DatasetField(name="y", sql="A.x + 1", datatype=DataType.DOUBLE),
         ],
         # No declared B→A edge: the ref resolves over the reverse hop
         # (DEV-1853); a second declared edge would make the pair ambiguous.
     )
-    await storage.save_model(model_b)
+    await storage.save_dataset(model_b)
     # Now save A with a forward ref to B.y, completing the cycle:
     # A.x → B.y → A.x.
-    model_a = SlayerModel(
+    model_a = SlayerDataset(
         name="A",
         data_source="ds",
         sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="b_id", sql="b_id", type=DataType.DOUBLE),
-            Column(name="x", sql="B.y + 1", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="b_id", sql="b_id", datatype=DataType.DOUBLE),
+            DatasetField(name="x", sql="B.y + 1", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="B", join_pairs=[["b_id", "id"]])],
+        relationships=[DatasetRelationship(to="B", join_pairs=[["b_id", "id"]])],
     )
-    with pytest.raises(ColumnCycleError) as exc_info:
-        await storage.save_model(model_a)
+    with pytest.raises(DatasetFieldCycleError) as exc_info:
+        await storage.save_dataset(model_a)
     msg = str(exc_info.value)
     assert "A.x" in msg and "B.y" in msg, f"cross-model cycle chain missing names: {msg}"
 
@@ -285,20 +285,20 @@ async def test_save_model_rejects_cross_model_cycle_when_second_model_completes_
     MUST detect the cycle — B.bar's ref resolves over the reverse hop
     (DEV-1853), no declared B→A edge needed."""
     storage = _yaml_storage(tmp_path)
-    model_b = SlayerModel(
+    model_b = SlayerDataset(
         name="B",
         data_source="ds",
         sql_table="B",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="a_id", sql="a_id", type=DataType.DOUBLE),
-            Column(name="bar", sql="A.foo + 1", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="a_id", sql="a_id", datatype=DataType.DOUBLE),
+            DatasetField(name="bar", sql="A.foo + 1", datatype=DataType.DOUBLE),
         ],
     )
-    await storage.save_model(model_b)
+    await storage.save_dataset(model_b)
     cyclic = _model_a_to_b(foo_sql="B.bar + 1")
-    with pytest.raises(ColumnCycleError):
-        await storage.save_model(cyclic)
+    with pytest.raises(DatasetFieldCycleError):
+        await storage.save_dataset(cyclic)
 
 
 async def test_save_model_rejects_cycle_when_joinless_model_saves_last(
@@ -308,18 +308,18 @@ async def test_save_model_rejects_cycle_when_joinless_model_saves_last(
     datasource-wide prefetch and the cycle crosses A's edge in reverse
     (DEV-1853)."""
     storage = _yaml_storage(tmp_path)
-    await storage.save_model(_model_a_to_b(foo_sql="B.bar + 1"))
-    model_b = SlayerModel(
+    await storage.save_dataset(_model_a_to_b(foo_sql="B.bar + 1"))
+    model_b = SlayerDataset(
         name="B",
         data_source="ds",
         sql_table="B",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="bar", sql="A.foo + 1", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="bar", sql="A.foo + 1", datatype=DataType.DOUBLE),
         ],
     )
-    with pytest.raises(ColumnCycleError):
-        await storage.save_model(model_b)
+    with pytest.raises(DatasetFieldCycleError):
+        await storage.save_dataset(model_b)
 
 
 async def test_save_model_tolerates_unresolved_joined_ref(tmp_path) -> None:
@@ -328,7 +328,7 @@ async def test_save_model_tolerates_unresolved_joined_ref(tmp_path) -> None:
     refs. (The compile-time guard catches the broken ref at query time.)"""
     storage = _yaml_storage(tmp_path)
     # No exception expected.
-    await storage.save_model(_model_a_to_b(foo_sql="B.bar + 1"))
+    await storage.save_dataset(_model_a_to_b(foo_sql="B.bar + 1"))
 
 
 async def test_save_model_ignores_indirect_join_target_in_cycle_detection(
@@ -345,10 +345,10 @@ async def test_save_model_ignores_indirect_join_target_in_cycle_detection(
     model_a, model_b, model_c = _abc_chain(
         a_foo_sql="C.x + 1", c_x_sql="A.foo + 1",
     )
-    await storage.save_model(model_c, _validate=False)  # C alone has unresolvable A.foo
-    await storage.save_model(model_b)
+    await storage.save_dataset(model_c, _validate=False)  # C alone has unresolvable A.foo
+    await storage.save_dataset(model_b)
     # No cycle raised — the indirect-reach ref is not a strict dependency.
-    await storage.save_model(model_a)
+    await storage.save_dataset(model_a)
 
 
 async def test_save_model_detects_cycle_via_canonical_multihop_path_alias(
@@ -366,10 +366,10 @@ async def test_save_model_detects_cycle_via_canonical_multihop_path_alias(
     model_a, model_b, model_c = _abc_chain(
         a_foo_sql="B.C.x + 1", c_x_sql="A.foo + 1", c_joins_back_to_a=True,
     )
-    await storage.save_model(model_c, _validate=False)  # A doesn't exist yet
-    await storage.save_model(model_b)
-    with pytest.raises(ColumnCycleError) as exc_info:
-        await storage.save_model(model_a)
+    await storage.save_dataset(model_c, _validate=False)  # A doesn't exist yet
+    await storage.save_dataset(model_b)
+    with pytest.raises(DatasetFieldCycleError) as exc_info:
+        await storage.save_dataset(model_a)
     msg = str(exc_info.value)
     assert "A.foo" in msg and "C.x" in msg, (
         f"multi-hop cycle chain missing names: {msg}"
@@ -383,31 +383,31 @@ async def test_save_model_skips_subquery_scope_refs_in_cycle_detection(
     the subquery has its own scope. So a model where the only ``cycle``
     is hidden inside a subquery does NOT raise at save time."""
     storage = _yaml_storage(tmp_path)
-    model = SlayerModel(
+    model = SlayerDataset(
         name="A",
         data_source="ds",
         sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="raw_a", sql="raw_a", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="raw_a", sql="raw_a", datatype=DataType.DOUBLE),
             # c1 references c2 inside a subquery — out of scope for cycle
             # detection (the subquery's bare ``c2`` is not c2-on-this-model).
             # The root-scope expression uses only base raw_a, so no cycle.
-            Column(
+            DatasetField(
                 name="c1",
                 sql="(SELECT MAX(c2) FROM other_table) + raw_a",
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
             ),
             # c2 references c1 inside a subquery — same treatment.
-            Column(
+            DatasetField(
                 name="c2",
                 sql="(SELECT MAX(c1) FROM other_table) + raw_a",
-                type=DataType.DOUBLE,
+                datatype=DataType.DOUBLE,
             ),
         ],
     )
     # No exception — subquery-scope refs are not dependencies.
-    await storage.save_model(model)
+    await storage.save_dataset(model)
 
 
 # ---------------------------------------------------------------------------
@@ -422,18 +422,18 @@ async def test_save_model_template_method_runs_for_yaml_and_sqlite_backends(
     tmp_path: Path, backend_factory: Callable[[Path], StorageBackend],
 ) -> None:
     storage = backend_factory(tmp_path)
-    cyclic = SlayerModel(
+    cyclic = SlayerDataset(
         name="A",
         data_source="ds",
         sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="c1", sql="c2 + 1", type=DataType.DOUBLE),
-            Column(name="c2", sql="c1 - 1", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.DOUBLE),
         ],
     )
-    with pytest.raises(ColumnCycleError):
-        await storage.save_model(cyclic)
+    with pytest.raises(DatasetFieldCycleError):
+        await storage.save_dataset(cyclic)
 
 
 # ---------------------------------------------------------------------------
@@ -483,10 +483,10 @@ async def test_save_model_migration_writeback_does_not_validate(tmp_path) -> Non
     (ds_dir / "A.yaml").write_text(yaml.safe_dump(cyclic_dict))
 
     # Must NOT raise — the migration write-back bypasses validation.
-    loaded = await storage.get_model("A", data_source="ds")
+    loaded = await storage.get_dataset("A", data_source="ds")
     assert loaded is not None
     assert loaded.name == "A"
-    assert {c.name for c in loaded.columns} == {"id", "c1", "c2"}
+    assert {c.name for c in loaded.fields} == {"id", "c1", "c2"}
 
 
 async def test_save_model_explicit_skip_validate_kwarg(tmp_path) -> None:
@@ -494,17 +494,17 @@ async def test_save_model_explicit_skip_validate_kwarg(tmp_path) -> None:
     method must accept ``_validate=False`` so callers in the migration
     path can persist legacy data unchanged."""
     storage = _yaml_storage(tmp_path)
-    cyclic = SlayerModel(
+    cyclic = SlayerDataset(
         name="A",
         data_source="ds",
         sql_table="A",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="c1", sql="c2 + 1", type=DataType.DOUBLE),
-            Column(name="c2", sql="c1 - 1", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="c1", sql="c2 + 1", datatype=DataType.DOUBLE),
+            DatasetField(name="c2", sql="c1 - 1", datatype=DataType.DOUBLE),
         ],
     )
     # No exception — explicit _validate=False bypasses validation.
-    await storage.save_model(cyclic, _validate=False)
-    reloaded = await storage.get_model("A", data_source="ds")
+    await storage.save_dataset(cyclic, _validate=False)
+    reloaded = await storage.get_dataset("A", data_source="ds")
     assert reloaded is not None

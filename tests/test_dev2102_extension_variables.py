@@ -6,9 +6,9 @@ import json
 
 import pytest
 
-from slayer.core.models import ModelJoin, SlayerModel
-from slayer.engine.model_reads import models_read_by
-from slayer.inspect.model_render import render_model_inspection
+from slayer.core.models import DatasetRelationship, SlayerDataset
+from slayer.engine.dataset_reads import datasets_read_by
+from slayer.inspect.dataset_render import render_dataset_inspection
 
 from tests._dev1966_fixtures import customers_model, dev1966_engine, m, orders_model, query
 from tests._dev2102_fixtures import DS, countries, customers, ext, join, orders, q, regions
@@ -17,14 +17,14 @@ _OVER = {"source_name": "orders", "measures": [
     {"name": "rev", "formula": "sum(iif(amount >= {floor}, amount, 0))"}]}
 
 
-def _over_rev(**fields) -> SlayerModel:
-    return SlayerModel(name="over_rev", data_source="test", source_queries=[query(
+def _over_rev(**fields) -> SlayerDataset:
+    return SlayerDataset(name="over_rev", data_source="test", source_queries=[query(
         source_model="orders", extensions=[_OVER], dimensions=["customer_id"], measures=["rev"])],
         **fields)
 
 
-def _wrap(name: str, floor: int) -> SlayerModel:
-    return SlayerModel(name=name, data_source="test", query_variables={"floor": floor}, source_queries=[
+def _wrap(name: str, floor: int) -> SlayerDataset:
+    return SlayerDataset(name=name, data_source="test", query_variables={"floor": floor}, source_queries=[
         query(source_model="over_rev", dimensions=["customer_id"], measures=[m("sum(rev)", "r")])])
 
 
@@ -43,7 +43,7 @@ async def test_conflicting_contexts_of_an_extension_variable_fail_closed() -> No
 
 async def test_inspection_reports_an_extension_variable_as_required() -> None:
     async with dev1966_engine("sqlite", models=[orders_model(), customers_model()]) as e:
-        rendered = await render_model_inspection(model=_over_rev(), storage=e.storage, engine=None, format="json")
+        rendered = await render_dataset_inspection(dataset=_over_rev(), storage=e.storage, engine=None, format="json")
     assert json.loads(rendered)["backing_query"]["required_variables"] == ["floor"]
 
 
@@ -51,9 +51,9 @@ async def test_inspection_reports_an_extension_variable_as_required() -> None:
     ext("customers", measures=[{"name": "region_count", "formula": "count(regions.id)"}]),
 ], ids=["measure"])
 def test_a_joined_models_extension_reads_what_its_definitions_read(extension: dict) -> None:
-    home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
+    home = DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])
     query = q(source_model="orders", dimensions=["status"], extensions=[extension])
-    reads = models_read_by(query, models=[orders(), customers(home), regions()], data_source=DS)
+    reads = datasets_read_by(query, datasets=[orders(), customers(home), regions()], data_source=DS)
     assert (DS, "regions") in reads
 
 
@@ -70,9 +70,9 @@ _TO_REGIONS = join("regions", [["region_id", "id"]])
 def test_a_path_through_an_extension_join_reads_its_downstream_models(
     source: dict, dimensions: list, extension: dict,
 ) -> None:
-    to_countries = ModelJoin(target_model="countries", join_pairs=[["country_id", "id"]])
+    to_countries = DatasetRelationship(to="countries", join_pairs=[["country_id", "id"]])
     models = [orders(), customers(), regions().model_copy(update={"joins": [to_countries]}), countries()]
-    reads = models_read_by(q(**source, dimensions=dimensions, extensions=[extension]), models=models, data_source=DS)
+    reads = datasets_read_by(q(**source, dimensions=dimensions, extensions=[extension]), datasets=models, data_source=DS)
     assert (DS, "countries") in reads
 
 
@@ -87,59 +87,59 @@ _TO_CUSTOMERS = join("customers", [["customer_id", "id"]])
 ], ids=["measure", "computed-dimension", "query-reference"])
 @pytest.mark.parametrize("data_source", [DS, ""], ids=["datasource", "no-datasource"])
 def test_a_sibling_stage_extension_reads_through_its_joins(dimensions: list, extension: dict, data_source: str) -> None:
-    home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
-    backed = SlayerModel(name="backed", data_source=data_source, source_queries=[
+    home = DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])
+    backed = SlayerDataset(name="backed", data_source=data_source, source_queries=[
         q(name="s", source_model="orders", dimensions=["customer_id"]),
         q(source_model="s", dimensions=dimensions, extensions=[extension])])
-    assert (DS, "regions") in models_read_by(backed, models=[orders(), customers(home), regions()])
+    assert (DS, "regions") in datasets_read_by(backed, datasets=[orders(), customers(home), regions()])
 
 
 @pytest.mark.parametrize("column", ["name", "label"], ids=["stored-column-name", "fresh-name"])
 def test_a_sibling_stage_shadows_a_same_named_stored_model(column: str) -> None:
-    backed = SlayerModel(name="backed", data_source=DS, source_queries=[
+    backed = SlayerDataset(name="backed", data_source=DS, source_queries=[
         q(name="customers", source_model="orders", dimensions=["customer_id"]),
         q(source_model="customers", measures=[column], extensions=[
             ext("customers", measures=[{"name": column, "formula": "sum(customer_id * 10)"}])])])
-    assert models_read_by(backed, models=[orders(), customers(), regions()]) == {(DS, "orders")}
+    assert datasets_read_by(backed, datasets=[orders(), customers(), regions()]) == {(DS, "orders")}
 
 
 def test_a_path_through_chained_sibling_stages_reads_its_downstream_models() -> None:
-    home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
-    backed = SlayerModel(name="backed", data_source=DS, source_queries=[
+    home = DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])
+    backed = SlayerDataset(name="backed", data_source=DS, source_queries=[
         q(name="s2", source_model="orders", dimensions=["customer_id"]),
         q(name="s1", source_model="orders", dimensions=["customer_id"]),
         q(source_model="s1", dimensions=["customer_id", "s2.customers.regions.name"], extensions=[
             ext("s1", joins=[join("s2", [["customer_id", "customer_id"]])]), ext("s2", joins=[_TO_CUSTOMERS])])])
-    assert (DS, "regions") in models_read_by(backed, models=[orders(), customers(home), regions()])
+    assert (DS, "regions") in datasets_read_by(backed, datasets=[orders(), customers(home), regions()])
 
 
 def test_a_short_form_reference_reads_the_models_on_its_route() -> None:
-    home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
+    home = DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])
     query = q(source_model="orders", dimensions=["regions.name"])
-    reads = models_read_by(query, models=[orders(), customers(home), regions()], data_source=DS)
+    reads = datasets_read_by(query, datasets=[orders(), customers(home), regions()], data_source=DS)
     assert {(DS, "customers"), (DS, "regions")} <= reads
 
 
 def test_a_product_read_reads_the_unrelated_model() -> None:
     query = q(source_model="orders", dimensions=["status"], measures=[{"formula": "count(countries.id)", "name": "n"}])
-    reads = models_read_by(query, models=[orders(), customers(), regions(), countries()], data_source=DS)
+    reads = datasets_read_by(query, datasets=[orders(), customers(), regions(), countries()], data_source=DS)
     assert (DS, "countries") in reads
 
 
 def test_a_rootless_sibling_stage_extension_reads_through_its_joins() -> None:
-    home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
-    backed = SlayerModel(name="backed", data_source="", source_queries=[
+    home = DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])
+    backed = SlayerDataset(name="backed", data_source="", source_queries=[
         q(name="s", dimensions=["orders.customer_id"]),
         q(source_model="s", dimensions=["customer_id", "customers.regions.name"],
           extensions=[ext("s", joins=[_TO_CUSTOMERS])])])
-    assert (DS, "regions") in models_read_by(backed, models=[orders(), customers(home), regions()])
+    assert (DS, "regions") in datasets_read_by(backed, datasets=[orders(), customers(home), regions()])
 
 
 def test_a_sibling_join_key_its_extension_defines_is_one_column() -> None:
-    home = ModelJoin(target_model="regions", join_pairs=[["region_id", "id"]])
-    backed = SlayerModel(name="backed", data_source=DS, source_queries=[
+    home = DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])
+    backed = SlayerDataset(name="backed", data_source=DS, source_queries=[
         q(name="s", source_model="orders", dimensions=[{"expression": "customer_id", "name": "customer_key"}]),
         q(source_model="s", dimensions=["customers.regions.name"], extensions=[ext(
             "s", joins=[join("customers", [["customer_key", "id"]])])])])
-    assert (DS, "regions") in models_read_by(backed, models=[orders(), customers(home), regions()])
+    assert (DS, "regions") in datasets_read_by(backed, datasets=[orders(), customers(home), regions()])
 

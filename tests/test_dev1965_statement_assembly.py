@@ -13,7 +13,7 @@ from sqlglot.expressions.core import Expression
 import slayer.sql.dialects.tsql as tsql_module
 import slayer.sql.naming as naming
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, ModelJoin, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.sql.dialects import SqlDialect, get_dialect
@@ -274,15 +274,15 @@ LONG = "c" * 310
 _CUSTOMER_ROWS = [(i, "gold" if i % 2 else "silver") for i in range(1, 8)]
 
 
-def _qb_models(data_source: str) -> list[SlayerModel]:
+def _qb_models(data_source: str) -> list[SlayerDataset]:
     orders = orders_model()
     orders.data_source = data_source
-    orders.joins = [ModelJoin(target_model="customers", join_pairs=[["id", "id"]])]
-    customers = SlayerModel(
+    orders.relationships = [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]
+    customers = SlayerDataset(
         name="customers", sql_table="customers", data_source=data_source,
-        columns=[
-            Column(name="id", sql="id", type=DataType.INT, primary_key=True),
-            Column(name=LONG, sql="tier", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name=LONG, sql="tier", datatype=DataType.TEXT),
         ],
     )
     return [orders, customers]
@@ -306,18 +306,18 @@ class TestQueryBackedWrap:
             storage = YAMLStorage(base_dir=d)
             await storage.save_datasource(DatasourceConfig(name="ds", type=ds_type, database="db"))
             for model in _qb_models("ds"):
-                await storage.save_model(model)
+                await storage.save_dataset(model)
             engine = SlayerQueryEngine(storage=storage)
-            expanded = await engine._expand_query_backed_model(
-                model=SlayerModel(name="qb", source_queries=[_qb_stage()], data_source="ds"),
+            expanded = await engine._expand_query_backed_dataset(
+                dataset=SlayerDataset(name="qb", source_queries=[_qb_stage()], data_source="ds"),
                 runtime_kwarg=None,
             )
         assert expanded.sql is not None
         fit = get_dialect(dialect).fit_alias
-        assert {c.name: c.sql for c in expanded.columns} == {
+        assert {c.name: c.sql for c in expanded.fields} == {
             f"customers__{LONG}": fit(f"customers__{LONG}"), "amount_sum": "amount_sum",
         }
-        assert set(parse(expanded.sql, dialect).named_selects) == {c.sql for c in expanded.columns}
+        assert set(parse(expanded.sql, dialect).named_selects) == {c.sql for c in expanded.fields}
         _assert_within_limit(expanded.sql, limit, dialect=dialect)
 
     async def test_duckdb_rows_are_keyed_by_column_names(self) -> None:
@@ -332,13 +332,13 @@ class TestQueryBackedWrap:
             con.close()
 
         pytest.importorskip("duckdb")
-        qb = SlayerModel(name="qb", source_queries=[_qb_stage()], data_source="test")
+        qb = SlayerDataset(name="qb", source_queries=[_qb_stage()], data_source="test")
         async with seeded_exec_engine(
             dialect="duckdb", seed=seed, models=[*_qb_models("test"), qb],
         ) as (engine, _db):
             resp = await engine.execute(SlayerQuery.model_validate({
-                "source_model": "qb", "dimensions": [f"customers__{LONG}"],
-                "measures": ["sum(amount_sum)"],
+                "population": "qb", "dimensions": [f"customers__{LONG}"],
+                "metrics": ["sum(amount_sum)"],
             }))
         assert {
             r[f"qb.customers__{LONG}"]: float(r["qb.amount_sum_sum"]) for r in resp.data
@@ -358,7 +358,7 @@ def _stat_seams(formula: str) -> dict:
     measure = [{"formula": formula, "name": "w"}]
     return {
         "producer_hoist": SlayerQuery.model_validate({
-            "source_model": "orders", "time_dimensions": F15.month_td(), "measures": measure,
+            "population": "orders", "time_dimensions": F15.month_td(), "metrics": measure,
         }),
         "non_root_stage": [
             {"name": "s1", "source_model": "orders", "time_dimensions": month, "measures": measure},

@@ -26,7 +26,7 @@ from tests._dev1840_fixtures import (
     gen,
     make_exec_engine as make_orders_engine,
 )
-from tests._dev1841_fixtures import ModelMeasure, associated_warnings, broadcast_warnings
+from tests._dev1841_fixtures import DatasetMetric, associated_warnings, broadcast_warnings
 from tests._dev1859_fixtures import assoc_wavg_region_weight, broadcast_wavg_global, customers_wsum_models
 from tests._dev1892_fixtures import assert_grain_residue, assert_ref_free
 from tests._dev1900_fixtures import (
@@ -71,11 +71,11 @@ from tests._dev1919_fixtures import (
     windowed_param_by_month,
 )
 
-AMOUNT = ModelMeasure(formula="sum(amount)", name="a")
+AMOUNT = DatasetMetric(expression="sum(amount)", name="a")
 
 
-def _m(formula: str) -> ModelMeasure:
-    return ModelMeasure(formula=formula, name="w")
+def _m(formula: str) -> DatasetMetric:
+    return DatasetMetric(expression=formula, name="w")
 
 
 @pytest.fixture(params=["sqlite", "duckdb"])
@@ -210,7 +210,7 @@ class TestAttributableDimensionsNeedNoAssociation:
 
 def _customers_attach(planned):
     (att,) = [a for a in planned.regroup_attach_plans
-              if a.producer_root_model == "customers"]
+              if a.producer_root_dataset == "customers"]
     return att
 
 
@@ -226,7 +226,7 @@ class TestPlanShape:
         att = _customers_attach(plan_query(
             query=mode_q(mode, dimensions=dims, measures=[_m(HEADLINE)]), bundle=bundle()))
         assert isinstance(att.kernel, PlainProducerKernel)  # D6: no new kernel
-        assert "orders" in [n.producer_root_model
+        assert "orders" in [n.producer_root_dataset
                             for n in att.producer_plan.regroup_attach_plans]
 
     @pytest.mark.parametrize("formula", [HEADLINE, MIXED, RECURSIVE])
@@ -324,7 +324,7 @@ class TestWindowedOuter:
                          measures=[_m(WINDOWED_PARAM)]),
             bundle=ResolvedSourceBundle(
                 dialect="sqlite",
-                source_model=models[0], referenced_models=models[1:]))
+                population=models[0], referenced_datasets=models[1:]))
         [attach] = planned.regroup_attach_plans
         kernel = attach.kernel
         assert isinstance(kernel, TrailingWindowProducerKernel)

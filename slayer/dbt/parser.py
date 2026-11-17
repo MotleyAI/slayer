@@ -129,7 +129,7 @@ def _collect_sql_files(directory: str) -> dict[str, str]:
 def parse_dbt_project(
     project_path: str,
     *,
-    include_regular_models: bool = False,
+    include_regular_datasets: bool = False,
 ) -> DbtProject:
     """Parse a dbt project directory into a DbtProject.
 
@@ -178,7 +178,7 @@ def parse_dbt_project(
         all_sources.extend(_declared_sources(data.get("sources"), path=path))
         all_metrics.extend(_metrics(data.get("metrics", []), path=path))
 
-    regular_models = _regular_models(project_path, declared=declared, include_manifest=include_regular_models)
+    regular_models = _regular_models(project_path, declared=declared, include_manifest=include_regular_datasets)
     logger.info(
         "Parsed dbt project: %d semantic models, %d metrics, %d regular models from %d files",
         len(all_semantic_models), len(all_metrics), len(regular_models), len(yaml_paths),

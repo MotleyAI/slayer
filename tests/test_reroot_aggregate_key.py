@@ -35,8 +35,8 @@ import pytest
 
 from slayer.core.keys import (
     AggregateKey,
-    ColumnKey,
-    ColumnSqlKey,
+    FieldKey,
+    FieldSqlKey,
     StarKey,
     reroot_aggregate_key,
 )
@@ -49,24 +49,24 @@ from slayer.core.keys import (
 
 def test_source_columnkey_exact_match_reroots_to_local() -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="sum",
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
-    assert out.source == ColumnKey(path=(), leaf="amount")
+    assert out.source == FieldKey(path=(), leaf="amount")
     assert out.agg == "sum"
 
 
 def test_source_columnsqlkey_exact_match_preserves_model_and_name() -> None:
     key = AggregateKey(
-        source=ColumnSqlKey(
-            path=("customers",), model="customers", column_name="net",
+        source=FieldSqlKey(
+            path=("customers",), dataset="customers", field_name="net",
         ),
         agg="sum",
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
-    assert out.source == ColumnSqlKey(
-        path=(), model="customers", column_name="net",
+    assert out.source == FieldSqlKey(
+        path=(), dataset="customers", field_name="net",
     )
 
 
@@ -82,14 +82,14 @@ def test_source_starkey_path_is_stripped_to_local() -> None:
 
 def test_source_columnsqlkey_deeper_than_target_keeps_residual() -> None:
     key = AggregateKey(
-        source=ColumnSqlKey(
-            path=("customers", "regions"), model="regions", column_name="net",
+        source=FieldSqlKey(
+            path=("customers", "regions"), dataset="regions", field_name="net",
         ),
         agg="sum",
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
-    assert out.source == ColumnSqlKey(
-        path=("regions",), model="regions", column_name="net",
+    assert out.source == FieldSqlKey(
+        path=("regions",), dataset="regions", field_name="net",
     )
 
 
@@ -102,22 +102,22 @@ def test_source_starkey_deeper_than_target_keeps_residual() -> None:
 
 def test_source_deeper_than_target_keeps_residual() -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers", "regions"), leaf="pop"),
+        source=FieldKey(path=("customers", "regions"), leaf="pop"),
         agg="sum",
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
-    assert out.source == ColumnKey(path=("regions",), leaf="pop")
+    assert out.source == FieldKey(path=("regions",), leaf="pop")
 
 
 def test_source_nonmatching_path_unchanged() -> None:
     # A path that does not START with target_path is left alone — reroot is
     # total, never raises; downstream binding decides legality.
     key = AggregateKey(
-        source=ColumnKey(path=("warehouses",), leaf="qty"),
+        source=FieldKey(path=("warehouses",), leaf="qty"),
         agg="sum",
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
-    assert out.source == ColumnKey(path=("warehouses",), leaf="qty")
+    assert out.source == FieldKey(path=("warehouses",), leaf="qty")
 
 
 # ===========================================================================
@@ -127,64 +127,64 @@ def test_source_nonmatching_path_unchanged() -> None:
 
 def test_arg_columnkey_exact_match_reroots() -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="last",
-        args=(ColumnKey(path=("customers",), leaf="signup_at"),),
+        args=(FieldKey(path=("customers",), leaf="signup_at"),),
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
-    assert out.args == (ColumnKey(path=(), leaf="signup_at"),)
+    assert out.args == (FieldKey(path=(), leaf="signup_at"),)
 
 
 def test_arg_columnsqlkey_exact_match_reroots() -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="last",
         args=(
-            ColumnSqlKey(
-                path=("customers",), model="customers",
-                column_name="signup_at_alias",
+            FieldSqlKey(
+                path=("customers",), dataset="customers",
+                field_name="signup_at_alias",
             ),
         ),
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
     assert out.args == (
-        ColumnSqlKey(path=(), model="customers", column_name="signup_at_alias"),
+        FieldSqlKey(path=(), dataset="customers", field_name="signup_at_alias"),
     )
 
 
 def test_arg_deeper_hop_keeps_residual_path() -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="last",
-        args=(ColumnKey(path=("customers", "regions"), leaf="opened_at"),),
+        args=(FieldKey(path=("customers", "regions"), leaf="opened_at"),),
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
-    assert out.args == (ColumnKey(path=("regions",), leaf="opened_at"),)
+    assert out.args == (FieldKey(path=("regions",), leaf="opened_at"),)
 
 
 def test_arg_columnsqlkey_deeper_hop_keeps_residual() -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="last",
         args=(
-            ColumnSqlKey(
-                path=("customers", "regions"), model="regions",
-                column_name="opened_day",
+            FieldSqlKey(
+                path=("customers", "regions"), dataset="regions",
+                field_name="opened_day",
             ),
         ),
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
     assert out.args == (
-        ColumnSqlKey(path=("regions",), model="regions", column_name="opened_day"),
+        FieldSqlKey(path=("regions",), dataset="regions", field_name="opened_day"),
     )
 
 
 def test_arg_columnsqlkey_nonmatching_path_unchanged() -> None:
-    arg = ColumnSqlKey(
-        path=("warehouses",), model="warehouses", column_name="shipped_day",
+    arg = FieldSqlKey(
+        path=("warehouses",), dataset="warehouses", field_name="shipped_day",
     )
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="last",
         args=(arg,),
     )
@@ -194,12 +194,12 @@ def test_arg_columnsqlkey_nonmatching_path_unchanged() -> None:
 
 def test_arg_nonmatching_path_unchanged() -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="last",
-        args=(ColumnKey(path=("warehouses",), leaf="shipped_at"),),
+        args=(FieldKey(path=("warehouses",), leaf="shipped_at"),),
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
-    assert out.args == (ColumnKey(path=("warehouses",), leaf="shipped_at"),)
+    assert out.args == (FieldKey(path=("warehouses",), leaf="shipped_at"),)
 
 
 @pytest.mark.parametrize(
@@ -208,7 +208,7 @@ def test_arg_nonmatching_path_unchanged() -> None:
 )
 def test_scalar_args_pass_through_untouched(scalar) -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="percentile",
         args=(scalar,),
     )
@@ -222,7 +222,7 @@ def test_scalar_args_pass_through_untouched(scalar) -> None:
 )
 def test_scalar_kwargs_pass_through_untouched(scalar) -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="percentile",
         kwargs=(("p", scalar),),
     )
@@ -237,30 +237,30 @@ def test_scalar_kwargs_pass_through_untouched(scalar) -> None:
 
 def test_kwarg_value_columnkey_exact_match_reroots_name_preserved() -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="weighted_avg",
-        kwargs=(("weight", ColumnKey(path=("customers",), leaf="qty")),),
+        kwargs=(("weight", FieldKey(path=("customers",), leaf="qty")),),
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
-    assert out.kwargs == (("weight", ColumnKey(path=(), leaf="qty")),)
+    assert out.kwargs == (("weight", FieldKey(path=(), leaf="qty")),)
 
 
 def test_kwarg_deeper_hop_keeps_residual() -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="corr",
         kwargs=(
-            ("other", ColumnKey(path=("customers", "regions"), leaf="code")),
+            ("other", FieldKey(path=("customers", "regions"), leaf="code")),
         ),
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
-    assert out.kwargs == (("other", ColumnKey(path=("regions",), leaf="code")),)
+    assert out.kwargs == (("other", FieldKey(path=("regions",), leaf="code")),)
 
 
 def test_kwarg_columnkey_nonmatching_path_unchanged() -> None:
-    val = ColumnKey(path=("warehouses",), leaf="code")
+    val = FieldKey(path=("warehouses",), leaf="code")
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="corr",
         kwargs=(("other", val),),
     )
@@ -270,33 +270,33 @@ def test_kwarg_columnkey_nonmatching_path_unchanged() -> None:
 
 def test_kwarg_columnsqlkey_exact_match_reroots() -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="corr",
         kwargs=(
             (
                 "other",
-                ColumnSqlKey(
-                    path=("customers",), model="customers", column_name="score",
+                FieldSqlKey(
+                    path=("customers",), dataset="customers", field_name="score",
                 ),
             ),
         ),
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
     assert out.kwargs == (
-        ("other", ColumnSqlKey(path=(), model="customers", column_name="score")),
+        ("other", FieldSqlKey(path=(), dataset="customers", field_name="score")),
     )
 
 
 def test_kwarg_columnsqlkey_deeper_hop_keeps_residual() -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="corr",
         kwargs=(
             (
                 "other",
-                ColumnSqlKey(
-                    path=("customers", "regions"), model="regions",
-                    column_name="score",
+                FieldSqlKey(
+                    path=("customers", "regions"), dataset="regions",
+                    field_name="score",
                 ),
             ),
         ),
@@ -305,17 +305,17 @@ def test_kwarg_columnsqlkey_deeper_hop_keeps_residual() -> None:
     assert out.kwargs == (
         (
             "other",
-            ColumnSqlKey(path=("regions",), model="regions", column_name="score"),
+            FieldSqlKey(path=("regions",), dataset="regions", field_name="score"),
         ),
     )
 
 
 def test_kwarg_columnsqlkey_nonmatching_path_unchanged() -> None:
-    val = ColumnSqlKey(
-        path=("warehouses",), model="warehouses", column_name="score",
+    val = FieldSqlKey(
+        path=("warehouses",), dataset="warehouses", field_name="score",
     )
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="corr",
         kwargs=(("other", val),),
     )
@@ -327,18 +327,18 @@ def test_kwargs_canonical_sort_preserved_after_reroot() -> None:
     # kwargs are canonicalised sorted-by-name by the validator; rerooting
     # must not reorder them.
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="corr",
         kwargs=(
-            ("z_other", ColumnKey(path=("customers",), leaf="c1")),
-            ("a_other", ColumnKey(path=("customers",), leaf="c2")),
+            ("z_other", FieldKey(path=("customers",), leaf="c1")),
+            ("a_other", FieldKey(path=("customers",), leaf="c2")),
         ),
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
     assert [k for k, _ in out.kwargs] == ["a_other", "z_other"]
     assert out.kwargs == (
-        ("a_other", ColumnKey(path=(), leaf="c2")),
-        ("z_other", ColumnKey(path=(), leaf="c1")),
+        ("a_other", FieldKey(path=(), leaf="c2")),
+        ("z_other", FieldKey(path=(), leaf="c1")),
     )
 
 
@@ -350,10 +350,10 @@ def test_kwargs_canonical_sort_preserved_after_reroot() -> None:
 def test_target_path_empty_is_identity() -> None:
     # Filtered-local reroot: source already host-local, nothing to strip.
     key = AggregateKey(
-        source=ColumnKey(path=(), leaf="amount"),
+        source=FieldKey(path=(), leaf="amount"),
         agg="last",
-        args=(ColumnKey(path=(), leaf="created_at"),),
-        kwargs=(("weight", ColumnKey(path=(), leaf="qty")),),
+        args=(FieldKey(path=(), leaf="created_at"),),
+        kwargs=(("weight", FieldKey(path=(), leaf="qty")),),
     )
     out = reroot_aggregate_key(key, target_path=())
     assert out == key
@@ -365,10 +365,10 @@ def test_target_path_empty_leaves_path_bearing_refs_unchanged() -> None:
     # case is true empty-prefix identity, not a short-circuit that silently
     # drops paths.
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="last",
-        args=(ColumnKey(path=("customers", "regions"), leaf="opened_at"),),
-        kwargs=(("weight", ColumnKey(path=("customers",), leaf="qty")),),
+        args=(FieldKey(path=("customers", "regions"), leaf="opened_at"),),
+        kwargs=(("weight", FieldKey(path=("customers",), leaf="qty")),),
     )
     out = reroot_aggregate_key(key, target_path=())
     assert out == key
@@ -376,16 +376,16 @@ def test_target_path_empty_leaves_path_bearing_refs_unchanged() -> None:
 
 def test_full_key_reroot_equals_handbuilt_local_key() -> None:
     key = AggregateKey(
-        source=ColumnKey(path=("customers",), leaf="amount"),
+        source=FieldKey(path=("customers",), leaf="amount"),
         agg="last",
-        args=(ColumnKey(path=("customers",), leaf="signup_at"),),
-        kwargs=(("weight", ColumnKey(path=("customers",), leaf="qty")),),
+        args=(FieldKey(path=("customers",), leaf="signup_at"),),
+        kwargs=(("weight", FieldKey(path=("customers",), leaf="qty")),),
     )
     expected = AggregateKey(
-        source=ColumnKey(path=(), leaf="amount"),
+        source=FieldKey(path=(), leaf="amount"),
         agg="last",
-        args=(ColumnKey(path=(), leaf="signup_at"),),
-        kwargs=(("weight", ColumnKey(path=(), leaf="qty")),),
+        args=(FieldKey(path=(), leaf="signup_at"),),
+        kwargs=(("weight", FieldKey(path=(), leaf="qty")),),
     )
     out = reroot_aggregate_key(key, target_path=("customers",))
     assert out == expected
@@ -393,11 +393,11 @@ def test_full_key_reroot_equals_handbuilt_local_key() -> None:
 
 
 def test_reroot_does_not_mutate_input_key() -> None:
-    src = ColumnKey(path=("customers",), leaf="amount")
-    arg = ColumnKey(path=("customers",), leaf="signup_at")
+    src = FieldKey(path=("customers",), leaf="amount")
+    arg = FieldKey(path=("customers",), leaf="signup_at")
     key = AggregateKey(source=src, agg="last", args=(arg,))
     _ = reroot_aggregate_key(key, target_path=("customers",))
     # Frozen keys are immutable, but pin that the original still reads
     # host-rooted (no accidental in-place surgery / aliasing).
-    assert key.source == ColumnKey(path=("customers",), leaf="amount")
-    assert key.args == (ColumnKey(path=("customers",), leaf="signup_at"),)
+    assert key.source == FieldKey(path=("customers",), leaf="amount")
+    assert key.args == (FieldKey(path=("customers",), leaf="signup_at"),)

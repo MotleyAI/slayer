@@ -77,7 +77,7 @@ async def _generate_one(case, dialect: str):
         kw = dict(case["kw"])
         if case["mode"] is not None:
             kw["to_many_handling"] = case["mode"]
-        query = SlayerQuery(source_model=case["source"], **kw)
+        query = SlayerQuery(population=case["source"], **kw)
         return await _engine_generate(
             query=query, model=models[0], extra_models=models[1:],
             dialect=dialect, validate=False,

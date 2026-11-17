@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover — Windows
     _fcntl = None  # type: ignore[assignment]
 
 from slayer.core.errors import StoredDocumentLoadError
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.memories.models import Memory, _validate_memory_id_charset
 from slayer.storage.atomic_write import _atomic_write_text, _atomic_write_yaml
 from slayer.storage.base import (
@@ -274,7 +274,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         # by the os.stat check on the next read; a stale entry is never served
         # because it is evicted on every write (and on an external delete), and
         # the miss path verifies the file did not change under it (stable-read).
-        self._model_cache: dict[str, tuple[StatKey, SlayerModel]] = {}
+        self._model_cache: dict[str, tuple[StatKey, SlayerDataset]] = {}
         self._datasource_cache: dict[
             str, tuple[StatKey, DatasourceConfig]
         ] = {}
@@ -311,10 +311,10 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     # ---- internal helpers --------------------------------------------------
 
-    def _model_path(self, data_source: str, name: str) -> str:
+    def _dataset_path(self, data_source: str, name: str) -> str:
         """A model's YAML path; both components are validated where the path is composed."""
         _validate_path_component(data_source, kind="datasource name")
-        _validate_path_component(name, kind="model name")
+        _validate_path_component(name, kind="dataset name")
         return os.path.join(self.models_dir, data_source, f"{name}.yaml")
 
     def _datasource_path(self, name: str) -> str:
@@ -322,7 +322,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         _validate_path_component(name, kind="datasource name")
         return os.path.join(self.datasources_dir, f"{name}.yaml")
 
-    def _model_entry_exists(self, *, data_source: str, name: str) -> bool:
+    def _dataset_entry_exists(self, *, data_source: str, name: str) -> bool:
         """Exact-case existence check for both path components of a model."""
         return _exact_entry_exists(
             dir_path=self.models_dir, entry_name=data_source,
@@ -331,17 +331,17 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             entry_name=f"{name}.yaml",
         )
 
-    async def _load_raw_model_dict(
+    async def _load_raw_dataset_dict(
         self, *, name: str, data_source: str,
     ) -> dict | None:
         """Read the on-disk YAML verbatim (no migration / no
         validation) for sibling-hop resolution during the legacy-``__``
         rewrite. Returns ``None`` when the file is absent or not a mapping."""
         try:
-            path = self._model_path(data_source, name)
+            path = self._dataset_path(data_source, name)
         except ValueError:  # not a storable model name, e.g. a foreign ``orders.v1.yaml``
             return None
-        if not self._model_entry_exists(data_source=data_source, name=name):
+        if not self._dataset_entry_exists(data_source=data_source, name=name):
             return None
         try:
             with open(path) as f:  # NOSONAR(S7493) — local read
@@ -350,8 +350,8 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             return None
         return raw if isinstance(raw, dict) else None
 
-    async def _write_raw_model_dict(self, *, name: str, data_source: str, data: dict) -> None:
-        path = self._model_path(data_source, name)
+    async def _write_raw_dataset_dict(self, *, name: str, data_source: str, data: dict) -> None:
+        path = self._dataset_path(data_source, name)
         self._model_cache.pop(path, None)
         _atomic_write_yaml(path=path, data=data)
         self._forget_raw(data_source=data_source, name=name)
@@ -392,15 +392,15 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
 
     # ---- model CRUD --------------------------------------------------------
 
-    async def _save_model_impl(self, model: SlayerModel) -> None:
-        target_dir = os.path.join(self.models_dir, model.data_source)
+    async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
+        target_dir = os.path.join(self.models_dir, dataset.data_source)
         os.makedirs(target_dir, exist_ok=True)
-        path = os.path.join(target_dir, f"{model.name}.yaml")
-        data = without_none(model.model_dump(mode="json"))
+        path = os.path.join(target_dir, f"{dataset.name}.yaml")
+        data = without_none(dataset.model_dump(mode="json"))
         self._model_cache.pop(path, None)  # Evict before the write
         _atomic_write_yaml(path=path, data=data)
 
-    async def _list_all_model_identities(self) -> list[tuple[str, str]]:
+    async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
         result: list[tuple[str, str]] = []
         if not os.path.isdir(self.models_dir):
             return result
@@ -413,17 +413,17 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                     result.append((ds, filename.rsplit(".", 1)[0]))
         return result
 
-    async def get_model(
+    async def get_dataset(
         self,
         name: str,
         data_source: str | None = None,
-    ) -> SlayerModel | None:
+    ) -> SlayerDataset | None:
         target = await self._resolve_target_or_none(name, data_source=data_source)
         if target is None:
             return None
         data_source, name = target
-        path = self._model_path(data_source, name)  # NOSONAR(S6549) — name/data_source were sanitized by _resolve_target_or_none above (rejects '..', path separators, NULs); SlayerModel Pydantic validators sanitize the save path
-        if not self._model_entry_exists(data_source=data_source, name=name):
+        path = self._dataset_path(data_source, name)  # NOSONAR(S6549) — name/data_source were sanitized by _resolve_target_or_none above (rejects '..', path separators, NULs); SlayerModel Pydantic validators sanitize the save path
+        if not self._dataset_entry_exists(data_source=data_source, name=name):
             self._model_cache.pop(path, None)  # Evict on external delete
             return None
         try:
@@ -440,7 +440,7 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
         except FileNotFoundError:  # deleted between the stat and the open
             self._model_cache.pop(path, None)
             return None
-        with stored_document_boundary(kind="model", name=name, data_source=data_source):
+        with stored_document_boundary(kind="dataset", name=name, data_source=data_source):
             try:
                 data = yaml.safe_load(text)
             except yaml.YAMLError as exc:
@@ -460,38 +460,38 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
             self._model_cache[path] = (admit, model)
         return model.model_copy(deep=True)
 
-    async def _delete_model_row(
+    async def _delete_dataset_row(
         self, *, data_source: str, name: str,
     ) -> bool:
-        self._model_cache.pop(self._model_path(data_source, name), None)
+        self._model_cache.pop(self._dataset_path(data_source, name), None)
         # Exact match — os.remove would otherwise hit a case-variant sibling.
-        if not self._model_entry_exists(data_source=data_source, name=name):
+        if not self._dataset_entry_exists(data_source=data_source, name=name):
             return False
-        os.remove(self._model_path(data_source, name))
+        os.remove(self._dataset_path(data_source, name))
         return True
 
-    async def update_column_sampled(
+    async def update_field_sampled(
         self,
         *,
         data_source: str,
-        model_name: str,
-        column_name: str,
+        dataset_name: str,
+        field_name: str,
         sampled: str | None,
         sampled_values: list[str] | None,
         distinct_count: int | None,
     ) -> None:
-        path = self._model_path(data_source, model_name)
+        path = self._dataset_path(data_source, dataset_name)
         self._model_cache.pop(path, None)  # Evict before the write
-        if not self._model_entry_exists(data_source=data_source, name=model_name):
+        if not self._dataset_entry_exists(data_source=data_source, name=dataset_name):
             raise ValueError(
-                f"update_column_sampled: model {model_name!r} in datasource "
+                f"update_field_sampled: model {dataset_name!r} in datasource "
                 f"{data_source!r} not found."
             )
         with open(path) as f:  # NOSONAR(S7493) — YAMLStorage uses sync I/O inside async by design
             data = yaml.safe_load(f) or {}
         cols = data.get("columns") or []
         for col in cols:
-            if isinstance(col, dict) and col.get("name") == column_name:
+            if isinstance(col, dict) and col.get("name") == field_name:
                 _write_sample_fields(
                     col,
                     sampled=sampled,
@@ -501,11 +501,11 @@ class YAMLStorage(SidecarEmbeddingsMixin, StorageBackend):
                 break
         else:
             raise ValueError(
-                f"update_column_sampled: column {column_name!r} not found "
-                f"on model {model_name!r} in datasource {data_source!r}."
+                f"update_field_sampled: column {field_name!r} not found "
+                f"on model {dataset_name!r} in datasource {data_source!r}."
             )
         _atomic_write_yaml(path=path, data=data)
-        self._forget_raw(data_source=data_source, name=model_name)
+        self._forget_raw(data_source=data_source, name=dataset_name)
 
     # ---- datasource CRUD ---------------------------------------------------
 

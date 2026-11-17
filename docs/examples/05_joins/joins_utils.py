@@ -94,6 +94,6 @@ def setup_diamond_example() -> tuple:
     engine = SlayerQueryEngine(storage=storage)
     models = engine.ingest_sync(ds)
     for model in models:
-        run_sync(storage.save_model(model))
+        run_sync(storage.save_dataset(model))
 
     return engine, storage, models, db_path, work_dir

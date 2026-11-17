@@ -11,7 +11,7 @@ import pytest
 from slayer.sql.scope_check import assert_scope_closed
 
 from tests._dev1839_fixtures import (
-    ModelMeasure,
+    DatasetMetric,
     REGION_CUMSUM,
     REGION_MONTH_TOTAL,
     REGION_TOTAL,
@@ -45,7 +45,7 @@ class TestMixedWindowedRankedDeferred:
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         sql = await gen(query)  # Lifted: renders, no longer raises
         assert_scope_closed(sql, dialect="duckdb")
@@ -58,7 +58,7 @@ class TestMixedWindowedRankedDeferred:
         )
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         sql = await gen(query)  # Lifted: renders, no longer raises
         assert_scope_closed(sql, dialect="duckdb")
@@ -75,7 +75,7 @@ class TestTransformKwargAgainstUnion:
         )
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -91,7 +91,7 @@ class TestUnchangedGuards:
         )
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
             to_many_handling="broadcast",
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
@@ -103,7 +103,7 @@ class TestUnchangedGuards:
         band = "rank(sum(amount) - sum(amount, partition_by=city), direction='desc')"
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "x"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -125,7 +125,7 @@ class TestTemporalAxisContainment:
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "cs"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -137,7 +137,7 @@ class TestTemporalAxisContainment:
         query = q(
             dimensions=["region", "city", {"expression": band, "name": "cs"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         with pytest.raises((NotImplementedError, ValueError)) as ei:
             await gen(query)
@@ -150,7 +150,7 @@ class TestTemporalAxisContainment:
         query = q(
             dimensions=["region", {"expression": band, "name": "cs"}],
             time_dimensions=month_td(),
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         resp = await engine.execute(query)
         got = {
@@ -178,7 +178,7 @@ class TestSameGrainMultiAggregateLocking:
         dialect, engine = exec_backend
         query = q(
             dimensions=["region", {"expression": SAMEGRAIN_RANK, "name": "gr"}],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         )
         resp = await engine.execute(query)
         by = rows_by(resp, "orders.region")

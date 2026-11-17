@@ -8,7 +8,7 @@ from typing import Any, cast
 import pytest
 from sqlglot import exp
 
-from slayer.core.models import SlayerModel
+from slayer.core.models import SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.dbt.converter import DbtToSlayerConverter
 from slayer.dbt.parser import parse_dbt_project
@@ -43,7 +43,7 @@ def _import(tmp_path: Path, *, dialect: str, semantic_models: list[dict[str, Any
     return DbtToSlayerConverter(project=parse_dbt_project(str(root)), data_source=DS, target_dialect=dialect).convert()
 
 
-def _relation(model: SlayerModel, *, dialect: str) -> list[str]:
+def _relation(model: SlayerDataset, *, dialect: str) -> list[str]:
     """The catalog names of the one relation ``model`` reads, as SLayer reads its stored text."""
     sql_dialect = get_dialect(dialect)
     if model.sql_table is not None:
@@ -54,8 +54,8 @@ def _relation(model: SlayerModel, *, dialect: str) -> list[str]:
     return [denoted_name(p, dialect=dialect) for p in cast(list[exp.Identifier], table.parts)]
 
 
-async def _generated_relation(model: SlayerModel, *, dialect: str) -> list[tuple[str, bool]]:
-    sql = await _engine_generate(query=SlayerQuery.model_validate({"source_model": model.name, "dimensions": ["qty"]}),
+async def _generated_relation(model: SlayerDataset, *, dialect: str) -> list[tuple[str, bool]]:
+    sql = await _engine_generate(query=SlayerQuery.model_validate({"population": model.name, "dimensions": ["qty"]}),
                                  model=model, dialect=dialect)
     (table,) = parse_query(sql=sql, target_dialect=get_dialect(dialect)).find_all(exp.Table)
     return [(p.name, p.quoted) for p in cast(list[exp.Identifier], table.parts)]
@@ -218,7 +218,7 @@ ORDERS = {"name": "orders", "model": "ref('orders')",
 
 def test_entity_expr_reads_the_folded_column(tmp_path: Path) -> None:
     orders = models_of(_import(tmp_path, dialect="postgres", semantic_models=[ORDERS]))["orders"]
-    keys = [c for c in orders.columns if c.primary_key]
+    keys = [c for c in orders.fields if c.primary_key]
     assert [c.physical_name for c in keys] == ["orderid"]
 
 
@@ -226,9 +226,9 @@ def test_metric_filter_with_a_mixed_case_logical_dimension_is_unchanged(tmp_path
     metric = {"name": "paid_revenue", "type": "simple", "type_params": {"measure": {
         "name": "revenue", "filter": "{{ Dimension('order_id__Status') }} = 'paid'"}}}
     orders = models_of(_import(tmp_path, dialect="postgres", semantic_models=[ORDERS], metrics=[metric]))["orders"]
-    measure = orders.get_measure("paid_revenue")
+    measure = orders.get_metric("paid_revenue")
     assert measure is not None
-    assert measure.formula == "sum(revenue_filtered)"
+    assert measure.expression == "sum(revenue_filtered)"
     assert column(orders, "revenue_filtered").filter == "Status = 'paid'"
 
 

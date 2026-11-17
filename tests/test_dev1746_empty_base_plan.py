@@ -37,8 +37,8 @@ from typing import AsyncIterator
 
 import pytest
 
-from slayer.core.models import ModelMeasure
-from slayer.core.query import ColumnRef, SlayerQuery
+from slayer.core.models import DatasetMetric
+from slayer.core.query import FieldRef, SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.engine.plan import plan_query
@@ -72,37 +72,37 @@ FILTERED_BASE = _norm(
 def _bundle() -> ResolvedSourceBundle:
     return ResolvedSourceBundle(
         dialect="postgres",
-        source_model=_orders_x(),
-        referenced_models=[_customers_v2(), _regions(), _countries()],
+        population=_orders_x(),
+        referenced_datasets=[_customers_v2(), _regions(), _countries()],
     )
 
 
 def _unfiltered_query() -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders_x",
-        measures=[ModelMeasure(
-            formula="sum(customers_v2.lifetime_value)", name="ltv",
+        population="orders_x",
+        metrics=[DatasetMetric(
+            expression="sum(customers_v2.lifetime_value)", name="ltv",
         )],
     )
 
 
 def _filtered_query() -> SlayerQuery:
     return SlayerQuery(
-        source_model="orders_x",
-        measures=[ModelMeasure(
-            formula="sum(customers_v2.lifetime_value)", name="ltv",
+        population="orders_x",
+        metrics=[DatasetMetric(
+            expression="sum(customers_v2.lifetime_value)", name="ltv",
         )],
-        filters=["status == 'paid'"],
+        filter=["status == 'paid'"],
     )
 
 
 def _non_empty_base_query() -> SlayerQuery:
     """A host dimension means the base is NOT empty — the node must be absent."""
     return SlayerQuery(
-        source_model="orders_x",
-        dimensions=[ColumnRef(name="status")],
-        measures=[ModelMeasure(
-            formula="sum(customers_v2.lifetime_value)", name="ltv",
+        population="orders_x",
+        dimensions=[FieldRef(name="status")],
+        metrics=[DatasetMetric(
+            expression="sum(customers_v2.lifetime_value)", name="ltv",
         )],
     )
 
@@ -269,8 +269,8 @@ class TestEmptyBaseExecution:
     ) -> None:
         """The reason for the LIMIT-1 collapse: one row, counted once."""
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="total")],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="total")],
         )
         resp = await exec_engine.execute(query)
         assert len(resp.data) == 1, (
@@ -286,9 +286,9 @@ class TestEmptyBaseExecution:
         restricts the isolated CTE by semi-join: only customer 100 has a paid
         order, so the scalar is 1000, not the unfiltered 1325."""
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="total")],
-            filters=["status == 'paid'"],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="total")],
+            filter=["status == 'paid'"],
         )
         resp = await exec_engine.execute(query)
         assert len(resp.data) == 1, resp.data
@@ -300,9 +300,9 @@ class TestEmptyBaseExecution:
         """The other half of the gate: no host row matches -> empty spine ->
         zero rows, NOT a row with the scalar aggregate in it."""
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="total")],
-            filters=["status == 'nonexistent'"],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(customers.spend)", name="total")],
+            filter=["status == 'nonexistent'"],
         )
         resp = await exec_engine.execute(query)
         assert resp.data == [], (
@@ -314,8 +314,8 @@ class TestEmptyBaseExecution:
     ) -> None:
         """An expression of cross-model aggregates alone also leaves ``_base`` a placeholder spine."""
         query = SlayerQuery(
-            source_model="orders",
-            measures=[ModelMeasure(formula="sum(customers.spend) * 2", name="twice")],
+            population="orders",
+            metrics=[DatasetMetric(expression="sum(customers.spend) * 2", name="twice")],
         )
         resp = await exec_engine.execute(query)
         assert len(resp.data) == 1, resp.data

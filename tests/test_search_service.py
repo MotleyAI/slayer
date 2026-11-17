@@ -29,7 +29,7 @@ import pytest
 import pytest_asyncio
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, ModelMeasure, SlayerModel
+from slayer.core.models import DatasetField, DatasetMetric, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.search.service import (
@@ -395,8 +395,8 @@ async def storage_with_query_memories(
             learning=f"example query {i}",
             entities=["warehouse.orders.amount_paid"],
             query=SlayerQuery(
-                source_model="orders",
-                measures=[ModelMeasure(formula="sum(amount_paid)")],
+                population="orders",
+                metrics=[DatasetMetric(expression="sum(amount_paid)")],
             ),
         )
     return storage_with_corpus
@@ -527,16 +527,16 @@ async def stale_setup() -> AsyncIterator[tuple[StorageBackend, SlayerQueryEngine
         await storage.save_datasource(DatasourceConfig(
             name="warehouse", type="sqlite", database=db_file,
         ))
-        await storage.save_model(SlayerModel(
+        await storage.save_dataset(SlayerDataset(
             name="orders",
             sql_table="orders",
             data_source="warehouse",
             description="Checkout orders fixture.",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="amount", type=DataType.DOUBLE),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
                 # status: stale — sampled_values intentionally None.
-                Column(name="status", type=DataType.TEXT,
+                DatasetField(name="status", datatype=DataType.TEXT,
                        description="Order status."),
             ],
         ))
@@ -602,9 +602,9 @@ async def test_search_refreshes_stale_categorical_column_hit(
     assert "paid" in status_hit.text
     assert "refunded" in status_hit.text
     # And persistence happened — reloading the model shows populated cache.
-    reloaded = await storage.get_model("orders", data_source="warehouse")
+    reloaded = await storage.get_dataset("orders", data_source="warehouse")
     assert reloaded is not None
-    status_col = reloaded.get_column("status")
+    status_col = reloaded.get_field("status")
     assert status_col is not None
     assert status_col.sampled_values is not None
     assert set(status_col.sampled_values) == {"paid", "refunded"}
@@ -646,9 +646,9 @@ async def test_search_refreshes_stale_column_hit_via_question_corpus(
         "question-path column hit must also receive the post-fusion refresh"
     )
     # And the refresh persisted to storage.
-    reloaded = await storage.get_model("orders", data_source="warehouse")
+    reloaded = await storage.get_dataset("orders", data_source="warehouse")
     assert reloaded is not None
-    status_col = reloaded.get_column("status")
+    status_col = reloaded.get_field("status")
     assert status_col is not None
     assert status_col.sampled_values is not None
 
@@ -667,9 +667,9 @@ async def test_search_no_refresh_when_engine_is_none(
     )
     # The hit may or may not include "paid" depending on what the stale
     # corpus rendered, but storage MUST NOT have been written to.
-    reloaded = await storage.get_model("orders", data_source="warehouse")
+    reloaded = await storage.get_dataset("orders", data_source="warehouse")
     assert reloaded is not None
-    status_col = reloaded.get_column("status")
+    status_col = reloaded.get_field("status")
     assert status_col is not None
     assert status_col.sampled_values is None, (
         "engine=None must skip the refresh; storage stays stale"
@@ -695,14 +695,14 @@ async def test_search_stale_text_preserved_when_profile_raises(
         raise RuntimeError("simulated profile failure")
 
     persist_calls: list = []
-    original_persist = storage.update_column_sampled
+    original_persist = storage.update_field_sampled
 
     async def tracking_persist(**kwargs):
         persist_calls.append(kwargs)
         return await original_persist(**kwargs)
 
     monkeypatch.setattr(engine, "execute", explodes)
-    monkeypatch.setattr(storage, "update_column_sampled", tracking_persist)
+    monkeypatch.setattr(storage, "update_field_sampled", tracking_persist)
 
     response = await svc.search(
         entities=["warehouse.orders.status"],
@@ -724,9 +724,9 @@ async def test_search_stale_text_preserved_when_profile_raises(
     assert "warehouse.orders.status" in text
     assert "Order status" in text  # column description
     # Storage stays stale.
-    reloaded = await storage.get_model("orders", data_source="warehouse")
+    reloaded = await storage.get_dataset("orders", data_source="warehouse")
     assert reloaded is not None
-    status_col = reloaded.get_column("status")
+    status_col = reloaded.get_field("status")
     assert status_col is not None
     assert status_col.sampled_values is None
     # And no persist call was attempted.
@@ -752,7 +752,7 @@ async def test_search_numeric_column_hit_is_refreshed(
     async def counting_execute(*args, **kwargs):
         q = kwargs.get("query", args[0] if args else None)
         if isinstance(q, SlayerQuery) and any(
-                (m.formula or "").startswith(("min(", "max(")) for m in q.measures or []):
+                (m.expression or "").startswith(("min(", "max(")) for m in q.metrics or []):
             numeric_queries.append(q)
         return await real_execute(*args, **kwargs)
 
@@ -765,9 +765,9 @@ async def test_search_numeric_column_hit_is_refreshed(
     # A min/max query IS run for the uncached numeric ``amount`` column.
     assert numeric_queries, "numeric column must trigger a min/max query from search refresh"
     # And the min/max range is persisted for later reads.
-    reloaded = await storage.get_model("orders", data_source="warehouse")
+    reloaded = await storage.get_dataset("orders", data_source="warehouse")
     assert reloaded is not None
-    amount_col = reloaded.get_column("amount")
+    amount_col = reloaded.get_field("amount")
     assert amount_col is not None
     assert amount_col.sampled is not None, (
         "numeric column must be back-filled by the search hook"
@@ -788,12 +788,12 @@ async def test_search_per_model_serialization_concurrent_hits(
     # Add another stale categorical column to the SAME model so two
     # hits on the same model would trigger parallel persist if not
     # serialized.
-    model = await storage.get_model("orders", data_source="warehouse")
+    model = await storage.get_dataset("orders", data_source="warehouse")
     assert model is not None
-    model.columns.append(
-        Column(name="region", type=DataType.TEXT, description="Region of sale."),
+    model.fields.append(
+        DatasetField(name="region", datatype=DataType.TEXT, description="Region of sale."),
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
     # Add a region column to the underlying table. (Without it, the
     # profile query will return no rows but the column will still be
     # in the refresh path.)
@@ -806,7 +806,7 @@ async def test_search_per_model_serialization_concurrent_hits(
     # Track the order of update_column_sampled calls per model. Capture
     # the column name and a start/stop marker so we can detect overlap.
     persist_events: list = []
-    original = storage.update_column_sampled
+    original = storage.update_field_sampled
 
     async def tracking_persist(**kwargs):
         persist_events.append(("start", kwargs.get("model_name"), kwargs.get("column_name")))
@@ -816,7 +816,7 @@ async def test_search_per_model_serialization_concurrent_hits(
         persist_events.append(("stop", kwargs.get("model_name"), kwargs.get("column_name")))
         return result
 
-    monkeypatch.setattr(storage, "update_column_sampled", tracking_persist)
+    monkeypatch.setattr(storage, "update_field_sampled", tracking_persist)
 
     svc = SearchService(storage=storage, engine=engine)
     response = await svc.search(
@@ -843,10 +843,10 @@ async def test_search_per_model_serialization_concurrent_hits(
 
     # And BOTH columns reload with populated sampled_values — proving both
     # writes landed (no last-write-wins overwrite).
-    reloaded2 = await storage.get_model("orders", data_source="warehouse")
+    reloaded2 = await storage.get_dataset("orders", data_source="warehouse")
     assert reloaded2 is not None
-    status_col = reloaded2.get_column("status")
-    region_col = reloaded2.get_column("region")
+    status_col = reloaded2.get_field("status")
+    region_col = reloaded2.get_field("region")
     assert status_col is not None
     assert region_col is not None
     assert status_col.sampled_values is not None, (
@@ -895,14 +895,14 @@ async def test_search_cross_model_concurrency_is_allowed(
             [(i, "EMEA" if i % 2 == 0 else "APAC") for i in range(1, 11)],
         )
         conn.commit()
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="customers",
         sql_table="customers",
         data_source="warehouse",
         description="Customers.",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="region", type=DataType.TEXT,
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="region", datatype=DataType.TEXT,
                    description="Customer region."),
         ],
     ))
@@ -910,7 +910,7 @@ async def test_search_cross_model_concurrency_is_allowed(
     persist_events: list = []
     started: set = set()
     both_started = asyncio.Event()
-    original = storage.update_column_sampled
+    original = storage.update_field_sampled
 
     async def tracking_persist(**kwargs):
         persist_events.append(
@@ -928,7 +928,7 @@ async def test_search_cross_model_concurrency_is_allowed(
         )
         return result
 
-    monkeypatch.setattr(storage, "update_column_sampled", tracking_persist)
+    monkeypatch.setattr(storage, "update_field_sampled", tracking_persist)
 
     svc = SearchService(storage=storage, engine=engine)
     response = await svc.search(

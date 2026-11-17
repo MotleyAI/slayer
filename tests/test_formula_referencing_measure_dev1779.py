@@ -40,11 +40,11 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.errors import UnknownReferenceError
 from slayer.core.models import (
-    Column,
+    DatasetField,
     DatasourceConfig,
-    ModelJoin,
-    ModelMeasure,
-    SlayerModel,
+    DatasetRelationship,
+    DatasetMetric,
+    SlayerDataset,
 )
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
@@ -57,48 +57,48 @@ _CANON_ORDER = "orders.id_count"
 _CANON_UNIQUE = "orders.customer_count_distinct"
 
 
-def _habit_measures() -> list[ModelMeasure]:
+def _habit_measures() -> list[DatasetMetric]:
     """order_count / unique_customers, plus the formula that divides them."""
     return [
-        ModelMeasure(name="order_count", formula="count(id)"),
-        ModelMeasure(name="unique_customers", formula="count_distinct(customer)"),
-        ModelMeasure(name="total_revenue", formula="sum(revenue)"),
-        ModelMeasure(name="habit_score", formula="order_count / unique_customers"),
+        DatasetMetric(name="order_count", expression="count(id)"),
+        DatasetMetric(name="unique_customers", expression="count_distinct(customer)"),
+        DatasetMetric(name="total_revenue", expression="sum(revenue)"),
+        DatasetMetric(name="habit_score", expression="order_count / unique_customers"),
     ]
 
 
-def _orders_model(measures: list[ModelMeasure] | None = None) -> SlayerModel:
-    return SlayerModel(
+def _orders_model(measures: list[DatasetMetric] | None = None) -> SlayerDataset:
+    return SlayerDataset(
         name="orders",
         sql_table="orders",
         data_source="test",
         default_time_dimension="created_at",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="customer", sql="customer", type=DataType.TEXT),
-            Column(name="revenue", sql="amount", type=DataType.DOUBLE),
-            Column(name="store_id", sql="store_id", type=DataType.DOUBLE),
-            Column(name="created_at", sql="created_at", type=DataType.TIMESTAMP),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="customer", sql="customer", datatype=DataType.TEXT),
+            DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="store_id", sql="store_id", datatype=DataType.DOUBLE),
+            DatasetField(name="created_at", sql="created_at", datatype=DataType.TIMESTAMP),
         ],
-        joins=[ModelJoin(target_model="stores", join_pairs=[["store_id", "id"]])],
-        measures=_habit_measures() if measures is None else measures,
+        relationships=[DatasetRelationship(to="stores", join_pairs=[["store_id", "id"]])],
+        metrics=_habit_measures() if measures is None else measures,
     )
 
 
-def _stores_model() -> SlayerModel:
-    return SlayerModel(
+def _stores_model() -> SlayerDataset:
+    return SlayerDataset(
         name="stores",
         sql_table="stores",
         data_source="test",
-        columns=[
-            Column(name="id", sql="id", type=DataType.DOUBLE, primary_key=True),
-            Column(name="name", sql="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True),
+            DatasetField(name="name", sql="name", datatype=DataType.TEXT),
         ],
     )
 
 
 async def _make_engine(
-    tmp_path, *, seed: bool, measures: list[ModelMeasure] | None = None
+    tmp_path, *, seed: bool, measures: list[DatasetMetric] | None = None
 ) -> SlayerQueryEngine:
     """Build a YAMLStorage-backed engine over the orders(+stores) model.
 
@@ -135,8 +135,8 @@ async def _make_engine(
     await storage.save_datasource(
         DatasourceConfig(name="test", type="sqlite", database=str(db_file))
     )
-    await storage.save_model(_stores_model())
-    await storage.save_model(_orders_model(measures))
+    await storage.save_dataset(_stores_model())
+    await storage.save_dataset(_orders_model(measures))
     return SlayerQueryEngine(storage=storage)
 
 
@@ -166,7 +166,7 @@ def _referenced_but_undeclared(sql: str) -> set[str]:
 async def _dry_sql(tmp_path, measures: list[str], **query_kw: Any) -> str:
     """Dry-run an orders query and return the emitted SQL."""
     engine = await _make_engine(tmp_path, seed=False)
-    query = SlayerQuery(source_model="orders", measures=measures, **query_kw)
+    query = SlayerQuery(population="orders", metrics=measures, **query_kw)
     resp = await engine.execute(query=query, dry_run=True)
     assert resp.sql is not None
     return resp.sql
@@ -214,7 +214,7 @@ async def test_formula_ref_executes(
     tmp_path, label: str, measures: list[str], _bug: bool, _both: bool
 ) -> None:
     engine = await _make_engine(tmp_path, seed=True)
-    query = SlayerQuery(source_model="orders", measures=measures)
+    query = SlayerQuery(population="orders", metrics=measures)
     resp = await engine.execute(query=query)  # runs the real SQL — must not raise
     assert resp.data, resp.sql
     row = resp.data[0]
@@ -233,13 +233,13 @@ async def test_transform_wrapped_reference_follows_rename(tmp_path) -> None:
         tmp_path,
         seed=False,
         measures=[
-            ModelMeasure(name="order_count", formula="count(id)"),
-            ModelMeasure(name="running_orders", formula="cumsum(order_count)"),
+            DatasetMetric(name="order_count", expression="count(id)"),
+            DatasetMetric(name="running_orders", expression="cumsum(order_count)"),
         ],
     )
     query = SlayerQuery(
-        source_model="orders",
-        measures=["running_orders", "order_count"],
+        population="orders",
+        metrics=["running_orders", "order_count"],
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
     )
     resp = await engine.execute(query=query, dry_run=True)
@@ -257,13 +257,13 @@ async def test_change_pct_desugar_reference_follows_rename(tmp_path) -> None:
         tmp_path,
         seed=False,
         measures=[
-            ModelMeasure(name="order_count", formula="count(id)"),
-            ModelMeasure(name="mom_orders", formula="change_pct(order_count)"),
+            DatasetMetric(name="order_count", expression="count(id)"),
+            DatasetMetric(name="mom_orders", expression="change_pct(order_count)"),
         ],
     )
     query = SlayerQuery(
-        source_model="orders",
-        measures=["mom_orders", "order_count"],
+        population="orders",
+        metrics=["mom_orders", "order_count"],
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
     )
     resp = await engine.execute(query=query, dry_run=True)
@@ -277,8 +277,8 @@ async def test_full_reported_scenario(tmp_path) -> None:
     dimension, formula measure listed first, and ORDER BY the formula."""
     engine = await _make_engine(tmp_path, seed=True)
     query = SlayerQuery(
-        source_model="orders",
-        measures=["habit_score", "order_count", "unique_customers", "total_revenue"],
+        population="orders",
+        metrics=["habit_score", "order_count", "unique_customers", "total_revenue"],
         dimensions=["stores.name"],
         order=[{"column": "habit_score", "direction": "desc"}],
         limit=100,
@@ -311,11 +311,11 @@ async def test_formula_referencing_nonexistent_measure_raises(tmp_path) -> None:
         tmp_path,
         seed=False,
         measures=[
-            ModelMeasure(name="order_count", formula="count(id)"),
-            ModelMeasure(name="bad", formula="order_count / nonexistent_measure"),
+            DatasetMetric(name="order_count", expression="count(id)"),
+            DatasetMetric(name="bad", expression="order_count / nonexistent_measure"),
         ],
     )
-    query = SlayerQuery(source_model="orders", measures=["bad"])
+    query = SlayerQuery(population="orders", metrics=["bad"])
     with pytest.raises(UnknownReferenceError) as exc:
         await engine.execute(query=query, dry_run=True)
     assert "nonexistent_measure" in str(exc.value)
@@ -328,13 +328,13 @@ async def test_transform_referencing_nonexistent_measure_raises(tmp_path) -> Non
         tmp_path,
         seed=False,
         measures=[
-            ModelMeasure(name="order_count", formula="count(id)"),
-            ModelMeasure(name="running_bad", formula="cumsum(nonexistent_measure)"),
+            DatasetMetric(name="order_count", expression="count(id)"),
+            DatasetMetric(name="running_bad", expression="cumsum(nonexistent_measure)"),
         ],
     )
     query = SlayerQuery(
-        source_model="orders",
-        measures=["running_bad"],
+        population="orders",
+        metrics=["running_bad"],
         time_dimensions=[{"dimension": "created_at", "granularity": "month"}],
     )
     with pytest.raises(UnknownReferenceError) as exc:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Hashable
 from typing import Any, TypeVar
 
-from slayer.core.models import DatasourceConfig, SlayerModel
+from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.embeddings.models import Embedding
 from slayer.memories.models import Memory
@@ -47,27 +47,27 @@ class EngineStorage(StorageBackend):
 
     # ---- public surface: the store's own behaviour (access filtering included), sourced -------
 
-    async def save_model(
-        self, model: SlayerModel, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
+    async def save_dataset(
+        self, dataset: SlayerDataset, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
     ) -> None:
-        await self._sourced(self._inner.save_model(model, _validate=_validate, failures=failures))
+        await self._sourced(self._inner.save_dataset(dataset, _validate=_validate, failures=failures))
 
-    async def validate_for_save(self, model: SlayerModel, *, failures: DocumentLoadFailures | None = None) -> None:
-        await self._sourced(self._inner.validate_for_save(model, failures=failures))
+    async def validate_for_save(self, dataset: SlayerDataset, *, failures: DocumentLoadFailures | None = None) -> None:
+        await self._sourced(self._inner.validate_for_save(dataset, failures=failures))
 
-    async def builtin_models(
+    async def builtin_datasets(
         self, data_source: str, *, detailed: bool = False, failures: DocumentLoadFailures | None = None,
-    ) -> list[SlayerModel]:
-        return await self._sourced(self._inner.builtin_models(data_source, detailed=detailed, failures=failures))
+    ) -> list[SlayerDataset]:
+        return await self._sourced(self._inner.builtin_datasets(data_source, detailed=detailed, failures=failures))
 
-    async def load_models(self, *, data_source: str | None = None, exclude: str | None = None) -> Loaded[SlayerModel]:
-        return await self._sourced(self._inner.load_models(data_source=data_source, exclude=exclude))
+    async def load_datasets(self, *, data_source: str | None = None, exclude: str | None = None) -> Loaded[SlayerDataset]:
+        return await self._sourced(self._inner.load_datasets(data_source=data_source, exclude=exclude))
 
-    async def get_model_or_builtin(self, name: str, data_source: str | None = None) -> SlayerModel | None:
-        return await self._sourced(self._inner.get_model_or_builtin(name, data_source=data_source))
+    async def get_dataset_or_builtin(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
+        return await self._sourced(self._inner.get_dataset_or_builtin(name, data_source=data_source))
 
-    async def delete_model(self, name: str, data_source: str | None = None) -> bool:
-        return await self._sourced(self._inner.delete_model(name, data_source=data_source))
+    async def delete_dataset(self, name: str, data_source: str | None = None) -> bool:
+        return await self._sourced(self._inner.delete_dataset(name, data_source=data_source))
 
     async def save_datasource(self, datasource: DatasourceConfig) -> None:
         await self._sourced(self._inner.save_datasource(datasource))
@@ -81,11 +81,11 @@ class EngineStorage(StorageBackend):
     async def set_datasource_priority(self, priority: list[str]) -> None:
         await self._sourced(self._inner.set_datasource_priority(priority))
 
-    async def list_models(self, data_source: str | None = None) -> list[str]:
-        return await self._sourced(self._inner.list_models(data_source=data_source))
+    async def list_datasets(self, data_source: str | None = None) -> list[str]:
+        return await self._sourced(self._inner.list_datasets(data_source=data_source))
 
-    async def resolve_model_identity(self, name: str, *, prefer_data_source: str | None = None) -> tuple[str, str] | None:
-        return await self._sourced(self._inner.resolve_model_identity(name, prefer_data_source=prefer_data_source))
+    async def resolve_dataset_identity(self, name: str, *, prefer_data_source: str | None = None) -> tuple[str, str] | None:
+        return await self._sourced(self._inner.resolve_dataset_identity(name, prefer_data_source=prefer_data_source))
 
     async def get_memory_row(self, memory_id: str) -> Memory | None:
         return await self._sourced(self._inner.get_memory_row(memory_id))
@@ -106,27 +106,27 @@ class EngineStorage(StorageBackend):
 
     # ---- models -------------------------------------------------------------
 
-    async def get_model(self, name: str, data_source: str | None = None) -> SlayerModel | None:
-        return await self._sourced(self._inner.get_model(name, data_source=data_source))
+    async def get_dataset(self, name: str, data_source: str | None = None) -> SlayerDataset | None:
+        return await self._sourced(self._inner.get_dataset(name, data_source=data_source))
 
-    async def _list_all_model_identities(self) -> list[tuple[str, str]]:
-        return await self._sourced(self._inner._list_all_model_identities())
+    async def _list_all_dataset_identities(self) -> list[tuple[str, str]]:
+        return await self._sourced(self._inner._list_all_dataset_identities())
 
-    async def _load_raw_model_dict(self, *, name: str, data_source: str) -> dict | None:
-        return await self._sourced(self._inner._load_raw_model_dict(name=name, data_source=data_source))
+    async def _load_raw_dataset_dict(self, *, name: str, data_source: str) -> dict | None:
+        return await self._sourced(self._inner._load_raw_dataset_dict(name=name, data_source=data_source))
 
-    async def _save_model_impl(self, model: SlayerModel) -> None:
-        await self._sourced(self._inner._save_model_impl(model))
+    async def _save_dataset_impl(self, dataset: SlayerDataset) -> None:
+        await self._sourced(self._inner._save_dataset_impl(dataset))
 
-    async def _delete_model_row(self, *, data_source: str, name: str) -> bool:
-        return await self._sourced(self._inner._delete_model_row(data_source=data_source, name=name))
+    async def _delete_dataset_row(self, *, data_source: str, name: str) -> bool:
+        return await self._sourced(self._inner._delete_dataset_row(data_source=data_source, name=name))
 
-    async def update_column_sampled(
-        self, *, data_source: str, model_name: str, column_name: str,
+    async def update_field_sampled(
+        self, *, data_source: str, dataset_name: str, field_name: str,
         sampled: str | None, sampled_values: list[str] | None, distinct_count: int | None,
     ) -> None:
-        await self._sourced(self._inner.update_column_sampled(
-            data_source=data_source, model_name=model_name, column_name=column_name,
+        await self._sourced(self._inner.update_field_sampled(
+            data_source=data_source, dataset_name=dataset_name, field_name=field_name,
             sampled=sampled, sampled_values=sampled_values, distinct_count=distinct_count,
         ))
 

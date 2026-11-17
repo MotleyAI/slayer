@@ -21,7 +21,7 @@ async def engine(request):
 
 
 def _q(**kw: Any) -> SlayerQuery:
-    return SlayerQuery.model_validate({"source_model": "lib", **kw})
+    return SlayerQuery.model_validate({"population": "lib", **kw})
 
 
 def _explicit(unit: str, **kw: Any) -> SlayerQuery:
@@ -53,7 +53,7 @@ class TestParse:
             await engine.execute(query)
 
     def test_shadowable(self) -> None:
-        assert Aggregation(name="date_trunc", formula="SUM({value})").name == "date_trunc"
+        assert Aggregation(name="date_trunc", expression="SUM({value})").name == "date_trunc"
 
 
 class TestPositions:

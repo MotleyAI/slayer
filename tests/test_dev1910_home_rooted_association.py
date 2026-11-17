@@ -247,5 +247,5 @@ class TestAssociationRestrictedConjunctEntry:
         for cell, expected in ASSOC_BASIC_SPEND_BY_STATUS.items():
             assert float(spend[cell]) == pytest.approx(expected), cell
         infos = pushed_filter_infos(resp)
-        assert {i.measure for i in infos} == {None, "csp"}, infos
+        assert {i.metric for i in infos} == {None, "csp"}, infos
         assert all("basic" in i.filter_text for i in infos)

@@ -17,8 +17,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
-from slayer.core.enums import DataType, JoinCardinality
-from slayer.core.models import Column, ModelJoin, SlayerModel
+from slayer.core.enums import DataType, RelationshipCardinality
+from slayer.core.models import DatasetField, DatasetRelationship, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.ir.source_bundle import ResolvedSourceBundle
@@ -120,33 +120,33 @@ def m(formula: str, name: str = "v") -> Dict[str, str]:
 MONTH_TD = {"dimension": "account_snapshots.snapshot_date", "granularity": "month"}
 
 
-def customers_model() -> SlayerModel:
-    return SlayerModel(
+def customers_model() -> SlayerDataset:
+    return SlayerDataset(
         name="customers", data_source="test", sql_table="customers",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="name", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="name", datatype=DataType.TEXT),
         ],
     )
 
 
-def snapshots_model() -> SlayerModel:
-    return SlayerModel(
+def snapshots_model() -> SlayerDataset:
+    return SlayerDataset(
         name="account_snapshots", data_source="test", sql_table="account_snapshots",
         default_time_dimension="snapshot_date",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="account_id", type=DataType.INT),
-            Column(name="customer_id", type=DataType.INT),
-            Column(name="snapshot_date", type=DataType.DATE),
-            Column(name="balance", type=DataType.DOUBLE),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="account_id", datatype=DataType.INT),
+            DatasetField(name="customer_id", datatype=DataType.INT),
+            DatasetField(name="snapshot_date", datatype=DataType.DATE),
+            DatasetField(name="balance", datatype=DataType.DOUBLE),
         ],
-        joins=[ModelJoin(target_model="customers", join_pairs=[["customer_id", "id"]],
-                         cardinality=JoinCardinality.MANY_TO_ONE)],
+        relationships=[DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]],
+                         cardinality=RelationshipCardinality.MANY_TO_ONE)],
     )
 
 
-def outer_grain_models() -> List[SlayerModel]:
+def outer_grain_models() -> List[SlayerDataset]:
     return [customers_model(), snapshots_model()]
 
 
@@ -154,8 +154,8 @@ def bundle(*, source: str = "customers") -> ResolvedSourceBundle:
     models = outer_grain_models()
     root = next(x for x in models if x.name == source)
     return ResolvedSourceBundle(
-        dialect="postgres", source_model=root,
-        referenced_models=[x for x in models if x is not root])
+        dialect="postgres", population=root,
+        referenced_datasets=[x for x in models if x is not root])
 
 
 def seed_sqlite(db_path: str) -> None:

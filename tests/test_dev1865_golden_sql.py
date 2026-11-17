@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tests._dev1865_fixtures import BAND35, ModelMeasure, SlayerQuery, dev1865_models
+from tests._dev1865_fixtures import BAND35, DatasetMetric, SlayerQuery, dev1865_models
 from tests._engine_helpers import _engine_generate
 from tests._golden_harness import bind_golden_tests, record_raise
 
@@ -34,21 +34,21 @@ def _cases() -> dict:
         "filter/cross_model_partitioned": _q(
             dimensions=["customers.regions.name", "customers.tier"],
             filters=[f"{cm_part} > 100"],
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
+            measures=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
         ),
         "filter/computed_dim_mix_field": _q(
             dimensions=["region", "city", band],
             filters=["band == 1 or channel == 'app'"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
         "filter/computed_dim_mix_measure": _q(
             dimensions=["region", "city", band],
             filters=["sum(amount, partition_by=city) > 45 or sum(amount) > 55"],
-            measures=[ModelMeasure(formula="sum(amount)", name="s")],
+            measures=[DatasetMetric(expression="sum(amount)", name="s")],
         ),
         "order/cross_model_partitioned": _q(
             dimensions=["customers.regions.name", "customers.tier"],
-            measures=[ModelMeasure(formula="sum(customers.spend)", name="sp")],
+            measures=[DatasetMetric(expression="sum(customers.spend)", name="sp")],
             order=[{"column": cm_part, "direction": "desc"}],
         ),
     }

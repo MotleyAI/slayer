@@ -49,7 +49,7 @@ def view(store: AccessStore, *tags: str, bypass: bool = False) -> AccessFiltered
 
 
 TWIN_DS = "acme2"
-HR_QUERY = SlayerQuery.model_validate({"source_model": "hr", "measures": [{"formula": "sum(salary)"}]})
+HR_QUERY = SlayerQuery.model_validate({"population": "hr", "metrics": [{"formula": "sum(salary)"}]})
 
 
 async def _twin_hr(store: AccessStore) -> None:
@@ -57,9 +57,9 @@ async def _twin_hr(store: AccessStore) -> None:
     ds = await store.storage.get_datasource(DS)
     assert ds is not None
     await store.storage.save_datasource(ds.model_copy(update={"name": TWIN_DS}))
-    hr = await store.storage.get_model("hr", data_source=DS)
+    hr = await store.storage.get_dataset("hr", data_source=DS)
     assert hr is not None
-    await store.storage.save_model(hr.model_copy(update={"data_source": TWIN_DS}), _validate=False)
+    await store.storage.save_dataset(hr.model_copy(update={"data_source": TWIN_DS}), _validate=False)
 
 
 class TestMemoryVisibility:
@@ -90,7 +90,7 @@ class TestMemoryVisibility:
         assert await view(store, bypass=True).list_memories() == await store.storage.list_memories()
 
     async def test_memory_reading_only_an_unloadable_model_is_hidden(self, store: AccessStore) -> None:
-        query = SlayerQuery.model_validate({"source_model": UNLOADABLE, "measures": [{"formula": "count(*)"}]})
+        query = SlayerQuery.model_validate({"population": UNLOADABLE, "metrics": [{"formula": "count(*)"}]})
         await store.storage.save_memory(id="broken-note", learning="Broken counts", entities=[], query=query)
         assert "broken-note" not in {m.id for m in await view(store, "fin").list_memories()}
         assert "broken-note" in {m.id for m in await view(store, bypass=True).list_memories()}

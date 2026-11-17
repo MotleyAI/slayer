@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, DatasourceConfig, SlayerModel
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.live_schema.ingestion import ingest_datasource_idempotent
 from slayer.engine.profiling import refresh_all_table_backed_sampled
@@ -31,8 +31,8 @@ from slayer.storage.base import StorageBackend
 from typing import Any
 
 
-def _stored_col(model: SlayerModel, name: str) -> Column:
-    col = model.get_column(name)
+def _stored_col(model: SlayerDataset, name: str) -> DatasetField:
+    col = model.get_field(name)
     assert col is not None
     return col
 
@@ -71,7 +71,7 @@ async def test_ingest_does_not_profile_columns(sqlite_table_setup: tuple[Storage
     finally:
         await engine.aclose()
         engine.close()
-    loaded = await storage.get_model("orders", data_source="ds")
+    loaded = await storage.get_dataset("orders", data_source="ds")
     assert loaded is not None
     # Columns are ingested but NOT profiled — samples stay unpopulated.
     assert _stored_col(loaded, "amount").sampled is None
@@ -92,12 +92,12 @@ async def test_refresh_samples_via_engine_helper(sqlite_table_setup: tuple[Stora
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),
-            Column(name="status", type=DataType.TEXT),
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),
+            DatasetField(name="status", datatype=DataType.TEXT),
         ],
     ))
     engine = SlayerQueryEngine(storage=storage)
@@ -105,7 +105,7 @@ async def test_refresh_samples_via_engine_helper(sqlite_table_setup: tuple[Stora
         engine=engine, storage=storage, data_source="ds",
     )
     assert errors == [], f"Unexpected refresh errors: {errors}"
-    loaded = await storage.get_model("orders", data_source="ds")
+    loaded = await storage.get_dataset("orders", data_source="ds")
     assert loaded is not None
     assert _stored_col(loaded, "amount").sampled is not None
 
@@ -123,24 +123,24 @@ async def test_edit_model_column_change_recomputes_only_that_column(
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
     ))
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[
-            Column(name="amount", type=DataType.DOUBLE, sampled="OLD AMOUNT"),
-            Column(name="status", type=DataType.TEXT, sampled="OLD STATUS"),
+        fields=[
+            DatasetField(name="amount", datatype=DataType.DOUBLE, sampled="OLD AMOUNT"),
+            DatasetField(name="status", datatype=DataType.TEXT, sampled="OLD STATUS"),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
     engine = SlayerQueryEngine(storage=storage)
     await handle_edit_refresh(
         engine=engine,
         storage=storage,
         data_source="ds",
-        model_name="orders",
-        changed_columns={"amount"},
-        model_level_change=False,
+        dataset_name="orders",
+        changed_fields={"amount"},
+        dataset_level_change=False,
     )
-    loaded = await storage.get_model("orders", data_source="ds")
+    loaded = await storage.get_dataset("orders", data_source="ds")
     assert loaded is not None
     # amount was recomputed (no longer "OLD AMOUNT")
     assert _stored_col(loaded, "amount").sampled != "OLD AMOUNT"
@@ -157,24 +157,24 @@ async def test_edit_model_model_level_change_recomputes_all_columns(
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
     ))
-    model = SlayerModel(
+    model = SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[
-            Column(name="amount", type=DataType.DOUBLE, sampled="OLD AMOUNT"),
-            Column(name="status", type=DataType.TEXT, sampled="OLD STATUS"),
+        fields=[
+            DatasetField(name="amount", datatype=DataType.DOUBLE, sampled="OLD AMOUNT"),
+            DatasetField(name="status", datatype=DataType.TEXT, sampled="OLD STATUS"),
         ],
     )
-    await storage.save_model(model)
+    await storage.save_dataset(model)
     engine = SlayerQueryEngine(storage=storage)
     await handle_edit_refresh(
         engine=engine,
         storage=storage,
         data_source="ds",
-        model_name="orders",
-        changed_columns=set(),
-        model_level_change=True,
+        dataset_name="orders",
+        changed_fields=set(),
+        dataset_level_change=True,
     )
-    loaded = await storage.get_model("orders", data_source="ds")
+    loaded = await storage.get_dataset("orders", data_source="ds")
     assert loaded is not None
     # Both columns recomputed.
     assert _stored_col(loaded, "amount").sampled != "OLD AMOUNT"
@@ -194,12 +194,12 @@ async def test_inspect_model_writes_back_on_sampled_miss(
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[
-            Column(name="id", type=DataType.INT, primary_key=True),
-            Column(name="amount", type=DataType.DOUBLE),  # NOSONAR(S125) — sampled=None test annotation
-            Column(name="status", type=DataType.TEXT),    # NOSONAR(S125) — sampled=None test annotation
+        fields=[
+            DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+            DatasetField(name="amount", datatype=DataType.DOUBLE),  # NOSONAR(S125) — sampled=None test annotation
+            DatasetField(name="status", datatype=DataType.TEXT),    # NOSONAR(S125) — sampled=None test annotation
         ],
     ))
     mcp = create_mcp_server(storage=storage)
@@ -208,7 +208,7 @@ async def test_inspect_model_writes_back_on_sampled_miss(
         "entity_type": "model", "reference": "ds.orders", "compact": False, "sections": ["columns"],
     })
     assert result is not None
-    loaded = await storage.get_model("orders", data_source="ds")
+    loaded = await storage.get_dataset("orders", data_source="ds")
     assert loaded is not None
     # After the call, sampled should be populated for non-PK columns.
     assert _stored_col(loaded, "amount").sampled is not None
@@ -224,10 +224,10 @@ async def test_inspect_model_reads_cached_sampled_without_recompute(
     await storage.save_datasource(DatasourceConfig(
         name="ds", type="sqlite", database=db_file,
     ))
-    await storage.save_model(SlayerModel(
+    await storage.save_dataset(SlayerDataset(
         name="orders", sql_table="orders", data_source="ds",
-        columns=[
-            Column(name="amount", type=DataType.DOUBLE, sampled="cached value"),
+        fields=[
+            DatasetField(name="amount", datatype=DataType.DOUBLE, sampled="cached value"),
         ],
     ))
     profile_call_count = {"n": 0}

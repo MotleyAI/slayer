@@ -244,7 +244,7 @@ class JoinType(StrEnum):
     INNER = "inner"
 
 
-class JoinCardinality(StrEnum):
+class RelationshipCardinality(StrEnum):
     """Arity of a join, read source->target ("many orders -> one customer").
 
     Descriptive metadata, orthogonal to ``JoinType`` — it does not change the
@@ -257,15 +257,15 @@ class JoinCardinality(StrEnum):
 
 
 def invert_cardinality(
-    cardinality: "JoinCardinality | None",
-) -> "JoinCardinality | None":
+    cardinality: "RelationshipCardinality | None",
+) -> "RelationshipCardinality | None":
     """Cardinality of the reverse edge; one_to_one / many_to_many / None are
     self-inverse.
     """
-    if cardinality is JoinCardinality.MANY_TO_ONE:
-        return JoinCardinality.ONE_TO_MANY
-    if cardinality is JoinCardinality.ONE_TO_MANY:
-        return JoinCardinality.MANY_TO_ONE
+    if cardinality is RelationshipCardinality.MANY_TO_ONE:
+        return RelationshipCardinality.ONE_TO_MANY
+    if cardinality is RelationshipCardinality.ONE_TO_MANY:
+        return RelationshipCardinality.MANY_TO_ONE
     return cardinality
 
 
@@ -365,14 +365,14 @@ class AggregationValueClass(StrEnum):
 
 
 def classify_aggregation(
-    *, measure_name: Optional[str], aggregation: str, source_type: Optional[DataType],
+    *, metric_name: Optional[str], aggregation: str, source_type: Optional[DataType],
 ) -> AggregationValueClass:
     """Bucket an aggregation for slot-type / display-format inference.
 
     ``measure_name == "*"`` (``count(*)``) and a boolean ``sum`` (a count of trues) are
     COUNT; custom/unknown aggregations fall through to PRESERVING (inherit source type & format).
     """
-    if measure_name == "*":
+    if metric_name == "*":
         return AggregationValueClass.COUNT
     if aggregation in INTEGER_AGGREGATIONS:
         return AggregationValueClass.COUNT
@@ -413,7 +413,7 @@ def normalize_aggregation_name(name: str) -> str:
 # {value} = measure's SQL expression; {param_name} = parameter values.
 # Note: percentile is dialect-dependent (no single template works on
 # SQLite/ClickHouse/MySQL) and lives in render_aggregate instead.
-BUILTIN_AGGREGATION_FORMULAS: dict[str, str] = {
+BUILTIN_AGGREGATION_EXPRESSIONS: dict[str, str] = {
     # A NULL value's weight is skipped like the value; ``* 1.0`` keeps integer inputs from dividing as integers.
     "weighted_avg": "SUM({value} * {weight}) * 1.0 / NULLIF(SUM(CASE WHEN {value} IS NOT NULL THEN {weight} END), 0)",
 }

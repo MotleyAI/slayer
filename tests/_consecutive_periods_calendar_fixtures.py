@@ -15,7 +15,7 @@ from typing import AsyncGenerator, Optional
 import pytest
 
 from slayer.core.enums import DataType
-from slayer.core.models import Column, SlayerModel
+from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.engine.query_engine import SlayerQueryEngine
 from slayer.storage.sqlite_conn import transaction
@@ -94,28 +94,28 @@ def ticks_rows() -> list:
     return [(i, *r) for i, r in enumerate(rows, start=1)]
 
 
-def calendar_models() -> list[SlayerModel]:
+def calendar_models() -> list[SlayerDataset]:
     """``[orders, ticks]``."""
     return [
-        SlayerModel(
+        SlayerDataset(
             name="orders", data_source="test", sql_table="orders",
             default_time_dimension="order_date",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="customer_id", type=DataType.INT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="status", type=DataType.TEXT),
-                Column(name="order_date", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="customer_id", datatype=DataType.INT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="status", datatype=DataType.TEXT),
+                DatasetField(name="order_date", datatype=DataType.TIMESTAMP),
             ],
         ),
-        SlayerModel(
+        SlayerDataset(
             name="ticks", data_source="test", sql_table="ticks",
             default_time_dimension="ts",
-            columns=[
-                Column(name="id", type=DataType.INT, primary_key=True),
-                Column(name="series", type=DataType.TEXT),
-                Column(name="amount", type=DataType.DOUBLE),
-                Column(name="ts", type=DataType.TIMESTAMP),
+            fields=[
+                DatasetField(name="id", datatype=DataType.INT, primary_key=True),
+                DatasetField(name="series", datatype=DataType.TEXT),
+                DatasetField(name="amount", datatype=DataType.DOUBLE),
+                DatasetField(name="ts", datatype=DataType.TIMESTAMP),
             ],
         ),
     ]
@@ -175,20 +175,20 @@ def orders_query(*, formula: str, filters=None, dimensions=None, date_range=None
     if date_range is not None:
         td["date_range"] = date_range
     return SlayerQuery.model_validate({
-        "source_model": "orders",
+        "population": "orders",
         "time_dimensions": [td],
         "dimensions": dimensions or [],
-        "filters": ["customer_id = 1"] if filters is None else filters,
-        "measures": [{"formula": formula, "name": "v"}],
+        "filter": ["customer_id = 1"] if filters is None else filters,
+        "metrics": [{"formula": formula, "name": "v"}],
     })
 
 
 def ticks_query(*, series: str, granularity: str, measures: list) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "source_model": "ticks",
+        "population": "ticks",
         "time_dimensions": [{"dimension": "ts", "granularity": granularity}],
-        "filters": [f"series = '{series}'"],
-        "measures": measures,
+        "filter": [f"series = '{series}'"],
+        "metrics": measures,
     })
 
 

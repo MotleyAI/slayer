@@ -32,7 +32,7 @@ async def cg(request):
 
 def _orders(*, granularity: str, measures: list) -> SlayerQuery:
     return SlayerQuery.model_validate({
-        "source_model": "orders", "measures": measures,
+        "population": "orders", "metrics": measures,
         "time_dimensions": [{"dimension": "order_date", "granularity": granularity}],
     })
 
@@ -67,9 +67,9 @@ class TestCustomSteps:
 
     async def test_streaks_count_custom_buckets(self, cg) -> None:
         resp = await cg.execute(SlayerQuery.model_validate({
-            "source_model": "events", "filters": ["series = 'streak'"],
+            "population": "events", "filter": ["series = 'streak'"],
             "time_dimensions": [{"dimension": "ts", "granularity": "sprint"}],
-            "measures": [m("consecutive_periods(count(*) > 0)", "cp")],
+            "metrics": [m("consecutive_periods(count(*) > 0)", "cp")],
         }))
         got = _rows(resp, ["cp"], column="ts")
         assert got == {"2025-01-06": (1.0,), "2025-01-20": (2.0,), "2025-02-17": (1.0,)}
@@ -83,7 +83,7 @@ class TestCustomSteps:
 async def test_month_without_home_rows_reads_its_trailing_interval(backend) -> None:
     async with spine_engine(backend, models=calendar_models()) as eng:
         resp = await eng.execute(SlayerQuery.model_validate({
-            "source_model": "calendar", "measures": [m("sum(orders.amount, window='2m')", "w")],
+            "population": "calendar", "metrics": [m("sum(orders.amount, window='2m')", "w")],
             "time_dimensions": [{"dimension": "date", "granularity": "month", "date_range": JAN_JUN}],
         }))
     got = by_bucket(resp, ["w"], bucket="calendar.date")
