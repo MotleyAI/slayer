@@ -383,10 +383,10 @@ def check_definition_reach(*, model: SlayerModel, reachable: dict[str, SlayerMod
     for column, fragment in _definitions(model):
         for quals, leaf in _fragment_refs(fragment) or []:
             path = _hop_path(quals=quals, host=model)
-            dataset = unreachable_target(root=model, token=path[0], models_by_name=models) if path else None
-            if dataset is not None:
+            unreached = unreachable_target(root=model, token=path[0], models_by_name=models) if path else None
+            if unreached is not None:
                 raise UnreachableDefinitionError(
-                    model=model.name, reference=".".join((*quals, leaf)), dataset=dataset,
+                    model=model.name, reference=".".join((*quals, leaf)), unreached=unreached,
                     definition=_definition_label(column=column, fragment=fragment),
                 )
 

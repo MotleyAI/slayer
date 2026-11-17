@@ -298,7 +298,7 @@ class _PendingMeasure(BaseModel):
     measure: ModelMeasure
     label: str
     #: The metric to convert from its SQL instead, when the restored formula does not validate.
-    metric: Optional[OSIMetric] = None
+    osi_metric: Optional[OSIMetric] = None
     doc: Optional[OSIDocument] = None
     home: Optional[str] = None
 
@@ -473,7 +473,7 @@ class OsiToSlayerConverter:
             measure = payload.measure.model_copy(update={"meta": {**(built or {}), **(payload.measure.meta or {})}
                                                          or None})
             self._pending.append(_PendingMeasure(model=payload.model, measure=measure, label=f"Metric {metric.name!r}",
-                                                 metric=metric, doc=doc, home=home))
+                                                 osi_metric=metric, doc=doc, home=home))
             return
         if found is not None:
             self._warn(f"Metric {metric.name!r}: {_EDITED}", model_name=home, metric_name=metric.name,
@@ -1507,15 +1507,15 @@ class OsiToSlayerConverter:
         return None
 
     def _fall_back(self, item: _PendingMeasure, *, error: str) -> None:
-        if item.metric is None or item.doc is None:
+        if item.osi_metric is None or item.doc is None:
             self._warn(f"{item.label} on {item.model!r} does not validate ({error}); skipping it.",
                        model_name=item.model, metric_name=item.measure.name, category=_EXTENSION,
                        suggestion=_IMPORT_INPUTS)
             return
         self._warn(f"{item.label}: its SLayer measure does not validate ({error}); imported from its SQL.",
-                   model_name=item.model, metric_name=item.metric.name, category=_EXTENSION, severity="info",
+                   model_name=item.model, metric_name=item.osi_metric.name, category=_EXTENSION, severity="info",
                    suggestion=_IMPORT_INPUTS)
-        self._build_measure(metric=item.metric, doc=item.doc, home=item.home, doc_models=self._doc_models(item.doc))
+        self._build_measure(metric=item.osi_metric, doc=item.doc, home=item.home, doc_models=self._doc_models(item.doc))
 
     def _restore_fields(self) -> None:
         """Column attributes; the value/filter split only where the field's fingerprint matches."""

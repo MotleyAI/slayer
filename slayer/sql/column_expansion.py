@@ -293,7 +293,7 @@ def _resolve_qualifiers(
     dataset = unreachable_target(root=source_model, token=path[0], models_by_name=models_by_name)
     if dataset is not None:
         raise UnreachableDefinitionError(
-            model=source_model.name, reference=".".join((*qualifiers, leaf)), dataset=dataset,
+            model=source_model.name, reference=".".join((*qualifiers, leaf)), unreached=dataset,
             definition=f"column {column!r}" if column else None,
         )
     # A revisit surfaces either from the direct walk or from the legacy

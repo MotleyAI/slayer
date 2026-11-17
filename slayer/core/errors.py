@@ -506,16 +506,16 @@ class UnsupportedServerFunctionError(QueryTypeError):
 class UnreachableDefinitionError(SlayerError, ValueError):
     """A stored ``Column.sql`` / ``Column.filter`` / model filter naming a dataset no join path reaches from its model."""
 
-    def __init__(self, *, model: str, reference: str, dataset: str, definition: str | None = None) -> None:
+    def __init__(self, *, model: str, reference: str, unreached: str, definition: str | None = None) -> None:
         self.model = model
         self.reference = reference
-        self.dataset = dataset
+        self.unreached = unreached
         self.definition = definition
         super().__init__(_format_error_message(
             cls_name=type(self).__name__,
             summary=f"{definition or 'A definition'} on model {model!r} reads {reference!r}, but no join path "
-            f"reaches {dataset!r} from {model!r}.",
-            suggestion=f"Declare a join between them, or read {dataset!r} in a query through aggregates.",
+            f"reaches {unreached!r} from {model!r}.",
+            suggestion=f"Declare a join between them, or read {unreached!r} in a query through aggregates.",
         ))
 
     def labelled(self, definition: str) -> "UnreachableDefinitionError":
@@ -523,7 +523,7 @@ class UnreachableDefinitionError(SlayerError, ValueError):
         if self.definition is not None:
             return self
         return UnreachableDefinitionError(
-            model=self.model, reference=self.reference, dataset=self.dataset, definition=definition,
+            model=self.model, reference=self.reference, unreached=self.unreached, definition=definition,
         )
 
     def __reduce__(self):
