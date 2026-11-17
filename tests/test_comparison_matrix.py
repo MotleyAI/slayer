@@ -98,5 +98,58 @@ def test_same_models_rejects_checks_it_would_skip(block):
         run_slayer.SlayerBlock.model_validate(block)
 
 
+_QUERY = {"source_model": "orders"}
+
+
+@pytest.mark.parametrize("check", [{"contains": ["x"]}, {"lacks": ["x"]}])
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"osi_roundtrip": {}, "query": _QUERY},
+        {"query": _QUERY},
+        {"run_by_name": "saved"},
+        {"steps": [{"tool": "query", "args": {}}]},
+    ],
+)
+def test_output_checks_reject_query_rows_they_would_skip(source, check):
+    with pytest.raises(ValidationError, match="not query rows"):
+        run_slayer.SlayerBlock.model_validate({**source, "expect": check})
+
+
+@pytest.mark.parametrize("other", [{"error": "E"}, {"warning": "w"}, {"known_bug": "b"}, {"buggy_row_count": 1}])
+def test_output_checks_take_no_other_expectation(other):
+    with pytest.raises(ValidationError, match=": no other expectation"):
+        run_slayer.SlayerBlock.model_validate(
+            {"steps": [{"tool": "inspect", "args": {}}], "expect": {"contains": ["x"], **other}}
+        )
+
+
+@pytest.mark.parametrize(
+    ("expect", "match"),
+    [
+        ({"error": "E", "warning": "w"}, "error: no other expectation"),
+        ({"error": "E", "known_bug": "b"}, "error: no other expectation"),
+        ({"buggy_rows": [[1]]}, "need known_bug"),
+        ({"buggy_error": "E"}, "need known_bug"),
+        ({"known_bug": "b", "warning": "w"}, "known_bug ignores warning"),
+    ],
+)
+def test_expectations_that_would_be_skipped_are_rejected(expect, match):
+    with pytest.raises(ValidationError, match=match):
+        run_slayer.SlayerBlock.model_validate({"query": _QUERY, "expect": expect})
+
+
+@pytest.mark.parametrize(
+    "expect", [{"error": "E"}, {"warning": "w"}, {"known_bug": "b", "buggy_rows": [[1]], "buggy_row_count": 1}]
+)
+def test_expectations_that_all_run_are_accepted(expect):
+    run_slayer.SlayerBlock.model_validate({"query": _QUERY, "expect": expect})
+
+
+@pytest.mark.parametrize("source", [{"osi_roundtrip": {}}, {"steps": [{"tool": "inspect", "args": {}}]}])
+def test_output_checks_on_a_report_or_tool_output_are_accepted(source):
+    run_slayer.SlayerBlock.model_validate({**source, "expect": {"contains": ["x"], "lacks": ["y"]}})
+
+
 def test_same_models_alone_on_a_roundtrip_is_accepted():
     run_slayer.SlayerBlock.model_validate({"osi_roundtrip": {}, "expect": {"same_models": True}})

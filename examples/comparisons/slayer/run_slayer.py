@@ -74,9 +74,17 @@ class SlayerExpect(BaseModel):
     same_models: bool = False
 
     @model_validator(mode="after")
-    def _same_models_alone(self) -> "SlayerExpect":
-        if self.same_models and self.model_fields_set - {"same_models"}:
-            raise ValueError("same_models takes no other expectation")
+    def _none_skipped(self) -> "SlayerExpect":
+        """Reject combinations whose evaluation would silently skip one of the checks."""
+        given = {f for f in self.model_fields_set if getattr(self, f) not in (None, False, [])}
+        for label, own in (("same_models", {"same_models"}), ("error", {"error"}),
+                           ("contains / lacks", {"contains", "lacks"})):
+            if given & own and given - own:
+                raise ValueError(f"{label}: no other expectation")
+        if given & {"buggy_rows", "buggy_row_count", "buggy_error"} and not self.known_bug:
+            raise ValueError("buggy_rows / buggy_row_count / buggy_error need known_bug")
+        if self.known_bug and self.warning:
+            raise ValueError("known_bug ignores warning")
         return self
 
 
@@ -139,10 +147,16 @@ class SlayerBlock(BaseModel):
             raise ValueError("refine applies only to run_by_name")
         if self.steps and self.steps[-1].tool is None:
             raise ValueError("the last step must be a tool call")
-        if isinstance(self.expect, SlayerExpect) and self.expect.same_models and (
-            self.osi_roundtrip is None or self.query is not None
-        ):
+        return self
+
+    @model_validator(mode="after")
+    def _expect_fits_source(self) -> "SlayerBlock":
+        ex = self.expect if isinstance(self.expect, SlayerExpect) else SlayerExpect()
+        if ex.same_models and (self.osi_roundtrip is None or self.query is not None):
             raise ValueError("same_models needs osi_roundtrip without query")
+        rows = self.query is not None or self.run_by_name is not None or (self.steps and self.steps[-1].tool == "query")
+        if (ex.contains or ex.lacks) and rows:
+            raise ValueError("contains / lacks check a report or tool output, not query rows")
         return self
 
 
