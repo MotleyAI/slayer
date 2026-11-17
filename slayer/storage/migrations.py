@@ -21,11 +21,11 @@ from slayer.core.strict_flag import without_strict
 
 # Per-entity current version. Bump independently when an entity's schema changes.
 CURRENT_VERSIONS: dict[str, int] = {
-    "SlayerModel": 25,
-    "SlayerQuery": 15,
+    "SlayerModel": 26,
+    "SlayerQuery": 16,
     "DatasourceConfig": 3,
-    "Memory": 11,
-    "Embedding": 1,
+    "Memory": 12,
+    "Embedding": 2,
 }
 
 _document: ContextVar[str | None] = ContextVar("slayer_migrated_document", default=None)
@@ -295,3 +295,4 @@ from slayer.storage import ossie_alignment_migration  # noqa: E402, F401  # ALLO
 from slayer.storage import many_handling_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import extension_columns_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
 from slayer.storage import date_only_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here
+from slayer.storage import ossie_vocabulary_migration  # noqa: E402, F401  # ALLOW(import-not-top): circular — migration modules import register_migration from here

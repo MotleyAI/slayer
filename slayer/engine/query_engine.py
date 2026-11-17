@@ -88,6 +88,7 @@ from slayer.core.names import name_taken
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine_query, respell_spine, spine_variant_warnings
 from slayer.core.scope import StageDisplay, StageSchema, collect_stale_spellings
 from slayer.core.legacy_spellings import collect_legacy_spellings, emit_deprecations
+from slayer.core.vocabulary import one_document
 from slayer.core.warnings import (
     AnySlayerWarning,
     AssociatedWarningPayload,
@@ -238,7 +239,8 @@ def _read_dataset_collisions(*, reads: StatementReads, bundle: ResolvedSourceBun
 def _validated_run_input(run_input: Any) -> Any:
     """``run_input`` with each query mapping validated once, so an input form it converts is reported once."""
     if isinstance(run_input, list):
-        return [SlayerQuery.model_validate(item) if isinstance(item, dict) else item for item in run_input]
+        with one_document():
+            return [SlayerQuery.model_validate(item) if isinstance(item, dict) else item for item in run_input]
     return SlayerQuery.model_validate(run_input) if isinstance(run_input, dict) else run_input
 
 
@@ -1099,7 +1101,8 @@ class SlayerQueryEngine:
                 raise ValueError(
                     "'query' must be a non-empty list when passing staged queries."
                 )
-            queries = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in query]
+            with one_document():
+                queries = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in query]
             out.extend(deprecated_inputs_of(q for q in queries if isinstance(q, SlayerQuery)))
             # Reorder so each stage follows the siblings it references (last stays
             # the entry point); validates names / dups / self-refs / cycles.
@@ -3000,9 +3003,8 @@ class SlayerQueryEngine:
     ) -> SlayerDataset:
         """Create a query-backed dataset; cache fields come from a save-time dry-run, ``save=False`` skips persisting."""
         raw = query if isinstance(query, list) else [query]
-        stages = [
-            SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in raw
-        ]
+        with one_document():
+            stages = [SlayerQuery.model_validate(q) if isinstance(q, dict) else q for q in raw]
         dataset = SlayerDataset(
             name=name,
             description=description,
@@ -3020,7 +3022,7 @@ class SlayerQueryEngine:
         """Persist a SlayerDataset, each deprecated spelling stored as its twin; query-backed datasets reject cache fields and validate via dry-run.
         The source queries' input deprecations, the spelling deprecations and narrowed-access warnings go to
         ``warnings_out`` when given; without it, narrowed-access warnings are emitted as Python warnings."""
-        deprecated_inputs = deprecated_inputs_of(dataset.source_queries or [])
+        deprecated_inputs = deprecated_inputs_of([dataset, *(dataset.source_queries or [])])
         dataset, spellings = with_canonical_spellings(dataset)
         if warnings_out is not None:
             warnings_out.extend([*deprecated_inputs, *spellings])

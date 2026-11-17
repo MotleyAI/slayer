@@ -23,7 +23,8 @@ from sqlglot.tokens import Tokenizer
 from slayer.core.enums import BUILTIN_AGGREGATION_EXPRESSIONS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, LIST_AGGREGATIONS, DataType, type_display, RelationshipCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, RESERVED_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
 from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError
 from slayer.core.names import folded_collisions, match_name
-from slayer.core.warnings import NameCollisionWarning
+from slayer.core.vocabulary import AGGREGATION_KEYS, DATASET_KEYS, FIELD_KEYS, METRIC_KEYS, RELATIONSHIP_KEYS, converted_document, renamed_input
+from slayer.core.warnings import DeprecatedInputWarning, NameCollisionWarning
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
 from slayer.core.keys import RESERVED_SCALAR_NAMES
@@ -31,7 +32,7 @@ from slayer.core.refs import IDENTIFIER_RE
 from slayer.sql.dialects import dialect_for_ds_type
 from slayer.sql.sql_predicate import parse_sql_predicate
 from slayer.sql.window_detect import WINDOW_IN_FILTER_ERROR, has_window_function
-from slayer.storage.migrations import CURRENT_VERSIONS, migrate as _migrate_schema, migrating_document
+from slayer.storage.migrations import CURRENT_VERSIONS, in_stored_document, migrate as _migrate_schema, migrating_document
 
 if TYPE_CHECKING:
     from slayer.core.query import SlayerQuery
@@ -262,6 +263,11 @@ class DatasetField(BaseModel):
     # Runtime-only (never persisted): stale respellings of a generated query-backed field.
     _respellings: tuple[str, ...] = PrivateAttr(default=())
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["DatasetField"]) -> "DatasetField":
+        return renamed_input(data, handler, FIELD_KEYS, stored=in_stored_document())
+
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_type(cls, data: Any) -> Any:
@@ -438,6 +444,11 @@ class DatasetMetric(BaseModel):
         out._bound_variables = dict(variables)
         return out
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["DatasetMetric"]) -> "DatasetMetric":
+        return renamed_input(data, handler, METRIC_KEYS, stored=in_stored_document())
+
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_type(cls, data: Any) -> Any:
@@ -511,6 +522,11 @@ class Aggregation(BaseModel):
     params: list[AggregationParam] = Field(default_factory=list)
     description: str | None = None
     meta: dict[str, Any] | None = None
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["Aggregation"]) -> "Aggregation":
+        return renamed_input(data, handler, AGGREGATION_KEYS, stored=in_stored_document())
 
     @field_validator("name")
     @classmethod
@@ -669,6 +685,11 @@ class DatasetRelationship(BaseModel):
     # Runtime-only: declared by a query extension, not stored.
     _query_local: bool = PrivateAttr(default=False)
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["DatasetRelationship"]) -> "DatasetRelationship":
+        return renamed_input(data, handler, RELATIONSHIP_KEYS, stored=in_stored_document())
+
     @property
     def aliases(self) -> tuple[str, ...]:
         return self._aliases
@@ -797,17 +818,31 @@ class SlayerDataset(BaseModel):
     metrics: list[DatasetMetric] = Field(default_factory=list)
     aggregations: list[Aggregation] = Field(default_factory=list)
 
+    _deprecated_inputs: tuple[DeprecatedInputWarning, ...] = PrivateAttr(default=())
+
     @model_validator(mode="wrap")
     @classmethod
     def _name_nested_migrations(cls, data: Any, handler: ModelWrapValidatorHandler["SlayerDataset"]) -> "SlayerDataset":
         is_dict = isinstance(data, dict)
         with migrating_document(data.get("name") if is_dict else None, stored=is_dict and "version" in data):
-            return handler(data)
+            stored = in_stored_document()
+            with converted_document(stored=stored) as (spellings, _):
+                if is_dict and not stored:
+                    data = spellings.rename(data, DATASET_KEYS)
+                dataset = handler(data)
+                if is_dict:
+                    dataset._deprecated_inputs = spellings.report()
+        return dataset
 
     @model_validator(mode="before")
     @classmethod
     def _apply_schema_migrations(cls, data: Any) -> Any:
         return _migrate_schema(entity="SlayerModel", data=data)
+
+    @property
+    def deprecated_inputs(self) -> tuple[DeprecatedInputWarning, ...]:
+        """Deprecations of the pre-2.0 spellings converted while building this dataset, nested parts included."""
+        return self._deprecated_inputs
 
     @field_validator("name")
     @classmethod

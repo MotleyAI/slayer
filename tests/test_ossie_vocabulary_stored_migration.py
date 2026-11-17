@@ -16,7 +16,7 @@ import pytest
 
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerDataset
-from slayer.core.query import SlayerQuery
+from slayer.core.query import ComputedDimension, FieldRef, SlayerQuery
 from slayer.memories.models import Memory
 from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._deprecated_input_helpers import recorded
@@ -85,6 +85,8 @@ def assert_migrated_query(query: SlayerQuery | None) -> None:
     assert query.population == "orders"
     assert [(m.expression, m.name) for m in query.metrics or []] == [("sum(amount)", "rev")]
     region, computed = query.dimensions or []
+    assert isinstance(region, FieldRef)
+    assert isinstance(computed, ComputedDimension)
     assert (region.name, region.dataset) == ("region", "customers")
     assert (computed.expression, computed.name) == ("upper(status)", "s")
     assert [td.field for td in query.time_dimensions or []] == ["ordered_at"]

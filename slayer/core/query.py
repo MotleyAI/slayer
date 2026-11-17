@@ -7,7 +7,6 @@ from collections.abc import Callable, Container, Iterable
 from typing import Annotated, Any, Literal, TypeVar
 
 from pydantic import (
-    AliasChoices,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -40,6 +39,16 @@ from slayer.core.names import quoted_name
 from slayer.core.refs import auto_name_from_expression
 from slayer.core.strict_flag import strict_flag, without_strict
 from slayer.core.time_points import TIME_POINT_FORMS, is_time_point_shape
+from slayer.core.vocabulary import (
+    EXTENSION_KEYS,
+    FIELD_REF_KEYS,
+    ORDER_ITEM_KEYS,
+    QUERY_KEYS,
+    REFINEMENT_KEYS,
+    TIME_DIMENSION_KEYS,
+    converted_document,
+    renamed_input,
+)
 from slayer.core.warnings import DeprecatedInputWarning
 from slayer.core.syntax import (
     AggCall,
@@ -564,6 +573,11 @@ class FieldRef(BaseModel):
         description="Per path segment, whether it was double-quoted (matched exactly); omitted when none is.",
     )
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["FieldRef"]) -> "FieldRef":
+        return renamed_input(data, handler, FIELD_REF_KEYS, stored=in_stored_document())
+
     @model_validator(mode="after")
     def _parse_dotted_name(self) -> "FieldRef":
         """Split a dotted ``name`` into ``dataset`` prefix + leaf, then validate both."""
@@ -799,9 +813,7 @@ def _coerce_time_dimension_text(value: Any) -> Any:
 
 class TimeDimension(BaseModel):
     """A time-bucketed group-by: ``field`` truncated to ``granularity``."""
-    field: Annotated[str, BeforeValidator(_coerce_time_dimension_text)] = Field(
-        validation_alias=AliasChoices("field", "column"),
-    )
+    field: Annotated[str, BeforeValidator(_coerce_time_dimension_text)]
     name: str | None = None
     granularity: GranularitySpec = Field(
         description="A built-in granularity, or a custom granularity defined on the query's datasource.",
@@ -827,11 +839,16 @@ class TimeDimension(BaseModel):
         """The dimension as written, before ``{var}`` substitution."""
         return self._template or self.field
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["TimeDimension"]) -> "TimeDimension":
+        return renamed_input(data, handler, TIME_DIMENSION_KEYS, stored=in_stored_document())
+
     @model_validator(mode="before")
     @classmethod
     def _reject_placeholder_names(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            field = data.get("field", data.get("column"))
+            field = data.get("field")
             _reject_time_dimension_placeholders(data, granularity=data.get("granularity"), field=field)
             if isinstance(field, dict) and field.get("label") is not None and data.get("label") is None:
                 data = {**data, "label": field["label"]}
@@ -906,6 +923,11 @@ class OrderItem(BaseModel):
         default=False, exclude=True,
         description="Internal — set on the default order SLayer adds; do not set.",
     )
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["OrderItem"]) -> "OrderItem":
+        return renamed_input(data, handler, ORDER_ITEM_KEYS, stored=in_stored_document())
 
     @model_validator(mode="before")
     @classmethod
@@ -1089,6 +1111,11 @@ class DatasetExtension(BaseModel):
     source_name: str                                # Dataset/stage to extend
     metrics: list[DatasetMetric] | None = None
     relationships: list[DatasetRelationship] | None = None
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["DatasetExtension"]) -> "DatasetExtension":
+        return renamed_input(data, handler, EXTENSION_KEYS, stored=in_stored_document())
 
     @model_validator(mode="before")
     @classmethod
@@ -1295,18 +1322,24 @@ class SlayerQuery(BaseModel):
     def _migrate_and_rewrite(cls, data: Any, handler: ModelWrapValidatorHandler["SlayerQuery"]) -> "SlayerQuery":
         # One validator sequences convert → migrate → functional-granularity rewrite.
         payloads: list[DeprecatedInputWarning] = []
-        if isinstance(data, dict):
-            data, payloads = prepare_query_input(data)
-        data = _migrate_schema(entity="SlayerQuery", data=data)
-        if isinstance(data, dict):
-            if is_legacy_root_extension(data.get("population")):
-                raise ValueError(
-                    "`population` names a dataset; put a query-scoped extension in `extensions`."
-                )
-            data = _rewrite_functional_granularity(data)
-        query = handler(data)
-        if payloads:
-            query._deprecated_inputs = tuple(payloads)
+        is_dict = isinstance(data, dict)
+        stored = in_stored_document() or (is_dict and "version" in data)
+        with converted_document(stored=stored) as (spellings, _):
+            if isinstance(data, dict):
+                if not stored:
+                    data = spellings.rename(data, QUERY_KEYS)
+                data, payloads = prepare_query_input(data)
+            data = _migrate_schema(entity="SlayerQuery", data=data)
+            if isinstance(data, dict):
+                data = spellings.rename(data, QUERY_KEYS)
+                if is_legacy_root_extension(data.get("population")):
+                    raise ValueError(
+                        "`population` names a dataset; put a query-scoped extension in `extensions`."
+                    )
+                data = _rewrite_functional_granularity(data)
+            query = handler(data)
+            if is_dict:
+                query._deprecated_inputs = (*payloads, *spellings.report())
         return query
 
     @property
@@ -1597,13 +1630,16 @@ class QueryRefinement(BaseModel):
         cls, data: Any, handler: ModelWrapValidatorHandler["QueryRefinement"],
     ) -> "QueryRefinement":
         payload = None
-        if isinstance(data, dict):
-            if "strict" in data:
-                data, payload = _convert_strict(data)
-            data = _rewrite_functional_granularity(data)
-        refinement = handler(data)
-        if payload is not None:
-            refinement._deprecated_inputs = (payload,)
+        is_dict = isinstance(data, dict)
+        with converted_document(stored=in_stored_document()) as (spellings, _):
+            if isinstance(data, dict):
+                data = spellings.rename(data, REFINEMENT_KEYS)
+                if "strict" in data:
+                    data, payload = _convert_strict(data)
+                data = _rewrite_functional_granularity(data)
+            refinement = handler(data)
+            if is_dict:
+                refinement._deprecated_inputs = (*((payload,) if payload is not None else ()), *spellings.report())
         return refinement
 
     @property
@@ -1621,7 +1657,9 @@ class QueryRefinement(BaseModel):
         return self
 
 
-def deprecated_inputs_of(sources: Iterable[SlayerQuery | QueryRefinement | None]) -> list[DeprecatedInputWarning]:
+def deprecated_inputs_of(
+    sources: Iterable[SlayerDataset | SlayerQuery | QueryRefinement | None],
+) -> list[DeprecatedInputWarning]:
     """The deprecations of the input forms ``sources`` were converted from, each payload once."""
     seen: set[int] = set()
     out: list[DeprecatedInputWarning] = []

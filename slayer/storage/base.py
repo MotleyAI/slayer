@@ -69,7 +69,7 @@ from slayer.storage import migrations as _mig
 from slayer.storage.date_only_migration import (
     StoredDatasets, below_date_only_upgrade, is_exact_inverse_relationship, needs_typing, stored_type, typing_with, upgraded_text,
 )
-from slayer.storage.document_keys import CURRENT_KEYS, keys_for
+from slayer.storage.document_keys import CURRENT_KEYS, LEGACY_KEYS, dataset_in, keys_for
 from slayer.storage.document_loading import DocumentLoadFailures, Loaded, stored_document_boundary
 from slayer.storage.granularity_rename import (
     Renames,
@@ -892,6 +892,10 @@ class StorageBackend(ABC):
                 self._load_raw_dataset_dict(name=name, data_source=data_source))
         return await asyncio.shield(read)  # one waiter's cancellation must not fail the others
 
+    async def _peer_dataset_dict(self, *, name: str, data_source: str) -> dict | None:
+        """A peer's raw stored dataset, read once per pass, spelled in the current vocabulary."""
+        return dataset_in(await self._cached_raw_dataset_dict(name=name, data_source=data_source), CURRENT_KEYS)
+
     def _forget_raw(self, *, data_source: str, name: str) -> None:
         """Drop ``(data_source, name)`` from the enclosing pass's raw reads after a write to it."""
         memo = _RAW_PASS.get()
@@ -1115,9 +1119,7 @@ class StorageBackend(ABC):
         for relationship in relationships:
             if not isinstance(relationship, dict) or not isinstance(relationship.get("to"), str):
                 continue
-            peer = await self._cached_raw_dataset_dict(
-                name=relationship["to"], data_source=data_source,
-            )
+            peer = await self._peer_dataset_dict(name=relationship["to"], data_source=data_source)
             relationship["join_pairs"] = canonical_join_pairs(
                 pairs=relationship.get("join_pairs"), source_fields=data.get("fields"),
                 target_fields=peer.get("fields") if isinstance(peer, dict) else None,
@@ -1140,7 +1142,7 @@ class StorageBackend(ABC):
         keys: list[tuple[Any, str | None]] = []
         for relationship in relationships if isinstance(relationships, list) else []:
             target = relationship.get("to") if isinstance(relationship, dict) else None
-            peer = await self._cached_raw_dataset_dict(name=target, data_source=data_source) if isinstance(target, str) else None
+            peer = await self._peer_dataset_dict(name=target, data_source=data_source) if isinstance(target, str) else None
             peer_fields = peer.get("fields") if isinstance(peer, dict) else None
             keys.extend((src, stored_type(key=tgt, fields=peer_fields)) for src, tgt in _key_pairs(relationship))
         return keys
@@ -1152,7 +1154,7 @@ class StorageBackend(ABC):
         names = {n for ds, n in identities if ds == data_source}
         for sibling_name in [n for ds, n in identities if ds == data_source and n != name]:
             sibling = _with_repaired_targets(
-                await self._cached_raw_dataset_dict(name=sibling_name, data_source=data_source), names=names,
+                await self._peer_dataset_dict(name=sibling_name, data_source=data_source), names=names,
             )
             if sibling is not None:
                 keys.extend(_incoming_keys(sibling=sibling, target=name, target_fields=fields))
@@ -1277,7 +1279,7 @@ class StorageBackend(ABC):
         for ds, name in await self._list_all_dataset_identities():
             raw = await self._cached_raw_dataset_dict(name=name, data_source=ds) if ds == data_source else None
             if isinstance(raw, dict):
-                datasets[name] = raw
+                datasets[name] = dataset_in(raw, LEGACY_KEYS)
         return StoredDatasets(data_source=data_source, datasets=datasets)
 
     async def _memory_typing(self, data: dict) -> StoredDatasets | None:
@@ -1321,7 +1323,7 @@ class StorageBackend(ABC):
         if not isinstance(peer_name, str) or peer_name == name:
             return True
         if peer_name not in cache:
-            cache[peer_name] = _with_repaired_targets(await self._cached_raw_dataset_dict(
+            cache[peer_name] = _with_repaired_targets(await self._peer_dataset_dict(
                 name=peer_name, data_source=data_source,
             ), names=names)
         counterpart = _stored_counterpart(
@@ -1390,7 +1392,7 @@ class StorageBackend(ABC):
             if i == len(chain) - 1:
                 return True
             if target not in cache:
-                cache[target] = _with_repaired_targets(await self._cached_raw_dataset_dict(
+                cache[target] = _with_repaired_targets(await self._peer_dataset_dict(
                     name=target, data_source=data_source,
                 ), names=names)
             current = cache[target]

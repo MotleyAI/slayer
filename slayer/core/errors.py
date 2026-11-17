@@ -564,6 +564,22 @@ class UnrecognizedStrictValueError(SlayerError):
         return type(self), (self.value,)
 
 
+class SpellingConflictError(SlayerError):
+    """One object spells a concept both the pre-2.0 way (``old``) and the Ossie way (``new``)."""
+
+    def __init__(self, *, old: str, new: str) -> None:
+        self.old = old
+        self.new = new
+        super().__init__(f"Both `{new}` and its pre-2.0 spelling `{old}` are given; keep only `{new}`.")
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return _rebuild_spelling_conflict, (self.old, self.new)
+
+
+def _rebuild_spelling_conflict(old: str, new: str) -> SpellingConflictError:
+    return SpellingConflictError(old=old, new=new)
+
+
 class DefaultTimeDimensionTypeError(SlayerError):
     """A dataset's declared ``default_time_dimension`` names a field of a non-temporal type."""
 

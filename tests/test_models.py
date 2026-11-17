@@ -207,7 +207,7 @@ class TestOrderShorthandHealing:
         assert q.order[0].direction == "desc"
 
     def test_bare_canonical_dict_wrapped(self) -> None:
-        q = SlayerQuery(population="orders", order={"field": "status", "direction": "asc"})
+        q = SlayerQuery(population="orders", order={"field": "status", "direction": "asc"})  # pyright: ignore[reportArgumentType] — a bare dict on purpose: the coercion under test
         assert q.order is not None
         assert len(q.order) == 1
         assert q.order[0].field.name == "status"
@@ -592,7 +592,7 @@ class TestWithinListDuplicateNames:
             DatasetField(name="revenue", sql="amount", datatype=DataType.DOUBLE),
             DatasetField(name="revenue", sql="net_amount", datatype=DataType.DOUBLE),
         ]
-        with pytest.raises(ValueError, match="duplicate.*column|column.*duplicate"):
+        with pytest.raises(ValueError, match="duplicate.*field|field.*duplicate"):
             SlayerDataset(
                 name="orders",
                 sql_table="t",
@@ -606,7 +606,7 @@ class TestWithinListDuplicateNames:
             DatasetMetric(name="aov", expression="sum(amount) / count(*)"),
             DatasetMetric(name="aov", expression="avg(amount)"),
         ]
-        with pytest.raises(ValueError, match="duplicate.*measure|measure.*duplicate"):
+        with pytest.raises(ValueError, match="duplicate.*metric|metric.*duplicate"):
             SlayerDataset(
                 name="orders",
                 sql_table="t",
@@ -734,7 +734,7 @@ class TestSelfJoinRejected:
         ]
         joins = [DatasetRelationship(to="staff",
                            join_pairs=[["manager_id", "id"]])]
-        with pytest.raises(ValueError, match="[Ss]elf-join") as ei:
+        with pytest.raises(ValueError, match="[Ss]elf-relationship") as ei:
             SlayerDataset(
                 name="staff", data_source="ds", sql_table="staff",
                 fields=columns, relationships=joins,
@@ -742,7 +742,7 @@ class TestSelfJoinRejected:
         message = str(ei.value)
         assert "staff" in message
         # The remedy is named, not just the ban.
-        assert "separate model" in message
+        assert "separate dataset" in message
 
     def test_distinct_target_still_accepted(self) -> None:
         m = SlayerDataset(
