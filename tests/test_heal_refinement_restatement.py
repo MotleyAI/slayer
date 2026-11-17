@@ -16,8 +16,8 @@ RESTATEMENTS = {
     "unnamed": {"expression": "revenue"},
     "shorthand": "revenue",
 }
-FIELD_VALUES = {"label": "Rev", "type": "DOUBLE", "description": "Paid revenue", "meta": {"unit": "usd"}}
-OTHER_VALUES = {"label": "Revenue", "type": "INT", "description": "All revenue", "meta": {"unit": "eur"}}
+FIELD_VALUES = {"label": "Rev", "datatype": "DOUBLE", "description": "Paid revenue", "meta": {"unit": "usd"}}
+OTHER_VALUES = {"label": "Revenue", "datatype": "INT", "description": "All revenue", "meta": {"unit": "eur"}}
 
 
 def saved(*measures: Any) -> SlayerQuery:
@@ -48,24 +48,24 @@ class TestRestatementCollapses:
     @pytest.mark.parametrize("field", sorted(FIELD_VALUES))
     def test_equal_explicit_field_collapses(self, field: str) -> None:
         base = saved({**REVENUE, field: FIELD_VALUES[field]})
-        assert merge(base, {"formula": "revenue", field: FIELD_VALUES[field]}) == base
+        assert merge(base, {"expression": "revenue", field: FIELD_VALUES[field]}) == base
 
     @pytest.mark.parametrize("field", sorted(FIELD_VALUES))
     def test_explicit_null_equal_to_unset_saved_field_collapses(self, field: str) -> None:
         base = saved(REVENUE)
-        assert merge(base, {"formula": "revenue", "name": "revenue", field: None}) == base
+        assert merge(base, {"expression": "revenue", "name": "revenue", field: None}) == base
 
 
 class TestRestatementConflicts:
     @pytest.mark.parametrize("field", sorted(FIELD_VALUES))
     def test_differing_field(self, field: str) -> None:
-        message = conflict(saved({**REVENUE, field: FIELD_VALUES[field]}), {"formula": "revenue", field: OTHER_VALUES[field]})
-        assert "measures" in message
+        message = conflict(saved({**REVENUE, field: FIELD_VALUES[field]}), {"expression": "revenue", field: OTHER_VALUES[field]})
+        assert "metrics" in message
         assert "revenue" in message
 
     @pytest.mark.parametrize("field", sorted(FIELD_VALUES))
     def test_explicit_null_against_set_saved_field(self, field: str) -> None:
-        message = conflict(saved({**REVENUE, field: FIELD_VALUES[field]}), {"formula": "revenue", field: None})
+        message = conflict(saved({**REVENUE, field: FIELD_VALUES[field]}), {"expression": "revenue", field: None})
         assert "revenue" in message
 
     def test_another_entry_named_like_the_saved_one_still_conflicts(self) -> None:
@@ -102,5 +102,5 @@ async def test_executed_restatement_with_differing_label_conflicts(backend: str)
     async with refine_engine(backend) as (eng, _):
         with pytest.raises(RefinementConflictError) as info:
             await eng.execute("monthly_revenue", refine={"metrics": [{"expression": "revenue", "label": "Rev"}]})
-    assert "measures" in str(info.value)
+    assert "metrics" in str(info.value)
     assert "revenue" in str(info.value)

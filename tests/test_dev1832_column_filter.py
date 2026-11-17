@@ -286,9 +286,9 @@ class TestFilteredLeafOnJoinedModel:
         # bad_pop_spend = spend filtered by regions.bad_pop > 0, crossing the
         # fanning regions→region_events hop.
         query = orders_q(metrics=[_metric("sum(amount - customers.bad_pop_spend)")])
-        with pytest.raises(ValueError, match="unproven or fanning join hop") as ei:
+        with pytest.raises(ValueError, match="unproven or fanning relationship hop") as ei:
             await gen(query)
-        assert "Aggregate the target column directly" in str(ei.value)
+        assert "Aggregate the target field directly" in str(ei.value)
 
     async def test_fanning_filter_default_parameter_fails_closed(self) -> None:
         # A filtered PHYSICAL column (no sql) whose filter crosses the fanning hop,
@@ -301,7 +301,7 @@ class TestFilteredLeafOnJoinedModel:
             name="wsum_badw", expression="SUM({value} * {weight})",
             params=[AggregationParam(name="weight", sql="bad_pop_w")]))
         query = orders_q(metrics=[_metric("wsum_badw(customers.spend)")])
-        with pytest.raises(ValueError, match="unproven join hop") as ei:
+        with pytest.raises(ValueError, match="unproven relationship hop") as ei:
             await gen(query, datasets=models)
         assert "region_events" in str(ei.value)
 

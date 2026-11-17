@@ -156,7 +156,7 @@ class TestReported:
             tags = await env.field("contractors", "tags")
         assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
         broken = _by_key(result)
-        for key in (("contractors", "measure", "nt"), ("by_tag", "saved_query", "by_tag")):
+        for key in (("contractors", "metric", "nt"), ("by_tag", "saved_query", "by_tag")):
             assert key in broken, broken
             _assert_list_type_break(broken[key])
 
@@ -194,7 +194,7 @@ class TestReported:
         async with _env(contractors()) as env:
             result = await env.reingest()
             tags = await env.field("contractors", "tags")
-        assert ("contractors", "measure", "nt") in _by_key(result)
+        assert ("contractors", "metric", "nt") in _by_key(result)
         assert tags.datatype is DataType.ARRAY
 
 
@@ -202,8 +202,8 @@ class TestNotReported:
     async def test_raw_sql_definitions_are_not_reported(self) -> None:
         async with _env(contractors(columns=(FIRST_TAG,), filters=("tags = 'go'",))) as env:
             broken = _by_key(await env.reingest())
-        assert ("contractors", "measure", "nt") in broken, broken
-        assert not [k for k in broken if k[1] in ("column", "filter")], broken
+        assert ("contractors", "metric", "nt") in broken, broken
+        assert not [k for k in broken if k[1] in ("field", "filter")], broken
 
     async def test_a_raw_sql_derived_column_is_checked(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _refuse_planning(monkeypatch, "first_tag")
@@ -217,8 +217,8 @@ class TestNotReported:
         by_set = {"population": "contractors", "dimensions": ["tags"], "metrics": ["count(*)"]}
         async with _env(contractors(metrics=(NT, n_tagged, n_sets)), saved={"by_set": by_set}) as env:
             broken = _by_key(await env.reingest())
-        assert ("contractors", "measure", "nt") in broken, broken
-        for key in (("contractors", "measure", "n_tagged"), ("contractors", "measure", "n_sets"),
+        assert ("contractors", "metric", "nt") in broken, broken
+        for key in (("contractors", "metric", "n_tagged"), ("contractors", "metric", "n_sets"),
                     ("by_set", "saved_query", "by_set")):
             assert key not in broken, broken
 
@@ -226,8 +226,8 @@ class TestNotReported:
         ghostly = DatasetMetric(name="ghostly", expression="max(tags) + sum(ghost)")
         async with _env(contractors(metrics=(NT, ghostly))) as env:
             broken = _by_key(await env.reingest())
-        assert ("contractors", "measure", "nt") in broken, broken
-        assert ("contractors", "measure", "ghostly") not in broken, broken
+        assert ("contractors", "metric", "nt") in broken, broken
+        assert ("contractors", "metric", "ghostly") not in broken, broken
 
     async def test_a_retype_whose_save_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async with _env(contractors()) as env:
@@ -253,7 +253,7 @@ class TestNotReported:
         _refuse_planning(monkeypatch, marker)
         async with _env(contractors(), orders(columns=(label,)), notes()) as env:
             result = await env.reingest()
-        assert ("contractors", "measure", "nt") in _by_key(result), result.broken_dependents
+        assert ("contractors", "metric", "nt") in _by_key(result), result.broken_dependents
         assert not [b for b in result.broken_dependents if b.dataset == "notes" or b.name == "label"], (
             result.broken_dependents)
 
@@ -298,7 +298,7 @@ class TestCallerClient:
                 rows = (await client.execute("SELECT 1 AS one")).rows
             finally:
                 await client.aclose()
-        assert ("contractors", "measure", "nt") in _by_key(result)
+        assert ("contractors", "metric", "nt") in _by_key(result)
         assert rows == [{"one": 1}]
 
 

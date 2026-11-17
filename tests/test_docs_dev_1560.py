@@ -38,7 +38,7 @@ def test_mcp_doc_sections_list_matches_code(path: Path) -> None:
     text = path.read_text()
     # The vocabulary, in canonical order.
     expected_substring = (
-        '["columns", "measures", "aggregations", "joins", "samples", "learnings", "saved_queries"]'
+        '["fields", "metrics", "aggregations", "relationships", "samples", "learnings", "saved_queries"]'
     )
     assert expected_substring in text, path
 

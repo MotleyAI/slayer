@@ -8,7 +8,7 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 VERSION_PATTERN = r"^\d+(\.\d+)*((a|b|rc)\d+)?(\.post\d+)?(\.dev\d+)?(\+[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$"
 
 Count = Annotated[int, Field(ge=0)]
@@ -118,8 +118,35 @@ def known_usage_key(*, surface: str, key: str) -> str | None:
     return other if other in USAGE_KEYS else None
 
 
+#: Schema-2 usage keys and their schema-3 replacements.
+RENAMED_USAGE_KEYS: dict[str, str] = {
+    "cli:validate-models": "cli:validate-datasets", "cli:recommend-root-model": "cli:recommend-population",
+    "cli:models.list": "cli:datasets.list", "cli:models.show": "cli:datasets.show",
+    "cli:models.create": "cli:datasets.create", "cli:models.delete": "cli:datasets.delete",
+    "mcp:create_model": "mcp:create_dataset", "mcp:edit_model": "mcp:edit_dataset",
+    "mcp:delete_model": "mcp:delete_dataset", "mcp:models_summary": "mcp:datasets_summary",
+    "mcp:validate_models": "mcp:validate_datasets", "mcp:recommend_root_model": "mcp:recommend_population",
+    "mcp:ingest_datasource_models": "mcp:ingest_datasource", "rest:/models": "rest:/datasets",
+    "rest:/models/{name}": "rest:/datasets/{name}", "rest:/validate-models": "rest:/validate-datasets",
+    "rest:/recommend-root-model": "rest:/recommend-population",
+}
+
+
+def _schema_2_context(data: dict) -> dict:
+    context = data.get("context")
+    if not isinstance(context, dict) or not isinstance(context.get("model_count"), dict):
+        return data
+    buckets = dict(context.get("dataset_count") or {})
+    _add(buckets, context["model_count"])
+    rest = {k: v for k, v in context.items() if k != "model_count"}
+    return {**data, "context": {**rest, "dataset_count": buckets}}
+
+
 def fold_retired_usage_keys(data: Any) -> Any:
-    """Count a usage key this version no longer defines as its surface's ``other`` (or drop it)."""
+    """A schema-2 key counted under its replacement; a usage key this version no longer defines counted as its
+    surface's ``other`` (or dropped)."""
+    if isinstance(data, dict):
+        data = _schema_2_context(data)
     usage = data.get("usage") if isinstance(data, dict) else None
     if not isinstance(usage, dict) or all(key in USAGE_KEYS for key in usage):
         return data
@@ -130,6 +157,7 @@ def fold_retired_usage_keys(data: Any) -> Any:
         return data
     folded: dict[str, dict] = {}
     for key, entry in entries.items():
+        key = RENAMED_USAGE_KEYS.get(str(key), key)
         target = known_usage_key(surface=str(key).partition(":")[0], key=str(key))
         if target is None:
             continue
@@ -254,7 +282,7 @@ class UsageReport(Batch):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, serialize_by_alias=True)
 
-    schema_version: Literal[2] = Field(default=SCHEMA_VERSION, alias="schema")
+    schema_version: Literal[3] = Field(default=SCHEMA_VERSION, alias="schema")
     install_id: uuid.UUID | None
     first_query_ok: datetime.date | None = None
     batch_id: uuid.UUID

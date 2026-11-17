@@ -315,6 +315,6 @@ class TestFailClosed:
         # Rooted at regions, `customers` is not on the path: nothing cancels, and
         # BOTH the default and its explicit twin fail with the same input-safety
         # error naming customers.
-        with pytest.raises(ValueError, match="(?i)unproven join hop") as ei:
+        with pytest.raises(ValueError, match="(?i)unproven relationship hop") as ei:
             await _gen(formula, source_dataset="regions")
         assert "customers" in str(ei.value)

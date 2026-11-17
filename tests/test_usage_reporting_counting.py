@@ -89,7 +89,7 @@ def test_cli_leaf_tokens(store: str) -> None:
     cli(["datasources", "--storage", store, "list"])
     report = show()
     assert usage(report, "cli:query") == {"ok": 1, "errors": {}}
-    assert usage(report, "cli:models.list") == {"ok": 1, "errors": {}}
+    assert usage(report, "cli:datasets.list") == {"ok": 1, "errors": {}}
     assert usage(report, "cli:datasources.list") == {"ok": 2, "errors": {}}
 
 
@@ -122,7 +122,7 @@ def test_cli_failure_counted_as_error(store: str) -> None:
     cli(["query", json.dumps({"population": "no_such_model", "metrics": ["count(*)"]}), "--storage", store])
     cli(["datasets", "--storage", store, "show", "no_such_model"])
     report = show()
-    for key in ("cli:query", "cli:models.show"):
+    for key in ("cli:query", "cli:datasets.show"):
         entry = usage(report, key)
         assert entry["ok"] == 0
         assert sum(entry["errors"].values()) == 1
@@ -227,7 +227,7 @@ def test_rest_counts_route_templates(store: str, started) -> None:
     end_process()
     report = show()
     assert usage(report, "rest:/health") == {"ok": 1, "errors": {}}
-    assert total(usage(report, "rest:/models/{name}")) == 2
+    assert total(usage(report, "rest:/datasets/{name}")) == 2
     assert usage(report, "rest:/query")["ok"] == 1
 
 
@@ -579,9 +579,9 @@ def _unavailable() -> Exception:
 
 _DB_FAILURE_CALLS = [
     ("query", (SlayerQueryEngine, "execute"), {"query": _QUERY}),
-    ("create_dataset", (SlayerQueryEngine, "save_model"),
+    ("create_dataset", (SlayerQueryEngine, "save_dataset"),
      {"name": "m", "sql_table": "orders", "data_source": "test", "fields": [{"name": "id", "sql": "id", "datatype": "number"}]}),
-    ("create_dataset", (SlayerQueryEngine, "create_model_from_query"), {"name": "m", "query": _QUERY}),
+    ("create_dataset", (SlayerQueryEngine, "create_dataset_from_query"), {"name": "m", "query": _QUERY}),
     ("validate_datasets", (SlayerQueryEngine, "validate_datasets"), {}),
     ("ingest_datasource", (engine_ingestion, "ingest_datasource_idempotent"), {"datasource_name": "test"}),
 ]

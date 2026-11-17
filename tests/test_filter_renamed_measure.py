@@ -372,7 +372,7 @@ class TestRemapEdgeCases:
             # ``amount_sum`` already names a source column.
             metrics=[DatasetMetric(expression="sum(amount)", name="revenue")],
         )
-        with pytest.raises(ValueError, match=r"shadows a source column"):
+        with pytest.raises(ValueError, match=r"shadows a source field"):
             await _generate(query, model)
 
     async def test_model_level_filter_unaffected_by_query_measure_rename(
@@ -436,5 +436,5 @@ class TestRemapEdgeCases:
             dimensions=[FieldRef(name="id")],
             metrics=[DatasetMetric(expression="sum(amount)", name="status")],
         )
-        with pytest.raises(ValueError, match=r"matches a source column"):
+        with pytest.raises(ValueError, match=r"matches a source field"):
             await _generate(query, model)

@@ -809,11 +809,11 @@ async def test_search_per_model_serialization_concurrent_hits(
     original = storage.update_field_sampled
 
     async def tracking_persist(**kwargs):
-        persist_events.append(("start", kwargs.get("model_name"), kwargs.get("column_name")))
+        persist_events.append(("start", kwargs.get("dataset_name"), kwargs.get("field_name")))
         # tiny sleep to widen any race window
         await asyncio.sleep(0.01)
         result = await original(**kwargs)
-        persist_events.append(("stop", kwargs.get("model_name"), kwargs.get("column_name")))
+        persist_events.append(("stop", kwargs.get("dataset_name"), kwargs.get("field_name")))
         return result
 
     monkeypatch.setattr(storage, "update_field_sampled", tracking_persist)
@@ -914,9 +914,9 @@ async def test_search_cross_model_concurrency_is_allowed(
 
     async def tracking_persist(**kwargs):
         persist_events.append(
-            ("start", kwargs.get("model_name"), kwargs.get("column_name"))
+            ("start", kwargs.get("dataset_name"), kwargs.get("field_name"))
         )
-        started.add(kwargs.get("model_name"))
+        started.add(kwargs.get("dataset_name"))
         if len(started) >= 2:
             both_started.set()
         # Hold the write open until the other model's write starts; a sequential refresh times out and never overlaps.
@@ -924,7 +924,7 @@ async def test_search_cross_model_concurrency_is_allowed(
             await asyncio.wait_for(both_started.wait(), timeout=5)
         result = await original(**kwargs)
         persist_events.append(
-            ("stop", kwargs.get("model_name"), kwargs.get("column_name"))
+            ("stop", kwargs.get("dataset_name"), kwargs.get("field_name"))
         )
         return result
 

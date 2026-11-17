@@ -39,7 +39,11 @@ RETIRED_HELP_IDS: tuple[str, ...] = (
     "help.formulas",
     "help.filters",
     "help.extending",
+    "help.models",
+    "help.joins",
 )
+#: Retired help topics and the topics that replaced them.
+RENAMED_HELP_IDS: dict[str, str] = {"help.models": "help.datasets", "help.joins": "help.relationships"}
 
 
 class HelpTopic(BaseModel):

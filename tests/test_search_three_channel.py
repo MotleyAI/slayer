@@ -22,6 +22,7 @@ from slayer.core.models import (
     SlayerDataset,
 )
 from slayer.embeddings import client as embedding_client
+from slayer.search.retrievers.embeddings import EmbeddingRetriever
 from slayer.search.service import SearchService
 from slayer.storage.yaml_storage import YAMLStorage
 
@@ -144,8 +145,6 @@ async def test_question_with_embeddings_returns_entity(
 
     # Refresh embeddings for everything in the seeded datasource via the
     # retriever so the storage table is populated.
-    from slayer.search.retrievers.embeddings import EmbeddingRetriever
-
     model = await storage.get_dataset("orders", data_source="dsx")
     assert model is not None
     await EmbeddingRetriever(storage=storage).refresh_dataset_subtree(model)
@@ -202,7 +201,6 @@ async def test_entity_hits_now_carry_rrf_fused_score(
     monkeypatch.setattr(
         embedding_client, "embed_query", stub_embed_query,
     )
-    from slayer.search.retrievers.embeddings import EmbeddingRetriever
     model = await storage.get_dataset("orders", data_source="dsx")
     assert model is not None
     await EmbeddingRetriever(storage=storage).refresh_dataset_subtree(model)
@@ -242,7 +240,6 @@ async def test_query_embed_failure_warns_and_continues(
         "slayer.search.retrievers.embeddings.embed_batch",
         stub_embed_batch,
     )
-    from slayer.search.retrievers.embeddings import EmbeddingRetriever
     model = await storage.get_dataset("orders", data_source="dsx")
     assert model is not None
     await EmbeddingRetriever(storage=storage).refresh_dataset_subtree(model)

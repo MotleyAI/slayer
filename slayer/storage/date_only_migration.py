@@ -21,6 +21,7 @@ from slayer.core.syntax import string_literal_spans
 from slayer.core.time_points import is_date_only
 from slayer.core.spine_names import TIME_SPINE_FIELD, TIME_SPINE_FIELD_TYPE, TIME_SPINE_DATASET
 from slayer.core.legacy_spellings import rewrite_spans
+from slayer.storage.document_keys import LEGACY_KEYS, DocumentKeys
 from slayer.storage.migrations import document_label, register_migration, stamp_stored
 from slayer.storage.rank_direction_migration import rewrite_query_fields, stamp_memory_query
 
@@ -49,15 +50,15 @@ def _reaches(*, target: Any, dataset: Any, universe: Iterable[str]) -> bool:
     return isinstance(dataset, str) and _named(target, universe) == dataset
 
 
-def stored_type(*, key: Any, fields: Any) -> str | None:
-    """The stored ``type`` of the column named ``key`` when it is a valid ``DataType``."""
+def stored_type(*, key: Any, fields: Any, keys: DocumentKeys) -> str | None:
+    """The stored datatype (spelled per ``keys``) of the field named ``key`` when it is a valid ``DataType``."""
     if not isinstance(fields, list):
         return None
     named = [c for c in fields if isinstance(c, dict)]
     found = _named(key, (c.get("name") for c in named))
     col = next((c for c in named if found is not None and c.get("name") == found), None)
     try:
-        return DataType(col["type"]).value if col is not None and "type" in col else None
+        return DataType(col[keys.datatype]).value if col is not None and keys.datatype in col else None
     except ValueError:
         return None
 
@@ -138,7 +139,8 @@ class StoredDatasets(BaseModel):
             if peer is None:
                 return None
             current = peer
-        return stored_type(key=leaf, fields=extended(key="columns", dataset=current, extensions=extensions))
+        return stored_type(key=leaf, fields=extended(key="columns", dataset=current, extensions=extensions),
+                           keys=LEGACY_KEYS)
 
     def _past_host(self, *, quals: list[str], host: dict) -> list[str] | None:
         """``quals`` read from their head as the engine reads it: a stage's (untypable); the spine's when spelt like it in

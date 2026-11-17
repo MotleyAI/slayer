@@ -307,7 +307,7 @@ async def test_graph_datasource_node_count(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_graph_model_node_count(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Model) RETURN m.id AS id", rich_storage
+        "MATCH (m:Dataset) RETURN m.id AS id", rich_storage
     )
     assert len(ids) == 3
     assert "shop.orders" in ids
@@ -319,7 +319,7 @@ async def test_graph_model_node_count(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_graph_column_node_count(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (c:ModelColumn) RETURN c.id AS id", rich_storage
+        "MATCH (c:DatasetField) RETURN c.id AS id", rich_storage
     )
     # orders: 3, customers: 3, events: 2 → 8 total
     assert len(ids) == 8
@@ -329,7 +329,7 @@ async def test_graph_column_node_count(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_graph_measure_node_count(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (ms:Measure) RETURN ms.id AS id", rich_storage
+        "MATCH (ms:Metric) RETURN ms.id AS id", rich_storage
     )
     assert len(ids) == 1
     assert "shop.orders.total_revenue" in ids
@@ -366,7 +366,7 @@ async def test_memory_node_learning_property(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_column_node_data_type_property(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (c:ModelColumn {data_type: 'DOUBLE'}) RETURN c.id AS id",
+        "MATCH (c:DatasetField {data_type: 'DOUBLE'}) RETURN c.id AS id",
         rich_storage,
     )
     assert "shop.orders.amount" in ids
@@ -377,7 +377,7 @@ async def test_column_node_data_type_property(rich_storage: YAMLStorage) -> None
 @pytest.mark.asyncio
 async def test_model_description_property(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Model) WHERE m.description CONTAINS 'Order' "
+        "MATCH (m:Dataset) WHERE m.description CONTAINS 'Order' "
         "RETURN m.id AS id",
         rich_storage,
     )
@@ -482,7 +482,7 @@ async def test_aggregation_description_property(
 @pytest.mark.asyncio
 async def test_mentions_memory_to_column(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Memory)-[:MENTIONS]->(c:ModelColumn {id: 'shop.orders.amount'}) "
+        "MATCH (m:Memory)-[:MENTIONS]->(c:DatasetField {id: 'shop.orders.amount'}) "
         "RETURN m.id AS id",
         rich_storage,
     )
@@ -493,7 +493,7 @@ async def test_mentions_memory_to_column(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_mentions_memory_to_model(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Memory)-[:MENTIONS]->(e:Model {id: 'analytics.events'}) "
+        "MATCH (m:Memory)-[:MENTIONS]->(e:Dataset {id: 'analytics.events'}) "
         "RETURN m.id AS id",
         rich_storage,
     )
@@ -544,7 +544,7 @@ async def test_mentions_memory_to_measure(rich_storage: YAMLStorage) -> None:
         clear_cache()
 
         ids = await get_filtered_ids(
-            "MATCH (m:Memory)-[:MENTIONS]->(ms:Measure) RETURN m.id AS id",
+            "MATCH (m:Memory)-[:MENTIONS]->(ms:Metric) RETURN m.id AS id",
             storage,
         )
         assert len(ids) == 1
@@ -578,7 +578,7 @@ async def test_memory_id_stored_as_canonical_form(rich_storage: YAMLStorage) -> 
 @pytest.mark.asyncio
 async def test_contains_datasource_to_model(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (d:Datasource {id: 'shop'})-[:CONTAINS]->(m:Model) "
+        "MATCH (d:Datasource {id: 'shop'})-[:CONTAINS]->(m:Dataset) "
         "RETURN m.id AS id",
         rich_storage,
     )
@@ -589,7 +589,7 @@ async def test_contains_datasource_to_model(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_contains_model_to_column(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Model {id: 'shop.orders'})-[:CONTAINS]->(c:ModelColumn) "
+        "MATCH (m:Dataset {id: 'shop.orders'})-[:CONTAINS]->(c:DatasetField) "
         "RETURN c.id AS id",
         rich_storage,
     )
@@ -600,7 +600,7 @@ async def test_contains_model_to_column(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_contains_model_to_measure(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Model {id: 'shop.orders'})-[:CONTAINS]->(ms:Measure) "
+        "MATCH (m:Dataset {id: 'shop.orders'})-[:CONTAINS]->(ms:Metric) "
         "RETURN ms.id AS id",
         rich_storage,
     )
@@ -611,7 +611,7 @@ async def test_contains_model_to_measure(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_contains_model_to_aggregation(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Model {id: 'shop.orders'})-[:CONTAINS]->(a:Aggregation) "
+        "MATCH (m:Dataset {id: 'shop.orders'})-[:CONTAINS]->(a:Aggregation) "
         "RETURN a.id AS id",
         rich_storage,
     )
@@ -624,7 +624,7 @@ async def test_contains_multi_hop_datasource_to_column(
     rich_storage: YAMLStorage,
 ) -> None:
     ids = await get_filtered_ids(
-        "MATCH (d:Datasource {id: 'shop'})-[:CONTAINS*2]->(c:ModelColumn) "
+        "MATCH (d:Datasource {id: 'shop'})-[:CONTAINS*2]->(c:DatasetField) "
         "RETURN c.id AS id",
         rich_storage,
     )
@@ -642,7 +642,7 @@ async def test_contains_multi_hop_datasource_to_column(
 @pytest.mark.asyncio
 async def test_joins_model_to_model(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Model {id: 'shop.orders'})-[:JOINS]->(t:Model) "
+        "MATCH (m:Dataset {id: 'shop.orders'})-[:RELATIONSHIPS]->(t:Dataset) "
         "RETURN t.id AS id",
         rich_storage,
     )
@@ -658,7 +658,7 @@ async def test_joins_model_to_model(rich_storage: YAMLStorage) -> None:
 @pytest.mark.asyncio
 async def test_multi_label_union_column_and_measure(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (n:ModelColumn:Measure) RETURN n.id AS id", rich_storage
+        "MATCH (n:DatasetField:Metric) RETURN n.id AS id", rich_storage
     )
     assert "shop.orders.amount" in ids          # Column
     assert "shop.orders.total_revenue" in ids   # Measure
@@ -668,7 +668,7 @@ async def test_multi_label_union_column_and_measure(rich_storage: YAMLStorage) -
 @pytest.mark.asyncio
 async def test_multi_label_all_data_model_entities(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (n:Datasource:Model:ModelColumn:Measure:Aggregation) RETURN n.id AS id",
+        "MATCH (n:Datasource:Dataset:DatasetField:Metric:Aggregation) RETURN n.id AS id",
         rich_storage,
     )
     assert "shop" in ids                        # Datasource
@@ -705,7 +705,7 @@ async def test_hidden_column_excluded_from_graph() -> None:
         )
         clear_cache()
         all_cols = await get_filtered_ids(
-            "MATCH (c:ModelColumn) RETURN c.id AS id", storage
+            "MATCH (c:DatasetField) RETURN c.id AS id", storage
         )
         assert "ds.orders.internal_flag" not in all_cols
         assert "ds.orders.id" in all_cols
@@ -738,7 +738,7 @@ async def test_hidden_model_excluded_from_graph() -> None:
         )
         clear_cache()
         ids = await get_filtered_ids(
-            "MATCH (m:Model) RETURN m.id AS id", storage
+            "MATCH (m:Dataset) RETURN m.id AS id", storage
         )
         assert "ds.hidden_model" not in ids
         assert "ds.visible" in ids
@@ -755,7 +755,7 @@ async def test_cache_hit_does_not_rebuild(shop_only_storage: YAMLStorage) -> Non
 
     with patch("slayer.search.graph.build_graph", wraps=build_graph) as mock_build:
         await get_filtered_ids(
-            "MATCH (m:Model) RETURN m.id AS id", shop_only_storage
+            "MATCH (m:Dataset) RETURN m.id AS id", shop_only_storage
         )
         await get_filtered_ids(
             "MATCH (d:Datasource) RETURN d.id AS id", shop_only_storage
@@ -769,7 +769,7 @@ async def test_cache_miss_after_storage_write(shop_only_storage: YAMLStorage) ->
 
     with patch("slayer.search.graph.build_graph", wraps=build_graph) as mock_build:
         await get_filtered_ids(
-            "MATCH (m:Model) RETURN m.id AS id", shop_only_storage
+            "MATCH (m:Dataset) RETURN m.id AS id", shop_only_storage
         )
         first_count = mock_build.call_count
 
@@ -832,7 +832,7 @@ async def test_concurrent_rebuild_rebuilds_once(
     clear_cache()
     with patch("slayer.search.graph.build_graph", wraps=build_graph) as mock_build:
         await asyncio.gather(
-            get_filtered_ids("MATCH (m:Model) RETURN m.id AS id", shop_only_storage),
+            get_filtered_ids("MATCH (m:Dataset) RETURN m.id AS id", shop_only_storage),
             get_filtered_ids("MATCH (d:Datasource) RETURN d.id AS id", shop_only_storage),
         )
         assert mock_build.call_count == 1
@@ -844,7 +844,7 @@ async def test_inaccessible_fingerprint_triggers_rebuild(
     shop_only_storage: YAMLStorage,
 ) -> None:
 
-    await get_filtered_ids("MATCH (m:Model) RETURN m.id AS id", shop_only_storage)
+    await get_filtered_ids("MATCH (m:Dataset) RETURN m.id AS id", shop_only_storage)
 
     with (
         patch("slayer.search.graph.build_graph", wraps=build_graph) as mock_build,
@@ -854,7 +854,7 @@ async def test_inaccessible_fingerprint_triggers_rebuild(
             side_effect=OSError("disk read failed"),
         ),
     ):
-        await get_filtered_ids("MATCH (m:Model) RETURN m.id AS id", shop_only_storage)
+        await get_filtered_ids("MATCH (m:Dataset) RETURN m.id AS id", shop_only_storage)
         assert mock_build.call_count == 1
 
 
@@ -867,10 +867,10 @@ def test_validate_cypher_accepts_match_return() -> None:
 
     _validate_cypher("MATCH (m:Memory) RETURN m.id AS id")
     _validate_cypher(
-        "MATCH (m:Memory)-[:MENTIONS]->(e:ModelColumn) WHERE e.id = 'x' RETURN m.id AS id"
+        "MATCH (m:Memory)-[:MENTIONS]->(e:DatasetField) WHERE e.id = 'x' RETURN m.id AS id"
     )
     _validate_cypher(
-        "MATCH (e:ModelColumn)<-[:CONTAINS*1..3]-(d:Datasource) RETURN e.id AS id"
+        "MATCH (e:DatasetField)<-[:CONTAINS*1..3]-(d:Datasource) RETURN e.id AS id"
     )
 
 
@@ -936,7 +936,7 @@ def test_validate_cypher_rejects_invalid(bad_cypher: str) -> None:
 @pytest.mark.asyncio
 async def test_cypher_property_filter(rich_storage: YAMLStorage) -> None:
     ids = await get_filtered_ids(
-        "MATCH (c:ModelColumn {id: 'shop.orders.amount'}) RETURN c.id AS id",
+        "MATCH (c:DatasetField {id: 'shop.orders.amount'}) RETURN c.id AS id",
         rich_storage,
     )
     assert ids == {"shop.orders.amount"}
@@ -948,7 +948,7 @@ async def test_cypher_path_traversal_memories_of_model(
     rich_storage: YAMLStorage,
 ) -> None:
     ids = await get_filtered_ids(
-        "MATCH (m:Memory)-[:MENTIONS]->(e:ModelColumn) "
+        "MATCH (m:Memory)-[:MENTIONS]->(e:DatasetField) "
         "WHERE e.id STARTS WITH 'shop.orders.' "
         "RETURN m.id AS id",
         rich_storage,
@@ -1174,7 +1174,7 @@ async def test_candidate_ids_results_are_exact_subset_of_cypher_output(
     Cypher — no memory outside the candidate set must surface."""
     # Cypher: only the memory that mentions shop.orders.amount
     cypher = (
-        "MATCH (m:Memory)-[:MENTIONS]->(c:ModelColumn {id: 'shop.orders.amount'}) "
+        "MATCH (m:Memory)-[:MENTIONS]->(c:DatasetField {id: 'shop.orders.amount'}) "
         "RETURN m.id AS id"
     )
     expected_candidates = await get_filtered_ids(cypher, rich_storage)
@@ -1213,7 +1213,7 @@ async def test_cypher_filter_and_datasource_are_intersected(
         entities=["shop.orders.amount"],
         datasource="analytics",
         cypher_filter=(
-            "MATCH (m:Memory)-[:MENTIONS]->(c:ModelColumn) "
+            "MATCH (m:Memory)-[:MENTIONS]->(c:DatasetField) "
             "WHERE c.id STARTS WITH 'shop.' "
             "RETURN m.id AS id"
         ),
@@ -1278,7 +1278,7 @@ def test_validate_cypher_accepts_mutation_keyword_in_string_literal() -> None:
     )
     # Double-quoted literal with DROP.
     _validate_cypher(
-        'MATCH (c:ModelColumn) WHERE c.description = "drop rate" RETURN c.id AS id'
+        'MATCH (c:DatasetField) WHERE c.description = "drop rate" RETURN c.id AS id'
     )
 
 

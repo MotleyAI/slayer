@@ -460,7 +460,7 @@ class TestSnapshotReuse:
         sql = "SELECT id, amount FROM orders"
         await env.save(_sql_dataset(name="sq_b", sql=sql))
         await env.save(_sql_dataset(name="sq_a", sql=sql).model_copy(update={
-            "joins": [DatasetRelationship(to="sq_b", join_pairs=[["id", "id"]])],
+            "relationships": [DatasetRelationship(to="sq_b", join_pairs=[["id", "id"]])],
         }))
         await _fails_unwrapped(env.engine, {
             "population": "sq_a", "dimensions": ["sq_b.id"],

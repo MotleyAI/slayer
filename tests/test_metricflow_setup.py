@@ -117,8 +117,9 @@ class TestFetchPinnedCommitRetry:
         monkeypatch.setattr(setup_metricflow, "_git", always_503)
         monkeypatch.setattr(setup_metricflow.time, "sleep", lambda _: None)
 
+        clone_dir = Path("/tmp/x")
         with pytest.raises(subprocess.CalledProcessError):
-            setup_metricflow._fetch_pinned_commit(Path("/tmp/x"))
+            setup_metricflow._fetch_pinned_commit(clone_dir)
 
         assert attempts["n"] == setup_metricflow._FETCH_RETRIES
 
@@ -136,7 +137,8 @@ class TestFetchPinnedCommitRetry:
             lambda _: pytest.fail("should not retry a deterministic failure"),
         )
 
+        clone_dir = Path("/tmp/x")
         with pytest.raises(subprocess.CalledProcessError):
-            setup_metricflow._fetch_pinned_commit(Path("/tmp/x"))
+            setup_metricflow._fetch_pinned_commit(clone_dir)
 
         assert attempts["n"] == 1  # failed once, no retry

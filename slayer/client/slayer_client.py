@@ -15,10 +15,13 @@ from typing import (
 )
 from urllib.parse import quote
 
+from typing_extensions import deprecated
+
 from slayer.async_utils import run_sync
 from slayer.core.format import NumberFormat
 from slayer.core.query import QueryRefinement, SlayerQuery, deprecated_inputs_of
 from slayer.core.recommend import PopulationRecommendation
+from slayer.core.vocabulary import method_twin
 from slayer.core.warnings import DeprecatedInputWarning
 from slayer.engine.query_engine import (
     ClientFactory,
@@ -649,3 +652,35 @@ class SlayerClient:
 
     def get_dataset_sync(self, name: str) -> dict[str, Any]:
         return self._request_sync("GET", f"/datasets/{name}")
+
+    @method_twin("list_datasets")
+    @deprecated("list_models is deprecated; use list_datasets", category=None)
+    async def list_models(self, data_source: str | None = None) -> list[str]: ...
+
+    @method_twin("list_datasets_sync")
+    @deprecated("list_models_sync is deprecated; use list_datasets_sync", category=None)
+    def list_models_sync(self) -> list[str]: ...
+
+    @method_twin("get_dataset")
+    @deprecated("get_model is deprecated; use get_dataset", category=None)
+    async def get_model(self, name: str, data_source: str | None = None) -> Any | None: ...
+
+    @method_twin("get_dataset_sync")
+    @deprecated("get_model_sync is deprecated; use get_dataset_sync", category=None)
+    def get_model_sync(self, name: str) -> dict[str, Any]: ...
+
+    @method_twin("create_dataset", arguments={"model": "dataset"})
+    @deprecated("create_model is deprecated; use create_dataset", category=None)
+    async def create_model(self, dataset: dict[str, Any]) -> dict[str, Any]: ...
+
+    @method_twin("recommend_population")
+    @deprecated("recommend_root_model is deprecated; use recommend_population", category=None)
+    async def recommend_root_model(
+        self, items: list[str], *, data_source: str | None = None, root_hint: str | None = None,
+    ) -> "PopulationRecommendation": ...
+
+    @method_twin("recommend_population_sync")
+    @deprecated("recommend_root_model_sync is deprecated; use recommend_population_sync", category=None)
+    def recommend_root_model_sync(
+        self, items: list[str], *, data_source: str | None = None, root_hint: str | None = None,
+    ) -> "PopulationRecommendation": ...

@@ -481,11 +481,11 @@ def test_query_v1_to_v2_inline_model_extension() -> None:
         "fields": [{"formula": "revenue:sum"}],
     })
     assert q["version"] == mig.CURRENT_VERSIONS["SlayerQuery"]
-    assert q["source_model"] == "orders"
+    assert q["population"] == "orders"
     (sm,) = q["extensions"]
     assert sm["source_name"] == "orders"
     assert [c["name"] for c in sm["columns"]] == ["region", "revenue"]
-    assert sm["measures"] == []
+    assert sm["metrics"] == []
 
 
 def test_query_v1_to_v2_inline_slayer_model_dict_migrates() -> None:
@@ -502,10 +502,10 @@ def test_query_v1_to_v2_inline_slayer_model_dict_migrates() -> None:
         },
         "fields": [{"formula": "revenue:sum"}],
     })
-    assert q["measures"]  # `fields` rename worked
-    m = mig.migrate("SlayerModel", q["source_model"])
+    assert q["metrics"]  # `fields` rename worked
+    m = mig.migrate("SlayerModel", q["population"])
     assert m["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-    assert [c["name"] for c in m["columns"]] == ["status", "revenue"]
+    assert [c["name"] for c in m["fields"]] == ["status", "revenue"]
 
 
 def test_model_v1_to_v2_source_queries_nested_rename() -> None:
@@ -557,7 +557,7 @@ def test_model_v1_to_v2_source_queries_with_inline_extension() -> None:
     })
     (inner,) = m["source_queries"]
     assert inner["version"] == mig.CURRENT_VERSIONS["SlayerQuery"]
-    assert inner["source_model"] == "orders"
+    assert inner["population"] == "orders"
     (src,) = inner["extensions"]
     # Merged into columns (status from dimensions + revenue from measures)
     assert sorted(c["name"] for c in src["columns"]) == ["revenue", "status"]
@@ -634,7 +634,7 @@ async def test_v1_yaml_round_trip_to_v2() -> None:
         new_path = Path(models_dir) / "demo" / "orders.yaml"
         on_disk = yaml.safe_load(await asyncio.to_thread(new_path.read_text))
         assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert "columns" in on_disk
+        assert "fields" in on_disk
         assert "dimensions" not in on_disk
 
 
@@ -922,7 +922,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "amount", "sql": "amount", "type": "number"}],
         })
-        assert d["columns"][0]["type"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "DOUBLE"
 
     def test_integer_renames_to_int(self) -> None:
         # v4 never shipped INTEGER but we accept lenient input on the path.
@@ -931,7 +931,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "qty", "sql": "qty", "type": "integer"}],
         })
-        assert d["columns"][0]["type"] == "INT"
+        assert d["fields"][0]["datatype"] == "INT"
 
     def test_time_renames_to_timestamp(self) -> None:
         d = mig.migrate("SlayerModel", {
@@ -939,7 +939,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "ts", "sql": "ts", "type": "time"}],
         })
-        assert d["columns"][0]["type"] == "TIMESTAMP"
+        assert d["fields"][0]["datatype"] == "TIMESTAMP"
 
     def test_date_renames_to_date(self) -> None:
         d = mig.migrate("SlayerModel", {
@@ -947,7 +947,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "d", "sql": "d", "type": "date"}],
         })
-        assert d["columns"][0]["type"] == "DATE"
+        assert d["fields"][0]["datatype"] == "DATE"
 
     def test_boolean_renames_to_boolean(self) -> None:
         d = mig.migrate("SlayerModel", {
@@ -955,7 +955,7 @@ class TestV4ToV5DictMigration:
             "name": "items", "sql_table": "items", "data_source": "ds",
             "columns": [{"name": "flag", "sql": "flag", "type": "boolean"}],
         })
-        assert d["columns"][0]["type"] == "BOOLEAN"
+        assert d["fields"][0]["datatype"] == "BOOLEAN"
 
     @pytest.mark.parametrize("pseudo", ["count", "count_distinct", "sum", "avg", "min", "max", "last"])
     def test_pseudo_types_stripped(self, pseudo: str) -> None:
@@ -965,7 +965,7 @@ class TestV4ToV5DictMigration:
             "columns": [{"name": "weird", "sql": "weird", "type": pseudo}],
         })
         # Field is removed (not present), so Pydantic falls through to default.
-        assert "type" not in d["columns"][0]
+        assert "datatype" not in d["fields"][0]
 
     def test_recurses_into_source_queries_inline_models(self) -> None:
         """Inline ``source_model`` dicts inside ``source_queries`` get the same

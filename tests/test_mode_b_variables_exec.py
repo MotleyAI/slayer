@@ -205,7 +205,7 @@ class TestSavedMeasures:
 
     async def test_saved_measure_uses_model_default(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_dataset(orders_dataset().model_copy(update={
-            "measures": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
+            "metrics": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
             "query_variables": {"k": 10},
         }))
         resp = await exec_engine.execute(q(metrics=["amt_scaled"]))
@@ -314,7 +314,7 @@ class TestSave:
 
     async def test_source_model_default_satisfies_save(self, exec_engine: SlayerQueryEngine) -> None:
         await exec_engine.save_dataset(orders_dataset().model_copy(update={
-            "measures": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
+            "metrics": [DatasetMetric(name="amt_scaled", expression="sum(amount) * {k}")],
             "query_variables": {"k": 10},
         }))
         saved = await exec_engine.create_dataset_from_query(query=q(metrics=["amt_scaled"]), name="sourced")

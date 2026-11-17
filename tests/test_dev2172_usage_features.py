@@ -294,11 +294,11 @@ def test_spool_never_keeps_a_hand_crafted_sentinel(tmp_path: Path) -> None:
 def test_older_spool_without_function_counters_is_kept_whole(tmp_path: Path) -> None:
     _spool_raw(tmp_path, {"usage": {"cli:query": {"ok": 1}},
                           "features": {"aggregations": {"sum": 3}, "transforms": {"cumsum": 1},
-                                       "flags": {"filter": 2}}})
+                                       "flags": {"filters": 2}}})
     batch = _load_one(tmp_path)
     assert batch.features.aggregations == {"sum": 3}
     assert batch.features.transforms == {"cumsum": 1}
-    assert batch.features.flags == {"filter": 2}
+    assert batch.features.flags == {"filters": 2}
     assert batch.features.functions == {}
     assert batch.usage["cli:query"].ok == 1
 

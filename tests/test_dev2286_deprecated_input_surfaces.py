@@ -30,7 +30,7 @@ from tests._deprecated_input_helpers import (
 from tests._library_names_fixtures import agg, metric, stored_engine, t_doc
 from tests._model_access_fixtures import mcp_text
 
-EXTENSION_OLD = "An extension object in `source_model`"
+EXTENSION_OLD = "An extension object in `population`"
 LEGACY_CLEAN = {"population": {"source_name": "orders"}, "metrics": ["count(*)"]}
 TWO_FORMS = strict(LEGACY_CLEAN)
 
@@ -173,7 +173,7 @@ class TestDryRun:
         async with stored_engine(datasets=[t_doc(aggregations=[agg("reverse")])]) as engine:
             text = await _dry_run(engine.storage, query, "json")
         shadows = [w for w in json.loads(text)["warnings"] if w.get("kind") == "library_name_shadow"]
-        assert [(w["model"], w["aggregation"], w["function"]) for w in shadows] == [("t", "reverse", "reverse")]
+        assert [(w["dataset"], w["aggregation"], w["function"]) for w in shadows] == [("t", "reverse", "reverse")]
 
     async def test_mcp_json_without_warnings_has_no_warnings_key(self) -> None:
         async with orders_engine() as engine:

@@ -17,6 +17,7 @@ from typing import Any, Callable, Coroutine, Dict, Iterator, List, Optional, Set
 
 from sqlglot import exp
 from sqlglot.expressions.core import Expr
+from typing_extensions import deprecated
 from pydantic import (
     BaseModel,
     ConfigDict as PydanticConfigDict,
@@ -88,7 +89,7 @@ from slayer.core.names import name_taken
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine_query, respell_spine, spine_variant_warnings
 from slayer.core.scope import StageDisplay, StageSchema, collect_stale_spellings
 from slayer.core.legacy_spellings import collect_legacy_spellings, emit_deprecations
-from slayer.core.vocabulary import one_document
+from slayer.core.vocabulary import method_twin, one_document
 from slayer.core.warnings import (
     AnySlayerWarning,
     AssociatedWarningPayload,
@@ -3015,6 +3016,74 @@ class SlayerQueryEngine:
         if save:
             return await self.save_dataset(dataset, warnings_out=warnings_out)
         return await self._validate_and_populate_cache(dataset)
+
+    @method_twin("save_dataset", arguments={"model": "dataset"})
+    @deprecated("save_model is deprecated; use save_dataset", category=None)
+    async def save_model(
+        self, dataset: SlayerDataset, *, warnings_out: Optional[List[SlayerWarning]] = None,
+    ) -> SlayerDataset: ...
+
+    @method_twin("create_dataset_from_query")
+    @deprecated("create_model_from_query is deprecated; use create_dataset_from_query", category=None)
+    async def create_model_from_query(
+        self, query: "SlayerQuery | list[SlayerQuery] | dict | list[dict]", name: str,
+        description: Optional[str] = None, variables: Optional[Dict[str, Any]] = None, save: bool = True,
+        access_tags: Optional[List[str]] = None, warnings_out: Optional[List[SlayerWarning]] = None,
+    ) -> SlayerDataset: ...
+
+    @method_twin("create_dataset_from_query_sync")
+    @deprecated("create_model_from_query_sync is deprecated; use create_dataset_from_query_sync", category=None)
+    def create_model_from_query_sync(
+        self, query: "SlayerQuery | list[SlayerQuery] | dict | list[dict]", name: str,
+        description: Optional[str] = None, variables: Optional[Dict[str, Any]] = None, save: bool = True,
+        access_tags: Optional[List[str]] = None, warnings_out: Optional[List[SlayerWarning]] = None,
+    ) -> SlayerDataset: ...
+
+    @method_twin("delete_dataset_by_name", arguments={"model_name": "dataset_name"})
+    @deprecated("delete_model_by_name is deprecated; use delete_dataset_by_name", category=None)
+    async def delete_model_by_name(self, *, dataset_name: str, data_source: Optional[str]) -> bool: ...
+
+    @method_twin("detect_relationship_cardinality", arguments={"model": "dataset"})
+    @deprecated("detect_join_cardinality is deprecated; use detect_relationship_cardinality", category=None)
+    async def detect_join_cardinality(
+        self, *, data_source: str | None = None, dataset: str | None = None, persist: bool = False,
+    ) -> RelationshipCardinalityReport: ...
+
+    @method_twin("edit_dataset_remove", arguments={
+        "model_name": "dataset_name", "remove_columns": "remove_fields", "remove_measures": "remove_metrics",
+        "remove_joins": "remove_relationships", "remove_join_edges": "remove_relationship_edges",
+    })
+    @deprecated("edit_model_remove is deprecated; use edit_dataset_remove", category=None)
+    async def edit_model_remove(
+        self, *, dataset_name: str, data_source: Optional[str], remove_fields: Optional[List[str]] = None,
+        remove_metrics: Optional[List[str]] = None, remove_aggregations: Optional[List[str]] = None,
+        remove_relationships: Optional[List[str]] = None, remove_filters: Optional[List[str]] = None,
+        remove_relationship_edges: Optional[List[RelationshipEdgeRef]] = None,
+    ) -> SlayerDataset: ...
+
+    @method_twin("expand_query_backed_dataset", arguments={"model": "dataset"})
+    @deprecated("expand_query_backed_model is deprecated; use expand_query_backed_dataset", category=None)
+    async def expand_query_backed_model(self, dataset: SlayerDataset) -> SlayerDataset: ...
+
+    @method_twin("recommend_population")
+    @deprecated("recommend_root_model is deprecated; use recommend_population", category=None)
+    async def recommend_root_model(
+        self, items: list[str], *, data_source: str | None = None, root_hint: str | None = None,
+    ) -> PopulationRecommendation: ...
+
+    @method_twin("recommend_population_sync")
+    @deprecated("recommend_root_model_sync is deprecated; use recommend_population_sync", category=None)
+    def recommend_root_model_sync(
+        self, items: list[str], *, data_source: str | None = None, root_hint: str | None = None,
+    ) -> PopulationRecommendation: ...
+
+    @method_twin("validate_datasets")
+    @deprecated("validate_models is deprecated; use validate_datasets", category=None)
+    async def validate_models(self, data_source: Optional[str] = None) -> "List[schema_drift.DriftReportEntry]": ...
+
+    @method_twin("validate_sql_dataset_source", arguments={"model": "dataset"})
+    @deprecated("validate_sql_model_source is deprecated; use validate_sql_dataset_source", category=None)
+    async def validate_sql_model_source(self, dataset: SlayerDataset) -> None: ...
 
     async def save_dataset(
         self, dataset: SlayerDataset, *, warnings_out: Optional[List[SlayerWarning]] = None,

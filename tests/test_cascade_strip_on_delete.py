@@ -17,7 +17,9 @@ from unittest.mock import patch
 import pytest
 
 from slayer.core.models import DatasetField, SlayerDataset
+from slayer.embeddings import client as embedding_client
 from slayer.engine.query_engine import SlayerQueryEngine
+from slayer.storage import base as base_mod
 from slayer.storage.base import StorageBackend
 
 
@@ -154,8 +156,6 @@ class TestEmbeddingRefreshNotFired:
         """Belt-and-suspenders: even if refresh fired, the actual
         litellm call must not happen because cascade-strip never changes
         the embedded text (tags excluded from memory embedding text)."""
-        from slayer.embeddings import client as embedding_client
-
         # The autouse conftest stubs ``is_available`` with a plain
         # lambda; reach past it here to force "channel available".
         monkeypatch.setattr(embedding_client, "is_available", lambda: True)
@@ -186,8 +186,6 @@ class TestCascadeLostUpdateWindow:
         original (now-stale) row. The cascade writes back the
         original-minus-cascade-target, losing the interleaved upsert's
         new entity."""
-        from slayer.storage import base as base_mod
-
         seed = await storage.save_memory(
             id="m1",
             learning="x",

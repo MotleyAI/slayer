@@ -52,7 +52,8 @@ def test_modeljoin_accepts_description_and_meta() -> None:
 def test_old_v7_join_without_new_fields_validates() -> None:
     # Data written before the fields existed omits them entirely.
     j = DatasetRelationship.model_validate({"to": "c", "join_pairs": [["a", "b"]]})
-    assert j.description is None and j.meta is None
+    assert j.description is None
+    assert j.meta is None
     # And a whole v7 model whose join lacks the fields still loads.
     m = SlayerDataset.model_validate(
         {
@@ -64,7 +65,8 @@ def test_old_v7_join_without_new_fields_validates() -> None:
             "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "customer_id"]]}],
         }
     )
-    assert m.relationships[0].description is None and m.relationships[0].meta is None
+    assert m.relationships[0].description is None
+    assert m.relationships[0].meta is None
 
 
 async def test_yaml_roundtrip_preserves_join_fields() -> None:

@@ -202,7 +202,7 @@ class TestConflicts:
         home = DatasetRelationship(to="regions", name="home", join_pairs=REGION_PAIRS)
         back = DatasetRelationship(to="customers", name="home", join_pairs=[["id", "region_id"]])
         merge = EdgeMerge(datasets={"customers": customers(home), "regions": regions().model_copy(
-            update={"joins": [back]})})
+            update={"relationships": [back]})})
         with pytest.raises(QueryExtensionError, match="matches 2 edges"):
             merge.add(declaring="customers", relationship=home)
 
@@ -254,7 +254,7 @@ class TestNewEdges:
         ])
         stored = with_datasets(
             customers(DatasetRelationship(to="regions", name="home_region", join_pairs=REGION_PAIRS)),
-            regions().model_copy(update={"joins": [
+            regions().model_copy(update={"relationships": [
                 DatasetRelationship(to="customers", name="manager", join_pairs=[["manager_id", "id"]])]}),
         )
         async with shop(dialect) as engine:

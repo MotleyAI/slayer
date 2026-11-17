@@ -225,7 +225,7 @@ class TestFanningDefaultHomesLikeItsTwin:
 
 class TestFailClosed:
     async def test_local_kwarg_on_a_fanning_path_stays_refused(self) -> None:
-        with pytest.raises(ValueError, match="(?i)unproven join hop") as ei:
+        with pytest.raises(ValueError, match="(?i)unproven relationship hop") as ei:
             await _gen("wsum_cust_spend(pop, weight=region_events.value)", source_dataset="regions")
         assert "region_events" in str(ei.value)
 

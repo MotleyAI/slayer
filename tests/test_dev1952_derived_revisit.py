@@ -134,8 +134,8 @@ class TestErrorVocabulary:
         assert exc.hop == "HOP"
         assert exc.via == "VIA"
         msg = str(exc)
-        assert "Circular join detected resolving 'A.B.leaf' from 'ROOT'" in msg
-        assert "hop 'HOP' revisits model 'REV'" in msg
+        assert "Circular relationship path detected resolving 'A.B.leaf' from 'ROOT'" in msg
+        assert "hop 'HOP' revisits dataset 'REV'" in msg
 
     def test_circular_error_names_the_column_when_set(self) -> None:
         exc = CircularRelationshipPathError(
@@ -162,12 +162,12 @@ class TestErrorVocabulary:
         assert exc.hop == "customers"
         assert exc.via == "regions"
         msg = str(exc)
-        assert "Derived column 'revisit_spend' on model 'customers'" in msg
+        assert "Derived field 'revisit_spend' on dataset 'customers'" in msg
         assert "references 'regions.customers.spend'" in msg
-        assert "revisits model 'customers'" in msg
-        assert "not a column of 'customers'" in msg
+        assert "revisits dataset 'customers'" in msg
+        assert "not a field of 'customers'" in msg
         # Both remedy arms: reference the column directly, or aggregate on the via.
-        assert "Reference the column on 'customers'" in msg
+        assert "Reference the field on 'customers'" in msg
         assert "declare the aggregate on 'regions'" in msg
         assert "reaches 'customers'" in msg
 
@@ -255,7 +255,7 @@ class TestBestEffortConsumersUnchanged:
         models = _chain()
         assert relationship_safety._hop_walk_reason(
             root_dataset=models["regions"], path=("customers", "regions"),
-            datasets_by_name=models) == "crosses a fanning or unproven join hop to customers"
+            datasets_by_name=models) == "crosses a fanning or unproven relationship hop to customers"
 
     def test_path_grain_determined_false(self) -> None:
         models = _chain()
@@ -530,7 +530,7 @@ class TestSaveTimeEngineDoor:
         await storage.save_dataset(_regions())
         engine = SlayerQueryEngine(storage=storage)
         model = _customers().model_copy(
-            update={"filter": ["regions.customers.spend > 0"]})
+            update={"filters": ["regions.customers.spend > 0"]})
         with pytest.raises(CircularRelationshipPathError) as ei:
             await engine.save_dataset(model)
         assert not isinstance(ei.value, DerivedFieldCircularError)
@@ -640,8 +640,8 @@ async def _assert_circular(
         await engine.execute(query)
     exc = ei.value
     msg = str(exc)
-    assert "Circular join" in msg
-    assert "revisits model" in msg
+    assert "Circular relationship path" in msg
+    assert "revisits dataset" in msg
     assert "no such column" not in msg.lower()
     if reference is not None:
         assert exc.reference == reference

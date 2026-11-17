@@ -72,7 +72,8 @@ async def test_an_old_kind_converts_in_the_naive_filter(
     assert fresh.results
     assert ids(legacy) == ids(fresh)
     assert {h.kind for h in fresh.results} <= NEW_KINDS
-    assert mentions(legacy, old, new) and not mentions(fresh, old)
+    assert mentions(legacy, old, new)
+    assert not mentions(fresh, old)
     assert [(payload_of(w).old, payload_of(w).new) for w in deprecations(caught)] == [(old, new)]
 
 

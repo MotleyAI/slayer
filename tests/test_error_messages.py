@@ -171,7 +171,7 @@ class TestIllegalWindowInFilterError:
             "  expr: 'rank() OVER (ORDER BY x) <= 3'\n"
             "  source: raw OVER(...) in DSL filter\n"
             "  suggestion: use a rank-family transform "
-            "(e.g. `rank(<measure>, direction='desc') <= N`)."
+            "(e.g. `rank(<metric>, direction='desc') <= N`)."
         )
 
     def test_filter_naming_windowed_column(self):
@@ -198,7 +198,7 @@ class TestAggregationNotAllowedError:
             reason="aggregation 'sum' is numeric-only; column 'status' is TEXT.",
         )
         assert str(e) == (
-            "AggregationNotAllowedError: Aggregation 'sum' is not allowed on column "
+            "AggregationNotAllowedError: Aggregation 'sum' is not allowed on field "
             "'status'.\n"
             "  reason: aggregation 'sum' is numeric-only; column 'status' is TEXT."
         )
@@ -223,7 +223,7 @@ class TestUnknownFunctionError:
         assert str(e) == (
             "UnknownFunctionError: Function 'regexp_match' is not allowed in Mode B.\n"
             "  at measures[0].formula\n"
-            "  suggestion: move the call to a derived Column.sql (Mode A)."
+            "  suggestion: move the call to a derived DatasetField.sql (Mode A)."
         )
 
     def test_with_explicit_suggestion(self):
@@ -244,7 +244,7 @@ class TestMeasureRecursionLimitError:
     def test_renders_chain(self):
         e = MetricRecursionLimitError(chain=["a", "b", "c", "d"], limit=32)
         s = str(e)
-        assert "MeasureRecursionLimitError" in s
+        assert "MetricRecursionLimitError" in s
         assert "limit=32" in s
         assert "a → b → c → d" in s
 
@@ -253,7 +253,7 @@ class TestMeasureCycleError:
     def test_renders_cycle(self):
         e = MetricCycleError(chain=["a", "b", "a"])
         assert str(e) == (
-            "MeasureCycleError: Cyclic reference in named-measure expansion.\n"
+            "MetricCycleError: Cyclic reference in named-metric expansion.\n"
             "  chain: a → b → a"
         )
 
@@ -270,8 +270,8 @@ class TestDuplicateMeasureNameError:
             occurrences=["measures[0]", "measures[3]"],
         )
         assert str(e) == (
-            "DuplicateMeasureNameError: The measure name is declared more than once.\n"
-            "  at measure 'rev'\n"
+            "DuplicateMetricNameError: The metric name is declared more than once.\n"
+            "  at metric 'rev'\n"
             "  occurrences: ['measures[0]', 'measures[3]']"
         )
 
@@ -280,9 +280,9 @@ class TestMeasureNameCollidesWithColumnError:
     def test_basic(self):
         e = MetricNameCollidesWithFieldError(name="status", dataset="orders")
         assert str(e) == (
-            "MeasureNameCollidesWithColumnError: The declared measure name "
-            "matches a source column on model 'orders'.\n"
-            "  at measure 'status'"
+            "MetricNameCollidesWithFieldError: The declared metric name "
+            "matches a source field on dataset 'orders'.\n"
+            "  at metric 'status'"
         )
 
 
@@ -294,9 +294,9 @@ class TestCanonicalAliasShadowsColumnError:
             dataset="orders",
         )
         assert str(e) == (
-            "CanonicalAliasShadowsColumnError: The canonical alias 'status_count' "
-            "shadows a source column on model 'orders'.\n"
-            "  at measure 'count(status)'"
+            "CanonicalAliasShadowsFieldError: The canonical alias 'status_count' "
+            "shadows a source field on dataset 'orders'.\n"
+            "  at metric 'count(status)'"
         )
 
 

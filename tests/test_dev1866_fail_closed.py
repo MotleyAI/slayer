@@ -38,7 +38,7 @@ class TestFailClosed:
         err = ei.value
         assert err.reason is PopulationErrorReason.TIE
         assert set(err.candidates) == {"acct", "prof"}
-        assert "source_model" in str(err)
+        assert "population" in str(err)
         _assert_stable_prefix(err)
 
     async def test_no_viable_candidate_lists_the_siblings(self, storage) -> None:
@@ -113,7 +113,7 @@ class TestFailClosed:
         err = ei.value
         assert err.reason is PopulationErrorReason.SIBLING_STAGE
         assert "s1" in str(err)
-        assert "source_model" in str(err)  # advice: name the sibling explicitly
+        assert "population" in str(err)  # advice: name the sibling explicitly
         _assert_stable_prefix(err)
 
     async def test_measure_only_without_datasource_is_empty_determination(self, storage) -> None:

@@ -27,8 +27,10 @@ Spec rules pinned by ``tests/test_search_render.py``:
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
+from typing_extensions import deprecated
 
 from slayer.core.models import (
     Aggregation,
@@ -37,6 +39,7 @@ from slayer.core.models import (
     SlayerDataset,
     field_type_text,
 )
+from slayer.core.vocabulary import name_twins
 from slayer.memories.models import Memory
 
 
@@ -61,7 +64,7 @@ class RenderedEntity(BaseModel):
 
 
 def _named_children_csv(items: list[tuple[str, str]]) -> str:
-    """Render ``[("a", "field"), ("b", "field")]`` as ``"a (field), b (field)"``."""
+    """Render ``[("a", "column"), ("b", "column")]`` as ``"a (column), b (column)"`` (embedding text keeps its words)."""
     return ", ".join(f"{name} ({kind})" for name, kind in items)
 
 
@@ -94,7 +97,7 @@ def render_datasource_text(
     if visible:
         lines.append(
             "Models: " + _named_children_csv(
-                [(m.name, "dataset") for m in visible]
+                [(m.name, "model") for m in visible]
             )
         )
     return "\n".join(lines)
@@ -162,13 +165,13 @@ def render_dataset_text(*, dataset: SlayerDataset) -> str:
     if visible_fields:
         lines.append(
             "Columns: " + _named_children_csv(
-                [(c.name, "field") for c in visible_fields]
+                [(c.name, "column") for c in visible_fields]
             )
         )
     if dataset.metrics:
         lines.append(
             "Measures: " + _named_children_csv(
-                [(m.name or "", "metric") for m in dataset.metrics if m.name]
+                [(m.name or "", "measure") for m in dataset.metrics if m.name]
             )
         )
     if dataset.aggregations:
@@ -181,7 +184,7 @@ def render_dataset_text(*, dataset: SlayerDataset) -> str:
         # Named-child mentions (target dataset name + kind).
         lines.append(
             "Joins: " + _named_children_csv(
-                [(j.to, "dataset") for j in dataset.relationships]
+                [(j.to, "model") for j in dataset.relationships]
             )
         )
         # Non-named-child: the join_pairs in full.
@@ -411,3 +414,16 @@ def collect_dataset_entity_pairs(
             description=aggregation.description,
         ))
     return out
+
+
+if TYPE_CHECKING:
+    @deprecated("collect_model_entity_pairs is deprecated; use collect_dataset_entity_pairs", category=None)
+    def collect_model_entity_pairs(
+        *, dataset: SlayerDataset, include_hidden: bool = False,
+    ) -> list[RenderedEntity]: ...
+
+
+__getattr__ = name_twins(
+    namespace=globals(), renames={"collect_model_entity_pairs": "collect_dataset_entity_pairs"},
+    arguments={"collect_model_entity_pairs": {"model": "dataset"}},
+)

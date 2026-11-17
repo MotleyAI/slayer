@@ -760,12 +760,12 @@ class TestRootHint:
 
     # -- bad hint → ValueError ------------------------------------------
     async def test_nonexistent_hint_raises(self, engine: SlayerQueryEngine) -> None:
-        with pytest.raises(ValueError, match="not a model in datasource"):
+        with pytest.raises(ValueError, match="not a dataset in datasource"):
             await engine.recommend_population(["orders.status"], root_hint="ordrs")
 
     async def test_wrong_kind_bare_hint_raises_not_a_model(self, engine: SlayerQueryEngine) -> None:
         # 'status' is a column, not a model → "not a model".
-        with pytest.raises(ValueError, match="not a model in datasource"):
+        with pytest.raises(ValueError, match="not a dataset in datasource"):
             await engine.recommend_population(["orders.status"], root_hint="status")
 
     async def test_cross_datasource_hint_raises(self, engine: SlayerQueryEngine) -> None:
@@ -859,7 +859,7 @@ class TestResultModels:
         # root_hint status is conveyed via message + warnings only — the
         # result schema must not grow a structured hint field.
         assert set(PopulationRecommendation.model_fields) == {
-            "data_source", "root_model", "reachable",
+            "data_source", "population", "reachable",
             "item_paths", "coverage", "message", "warnings",
         }
 

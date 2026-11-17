@@ -213,7 +213,7 @@ def test_package_qualified_ref_follows_the_policy(tmp_path: Path) -> None:
 ORDERS = {"name": "orders", "model": "ref('orders')",
           "entities": [{"name": "order_id", "type": "primary", "expr": "OrderId"}],
           "dimensions": [{"name": "Status", "type": "categorical", "expr": "status"}],
-          "metrics": [{"name": "revenue", "agg": "sum", "expr": "amount"}]}
+          "measures": [{"name": "revenue", "agg": "sum", "expr": "amount"}]}
 
 
 def test_entity_expr_reads_the_folded_column(tmp_path: Path) -> None:

@@ -244,7 +244,7 @@ class TestSaveCollisions:
 
     async def test_a_new_join_name_collision_is_refused(self, storage: StorageBackend) -> None:
         await storage.save_dataset(dev2215_datasets()[1])
-        model = orders_dataset().model_copy(update={"joins": [
+        model = orders_dataset().model_copy(update={"relationships": [
             DatasetRelationship(to="customers", name="buyer", join_pairs=[["customer_id", "id"]]),
             DatasetRelationship(to="customers", name="Buyer", join_pairs=[["customer_id", "id"]]),
         ]})
@@ -284,7 +284,7 @@ class TestSaveCollisions:
 
     async def test_removing_and_reintroducing_a_collision(self, storage: StorageBackend) -> None:
         await storage.save_dataset(ledger_dataset(), _validate=False)
-        without = ledger_dataset().model_copy(update={"columns": [c for c in ledger_dataset().fields if c.name != "revenue"]})
+        without = ledger_dataset().model_copy(update={"fields": [c for c in ledger_dataset().fields if c.name != "revenue"]})
         await storage.save_dataset(without)
         model = ledger_dataset()
         with pytest.raises(SlayerError) as err:
@@ -361,7 +361,7 @@ def test_dotted_names_colliding_by_case_are_ambiguous() -> None:
 
 @pytest.mark.parametrize(("dimension", "expected"), [
     ('"Revenue"', {"name": "Revenue", "quoted": [True]}),
-    ('ledger."Revenue"', {"name": "Revenue", "model": "ledger", "quoted": [False, True]}),
+    ('ledger."Revenue"', {"name": "Revenue", "dataset": "ledger", "quoted": [False, True]}),
     ("Revenue", {"name": "Revenue"}),
 ])
 def test_a_reference_dimension_is_a_column_ref_keeping_its_quoting(dimension: str, expected: dict[str, Any]) -> None:

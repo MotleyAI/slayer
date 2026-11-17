@@ -21,7 +21,8 @@ def load_seed_module():
     """Load tests/perf/seed.py by path (tests.perf is a package; we are not in it)."""
     path = Path(__file__).parent.parent / "seed.py"
     spec = importlib.util.spec_from_file_location("slayer_perf_seed", path)
-    assert spec is not None and spec.loader is not None, path
+    assert spec is not None, path
+    assert spec.loader is not None, path
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

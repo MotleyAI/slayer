@@ -130,7 +130,8 @@ async def test_save_model_rejects_same_model_cycle(tmp_path) -> None:
     # Backwards compat: still catchable as ValueError.
     assert isinstance(exc_info.value, ValueError)
     msg = str(exc_info.value)
-    assert "A.c1" in msg and "A.c2" in msg, f"cycle chain missing names: {msg}"
+    assert "A.c1" in msg, f"cycle chain missing names: {msg}"
+    assert "A.c2" in msg, f"cycle chain missing names: {msg}"
 
 
 async def test_save_model_rejects_three_deep_cycle(tmp_path) -> None:
@@ -273,7 +274,8 @@ async def test_save_model_rejects_cross_model_cycle_within_datasource(
     with pytest.raises(DatasetFieldCycleError) as exc_info:
         await storage.save_dataset(model_a)
     msg = str(exc_info.value)
-    assert "A.x" in msg and "B.y" in msg, f"cross-model cycle chain missing names: {msg}"
+    assert "A.x" in msg, f"cross-model cycle chain missing names: {msg}"
+    assert "B.y" in msg, f"cross-model cycle chain missing names: {msg}"
 
 
 async def test_save_model_rejects_cross_model_cycle_when_second_model_completes_it(
@@ -371,9 +373,8 @@ async def test_save_model_detects_cycle_via_canonical_multihop_path_alias(
     with pytest.raises(DatasetFieldCycleError) as exc_info:
         await storage.save_dataset(model_a)
     msg = str(exc_info.value)
-    assert "A.foo" in msg and "C.x" in msg, (
-        f"multi-hop cycle chain missing names: {msg}"
-    )
+    assert "A.foo" in msg, f"multi-hop cycle chain missing names: {msg}"
+    assert "C.x" in msg, f"multi-hop cycle chain missing names: {msg}"
 
 
 async def test_save_model_skips_subquery_scope_refs_in_cycle_detection(

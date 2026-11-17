@@ -190,7 +190,7 @@ class TestRefineDictWithLiveSchema:
         changed = await _refine(d, ds)
         assert changed is True
         assert d["fields"][0]["datatype"] == "INT"
-        assert d["columns"][1]["type"] == "INT"
+        assert d["fields"][1]["datatype"] == "INT"
 
     async def test_leaves_double_for_real_columns(self, sqlite_with_int_double_text) -> None:
         d = {
@@ -219,7 +219,7 @@ class TestRefineDictWithLiveSchema:
         ds = self._ds_for(sqlite_with_int_double_text["db_path"])
         await _refine(d, ds)
         assert d["fields"][0]["datatype"] == "TEXT"
-        assert d["columns"][1]["type"] == "DOUBLE"
+        assert d["fields"][1]["datatype"] == "DOUBLE"
 
     async def test_skips_non_base_derived_columns(self, sqlite_with_int_double_text) -> None:
         d = {
@@ -320,7 +320,7 @@ class TestYamlStorageRefinementOnLoad:
         with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             raw = yaml.safe_load(f)
         assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        types_by_name = {c["name"]: c["type"] for c in raw["columns"]}
+        types_by_name = {c["name"]: c["datatype"] for c in raw["fields"]}
         assert types_by_name["id"] == "INT"
         assert types_by_name["qty"] == "INT"
         assert types_by_name["amount"] == "DOUBLE"
@@ -487,9 +487,9 @@ class TestRefineSqliteAffinityProbe:
         ds = self._ds_for(db_path)
         changed = await _refine(d, ds)
         assert changed is True
-        assert d["columns"][0]["type"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "DOUBLE"
         # Auto-default integer format is updated to FLOAT.
-        assert d["columns"][0]["format"]["type"] == "float"
+        assert d["fields"][0]["format"]["type"] == "float"
 
     async def test_sqlite_double_narrows_to_int_when_probe_certifies_int(
         self, tmp_path: Path
@@ -512,7 +512,7 @@ class TestRefineSqliteAffinityProbe:
         }
         ds = self._ds_for(db_path)
         await _refine(d, ds)
-        assert d["columns"][0]["type"] == "INT"
+        assert d["fields"][0]["datatype"] == "INT"
 
     async def test_sqlite_double_stays_double_when_probe_says_double(
         self, tmp_path: Path
@@ -533,7 +533,7 @@ class TestRefineSqliteAffinityProbe:
         }
         ds = self._ds_for(db_path)
         await _refine(d, ds)
-        assert d["columns"][0]["type"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "DOUBLE"
 
     async def test_sqlite_double_stays_double_when_probe_returns_none(
         self, tmp_path: Path
@@ -557,7 +557,7 @@ class TestRefineSqliteAffinityProbe:
             return_value=None,
         ):
             await _refine(d, ds)
-        assert d["columns"][0]["type"] == "DOUBLE"
+        assert d["fields"][0]["datatype"] == "DOUBLE"
 
     async def test_postgres_still_narrows_double_to_int(self) -> None:
         """Sanity: the DEV-1361 narrowing rule is preserved for non-SQLite
@@ -630,9 +630,9 @@ class TestRefineSqliteAffinityProbe:
         await _refine(d, ds)
         assert d["fields"][0]["datatype"] == "DOUBLE"
         # Custom format preserved verbatim.
-        assert d["columns"][0]["format"]["type"] == "currency"
-        assert d["columns"][0]["format"]["symbol"] == "€"
-        assert d["columns"][0]["format"]["precision"] == 3
+        assert d["fields"][0]["format"]["type"] == "currency"
+        assert d["fields"][0]["format"]["symbol"] == "€"
+        assert d["fields"][0]["format"]["precision"] == 3
 
     async def test_sqlite_int_with_text_storage_widens_to_text(
         self, tmp_path: Path
@@ -659,7 +659,7 @@ class TestRefineSqliteAffinityProbe:
         assert changed is True
         assert d["fields"][0]["datatype"] == "TEXT"
         # Auto-default integer format must be cleared on TEXT widening.
-        assert d["columns"][0].get("format") in (None, {})
+        assert d["fields"][0].get("format") in (None, {})
 
 
 class TestHasRefineableColumnsSqliteIntBranch:
@@ -828,14 +828,14 @@ class TestV7SqliteModelNotAutoRepairedOnLoad:
                     "name": "items",
                     "sql_table": "items",
                     "data_source": "live",
-                    "columns": [
+                    "fields": [
                         {
                             "name": "id", "sql": "id",
-                            "type": "INT", "primary_key": True,
+                            "datatype": "INT", "primary_key": True,
                         },
                         # WRONG persisted type: live storage is REAL but
                         # persisted INT. Load must NOT widen it.
-                        {"name": "qty", "sql": "qty", "type": "INT"},
+                        {"name": "qty", "sql": "qty", "datatype": "INT"},
                     ],
                 },
                 f,
@@ -897,7 +897,7 @@ class TestCliMigrateTypes:
         with open(storage_with_v4_model["model_path"]) as f:  # NOSONAR(S7493) — test fixture: sync I/O is fine
             raw = yaml.safe_load(f)
         assert raw["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        types_by_name = {c["name"]: c["type"] for c in raw["columns"]}
+        types_by_name = {c["name"]: c["datatype"] for c in raw["fields"]}
         assert types_by_name["id"] == "INT"
         assert types_by_name["qty"] == "INT"
 

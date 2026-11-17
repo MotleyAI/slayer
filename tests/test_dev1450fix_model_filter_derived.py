@@ -217,5 +217,5 @@ async def test_windowed_derived_column_model_filter_raises(engine):
 async def test_measure_ref_model_filter_raises(engine):
     """A model filter referencing a same-model ModelMeasure still raises."""
     q = SlayerQuery.model_validate({"population": "orders_meas", "metrics": [{"expression": "count(*)"}]})
-    with pytest.raises(ValueError, match="measure"):
+    with pytest.raises(ValueError, match="metric"):
         await engine.execute(q)

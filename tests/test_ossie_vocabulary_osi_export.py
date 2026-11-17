@@ -72,7 +72,8 @@ async def stored_datasets(env: Env) -> dict[str, dict[str, Any]]:
 
 def test_the_v1_fixture_is_a_pre_rename_export() -> None:
     bodies = slayer_payloads(v1_document())
-    assert bodies and {b["version"] for b in bodies} == {1}
+    assert bodies
+    assert {b["version"] for b in bodies} == {1}
     assert PRE_2_0_PAYLOAD_KEYS & payload_keys(bodies)
 
 

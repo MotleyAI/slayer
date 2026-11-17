@@ -141,7 +141,7 @@ class TestExpressionRankingKey:
     ])
     async def test_non_row_level_ranking_key_rejected(self, sqlite_engine: SlayerQueryEngine, formula: str) -> None:
         query = q(metrics=[m(formula)])
-        with pytest.raises(ValueError, match="ranks by a column"):
+        with pytest.raises(ValueError, match="ranks by a field"):
             await sqlite_engine.execute(query)
 
 

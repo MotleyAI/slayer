@@ -112,7 +112,8 @@ class TestMcpArguments:
             ))
         assert reported("\n".join(reply.get("warnings", [])), old="measures", new="metrics")
         dataset = await storage.get_dataset("orders", data_source=DS)
-        assert dataset is not None and "revenue" not in {m.name for m in dataset.metrics}
+        assert dataset is not None
+        assert "revenue" not in {m.name for m in dataset.metrics}
 
     @pytest.mark.parametrize(("old", "new"), [("columns", "fields"), ("measures", "metrics"),
                                               ("joins", "relationships")])
@@ -126,7 +127,8 @@ class TestMcpArguments:
             text = await mcp_text(storage, "create_dataset", **args)
         assert reported(text, old=old, new=new), text
         dataset = await storage.get_dataset("orders2", data_source=DS)
-        assert dataset is not None and getattr(dataset, new)
+        assert dataset is not None
+        assert getattr(dataset, new)
 
     async def test_old_query_keys_convert_in_the_query_tool(self, tmp_path: Path) -> None:
         storage = await seeded(tmp_path)
@@ -221,7 +223,8 @@ class TestRest:
         assert "deprecation" in headers_of(resp)
         assert any("/models" in w["old"] for w in deprecated_in(resp.json()["warnings"]))
         dataset = await storage.get_dataset("orders", data_source=DS)
-        assert dataset is not None and [m.name for m in dataset.metrics] == ["n"]
+        assert dataset is not None
+        assert [m.name for m in dataset.metrics] == ["n"]
 
     async def test_an_old_delete_route_deletes(self, tmp_path: Path) -> None:
         storage = await seeded(tmp_path)

@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from slayer.usage_reporting import sender, spool
-from slayer.usage_reporting.payload import SCHEMA_VERSION, USAGE_KEYS, Batch, Context, UsageReport, read_spooled
+from slayer.usage_reporting.payload import SCHEMA_VERSION, USAGE_KEYS, Batch, Context, UsageKey, UsageReport, read_spooled
 from slayer.usage_reporting.settings import UsageReportingConfig
 from tests._usage_reporting_helpers import build_storage, cli, config, quiet_config, write_config
 
@@ -97,14 +97,14 @@ class TestSchema:
 
 class TestOlderBatches:
     @pytest.mark.parametrize(("old", "new"), sorted(RENAMED_KEYS.items()))
-    def test_a_renamed_key_keeps_its_counts(self, old: str, new: str) -> None:
+    def test_a_renamed_key_keeps_its_counts(self, old: str, new: UsageKey) -> None:
         surface = old.partition(":")[0]
         batch = read_spooled(json.dumps({"usage": {
             old: {"ok": 2, "errors": {"timeout": 1}}, new: {"ok": 1}, f"{surface}:other": {"ok": 5},
         }}).encode())
         assert batch.usage[new].ok == 3
         assert batch.usage[new].errors == {"timeout": 1}
-        assert batch.usage[f"{surface}:other"].ok == 5
+        assert {str(k): v.ok for k, v in batch.usage.items()}[f"{surface}:other"] == 5
 
     def test_the_model_count_bucket_becomes_the_dataset_count(self) -> None:
         batch = read_spooled(json.dumps({"context": {"model_count": {"11-50": 1}, "storage": {"yaml": 1}}}).encode())

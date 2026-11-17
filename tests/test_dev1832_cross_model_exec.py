@@ -294,12 +294,12 @@ class TestExpressionSourceTyping:
     async def test_fanning_leaf_fails_closed(self):
         query = orders_q(metrics=[
             DatasetMetric(expression="sum(amount - customers.regions.bad_pop)", name="m")])
-        with pytest.raises(ValueError, match="(?i)unproven join hop|fanning") as ei:
+        with pytest.raises(ValueError, match="(?i)unproven relationship hop|fanning") as ei:
             await gen(query)
         assert not re.search(r"DEV-\d+", str(ei.value))
         # A source-leaf crossing names the cross-model spelling as the remedy.
         assert "region_events" in str(ei.value)
-        assert "Aggregate the target column directly" in str(ei.value)
+        assert "Aggregate the target field directly" in str(ei.value)
 
     async def test_unanalysable_leaf_fails_closed(self):
         query = orders_q(metrics=[

@@ -89,7 +89,8 @@ def assert_refused(cls: Any, raw: dict[str, Any], *, new: str, old: str) -> None
     typed = [e for e in errors_in(ei.value) if isinstance(e, SpellingConflictError)]
     assert typed, ei.value
     message = str(typed[0])
-    assert new in message and old in message
+    assert new in message
+    assert old in message
 
 
 @pytest.mark.parametrize("case", sorted(DATASET_CASES))
@@ -114,4 +115,5 @@ async def test_rest_refuses_both_query_keys_as_a_client_error() -> None:
     async with vocab_engine("sqlite") as engine:
         resp = TestClient(create_app(storage=engine.storage)).post("/query", json=plus(QUERY, source_model="orders"))
     assert resp.status_code in (400, 422)
-    assert "population" in resp.text and "source_model" in resp.text
+    assert "population" in resp.text
+    assert "source_model" in resp.text

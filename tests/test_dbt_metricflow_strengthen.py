@@ -1225,7 +1225,7 @@ def test_config_meta_preserved_on_dimension_and_measure() -> None:
         "model": "orders",
         "dimensions": [{"name": "region", "type": "categorical",
                         "config": {"meta": {"pii": False}}}],
-        "metrics": [{"name": "revenue", "agg": "sum", "expr": "amount",
+        "measures": [{"name": "revenue", "agg": "sum", "expr": "amount",
                       "config": {"meta": {"owner": "finance"}}}],
     })
     result = _convert(DbtProject(semantic_models=[sm]))

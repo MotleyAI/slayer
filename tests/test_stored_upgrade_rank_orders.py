@@ -8,6 +8,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.memories.models import Memory
 from slayer.database import engine_factory
 from slayer.storage import migrations as mig
+from slayer.storage.document_keys import keys_for
 from tests._stored_upgrade_fixtures import (
     BACKENDS,
     DS,
@@ -34,10 +35,10 @@ TOP_QUERY = {"population": "top_status", "dimensions": ["status"], "metrics": ["
 
 def _stages(*, query_version: int | None = None) -> list[dict]:
     stages = [
-        {"name": "x", "population": "orders", "dimensions": [{"name": "status"}],
-         "metrics": [{"expression": "sum(amount)", "name": "rev"}]},
-        {"population": "x", "dimensions": [{"name": "status"}],
-         "metrics": [{"expression": "rev:sum", "name": "total"}],
+        {"name": "x", "source_model": "orders", "dimensions": [{"name": "status"}],
+         "measures": [{"formula": "sum(amount)", "name": "rev"}]},
+        {"source_model": "x", "dimensions": [{"name": "status"}],
+         "measures": [{"formula": "rev:sum", "name": "total"}],
          "order": [funcstyle_rank_order(STAGE_RANK)], "limit": 1},
     ]
     if query_version is not None:
@@ -47,8 +48,9 @@ def _stages(*, query_version: int | None = None) -> list[dict]:
 
 
 def _memory_query(*, version: int | None = 4) -> dict:
-    q: dict = {"population": "orders", "dimensions": [{"name": "status"}],
-               "metrics": [{"expression": "sum(amount)", "name": "rev"}],
+    k = keys_for(entity="SlayerQuery", version=version or mig.CURRENT_VERSIONS["SlayerQuery"])
+    q: dict = {k.population: "orders", "dimensions": [{"name": "status"}],
+               k.query_metrics: [{k.expression: "sum(amount)", "name": "rev"}],
                "order": [funcstyle_rank_order(MEMORY_RANK)], "limit": 1}
     if version is not None:
         q["version"] = version

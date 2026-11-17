@@ -281,7 +281,7 @@ class TestDriftSeesViews:
                 DatasetField(name="status", sql="status", datatype=DataType.TEXT),
             ],
         )
-        entries = await _with_client(validate_datasource, datasource=ds, models=[model])
+        entries = await _with_client(validate_datasource, datasource=ds, datasets=[model])
         whole = [e for e in entries if isinstance(e, WholeDatasetDelete)]
         assert whole == [], f"view-backed model marked for deletion: {whole}"
 
@@ -296,7 +296,7 @@ class TestDriftSeesViews:
             data_source="ds",
             fields=[DatasetField(name="id", sql="id", datatype=DataType.INT)],
         )
-        entries = await _with_client(validate_datasource, datasource=ds, models=[model])
+        entries = await _with_client(validate_datasource, datasource=ds, datasets=[model])
         assert any(isinstance(e, WholeDatasetDelete) for e in entries)
 
     def test_drift_sees_views_unconditionally(self, workspace: Path) -> None:

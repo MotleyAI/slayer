@@ -25,13 +25,16 @@ from slayer.facade.catalog import (
     FacadeCatalog,
     build_catalog_grouped_by_schema,
 )
-from slayer.facade.catalog_sql import CatalogSqlExecutor, executor_for
+from slayer.facade.catalog_sql import CatalogSqlExecutor, build_catalog_relations, executor_for
+from slayer.facade.probe_queries import match_probe as facade_match_probe
 from slayer.facade.translator import (
     NoOpResult,
     PgCatalogResult,
     ProbeResult,
     translate,
 )
+from slayer.pg_facade.identity import version_string
+from slayer.pg_facade.probes import match_pg_probe
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "metabase_v0_62_sync_corpus.sql"
@@ -87,9 +90,6 @@ def _pg_probe_matcher(catalog: FacadeCatalog):
     runtime (DEV-1556 added SHOW + current_catalog/current_user/etc.).
     The corpus tests rely on this so SHOW statements are routed to a
     ProbeResult rather than to the noop classifier."""
-    from slayer.pg_facade.identity import version_string
-    from slayer.pg_facade.probes import match_pg_probe
-    from slayer.facade.probe_queries import match_probe as facade_match_probe
     datasource = catalog.schemas[0].name if catalog.schemas else catalog.catalog_name
 
     def matcher(parsed):
@@ -546,7 +546,6 @@ def test_corpus_18_field_type_lookup_substitutes_slayer_oid() -> None:
     of the captured literal 16384 happens; the captured literal is a property
     of the original Postgres, not of SLayer's catalog."""
     catalog = _demo_catalog()
-    from slayer.facade.catalog_sql import build_catalog_relations
     relations = {r.name: r for r in build_catalog_relations(catalog)}
     orders_oid = next(r["oid"] for r in relations["pg_class"].rows if r["relname"] == "orders")
 

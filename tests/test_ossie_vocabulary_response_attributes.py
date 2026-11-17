@@ -48,7 +48,8 @@ async def test_the_old_python_attribute_reads_metrics_with_one_warning() -> None
         old = getattr(response.attributes, OLD_ATTRIBUTE)
     assert old == response.attributes.metrics
     [w] = [w for w in caught if issubclass(w.category, FutureWarning)]
-    assert "metrics" in str(w.message) and "3.0" in str(w.message)
+    assert "metrics" in str(w.message)
+    assert "3.0" in str(w.message)
     assert OLD_ATTRIBUTE not in response.attributes.model_dump(mode="json")
 
 

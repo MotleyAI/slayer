@@ -15,8 +15,8 @@ from slayer.storage.yaml_storage import YAMLStorage
 from tests._query_heal_fixtures import BACKENDS, assert_equivalent, heal_engine, table
 from tests._saved_query_refinement_fixtures import refine_engine
 
-SUM_DESC_OBJECT = {"column": {"name": "sum(amount)"}, "direction": "desc"}
-SUM_DESC_STRING = {"column": "sum(amount)", "direction": "desc"}
+SUM_DESC_OBJECT = {"field": {"name": "sum(amount)"}, "direction": "desc"}
+SUM_DESC_STRING = {"field": "sum(amount)", "direction": "desc"}
 
 
 @pytest.fixture(params=BACKENDS)
@@ -32,8 +32,8 @@ def by_region(order: list[dict[str, Any]]) -> dict[str, Any]:
 class TestOrderItemCoercion:
     @pytest.mark.parametrize("expr", ["sum(amount)", "sum(amount) / count(*)", "rank(sum(amount), direction='desc')"])
     def test_object_equals_string_form(self, expr: str) -> None:
-        healed = SlayerQuery.model_validate(by_region([{"column": {"name": expr}}]))
-        canonical = SlayerQuery.model_validate(by_region([{"column": expr}]))
+        healed = SlayerQuery.model_validate(by_region([{"field": {"name": expr}}]))
+        canonical = SlayerQuery.model_validate(by_region([{"field": expr}]))
         assert healed.model_dump() == canonical.model_dump()
 
     def test_refinement_object_equals_string_form(self) -> None:
@@ -42,10 +42,10 @@ class TestOrderItemCoercion:
         assert healed.model_dump() == canonical.model_dump()
 
     @pytest.mark.parametrize("column", [
-        {"name": "sum(amount)", "model": "orders"}, {"name": "sum(amount)", "label": "Total"}, {"name": "bad name"},
+        {"name": "sum(amount)", "dataset": "orders"}, {"name": "sum(amount)", "label": "Total"}, {"name": "bad name"},
     ])
     def test_object_with_other_keys_or_no_expression_keeps_error(self, column: dict[str, Any]) -> None:
-        query = by_region([{"column": column}])
+        query = by_region([{"field": column}])
         with pytest.raises(ValidationError, match="Invalid name"):
             SlayerQuery.model_validate(query)
 
@@ -57,7 +57,7 @@ class TestExecuted:
 
     async def test_stored_raw_formula_round_trips(self, engine: SlayerQueryEngine) -> None:
         stored = SlayerQuery.model_validate(by_region([SUM_DESC_STRING])).model_dump(mode="json")
-        assert stored["order"][0]["raw_formula"] == "sum(amount)"
+        assert stored["order"][0]["raw_expression"] == "sum(amount)"
         reloaded = SlayerQuery.model_validate(stored)
         assert reloaded.model_dump(mode="json") == stored
         await assert_equivalent(engine, reloaded, by_region([SUM_DESC_STRING]), ordered=True)
@@ -81,14 +81,14 @@ class TestAdvertisedSchema:
         return tools["query"].inputSchema["$defs"]["OrderItem"]
 
     def test_column_accepts_string_or_object(self, order_item_schema: dict[str, Any]) -> None:
-        column = order_item_schema["properties"]["column"]
+        column = order_item_schema["properties"]["field"]
         branches = column.get("anyOf") or column.get("oneOf") or [column]
         assert any(b.get("type") == "string" for b in branches), column
-        assert any(b.get("$ref", "").endswith("/ColumnRef") for b in branches), column
+        assert any(b.get("$ref", "").endswith("/FieldRef") for b in branches), column
 
     def test_raw_formula_not_published(self, order_item_schema: dict[str, Any]) -> None:
-        assert "raw_formula" not in order_item_schema["properties"]
+        assert "raw_expression" not in order_item_schema["properties"]
 
     def test_raw_formula_still_accepted_on_input(self) -> None:
-        query = SlayerQuery.model_validate(by_region([{"column": "sum(amount)", "raw_formula": "sum(amount)"}]))
+        query = SlayerQuery.model_validate(by_region([{"field": "sum(amount)", "raw_expression": "sum(amount)"}]))
         assert (query.order or [])[0].raw_expression == "sum(amount)"

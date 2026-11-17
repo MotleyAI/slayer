@@ -163,7 +163,7 @@ class TestBroadcastDedup:
 def _attach(**overrides):
     empty = SimpleNamespace(regroup_attach_plans=[], cross_model_aggregate_plans=[])
     base = dict(
-        broadcast_measure=None, broadcast_dimensions=[], association_unsupported=None, producer_plan=empty,
+        broadcast_metric=None, broadcast_dimensions=[], association_unsupported=None, producer_plan=empty,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -183,10 +183,10 @@ class TestCollectorIdentityUnits:
         """D6 identity is per stage: same-labeled aggregates in different DAG
         stages are distinct — dimensions must not union across stages."""
         stage_one = _planned([_attach(
-            broadcast_measure="orders.cm", broadcast_dimensions=[("d1", "r1")],
+            broadcast_metric="orders.cm", broadcast_dimensions=[("d1", "r1")],
         )])
         stage_two = _planned([_attach(
-            broadcast_measure="orders.cm", broadcast_dimensions=[("d2", "r2")],
+            broadcast_metric="orders.cm", broadcast_dimensions=[("d2", "r2")],
         )])
         out = _collect_broadcast_warnings(
             planned_list=[stage_one, stage_two],
@@ -200,9 +200,9 @@ class TestCollectorIdentityUnits:
 
     def test_same_stage_same_measure_still_unions_dimensions(self):
         plans = _planned([
-            _attach(broadcast_measure="orders.cm",
+            _attach(broadcast_metric="orders.cm",
                     broadcast_dimensions=[("d1", "r1")]),
-            _attach(broadcast_measure="orders.cm",
+            _attach(broadcast_metric="orders.cm",
                     broadcast_dimensions=[("d1", "r1"), ("d2", "r2")]),
         ])
         (w,) = _collect_broadcast_warnings(
@@ -213,7 +213,7 @@ class TestCollectorIdentityUnits:
     def test_broadcast_human_message_names_location_and_reasons(self):
         (w,) = _collect_broadcast_warnings(
             planned_list=[_planned([_attach(
-                broadcast_measure="orders.cm",
+                broadcast_metric="orders.cm",
                 broadcast_dimensions=[("status", "crosses an unproven join hop to x")],
             )])],
             stages=[SimpleNamespace(name=None)],

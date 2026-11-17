@@ -610,7 +610,7 @@ class TestWindowedSrcFrameBounds:
         query = _windowed_query(
             filter=["created_at >= '2024-06-01' and customers.tier = 'gold'"],
         )
-        sql = await _wm_sql(query, _joined_orders(), extra_models=[_customers()])
+        sql = await _wm_sql(query, _joined_orders(), extra_datasets=[_customers()])
         src = _extract_src_body(sql)
         assert "2024-06-01" not in src, src
         assert "'gold'" in src, src
@@ -639,7 +639,7 @@ class TestWindowedSrcFrameBounds:
             main_time_dimension="created_at",
             filter=["customers.signup_at >= '2024-06-01'"],
         )
-        sql = await _wm_sql(query, _joined_orders(), extra_models=[_customers()])
+        sql = await _wm_sql(query, _joined_orders(), extra_datasets=[_customers()])
         src = _extract_src_body(sql)
         assert "2024-06-01" not in src, src
         assert "customers" in _join_aliases(src), (
@@ -670,7 +670,7 @@ class TestWindowedSrcFrameBounds:
             ],
         )
         sql = await _wm_sql(
-            query, _joined_orders(), extra_models=[customers, _regions()],
+            query, _joined_orders(), extra_datasets=[customers, _regions()],
         )
         src = _extract_src_body(sql)
         aliases = _join_aliases(src)
@@ -692,7 +692,7 @@ class TestWindowedSrcFrameBounds:
             filter=["created_at >= '2024-06-01' and customers.regions.name = 'North'"],
         )
         sql = await _wm_sql(
-            query, _joined_orders(), extra_models=[customers, _regions()],
+            query, _joined_orders(), extra_datasets=[customers, _regions()],
         )
         src = _extract_src_body(sql)
         aliases = _join_aliases(src)

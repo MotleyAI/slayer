@@ -139,7 +139,7 @@ def orders_joined(*targets: str) -> Dict[str, Any]:
     """Query kwargs: ``orders`` extended with a ``customer_id = <target>.id`` join per target."""
     return {"population": "orders", "extensions": [DatasetExtension.model_validate({
         "source_name": "orders",
-        "relationships": [{"target_model": t, "join_pairs": [["customer_id", "id"]]} for t in targets],
+        "relationships": [{"to": t, "join_pairs": [["customer_id", "id"]]} for t in targets],
     })]}
 
 

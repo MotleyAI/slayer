@@ -179,7 +179,7 @@ class TestWindowedFilters:
             filter=["sum(amount, window='90d') > 40 or status = 'ok'"],
             metrics=[DatasetMetric(expression="sum(amount)", name="m")],
         )
-        with pytest.raises(ValueError, match="neither a field nor a measure"):
+        with pytest.raises(ValueError, match="neither a field nor a metric"):
             await engine.execute(query)
 
 

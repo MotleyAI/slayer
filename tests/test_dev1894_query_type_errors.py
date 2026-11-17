@@ -111,13 +111,13 @@ FAMILY_CASES = [
     ("rank-partition-key", _rank_partition, PartitionKeyError, "transform 'rank'", True),
     ("aggregate-partition-key",
      lambda: (orders_q(dimensions=["region"], metrics=[_m("sum(amount, partition_by=city)", "p")]), f1739.dev1739_datasets()),
-     PartitionKeyError, "measure 'p'", True),
+     PartitionKeyError, "metric 'p'", True),
     ("unsafe-join-input",
      lambda: (f1945.orders_q(metrics=[f1945.metric("last(amount, li_ts)")]), f1945.dev1945_datasets(orders_default="created_at")),
-     UnsafeRelationshipInputError, "measure 'amount_last_li_ts'", True),
+     UnsafeRelationshipInputError, "metric 'amount_last_li_ts'", True),
     ("unanalyzable-dependency",
      lambda: (f1945.orders_q(metrics=[f1945.metric("last(amount)")]), f1945.dev1945_datasets(orders_default="bad_ts")),
-     UnanalyzableDependencyError, "measure 'amount_last'", True),
+     UnanalyzableDependencyError, "metric 'amount_last'", True),
     ("transform-input",
      lambda: (f1832.orders_q(metrics=[_m("sum(cumsum(weight) - 1)", "m")], time_dimensions=f1832.month_td()), f1832.dev1832_datasets()),
      TransformInputError, "transform 'cumsum'", True),
@@ -131,16 +131,16 @@ FAMILY_CASES = [
      lambda: (f1841.assoc_q(dimensions=["status"], metrics=[_m("sum(customers.spend, window='90d')", "cm")],
                             time_dimensions=[TimeDimension(field="customers.signup_at", granularity=TimeGranularity.MONTH)]),
               f1841.dev1840_datasets()),
-     AssociationError, "measure 'cm'", True),
+     AssociationError, "metric 'cm'", True),
     ("parameter-grain",
      lambda: (f1847.sales_q(dimensions=["region"], metrics=[_m(f"wavg({f1847.INNER_CR}, weight=id)", "w")]), f1847.dev1847_datasets()),
-     ParameterGrainError, "measure 'w'", True),
+     ParameterGrainError, "metric 'w'", True),
     ("reaggregation",
      lambda: (orders_q(
          dimensions=["region"], time_dimensions=f1739.month_td(),
          metrics=[_m("sum(sum(amount, partition_by=[region, city]), window='90d')", "w")],
      ), f1739.dev1739_datasets()),
-     ReaggregationError, "measure 'w'", True),
+     ReaggregationError, "metric 'w'", True),
     ("name-collision",
      lambda: (SlayerQuery.model_validate({
          "population": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}],
@@ -160,7 +160,7 @@ FAMILY_CASES = [
     ("model-filter",
      lambda: (SlayerQuery(population="orders", metrics=[DatasetMetric(expression="count(*)")]),
               [_orders(metrics=[_m("sum(amount)", "tot")], filters=["tot > 100"])]),
-     DatasetFilterError, "model filter 'tot > 100'", True),
+     DatasetFilterError, "dataset filter 'tot > 100'", True),
     ("position-typing",
      lambda: (SlayerQuery(
          population="orders", time_dimensions=_MONTH, metrics=[DatasetMetric(expression="count(*)")],
@@ -210,15 +210,15 @@ async def test_family_error_layout(
 @pytest.mark.parametrize(("case", "cls", "location"), [
     pytest.param(lambda: (SlayerQuery(
         population="orders", dimensions=[FieldRef(name="id")], metrics=[_m("sum(amount)", "status")],
-    ), [_orders()]), MetricNameCollidesWithFieldError, "measure 'status'", id="measure-collides-with-column"),
+    ), [_orders()]), MetricNameCollidesWithFieldError, "metric 'status'", id="measure-collides-with-column"),
     pytest.param(lambda: (SlayerQuery(
         population="orders", dimensions=[FieldRef(name="status")], metrics=[_m("sum(amount)", "rev2")],
     ), [_orders(extra_columns=(DatasetField(name="amount_sum", datatype=DataType.DOUBLE),))]),
-        CanonicalAliasShadowsFieldError, "measure 'rev2'", id="canonical-alias-shadows"),
+        CanonicalAliasShadowsFieldError, "metric 'rev2'", id="canonical-alias-shadows"),
     pytest.param(lambda: (SlayerQuery(
         population="orders", dimensions=[FieldRef(name="status")],
         metrics=[_m("sum(revenue)", "profit_avg"), DatasetMetric(expression="avg(profit)")],
-    ), [_orders()]), DuplicateMetricNameError, "measure 'profit_avg'", id="duplicate-measure-name"),
+    ), [_orders()]), DuplicateMetricNameError, "metric 'profit_avg'", id="duplicate-measure-name"),
 ])
 async def test_structured_name_collisions(case: Case, cls: type, location: str) -> None:
     exc = await _raise_of(case)

@@ -71,7 +71,7 @@ def test_a_path_through_an_extension_join_reads_its_downstream_models(
     source: dict, dimensions: list, extension: dict,
 ) -> None:
     to_countries = DatasetRelationship(to="countries", join_pairs=[["country_id", "id"]])
-    models = [orders(), customers(), regions().model_copy(update={"joins": [to_countries]}), countries()]
+    models = [orders(), customers(), regions().model_copy(update={"relationships": [to_countries]}), countries()]
     reads = datasets_read_by(q(**source, dimensions=dimensions, extensions=[extension]), datasets=models, data_source=DS)
     assert (DS, "countries") in reads
 

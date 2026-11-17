@@ -114,7 +114,8 @@ class TestDump:
         assert deprecations(caught) == []
         assert request.population == "orders"
         assert request.filter == ["amount > 5"]
-        assert request.metrics is not None and len(request.metrics) == 2
+        assert request.metrics is not None
+        assert len(request.metrics) == 2
 
 
 @pytest.mark.parametrize("backend", ["yaml", "sqlite"])

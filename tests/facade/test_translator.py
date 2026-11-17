@@ -2294,7 +2294,7 @@ def test_left_join_subquery_aggregate_on_joined_col_blocked_by_local_metric_guar
     with pytest.raises(TranslationError) as exc_info:
         translate(sql=sql, catalog=catalog, dialect=dialect)
     msg = str(exc_info.value)
-    assert "Cross-model metric" in msg
+    assert "Cross-dataset metric" in msg
     assert "flat SELECT" in msg
 
 
@@ -2339,7 +2339,7 @@ def test_left_join_subquery_having_on_joined_aggregate_blocked_by_local_metric_g
     catalog = _join_catalog()
     with pytest.raises(TranslationError) as exc_info:
         translate(sql=sql, catalog=catalog, dialect=dialect)
-    assert "Cross-model metric" in str(exc_info.value)
+    assert "Cross-dataset metric" in str(exc_info.value)
 
 
 def test_left_join_subquery_offset_passes_through(dialect) -> None:
@@ -2473,7 +2473,7 @@ def test_left_join_dynamic_aggregate_on_joined_col_blocked_by_local_metric_guard
     with caplog.at_level(logging.WARNING, logger="slayer.facade.translator"):
         with pytest.raises(TranslationError) as exc_info:
             translate(sql=sql, catalog=cat, dialect=dialect)
-    assert "Cross-model metric" in str(exc_info.value)
+    assert "Cross-dataset metric" in str(exc_info.value)
     # WARN fires because the join is parsed before projection resolution runs the guard.
     warns = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
     assert any("dynamic join" in m and "orders" in m and "stores" in m for m in warns)

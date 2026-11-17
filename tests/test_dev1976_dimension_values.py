@@ -443,17 +443,17 @@ class TestPositionParity:
     async def test_filter_and_order_follow_the_measure(self, exec_engine, make_q, dims,
                                                        expr, key, t):
         e_key = key.split(".", 1)[0] + ".e"
-        measured = await exec_engine.execute(make_q(dimensions=dims, measures=[_m(expr, "e")]))
+        measured = await exec_engine.execute(make_q(dimensions=dims, metrics=[_m(expr, "e")]))
         values = {r[key]: r[e_key] for r in measured.data}
 
         filtered = await exec_engine.execute(make_q(
-            dimensions=dims, measures=[N], filters=[f"{expr} > {t}"]))
+            dimensions=dims, metrics=[N], filter=[f"{expr} > {t}"]))
         kept = {k for k, v in values.items() if v is not None and v > t}
         assert kept
         assert {r[key] for r in filtered.data} == kept
 
         ordered = await exec_engine.execute(make_q(
-            dimensions=dims, measures=[N], order=[{"field": expr, "direction": "desc"}]))
+            dimensions=dims, metrics=[N], order=[{"field": expr, "direction": "desc"}]))
         assert [values[r[key]] for r in ordered.data] == _desc_nulls_last(list(values.values()))
 
 
@@ -461,8 +461,8 @@ class TestPositionParity:
 # Typed errors — a row-level reference that is not a dimension value.
 # --------------------------------------------------------------------------- #
 def _assert_typing_error(exc: PositionTypingError, *, blocker: str, position: str) -> None:
-    """``position``: ``"measure 'm'"`` (the location) or ``"order"`` / ``"filter"`` (the summary)."""
-    if position.startswith("measure"):
+    """``position``: ``"metric 'm'"`` (the location) or ``"order"`` / ``"filter"`` (the summary)."""
+    if position.startswith("metric"):
         assert exc.location == position, str(exc)
     else:
         assert f"{position} expression" in exc.summary, exc.summary
@@ -479,14 +479,14 @@ class TestMeasureTypingErrors:
                      "customers.region_id * sum(amount)", "customers.region_id",
                      id="joined"),
     ])
-    @pytest.mark.parametrize("position", ["measure 'm'", "order"])
+    @pytest.mark.parametrize("position", ["metric 'm'", "order"])
     def test_non_dimension_row_reference(self, make_q, source, dims, formula, blocker,
                                          position):
         if position == "order":
-            query = make_q(dimensions=dims, measures=[TOT],
+            query = make_q(dimensions=dims, metrics=[TOT],
                            order=[{"field": formula, "direction": "asc"}])
         else:
-            query = make_q(dimensions=dims, measures=[_m(formula)])
+            query = make_q(dimensions=dims, metrics=[_m(formula)])
         bundle = _bundle(source)
         with pytest.raises(PositionTypingError) as ei:
             plan_query(query=query, bundle=bundle)
@@ -497,7 +497,7 @@ class TestMeasureTypingErrors:
         bundle = _bundle()
         with pytest.raises(PositionTypingError) as ei:
             plan_query(query=query, bundle=bundle)
-        _assert_typing_error(ei.value, blocker="amount", position="measure 'm'")
+        _assert_typing_error(ei.value, blocker="amount", position="metric 'm'")
         assert "needs an aggregation inside an expression" in str(ei.value)
         assert "sum(amount)" in str(ei.value)
 
@@ -511,7 +511,7 @@ class TestMeasureTypingErrors:
             orders_plan(as_measure)
         with pytest.raises(PositionTypingError) as filter_ei:
             orders_plan(as_filter)
-        _assert_typing_error(measure_ei.value, blocker="ordered_at", position="measure 'm'")
+        _assert_typing_error(measure_ei.value, blocker="ordered_at", position="metric 'm'")
         _assert_typing_error(filter_ei.value, blocker="ordered_at", position="filter")
 
 
@@ -527,7 +527,7 @@ class TestExistingMeasureErrorsTakePrecedence:
         with pytest.raises(PartitionKeyError) as ei:
             plan_query(query=query, bundle=bundle)
         assert re.search(r"\bcity\b", ei.value.summary), ei.value.summary
-        assert ei.value.location == "measure 'm'"
+        assert ei.value.location == "metric 'm'"
 
     @pytest.mark.parametrize(("formula", "family"), [
         pytest.param("rank(amount, direction='desc') + amount", TransformInputError, id="transform-input"),

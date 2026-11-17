@@ -222,7 +222,8 @@ class TestStores:
         with recorded() as caught:
             memory = await storage.get_memory("1")
         assert future(caught) == []
-        assert memory is not None and memory.query is not None
+        assert memory is not None
+        assert memory.query is not None
         assert memory.query.filter == ["amount > 1"]
         assert [(m.expression, m.name) for m in memory.query.metrics or []] == [("sum(amount)", "rev")]
         assert_new_query_keys(memory.query.model_dump(mode="json"))

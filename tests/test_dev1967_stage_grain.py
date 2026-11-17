@@ -104,7 +104,7 @@ class TestSiblingStageGrain:
             "metrics": [{"expression": "count(*)", "name": "n"}],
         })
         customers = next(m for m in dev1836_datasets() if m.name == "customers")
-        bundle = _bundle().model_copy(update={"stage_source_models": {"c": customers}})
+        bundle = _bundle().model_copy(update={"stage_source_datasets": {"c": customers}})
         planned = plan_stages(queries=[sibling, root], bundle=bundle)
         assert planned[0].stage_schema is not None
         assert planned[0].stage_schema.grain == ["id"]

@@ -48,7 +48,7 @@ async def test_join_target_keeps_its_onward_relationship(engine: SlayerQueryEngi
 
 
 async def test_saved_relation_without_outgoing_joins_can_use_incoming_edge(engine: SlayerQueryEngine):
-    await engine.save_dataset(_customer_totals().model_copy(update={"joins": []}))
+    await engine.save_dataset(_customer_totals().model_copy(update={"relationships": []}))
     customers = customers_dataset()
     await engine.save_dataset(customers.model_copy(update={"relationships": [
         *customers.relationships,
@@ -104,7 +104,7 @@ async def test_legal_stage_named_join_target_is_not_a_synthetic_self_join(engine
     await engine.save_dataset(customers_dataset().model_copy(update={"name": "_stage"}))
     totals = _customer_totals()
     await engine.save_dataset(totals.model_copy(update={
-        "relationships": [totals.relationships[0].model_copy(update={"target_model": "_stage"})],
+        "relationships": [totals.relationships[0].model_copy(update={"to": "_stage"})],
     }))
 
     unjoined = await engine.execute(_query(

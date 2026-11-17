@@ -107,7 +107,7 @@ class TestAggIsReserved:
             await storage.save_dataset(model)
 
     async def test_a_measure_or_column_named_agg_is_legal(self) -> None:
-        with_column = orders_dataset().model_copy(update={"columns": [
+        with_column = orders_dataset().model_copy(update={"fields": [
             *orders_dataset().fields, DatasetField(name="agg", sql="amount", datatype=DataType.DOUBLE)]})
         with_measure = SlayerDataset(name="totals", sql_table="orders", data_source="test",
                                    fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True),

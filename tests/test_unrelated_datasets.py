@@ -252,7 +252,7 @@ class TestStoredDefinitionsRefuse:
         model = customers_dataset(fields=[DatasetField(name="ev_amount", datatype=DataType.DOUBLE, sql=sql)])
         await engine.storage.save_dataset(model, _validate=False)
         q = query(metrics=[m("sum(ev_amount)", "x")])
-        with pytest.raises(SlayerError, match="no join path reaches 'events'"):
+        with pytest.raises(SlayerError, match="no relationship path reaches 'events'"):
             await engine.execute(q)
 
     @pytest.mark.parametrize(("source", "formula"), [("per_city", "max(n)"), ("orgs", "max(per_city.n)")])
@@ -267,7 +267,7 @@ class TestStoredDefinitionsRefuse:
             query(dimensions=["city"], metrics=[m("count(lx)", "n")]),
         ]), _validate=False)
         q = SlayerQuery.model_validate({"population": source, "metrics": [m(formula, "x")]})
-        with pytest.raises(UnreachableDefinitionError, match="no join path reaches 'logs' from 'customers'"):
+        with pytest.raises(UnreachableDefinitionError, match="no relationship path reaches 'logs' from 'customers'"):
             await engine.execute(q)
 
     async def test_unspliceable_unrelated_query_backed_model(self, engine: SlayerQueryEngine) -> None:
@@ -496,7 +496,7 @@ class TestWarnings:
 
     @pytest.mark.parametrize("build", [grouped_query, query])
     async def test_nested_producer(self, engine, build) -> None:
-        resp = await engine.execute(build(measures=[m("max(count(events.id), partition_by=[])", "top")]))
+        resp = await engine.execute(build(metrics=[m("max(count(events.id), partition_by=[])", "top")]))
         (w,) = unrelated_warnings(resp)
         assert w.dataset == "events"
 

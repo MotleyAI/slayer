@@ -257,7 +257,7 @@ class TestBroadcastFallback:
     @pytest.mark.parametrize("mode", [None, "broadcast", "associate", "error"])
     async def test_input_safety_is_not_a_fallback(self, crossing_engine, mode) -> None:
         query = _q(mode, dimensions=["status"], metrics=[DatasetMetric(expression="sum(customers.vip_spend)", name="vip")])
-        with pytest.raises(UnsafeRelationshipInputError, match="unproven join hop"):
+        with pytest.raises(UnsafeRelationshipInputError, match="unproven relationship hop"):
             await crossing_engine.execute(query)
 
     async def test_partition_key_fanning_from_its_host_fails_by_default(self, fanning_engine) -> None:

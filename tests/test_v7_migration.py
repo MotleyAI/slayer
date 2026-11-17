@@ -103,8 +103,8 @@ def test_v7_payload_round_trips_with_populated_fields() -> None:
     assert col.sampled_values == ["paid", "refunded", "cancelled"]
     assert col.distinct_count == 3
     dumped = m.model_dump(mode="json", exclude_none=True)
-    assert dumped["columns"][0]["sampled_values"] == ["paid", "refunded", "cancelled"]
-    assert dumped["columns"][0]["distinct_count"] == 3
+    assert dumped["fields"][0]["sampled_values"] == ["paid", "refunded", "cancelled"]
+    assert dumped["fields"][0]["distinct_count"] == 3
 
 
 def test_v7_payload_with_overflow_marker_round_trips() -> None:

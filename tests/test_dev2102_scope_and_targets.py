@@ -30,7 +30,7 @@ from tests._dev2102_fixtures import (
     with_datasets,
 )
 
-TIER_LABEL = {"name": "tier_label", "sql": "upper(tier)", "type": "TEXT"}
+TIER_LABEL = {"name": "tier_label", "sql": "upper(tier)", "datatype": "TEXT"}
 AMOUNT = {"expression": "sum(amount)", "name": "a"}
 CREDIT_TOTAL = {"name": "credit_total", "expression": "sum(credit)"}
 COUNT_X = {"name": "x", "expression": "count(*)"}
@@ -49,7 +49,7 @@ def _cust_spend() -> SlayerDataset:
 
 class TestExtendingAnyModel:
     async def test_extending_a_joined_model_adds_a_dimension(self, dialect) -> None:
-        stored = customers().model_copy(update={"columns": [*customers().fields, DatasetField.model_validate(TIER_LABEL)]})
+        stored = customers().model_copy(update={"fields": [*customers().fields, DatasetField.model_validate(TIER_LABEL)]})
         computed = q(population="orders", dimensions=[{"expression": "upper(customers.tier)", "name": "tier_label"}],
                      metrics=[AMOUNT])
         async with shop(dialect) as engine:

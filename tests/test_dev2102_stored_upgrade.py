@@ -32,15 +32,15 @@ from tests._stored_upgrade_fixtures import (
 
 LEGACY_EXTENSION = {
     "source_name": "orders",
-    "relationships": [{"to": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}],
+    "joins": [{"target_model": "customers", "join_pairs": [["customer_id", "id"]], "cardinality": "many_to_one"}],
 }
 #: The rows the stage returned before the upgrade: sum(amount * 2) by customers.region.
 RECORDED = {"North": 240.0, "South": 180.0}
 
 
 def _stage(version: int | None = 9) -> dict:
-    stage = {"population": LEGACY_EXTENSION, "dimensions": ["customers.region"],
-             "metrics": [{"expression": "sum(amount * 2)", "name": "rev2"}]}
+    stage = {"source_model": LEGACY_EXTENSION, "dimensions": ["customers.region"],
+             "measures": [{"formula": "sum(amount * 2)", "name": "rev2"}]}
     return stage if version is None else {"version": version, **stage}
 
 
@@ -95,7 +95,7 @@ class TestQueryDocument:
         twice = SlayerQuery.model_validate(dumped)
         assert twice == once
         assert twice.model_dump(mode="json", exclude_none=True) == dumped
-        assert dumped["source_model"] == "orders"
+        assert dumped["population"] == "orders"
 
 
 class TestStoredModels:
@@ -130,7 +130,7 @@ class TestStoredModels:
         await storage.save_dataset(model)
         [stage] = (await raw_doc(storage, "rev2_q"))["source_queries"]
         assert stage["version"] == CURRENT_VERSIONS["SlayerQuery"]
-        assert stage["source_model"] == "orders"
+        assert stage["population"] == "orders"
         assert [e["source_name"] for e in stage["extensions"]] == ["orders"]
         assert await storage.get_dataset("rev2_q", data_source=DS) == model
 

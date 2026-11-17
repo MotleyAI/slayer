@@ -224,7 +224,7 @@ class TestMisplacedMeasure:
         # A misplaced bare column is appended to existing dimensions, not
         # replacing them.
         m = _orders().model_copy(update={
-            "columns": _orders().fields + [DatasetField(name="customer_id", datatype=DataType.INT)],
+            "fields": _orders().fields + [DatasetField(name="customer_id", datatype=DataType.INT)],
         })
         q = SlayerQuery.model_validate({
             "population": "orders",
@@ -386,7 +386,7 @@ class TestEngineWiring:
             })
             with pytest.raises(PositionTypingError) as ei:
                 await engine.execute(q, dry_run=True)
-            assert ei.value.location == "measure 'customers_name'"
+            assert ei.value.location == "metric 'customers_name'"
             assert "customers.name" in ei.value.summary
             assert "add it to the query dimensions" in str(ei.value)
 
@@ -424,7 +424,7 @@ def _customers_with_rolling_avg() -> SlayerDataset:
 
 def _orders_joining_customers() -> SlayerDataset:
     return _orders().model_copy(update={
-        "joins": [
+        "relationships": [
             DatasetRelationship(to="customers", join_pairs=[["id", "id"]]),
         ],
     })

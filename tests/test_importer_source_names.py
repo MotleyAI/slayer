@@ -360,7 +360,7 @@ def test_source_sql_the_importer_cannot_read(live: Live, source_sql: str) -> Non
     regular = {"name": "src", "raw_code": source_sql}
     models, messages = _dbt(live, [{"name": "m", "model": "src", "dimensions": [
         {"name": "id", "type": "categorical"}],
-        "metrics": [{"name": "total", "agg": "sum", "expr": "id"}]}], regular_datasets=[regular])
+        "measures": [{"name": "total", "agg": "sum", "expr": "id"}]}], regular_datasets=[regular])
     assert _typed(models["m"], "id_col") is DataType.DOUBLE
     assert len(typing_notes(messages)) == 1
     assert live.ran("_slayer_src") == []
@@ -506,7 +506,7 @@ async def test_mixed_case_column_reads_the_folded_physical_column(pg: Live, tmp_
     models, _ = _cube(pg, {"name": "payments", "sql_table": "payments", "dimensions": [
         {"name": "id", "sql": "{CUBE}.id", "type": "number", "primary_key": True},
         {"name": "amount", "sql": "{CUBE}.OrderAmount", "type": "number"}],
-        "metrics": [{"name": "total", "datatype": "sum", "sql": "{CUBE}.OrderAmount"}]})
+        "measures": [{"name": "total", "type": "sum", "sql": "{CUBE}.OrderAmount"}]})
     assert _typed(models["payments"], "amount") is DataType.INT
     assert await _grouped(pg, tmp_path, models, "payments", "amount") == [7]
     (row,) = await _rows(pg, tmp_path / "measure", models.values(), {

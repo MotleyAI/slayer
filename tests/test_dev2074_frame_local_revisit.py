@@ -497,7 +497,7 @@ class TestCancellationToTheNearestOccurrence:
     def test_stage_spelling_cancels_to_the_stage_occurrence(self) -> None:
         models = _by_name()
         stage = _orders().model_copy(update={"name": "stage_recent"}).with_spelling("recent")
-        cust = _customers().model_copy(update={"joins": [
+        cust = _customers().model_copy(update={"relationships": [
             *_customers().relationships,
             DatasetRelationship(to="stage_recent", name="recent_order",
                       join_pairs=[["last_order_id", "id"]], cardinality=M2O),
@@ -514,8 +514,8 @@ class TestCancellationToTheNearestOccurrence:
             name="notes", data_source=DS, sql_table="notes",
             fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)])
         cust = _customers().model_copy(update={
-            "columns": [*_customers().fields, DatasetField(name="note_id", datatype=DataType.INT)],
-            "joins": [*_customers().relationships, DatasetRelationship(
+            "fields": [*_customers().fields, DatasetField(name="note_id", datatype=DataType.INT)],
+            "relationships": [*_customers().relationships, DatasetRelationship(
                 to="notes", name="orders", join_pairs=[["note_id", "id"]], cardinality=M2O)],
         })
         models = {**_by_name(), "customers": cust, "notes": notes}

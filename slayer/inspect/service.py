@@ -9,6 +9,7 @@ import json
 from typing import Any, NamedTuple
 
 from slayer.core.time_spine import TIME_SPINE_DATASET
+from slayer.core.vocabulary import deprecated_spelling
 from slayer.core.errors import (
     AmbiguousDatasetError,
     EntityResolutionError,
@@ -32,7 +33,7 @@ from slayer.inspect.dataset_render import (
     render_dataset_skeleton,
     saved_queries_index,
 )
-from slayer.memories.help_seed import HELP_ID_PREFIX
+from slayer.memories.help_seed import HELP_ID_PREFIX, RENAMED_HELP_IDS
 from slayer.memories.resolver import resolve_entity
 from slayer.search.render import (
     collect_dataset_entity_pairs,
@@ -477,6 +478,10 @@ class InspectService:
                 f"'memory:'."
             ))
         memory_id = reference[len("memory:"):]
+        if memory_id in RENAMED_HELP_IDS:
+            renamed = deprecated_spelling(reference, f"memory:{RENAMED_HELP_IDS[memory_id]}")
+            warnings.append(renamed.human_message())
+            memory_id = RENAMED_HELP_IDS[memory_id]
         try:
             mem = await self._storage.get_memory(memory_id)
         except MemoryNotFoundError:

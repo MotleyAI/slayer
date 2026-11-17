@@ -435,7 +435,7 @@ class TestArgumentMessagePrecedence:
         assert "ordered_at" in msg
         assert "customers" in msg
         assert "not attributable from" in msg
-        assert "join hop to orders" in msg
+        assert "relationship hop to orders" in msg
         assert_ref_free(msg)
 
     @pytest.mark.parametrize("mode", MODES)
@@ -446,5 +446,5 @@ class TestArgumentMessagePrecedence:
         msg = str(ei.value)
         assert "ordered_at" in msg
         assert "not attributable from regions" in msg
-        assert "join hop to customers" in msg
+        assert "relationship hop to customers" in msg
         assert "region_events" not in msg

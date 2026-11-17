@@ -28,6 +28,13 @@ from slayer.search.render import (
 from slayer.search.retriever import RetrievalResult, Retriever
 from slayer.storage.base import StorageBackend
 
+try:  # the optional ``advanced_search`` extra
+    import numpy as np
+
+    from slayer.embeddings.ranker import normalise, normalise_matrix, top_k_cosine
+except ImportError:
+    np = None
+
 
 _log = logging.getLogger(__name__)
 
@@ -231,18 +238,7 @@ class EmbeddingRetriever(Retriever):
                 f"{self._model_name!r}. Run `slayer ingest` to populate.",
             ])
 
-        # Inline imports: ``numpy`` and ``slayer.embeddings.ranker``
-        # require the optional ``advanced_search`` extra. Importing here
-        # rather than at module scope keeps the rest of slayer working
-        # without the extra.
-        try:
-            import numpy as np
-            from slayer.embeddings.ranker import (
-                normalise,
-                normalise_matrix,
-                top_k_cosine,
-            )
-        except ImportError:
+        if np is None:
             # Same packaging gap as the is_available() check above, reached by
             # a different route: an operator concern, not a caller's.
             _log.warning(

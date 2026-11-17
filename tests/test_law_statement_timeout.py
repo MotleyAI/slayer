@@ -9,7 +9,7 @@ from pathlib import Path
 from slayer.database import client as sql_client
 
 # The one sqlglot parse allowed in client.py: save-time model classification, never executed.
-_PARSE_ALLOWED_IN = {"classify_model_sql"}
+_PARSE_ALLOWED_IN = {"classify_dataset_sql"}
 _TIMEOUT_SQL = re.compile(
     r"\bSET\s+(LOCAL\s+)?(max_execution_time|max_statement_time|statement_timeout)|getSetting\(",
     re.IGNORECASE,

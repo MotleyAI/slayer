@@ -13,6 +13,7 @@ from ruamel.yaml import YAML
 from slayer.core.enums import DataType
 from slayer.core.models import SlayerDataset
 from slayer.osi import slayer_extension as ext
+from slayer.storage.document_keys import LEGACY_KEYS, dataset_in
 from tests._cli_inprocess import run_cli_in_process
 from tests._osi_export_fixtures import BASIC_MEASURES, col, customers, orders, orders_columns, rich_orders
 from tests._osi_export_helpers import (
@@ -107,9 +108,9 @@ async def test_malformed_document_level_entry_is_reported_and_omitted(env, exten
 async def test_model_stored_before_the_shape_change(env) -> None:
     await save(env, customers(), orders(metrics=BASIC_MEASURES))
     path = env.store / "models" / env.datasource / "orders.yaml"
-    stored = yaml.safe_load(path.read_text(encoding="utf-8"))
+    stored = dataset_in(yaml.safe_load(path.read_text(encoding="utf-8")), LEGACY_KEYS)
     stored["version"] = 21
-    [amount] = [c for c in stored["fields"] if c["name"] == "amount"]
+    [amount] = [c for c in stored["columns"] if c["name"] == "amount"]
     amount["meta"] = {"osi_custom_extensions": [{"vendor_name": "ACME", "data": '{"k": 1}'},
                                                 {"vendor_name": "ACME", "data": "not json"}]}
     path.write_text(yaml.safe_dump(stored, sort_keys=False), encoding="utf-8")

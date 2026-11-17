@@ -199,7 +199,7 @@ class TestBinderAndChecker:
         assert "month" in msg
         assert "day" in msg
         assert "already bucketed" in msg
-        assert "bucket the raw column instead" in msg
+        assert "bucket the raw field instead" in msg
         assert "nesting-coarser" in msg
         assert "upstream stage" not in msg
 

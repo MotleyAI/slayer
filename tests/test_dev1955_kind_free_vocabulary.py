@@ -24,7 +24,7 @@ _KIND_LABELS = ("sql reference", "filter reference")
 
 def _circular(**overrides: str) -> DerivedFieldCircularError:
     kwargs = {
-        "column": "COL", "reference": "A.B.leaf", "root_model": "ROOT",
+        "field": "COL", "reference": "A.B.leaf", "root_dataset": "ROOT",
         "revisited": "REV", "hop": "HOP", "via": "VIA",
     }
     kwargs.update(overrides)
@@ -102,8 +102,8 @@ class TestFanningErrorVocabulary:
         assert exc.reference == "line_items.qty"
         msg = str(exc)
         assert msg.startswith(
-            "Derived column 'li_qty' on model 'orders' references 'line_items.qty', "
-            "crossing a fanning join hop to 'line_items': "
+            "Derived field 'li_qty' on dataset 'orders' references 'line_items.qty', "
+            "crossing a fanning relationship hop to 'line_items': "
         )
         assert "<aggregation>(line_items.qty)" in msg
         assert not any(label in msg for label in _KIND_LABELS)
@@ -130,11 +130,11 @@ class TestCircularErrorVocabulary:
     def test_new_message(self) -> None:
         msg = str(_circular())
         assert msg.startswith(
-            "Derived column 'COL' on model 'ROOT' references 'A.B.leaf', which "
-            "revisits model 'REV' (hop 'HOP' from 'VIA'): "
+            "Derived field 'COL' on dataset 'ROOT' references 'A.B.leaf', which "
+            "revisits dataset 'REV' (hop 'HOP' from 'VIA'): "
         )
-        assert "not a column of 'ROOT'" in msg
-        assert "Reference the column on 'REV'" in msg
+        assert "not a field of 'ROOT'" in msg
+        assert "Reference the field on 'REV'" in msg
         assert "declare the aggregate on 'VIA'" in msg
         assert not any(label in msg for label in _KIND_LABELS)
 
@@ -153,8 +153,8 @@ class TestUnprovenWarning:
         msgs = [str(w.message) for w in rec if "li_qty" in str(w.message)]
         assert len(msgs) == 1
         assert msgs[0].startswith(
-            "Derived column 'li_qty' on model 'orders' has a reference crossing "
-            "an unproven join hop to 'line_items' "
+            "Derived field 'li_qty' on dataset 'orders' has a reference crossing "
+            "an unproven relationship hop to 'line_items' "
         )
         assert not any(label in msgs[0] for label in _KIND_LABELS)
 
@@ -232,8 +232,8 @@ class TestEngineDoorCrossModelAttribution:
         assert exc.reference == "regions.customers.spend"
         assert exc.revisited == "customers"
         msg = str(exc)
-        assert "Derived column 'bad' on model 'customers'" in msg
-        assert "not a column of 'customers'" in msg
+        assert "Derived field 'bad' on dataset 'customers'" in msg
+        assert "not a field of 'customers'" in msg
         assert "'orders'" not in msg
         assert not any(label in msg for label in _KIND_LABELS)
         assert await storage.get_dataset("orders", data_source=DS) is None

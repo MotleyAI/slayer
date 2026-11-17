@@ -153,7 +153,7 @@ class TestKeylessAssociation:
         assert _per(resp, "skills.value", dataset="twins") == {"go": 2}
 
     async def test_another_to_many_hop_uses_the_row_identity(self) -> None:
-        contractors = contractors_dataset(keyed=False).model_copy(update={"joins": [DatasetRelationship(
+        contractors = contractors_dataset(keyed=False).model_copy(update={"relationships": [DatasetRelationship(
             to="assignments", join_pairs=[["id", "contractor_id"]],
             cardinality=RelationshipCardinality.ONE_TO_MANY)]})
         assignments = SlayerDataset(name="assignments", sql_table="assignments", data_source="test", fields=[
@@ -197,7 +197,7 @@ class TestComposition:
         assert _per(resp, "a_skills.value") == {"go": 2, "sql": 2}
 
     async def test_element_aggregates_filtered_across_a_declared_to_many(self) -> None:
-        contractors = contractors_dataset().model_copy(update={"joins": [DatasetRelationship(
+        contractors = contractors_dataset().model_copy(update={"relationships": [DatasetRelationship(
             to="assignments", join_pairs=[["id", "contractor_id"]],
             cardinality=RelationshipCardinality.ONE_TO_MANY)]})
         assignments = SlayerDataset(name="assignments", sql_table="assignments", data_source="test", fields=[
@@ -244,14 +244,14 @@ async def storage(tmp_path) -> YAMLStorage:
 class TestNameCollisions:
     async def test_a_list_column_named_like_a_joined_model(self, storage: StorageBackend) -> None:
         await storage.save_dataset(_plain("skills"))
-        model = contractors_dataset().model_copy(update={"joins": [DatasetRelationship(to="skills",
+        model = contractors_dataset().model_copy(update={"relationships": [DatasetRelationship(to="skills",
                                                                            join_pairs=[["id", "id"]])]})
         with pytest.raises(ValueError, match="skills"):
             await storage.save_dataset(model)
 
     async def test_a_list_column_named_like_an_edge(self, storage: StorageBackend) -> None:
         await storage.save_dataset(_plain("people"))
-        model = contractors_dataset().model_copy(update={"joins": [DatasetRelationship(to="people",
+        model = contractors_dataset().model_copy(update={"relationships": [DatasetRelationship(to="people",
                                                                            join_pairs=[["id", "id"]],
                                                                            name="skills")]})
         with pytest.raises(ValueError, match="skills"):
@@ -272,7 +272,7 @@ class TestNameCollisions:
 
     async def test_no_collision_saves(self, storage: StorageBackend) -> None:
         await storage.save_dataset(_plain("people"))
-        await storage.save_dataset(contractors_dataset().model_copy(update={"joins": [DatasetRelationship(
+        await storage.save_dataset(contractors_dataset().model_copy(update={"relationships": [DatasetRelationship(
             to="people", join_pairs=[["id", "id"]])]}))
 
 

@@ -514,7 +514,7 @@ class TestWindowInFilter:
         # that column raises IllegalWindowInFilterError (DEV-1369: no
         # auto-promotion).
         model = _orders().model_copy(update={
-            "columns": list(_orders().fields) + [
+            "fields": list(_orders().fields) + [
                 DatasetField(
                     name="rolling_rank",
                     datatype=DataType.INT,

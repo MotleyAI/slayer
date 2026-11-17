@@ -5,6 +5,8 @@ or ``scheduled_notice`` is the tag.
 major version reaches a call's ``removal``.
 """
 
+from __future__ import annotations
+
 import contextlib
 import os
 import sys
@@ -14,7 +16,7 @@ from typing import NoReturn
 
 import pydantic
 
-from slayer.core.warnings import DeprecatedInputWarning
+from slayer.core import warnings as payloads  # a module reference: warnings reaches this module through vocabulary
 
 # Frames under these directories never supply input; a deprecated input form is attributed past them.
 _INTERNAL_DIRS = (
@@ -36,7 +38,7 @@ def warn_deprecated(message: str, *, removal: str, stacklevel: int = 2) -> None:
 class DeprecatedInputFutureWarning(FutureWarning):
     """Carrier ``FutureWarning`` for a ``DeprecatedInputWarning`` payload — one wording on both channels."""
 
-    def __init__(self, payload: DeprecatedInputWarning) -> None:
+    def __init__(self, payload: payloads.DeprecatedInputWarning) -> None:
         super().__init__(payload)
         self.payload = payload
 
@@ -54,10 +56,10 @@ def _outside_caller_stacklevel() -> int:
     return level
 
 
-def deprecated_input(old: str, new: str, *, removal: str) -> DeprecatedInputWarning:
+def deprecated_input(old: str, new: str, *, removal: str) -> payloads.DeprecatedInputWarning:
     """Report converting the input form ``old`` to ``new``: one ``FutureWarning`` at the first line outside SLayer
     that supplied it, and the payload the caller keeps with the converted input. ``removal`` as in ``warn_deprecated``."""
-    payload = DeprecatedInputWarning(old=old, new=new, removal=removal)
+    payload = payloads.DeprecatedInputWarning(old=old, new=new, removal=removal)
     warnings.warn(DeprecatedInputFutureWarning(payload), stacklevel=_outside_caller_stacklevel())
     return payload
 

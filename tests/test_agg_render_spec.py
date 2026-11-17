@@ -173,14 +173,14 @@ class TestAggRenderSpecConstruction:
         assert set(AggRenderSpec.model_fields) == {
             "sql",
             "name",
-            "model_name",
+            "dataset_name",
             "aggregation",
-            "formula",
+            "expression",
             "agg_kwargs",
             "alias",
-            "time_column",
+            "time_field",
             "type",
-            "column_type",
+            "field_type",
             "input_type",
             "value",
             "element_type",
@@ -271,7 +271,7 @@ class TestBuilderStarKey:
         key = AggregateKey(source=StarKey(), agg="sum")
         slot = _slot(key, declared_name="_sum", public_name="_sum")
         source_model = _orders_dataset()
-        with pytest.raises(ValueError, match=r"not allowed with measure '\*'"):
+        with pytest.raises(ValueError, match=r"not allowed with metric '\*'"):
             _invoke(
                 slot=slot,
                 key=key,
@@ -384,7 +384,7 @@ class TestBuilderColumnKey:
         source_model = _orders_dataset()
         with pytest.raises(
             ValueError,
-            match=r"Aggregate source column 'nonexistent' not found on model 'orders'",
+            match=r"Aggregate source field 'nonexistent' not found on dataset 'orders'",
         ):
             _invoke(
                 slot=slot,
@@ -640,7 +640,7 @@ class TestBuilderCrossModelKwargPath:
         )
         orders = _orders_dataset()
         with pytest.raises(
-            AggregationNotAllowedError, match=r"kwarg .* references ColumnKey",
+            AggregationNotAllowedError, match=r"kwarg .* references FieldKey",
         ):
             _invoke(
                 slot=slot,
@@ -803,5 +803,5 @@ class TestBuildAggRegistryDispatch:
     def test_unknown_aggregation_without_a_formula_raises(self) -> None:
         gen = SQLGenerator(dialect="postgres")
         spec = self._spec("definitely_not_an_aggregation")
-        with pytest.raises(ValueError, match="no formula"):
+        with pytest.raises(ValueError, match="no expression"):
             gen._build_agg(spec)

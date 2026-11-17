@@ -81,7 +81,7 @@ def test_concurrent_processes_each_write_their_own_spool_file(store: str, usage_
     ]
     assert [p.wait(timeout=120) for p in procs] == [0] * 5
     assert len(spool_files()) == 5
-    assert usage(show(), "cli:models.list")["ok"] == 5
+    assert usage(show(), "cli:datasets.list")["ok"] == 5
 
 
 def _mcp_with_one_call(store: str, env: dict[str, str], *, argv: list[str] | None = None) -> McpStdio:
@@ -504,7 +504,7 @@ def test_sender_crash_recovered_by_a_later_send(store: str, usage_reporting_env)
     requests = usage_reporting_env.capture.wait_for(count=1, timeout=20)
     end_process()
     assert len(requests) == 1
-    assert requests[0].json()["properties"]["usage"]["cli:models.list"]["ok"] == 1
+    assert requests[0].json()["properties"]["usage"]["cli:datasets.list"]["ok"] == 1
 
 
 def test_disable_racing_a_send_leaves_nothing_behind(store: str, usage_reporting_env) -> None:

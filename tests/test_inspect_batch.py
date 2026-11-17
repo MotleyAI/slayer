@@ -182,7 +182,7 @@ class TestMarkdownBatch:
         assert "## mydb.orders.amount" in out
         assert "Order total in USD." in out
         second = out.split(_BLOCK_SEP)[1]
-        assert "measure" in second.lower()
+        assert "metric" in second.lower()
 
     async def test_all_error_list_does_not_raise(
         self, svc: InspectService
@@ -486,7 +486,7 @@ class TestPerIdFieldsAcrossList:
                 compact=True, format="json",
             ))
             assert arr[0]["canonical_id"] == "shared"
-            assert any("both a datasource and a model" in w
+            assert any("both a datasource and a dataset" in w
                        for w in arr[0]["warnings"])
             # The unambiguous datasource carries no such warning.
             assert arr[1]["canonical_id"] == "other"

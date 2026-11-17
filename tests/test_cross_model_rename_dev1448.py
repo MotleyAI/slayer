@@ -517,7 +517,7 @@ class TestCrossModelRenameCollisionGuards:
             dimensions=[FieldRef(name="status")],
             metrics=[DatasetMetric(expression="sum(customers.revenue)", name="cust_rev")],
         )
-        with pytest.raises(ValueError, match=r"matches a source column"):
+        with pytest.raises(ValueError, match=r"matches a source field"):
             await engine.execute(query=query, dry_run=True)
 
     async def test_cross_model_duplicate_explicit_name_raises(
@@ -533,7 +533,7 @@ class TestCrossModelRenameCollisionGuards:
                 DatasetMetric(expression="count_distinct(customers.id)", name="metric"),
             ],
         )
-        with pytest.raises(ValueError, match=r"declared more than once\.\n  at measure 'metric'"):
+        with pytest.raises(ValueError, match=r"declared more than once\.\n  at metric 'metric'"):
             await engine.execute(query=query, dry_run=True)
 
     async def test_cross_model_star_count_vs_renamed_sibling_stay_distinct(
@@ -586,7 +586,7 @@ class TestCrossModelRenameCollisionGuards:
             ],
         )
         with pytest.raises(
-            ValueError, match=r"declared more than once\.\n  at measure 'customers__region_id'",
+            ValueError, match=r"declared more than once\.\n  at metric 'customers__region_id'",
         ):
             await engine.execute(query=query, dry_run=True)
 

@@ -389,9 +389,9 @@ class TestBlockingPairs:
         models = _by(hub, *spokes, _m("leaf0", joins=[_to("far")]), _m("leaf1"), _m("leaf2"), _m("far"))
         calls: dict[str, int] = {}
 
-        def counting(*, model: SlayerDataset, models_by_name: dict[str, SlayerDataset]):
-            calls[model.name] = calls.get(model.name, 0) + 1
-            return neighbors(dataset=model, datasets_by_name=models_by_name)
+        def counting(*, dataset: SlayerDataset, datasets_by_name: dict[str, SlayerDataset]):
+            calls[dataset.name] = calls.get(dataset.name, 0) + 1
+            return neighbors(dataset=dataset, datasets_by_name=datasets_by_name)
 
         monkeypatch.setattr(relationship_search, "neighbors", counting)
         pairs = blocking_pairs(root=models["hub"], target="far", datasets_by_name=models)

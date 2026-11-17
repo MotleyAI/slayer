@@ -186,7 +186,7 @@ class TestFrameBoundColumnsStayPlanSide:
         """A DECLARED field, checked the same way as masks.
         ``hasattr`` is always true for a field with a default_factory, so it
         could not fail regardless of planner behaviour."""
-        assert "frame_bound_columns" in PlannedQuery.model_fields
+        assert "frame_bound_fields" in PlannedQuery.model_fields
 
     def test_frame_bound_columns_covers_the_time_dimension(self) -> None:
         """Names the expected column, not just "non-empty" — the query has one

@@ -60,9 +60,9 @@ class TestDropAddressesOneEdge:
         entry = await _orders_entry(drifted)
         assert entry.remove.relationships == ["billing_address"]
         assert entry.remove.model_dump(mode="json")["relationship_edges"] == [
-            {"target_model": "addresses", "name": "billing_address", "join_pairs": [["billing_address_id", "id"]]},
+            {"to": "addresses", "name": "billing_address", "join_pairs": [["billing_address_id", "id"]]},
         ]
-        assert "join:billing_address" in {r.target for r in entry.reasons}
+        assert "relationship:billing_address" in {r.target for r in entry.reasons}
 
     async def test_applying_the_drift_keeps_the_parallel_edge(self, drifted: Live) -> None:
         entry = EditDatasetDelete.model_validate_json((await _orders_entry(drifted)).model_dump_json())
@@ -173,4 +173,4 @@ class TestNonParallelDropReportsTheTarget:
                 await lv.storage.save_dataset(model)
             entry = await _orders_entry(lv)
             assert entry.remove.relationships == ["customers"]
-            assert "join:customers" in {r.target for r in entry.reasons}
+            assert "relationship:customers" in {r.target for r in entry.reasons}

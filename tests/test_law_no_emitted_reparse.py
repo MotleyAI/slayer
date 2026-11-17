@@ -187,7 +187,7 @@ class TestTargets:
 
     def test_every_public_engine_method_is_an_execution(self) -> None:
         names = law.entry_points()
-        assert {"execute", "evict", "refresh", "detect_join_cardinality", "save_model"} <= set(names)
+        assert {"execute", "evict", "refresh", "detect_relationship_cardinality", "save_dataset"} <= set(names)
         for name in names:
             assert getattr(inspect.getattr_static(SlayerQueryEngine, name), law.GUARD_MARK, None) == "entry", name
 

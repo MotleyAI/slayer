@@ -242,7 +242,7 @@ class TestResolveEntityBare:
         # the column.
         result = await resolve_entity("orders", storage=storage)
         assert result.canonical_forms == ["mydb.orders"]
-        assert any("column" in w.lower() for w in result.warnings), (
+        assert any("field" in w.lower() for w in result.warnings), (
             f"expected Case A column-collision warning, got "
             f"{result.warnings!r}"
         )
@@ -408,7 +408,7 @@ class TestResolveEntityCaseDDatasourceModelCollision:
         result = await resolve_entity("mydb", storage=storage)
         assert result.canonical_forms == ["mydb"]
         assert any(
-            "datasource" in w.lower() and "model" in w.lower()
+            "datasource" in w.lower() and "dataset" in w.lower()
             for w in result.warnings
         ), f"expected Case D warning, got {result.warnings!r}"
 

@@ -68,12 +68,12 @@ def _players(scores: DatasetField) -> SlayerDataset:
 
 def _deletes_scores(entry: dict[str, Any]) -> bool:
     if entry.get("tool") == "delete_dataset":
-        return entry.get("model_name") == "players"
-    return "scores" in ((entry.get("remove") or {}).get("columns") or [])
+        return entry.get("dataset_name") == "players"
+    return "scores" in ((entry.get("remove") or {}).get("fields") or [])
 
 
 def _findings(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [e for e in entries if e.get("finding") == "retype" and e.get("column") == "scores"]
+    return [e for e in entries if e.get("finding") == "retype" and e.get("field") == "scores"]
 
 
 STALE_TYPES = [t for t in DataType if t is not DataType.ARRAY]

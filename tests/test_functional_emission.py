@@ -229,7 +229,7 @@ async def test_mcp_tool_descriptions_are_functional(tmp_path: Path) -> None:
         assert not _COLON_ANY.search(text), (tool.name, _COLON_ANY.findall(text))
     assert not _COLON_ANY.search(server.instructions or "")
     create_model = next(t for t in tools if t.name == "create_dataset")
-    assert "sum_sq(column)" in (create_model.description or "")
+    assert "sum_sq(field)" in (create_model.description or "")
 
 
 def test_help_content_is_functional() -> None:

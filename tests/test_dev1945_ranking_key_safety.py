@@ -39,7 +39,7 @@ from tests._dev1945_fixtures import (
 )
 from slayer.engine.query_engine import SlayerResponse
 
-HOST_HOP = "unproven join hop to line_items from orders"
+HOST_HOP = "unproven relationship hop to line_items from orders"
 MODES = ["broadcast", "error", "associate"]
 
 # Host-coordinate aggregate keys — the alias every refusal must name (D6).
@@ -58,7 +58,7 @@ LI_QTY_LAST = AggregateKey(source=FieldKey(path=("line_items",), leaf="qty"), ag
 
 
 def _alias_of(msg: str) -> str:
-    match = re.search(r"\n  at measure '([^']+)'", msg)
+    match = re.search(r"\n  at metric '([^']+)'", msg)
     assert match, msg
     return match.group(1)
 
@@ -129,10 +129,10 @@ class TestFixture:
         arity = [str(w.message) for w in rec if w.category is UserWarning]
         expected = {("li_ts", "line_items"), ("li_flag_ts", "line_items"), ("sh_ts", "shipments")}
         assert len(arity) == len(expected), arity
-        assert all("crossing an unproven join hop" in m for m in arity), arity
+        assert all("crossing an unproven relationship hop" in m for m in arity), arity
         named = {
             (column, hop) for column, hop in expected
-            if any(f"column {column!r}" in m and f"to {hop!r}" in m for m in arity)
+            if any(f"field {column!r}" in m and f"to {hop!r}" in m for m in arity)
         }
         assert named == expected, arity
 
@@ -218,7 +218,7 @@ class TestExplicitAndDefinitionKeys:
     async def test_unanalyzable_default(self, tmp_path) -> None:
         engine = await make_engine(str(tmp_path), orders_default="bad_ts")
         await _refused(
-            engine, "names derived column 'bad_ts'", "no supported dialect can analyse",
+            engine, "names derived field 'bad_ts'", "no supported dialect can analyse",
             agg_key=AMOUNT_LAST, metrics=[metric("last(amount)")],
         )
 

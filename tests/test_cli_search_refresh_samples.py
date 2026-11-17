@@ -96,7 +96,7 @@ class TestDatasourcesRefreshSamples:
             ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--dataset", "orders", "--format", "json"],
         )
         assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout) == {"errors": [], "unresolved_models": []}
+        assert json.loads(result.stdout) == {"errors": [], "unresolved_datasets": []}
 
     def test_unknown_model_listed_and_exits_1(self, default_shop: str) -> None:
         result = run_cli_in_process(

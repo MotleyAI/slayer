@@ -61,15 +61,15 @@ G8_MALFORMED = (
     "  suggestion: Use syntax like '1y2m3w5d6h7min8s'."
 )
 G2_MESSAGE = (
-    "TimeAxisError: Windowed measure could not resolve its time dimension.\n"
+    "TimeAxisError: Windowed metric could not resolve its time dimension.\n"
     "  suggestion: Add a single time_dimensions entry, or set main_time_dimension "
     "to select among multiple time dimensions."
 )
 NO_RANKING_COLUMN = (
-    "first/last aggregation requires a ranking time column "
+    "first/last aggregation requires a ranking time field "
     "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
-    "model's default_time_dimension); none is resolvable for "
-    "model 'orders'."
+    "dataset's default_time_dimension); none is resolvable for "
+    "dataset 'orders'."
 )
 
 
@@ -114,7 +114,7 @@ class TestPreservedGuardsVerbatim:
         # A second temporal column leaves no sole-column default either.
         models[0] = models[0].model_copy(update={
             "default_time_dimension": None,
-            "columns": [*models[0].fields, DatasetField(name="updated_at", sql="ordered_at", datatype=DataType.TIMESTAMP)],
+            "fields": [*models[0].fields, DatasetField(name="updated_at", sql="ordered_at", datatype=DataType.TIMESTAMP)],
         })
         query = q(
             dimensions=["region"],

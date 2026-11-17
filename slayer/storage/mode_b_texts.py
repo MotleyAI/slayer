@@ -8,7 +8,7 @@ from typing import Any
 
 from slayer.core.legacy_spellings import LegacySpan, rewrite_spans
 from slayer.core.syntax import call_spans, legacy_spans, rewrite_colon_spans
-from slayer.storage.document_keys import DocumentKeys
+from slayer.storage.document_keys import DocumentKeys, query_keys
 from slayer.storage.rank_direction_migration import rewrite_query_fields
 
 TextRewrite = Callable[[str], str]
@@ -26,6 +26,7 @@ def rewrite_dataset_doc(data: dict, fn: TextRewrite, *, keys: DocumentKeys) -> d
 
 
 def rewrite_query_doc(data: dict, fn: TextRewrite, *, keys: DocumentKeys) -> dict:
+    keys = query_keys(data, enclosing=keys)
     out = rewrite_query_fields(dict(data), fn, keys)
     source = out.get(keys.population)
     if isinstance(source, dict):

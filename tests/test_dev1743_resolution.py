@@ -372,7 +372,7 @@ class TestModeAValidationDialect:
     async def test_save_time_mode_a_uses_datasource_dialect(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: dict = {}
 
-        def _spy(*, sql, model, alias_path, models_by_name, dialect):
+        def _spy(*, sql, dataset, alias_path, datasets_by_name, dialect):
             captured["dialect"] = dialect
 
         monkeypatch.setattr(qe_mod, "expand_derived_refs_sync", _spy)

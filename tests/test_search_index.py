@@ -211,7 +211,7 @@ def test_kind_filter_model_returns_only_model_hits() -> None:
         datasources=["warehouse"],
     )
     hits = search_index(
-        index=idx, question="customer", limit=50, kind_filter="model",
+        index=idx, question="customer", limit=50, kind_filter="dataset",
     )
     assert hits, "expected at least one model hit"
     assert all(h.kind == "dataset" for h in hits)

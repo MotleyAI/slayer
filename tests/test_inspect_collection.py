@@ -176,15 +176,15 @@ class TestModelCollectionCompactMarkdown:
         self, two_ds: YAMLStorage
     ) -> None:
         out = await _svc(two_ds).inspect(reference=None, entity_type="dataset")
-        assert "# Datasource: `mydb` — 3 model(s)" in out
-        assert "# Datasource: `otherdb` — 2 model(s)" in out
+        assert "# Datasource: `mydb` — 3 dataset(s)" in out
+        assert "# Datasource: `otherdb` — 2 dataset(s)" in out
 
     async def test_oneliner_per_model(self, two_ds: YAMLStorage) -> None:
         out = await _svc(two_ds).inspect(reference=None, entity_type="dataset")
-        assert "- `orders` (3 cols; joins: `customers`)" in out
+        assert "- `orders` (3 fields; relationships: `customers`)" in out
         # Reverse-reachable joins show in Markdown like in JSON.
-        assert "- `customers` (1 cols; joins: `orders`)" in out
-        assert "- `events` (2 cols; joins: _(none)_)" in out
+        assert "- `customers` (1 fields; relationships: `orders`)" in out
+        assert "- `events` (2 fields; relationships: _(none)_)" in out
 
     async def test_no_verbose_block(self, two_ds: YAMLStorage) -> None:
         # The compact index must NOT emit the models_summary 5-line block.
@@ -197,7 +197,7 @@ class TestModelCollectionCompactMarkdown:
         out = await _svc(two_ds).inspect(reference=None, entity_type="dataset")
         assert "secret" not in out
         # mydb model count reflects only the visible models (2 + the built-in spine).
-        assert "# Datasource: `mydb` — 3 model(s)" in out
+        assert "# Datasource: `mydb` — 3 dataset(s)" in out
 
     async def test_models_sorted_by_name_within_ds(
         self, two_ds: YAMLStorage
@@ -223,7 +223,7 @@ class TestModelCollectionCompactMarkdown:
     ) -> None:
         # Default (no compact kwarg) is the one-liner index.
         out = await _svc(two_ds).inspect(reference=None, entity_type="dataset")
-        assert "- `orders` (3 cols; joins: `customers`)" in out
+        assert "- `orders` (3 fields; relationships: `customers`)" in out
 
 
 class TestModelCollectionCompactJson:
@@ -232,7 +232,7 @@ class TestModelCollectionCompactJson:
             reference=None, entity_type="dataset", format="json",
         )
         data = json.loads(out)
-        assert data["entity_type"] == "model"
+        assert data["entity_type"] == "dataset"
         assert data["collection"] is True
         assert data["warnings"] == []
         names = {d["data_source"] for d in data["datasources"]}
@@ -245,12 +245,12 @@ class TestModelCollectionCompactJson:
         data = json.loads(out)
         mydb = next(d for d in data["datasources"] if d["data_source"] == "mydb")
         assert mydb["dataset_count"] == 3
-        orders = next(m for m in mydb["models"] if m["name"] == "orders")
-        assert orders["column_count"] == 3
-        assert orders["joins_to"] == ["customers"]
+        orders = next(m for m in mydb["datasets"] if m["name"] == "orders")
+        assert orders["field_count"] == 3
+        assert orders["relationships_to"] == ["customers"]
         # The terse envelope carries no per-column / formula payload.
-        assert "columns" not in orders
-        assert "measures" not in orders
+        assert "fields" not in orders
+        assert "metrics" not in orders
 
 
 # ===========================================================================
@@ -302,9 +302,9 @@ class TestModelCollectionVerbose:
             reference=None, entity_type="dataset", compact=False,
         )
         # Full models_summary verbose markers, both datasources.
-        assert "**Columns (3):**" in out          # orders in mydb
+        assert "**Fields (3):**" in out          # orders in mydb
         assert "sum(amount)" in out
-        assert "# Datasource: `otherdb` — 2 model(s)" in out
+        assert "# Datasource: `otherdb` — 2 dataset(s)" in out
 
     async def test_descriptions_max_chars_truncates(
         self, single_ds: YAMLStorage
@@ -328,7 +328,7 @@ class TestModelCollectionEdges:
         self, empty_store: YAMLStorage
     ) -> None:
         out = await _svc(empty_store).inspect(reference=None, entity_type="dataset")
-        assert out == "No models found."
+        assert out == "No datasets found."
 
     async def test_zero_datasources_json(
         self, empty_store: YAMLStorage
@@ -347,8 +347,8 @@ class TestModelCollectionEdges:
                 DatasourceConfig(name="emptyds", type="postgres", host="h")
             )
             out = await _svc(st).inspect(reference=None, entity_type="dataset")
-            assert "# Datasource: `emptyds` — 1 model(s)" in out
-            assert "- `time_spine` (1 cols; joins: _(none)_)" in out
+            assert "# Datasource: `emptyds` — 1 dataset(s)" in out
+            assert "- `time_spine` (1 fields; relationships: _(none)_)" in out
 
     async def test_compact_false_empty_ds_json_is_valid(self) -> None:
         # CodeRabbit: an empty datasource must be a valid JSON object (not a
@@ -366,7 +366,7 @@ class TestModelCollectionEdges:
             entry = json.loads(out)["datasources"][0]
             assert entry["datasource_name"] == "emptyds"
             assert entry["dataset_count"] == 1
-            assert [m["name"] for m in entry["models"]] == ["time_spine"]
+            assert [m["name"] for m in entry["datasets"]] == ["time_spine"]
 
 
 # ===========================================================================
@@ -466,7 +466,7 @@ class TestDatasourceCollection:
 
 class TestKindGuard:
     @pytest.mark.parametrize(
-        "kind", ["column", "measure", "aggregation", "memory"],
+        "kind", ["field", "metric", "aggregation", "memory"],
     )
     async def test_none_raises(self, two_ds: YAMLStorage, kind: str) -> None:
         svc = _svc(two_ds)
@@ -474,7 +474,7 @@ class TestKindGuard:
             await svc.inspect(reference=None, entity_type=kind)
 
     @pytest.mark.parametrize(
-        "kind", ["column", "measure", "aggregation", "memory"],
+        "kind", ["field", "metric", "aggregation", "memory"],
     )
     async def test_empty_list_raises_same_error(
         self, two_ds: YAMLStorage, kind: str
@@ -536,8 +536,8 @@ class TestMcpCollection:
             name="inspect", arguments={"entity_type": "dataset"},
         )
         out = blocks[0].text
-        assert "# Datasource: `mydb` — 3 model(s)" in out
-        assert "- `orders` (3 cols; joins: `customers`)" in out
+        assert "# Datasource: `mydb` — 3 dataset(s)" in out
+        assert "- `orders` (3 fields; relationships: `customers`)" in out
 
     async def test_inspect_reference_accepts_null_in_schema(
         self, two_ds: YAMLStorage
@@ -581,14 +581,14 @@ class TestRestCollection:
     def test_no_reference_is_collection(self, rest_client: TestClient) -> None:
         r = rest_client.post("/inspect", json={"entity_type": "dataset"})
         assert r.status_code == 200
-        assert "# Datasource: `mydb` — 3 model(s)" in r.json()["result"]
+        assert "# Datasource: `mydb` — 3 dataset(s)" in r.json()["result"]
 
     def test_null_reference_is_collection(self, rest_client: TestClient) -> None:
         r = rest_client.post(
             "/inspect", json={"reference": None, "entity_type": "dataset"},
         )
         assert r.status_code == 200
-        assert "- `orders` (3 cols; joins: `customers`)" in r.json()["result"]
+        assert "- `orders` (3 fields; relationships: `customers`)" in r.json()["result"]
 
     def test_empty_list_reference_is_collection(
         self, rest_client: TestClient
@@ -655,14 +655,14 @@ class TestCliCollection:
                 storage=cli_storage,
             )
         out = buf.getvalue()
-        assert "# Datasource: `mydb` — 3 model(s)" in out
+        assert "# Datasource: `mydb` — 3 dataset(s)" in out
 
     def test_no_positional_unsupported_kind_exits_nonzero(
         self, cli_storage: YAMLStorage
     ) -> None:
 
         result = run_cli_in_process(
-            ["inspect", "--type", "column", "--storage", cli_storage.base_dir],
+            ["inspect", "--type", "field", "--storage", cli_storage.base_dir],
         )
         assert result.returncode == 1
         # Must fail with the collection-unsupported message, NOT the old
@@ -700,12 +700,12 @@ class TestCliCollection:
         os.makedirs(storage_dir, exist_ok=True)
         _seed_two_ds_sync(YAMLStorage(base_dir=storage_dir))
 
-        argv = ["slayer", "inspect", "--type", "model", "--storage", storage_dir]
+        argv = ["slayer", "inspect", "--type", "dataset", "--storage", storage_dir]
         monkeypatch.setattr(sys, "argv", argv)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             main()
-        assert "# Datasource: `mydb` — 3 model(s)" in buf.getvalue()
+        assert "# Datasource: `mydb` — 3 dataset(s)" in buf.getvalue()
 
 
 # ---- SlayerClient ----------------------------------------------------------
@@ -726,7 +726,7 @@ class TestSlayerClientCollection:
 
         client = SlayerClient(storage=client_storage)
         out = await client.inspect(reference=None, entity_type="dataset")
-        assert "# Datasource: `mydb` — 3 model(s)" in out
+        assert "# Datasource: `mydb` — 3 dataset(s)" in out
 
     def test_remote_posts_null_reference(
         self, monkeypatch: pytest.MonkeyPatch
@@ -747,7 +747,7 @@ class TestSlayerClientCollection:
         # not dropped), proving the client forwards the collection sentinel.
         assert "reference" in captured["json"]
         assert captured["json"]["reference"] is None
-        assert captured["json"]["entity_type"] == "model"
+        assert captured["json"]["entity_type"] == "dataset"
 
 
 # ===========================================================================
@@ -758,7 +758,7 @@ _BLOCK_SEP = "\n\n---\n\n"
 
 _UNSUPPORTED_MSG = (
     "Collection view (null reference) is only supported for entity_type "
-    "'model' or 'datasource'."
+    "'dataset' or 'datasource'."
 )
 
 
@@ -795,7 +795,7 @@ class TestInvalidConfigTolerance:
             out = await _svc(st).inspect(reference=None, entity_type="dataset")
             assert "# Datasource: `zzz_broken` — (ERROR: invalid config)" in out
             # The healthy datasources still render.
-            assert "# Datasource: `mydb` — 3 model(s)" in out
+            assert "# Datasource: `mydb` — 3 dataset(s)" in out
 
     async def test_model_json_error_entry(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -866,12 +866,12 @@ class TestHiddenColumnCount:
                 ],
             ))
             md = await _svc(st).inspect(reference=None, entity_type="dataset")
-            assert "- `widgets` (2 cols; joins: _(none)_)" in md
+            assert "- `widgets` (2 fields; relationships: _(none)_)" in md
             js = json.loads(await _svc(st).inspect(
                 reference=None, entity_type="dataset", format="json",
             ))
-            widgets = next(m for m in js["datasources"][0]["models"] if m["name"] == "widgets")
-            assert widgets["column_count"] == 2
+            widgets = next(m for m in js["datasources"][0]["datasets"] if m["name"] == "widgets")
+            assert widgets["field_count"] == 2
 
 
 class TestSortedJoins:
@@ -904,14 +904,14 @@ class TestSortedJoins:
                 fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
             ))
             md = await _svc(st).inspect(reference=None, entity_type="dataset")
-            assert "joins: `alpha`, `zebra`" in md
+            assert "relationships: `alpha`, `zebra`" in md
             js = json.loads(await _svc(st).inspect(
                 reference=None, entity_type="dataset", format="json",
             ))
             hub = next(
-                m for m in js["datasources"][0]["models"] if m["name"] == "hub"
+                m for m in js["datasources"][0]["datasets"] if m["name"] == "hub"
             )
-            assert hub["joins_to"] == ["alpha", "zebra"]
+            assert hub["relationships_to"] == ["alpha", "zebra"]
 
 
 class TestVerboseEmptyDsInheritance:
@@ -927,7 +927,7 @@ class TestVerboseEmptyDsInheritance:
             out = await _svc(st).inspect(
                 reference=None, entity_type="dataset", compact=False,
             )
-            assert "# Datasource: `emptyds` — 1 model(s)" in out
+            assert "# Datasource: `emptyds` — 1 dataset(s)" in out
             assert "## `time_spine`" in out
 
 
@@ -971,7 +971,7 @@ class TestEnvelopeCoverage:
         data = json.loads(await _svc(two_ds).inspect(
             reference=None, entity_type="dataset", compact=False, format="json",
         ))
-        assert data["entity_type"] == "model"
+        assert data["entity_type"] == "dataset"
         assert data["collection"] is True
         assert data["warnings"] == []
 
@@ -985,9 +985,9 @@ class TestEnvelopeCoverage:
         assert data["collection"] is True
         mydb = next(d for d in data["datasources"] if d["name"] == "mydb")
         assert "description" in mydb
-        assert "models" in mydb
+        assert "datasets" in mydb
         # Model skeletons carry names.
-        assert any(m.get("name") == "orders" for m in mydb["models"])
+        assert any(m.get("name") == "orders" for m in mydb["datasets"])
 
 
 class TestGoldenFormatPins:

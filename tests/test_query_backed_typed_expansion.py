@@ -1079,13 +1079,13 @@ class TestWrapperAliasShapes:
         # Add a join + a numeric customers.revenue column so the cross-
         # model agg has something to aggregate.
         orders_with_join = _orders_dataset().model_copy(update={
-            "joins": [DatasetRelationship(
+            "relationships": [DatasetRelationship(
                 to="customers",
                 join_pairs=[["customer_id", "id"]],
             )],
         })
         customers_with_rev = _customers_dataset().model_copy(update={
-            "columns": list(_customers_dataset().fields) + [
+            "fields": list(_customers_dataset().fields) + [
                 DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
             ],
         })
@@ -1118,13 +1118,13 @@ class TestWrapperAliasShapes:
         flattens to ``customers__revenue_percentile_p_0_5`` (the wrapper keeps the kwarg suffix).
         """
         orders_with_join = _orders_dataset().model_copy(update={
-            "joins": [DatasetRelationship(
+            "relationships": [DatasetRelationship(
                 to="customers",
                 join_pairs=[["customer_id", "id"]],
             )],
         })
         customers_with_rev = _customers_dataset().model_copy(update={
-            "columns": list(_customers_dataset().fields) + [
+            "fields": list(_customers_dataset().fields) + [
                 DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
             ],
         })
@@ -1152,7 +1152,7 @@ class TestWrapperAliasShapes:
 
     async def test_joined_dim_alias_flattens(self) -> None:
         orders_with_join = _orders_dataset().model_copy(update={
-            "joins": [DatasetRelationship(
+            "relationships": [DatasetRelationship(
                 to="customers",
                 join_pairs=[["customer_id", "id"]],
             )],
@@ -1209,13 +1209,13 @@ class TestP4ClosureBehavior:
         reaches from the virtual model, is aggregated over its own rows.
         """
         orders_with_join = _orders_dataset().model_copy(update={
-            "joins": [DatasetRelationship(
+            "relationships": [DatasetRelationship(
                 to="customers",
                 join_pairs=[["customer_id", "id"]],
             )],
         })
         customers_with_rev = _customers_dataset().model_copy(update={
-            "columns": list(_customers_dataset().fields) + [
+            "fields": list(_customers_dataset().fields) + [
                 DatasetField(name="revenue", sql="revenue", datatype=DataType.DOUBLE),
             ],
         })

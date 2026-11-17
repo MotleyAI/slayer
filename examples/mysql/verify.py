@@ -12,6 +12,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from verify_common import (
+    api,
     run_common_checks,
     check_rollup,
     check_corr_covar,
@@ -25,7 +26,6 @@ if __name__ == "__main__":
 
     # MySQL may or may not have rollup depending on FK detection
     print("\nRollup:")
-    from verify_common import api
     orders_dataset = api("GET", "/datasets/orders")
     dim_names = [d["name"] for d in orders_dataset.get("dimensions", [])]
     has_rollup = any("__" in d for d in dim_names)

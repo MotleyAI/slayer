@@ -9,7 +9,12 @@ verbatim through MCP / REST / CLI / SlayerClient.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import TYPE_CHECKING, Any
+
+from pydantic import BaseModel, ModelWrapValidatorHandler, model_validator
+from typing_extensions import deprecated
+
+from slayer.core.vocabulary import COVERAGE_KEYS, RECOMMENDATION_KEYS, attribute_used, name_twins, renamed_input
 
 
 class ItemPath(BaseModel):
@@ -35,6 +40,23 @@ class CandidateCoverage(BaseModel):
     reachable_items: list[str]
     unreachable_items: list[str]
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler[CandidateCoverage]) -> CandidateCoverage:
+        return renamed_input(data, handler, COVERAGE_KEYS, stored=False)
+
+    @property
+    @deprecated("model_name is deprecated; use dataset_name", category=None)
+    def model_name(self) -> str:
+        attribute_used(self, old="model_name", new="dataset_name")
+        return self.dataset_name
+
+    @model_name.setter
+    @deprecated("model_name is deprecated; use dataset_name", category=None)
+    def model_name(self, value: str) -> None:
+        attribute_used(self, old="model_name", new="dataset_name")
+        self.dataset_name = value
+
 
 class PopulationRecommendation(BaseModel):
     """Outcome of :meth:`SlayerQueryEngine.recommend_population`.
@@ -54,6 +76,25 @@ class PopulationRecommendation(BaseModel):
     coverage: list[CandidateCoverage] = []
     message: str = ""
     warnings: list[str] = []
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(
+        cls, data: Any, handler: ModelWrapValidatorHandler[PopulationRecommendation],
+    ) -> PopulationRecommendation:
+        return renamed_input(data, handler, RECOMMENDATION_KEYS, stored=False)
+
+    @property
+    @deprecated("root_model is deprecated; use population", category=None)
+    def root_model(self) -> str | None:
+        attribute_used(self, old="root_model", new="population")
+        return self.population
+
+    @root_model.setter
+    @deprecated("root_model is deprecated; use population", category=None)
+    def root_model(self, value: str | None) -> None:
+        attribute_used(self, old="root_model", new="population")
+        self.population = value
 
 
 def _render_item_paths(rec: PopulationRecommendation) -> list[str]:
@@ -100,3 +141,11 @@ def render_recommendation_markdown(rec: PopulationRecommendation) -> str:
         lines.append("Warnings:")
         lines.extend(f"- {w}" for w in rec.warnings)
     return "\n".join(lines)
+
+
+if TYPE_CHECKING:
+    @deprecated("RootModelRecommendation is deprecated; use PopulationRecommendation", category=None)
+    class RootModelRecommendation(PopulationRecommendation): ...
+
+
+__getattr__ = name_twins(namespace=globals(), renames={"RootModelRecommendation": "PopulationRecommendation"})

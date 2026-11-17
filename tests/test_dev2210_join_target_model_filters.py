@@ -174,7 +174,7 @@ class TestFilteredRoot:
 class TestListParentReadsFilteredRows:
     @pytest.fixture
     async def team_a(self) -> AsyncIterator[SlayerQueryEngine]:
-        model = contractors_dataset().model_copy(update={"filter": ["team = 'A'"]})
+        model = contractors_dataset().model_copy(update={"filters": ["team = 'A'"]})
         async with contractors_engine("duckdb", datasets=[model]) as eng:
             yield eng
 

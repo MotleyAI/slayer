@@ -94,7 +94,7 @@ _UPPER_BUYER = {"expression": "UPPER(buyer.name)", "name": "buyer_name"}
 
 
 def _orders_with_stored_buyer() -> SlayerDataset:
-    return _orders().model_copy(update={"joins": [
+    return _orders().model_copy(update={"relationships": [
         DatasetRelationship(to="customers", join_pairs=[["buyer_ref", "id"]], name="buyer"),
     ]})
 
@@ -154,7 +154,7 @@ class TestInnerExtensionJoinRestriction:
         assert _whole_dropped(qb=qb, dataset=_orders(), column="buyer_ref") == set()
 
     def test_restriction_declared_on_a_routed_model(self) -> None:
-        customers = _customers().model_copy(update={"columns": [
+        customers = _customers().model_copy(update={"fields": [
             *_customers().fields, DatasetField(name="region_id", datatype=DataType.INT),
         ]})
         regions = SlayerDataset(name="regions", data_source="ds", sql_table="regions", fields=[
@@ -174,12 +174,12 @@ class TestInnerExtensionJoinRestriction:
 
 class TestExtensionDefinitionFrames:
     def test_definition_revisiting_the_root_attributes_its_own_join(self) -> None:
-        orders = _orders().model_copy(update={"joins": [
+        orders = _orders().model_copy(update={"relationships": [
             DatasetRelationship(to="customers", join_pairs=[["buyer_ref", "id"]], name="customer"),
         ]})
         customers = _customers().model_copy(update={
-            "columns": [*_customers().fields, DatasetField(name="last_order_id", datatype=DataType.INT)],
-            "joins": [DatasetRelationship(to="orders", join_pairs=[["last_order_id", "id"]], name="last_order")],
+            "fields": [*_customers().fields, DatasetField(name="last_order_id", datatype=DataType.INT)],
+            "relationships": [DatasetRelationship(to="orders", join_pairs=[["last_order_id", "id"]], name="last_order")],
         })
         ext = DatasetExtension(source_name="customers", metrics=[
             DatasetMetric(name="latest", expression="max(last_order.amount)")])

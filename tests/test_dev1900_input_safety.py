@@ -30,7 +30,7 @@ from tests._dev1900_fixtures import (
     unparseable_derived_datasets,
 )
 
-UNPROVEN = "unproven join hop"
+UNPROVEN = "unproven relationship hop"
 HOP = "region_events"
 MODES = ["broadcast", "associate", "error"]
 
@@ -167,7 +167,7 @@ class TestInputDependencyCheckerAlwaysRaises:
     return silently passed an unanalysable dependency)."""
 
     def test_named_column_raises_naming_it(self):
-        with pytest.raises(ValueError, match="derived column 'bad_pop'"):
+        with pytest.raises(ValueError, match="derived field 'bad_pop'"):
             check_input_dependencies_analyzable(alias="w", field="bad_pop")
 
     def test_unnameable_dependency_still_raises(self):

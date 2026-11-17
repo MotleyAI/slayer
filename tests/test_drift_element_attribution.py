@@ -201,7 +201,7 @@ def _inject(remove: RemoveSpec) -> Any:
 
     async def _with_entry(**kwargs: Any) -> list[Any]:
         entries = await real(**kwargs)
-        if any(m.name == "orders" for m in kwargs["models"]):
+        if any(m.name == "orders" for m in kwargs["datasets"]):
             entries = [*entries, EditDatasetDelete(dataset_name="orders", data_source="ds", remove=remove,
                                                  reasons=[DeleteReason(target="injected", reason="injected")])]
         return entries

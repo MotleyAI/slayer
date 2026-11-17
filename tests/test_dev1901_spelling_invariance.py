@@ -127,6 +127,6 @@ async def test_join_registration(col: str) -> None:
 async def test_fanning_leaf_refused_in_both_spellings() -> None:
     col = "customers.regions.region_events.value"
     for formula in (f"wsum(amount, weight={col})", f"wsum(amount, weight='{col} * 1')"):
-        with pytest.raises(ValueError, match="(?i)unproven join hop") as ei:
+        with pytest.raises(ValueError, match="(?i)unproven relationship hop") as ei:
             await _sql(formula)
         assert "region_events" in str(ei.value)

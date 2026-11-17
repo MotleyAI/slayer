@@ -130,8 +130,9 @@ def test_atomic_write_cleanup_error_does_not_mask_original(tmp_path, monkeypatch
     monkeypatch.setattr(atomic_write_module.os, "fsync", failing_fsync)
     monkeypatch.setattr(atomic_write_module.os, "remove", failing_remove)
     # The real failure (fsync) must surface, not the cleanup unlink error.
+    target = str(path)
     with pytest.raises(OSError, match="simulated fsync failure"):
-        yaml_storage_module._atomic_write_text(path=str(path), text="new")
+        yaml_storage_module._atomic_write_text(path=target, text="new")
     assert path.read_text() == "old"
 
 
@@ -156,8 +157,9 @@ def test_atomic_write_failure_preserves_target_and_cleans_temp(tmp_path, monkeyp
             raise OSError("simulated temp-file write failure")
 
     monkeypatch.setattr(yaml_storage_module.os, "fdopen", PartialWriter)
+    target = str(path)
     with pytest.raises(OSError, match="simulated temp-file write failure"):
-        yaml_storage_module._atomic_write_text(path=str(path), text="new")
+        yaml_storage_module._atomic_write_text(path=target, text="new")
 
     assert path.read_text() == "old"
     assert list(tmp_path.iterdir()) == [path]

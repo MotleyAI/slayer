@@ -208,9 +208,9 @@ async def test_compact_search_surfaces_description_for_every_entity_kind(
     # SearchHit.description field, and an empty text.
     expectations = [
         ("warehouse", "datasource", "Warehouse top-level ds desc."),
-        ("warehouse.orders", "model", "Orders table desc."),
-        ("warehouse.orders.amount_paid", "column", "amount_paid column desc."),
-        ("warehouse.orders.revenue", "measure", "revenue measure desc."),
+        ("warehouse.orders", "dataset", "Orders table desc."),
+        ("warehouse.orders.amount_paid", "field", "amount_paid column desc."),
+        ("warehouse.orders.revenue", "metric", "revenue measure desc."),
         ("warehouse.orders.wavg", "aggregation", "weighted average agg desc."),
     ]
     for canonical, kind, expected_desc in expectations:

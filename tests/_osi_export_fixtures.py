@@ -161,7 +161,7 @@ def rich_orders() -> SlayerDataset:
         aggregations=[Aggregation(name="trimmed_sum", expression="SUM(CASE WHEN {value} < 15 THEN {value} END)")],
         metrics=[
             *BASIC_MEASURES,
-            slayer_metric("avg_amount", "avg(amount)", label="Average amount", type=DataType.DOUBLE,
+            slayer_metric("avg_amount", "avg(amount)", label="Average amount", datatype=DataType.DOUBLE,
                     meta={"owner": "finance"}),
             slayer_metric("min_amount", "min(amount)"),
             slayer_metric("max_amount", "max(amount)"),

@@ -136,7 +136,7 @@ async def test_combined_consumer_keyless_grain_rejected(
     if order:
         kw["order"] = order
     if filters:
-        kw["filters"] = filters
+        kw["filter"] = filters
     query = q(**kw)
     with pytest.raises(ValueError, match=r"not a query dimension") as ei:
         await gen(query)
@@ -148,8 +148,8 @@ async def test_combined_consumer_keyless_grain_rejected(
 
 
 _ERROR_TEMPLATE = (
-    "PartitionKeyError: The partition_by column '{key}' is not a query dimension.\n"
-    "  at measure 'rt'\n"
+    "PartitionKeyError: The partition_by field '{key}' is not a query dimension.\n"
+    "  at metric 'rt'\n"
     "  suggestion: Add it to dimensions/time_dimensions, or choose one of: {dims}."
 )
 

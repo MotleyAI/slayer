@@ -90,5 +90,5 @@ def test_unknown_datasource(shop: Env, tmp_path: Path) -> None:
 
 def test_parser_defaults() -> None:
     args = _build_parser().parse_args(["export-osi", "--datasource", "ds", "--out", "x.yaml"])
-    assert args.models is None
+    assert args.datasets is None
     assert args.no_extensions is False

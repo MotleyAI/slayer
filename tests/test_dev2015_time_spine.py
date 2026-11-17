@@ -373,7 +373,8 @@ class TestSpineStages:
     async def test_a_saved_spine_query_read_as_a_source(self, engine: SlayerQueryEngine, extra, pinned, count) -> None:
         await engine.create_dataset_from_query(query=_monthly_stage(**extra), name="saved_monthly")
         stored = await engine.storage.get_dataset("saved_monthly", data_source="test")
-        assert stored is not None and stored.source_queries is not None
+        assert stored is not None
+        assert stored.source_queries is not None
         assert [s.population for s in stored.source_queries] == [pinned]
         resp = await engine.execute(_over_monthly(population="saved_monthly"))
         assert [(num(value(r, "t")), num(value(r, "c"))) for r in resp.data] == [(220.0, count)]

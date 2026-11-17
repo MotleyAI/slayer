@@ -3,7 +3,7 @@ through ``render_value_key`` with byte-identical SQL.
 
 Behavioural unit tests for the renderer surface the migration added: the
 ``FilterFacilities.agg_builder`` HAVING seam (slot lookup + ``having_full_alias``
-recovery), the ``cast_column_sql`` filter-CAST policy, the
+recovery), the ``cast_field_sql`` filter-CAST policy, the
 ``paren_comparison_operands`` grouping policy, the alias-exclusive resolution
 mode with table qualification, the ``Optional`` scope fail-closed rule, and
 ``ScopeFrame.field_type``.
@@ -279,7 +279,7 @@ class TestFacilityFieldStructure:
     def test_filter_facilities_fields(self) -> None:
         fields = FilterFacilities.model_fields
         assert "agg_builder" in fields
-        assert "cast_column_sql" in fields
+        assert "cast_field_sql" in fields
         assert "paren_comparison_operands" in fields
         # The obsolete dead-type field is gone (PR 6 deletes the type).
         assert "first_last_state" not in fields
@@ -309,17 +309,17 @@ class TestFilterCastColumnSql:
         return render_value_key(key=key, ctx=ctx)
 
     def test_cast_wraps_a_non_temporal_derived_leaf(self) -> None:
-        out = self._out(_NET, cast_column_sql=True)
+        out = self._out(_NET, cast_field_sql=True)
         assert isinstance(out, exp.Cast), _emit(out)
         # It casts the derived expression itself, not something else.
         assert "amount" in _emit(out).lower(), _emit(out)
 
     def test_temporal_derived_leaf_is_not_cast(self) -> None:
-        out = self._out(_NET_TS, cast_column_sql=True)
+        out = self._out(_NET_TS, cast_field_sql=True)
         assert not isinstance(out, exp.Cast), _emit(out)
 
     def test_no_cast_when_flag_false(self) -> None:
-        out = self._out(_NET, cast_column_sql=False)
+        out = self._out(_NET, cast_field_sql=False)
         assert not isinstance(out, exp.Cast), _emit(out)
 
     def test_no_cast_without_filter_facility(self) -> None:

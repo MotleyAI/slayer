@@ -261,13 +261,13 @@ def _fine_cases():
     """(id, query kwargs, expected location pattern) for combined consumers of FINE."""
     fm = DatasetMetric(expression=FINE, name="f")
     return [
-        ("measure", {"metrics": [fm]}, r"measure 'f'"),
+        ("measure", {"metrics": [fm]}, r"metric 'f'"),
         ("order", {"metrics": [TOT], "order": [{"field": FINE, "direction": "asc"}]},
          r"order item\b"),
         ("arithmetic", {"metrics": [DatasetMetric(expression=f"{FINE} + 1", name="f")]},
-         r"measure 'f'"),
+         r"metric 'f'"),
         ("transform", {"metrics": [DatasetMetric(expression=f"rank({FINE}, direction='desc')", name="f")]},
-         r"measure 'f'"),
+         r"metric 'f'"),
         ("filter", {"metrics": [TOT], "filter": [f"{FINE} < sum(amount)"]}, r"filter\b"),
         ("split-filter",
          {"metrics": [TOT], "filter": [f"{FINE} < sum(amount) and region <> 'Gap'"]},
@@ -312,7 +312,7 @@ class TestReaggregationOuterKeyCarriesTheRule:
         bundle = _bundle("corders")
         with pytest.raises(PartitionKeyError) as ei:
             plan_query(query=query, bundle=bundle)
-        _assert_consumer_error(ei.value, key="customers.region_id", location=r"measure 'c'")
+        _assert_consumer_error(ei.value, key="customers.region_id", location=r"metric 'c'")
 
 
 # --------------------------------------------------------------------------- #

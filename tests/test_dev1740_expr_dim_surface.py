@@ -65,7 +65,7 @@ class TestBareIdentifierPathUnchanged:
     def test_order_of_mixed_dims_preserved(self) -> None:
         dims = _dims(["region", {"expression": "lower(city)", "name": "lc"}, "channel"])
         assert [type(d).__name__ for d in dims] == [
-            "ColumnRef", "ComputedDimension", "ColumnRef",
+            "FieldRef", "ComputedDimension", "FieldRef",
         ]
 
 

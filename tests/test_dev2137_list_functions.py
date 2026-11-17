@@ -262,6 +262,6 @@ class TestEmission:
     @pytest.mark.parametrize("dialect", NATIVE_LIST_DIALECTS)
     async def test_date_lists_emit(self, dialect: str) -> None:
         days = DatasetField(name="days", datatype=DataType.ARRAY, element_type=DataType.DATE)
-        model = contractors_dataset().model_copy(update={"columns": [*contractors_dataset().fields, days]})
+        model = contractors_dataset().model_copy(update={"fields": [*contractors_dataset().fields, days]})
         await emit_contractors(query(dimensions=["id", {"expression": "contains(days, DATE '2025-01-01')",
                                                         "name": "v"}]), dialect=dialect, datasets=[model])

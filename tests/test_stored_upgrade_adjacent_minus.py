@@ -61,7 +61,7 @@ def test_loaded_text_parses(stored: str, loaded: str) -> None:
 
 @pytest.mark.parametrize(("stored", "loaded"), CASES)
 def test_model_measure_formula(stored: str, loaded: str) -> None:
-    doc = {**orders_v10(version=15), "metrics": [{"name": "x", "expression": stored}]}
+    doc = {**orders_v10(version=15), "measures": [{"name": "x", "formula": stored}]}
     assert SlayerDataset.model_validate(doc).metrics[0].expression == _fully_loaded(stored, loaded)
 
 
@@ -72,7 +72,7 @@ def test_query_filter(stored: str, loaded: str) -> None:
 
 
 def test_current_version_text_is_never_rewritten() -> None:
-    doc = {**orders_v10(version=16), "metrics": [{"name": "x", "expression": "sum(a) --note"}]}
+    doc = {**orders_v10(version=16), "measures": [{"name": "x", "formula": "sum(a) --note"}]}
     assert SlayerDataset.model_validate(doc).metrics[0].expression == "sum(a) --note"
 
 
@@ -89,8 +89,8 @@ def shop_ds(tmp_path):
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_stored_double_negation_returns_its_old_value(tmp_path, shop_ds, backend: str) -> None:
-    stage: dict[str, Any] = {"population": "orders",
-                             "metrics": [{"expression": "sum(amount) --sum(amount)", "name": "rev"}]}
+    stage: dict[str, Any] = {"source_model": "orders",
+                             "measures": [{"formula": "sum(amount) --sum(amount)", "name": "rev"}]}
     storage = await raw_store(backend=backend, base=str(tmp_path / "store"), datasource=shop_ds,
                               models=[orders_v10(), customers_v10(), query_backed_v10(name="rev_q", stages=[stage])])
     total = measure_total(await run(storage, {"population": "orders", "metrics": [{"expression": "sum(amount)",

@@ -521,7 +521,7 @@ class TestBindLevel:
     def test_transform_ranking_key_refused(self):
         scope, bundle = _orders_scope_bundle()
         parsed = parse_expr(LAST_RANK_KEY)
-        with pytest.raises(ValueError, match="ranks by a column"):
+        with pytest.raises(ValueError, match="ranks by a field"):
             bind_expr(parsed, scope=scope, bundle=bundle)
 
     def test_time_bucketed_partition_key_granularity_in_fragment(self):

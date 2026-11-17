@@ -466,7 +466,7 @@ class TestCliBatch:
         argv = [
             "slayer", "inspect",
             "mydb.orders.amount", "mydb.orders.customer_id",
-            "--type", "column", "--storage", storage_dir,
+            "--type", "field", "--storage", storage_dir,
         ]
         monkeypatch.setattr(sys, "argv", argv)
         buf = io.StringIO()

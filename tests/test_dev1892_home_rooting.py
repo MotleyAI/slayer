@@ -164,7 +164,7 @@ class TestDerivedColumnEdgeCases:
         query = bcast_q(dimensions=["status"], metrics=[DatasetMetric(
             expression="weighted_avg(customers.bad_spend, weight=amount)", name="w")])
         models = fanning_derived_source_datasets()
-        with pytest.raises(ValueError, match="unproven join hop"):
+        with pytest.raises(ValueError, match="unproven relationship hop"):
             await gen(query, datasets=models)
 
 

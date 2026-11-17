@@ -28,7 +28,7 @@ class TestMixedGrainOr:
             await exec_engine.execute(query)
         msg = str(ei.value).lower()
         assert "field" in msg
-        assert "measure" in msg
+        assert "metric" in msg
         assert "status" in msg
         assert "partition" in msg or "sum(amount)" in msg
 
@@ -42,7 +42,7 @@ class TestRawRowsHaveNoMeasurePosition:
         )
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await exec_engine.execute(query)
-        assert "measure" in str(ei.value).lower()
+        assert "metric" in str(ei.value).lower()
 
     async def test_order_on_measure_in_raw_rows_errors(self, exec_engine) -> None:
         # An aggregate order target is valid as neither field nor measure when the
@@ -54,4 +54,4 @@ class TestRawRowsHaveNoMeasurePosition:
         )
         with pytest.raises(DistinctDimensionValuesError) as ei:
             await exec_engine.execute(query)
-        assert "measure" in str(ei.value).lower()
+        assert "metric" in str(ei.value).lower()

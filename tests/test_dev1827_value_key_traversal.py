@@ -724,7 +724,7 @@ class TestHavingValidationWiring:
             filter=["_count > 1 or status == 'completed'"],
         )
         model = _status_orders_dataset()
-        with pytest.raises(ValueError, match="neither a field nor a measure"):
+        with pytest.raises(ValueError, match="neither a field nor a metric"):
             await _engine_generate(query=query, dataset=model)
 
     async def test_grouped_column_in_having_still_accepted(self) -> None:

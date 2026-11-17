@@ -53,7 +53,7 @@ class TestInspectShowsEdgeNames:
 
     async def test_names_only_view_lists_edge_references(self) -> None:
         payload = json.loads(await _inspect(_orders(), format="json", sections=["fields"]))
-        assert sorted(payload["joins_names"]) == EDGE_NAMES
+        assert sorted(payload["relationships_names"]) == EDGE_NAMES
 
     def test_skeleton_lists_edge_references(self) -> None:
         assert dataset_skeleton_fields(dataset=_orders())["relationships_to"] == EDGE_NAMES

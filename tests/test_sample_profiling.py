@@ -130,7 +130,7 @@ def _count_persists(*, storage: StorageBackend, monkeypatch: pytest.MonkeyPatch)
     real = storage.update_field_sampled
 
     async def counting(**kwargs):
-        calls.append(kwargs["column_name"])
+        calls.append(kwargs["field_name"])
         return await real(**kwargs)
 
     monkeypatch.setattr(storage, "update_field_sampled", counting)
@@ -758,7 +758,7 @@ async def test_model_level_failure_logs_once(env, caplog) -> None:
     msg = warnings[0].getMessage()
     assert DS in msg
     assert "ghost" in msg
-    assert re.search(r"\d+ columns", msg)
+    assert re.search(r"\d+ fields", msg)
     assert "no such table" in msg
     assert "[SQL:" not in msg
 
@@ -793,7 +793,7 @@ async def test_persist_failure_on_one_column_only(env: tuple[SlayerQueryEngine, 
     real = storage.update_field_sampled
 
     async def flaky(**kwargs):
-        if kwargs["column_name"] == "amount":
+        if kwargs["field_name"] == "amount":
             raise RuntimeError("disk on fire")
         return await real(**kwargs)
 
@@ -947,7 +947,7 @@ async def test_inspect_model_under_policy_renders_scoped_samples(env: tuple[Any,
     out = await render_dataset_inspection(
         dataset=model, storage=storage, engine=_policy_engine(storage), format="json", sections=["fields"],
     )
-    rendered = {c["name"]: c["sampled"] for c in json.loads(out)["columns"]}
+    rendered = {c["name"]: c["sampled"] for c in json.loads(out)["fields"]}
     assert rendered["status"] == "paid"
     assert "STORED" not in out
 

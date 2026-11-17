@@ -327,7 +327,7 @@ async def test_windowed_corr_other_across_fanning_hop_fails_closed(exec_backend:
         population="customers", time_dimensions=F.month_td("signup_at"),
         metrics=[_m("corr(spend, other=orders.amount, window='1y')", "m")],
     )
-    with pytest.raises(ValueError, match="unproven join hop"):
+    with pytest.raises(ValueError, match="unproven relationship hop"):
         await engine.execute(query)
 
 
@@ -337,7 +337,7 @@ async def test_windowed_last_ranking_across_fanning_hop_fails_closed(exec_backen
         population="customers", time_dimensions=F.month_td("signup_at"),
         metrics=[_m("last(spend, orders.created_at, window='1y')", "m")],
     )
-    with pytest.raises(ValueError, match="unproven join hop"):
+    with pytest.raises(ValueError, match="unproven relationship hop"):
         await engine.execute(query)
 
 
@@ -346,7 +346,7 @@ async def test_windowed_star_non_count_fails_closed():
     # never silently render <agg>(1) over the interval rows.
     query = F.q(time_dimensions=F.month_td(),
                 metrics=[_m("sum(*, window='90d')", "w")])
-    with pytest.raises(ValueError, match="not allowed with measure"):
+    with pytest.raises(ValueError, match="not allowed with metric"):
         await F.gen(query)
 
 

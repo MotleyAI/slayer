@@ -77,7 +77,7 @@ class TestExecuteByName:
     async def test_missing_model_raises(self) -> None:
         engine, tmp = await _engine_with_orders()
         try:
-            with pytest.raises(ValueError, match="Model 'nope' not found"):
+            with pytest.raises(ValueError, match="Dataset 'nope' not found"):
                 await engine.execute("nope")
         finally:
             tmp.cleanup()

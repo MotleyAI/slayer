@@ -79,7 +79,7 @@ class TestInputs:
         assert model.sql_table is None
 
     def test_column_sql_applied(self) -> None:
-        model = _build(["id"], sql="SELECT 1 AS id", column_sql={"tier": "tier_fit"})
+        model = _build(["id"], sql="SELECT 1 AS id", field_sql={"tier": "tier_fit"})
         assert _col(model, "tier").sql == "tier_fit"
 
     def test_default_time_dimension_passed_through(self) -> None:

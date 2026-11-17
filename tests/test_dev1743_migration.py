@@ -186,7 +186,7 @@ class TestLegacyAliasRewrittenOnLoad:
             on_disk = yaml.safe_load(
                 open(os.path.join(d, "models", "ds", "orders.yaml")).read())
             assert on_disk["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-            region_col = next(c for c in on_disk["columns"]
+            region_col = next(c for c in on_disk["fields"]
                               if c["name"] == "region_name")
             assert region_col["sql"] == "customers.regions.name"
 
@@ -228,7 +228,7 @@ class TestRewritePrecedesValidation:
             assert seen, "orders never reached model_validate"
             # The dict handed to Pydantic already carries the dotted form —
             # proving the raw-dict rewrite preceded validation.
-            col = next(c for c in seen[-1]["columns"]
+            col = next(c for c in seen[-1]["fields"]
                        if c["name"] == "region_name")
             assert col["sql"] == "customers.regions.name"
 

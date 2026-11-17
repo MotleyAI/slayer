@@ -119,5 +119,5 @@ class TestRanklessTargetStaysTyped:
                 expression="last(customers.spend, partition_by=customers.tier)",
                 name="l")],
         )
-        with pytest.raises(ValueError, match=r"ranking time column"):
+        with pytest.raises(ValueError, match=r"ranking time field"):
             await exec_engine.execute(query)

@@ -216,7 +216,7 @@ class TestPerKindFullRender:
             reference="mydb.orders", entity_type="dataset", compact=False,
         )
         # Reuses the inspect_model renderer.
-        assert "# Model: `orders`" in out
+        assert "# Dataset: `orders`" in out
         assert "amount" in out
 
 
@@ -257,19 +257,19 @@ class TestCompact:
         # Description still shown.
         assert "One row per placed order." in out
         # Skeleton lines present (all four, names only).
-        assert "Columns: " in out
+        assert "Fields: " in out
         assert "amount" in out
         assert "customer_id" in out
-        assert "Measures: aov" in out
+        assert "Metrics: aov" in out
         assert "Aggregations: big" in out
-        assert "Joins to: customers" in out
+        assert "Relationships to: customers" in out
         # Standalone skeleton heading is the backticked model name (no "Model:"
         # prefix, distinguishing it from the full render).
         assert "# `orders`" in out
         # Full-render-only markers must be absent (proves the skeleton path,
         # not render_model_inspection).
-        assert "# Model: `orders`" not in out   # full-render heading
-        assert "## Columns (" not in out         # full-render columns table
+        assert "# Dataset: `orders`" not in out   # full-render heading
+        assert "## Fields (" not in out         # full-render columns table
         assert "- **data_source:**" not in out   # metadata bullets
         assert "## Data Profile" not in out
 
@@ -299,7 +299,7 @@ class TestNormalization:
         )
         payload = json.loads(out)
         assert payload["canonical_id"] == "mydb.customers.region"
-        assert payload["entity_type"] == "column"
+        assert payload["entity_type"] == "field"
 
 
 # ---------------------------------------------------------------------------
@@ -391,8 +391,8 @@ class TestEntityTypeMismatch:
         out = await svc.inspect(
             reference="mydb.orders.amount", entity_type="metric", compact=False,
         )
-        assert "measure" in out.lower()
-        assert "column" in out.lower()
+        assert "metric" in out.lower()
+        assert "field" in out.lower()
 
     async def test_model_entity_type_on_three_part_id_errors(
         self, svc: InspectService
@@ -400,7 +400,7 @@ class TestEntityTypeMismatch:
         out = await svc.inspect(
             reference="mydb.orders.amount", entity_type="dataset", compact=False,
         )
-        assert "model" in out.lower()
+        assert "dataset" in out.lower()
 
     async def test_dotted_leaf_does_not_resolve_to_unrelated_model(
         self, storage: YAMLStorage
@@ -420,7 +420,7 @@ class TestEntityTypeMismatch:
             reference="mydb.orders.amount", entity_type="dataset", compact=False,
         )
         assert "UNRELATED model named amount." not in out
-        assert "# Model: `amount`" not in out
+        assert "# Dataset: `amount`" not in out
 
     async def test_memory_entity_type_on_non_memory_ref_errors(
         self, svc: InspectService
@@ -537,7 +537,7 @@ class TestDatasourceModelCollision:
             reference="shared", entity_type="dataset", compact=False,
         )
         # entity_type=model must win over the resolver's datasource default.
-        assert "# Model: `shared`" in out
+        assert "# Dataset: `shared`" in out
 
 
 # ---------------------------------------------------------------------------
@@ -735,7 +735,7 @@ class TestEngineNone:
             sections=["samples"], num_rows=3,
         )
         # Renders the model header; sample-data is skipped (no engine).
-        assert "# Model: `orders`" in out
+        assert "# Dataset: `orders`" in out
 
 
 # ---------------------------------------------------------------------------
@@ -751,7 +751,7 @@ class TestJsonShapes:
         )
         payload = json.loads(out)
         assert payload["canonical_id"] == "mydb.orders.amount"
-        assert payload["entity_type"] == "column"
+        assert payload["entity_type"] == "field"
         assert "text" in payload
         assert "warnings" in payload
 
@@ -821,7 +821,7 @@ class TestModelSamplesWithEngine:
                 reference="live.orders", entity_type="dataset", compact=False,
                 sections=["samples"], num_rows=3,
             )
-            assert "# Model: `orders`" in out
+            assert "# Dataset: `orders`" in out
 
 
 # ---------------------------------------------------------------------------
@@ -928,10 +928,10 @@ class TestModelSkeletonHelpers:
         assert not any(line.startswith("#") for line in md.splitlines())
         assert "One row per placed order." in md
         # Exact plain-CSV (no backticks) per the locked format.
-        assert "Columns: id, amount, customer_id, big" in md
-        assert "Measures: aov" in md
+        assert "Fields: id, amount, customer_id, big" in md
+        assert "Metrics: aov" in md
         assert "Aggregations: big" in md
-        assert "Joins to: customers" in md
+        assert "Relationships to: customers" in md
 
     def test_render_model_skeleton_empty_sections_render_none(self) -> None:
 
@@ -945,15 +945,15 @@ class TestModelSkeletonHelpers:
         md = render_dataset_skeleton(dataset=bare)
         lines = md.splitlines()
         # No description set → no description line; body starts at `Columns:`.
-        assert lines[0] == "Columns: id, region"
+        assert lines[0] == "Fields: id, region"
         # All four lines always present; empty ones render `_(none)_`
         # (aligned to models_summary(compact)).
-        assert "Measures: _(none)_" in md
+        assert "Metrics: _(none)_" in md
         assert "Aggregations: _(none)_" in md
-        assert "Joins to: _(none)_" in md
+        assert "Relationships to: _(none)_" in md
         # No blank trailing-space "Measures: " line.
-        assert "Measures: \n" not in md
-        assert not md.endswith("Measures: ")
+        assert "Metrics: \n" not in md
+        assert not md.endswith("Metrics: ")
 
     def test_render_model_skeleton_hidden_only_columns_render_none(self) -> None:
 
@@ -964,7 +964,7 @@ class TestModelSkeletonHelpers:
             ],
         )
         md = render_dataset_skeleton(dataset=m)
-        assert "Columns: _(none)_" in md
+        assert "Fields: _(none)_" in md
         assert "secret" not in md
 
     def test_render_model_skeleton_unnamed_only_measures_render_none(
@@ -980,13 +980,13 @@ class TestModelSkeletonHelpers:
         )
         m = base.model_copy(update={"metrics": [DatasetMetric(expression="max(id)")]})
         md = render_dataset_skeleton(dataset=m)
-        assert "Measures: _(none)_" in md
+        assert "Metrics: _(none)_" in md
 
     def test_render_model_skeleton_truncates_description(self) -> None:
 
         md = render_dataset_skeleton(dataset=_orders_like_dataset(), max_chars=4)
         assert "One row per placed order." not in md
-        assert "Columns: " in md
+        assert "Fields: " in md
 
     def test_model_skeleton_fields_shape(self) -> None:
 
@@ -994,10 +994,10 @@ class TestModelSkeletonHelpers:
         assert fields["name"] == "orders"
         assert fields["canonical_id"] == "mydb.orders"
         assert fields["description"] == "One row per placed order."
-        assert fields["column_names"] == ["id", "amount", "customer_id", "big"]
-        assert fields["measure_names"] == ["aov"]
+        assert fields["field_names"] == ["id", "amount", "customer_id", "big"]
+        assert fields["metric_names"] == ["aov"]
         assert fields["aggregation_names"] == ["big"]
-        assert fields["joins_to"] == ["customers"]
+        assert fields["relationships_to"] == ["customers"]
 
     def test_model_skeleton_fields_excludes_hidden_columns(self) -> None:
 
@@ -1024,7 +1024,7 @@ class TestModelSkeletonHelpers:
             DatasetMetric(name="named", expression="sum(id)"),
             DatasetMetric(expression="max(id)"),  # unnamed
         ]})
-        assert dataset_skeleton_fields(dataset=m)["measure_names"] == ["named"]
+        assert dataset_skeleton_fields(dataset=m)["metric_names"] == ["named"]
 
     def test_model_skeleton_fields_joins_sorted_deduped(self) -> None:
 
@@ -1071,13 +1071,13 @@ class TestModelCompactSkeletonJson:
         )
         p = json.loads(out)
         assert p["canonical_id"] == "mydb.orders"
-        assert p["entity_type"] == "model"
+        assert p["entity_type"] == "dataset"
         assert p["name"] == "orders"
         assert p["description"] == "One row per placed order."
-        assert p["column_names"] == ["id", "amount", "customer_id", "big"]
-        assert p["measure_names"] == ["aov"]
+        assert p["field_names"] == ["id", "amount", "customer_id", "big"]
+        assert p["metric_names"] == ["aov"]
         assert p["aggregation_names"] == ["big"]
-        assert p["joins_to"] == ["customers"]
+        assert p["relationships_to"] == ["customers"]
         assert "text" not in p
         assert "warnings" in p
 
@@ -1093,9 +1093,9 @@ class TestModelCompactSkeletonJson:
         p = json.loads(out)
         assert p["canonical_id"] == "mydb.customers"
         assert p["field_names"] == ["id", "region"]
-        assert p["measure_names"] == []
+        assert p["metric_names"] == []
         assert p["aggregation_names"] == []
-        assert p["joins_to"] == []
+        assert p["relationships_to"] == []
         assert "text" not in p
 
     async def test_model_compact_markdown_empty_sections_render_none(
@@ -1104,11 +1104,11 @@ class TestModelCompactSkeletonJson:
         out = await svc.inspect(
             reference="mydb.customers", entity_type="dataset", compact=True,
         )
-        assert "Columns: " in out
+        assert "Fields: " in out
         assert "region" in out
-        assert "Measures: _(none)_" in out
+        assert "Metrics: _(none)_" in out
         assert "Aggregations: _(none)_" in out
-        assert "Joins to: _(none)_" in out
+        assert "Relationships to: _(none)_" in out
 
     async def test_model_compact_descriptions_max_chars(
         self, svc: InspectService
@@ -1118,7 +1118,7 @@ class TestModelCompactSkeletonJson:
             descriptions_max_chars=4,
         )
         assert "One row per placed order." not in out
-        assert "Columns: " in out
+        assert "Fields: " in out
 
     async def test_model_compact_json_truncates_description(
         self, svc: InspectService
@@ -1147,8 +1147,8 @@ class TestDatasourceCompactFalseSkeletons:
         assert "## `customers`" in out
         assert "## `orders`" in out
         assert "region" in out            # customers column name
-        assert "Measures: aov" in out     # orders measure
-        assert "Joins to: customers" in out
+        assert "Metrics: aov" in out     # orders measure
+        assert "Relationships to: customers" in out
         # Sorted by name: customers heading precedes orders heading.
         assert out.index("## `customers`") < out.index("## `orders`")
 
@@ -1166,10 +1166,10 @@ class TestDatasourceCompactFalseSkeletons:
         assert names == ["customers", "orders", "time_spine"]   # sorted by name
         orders = next(m for m in p["datasets"] if m["name"] == "orders")
         assert orders["canonical_id"] == "mydb.orders"
-        assert orders["column_names"] == ["id", "amount", "customer_id", "big"]
-        assert orders["measure_names"] == ["aov"]
+        assert orders["field_names"] == ["id", "amount", "customer_id", "big"]
+        assert orders["metric_names"] == ["aov"]
         assert orders["aggregation_names"] == ["big"]
-        assert orders["joins_to"] == ["customers"]
+        assert orders["relationships_to"] == ["customers"]
 
     async def test_hidden_model_excluded(self, storage: YAMLStorage) -> None:
         await storage.save_dataset(SlayerDataset(
@@ -1205,7 +1205,7 @@ class TestDatasourceCompactFalseSkeletons:
             reference="emptyds", entity_type="datasource",
             format="json", compact=False,
         )
-        assert [m["name"] for m in json.loads(outj)["models"]] == ["time_spine"]
+        assert [m["name"] for m in json.loads(outj)["datasets"]] == ["time_spine"]
         outmd = await svc.inspect(
             reference="emptyds", entity_type="datasource", compact=False,
         )
@@ -1258,7 +1258,7 @@ class TestDatasourceCompactTrueUnchanged:
         )
         assert "Primary analytics warehouse." in out
         assert "## `orders`" not in out
-        assert "Columns:" not in out
+        assert "Fields:" not in out
 
     async def test_json_omits_text_and_models(
         self, svc: InspectService
@@ -1269,7 +1269,7 @@ class TestDatasourceCompactTrueUnchanged:
         )
         p = json.loads(out)
         assert "text" not in p
-        assert "models" not in p
+        assert "datasets" not in p
         assert p["description"] == "Primary analytics warehouse."
 
 
@@ -1277,7 +1277,7 @@ class TestCompactTextOmittedAllKinds:
     @pytest.mark.parametrize(
         "reference,entity_type",
         [
-            ("mydb.orders.amount", "column"),
+            ("mydb.orders.amount", "field"),
         ],
     )
     async def test_leaf_compact_json_omits_text(
@@ -1294,7 +1294,7 @@ class TestCompactTextOmittedAllKinds:
     @pytest.mark.parametrize(
         "reference,entity_type",
         [
-            ("mydb.orders.aov", "measure"),
+            ("mydb.orders.aov", "metric"),
             ("mydb.orders.big", "aggregation"),
         ],
     )
@@ -1314,8 +1314,8 @@ class TestCompactTextOmittedAllKinds:
     @pytest.mark.parametrize(
         "reference,entity_type",
         [
-            ("mydb.orders.amount", "column"),
-            ("mydb.orders.aov", "measure"),
+            ("mydb.orders.amount", "field"),
+            ("mydb.orders.aov", "metric"),
             ("mydb.orders.big", "aggregation"),
         ],
     )
@@ -1378,7 +1378,7 @@ class TestSkeletonZeroDB:
         out = await svc.inspect(
             reference="mydb.orders", entity_type="dataset", compact=True,
         )
-        assert "Columns: " in out
+        assert "Fields: " in out
         outj = await svc.inspect(
             reference="mydb.orders", entity_type="dataset",
             format="json", compact=True,
@@ -1400,7 +1400,7 @@ class TestSkeletonZeroDB:
         out = await svc.inspect(
             reference="mydb.orders", entity_type="dataset", compact=True,
         )
-        assert "Columns: " in out
+        assert "Fields: " in out
         # And the full path STILL uses it (guards against a stale patch /
         # wrong-symbol monkeypatch giving a false pass above).
         with pytest.raises(AssertionError, match="must not run"):
@@ -1433,7 +1433,7 @@ class TestAmbiguousModelName:
         await storage.set_datasource_priority([])
 
     @pytest.mark.parametrize(
-        "entity_type", ["model", "datasource", "column"],
+        "entity_type", ["dataset", "datasource", "field"],
     )
     async def test_ambiguous_bare_model_returns_message_not_raise(
         self, storage: YAMLStorage, entity_type: str

@@ -99,7 +99,7 @@ class TestStoredModelsReject:
             path = storage._dataset_path("test", "rev_by_status")
             with open(path) as fh:
                 raw = yaml.safe_load(fh)
-            raw["source_queries"][0]["source_model"] = INLINE_QB
+            raw["source_queries"][0]["population"] = INLINE_QB
             with open(path, "w") as fh:
                 yaml.safe_dump(raw, fh)
             reloaded = YAMLStorage(base_dir=tmp)

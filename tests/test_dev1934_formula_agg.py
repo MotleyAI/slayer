@@ -91,7 +91,7 @@ async def _joined_sql(*, agg: Aggregation, expression: str, validate: bool = Tru
         ],
     )
     host = _orders((agg,)).model_copy(
-        update={"joins": [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]},
+        update={"relationships": [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]},
     )
     return await _engine_generate(query=_q(expression), dataset=host, extra_datasets=[customers], validate=validate)
 
@@ -271,7 +271,7 @@ class TestInvalidTemplates:
     @pytest.mark.parametrize("name", ["custom_agg", "weighted_avg", "percentile"])
     def test_param_named_value_is_rejected(self, name: str) -> None:
         params = [AggregationParam(name="value", sql="1")]
-        with pytest.raises(ValidationError, match=rf"'{name}'.*may not be named 'value'.*aggregated column"):
+        with pytest.raises(ValidationError, match=rf"'{name}'.*may not be named 'value'.*aggregated field"):
             Aggregation(name=name, expression="SUM({value})" if name == "custom_agg" else None, params=params)
 
     @pytest.mark.parametrize(("formula", "aggs"), [
@@ -282,7 +282,7 @@ class TestInvalidTemplates:
     async def test_value_kwarg_on_value_template_explains(
         self, formula: str, aggs: tuple[Aggregation, ...],
     ) -> None:
-        with pytest.raises(SqlTemplateError, match=r"may not be named 'value'.*aggregated column"):
+        with pytest.raises(SqlTemplateError, match=r"may not be named 'value'.*aggregated field"):
             await _sql(formula, aggs=aggs)
 
     async def test_dialect_only_formula_accepts_its_kwarg(self) -> None:
@@ -302,12 +302,12 @@ class TestInvalidTemplates:
         self, formula: str, twin: str, aggs: tuple[Aggregation, ...],
     ) -> None:
         message = await _fails_as_its_comparison_twin(expression=formula, twin=twin, aggs=aggs)
-        assert "aggregated column" not in message
+        assert "aggregated field" not in message
 
     @pytest.mark.parametrize("name", ["custom_agg", "weighted_avg"])
     @pytest.mark.parametrize("formula", ["", "  "])
     def test_empty_formula_is_rejected(self, name: str, formula: str) -> None:
-        with pytest.raises(ValidationError, match=f"'{name}' has an empty formula"):
+        with pytest.raises(ValidationError, match=f"'{name}' has an empty expression"):
             Aggregation(name=name, expression=formula)
 
 
@@ -453,7 +453,7 @@ _K_UNUSED = Aggregation(name="kx", expression="SUM({value}) * {k}", params=[
 
 
 async def _windowed_sql(expression: str, agg: Aggregation) -> str:
-    model = _orders((agg,)).model_copy(update={"columns": [
+    model = _orders((agg,)).model_copy(update={"fields": [
         *_orders().fields, DatasetField(name="ordered_at", sql="ordered_at", datatype=DataType.TIMESTAMP),
     ]})
     query = SlayerQuery(
@@ -545,7 +545,7 @@ async def _associated_star_sql(expression: str) -> str:
         name="customers", sql_table="customers", data_source="test", aggregations=[_COUNT_K],
         fields=[DatasetField(name="id", sql="id", datatype=DataType.DOUBLE, primary_key=True)],
     )
-    host = _orders().model_copy(update={"joins": [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]})
+    host = _orders().model_copy(update={"relationships": [DatasetRelationship(to="customers", join_pairs=[["id", "id"]])]})
     query = SlayerQuery(
         population="orders", metrics=[DatasetMetric(expression=expression, name="m")],
         dimensions=[FieldRef(name="quantity")], to_many_handling="associate",

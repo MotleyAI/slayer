@@ -71,7 +71,7 @@ def test_validate_models_with_cardinality_uses_one_event_loop(
 ) -> None:
     store = _store(tmp_path / "store", pg_datasource)
     args = SimpleNamespace(
-        datasource=pg_datasource.name, model=None, cardinality=True, persist_cardinality=False,
+        datasource=pg_datasource.name, dataset=None, cardinality=True, persist_cardinality=False,
         format="json", force_clean=False, yes=False, storage=store,
     )
     _run_validate_datasets(args)
@@ -80,5 +80,5 @@ def test_validate_models_with_cardinality_uses_one_event_loop(
     findings = data["cardinality"]["findings"]
     assert findings
     assert all(f["verdict"] != CardinalityVerdict.SCAN_FAILED.value for f in findings), findings
-    orders = next(f for f in findings if f["model"] == "orders")
+    orders = next(f for f in findings if f["dataset"] == "orders")
     assert orders["detected"] == "many_to_one"

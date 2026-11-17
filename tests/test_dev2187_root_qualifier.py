@@ -355,7 +355,7 @@ async def test_restating_a_saved_measure_by_name(refine: SlayerQueryEngine, meas
 async def test_a_root_qualified_restatement_with_another_label_conflicts(refine: SlayerQueryEngine) -> None:
     with pytest.raises(RefinementConflictError) as info:
         await refine.execute("monthly_revenue", refine={"metrics": [{"expression": "orders.revenue", "label": "Rev"}]})
-    assert "measures" in str(info.value)
+    assert "metrics" in str(info.value)
     assert "revenue" in str(info.value)
 
 

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 from collections.abc import Iterator
@@ -23,8 +24,6 @@ from slayer.storage.yaml_storage import YAMLStorage
 def client() -> Iterator[TestClient]:
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = YAMLStorage(base_dir=os.path.join(tmpdir, "store"))
-        import asyncio
-
         loop = asyncio.new_event_loop()
         try:
             loop.run_until_complete(

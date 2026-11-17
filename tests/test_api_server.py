@@ -518,8 +518,8 @@ class TestRunByNameRefine:
     def test_openapi_shows_query_refinement(self, client: TestClient) -> None:
         schemas = client.get("/openapi.json").json()["components"]["schemas"]
         assert "QueryRefinement" in schemas
-        assert {"dimensions", "measures", "filters", "limit"} <= set(schemas["QueryRefinement"]["properties"])
-        assert "source_model" not in schemas["QueryRefinement"]["properties"]
+        assert {"dimensions", "metrics", "filter", "limit"} <= set(schemas["QueryRefinement"]["properties"])
+        assert "population" not in schemas["QueryRefinement"]["properties"]
 
 
 class TestQueryListBody:

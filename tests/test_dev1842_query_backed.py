@@ -171,7 +171,7 @@ class TestSameNameExtensionRejected:
             )],
             "metrics": [{"expression": "sh", "name": "r"}],
         })
-        with pytest.raises(ValueError, match=r"duplicate measure names"):
+        with pytest.raises(ValueError, match=r"duplicate metric names"):
             await _engine_generate(
                 query=query, dataset=base, dialect="duckdb", validate=False,
             )
@@ -192,7 +192,7 @@ class TestOverlayNamespaceDisjoint:
             metrics=[DatasetMetric(name="amount", expression="sum(amount)")],
         )
         with pytest.raises(
-            ValueError, match=r"name collision between columns and measures"
+            ValueError, match=r"name collision between fields and metrics"
         ):
             apply_extension_overlay(base, ext)
 

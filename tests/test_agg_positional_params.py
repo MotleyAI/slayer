@@ -71,15 +71,15 @@ class TestPositionalErrors:
             await _rows(exec_engine, "sum(amount, sum(amount, partition_by=region))")
 
     async def test_ranked_rejects_aggregate_ranking_key(self, exec_engine):
-        with pytest.raises(ValueError, match="ranks by a column"):
+        with pytest.raises(ValueError, match="ranks by a field"):
             await _rows(exec_engine, "last(amount, sum(amount, partition_by=region))")
 
     async def test_ranked_rejects_literal_ranking_key(self, exec_engine):
-        with pytest.raises(ValueError, match="ranks by a column"):
+        with pytest.raises(ValueError, match="ranks by a field"):
             await _rows(exec_engine, "last(amount, 1)")
 
     async def test_ranked_rejects_extra_positionals(self, exec_engine):
-        with pytest.raises(ValueError, match="ranks by at most one column"):
+        with pytest.raises(ValueError, match="ranks by at most one field"):
             await _rows(exec_engine, "last(amount, id, amount)")
 
 

@@ -135,20 +135,20 @@ class TestStructuredCollisions:
     @pytest.mark.parametrize(("exc", "rendered"), [
         pytest.param(
             MetricNameCollidesWithFieldError(name="amount", dataset="orders"),
-            "MeasureNameCollidesWithColumnError: The declared measure name matches a source column "
-            "on model 'orders'.\n  at measure 'amount'",
+            "MetricNameCollidesWithFieldError: The declared metric name matches a source field "
+            "on dataset 'orders'.\n  at metric 'amount'",
             id="measure-collides",
         ),
         pytest.param(
             CanonicalAliasShadowsFieldError(expression="sum(amount)", canonical="amount_sum", dataset="orders"),
-            "CanonicalAliasShadowsColumnError: The canonical alias 'amount_sum' shadows a source column "
-            "on model 'orders'.\n  at measure 'sum(amount)'",
+            "CanonicalAliasShadowsFieldError: The canonical alias 'amount_sum' shadows a source field "
+            "on dataset 'orders'.\n  at metric 'sum(amount)'",
             id="canonical-shadows",
         ),
         pytest.param(
             DuplicateMetricNameError(name="total", occurrences=["sum(a)", "sum(b)"]),
-            "DuplicateMeasureNameError: The measure name is declared more than once.\n"
-            "  at measure 'total'\n  occurrences: ['sum(a)', 'sum(b)']",
+            "DuplicateMetricNameError: The metric name is declared more than once.\n"
+            "  at metric 'total'\n  occurrences: ['sum(a)', 'sum(b)']",
             id="duplicate",
         ),
     ])

@@ -515,9 +515,9 @@ class TestStrictResolution:
         with pytest.raises(
             ValueError,
             match=(
-                r"no join to 'transportation_assets'"
+                r"no relationship to 'transportation_assets'"
                 r"|Cannot resolve reference 'transportation_assets"
-                r"|not a valid join path from 'households'"
+                r"|not a valid relationship path from 'households'"
             ),
         ):
             await _engine_generate(query=query, dataset=households)

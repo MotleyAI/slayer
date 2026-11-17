@@ -13,7 +13,7 @@ from typing import Any
 from slayer.core.enums import ALL_TRANSFORMS, BUILTIN_AGGREGATIONS, normalize_aggregation_name
 from slayer.core.models import reserved_granularity_names
 from slayer.core.time_points import relative_unit_word
-from slayer.storage.document_keys import DocumentKeys, keys_for
+from slayer.storage.document_keys import DocumentKeys, keys_for, query_keys
 from slayer.storage.rank_direction_migration import rewrite_query_fields
 
 #: Casefolded stored name → its new name.
@@ -118,6 +118,7 @@ def _version_keys(*, entity: str, data: dict) -> DocumentKeys:
 def rename_in_query(data: dict, *, renames: Renames, keys: DocumentKeys) -> dict:
     """A stored query dict with every granularity reference renamed (inline datasets and extensions included)."""
     text = partial(rename_in_text, renames=renames)
+    keys = query_keys(data, enclosing=keys)
     data = rewrite_query_fields(dict(data), text, keys)
     if isinstance(data.get("time_dimensions"), list):
         data["time_dimensions"] = [_renamed_time_dimension(td, renames=renames) for td in data["time_dimensions"]]
@@ -196,8 +197,9 @@ def renamed_datasource(data: dict, *, renames: Renames) -> dict:
 def memory_source_dataset(data: dict) -> tuple[str | None, str | None]:
     """``(inline dataset's data_source, saved root dataset name)`` a stored memory's query reads, each if any."""
     query = data.get("query")
-    population_key = _version_keys(entity="Memory", data=data).population
-    source = query.get(population_key) if isinstance(query, dict) else None
+    if not isinstance(query, dict):
+        return None, None
+    source = query.get(query_keys(query, enclosing=_version_keys(entity="Memory", data=data)).population)
     if isinstance(source, dict) and "source_name" not in source:
         data_source = source.get("data_source")
         return (data_source if isinstance(data_source, str) else None), None

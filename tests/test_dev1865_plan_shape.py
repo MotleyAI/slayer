@@ -53,7 +53,7 @@ class TestMaskEntries:
             assert hasattr(mask, "stratum")
         typings = {_typing(m) for m in masks}
         assert any("field" in t for t in typings)
-        assert any("measure" in t for t in typings)
+        assert any("metric" in t for t in typings)
 
     def test_mask_slots_are_hidden(self) -> None:
         planned = plan(q(

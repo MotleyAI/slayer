@@ -211,7 +211,7 @@ def test_usage_reporting_makes_no_storage_call_or_connection(
     store: str, monkeypatch: pytest.MonkeyPatch, command: list[str],
 ) -> None:
     monkeypatch.setitem(sys.modules, "uvicorn", fake_uvicorn())
-    args = [*command[:1], "--storage", store, *command[1:]] if command[0] in ("models", "datasources") \
+    args = [*command[:1], "--storage", store, *command[1:]] if command[0] in ("datasets", "datasources") \
         else [*command, "--storage", store]
     _storage_and_connection_calls(args, monkeypatch)  # warm-up: the first run seeds help memories
     on = _storage_and_connection_calls(args, monkeypatch)
@@ -249,7 +249,7 @@ def run(*args):
             pass
     return out.getvalue()
 
-run("models", "--storage", {store!r}, "list")
+run("datasets", "--storage", {store!r}, "list")
 shown = run("usage-reporting", "show")
 print(json.dumps({{"modules": sorted(sys.modules), "shown": shown}}))
 """

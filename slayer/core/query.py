@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Container, Iterable
-from typing import Annotated, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeVar
 
 from pydantic import (
     BaseModel,
@@ -18,6 +18,7 @@ from pydantic import (
     model_serializer,
     model_validator,
 )
+from typing_extensions import deprecated
 
 from slayer.core.deprecation import deprecated_input
 from slayer.core.direction import normalize_direction
@@ -46,7 +47,10 @@ from slayer.core.vocabulary import (
     QUERY_KEYS,
     REFINEMENT_KEYS,
     TIME_DIMENSION_KEYS,
+    attribute_used,
+    same_ignoring_deprecations,
     converted_document,
+    name_twins,
     renamed_input,
 )
 from slayer.core.warnings import DeprecatedInputWarning
@@ -638,6 +642,18 @@ class FieldRef(BaseModel):
         """Create a FieldRef from a string. Dots are parsed by the validator."""
         return cls(name=s)
 
+    @property
+    @deprecated("model is deprecated; use dataset", category=None)
+    def model(self) -> str | None:
+        attribute_used(self, old="model", new="dataset")
+        return self.dataset
+
+    @model.setter
+    @deprecated("model is deprecated; use dataset", category=None)
+    def model(self, value: str | None) -> None:
+        attribute_used(self, old="model", new="dataset")
+        self.dataset = value
+
 
 def field_ref_of(text: str) -> FieldRef | None:
     """``text`` as a field reference when it is a bare, possibly quoted, identifier or dotted path, else ``None``."""
@@ -796,7 +812,7 @@ def _legacy_field_ref_text(value: Any) -> Any:
     if isinstance(value, FieldRef):
         return value.spelling
     if isinstance(value, dict) and isinstance(value.get("name"), str):
-        return FieldRef.model_validate({k: v for k, v in value.items() if k in ("name", "dataset", "quoted")}).spelling
+        return FieldRef.model_validate({k: v for k, v in value.items() if k in ("name", "dataset", "model", "quoted")}).spelling
     return value
 
 
@@ -876,6 +892,24 @@ class TimeDimension(BaseModel):
             )
         return self
 
+    @property
+    @deprecated("dimension is deprecated; use field", category=None)
+    def dimension(self) -> str:
+        attribute_used(self, old="dimension", new="field")
+        return self.field
+
+    @dimension.setter
+    @deprecated("dimension is deprecated; use field", category=None)
+    def dimension(self, value: str) -> None:
+        attribute_used(self, old="dimension", new="field")
+        self.field = value
+
+    @property
+    @deprecated("column_ref is deprecated; use field_ref", category=None)
+    def column_ref(self) -> FieldRef | None:
+        attribute_used(self, old="column_ref", new="field_ref")
+        return self.field_ref
+
 
 def _advertise_string_time_dimensions(schema: dict[str, Any]) -> None:
     """Add the ``date_trunc('<unit>', expr)`` string alternative to each ``time_dimensions``
@@ -953,6 +987,30 @@ class OrderItem(BaseModel):
             "order direction must be one of asc/desc/ascending/descending "
             f"(case-insensitive), got {v!r}"
         )
+
+    @property
+    @deprecated("column is deprecated; use field", category=None)
+    def column(self) -> FieldRef:
+        attribute_used(self, old="column", new="field")
+        return self.field
+
+    @column.setter
+    @deprecated("column is deprecated; use field", category=None)
+    def column(self, value: FieldRef) -> None:
+        attribute_used(self, old="column", new="field")
+        self.field = value
+
+    @property
+    @deprecated("raw_formula is deprecated; use raw_expression", category=None)
+    def raw_formula(self) -> str | None:
+        attribute_used(self, old="raw_formula", new="raw_expression")
+        return self.raw_expression
+
+    @raw_formula.setter
+    @deprecated("raw_formula is deprecated; use raw_expression", category=None)
+    def raw_formula(self, value: str | None) -> None:
+        attribute_used(self, old="raw_formula", new="raw_expression")
+        self.raw_expression = value
 
 
 def _coerce_metrics(v: Any) -> Any:
@@ -1123,6 +1181,30 @@ class DatasetExtension(BaseModel):
         if isinstance(data, dict) and "columns" in data:
             raise ValueError(_extension_fields_removed(data))
         return data
+
+    @property
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self) -> list[DatasetMetric] | None:
+        attribute_used(self, old="measures", new="metrics")
+        return self.metrics
+
+    @measures.setter
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self, value: list[DatasetMetric] | None) -> None:
+        attribute_used(self, old="measures", new="metrics")
+        self.metrics = value
+
+    @property
+    @deprecated("joins is deprecated; use relationships", category=None)
+    def joins(self) -> list[DatasetRelationship] | None:
+        attribute_used(self, old="joins", new="relationships")
+        return self.relationships
+
+    @joins.setter
+    @deprecated("joins is deprecated; use relationships", category=None)
+    def joins(self, value: list[DatasetRelationship] | None) -> None:
+        attribute_used(self, old="joins", new="relationships")
+        self.relationships = value
 
 
 
@@ -1316,6 +1398,12 @@ class SlayerQuery(BaseModel):
     )
 
     _deprecated_inputs: tuple[DeprecatedInputWarning, ...] = PrivateAttr(default=())
+
+    def __eq__(self, other: object) -> bool:
+        """Equal whatever pre-2.0 spellings either was read from."""
+        if not isinstance(other, BaseModel) or type(other) is not type(self):
+            return NotImplemented
+        return same_ignoring_deprecations(self, other)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -1592,6 +1680,48 @@ class SlayerQuery(BaseModel):
         """The population's dataset name before resolution."""
         return self.population
 
+    @property
+    @deprecated("source_model is deprecated; use population", category=None)
+    def source_model(self) -> SourceSpec | None:
+        attribute_used(self, old="source_model", new="population")
+        return self.population
+
+    @source_model.setter
+    @deprecated("source_model is deprecated; use population", category=None)
+    def source_model(self, value: SourceSpec | None) -> None:
+        attribute_used(self, old="source_model", new="population")
+        self.population = value
+
+    @property
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self) -> MetricsField:
+        attribute_used(self, old="measures", new="metrics")
+        return self.metrics
+
+    @measures.setter
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self, value: MetricsField) -> None:
+        attribute_used(self, old="measures", new="metrics")
+        self.metrics = value
+
+    @property
+    @deprecated("filters is deprecated; use filter", category=None)
+    def filters(self) -> list[str] | None:
+        attribute_used(self, old="filters", new="filter")
+        return self.filter
+
+    @filters.setter
+    @deprecated("filters is deprecated; use filter", category=None)
+    def filters(self, value: list[str] | None) -> None:
+        attribute_used(self, old="filters", new="filter")
+        self.filter = value
+
+    @property
+    @deprecated("source_model_name is deprecated; use population_name", category=None)
+    def source_model_name(self) -> str | None:
+        attribute_used(self, old="source_model_name", new="population_name")
+        return self.population_name
+
 
 def _refinement_field(name: str) -> Any:
     """``SlayerQuery``'s field ``name`` with a ``None`` default (supplied-ness is ``model_fields_set``)."""
@@ -1624,6 +1754,12 @@ class QueryRefinement(BaseModel):
 
     _deprecated_inputs: tuple[DeprecatedInputWarning, ...] = PrivateAttr(default=())
 
+    def __eq__(self, other: object) -> bool:
+        """Equal whatever pre-2.0 spellings either was read from."""
+        if not isinstance(other, BaseModel) or type(other) is not type(self):
+            return NotImplemented
+        return same_ignoring_deprecations(self, other)
+
     @model_validator(mode="wrap")
     @classmethod
     def _convert_and_rewrite(
@@ -1655,6 +1791,30 @@ class QueryRefinement(BaseModel):
             if name in self.model_fields_set and getattr(self, name) is None:
                 raise ValueError(f"refine.{name} cannot be null; omit it to keep the saved value")
         return self
+
+    @property
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self) -> MetricsField:
+        attribute_used(self, old="measures", new="metrics")
+        return self.metrics
+
+    @measures.setter
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self, value: MetricsField) -> None:
+        attribute_used(self, old="measures", new="metrics")
+        self.metrics = value
+
+    @property
+    @deprecated("filters is deprecated; use filter", category=None)
+    def filters(self) -> list[str] | None:
+        attribute_used(self, old="filters", new="filter")
+        return self.filter
+
+    @filters.setter
+    @deprecated("filters is deprecated; use filter", category=None)
+    def filters(self, value: list[str] | None) -> None:
+        attribute_used(self, old="filters", new="filter")
+        self.filter = value
 
 
 def deprecated_inputs_of(
@@ -1822,3 +1982,23 @@ def refine_query(*, saved: SlayerQuery, refinement: QueryRefinement) -> SlayerQu
     if "order" in supplied:
         data["order"] = refinement.order or None
     return SlayerQuery.model_validate(data)
+
+
+if TYPE_CHECKING:
+    @deprecated("ColumnRef is deprecated; use FieldRef", category=None)
+    class ColumnRef(FieldRef): ...
+
+    @deprecated("ModelExtension is deprecated; use DatasetExtension", category=None)
+    class ModelExtension(DatasetExtension): ...
+
+    @deprecated("ModelVariables is deprecated; use DatasetVariables", category=None)
+    class ModelVariables(DatasetVariables): ...
+
+    @deprecated("ModelMeasure is deprecated; use DatasetMetric", category=None)
+    class ModelMeasure(DatasetMetric): ...
+
+
+__getattr__ = name_twins(namespace=globals(), renames={
+    "ColumnRef": "FieldRef", "ModelExtension": "DatasetExtension", "ModelVariables": "DatasetVariables",
+    "ModelMeasure": "DatasetMetric",
+})

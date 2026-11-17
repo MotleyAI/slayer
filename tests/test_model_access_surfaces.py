@@ -192,9 +192,9 @@ class TestSearch:
         assert leaks(" ".join(response.warnings)) == []
 
     async def test_graph_holds_only_visible_models_and_joins(self, pair: Pair) -> None:
-        models = await search_graph.get_filtered_ids("MATCH (m:Model) RETURN m.id AS id", pair.fin)
+        models = await search_graph.get_filtered_ids("MATCH (m:Dataset) RETURN m.id AS id", pair.fin)
         assert models == {f"{DS}.{n}" for n in VISIBLE_TO_FIN}
-        joined = await search_graph.get_filtered_ids("MATCH (a:Model)-[:JOINS]->(b:Model) RETURN b.id AS id", pair.fin)
+        joined = await search_graph.get_filtered_ids("MATCH (a:Dataset)-[:RELATIONSHIPS]->(b:Dataset) RETURN b.id AS id", pair.fin)
         assert [i for i in joined if leaks(i)] == []
 
 

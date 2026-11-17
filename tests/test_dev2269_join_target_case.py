@@ -230,7 +230,7 @@ class TestStoredUpgrade:
         assert await _targets(storage, "orders") == ["Customers"]
         doc = await raw_doc(storage, "orders")
         assert doc["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert [j["target_model"] for j in doc["joins"]] == ["Customers"]
+        assert [j["to"] for j in doc["relationships"]] == ["Customers"]
         resp = await run(storage, NAME_QUERY)
         assert {k: int(v) for k, v in by_dimension(resp, dim_suffix="name").items()} == ORDERS_BY_NAME
         written = stored_bytes(backend=backend, base=str(tmp_path / "store"), name="orders")
@@ -267,7 +267,7 @@ class TestStoredUpgrade:
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_legacy_alias_walks_a_case_only_target(self, tmp_path, shop_ds, backend) -> None:
-        orders_doc = {**_orders_doc(), "filter": ["customers__addr.region = 'North'"]}
+        orders_doc = {**_orders_doc(), "filters": ["customers__addr.region = 'North'"]}
         target = {**_customers_doc(), "joins": [{"target_model": "addr", "join_pairs": [["id", "id"]]}]}
         storage = await _store(tmp_path, backend=backend, ds=shop_ds,
                                docs=[orders_doc, target, _customers_doc("addr")])

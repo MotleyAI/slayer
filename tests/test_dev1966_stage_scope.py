@@ -236,7 +236,7 @@ class TestReverseHopSpelling:
             resp = await engine.execute([s, root])
         assert rows_by(resp.data, key="s.tier", value="s.a") == {t: 145.0 for t in AMOUNT_BY_TIER}
         (w,) = [w for w in resp.warnings if w.kind == "broadcast"]
-        assert [d.reason for d in w.dimensions] == ["crosses a fanning or unproven join hop to s"]
+        assert [d.reason for d in w.dimensions] == ["crosses a fanning or unproven relationship hop to s"]
         assert INTERNAL not in str([x.model_dump() for x in resp.warnings])
 
     async def test_producer_rooted_at_a_stage_aliases_its_host_by_model(self, engine) -> None:

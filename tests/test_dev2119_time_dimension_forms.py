@@ -68,7 +68,7 @@ class TestTextCoercion:
 class TestSchema:
     def test_dimension_is_a_string_property_without_column(self) -> None:
         props = _td_schema()["properties"]
-        assert props["dimension"]["type"] == "string"
+        assert props["field"]["type"] == "string"
         assert "column" not in props
 
     def test_name_is_advertised(self) -> None:

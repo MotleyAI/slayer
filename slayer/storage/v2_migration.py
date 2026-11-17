@@ -26,6 +26,7 @@ def _migrate_dataset_extension_v1_to_v2(ext: dict) -> dict:
         return ext
 
     out = dict(ext)
+    fields_key, metrics_key = _v1_keys(out)
     fields: list[dict] = []
     seen: set[str] = set()
     collisions: list[str] = []
@@ -34,7 +35,7 @@ def _migrate_dataset_extension_v1_to_v2(ext: dict) -> dict:
         if isinstance(dim, dict):
             _record(dict(dim), fields, seen, collisions)
 
-    for meas in out.pop("measures", None) or []:
+    for meas in out.pop(metrics_key, None) or []:
         if isinstance(meas, dict):
             _record(_migrate_metric_dict(dict(meas)), fields, seen, collisions)
 
@@ -45,9 +46,14 @@ def _migrate_dataset_extension_v1_to_v2(ext: dict) -> dict:
             f"migrating."
         )
 
-    out["columns"] = fields
-    out["measures"] = []  # repurposed; users may add ModelMeasure formulas later
+    out[fields_key] = fields
+    out[metrics_key] = []  # repurposed; users may add DatasetMetric expressions later
     return out
+
+
+def _v1_keys(data: dict) -> tuple[str, str]:
+    """The (fields, metrics) keys ``data`` spells: fresh input arrives already renamed to ``metrics``."""
+    return ("fields", "metrics") if "metrics" in data and "measures" not in data else ("columns", "measures")
 
 
 def _migrate_metric_dict(col: dict) -> dict:
@@ -102,14 +108,14 @@ def _looks_like_v1_dataset(data: dict) -> bool:
     """
     if "dimensions" in data:
         return True
-    raw_measures = data.get("measures")
+    raw_measures = data.get(_v1_keys(data)[1])
     if not isinstance(raw_measures, (list, tuple)) or not raw_measures:
         return False
     first = raw_measures[0]
     if not isinstance(first, dict):
         return False
-    # v2 ModelMeasure has `formula` (required); v1 Measure didn't.
-    return "formula" not in first
+    # v2 DatasetMetric has an expression (required); v1 Measure didn't.
+    return "formula" not in first and "expression" not in first
 
 
 @register_migration("SlayerModel", 1)
@@ -120,6 +126,7 @@ def _dataset_v1_to_v2(data: dict) -> dict:
     persist v1 inner shapes. See module docstring for the rationale.
     """
     if _looks_like_v1_dataset(data):
+        fields_key, metrics_key = _v1_keys(data)
         columns: list[dict] = []
         seen: set[str] = set()
         collisions: list[str] = []
@@ -131,7 +138,7 @@ def _dataset_v1_to_v2(data: dict) -> dict:
                 _record(dict(dim), columns, seen, collisions)
 
         # (b) v1 Measures → Columns (with measure-specific defaults).
-        for meas in data.pop("measures", None) or []:
+        for meas in data.pop(metrics_key, None) or []:
             if isinstance(meas, dict):
                 _record(_migrate_metric_dict(dict(meas)), columns, seen, collisions)
 
@@ -142,11 +149,11 @@ def _dataset_v1_to_v2(data: dict) -> dict:
                 f"Rename one before migrating."
             )
 
-        data["columns"] = columns
+        data[fields_key] = columns
         # The new measures field is the formula list — empty after migration.
         # Users can populate it post-migration with named formulas
         # (was Query.fields).
-        data["measures"] = []
+        data[metrics_key] = []
 
     # Recursively migrate nested source_queries regardless of whether the
     # outer model is v1-shaped: a v1 model can have already-merged columns

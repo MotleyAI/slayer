@@ -13,28 +13,33 @@ import math
 from typing import Annotated, Any, Literal, Union
 
 import sqlglot
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, TypeAdapter
 from sqlglot.errors import SqlglotError
 
 from slayer.core.enums import DataType
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import GranularitySpec
 from slayer.core.models import Aggregation, DatasetField, DatasetRelationship, DatasetMetric
+from slayer.core.vocabulary import (
+    AGGREGATION_KEYS, DATASET_KEYS, FIELD_KEYS, METRIC_KEYS, RELATIONSHIP_KEYS, Spellings,
+)
 from slayer.osi.dialects import PORTABLE_READER, reader_for
 from slayer.osi.models import OSIExpression, OSINonportableExtension
 
 VENDOR = "SLAYER"
-PAYLOAD_VERSION = 1
+PAYLOAD_VERSION = 2
 _FINGERPRINT_VERSION = 1
 
 
 class _Payload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal[1] = PAYLOAD_VERSION
+    version: Literal[2] = PAYLOAD_VERSION
     #: The name of the Ossie entity the payload was written for.
     entity: str
     fingerprint: str = ""
+    #: A version-1 payload's content as written, which its fingerprint covers.
+    _written: dict[str, Any] | None = PrivateAttr(default=None)
 
 
 class RelationshipDeclaration(BaseModel):
@@ -109,6 +114,8 @@ _ADAPTER: TypeAdapter[Payload] = TypeAdapter(Payload)
 
 
 def _content(payload: _Payload) -> dict[str, Any]:
+    if payload._written is not None:
+        return payload._written
     return payload.model_dump(mode="json", exclude={"fingerprint"}, exclude_none=True)
 
 
@@ -150,9 +157,46 @@ def encode(payload: _Payload, *, ossie: Any) -> dict[str, Any]:
     return {"vendor_name": VENDOR, "data": stamped.model_dump(mode="json", exclude_none=True)}
 
 
+def _renamed_each(items: Any, table: dict[str, str], spellings: Spellings) -> Any:
+    return [spellings.rename(i, table) if isinstance(i, dict) else i for i in items] if isinstance(items, list) else items
+
+
+def _version_2(data: dict[str, Any]) -> dict[str, Any]:
+    """A version-1 payload in the version-2 (Ossie) vocabulary."""
+    spellings = Spellings(stored=True)
+    out = {**data, "version": 2}
+    kind = out.get("kind")
+    if kind == "field":
+        out = spellings.rename(out, {"column": "field"})
+        if isinstance(out.get("field"), dict):
+            out["field"] = spellings.rename(out["field"], FIELD_KEYS)
+    elif kind == "metric":
+        out = spellings.rename(out, {"model": "dataset", "measure": "metric"})
+        if isinstance(out.get("metric"), dict):
+            out["metric"] = spellings.rename(out["metric"], METRIC_KEYS)
+    elif kind == "relationship" and isinstance(out.get("declarations"), list):
+        declarations = _renamed_each(out["declarations"], {"model": "dataset", "join": "relationship"}, spellings)
+        out["declarations"] = [
+            {**d, "relationship": spellings.rename(d["relationship"], RELATIONSHIP_KEYS)}
+            if isinstance(d, dict) and isinstance(d.get("relationship"), dict) else d for d in declarations
+        ]
+    elif kind == "dataset":
+        out = spellings.rename(out, DATASET_KEYS)
+        out["fields"] = _renamed_each(out.get("fields"), FIELD_KEYS, spellings)
+        out["metrics"] = _renamed_each(out.get("metrics"), METRIC_KEYS, spellings)
+        out["aggregations"] = _renamed_each(out.get("aggregations"), AGGREGATION_KEYS, spellings)
+        out = {k: v for k, v in out.items() if v is not None}
+    return out
+
+
 def decode(data: dict[str, Any]) -> Payload:
-    """The payload in ``data``; raises ``ValueError`` when malformed or of an unknown version or kind."""
-    return _ADAPTER.validate_python(data)
+    """The payload in ``data`` (a version-1 payload read silently as version 2, its fingerprint over its content as
+    written); raises ``ValueError`` when malformed or of an unknown version or kind."""
+    if data.get("version") != 1:
+        return _ADAPTER.validate_python(data)
+    payload = _ADAPTER.validate_python(_version_2(data))
+    payload._written = {k: v for k, v in data.items() if k != "fingerprint"}
+    return payload
 
 
 def matches(payload: _Payload, *, ossie: Any) -> bool:

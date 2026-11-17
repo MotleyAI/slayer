@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, Field as PydanticField
+from pydantic import BaseModel, Field as PydanticField, ModelWrapValidatorHandler, model_validator
 from sqlglot.expressions.core import Expr
 from sqlglot.expressions.query import Query
+from typing_extensions import deprecated
 
 from slayer.core.enums import AggregationValueClass, DataType, classify_aggregation
 from slayer.core.format import NumberFormat, NumberFormatType
@@ -25,6 +26,7 @@ from slayer.core.keys import (
 )
 from slayer.core.models import DatasetField, SlayerDataset
 from slayer.core.refs import EXPRESSION_SOURCE_KINDS
+from slayer.core.vocabulary import RESPONSE_ATTRIBUTE_KEYS, attribute_used, renamed_input
 from slayer.ir.planned import PlannedQuery, ValueSlot
 from slayer.ir.source_bundle import ResolvedSourceBundle
 from slayer.sql.naming import expression_source_leaf, next_slot_result_key
@@ -39,8 +41,25 @@ class ResponseAttributes(BaseModel):
     dimensions: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
     metrics: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler[ResponseAttributes]) -> ResponseAttributes:
+        return renamed_input(data, handler, RESPONSE_ATTRIBUTE_KEYS, stored=False)
+
     def get(self, column: str) -> Optional[FieldMetadata]:
         return self.dimensions.get(column) or self.metrics.get(column)
+
+    @property
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self) -> Dict[str, FieldMetadata]:
+        attribute_used(self, old="measures", new="metrics")
+        return self.metrics
+
+    @measures.setter
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self, value: Dict[str, FieldMetadata]) -> None:
+        attribute_used(self, old="measures", new="metrics")
+        self.metrics = value
 
 
 def _infer_aggregated_format(

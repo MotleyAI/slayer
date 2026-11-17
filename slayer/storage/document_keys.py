@@ -44,6 +44,12 @@ def keys_for(*, entity: str, version: int) -> DocumentKeys:
     return CURRENT_KEYS if version >= VOCABULARY_VERSIONS[entity] else LEGACY_KEYS
 
 
+def query_keys(query: dict, *, enclosing: DocumentKeys) -> DocumentKeys:
+    """The keys a nested stored query spells: its own version's, else (version-less) its enclosing document's."""
+    version = query.get("version")
+    return keys_for(entity="SlayerQuery", version=version) if isinstance(version, int) else enclosing
+
+
 def _respelled(item: Any, renames: dict[str, str]) -> Any:
     if not isinstance(item, dict):
         return item

@@ -112,13 +112,13 @@ class TestSourceSideAtConstruction:
         with pytest.raises(ValueError) as exc:
             _orders(pairs=[["customer_id", "id"]])
         msg = str(exc.value)
-        assert "JoinKeyError: join orders → customers key 'customer_id'" in msg
+        assert "RelationshipKeyError: relationship orders → customers key 'customer_id'" in msg
         assert "declare" in msg.lower()
         assert "suggestion:" in msg
 
     def test_physical_spelling_of_a_renamed_source_key_rejected(self):
         fk = DatasetField(name="customer_id", sql="cust_fk")
-        with pytest.raises(ValueError, match="join orders → customers key 'cust_fk'"):
+        with pytest.raises(ValueError, match="relationship orders → customers key 'cust_fk'"):
             _orders(fk, pairs=[["cust_fk", "id"]])
 
     def test_expression_source_key_rejected(self):
@@ -126,12 +126,12 @@ class TestSourceSideAtConstruction:
         with pytest.raises(ValueError) as exc:
             _orders(ck, pairs=[["ck", "id"]])
         msg = str(exc.value)
-        assert "join orders → customers key 'ck'" in msg
-        assert "base column" in msg
+        assert "relationship orders → customers key 'ck'" in msg
+        assert "base field" in msg
 
     def test_filtered_source_key_rejected(self):
         fk = DatasetField(name="customer_id", sql="cust_fk", filter="status = 'ok'")
-        with pytest.raises(ValueError, match="join orders → customers key 'customer_id'"):
+        with pytest.raises(ValueError, match="relationship orders → customers key 'customer_id'"):
             _orders(fk, pairs=[["customer_id", "id"]])
 
     def test_dotted_key_entry_rejected(self):
@@ -165,7 +165,7 @@ class TestExtensionOverlay:
         ext = DatasetExtension(source_name="orders", relationships=[
             DatasetRelationship(to="regions", join_pairs=[["region_id", "id"]])])
         base = orders_dataset()
-        with pytest.raises(ValueError, match="join orders → regions key 'region_id'"):
+        with pytest.raises(ValueError, match="relationship orders → regions key 'region_id'"):
             apply_extension_overlay(base, ext)
 
     async def test_query_extension_fails_before_sql(self):
@@ -198,8 +198,8 @@ class TestTargetSide:
             with pytest.raises(RelationshipKeyError) as exc:
                 await engine.save_dataset(orders)
             first, *rest = str(exc.value).splitlines()
-            assert first.startswith("JoinKeyError: join orders → customers key 'code'")
-            assert any(line.lstrip().startswith("suggestion:") and "base column" in line
+            assert first.startswith("RelationshipKeyError: relationship orders → customers key 'code'")
+            assert any(line.lstrip().startswith("suggestion:") and "base field" in line
                        for line in rest)
             assert await storage.get_dataset("orders", data_source="test") is None
 

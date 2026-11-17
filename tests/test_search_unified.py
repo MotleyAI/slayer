@@ -353,11 +353,11 @@ async def test_naive_cypher_single_model_label_filters_results(
     service: SearchService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MATCH (n:Model) RETURN n.id AS id filters to model-kind entities only."""
+    """MATCH (n:Dataset) RETURN n.id AS id filters to model-kind entities only."""
     monkeypatch.setattr(_search_graph, "is_available", lambda: False)
     response = await service.search(
         question="orders amount customers",
-        cypher_filter="MATCH (n:Model) RETURN n.id AS id",
+        cypher_filter="MATCH (n:Dataset) RETURN n.id AS id",
         max_results=20,
     )
     for hit in response.results:
@@ -371,11 +371,11 @@ async def test_naive_cypher_multi_label_colon_separated(
     service: SearchService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MATCH (n:Memory:Model) RETURN n.id AS id filters to memory + model."""
+    """MATCH (n:Memory:Dataset) RETURN n.id AS id filters to memory + model."""
     monkeypatch.setattr(_search_graph, "is_available", lambda: False)
     response = await service.search(
         question="orders amount customers",
-        cypher_filter="MATCH (n:Memory:Model) RETURN n.id AS id",
+        cypher_filter="MATCH (n:Memory:Dataset) RETURN n.id AS id",
         max_results=20,
     )
     for hit in response.results:
@@ -408,7 +408,7 @@ async def test_naive_cypher_case_insensitive(
     monkeypatch.setattr(_search_graph, "is_available", lambda: False)
     response = await service.search(
         question="orders",
-        cypher_filter="match (n:model) return n.id as id",
+        cypher_filter="match (n:dataset) return n.id as id",
         max_results=20,
     )
     for hit in response.results:
@@ -459,7 +459,7 @@ async def test_naive_cypher_complex_query_raises_slayer_error_with_install_hint(
         await service.search(
             question="x",
             cypher_filter=(
-                "MATCH (m:Memory)-[:MENTIONS]->(e:Model) "
+                "MATCH (m:Memory)-[:MENTIONS]->(e:Dataset) "
                 "RETURN m.id AS id"
             ),
         )
@@ -475,7 +475,7 @@ async def test_naive_cypher_where_clause_raises_slayer_error(
         await service.search(
             question="x",
             cypher_filter=(
-                "MATCH (n:Model) WHERE n.name = 'orders' RETURN n.id AS id"
+                "MATCH (n:Dataset) WHERE n.name = 'orders' RETURN n.id AS id"
             ),
         )
 
@@ -490,7 +490,7 @@ async def test_naive_cypher_missing_as_id_raises_slayer_error(
     with pytest.raises(SlayerError):
         await service.search(
             question="x",
-            cypher_filter="MATCH (n:Model) RETURN n.id",
+            cypher_filter="MATCH (n:Dataset) RETURN n.id",
         )
 
 

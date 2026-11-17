@@ -248,7 +248,8 @@ class TestExecution:
                                         "dimensions": [{"name": "name", "dataset": "customers"}]})
         assert normal(old) == normal(new)
         [w] = deprecated_in(old.warnings)
-        assert "model" in w.old and "dataset" in w.new
+        assert "model" in w.old
+        assert "dataset" in w.new
 
     async def test_an_old_key_across_stages_and_an_extension_warns_once(self, backend: str) -> None:
         stages = [
@@ -283,9 +284,11 @@ def old_orders() -> dict[str, Any]:
 
 def assert_stored_new(*, backend: str, base: Path) -> None:
     doc = stored_document(backend=backend, base=str(base), name="orders")
-    assert "fields" in doc and "columns" not in doc
+    assert "fields" in doc
+    assert "columns" not in doc
     [rel] = doc["relationships"]
-    assert rel["to"] == "customers" and "target_model" not in rel
+    assert rel["to"] == "customers"
+    assert "target_model" not in rel
 
 
 def assert_two_conversions(entries: Any) -> None:
@@ -297,7 +300,8 @@ def assert_two_conversions(entries: Any) -> None:
 def assert_measures_reported(entries: Any) -> None:
     [w] = deprecated_in(list(entries))
     old, new = (w["old"], w["new"]) if isinstance(w, dict) else (w.old, w.new)
-    assert "measures" in old and "metrics" in new
+    assert "measures" in old
+    assert "metrics" in new
 
 
 async def via_app(app: TestClient, *, method: str, path: str, json: dict | None = None,
@@ -337,9 +341,12 @@ class TestSaveSurfaces:
         with recorded():
             text = await mcp_text(storage, "create_dataset", name="orders", sql_table="orders", data_source=DS,
                                   fields=orders["fields"], measures=orders["metrics"])
-        assert "measures" in text and "metrics" in text and "3.0" in text
+        assert "measures" in text
+        assert "metrics" in text
+        assert "3.0" in text
         dataset = await storage.get_dataset("orders", data_source=DS)
-        assert dataset is not None and [m.name for m in dataset.metrics] == ["revenue"]
+        assert dataset is not None
+        assert [m.name for m in dataset.metrics] == ["revenue"]
 
     async def test_rest_reports_a_measures_key(self, tmp_path: Path) -> None:
         storage = await shop_store(backend="yaml", base=str(tmp_path))

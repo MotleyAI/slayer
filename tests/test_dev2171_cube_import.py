@@ -44,7 +44,7 @@ def meas(name: str, type_: str, sql: str | None = None, **extra: Any) -> dict[st
 
 def cube(name: str = "orders", *, dimensions: list[dict[str, Any]] | None = None,
          metrics: list[dict[str, Any]] | None = None, **extra: Any) -> dict[str, Any]:
-    out: dict[str, Any] = {"name": name, "dimensions": [ID, *(dimensions or [])], "metrics": metrics or [],
+    out: dict[str, Any] = {"name": name, "dimensions": [ID, *(dimensions or [])], "measures": metrics or [],
                            **extra}
     if "sql" not in extra:
         out.setdefault("sql_table", "orders")
@@ -234,7 +234,7 @@ class TestJoinedCubesPhysicalColumn:
                               CUSTOMERS])
         assert not any(has_column(result, "orders", c) for c in ("cn", "cn_upper"))
         assert not has_metric(result, "orders", "n_names")
-        assert [i for i in cube_issues(result, "cn") if "no join" in i.message], result.report.issues
+        assert [i for i in cube_issues(result, "cn") if "no relationship" in i.message], result.report.issues
 
     async def test_measure_over_the_joined_cubes_column(self, db: Path) -> None:
         result = import_cube([cube(metrics=[meas("n_regions", "count_distinct", "{customers}.region")],

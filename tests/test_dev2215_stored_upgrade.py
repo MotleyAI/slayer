@@ -97,10 +97,10 @@ def test_versions_bumped() -> None:
 # --------------------------------------------------------------------------- #
 # Stored bucket calls are upgraded to date_trunc
 # --------------------------------------------------------------------------- #
-MONTHLY_STAGE = {"population": "orders", "dimensions": ["month(ordered_at)"],
-                 "metrics": [{"expression": "sum(amount)", "name": "rev"}],
-                 "filter": ["year(ordered_at) >= '2024'"],
-                 "order": [{"field": "month(ordered_at)", "direction": "asc"}]}
+MONTHLY_STAGE = {"source_model": "orders", "dimensions": ["month(ordered_at)"],
+                 "measures": [{"formula": "sum(amount)", "name": "rev"}],
+                 "filters": ["year(ordered_at) >= '2024'"],
+                 "order": [{"column": "month(ordered_at)", "direction": "asc"}]}
 
 
 class TestBucketCalls:
@@ -222,8 +222,8 @@ class TestBucketCalls:
 
     def test_extension_is_rewritten(self) -> None:
         extension = {"source_name": "orders",
-                     "metrics": [{"name": "months", "expression": "count_distinct(month(ordered_at))"},
-                                  {"name": "ok", "expression": "sum(iif(status == 'ok', amount, None))"}]}
+                     "measures": [{"name": "months", "formula": "count_distinct(month(ordered_at))"},
+                                  {"name": "ok", "formula": "sum(iif(status == 'ok', amount, None))"}]}
         text = dumped(SlayerQuery.model_validate({"version": PRE["SlayerQuery"], "source_model": extension}))
         assert not _BUCKET_CALL.search(text), text
         assert "==" not in text, text
@@ -233,9 +233,9 @@ class TestBucketCalls:
     def test_nested_saved_query_stages_are_rewritten(self) -> None:
         model = SlayerDataset.model_validate(saved_query_doc(
             "two_stage",
-            {"name": "inner", "population": "orders", "metrics": [{"expression": "sum(amount)", "name": "rev"}],
-             "filter": ["year(ordered_at) >= '2024' and status == 'ok'"]},
-            {"population": "inner", "metrics": [{"expression": "sum(rev)", "name": "t"}]}))
+            {"name": "inner", "source_model": "orders", "measures": [{"formula": "sum(amount)", "name": "rev"}],
+             "filters": ["year(ordered_at) >= '2024' and status == 'ok'"]},
+            {"source_model": "inner", "measures": [{"formula": "sum(rev)", "name": "t"}]}))
         stage = (model.source_queries or [])[0]
         assert stage.filter == ["date_trunc('year', ordered_at) >= '2024' and status = 'ok'"]
 
@@ -281,8 +281,8 @@ class TestDeprecatedSpellings:
 
     def test_method_call_and_list_after_in_in_a_saved_query(self) -> None:
         model = SlayerDataset.model_validate(saved_query_doc("q", {
-            "population": "orders", "metrics": [{"expression": "customers.count(*)", "name": "n"}],
-            "filter": ["status in ['ok', 'new']", "customer_id is None or status == 'ok'"]}))
+            "source_model": "orders", "measures": [{"formula": "customers.count(*)", "name": "n"}],
+            "filters": ["status in ['ok', 'new']", "customer_id is None or status == 'ok'"]}))
         stage = (model.source_queries or [])[0]
         assert [m.expression for m in stage.metrics or []] == ["count(customers.*)"]
         assert stage.filter == ["status in ('ok', 'new')", "customer_id IS NULL or status = 'ok'"]
@@ -305,8 +305,8 @@ class TestAggRename:
     async def test_aggregation_named_agg(self, tmp_path: Path, shop_ds: DatasourceConfig, backend: str,
                                          caplog: pytest.LogCaptureFixture) -> None:
         doubled = orders_doc(aggregations=[{"name": "agg", "formula": "SUM({value}) * 2"}])
-        saved = saved_query_doc("doubled", {"population": "orders",
-                                            "metrics": [{"expression": "agg(amount)", "name": "d"}]})
+        saved = saved_query_doc("doubled", {"source_model": "orders",
+                                            "measures": [{"formula": "agg(amount)", "name": "d"}]})
         storage = await store(tmp_path, shop_ds, backend=backend, models=[doubled, saved])
         with logged(caplog) as texts:
             model = await storage.get_dataset("orders", data_source=DS)

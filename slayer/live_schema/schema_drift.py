@@ -21,6 +21,7 @@ import sqlglot
 from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
+from typing_extensions import deprecated
 
 from slayer.core.enums import DataType
 from slayer.core.models import (
@@ -34,6 +35,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import ComputedDimension, SlayerQuery, extension_dataset_names
 from slayer.core.refs import IDENTIFIER_RE
+from slayer.core.vocabulary import name_twins
 from slayer.core.warnings import BrokenDependentWarning
 from slayer.sql.dialects.reflection import TableKeyReadFailure
 from slayer.sql.sql_predicate import parse_sql_predicate
@@ -73,6 +75,9 @@ from slayer.sql.dialects import SqlDialect, dialect_for_ds_type
 from slayer.sql.dialects.reflection import ResultColumnType
 from slayer.database.engine_factory import ClientCacheKey, client_cache_key
 from slayer.sql.naming import render_table_name
+
+if TYPE_CHECKING:
+    from slayer.live_schema.ingestion import InternalTable
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +149,10 @@ _LEGACY_REMEDIES: dict[RemedyKind, re.Pattern[str]] = {
 }
 
 
+#: A pre-2.0 serialized finding's keys and their replacements.
+_PRE_2_0_FINDING_KEYS = {"model_name": "dataset_name", "column": "field"}
+
+
 class RetypeFinding(BaseModel):
     """Report-only: a field whose live column exists with a conflicting type."""
 
@@ -159,7 +168,11 @@ class RetypeFinding(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _infer_legacy_remedy_kind(cls, data: Any) -> Any:
-        if not isinstance(data, dict) or "remedy_kind" in data:
+        if not isinstance(data, dict):
+            return data
+        data = {_PRE_2_0_FINDING_KEYS.get(k, k) if _PRE_2_0_FINDING_KEYS.get(k, k) not in data else k: v
+                for k, v in data.items()}
+        if "remedy_kind" in data:
             return data
         remedy = data.get("remedy")
         kind = next((k for k, pattern in _LEGACY_REMEDIES.items()
@@ -276,8 +289,6 @@ class IngestionError(BaseModel):
 
 
 if TYPE_CHECKING:
-    from slayer.live_schema.ingestion import InternalTable
-
     _HiddenInternals = list[InternalTable]
 else:
     _HiddenInternals = list  # items are InternalTable; the import is circular
@@ -2395,3 +2406,19 @@ async def validate_datasource(
         sql_table_diffs=sql_table_diffs,
         sql_diffs=sql_diffs,
     ))
+
+
+if TYPE_CHECKING:
+    @deprecated("EditModelDelete is deprecated; use EditDatasetDelete", category=None)
+    class EditModelDelete(EditDatasetDelete): ...
+
+    @deprecated("ModelAddition is deprecated; use DatasetAddition", category=None)
+    class ModelAddition(DatasetAddition): ...
+
+    @deprecated("WholeModelDelete is deprecated; use WholeDatasetDelete", category=None)
+    class WholeModelDelete(WholeDatasetDelete): ...
+
+
+__getattr__ = name_twins(namespace=globals(), renames={
+    "EditModelDelete": "EditDatasetDelete", "ModelAddition": "DatasetAddition", "WholeModelDelete": "WholeDatasetDelete",
+})

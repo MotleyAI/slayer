@@ -126,7 +126,7 @@ class TestSchema:
         prop = schema["properties"]["extensions"]
         assert _refs(prop) == {"array", "#/$defs/DatasetExtension", "null"}
         assert prop.get("description")
-        ext = schema["$defs"]["ModelExtension"]
+        ext = schema["$defs"]["DatasetExtension"]
         assert ext["additionalProperties"] is False
         assert ext["required"] == ["source_name"]
 
@@ -136,8 +136,8 @@ class TestSchema:
     async def test_mcp_query_tool_carries_the_definitions(self, mcp_server) -> None:
         tools = {t.name: t for t in await mcp_server.list_tools()}
         schema = tools["query"].inputSchema
-        assert "ModelExtension" in schema.get("$defs", {})
-        assert "SlayerModel" not in schema.get("$defs", {})
+        assert "DatasetExtension" in schema.get("$defs", {})
+        assert "SlayerDataset" not in schema.get("$defs", {})
         assert '"extensions"' in json.dumps(schema)
 
     def test_openapi_rest_body_carries_extensions(self, rest_client) -> None:

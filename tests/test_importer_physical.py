@@ -17,4 +17,4 @@ def test_an_exact_name_column_wins_over_a_case_only_namesake() -> None:
 
 def test_a_case_only_namesake_alone_still_masks() -> None:
     found = unreadable_fields([LEGAL, DONE], dialect="duckdb")
-    assert "masked by the column 'Status'" in found["done"]
+    assert "masked by the field 'Status'" in found["done"]

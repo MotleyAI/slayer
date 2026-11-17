@@ -57,7 +57,7 @@ def test_import_cube_writes_models_and_report(tmp_path):
     assert report_path.exists()
     report = json.loads(report_path.read_text())
     assert "issues" in report
-    assert report["model_count"] >= 3
+    assert report["dataset_count"] >= 3
 
 
 def test_import_cube_survives_save_failure(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys):

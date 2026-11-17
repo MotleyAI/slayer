@@ -217,7 +217,7 @@ class TestPrecedence:
         with pytest.raises(ValueError) as ei:
             await engine.execute(query)
         msg = str(ei.value)
-        assert "partition_by column 'region' is not a query dimension" in msg, msg
+        assert "partition_by field 'region' is not a query dimension" in msg, msg
         assert "spend_band" in msg, msg
         assert "operand grain" not in msg, msg
 

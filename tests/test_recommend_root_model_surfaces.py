@@ -299,7 +299,7 @@ class TestUnrelatedFlagSurfaces:
 
         async def fake_request(method, path, json=None, params=None):  # NOSONAR(S7503) — async required: stub is awaited via client._request
             return {
-                "data_source": "mydb", "root_model": "customers", "reachable": True,
+                "data_source": "mydb", "population": "customers", "reachable": True,
                 "item_paths": [
                     {"input_item": "customers.name", "path": "name", "unrelated": False},
                     {"input_item": "count(tickets.id)", "path": "count(tickets.id)", "unrelated": True},
@@ -412,7 +412,7 @@ class TestRootHintSurfaces:
         async def fake_request(method, path, json=None, params=None):  # NOSONAR(S7503) — async required: stub is awaited via client._request
             captured.append(json or {})
             return {
-                "data_source": "mydb", "root_model": "orders",
+                "data_source": "mydb", "population": "orders",
                 "reachable": True, "item_paths": [], "coverage": [],
                 "message": "", "warnings": [],
             }

@@ -5,6 +5,8 @@ DEV-1608 §10.
 
 import json
 
+from slayer.cube.converter import CubeToSlayerConverter
+from slayer.cube.models import CubeCube, CubeDimension, CubeProject, CubeView, CubeViewCubeRef
 from slayer.cube.report import (
     CubeConversionIssue,
     CubeConversionReport,
@@ -67,7 +69,7 @@ def test_result_json_round_trips():
     )
     blob = result.model_dump_json()
     parsed = json.loads(blob)
-    assert parsed["report"]["model_count"] == 3
+    assert parsed["report"]["dataset_count"] == 3
     assert parsed["report"]["issues"][0]["category"] == "unmapped_infra"
 
     # Re-validate from the JSON to confirm the categories survive the round-trip.
@@ -80,9 +82,6 @@ def test_result_json_round_trips():
 
 def test_converter_derives_report_counts():
     """The converter must populate model/hidden/view counts on the report."""
-    from slayer.cube.converter import CubeToSlayerConverter
-    from slayer.cube.models import CubeCube, CubeDimension, CubeProject, CubeView, CubeViewCubeRef
-
     project = CubeProject(
         cubes=[
             CubeCube(name="orders", sql_table="public.orders",

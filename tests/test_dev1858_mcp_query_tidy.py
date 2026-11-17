@@ -203,7 +203,7 @@ class TestQueryDispatch:
             await _call(orders_server, query="orders")
         message = str(ei.value)
         assert "not query-backed" in message
-        assert "source_model='orders'" in message
+        assert "population='orders'" in message
 
     async def test_empty_list_is_rejected(self, orders_server) -> None:
         with pytest.raises(ToolError, match="non-empty"):

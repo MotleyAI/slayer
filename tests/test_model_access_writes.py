@@ -87,7 +87,7 @@ async def test_save_warns_about_no_hidden_dependent_it_breaks(store: AccessStore
     )
     await store.storage.save_dataset(secret, _validate=False)
     fin = view(store, "fin")
-    edited = (await must_get(fin, "pub_link")).model_copy(update={"joins": []})
+    edited = (await must_get(fin, "pub_link")).model_copy(update={"relationships": []})
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         await fin.save_dataset(edited)
@@ -365,15 +365,15 @@ class TestMcpEdits:
 
     async def test_editing_hidden_model_reads_like_missing(self, store: AccessStore) -> None:
         fin = view(store, "fin")
-        hidden = await self.call(fin, model_name="hr", description="x")
-        missing = await self.call(fin, model_name="nosuch", description="x")
+        hidden = await self.call(fin, dataset_name="hr", description="x")
+        missing = await self.call(fin, dataset_name="nosuch", description="x")
         assert hidden.replace("hr", "X") == missing.replace("nosuch", "X")
         assert (await must_get(store.storage, "hr")).description != "x"
 
     async def test_moving_model_with_pruned_join_is_refused(self, store: AccessStore) -> None:
         await store.storage.save_datasource(DatasourceConfig(name="acme2", type=store.dialect, database=store.db_path))
         before = await store.storage.get_dataset("pub_link", data_source=DS)
-        text = await self.call(view(store, "fin"), model_name="pub_link", data_source=DS, new_data_source="acme2")
+        text = await self.call(view(store, "fin"), dataset_name="pub_link", data_source=DS, new_data_source="acme2")
         assert "conflict" in text.lower()
         assert foreign_leaks(text) == []
         assert await store.storage.get_dataset("pub_link", data_source=DS) == before

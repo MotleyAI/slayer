@@ -42,7 +42,7 @@ from tests._stored_upgrade_fixtures import DS, raw_doc, raw_store
 
 
 def _array(element: str) -> dict[str, Any]:
-    return {"type": "ARRAY", "element_type": element}
+    return {"datatype": "ARRAY", "element_type": element}
 
 
 class TestTheType:
@@ -431,7 +431,7 @@ class TestReingest:
 # --------------------------------------------------------------------------- #
 def _find_column(node: Any, name: str) -> Optional[dict[str, Any]]:
     if isinstance(node, dict):
-        if node.get("name") == name and "type" in node:
+        if node.get("name") == name and "datatype" in node:
             return node
         children = node.values()
     elif isinstance(node, list):
@@ -461,7 +461,7 @@ class TestRendering:
                                             sections=["fields"])
         skills = _find_column(json.loads(out), "skills")
         assert skills is not None
-        assert (skills["type"], skills["element_type"]) == ("ARRAY", "TEXT")
+        assert (skills["datatype"], skills["element_type"]) == ("ARRAY", "TEXT")
         assert skills.get("sampled_values") == ["go", "sql"]
 
     def test_search_column_text(self) -> None:
@@ -487,7 +487,7 @@ class TestRendering:
 class TestSnowflakeJson:
     async def test_json_value_reads_an_array_column(self) -> None:
         tags = DatasetField(name="tags", datatype=DataType.ARRAY, element_type=DataType.TEXT, db_type="ARRAY")
-        model = contractors_dataset().model_copy(update={"columns": [*contractors_dataset().fields, tags]})
+        model = contractors_dataset().model_copy(update={"fields": [*contractors_dataset().fields, tags]})
         sql = await emit_contractors(query(dimensions=["id", {"expression": "json_value(tags, '$[0]')", "name": "t"}]),
                                      dialect="snowflake", datasets=[model])
         assert "TRY_PARSE_JSON" not in sql.upper(), sql
@@ -544,28 +544,28 @@ class TestSqlModeElementType:
         assert DatasetField.model_validate({"name": "skills", "datatype": "ARRAY"}).datatype is DataType.ARRAY
 
     def test_undeclared_element_type_is_unknown(self) -> None:
-        assert _skills(_dev_skills({"type": "ARRAY"})).element_type is DataType.UNKNOWN
+        assert _skills(_dev_skills({"datatype": "ARRAY"})).element_type is DataType.UNKNOWN
 
     def test_a_declared_element_type_is_kept(self) -> None:
         assert _skills(_dev_skills(_array("TEXT"))).element_type is DataType.TEXT
 
     async def test_element_access_names_the_opaque_type(self) -> None:
-        async with contractors_engine(datasets=[contractors_dataset(), _dev_skills({"type": "ARRAY"})]) as e:
+        async with contractors_engine(datasets=[contractors_dataset(), _dev_skills({"datatype": "ARRAY"})]) as e:
             with pytest.raises(SlayerError, match="UNKNOWN"):
                 await e.execute({"population": "dev_skills", "dimensions": ["skills.value"]})
 
     @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
     async def test_a_stored_model_loads_and_re_saves_unknown(self, tmp_path, backend: str) -> None:
         doc = {"version": CURRENT_VERSIONS["SlayerModel"], "name": "dev_skills", "sql": SKILLS_SQL,
-               "data_source": DS, "columns": [{"name": "id", "type": "INT", "primary_key": True},
-                                              {"name": "skills", "type": "ARRAY"}]}
+               "data_source": DS, "fields": [{"name": "id", "datatype": "INT", "primary_key": True},
+                                              {"name": "skills", "datatype": "ARRAY"}]}
         storage = await raw_store(backend=backend, base=str(tmp_path), models=[doc],
                                   datasource=DatasourceConfig(name=DS, type="duckdb", database=":memory:"))
         loaded = await storage.get_dataset("dev_skills", data_source=DS)
         assert _skills(loaded).element_type is DataType.UNKNOWN
         assert loaded is not None
         await storage.save_dataset(loaded)
-        (saved,) = [c for c in (await raw_doc(storage, "dev_skills"))["columns"] if c["name"] == "skills"]
+        (saved,) = [c for c in (await raw_doc(storage, "dev_skills"))["fields"] if c["name"] == "skills"]
         assert saved.get("element_type") == "UNKNOWN", saved
 
     async def test_a_declared_element_type_survives_re_ingest(self) -> None:
@@ -582,7 +582,7 @@ class TestSqlModeElementType:
 
     async def test_an_undeclared_element_type_stays_opaque_on_re_ingest(self) -> None:
         with _duckdb_file(*LIVE) as (ds, tmp):
-            loaded = await _reingest(ds, tmp, _dev_skills({"type": "ARRAY"}))
+            loaded = await _reingest(ds, tmp, _dev_skills({"datatype": "ARRAY"}))
         assert (_skills(loaded).datatype, _skills(loaded).element_type) == (DataType.ARRAY, DataType.UNKNOWN)
 
     def test_snowflake_re_inference_applies(self) -> None:
@@ -633,7 +633,7 @@ class TestMCPSqlModeElementType:
 
     async def test_edit_model_canonicalises_sql_mode(self) -> None:
         async with self._server() as (server, storage):
-            await storage.save_dataset(_dev_skills(_array("TEXT")).model_copy(update={"columns": [
+            await storage.save_dataset(_dev_skills(_array("TEXT")).model_copy(update={"fields": [
                 DatasetField(name="id", datatype=DataType.INT, primary_key=True)]}))
             await _mcp(server, name="edit_dataset", arguments={
                 "dataset_name": "dev_skills", "fields": [{"name": "skills", "datatype": "ARRAY"}]})

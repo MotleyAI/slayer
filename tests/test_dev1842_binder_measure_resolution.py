@@ -111,19 +111,19 @@ class TestAggregationScopeNotExpanded:
         model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
             await _gen(model, "sum(rev)")
-        assert "saved measure" in str(ei.value).lower()
+        assert "saved metric" in str(ei.value).lower()
 
     async def test_agg_positional_arg_not_expanded(self) -> None:
         model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
             await _gen(model, "last(amount, rev)")
-        assert "saved measure" in str(ei.value).lower()
+        assert "saved metric" in str(ei.value).lower()
 
     async def test_agg_kwarg_not_expanded(self) -> None:
         model = _dataset([_REV])
         with pytest.raises(ValueError) as ei:
             await _gen(model, "weighted_avg(amount, weight=rev)")
-        assert "saved measure" in str(ei.value).lower()
+        assert "saved metric" in str(ei.value).lower()
 
 
 class TestCycleAndDepthThroughBinder:

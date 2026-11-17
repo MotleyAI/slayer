@@ -67,7 +67,7 @@ def test_bare_cross_model_metric_projection_rejected() -> None:
     with pytest.raises(TranslationError) as exc_info:
         _translate(sql)
     msg = str(exc_info.value)
-    assert "cross-model" in msg.lower()
+    assert "cross-dataset" in msg.lower()
     assert "customers.row_count" in msg
 
 
@@ -80,7 +80,7 @@ def test_bare_cross_model_metric_projection_with_alias_rejected() -> None:
     with pytest.raises(TranslationError) as exc_info:
         _translate(sql)
     msg = str(exc_info.value)
-    assert "cross-model" in msg.lower()
+    assert "cross-dataset" in msg.lower()
 
 
 # --- Aggregate over cross-model column ---------------------------------------
@@ -91,7 +91,7 @@ def test_aggregate_over_cross_model_column_rejected() -> None:
     with pytest.raises(TranslationError) as exc_info:
         _translate(sql)
     msg = str(exc_info.value)
-    assert "cross-model" in msg.lower()
+    assert "cross-dataset" in msg.lower()
 
 
 def test_aggregate_over_cross_model_column_with_alias_rejected() -> None:
@@ -99,14 +99,14 @@ def test_aggregate_over_cross_model_column_with_alias_rejected() -> None:
     with pytest.raises(TranslationError) as exc_info:
         _translate(sql)
     msg = str(exc_info.value)
-    assert "cross-model" in msg.lower()
+    assert "cross-dataset" in msg.lower()
 
 
 def test_count_distinct_over_cross_model_column_rejected() -> None:
     sql = 'SELECT COUNT(DISTINCT "customers"."email") FROM "public"."orders"'
     with pytest.raises(TranslationError) as exc_info:
         _translate(sql)
-    assert "cross-model" in str(exc_info.value).lower()
+    assert "cross-dataset" in str(exc_info.value).lower()
 
 
 # --- HAVING path -------------------------------------------------------------
@@ -122,7 +122,7 @@ def test_having_cross_model_aggregate_rejected() -> None:
     )
     with pytest.raises(TranslationError) as exc_info:
         _translate(sql)
-    assert "cross-model" in str(exc_info.value).lower()
+    assert "cross-dataset" in str(exc_info.value).lower()
 
 
 # --- Sanity: same-model and cross-model dimension paths still work ----------

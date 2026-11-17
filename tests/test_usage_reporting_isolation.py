@@ -230,7 +230,7 @@ def test_stalled_send_delays_exit_by_at_most_about_a_second(
     assert exit_wait < 2.0
 
     usage_reporting_env.set_now(now_utc() + datetime.timedelta(days=1))
-    assert usage(show(), "cli:models.list")["ok"] == 2
+    assert usage(show(), "cli:datasets.list")["ok"] == 2
 
 
 def test_first_run_notice_and_send_never_touch_stdout(store: str, usage_reporting_env) -> None:

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlglot import exp, parse_one
 from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.qualify import qualify
+from typing_extensions import deprecated
 from sqlglot.schema import MappingSchema
 
 from slayer.async_utils import run_sync
@@ -28,6 +29,7 @@ from slayer.core.models import (
 from slayer.core.relationship_edges import edge_reference
 from slayer.core.names import name_taken
 from slayer.core.query import extract_variable_refs
+from slayer.core.vocabulary import name_twins
 from slayer.live_schema import schema_drift
 from slayer.live_schema import broken_dependents as dependents  # module import: in an import cycle
 from slayer.engine.cardinality.inference import infer_structural_cardinality
@@ -2514,3 +2516,17 @@ async def _refresh_datasource_embeddings(
         datasource_name=datasource_name, storage=storage, search=search, failures=failures,
     )
     return dataset_warnings + doc_warnings + memory_warnings
+
+
+if TYPE_CHECKING:
+    @deprecated("introspect_table_to_model is deprecated; use introspect_table_to_dataset", category=None)
+    async def introspect_table_to_model(
+        *, client: SqlClient, table_name: str, ref: SchemaRef | None, data_source: str,
+        dataset_name: str | None = None, source_kind: ObjectKind | None = None,
+    ) -> SlayerDataset: ...
+
+
+__getattr__ = name_twins(
+    namespace=globals(), renames={"introspect_table_to_model": "introspect_table_to_dataset"},
+    arguments={"introspect_table_to_model": {"model_name": "dataset_name"}},
+)

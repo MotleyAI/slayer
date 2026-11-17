@@ -147,8 +147,8 @@ class TestEachRouteIsRefused:
             SlayerQuery.model_validate(payload)
 
     def test_legacy_root_extension_with_columns_is_refused(self) -> None:
-        legacy = {"source_name": "orders", "columns": [{"name": "leak", "sql": "(SELECT max(pw) FROM secrets)"}]}
-        with pytest.raises(ValidationError, match="columns"):
+        legacy = {"source_name": "orders", "fields": [{"name": "leak", "sql": "(SELECT max(pw) FROM secrets)"}]}
+        with pytest.raises(ValidationError, match="fields"):
             SlayerQuery.model_validate({"population": legacy, "metrics": ["count(*)"]})
 
     @pytest.mark.parametrize(("column", "replacement"), [

@@ -172,7 +172,7 @@ class TestValidateModels:
         entries = await self._validate(
             models, client=_live(bq_connection, layout, schemas=_TWO_DATASETS), snapshot=snapshot,
         )
-        assert _verdicts(entries) == [("WholeModelDelete", "gone", [])]
+        assert _verdicts(entries) == [("WholeDatasetDelete", "gone", [])]
 
     async def test_column_drift_on_a_bare_model_is_an_edit(self, bq_connection: MagicMock, snapshot: bool) -> None:
         layout = {_URL_DATASET: {"contractors": _ID_NAME}, "ds_b": {}}
@@ -180,7 +180,7 @@ class TestValidateModels:
             [_dataset("contractors", sql_table="contractors", columns=_WITH_SKILLS)],
             client=_live(bq_connection, layout, schemas=_TWO_DATASETS), snapshot=snapshot,
         )
-        assert _verdicts(entries) == [("EditModelDelete", "contractors", ["skills"])]
+        assert _verdicts(entries) == [("EditDatasetDelete", "contractors", ["skills"])]
 
     async def test_a_bare_name_never_resolves_to_another_dataset(
         self, bq_connection: MagicMock, snapshot: bool,
@@ -193,7 +193,7 @@ class TestValidateModels:
         entries = await self._validate(
             models, client=_live(bq_connection, layout, schemas=_TWO_DATASETS), snapshot=snapshot,
         )
-        assert _verdicts(entries) == [("WholeModelDelete", "orphans", [])]
+        assert _verdicts(entries) == [("WholeDatasetDelete", "orphans", [])]
 
     async def test_a_same_named_table_elsewhere_does_not_shadow_the_default(
         self, bq_connection: MagicMock, snapshot: bool,
@@ -206,7 +206,7 @@ class TestValidateModels:
         entries = await self._validate(
             models, client=_live(bq_connection, layout, schemas=_TWO_DATASETS), snapshot=snapshot,
         )
-        assert _verdicts(entries) == [("EditModelDelete", "contractors", ["skills"])]
+        assert _verdicts(entries) == [("EditDatasetDelete", "contractors", ["skills"])]
 
 
 @pytest.fixture
@@ -249,7 +249,7 @@ class TestQueryTimeAttribution:
             await query_engine._maybe_raise_schema_drift(
                 err=_UNRELATED, datasource=_DS, read_set={"contractors"}, reads=reads,
             )
-        assert _verdicts(exc.value.to_delete) == [("EditModelDelete", "contractors", ["skills"])]
+        assert _verdicts(exc.value.to_delete) == [("EditDatasetDelete", "contractors", ["skills"])]
 
 
 async def test_reingest_with_the_url_dataset_heals_a_bare_model(bq_connection: MagicMock, tmp_path: Path) -> None:

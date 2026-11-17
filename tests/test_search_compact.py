@@ -464,11 +464,11 @@ async def test_compact_plus_lazy_column_refresh_keeps_text_empty(
 
     refreshed_calls = []
 
-    async def fake_refresh(*, model, columns, engine, storage, force=False):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_samples_fresh(...)`)
+    async def fake_refresh(*, dataset, fields, engine, storage, force=False):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_samples_fresh(...)`)
         # Materially-different columns, so the production path treats them as refreshed.
-        refreshed_calls.extend((model.name, c.name) for c in columns)
+        refreshed_calls.extend((dataset.name, c.name) for c in fields)
         return ProfileOutcome(
-            columns=[c.model_copy(update={"description": "FRESH"}) for c in columns], errors=[],
+            columns=[c.model_copy(update={"description": "FRESH"}) for c in fields], errors=[],
         )
 
     monkeypatch.setattr(svc_mod, "ensure_samples_fresh", fake_refresh)
@@ -491,9 +491,9 @@ async def test_verbose_plus_lazy_column_refresh_regenerates_text(
     engine = SlayerQueryEngine(storage=storage)
     service = SearchService(storage=storage, engine=engine)
 
-    async def fake_refresh(*, model, columns, engine, storage, force=False):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_samples_fresh(...)`)
+    async def fake_refresh(*, dataset, fields, engine, storage, force=False):  # NOSONAR(S7503) — async required to match the monkeypatched call site (`await ensure_samples_fresh(...)`)
         return ProfileOutcome(
-            columns=[c.model_copy(update={"description": "FRESH"}) for c in columns], errors=[],
+            columns=[c.model_copy(update={"description": "FRESH"}) for c in fields], errors=[],
         )
 
     monkeypatch.setattr(svc_mod, "ensure_samples_fresh", fake_refresh)
@@ -572,9 +572,9 @@ async def test_compact_with_cypher_filter_excludes_non_matching(
     baseline = await service.search(question="amount paid", compact=True)
     assert any(h.id == mem_id for h in baseline.results)
 
-    # The full-graph engine uses label "ModelColumn"; the naive-fallback
-    # parser uses "Column". Both should narrow to column-only hits.
-    column_label = "ModelColumn" if _graph_mod.is_available() else "Column"
+    # The full-graph engine uses label "DatasetField"; the naive-fallback
+    # parser uses "Field". Both should narrow to column-only hits.
+    column_label = "DatasetField" if _graph_mod.is_available() else "Field"
     filtered = await service.search(
         question="amount paid",
         cypher_filter=f"MATCH (n:{column_label}) RETURN n.id AS id",

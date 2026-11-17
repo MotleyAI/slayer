@@ -12,14 +12,14 @@ SHIFT = {"expression": "time_shift(sum(amount), -1)", "name": "p"}
 
 # "last 3 months" at the pinned clock is [2026-06-01, 2026-09-01).
 LAST_3_MONTHS = [
-    {"filter": ["ts in 'last 3 months'"]},
-    {"filter": ["ts = 'last 3 months'"]},
-    {"filter": ["ts >= 'last 3 months' and ts <= 'last 3 months'"]},
-    {"filter": ["ts >= '2026-06' and ts < '2026-09'"]},
-    {"filter": ["ts >= '2026-06-01' and ts < '2026-09-01'"]},
-    {"filter": ["ts >= '2026-06-01 00:00:00' and ts < '2026-09-01 00:00:00'"]},
-    {"filter": ["date_trunc('month', ts) >= '2026-06' and date_trunc('month', ts) < '2026-09'"]},
-    {"filter": ["date_trunc('month', ts) in 'last 3 months'"]},
+    {"filters": ["ts in 'last 3 months'"]},
+    {"filters": ["ts = 'last 3 months'"]},
+    {"filters": ["ts >= 'last 3 months' and ts <= 'last 3 months'"]},
+    {"filters": ["ts >= '2026-06' and ts < '2026-09'"]},
+    {"filters": ["ts >= '2026-06-01' and ts < '2026-09-01'"]},
+    {"filters": ["ts >= '2026-06-01 00:00:00' and ts < '2026-09-01 00:00:00'"]},
+    {"filters": ["date_trunc('month', ts) >= '2026-06' and date_trunc('month', ts) < '2026-09'"]},
+    {"filters": ["date_trunc('month', ts) in 'last 3 months'"]},
     {"date_range": "last 3 months"},
     {"date_range": ["last 3 months"]},
     {"date_range": ["2026-06", "2026-08"]},
@@ -50,10 +50,10 @@ class TestTrailingWindow:
 
 class TestTimeShift:
     @pytest.mark.parametrize("spelling", [
-        {"filter": ["date_trunc('month', ts) >= '2025-01'"]},
-        {"filter": ["ts >= '2025'"]},
-        {"filter": ["ts > '2024-12'"]},
-        {"filter": ["ts >= '2025-01-01'"]},
+        {"filters": ["date_trunc('month', ts) >= '2025-01'"]},
+        {"filters": ["ts >= '2025'"]},
+        {"filters": ["ts > '2024-12'"]},
+        {"filters": ["ts >= '2025-01-01'"]},
         {"date_range": ["2025-01", None]},
     ], ids=lambda s: str(s))
     async def test_period_bound_does_not_clip_shift(self, engine, spelling) -> None:

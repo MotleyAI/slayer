@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable, Hashable, Iterable
 
+from typing_extensions import deprecated
+
 from slayer.core.enums import RESERVED_NAMES, DataType, TimeGranularity
 from slayer.core.granularity import resolve_granularity, unknown_granularity_message
 from slayer.core.time_spine import TIME_SPINE_DATASET, is_spine_spelling, spine_dataset, spine_variant_warnings
@@ -49,6 +51,7 @@ from slayer.core.models import (
 )
 from slayer.core.query import SlayerQuery, mode_a_texts
 from slayer.core.syntax import parse_expr
+from slayer.core.vocabulary import bridge_renamed_hooks, method_twin
 from slayer.core.warnings import (
     DeprecatedSpellingWarning,
     LibraryNameShadowWarning,
@@ -207,7 +210,7 @@ def _incoming_keys(*, sibling: dict, target: str, target_fields: list) -> list[t
         canonical = {**relationship, "join_pairs": canonical_join_pairs(
             pairs=relationship.get("join_pairs"), source_fields=sibling.get("fields"), target_fields=target_fields,
         )}
-        out.extend((tgt, stored_type(key=src, fields=sibling.get("fields"))) for src, tgt in _key_pairs(canonical))
+        out.extend((tgt, stored_type(key=src, fields=sibling.get("fields"), keys=CURRENT_KEYS)) for src, tgt in _key_pairs(canonical))
     return out
 
 
@@ -568,6 +571,22 @@ def _validate_default_time_dimension(dataset: SlayerDataset) -> None:
         raise DefaultTimeDimensionTypeError(dataset=dataset.name, field=field.name, field_type=field.datatype)
 
 
+#: The 1.x methods and hooks a custom backend may still override, by their 2.0 names.
+HOOK_RENAMES = {
+    "get_model": "get_dataset", "save_model": "save_dataset", "delete_model": "delete_dataset",
+    "list_models": "list_datasets", "get_model_or_builtin": "get_dataset_or_builtin",
+    "resolve_model_identity": "resolve_dataset_identity", "load_models": "load_datasets",
+    "builtin_models": "builtin_datasets", "update_column_sampled": "update_field_sampled",
+    "_save_model_impl": "_save_dataset_impl", "_list_all_model_identities": "_list_all_dataset_identities",
+    "_delete_model_row": "_delete_dataset_row",
+}
+#: A 1.x override's keywords, by the 2.0 name (new → old).
+HOOK_ARGUMENTS = {
+    "save_dataset": {"dataset": "model"}, "_save_dataset_impl": {"dataset": "model"},
+    "update_field_sampled": {"dataset_name": "model_name", "field_name": "column_name"},
+}
+
+
 class StorageBackend(ABC):
     """Abstract async storage backend keyed by ``(data_source, name)``. Concrete backends implement the composite-key CRUD; this class supplies shared validation and the priority-aware bare-name resolver."""
 
@@ -575,6 +594,57 @@ class StorageBackend(ABC):
     #: by case (they alias on case-insensitive filesystems). Wrappers copy it.
     _ids_collide_as_filenames = False
     _instance_identity: str | None = None
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        bridge_renamed_hooks(cls, HOOK_RENAMES, arguments=HOOK_ARGUMENTS)
+
+    @method_twin("get_dataset")
+    @deprecated("get_model is deprecated; use get_dataset", category=None)
+    async def get_model(self, name: str, data_source: str | None = None) -> SlayerDataset | None: ...
+
+    @method_twin("save_dataset", arguments={"model": "dataset"})
+    @deprecated("save_model is deprecated; use save_dataset", category=None)
+    async def save_model(
+        self, dataset: SlayerDataset, *, _validate: bool = True, failures: DocumentLoadFailures | None = None,
+    ) -> None: ...
+
+    @method_twin("delete_dataset")
+    @deprecated("delete_model is deprecated; use delete_dataset", category=None)
+    async def delete_model(self, name: str, data_source: str | None = None) -> bool: ...
+
+    @method_twin("list_datasets")
+    @deprecated("list_models is deprecated; use list_datasets", category=None)
+    async def list_models(self, data_source: str | None = None) -> list[str]: ...
+
+    @method_twin("resolve_dataset_identity")
+    @deprecated("resolve_model_identity is deprecated; use resolve_dataset_identity", category=None)
+    async def resolve_model_identity(
+        self, name: str, *, prefer_data_source: str | None = None,
+    ) -> tuple[str, str] | None: ...
+
+    @method_twin("get_dataset_or_builtin")
+    @deprecated("get_model_or_builtin is deprecated; use get_dataset_or_builtin", category=None)
+    async def get_model_or_builtin(self, name: str, data_source: str | None = None) -> SlayerDataset | None: ...
+
+    @method_twin("load_datasets")
+    @deprecated("load_models is deprecated; use load_datasets", category=None)
+    async def load_models(
+        self, *, data_source: str | None = None, exclude: str | None = None,
+    ) -> Loaded[SlayerDataset]: ...
+
+    @method_twin("builtin_datasets")
+    @deprecated("builtin_models is deprecated; use builtin_datasets", category=None)
+    async def builtin_models(
+        self, data_source: str, *, detailed: bool = False, failures: DocumentLoadFailures | None = None,
+    ) -> list[SlayerDataset]: ...
+
+    @method_twin("update_field_sampled", arguments={"model_name": "dataset_name", "column_name": "field_name"})
+    @deprecated("update_column_sampled is deprecated; use update_field_sampled", category=None)
+    async def update_column_sampled(
+        self, *, data_source: str, dataset_name: str, field_name: str, sampled: str | None,
+        sampled_values: list[str] | None, distinct_count: int | None,
+    ) -> None: ...
 
     # ---- dataset CRUD (composite key) --------------------------------------
 
@@ -1144,7 +1214,7 @@ class StorageBackend(ABC):
             target = relationship.get("to") if isinstance(relationship, dict) else None
             peer = await self._peer_dataset_dict(name=target, data_source=data_source) if isinstance(target, str) else None
             peer_fields = peer.get("fields") if isinstance(peer, dict) else None
-            keys.extend((src, stored_type(key=tgt, fields=peer_fields)) for src, tgt in _key_pairs(relationship))
+            keys.extend((src, stored_type(key=tgt, fields=peer_fields, keys=CURRENT_KEYS)) for src, tgt in _key_pairs(relationship))
         return keys
 
     async def _sibling_keys_into(self, *, name: str, fields: list, data_source: str) -> list[tuple[Any, str | None]]:

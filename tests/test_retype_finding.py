@@ -34,7 +34,7 @@ from tests._pg_helpers import client_datasource
 postgresql_proc = factories.postgresql_proc(port=None)
 postgresql = factories.postgresql("postgresql_proc")
 
-RETYPE_FIELDS = {"finding", "model_name", "data_source", "column", "stored_type", "live_type", "live_db_type",
+RETYPE_FIELDS = {"finding", "dataset_name", "data_source", "field", "stored_type", "live_type", "live_db_type",
                  "remedy_kind", "remedy"}
 
 DUCK_LIVE = (
@@ -169,7 +169,7 @@ def _assert_remedy_agrees(finding: dict[str, Any]) -> None:
     """``remedy`` and ``summary`` agree with ``remedy_kind``."""
     expected = {
         "reingest": f"re-ingest datasource '{finding['data_source']}' (`slayer ingest`) to re-type it",
-        "set_type": f"set the column's type to {finding['live_type']}",
+        "set_type": f"set the field's type to {finding['live_type']}",
     }[finding["remedy_kind"]]
     assert finding["remedy"] == expected, finding
     assert finding["summary"].endswith(f"; {expected}."), finding
@@ -179,19 +179,19 @@ def _retypes(entries: list[dict[str, Any]], dataset: str) -> dict[str, dict[str,
     found = [e for e in entries if e.get("finding") == "retype"]
     for e in found:
         _assert_remedy_agrees(e)
-    return {e["column"]: e for e in found if e.get("model_name") == dataset}
+    return {e["field"]: e for e in found if e.get("dataset_name") == dataset}
 
 
 def _removed(entries: list[dict[str, Any]], dataset: str) -> set[str]:
     """Every column and measure ``dataset`` loses to the deletes in ``entries``."""
     out: set[str] = set()
     for e in entries:
-        if e.get("model_name") != dataset:
+        if e.get("dataset_name") != dataset:
             continue
         if e.get("tool") == "delete_dataset":
             out.add("<model>")
         elif e.get("tool") == "edit_dataset":
-            out |= set(e["remove"]["columns"]) | set(e["remove"]["measures"])
+            out |= set(e["remove"]["fields"]) | set(e["remove"]["metrics"])
     return out
 
 
@@ -330,7 +330,7 @@ class TestForceClean:
 
 
 def _carried(err: SchemaDriftError, *, dataset: str, column: str) -> bool:
-    wanted = {"finding": "retype", "model_name": dataset, "column": column}
+    wanted = {"finding": "retype", "dataset_name": dataset, "field": column}
     carried = [f.model_dump(mode="json") for f in getattr(err, "findings", [])]
     for f in carried:
         _assert_remedy_agrees(f)
@@ -375,7 +375,7 @@ class TestOneShape:
         mcp = json.loads(blocks[0].text)
 
         def key(e: dict[str, Any]) -> tuple[str, str]:
-            return e["model_name"], e["column"]
+            return e["dataset_name"], e["field"]
 
         assert python, python
         assert all(RETYPE_FIELDS <= set(e) for e in python), python

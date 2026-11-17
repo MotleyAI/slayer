@@ -118,7 +118,7 @@ class TestModelsSummary:
     async def test_only_the_spine_when_datasource_has_no_models(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
         result = await _call(mcp_server, name="datasets_summary", arguments={"datasource_name": "mydb"})
-        assert result.startswith("# Datasource: `mydb` — 1 model(s)")
+        assert result.startswith("# Datasource: `mydb` — 1 dataset(s)")
         assert "## `time_spine`" in result
 
     async def test_filters_by_datasource(self, mcp_server, storage: YAMLStorage) -> None:
@@ -148,15 +148,15 @@ DatasetField(name="revenue", sql="amount", description="USD", datatype=DataType.
         result = await _call(mcp_server, name="datasets_summary", arguments={
             "datasource_name": "mydb", "compact": False,
         })
-        assert result.startswith("# Datasource: `mydb` — 2 model(s)")
+        assert result.startswith("# Datasource: `mydb` — 2 dataset(s)")
         assert "## `orders`" in result
         assert "Orders fact table." in result
-        assert "**Columns (2):**" in result
+        assert "**Fields (2):**" in result
         assert "| status |" in result
         assert "Order state" in result
         assert "| revenue |" in result
         assert "USD" in result
-        assert "**Joins to:** `customers`" in result
+        assert "**Relationships to:** `customers`" in result
 
     async def test_hidden_models_excluded(self, mcp_server, storage: YAMLStorage) -> None:
         await storage.save_datasource(DatasourceConfig(name="mydb", type="postgres", host="h"))
@@ -172,7 +172,7 @@ DatasetField(name="revenue", sql="amount", description="USD", datatype=DataType.
         result = await _call(mcp_server, name="datasets_summary", arguments={
             "datasource_name": "mydb", "compact": False,
         })
-        assert "**Joins to:** _(none)_" in result
+        assert "**Relationships to:** _(none)_" in result
 
     async def test_columns_table_includes_type(
         self, mcp_server, storage: YAMLStorage,
@@ -189,7 +189,7 @@ DatasetField(name="revenue", sql="amount", description="USD", datatype=DataType.
         result = await _call(mcp_server, name="datasets_summary", arguments={
             "datasource_name": "mydb", "compact": False,
         })
-        col_section = result.split("**Columns")[1].split("**Measures")[0]
+        col_section = result.split("**Fields")[1].split("**Metrics")[0]
         assert "| x | TEXT |" in col_section
         assert "| y | DOUBLE |" in col_section
 
@@ -197,7 +197,7 @@ DatasetField(name="revenue", sql="amount", description="USD", datatype=DataType.
 class TestInspectModel:
     async def test_not_found(self, mcp_server) -> None:
         result = await _call(mcp_server, name="inspect", arguments={"entity_type": "dataset", "reference": "nonexistent", "compact": False})
-        assert "does not resolve to a model" in result
+        assert "does not resolve to a dataset" in result
 
     async def test_markdown_structure(self, mcp_server, storage: YAMLStorage) -> None:
         """Every expected section header appears and the response is no longer JSON."""
@@ -217,18 +217,18 @@ DatasetField(name="revenue", sql="amount", label="Revenue", description="USD tot
         ))
         result = await _call(mcp_server, name="inspect", arguments={"entity_type": "dataset", "reference": "test", "compact": False, "show_sql": True})
 
-        assert result.startswith("# Model: `test`")
+        assert result.startswith("# Dataset: `test`")
         assert "A test model used in unit tests." in result
         assert "**data_source:** `test`" in result
         assert "**sql_table:** `public.t`" in result
-        assert "## Filters (model-level)" in result
+        assert "## Filters (dataset-level)" in result
         assert "`deleted_at IS NULL`" in result
-        assert "## Columns (3)" in result
+        assert "## Fields (3)" in result
         assert "| status |" in result
         assert "Order state" in result
         assert "Revenue" in result
         assert "USD total" in result
-        assert "## Joins (1)" in result
+        assert "## Relationships (1)" in result
         assert "customers" in result
         assert "customer_id = id" in result
 
@@ -437,7 +437,7 @@ class TestMdCodeSpan:
             dataset=model, num_rows=3,
             metric_types={"amount": ResultColumnType(type=DataType.DOUBLE), "label": ResultColumnType(type=DataType.TEXT)},
         )
-        formulas = [f["formula"] for f in args_with_types["measures"]]
+        formulas = [f["expression"] for f in args_with_types["metrics"]]
         assert "avg(amount)" in formulas
         assert "count_distinct(label)" in formulas
 
@@ -688,9 +688,9 @@ class TestInspectModelSectionGating:
         """Default call (no `sections=`) emits all sections and no footer."""
         await self._save_rich_dataset(storage)
         result = await _call(mcp_server, name="inspect", arguments={"entity_type": "dataset", "reference": "rich", "compact": False})
-        assert "## Columns (3)" in result
-        assert "## Measures (2)" in result
-        assert "## Joins (2)" in result
+        assert "## Fields (3)" in result
+        assert "## Metrics (2)" in result
+        assert "## Relationships (2)" in result
         # Default does not opt into show_sql, so aggregations table appears with name/params/description
         assert "## Aggregations (1)" in result
         # The footer only renders when something was trimmed/unknown
@@ -706,20 +706,20 @@ class TestInspectModelSectionGating:
             arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["fields"]},
         )
         # Columns full
-        assert "## Columns (3)" in result
+        assert "## Fields (3)" in result
         # Measures, Aggregations, Joins → names-only (CSV under heading)
-        assert "## Measures (2 — names only)" in result
+        assert "## Metrics (2 — names only)" in result
         assert "`aov`, `rev`" in result
         assert "## Aggregations (1 — names only)" in result
         assert "`wavg`" in result
-        assert "## Joins (2 — names only)" in result
+        assert "## Relationships (2 — names only)" in result
         assert "`customers`, `products`" in result
         # Reachable fields and samples fully omitted
         assert "## Reachable" not in result
         assert "## Data Profile" not in result
         # Footer present
-        assert "> Sections shown: columns." in result
-        assert "> Names-only: measures, aggregations, joins." in result
+        assert "> Sections shown: fields." in result
+        assert "> Names-only: metrics, aggregations, relationships." in result
         assert "> Omitted: samples, learnings, saved_queries." in result
         assert "Re-call inspect with" in result
 
@@ -734,11 +734,11 @@ class TestInspectModelSectionGating:
             mcp_server, name="inspect",
             arguments={"entity_type": "dataset", "reference": "bare", "compact": False, "sections": ["fields"]},
         )
-        assert "## Columns" in result
+        assert "## Fields" in result
         # No measures, aggregations, or joins → no headings for them at all
-        assert "## Measures" not in result
+        assert "## Metrics" not in result
         assert "## Aggregations" not in result
-        assert "## Joins" not in result
+        assert "## Relationships" not in result
 
     async def test_unknown_section_emits_warning(self, mcp_server, storage: YAMLStorage) -> None:
         """An unknown section name produces a warning line in the footer."""
@@ -748,9 +748,9 @@ class TestInspectModelSectionGating:
             arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["fields", "fish"]},
         )
         assert "> Warning: ignored unknown sections: 'fish'." in result
-        assert "Valid: columns, measures, aggregations, joins, samples, learnings, saved_queries." in result
+        assert "Valid: fields, metrics, aggregations, relationships, samples, learnings, saved_queries." in result
         # Valid section still rendered
-        assert "## Columns (3)" in result
+        assert "## Fields (3)" in result
 
     async def test_all_unknown_resolves_to_no_sections(self, mcp_server, storage: YAMLStorage) -> None:
         """All-unknown sections ⇒ none selected (None/[] alone means "all six")."""
@@ -761,13 +761,13 @@ class TestInspectModelSectionGating:
         )
         assert "Warning: ignored unknown sections: 'fish', 'bird'." in result
         # Always-on header still renders
-        assert "# Model: `rich`" in result
+        assert "# Dataset: `rich`" in result
         # Names-only collapse for the four gateable sections — no full tables
-        assert "## Columns (3 — names only)" in result
-        assert "## Measures (2 — names only)" in result
-        assert "## Joins (2 — names only)" in result
+        assert "## Fields (3 — names only)" in result
+        assert "## Metrics (2 — names only)" in result
+        assert "## Relationships (2 — names only)" in result
         # The full-table heading must NOT appear
-        assert "## Columns (3)\n\n|" not in result
+        assert "## Fields (3)\n\n|" not in result
         # samples and learnings are fully omitted (no heading at all)
         assert "## Sample" not in result
         # Reachable-via-joins section was removed entirely — it
@@ -776,7 +776,7 @@ class TestInspectModelSectionGating:
         # Footer summarises what was dropped — caller can re-call with a
         # corrected sections= list.
         assert "Sections shown: (none)" in result
-        assert "Names-only: columns, measures, aggregations, joins" in result
+        assert "Names-only: fields, metrics, aggregations, relationships" in result
         assert "Omitted: samples, learnings, saved_queries" in result
         assert "Re-call inspect with `sections=[...]`" in result
 
@@ -787,7 +787,7 @@ class TestInspectModelSectionGating:
             mcp_server, name="inspect",
             arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["metrics", "fields"]},
         )
-        assert result.find("## Columns (3)") < result.find("## Measures (2)")
+        assert result.find("## Fields (3)") < result.find("## Metrics (2)")
 
     # ---- reachable_fields surface fully removed ----
 
@@ -801,14 +801,14 @@ class TestInspectModelSectionGating:
         )
         assert (
             "> Warning: ignored unknown sections: 'reachable_fields'. "
-            "Valid: columns, measures, aggregations, joins, samples, learnings, saved_queries."
+            "Valid: fields, metrics, aggregations, relationships, samples, learnings, saved_queries."
         ) in result_md
         assert "## Reachable" not in result_md
         # Unknown-branch wins over a silent-drop fallback to the full Columns table.
-        assert "## Columns (3)\n\n|" not in result_md
-        assert "## Columns (3 — names only)" in result_md
+        assert "## Fields (3)\n\n|" not in result_md
+        assert "## Fields (3 — names only)" in result_md
         assert "> Sections shown: (none)" in result_md
-        assert "> Names-only: columns, measures, aggregations, joins." in result_md
+        assert "> Names-only: fields, metrics, aggregations, relationships." in result_md
         assert "> Omitted: samples, learnings, saved_queries." in result_md
 
         result_json = await _call(
@@ -823,8 +823,8 @@ class TestInspectModelSectionGating:
         assert parsed["unknown_sections"] == ["reachable_fields"]
         assert "reachable_dimensions" not in parsed
         assert "reachable_measures" not in parsed
-        assert "columns" not in parsed  # full key absent ⇒ unknown-branch not bypassed
-        assert parsed["names_only_sections"] == ["columns", "measures", "aggregations", "joins"]
+        assert "fields" not in parsed  # full key absent ⇒ unknown-branch not bypassed
+        assert parsed["names_only_sections"] == ["fields", "metrics", "aggregations", "relationships"]
         assert parsed["omitted_sections"] == ["samples", "learnings", "saved_queries"]
 
     async def test_old_reachable_fields_token_with_other_sections(self, mcp_server, storage: YAMLStorage) -> None:
@@ -836,7 +836,7 @@ class TestInspectModelSectionGating:
             arguments={"entity_type": "dataset", "reference": "rich", "compact": False, "sections": ["reachable_fields", "fields"]},
         )
         # Columns table renders in full.
-        assert "## Columns (3)" in result_md
+        assert "## Fields (3)" in result_md
         # Footer warning calls out the bad token by repr.
         assert "> Warning: ignored unknown sections: 'reachable_fields'." in result_md
         assert "## Reachable" not in result_md
@@ -850,7 +850,7 @@ class TestInspectModelSectionGating:
             },
         )
         parsed = json.loads(result_json)
-        assert "columns" in parsed
+        assert "fields" in parsed
         assert parsed["unknown_sections"] == ["reachable_fields"]
         assert "reachable_dimensions" not in parsed
         assert "reachable_measures" not in parsed
@@ -1046,21 +1046,21 @@ class TestInspectModelJsonGating:
         )
         parsed = json.loads(raw)
         # Columns key present (full)
-        assert "columns" in parsed
+        assert "fields" in parsed
         # Measures/aggregations/joins → names-only siblings
-        assert parsed["measures_names"] == ["aov"]
+        assert parsed["metrics_names"] == ["aov"]
         assert parsed["aggregations_names"] == ["wavg"]
-        assert parsed["joins_names"] == ["customers"]
-        assert "measures" not in parsed
+        assert parsed["relationships_names"] == ["customers"]
+        assert "metrics" not in parsed
         assert "aggregations" not in parsed
-        assert "joins" not in parsed
+        assert "relationships" not in parsed
         # Reachable / samples → fully absent
         assert "reachable_dimensions" not in parsed
         assert "reachable_measures" not in parsed
         assert "sample_data" not in parsed
         assert "sample_data_error" not in parsed
         # Top-level state arrays
-        assert parsed["names_only_sections"] == ["measures", "aggregations", "joins"]
+        assert parsed["names_only_sections"] == ["metrics", "aggregations", "relationships"]
         assert parsed["omitted_sections"] == ["samples", "learnings", "saved_queries"]
         assert "unknown_sections" not in parsed
 
@@ -1152,7 +1152,7 @@ class TestInspectModelHelpers:
 
     def test_resolve_inspect_sections_none(self) -> None:
         resolved, unknown = _resolve_inspect_sections(None)
-        assert resolved == ["columns", "measures", "aggregations", "joins", "samples", "learnings", "saved_queries"]
+        assert resolved == ["fields", "metrics", "aggregations", "relationships", "samples", "learnings", "saved_queries"]
         assert unknown == []
 
     def test_resolve_inspect_sections_empty(self) -> None:
@@ -1160,10 +1160,10 @@ class TestInspectModelHelpers:
         # Same expansion as the ``None`` case — pin the order so a
         # missing or duplicated section name fails.
         assert resolved == [
-            "columns",
-            "measures",
+            "fields",
+            "metrics",
             "aggregations",
-            "joins",
+            "relationships",
             "samples",
             "learnings",
             "saved_queries",
@@ -1171,14 +1171,14 @@ class TestInspectModelHelpers:
         assert unknown == []
 
     def test_resolve_inspect_sections_subset_canonical_order(self) -> None:
-        resolved, unknown = _resolve_inspect_sections(["measures", "columns"])
+        resolved, unknown = _resolve_inspect_sections(["metrics", "fields"])
         # Canonical order, not caller order
-        assert resolved == ["columns", "measures"]
+        assert resolved == ["fields", "metrics"]
         assert unknown == []
 
     def test_resolve_inspect_sections_unknowns_filtered(self) -> None:
-        resolved, unknown = _resolve_inspect_sections(["columns", "fish", "samples"])
-        assert resolved == ["columns", "samples"]
+        resolved, unknown = _resolve_inspect_sections(["fields", "fish", "samples"])
+        assert resolved == ["fields", "samples"]
         assert unknown == ["fish"]
 
     def test_resolve_inspect_sections_all_unknown_returns_empty(self) -> None:
@@ -1249,7 +1249,7 @@ class TestBuildSampleQueryArgs:
         assert [f["expression"] for f in args["metrics"]] == ["count(*)", "avg(rev)", "avg(qty)"]
         assert [d["name"] for d in args["dimensions"]] == ["status", "region"]
         assert args["limit"] == 7
-        assert args["source_model"] == "t"
+        assert args["population"] == "t"
 
     def test_fallback_to_first_allowed_when_avg_not_permitted(self) -> None:
         model = SlayerDataset(
@@ -1576,7 +1576,7 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        assert any("created column 'total'" in c for c in parsed["changes"])
+        assert any("created field 'total'" in c for c in parsed["changes"])
         model = await storage.get_dataset("orders")
         assert len(model.fields) == 2
 
@@ -1623,7 +1623,7 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        assert any("updated column 'revenue'" in c for c in parsed["changes"])
+        assert any("updated field 'revenue'" in c for c in parsed["changes"])
         model = await storage.get_dataset("orders")
         assert len(model.fields) == 1
         assert model.fields[0].sql == "price"
@@ -1658,7 +1658,7 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        assert any("created measure 'aov'" in c for c in parsed["changes"])
+        assert any("created metric 'aov'" in c for c in parsed["changes"])
         model = await storage.get_dataset("orders")
         assert len(model.metrics) == 1
         assert model.metrics[0].expression == "sum(revenue) / count(*)"
@@ -1694,8 +1694,8 @@ class TestEditModel:
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
-        assert any("updated column 'revenue'" in c for c in parsed["changes"])
-        assert any("created column 'profit'" in c for c in parsed["changes"])
+        assert any("updated field 'revenue'" in c for c in parsed["changes"])
+        assert any("created field 'profit'" in c for c in parsed["changes"])
         model = await storage.get_dataset("orders")
         assert len(model.fields) == 2
 
@@ -1792,7 +1792,7 @@ class TestEditModel:
         ))
         result = await _call(mcp_server, name="edit_dataset", arguments={
             "dataset_name": "orders",
-            "remove": {"joins": ["customers"]},
+            "remove": {"relationships": ["customers"]},
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -1907,7 +1907,7 @@ class TestEditModel:
         ))
         result = await _call(mcp_server, name="edit_dataset", arguments={
             "dataset_name": "orders",
-            "remove": {"columns": ["total"]},
+            "remove": {"fields": ["total"]},
         })
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -1918,7 +1918,7 @@ class TestEditModel:
         await storage.save_dataset(SlayerDataset(name="orders", sql_table="t", data_source="test"))
         result = await _call(mcp_server, name="edit_dataset", arguments={
             "dataset_name": "orders",
-            "remove": {"columns": ["nonexistent"]},
+            "remove": {"fields": ["nonexistent"]},
         })
         assert "not found" in result
 
@@ -1938,7 +1938,7 @@ class TestEditModel:
         ))
         result = await _call(mcp_server, name="edit_dataset", arguments={
             "dataset_name": "orders",
-            "remove": {"columns": ["status"]},
+            "remove": {"fields": ["status"]},
             "fields": [{"name": "status", "sql": "new_col", "datatype": "string"}],
         })
         parsed = json.loads(result)
@@ -2102,7 +2102,7 @@ class TestEditModel:
             "dataset_name": "orders",
             "aggregations": [{
                 "name": "my_agg",
-                "formula": "SUM({expr})",
+                "expression": "SUM({expr})",
                 "meta": {"owner": "x"},
             }],
         })
@@ -2601,13 +2601,13 @@ class TestQueryAcceptsInlineSourceModel:
         self, mcp_server, storage: YAMLStorage
     ) -> None:
         await self._setup_orders(storage)
-        with pytest.raises(ToolError, match="columns"):
+        with pytest.raises(ToolError, match="fields"):
             await _call(mcp_server, name="query", arguments={
                 "query": {
                     "population": "orders",
                     "extensions": [{
                         "source_name": "orders",
-                        "columns": [
+                        "fields": [
                             {"name": "double_amount", "sql": "amount * 2", "type": "DOUBLE"},
                         ],
                     }],
@@ -3159,7 +3159,7 @@ class TestDatabaseFailuresAreToolErrors:
         assert not result.isError
         content = result.content[0]
         assert isinstance(content, TextContent)
-        causes = {entry.get("model_name"): entry.get("cause") for entry in json.loads(content.text)}
+        causes = {entry.get("dataset_name"): entry.get("cause") for entry in json.loads(content.text)}
         assert causes["bad"] == "invalid_sql"
 
     async def test_ingest_database_unreachable(self, db_storage: YAMLStorage) -> None:
@@ -3168,9 +3168,9 @@ class TestDatabaseFailuresAreToolErrors:
         )
 
     @pytest.mark.parametrize(("method", "arguments"), [
-        ("save_model", {"name": "m", "sql_table": "orders", "data_source": "down",
+        ("save_dataset", {"name": "m", "sql_table": "orders", "data_source": "down",
                         "fields": [{"name": "id", "sql": "id", "datatype": "number"}]}),
-        ("create_model_from_query", {"name": "m", "query": {"population": "orders", "metrics": ["count(*)"]}}),
+        ("create_dataset_from_query", {"name": "m", "query": {"population": "orders", "metrics": ["count(*)"]}}),
     ], ids=["table", "query"])
     async def test_create_model_database_unreachable(
         self, db_storage: YAMLStorage, monkeypatch: pytest.MonkeyPatch, method: str, arguments: dict[str, Any],

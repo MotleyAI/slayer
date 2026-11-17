@@ -37,5 +37,6 @@ def test_render_report_and_tally() -> None:
         ],
     )
     report = result.render_report()
-    assert "m1" in report and "cannot convert" in report
+    assert "m1" in report
+    assert "cannot convert" in report
     assert result.tally() == (1, 1)  # (unconverted, dropped)

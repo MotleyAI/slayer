@@ -133,7 +133,7 @@ def test_single_name_emission_unchanged() -> None:
 
 def test_same_name_same_formula_raises() -> None:
     with pytest.raises(
-        ValueError, match="Stage column name collision on 'run_a'",
+        ValueError, match="Stage field name collision on 'run_a'",
     ):
         _generate([
             {"expression": "cumsum(sum(amount))", "name": "run_a"},

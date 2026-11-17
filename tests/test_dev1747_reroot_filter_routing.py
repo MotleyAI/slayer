@@ -166,7 +166,7 @@ class TestClassifiedExactlyOnce:
         _sole_attach(FILTER_REACHABLE)
         assert calls, "the inheritance pass was never called — spy is vacuous"
         assert {call["target_path"] for call in calls} == {("customers",)}
-        assert {call["root_model"].name for call in calls} == {"customers"}
+        assert {call["root_dataset"].name for call in calls} == {"customers"}
 
     def test_the_classifier_receives_the_structural_summary(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -265,7 +265,7 @@ class TestInternalFailuresRaise:
         broad = {"Exception", "BaseException", "ValueError"}
         checked = 0
         for mod, name in (
-            (stages, "_cross_model_inherited_filters"),
+            (stages, "_cross_dataset_inherited_filters"),
             (relationship_safety, "attributable_from_root"),
             (relationship_safety, "reroot_from_root"),
         ):

@@ -670,7 +670,7 @@ class TestImportDbtCli:
             dbt_project_path=str(project_dir),
             datasource="test_db",
             storage=str(storage_dir),
-            include_hidden_models=False,
+            include_hidden_datasets=False,
         )
 
         _run_import_dbt(args)

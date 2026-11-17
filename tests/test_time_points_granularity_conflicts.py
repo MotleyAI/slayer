@@ -9,7 +9,7 @@ from tests._time_points_fixtures import ev_dataset, tp_engine
 
 
 async def test_two_spellings_of_one_column_warn() -> None:
-    model = ev_dataset(name="ev_buyer", table="ev").model_copy(update={"joins": [
+    model = ev_dataset(name="ev_buyer", table="ev").model_copy(update={"relationships": [
         DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]], name="buyer"),
     ]})
     query = SlayerQuery.model_validate({
@@ -24,5 +24,5 @@ async def test_two_spellings_of_one_column_warn() -> None:
         await engine.save_dataset(model)
         resp = await engine.execute(query, dry_run=True)
     [warning] = [w for w in resp.warnings if w.kind == "whole_periods_non_nesting"]
-    assert warning.model_dump()["column"] == "buyer.created_at"
+    assert warning.model_dump()["field"] == "buyer.created_at"
     assert warning.model_dump()["granularities"] == ["week", "month"]

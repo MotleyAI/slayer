@@ -205,7 +205,7 @@ class TestNotice:
     @pytest.mark.parametrize("bound", ["updated_at", "customers.updated_at", "CUSTOMERS.Updated_At"])
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_a_same_named_column_elsewhere_names_no_variable(self, backend: str, bound: str) -> None:
-        events = events_dataset().model_copy(update={"joins": [
+        events = events_dataset().model_copy(update={"relationships": [
             DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])]})
         async with dev2215_engine(backend, datasets=[orders_dataset(), customers_dataset(), events]) as eng:
             resp = await eng.execute(q(

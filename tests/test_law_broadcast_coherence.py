@@ -94,7 +94,7 @@ async def test_ill_typed_operand_refuses_identically_in_both_phrasings(exec_engi
     typed refusal must not depend on phrasing (formula vs separate measures).
     The rm-grain pair sample excludes part_city for exactly this reason."""
     kwargs: dict = {"dimensions": ["region"], "time_dimensions": month_td()}
-    refusal = r"partition_by column 'city' is not a query dimension"
+    refusal = r"partition_by field 'city' is not a query dimension"
     as_formula = q(**kwargs, metrics=[
         DatasetMetric(
             expression=f"{OPERANDS['part_city']} + {OPERANDS['plain']}",

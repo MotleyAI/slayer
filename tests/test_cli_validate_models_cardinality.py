@@ -103,7 +103,7 @@ def _setup(
 def _args(store: str, **kw) -> SimpleNamespace:
     base = dict(
         datasource="ds",
-        model=None,
+        dataset=None,
         cardinality=False,
         persist_cardinality=False,
         format="text",
@@ -245,7 +245,7 @@ def test_json_join_safety_reports_unproven_join(workspace: Path, capsys) -> None
     data = json.loads(capsys.readouterr().out)
     (finding,) = [f for f in data["relationship_safety"] if f["dataset"] == "risky"]
     assert finding["data_source"] == "ds"
-    assert finding["target_model"] == "customers"
+    assert finding["to"] == "customers"
     assert "unproven" in finding["message"]
     assert finding["forward_provably_to_one"] is False
 
@@ -275,15 +275,15 @@ def test_json_serialises_drift_entries(workspace: Path, capsys) -> None:
 
 def test_model_scopes_both_sections(workspace: Path, capsys) -> None:
     store = _setup(workspace, drift_orders=True, drift_customers=True)
-    _run_validate_datasets(_args(store, model="orders", cardinality=True, format="json"))
+    _run_validate_datasets(_args(store, dataset="orders", cardinality=True, format="json"))
     data = json.loads(capsys.readouterr().out)
     assert {e["dataset_name"] for e in data["drift"]} == {"orders"}
-    assert {f["model"] for f in data["cardinality"]["findings"]} == {"orders"}
+    assert {f["dataset"] for f in data["cardinality"]["findings"]} == {"orders"}
 
 
 def test_model_scopes_force_clean_mutations(workspace: Path, capsys) -> None:
     store = _setup(workspace, drift_orders=True, drift_customers=True)
-    _run_validate_datasets(_args(store, model="orders", force_clean=True, yes=True))
+    _run_validate_datasets(_args(store, dataset="orders", force_clean=True, yes=True))
     capsys.readouterr()
     storage = YAMLStorage(base_dir=store)
     orders = run_sync(storage.get_dataset("orders", data_source="ds"))
@@ -295,14 +295,14 @@ def test_model_scopes_force_clean_mutations(workspace: Path, capsys) -> None:
 def test_force_clean_ignores_out_of_scope_residual(workspace: Path, capsys) -> None:
     """Drift on a model outside --model must not print, nor force exit 1."""
     store = _setup(workspace, drift_orders=True, drift_customers=True)
-    _run_validate_datasets(_args(store, model="orders", force_clean=True, yes=True))
+    _run_validate_datasets(_args(store, dataset="orders", force_clean=True, yes=True))
     out = capsys.readouterr().out
     assert "ghost_c" not in out
 
 
 def test_unknown_model_fails_fast(workspace: Path, capsys) -> None:
     store = _setup(workspace)
-    args = _args(store, model="nope")
+    args = _args(store, dataset="nope")
     with pytest.raises(SystemExit) as exc:
         _run_validate_datasets(args)
     assert exc.value.code == 1
@@ -322,7 +322,7 @@ def test_model_resolves_across_datasources(workspace: Path, capsys) -> None:
     store = _setup(workspace, ds_name="ds")
     _setup(workspace, ds_name="ds2", store=store)
     _run_validate_datasets(
-        _args(store, datasource=None, model="orders", cardinality=True, format="json")
+        _args(store, datasource=None, dataset="orders", cardinality=True, format="json")
     )
     data = json.loads(capsys.readouterr().out)
     sources = {f["data_source"] for f in data["cardinality"]["findings"]}
@@ -340,7 +340,7 @@ def test_model_present_in_only_one_datasource_does_not_fail(
         fields=[DatasetField(name="id", sql="id", datatype=DataType.INT, primary_key=True)],
     )))
     _run_validate_datasets(
-        _args(store, datasource=None, model="solo", cardinality=True, format="json")
+        _args(store, datasource=None, dataset="solo", cardinality=True, format="json")
     )
     data = json.loads(capsys.readouterr().out)
     assert data["cardinality"]["findings"] == []
@@ -430,7 +430,7 @@ def test_datasource_failure_keeps_json_parseable(
         _run_validate_datasets(args)
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {
-        "drift": [], "join_safety": [], "cardinality": None,
+        "drift": [], "relationship_safety": [], "cardinality": None,
     }
     assert "ds2" in captured.err
 

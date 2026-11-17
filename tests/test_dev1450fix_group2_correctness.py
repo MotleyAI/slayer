@@ -245,7 +245,7 @@ def test_cyclic_dotted_star_rejected():
     bundle = _cyclic_bundle()
     scope = DatasetScope(population=bundle.population)
     parsed = parse_expr("count(a.b.a.*)")
-    with pytest.raises(ValueError, match="Circular join"):
+    with pytest.raises(ValueError, match="Circular relationship path"):
         bind_expr(parsed, scope=scope, bundle=bundle)
 
 

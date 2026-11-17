@@ -59,7 +59,7 @@ class TestSaveRefusesInvalidFilters:
         model = _with_total("orders_tot")
         with pytest.raises(DatasetFilterError) as exc:
             await _save(engine, model, door=door)
-        assert "model filter 'tot > 100'" in str(exc.value)
+        assert "dataset filter 'tot > 100'" in str(exc.value)
         assert await engine.storage.get_dataset("orders_tot", data_source="test") is None
 
     async def test_filter_on_joined_windowed_column(self, engine: SlayerQueryEngine, door):
@@ -100,4 +100,4 @@ class TestQueryReadsInvalidStoredFilter:
         query = SlayerQuery.model_validate(body)
         with pytest.raises(DatasetFilterError) as exc:
             await stored.execute(query)
-        assert "model filter 'tot > 100'" in str(exc.value)
+        assert "dataset filter 'tot > 100'" in str(exc.value)

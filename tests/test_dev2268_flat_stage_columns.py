@@ -174,7 +174,7 @@ async def test_a_quoted_segment_in_the_wrong_case_gives_no_hint(ref: str, refere
 
 
 async def test_a_routing_short_form_is_not_pre_empted_by_a_flat_column() -> None:
-    flat = orders().model_copy(update={"columns": [
+    flat = orders().model_copy(update={"fields": [
         *orders().fields, DatasetField(name="regions__name", sql="status", datatype=DataType.TEXT)]})
     models = with_datasets(flat, customers(DatasetRelationship(to="regions", join_pairs=_REGION_PAIRS)))
     async with shop("sqlite", models) as engine:
@@ -190,7 +190,7 @@ async def test_a_downstream_stages_dotted_spelling_names_the_flat_column() -> No
 
 
 async def test_a_downstream_dotted_spelling_shaped_like_a_list_element_names_the_flat_column() -> None:
-    valued = customers().model_copy(update={"columns": [
+    valued = customers().model_copy(update={"fields": [
         *customers().fields, DatasetField(name="value", sql="credit", datatype=DataType.DOUBLE)]})
     stage = {**_S, "dimensions": ["customers.value"]}
     err = await _refused([q(**stage), q(population="s", dimensions=["s.customers.value"])],

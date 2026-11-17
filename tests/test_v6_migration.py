@@ -79,7 +79,7 @@ def test_v6_payload_round_trips_with_sampled_value() -> None:
     m = SlayerDataset.model_validate(raw)
     assert m.fields[0].sampled == "0.0 .. 9999.99"
     dumped = m.model_dump(mode="json", exclude_none=True)
-    assert dumped["columns"][0]["sampled"] == "0.0 .. 9999.99"
+    assert dumped["fields"][0]["sampled"] == "0.0 .. 9999.99"
 
 
 # ---------------------------------------------------------------------------

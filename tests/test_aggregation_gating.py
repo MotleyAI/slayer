@@ -419,7 +419,7 @@ class TestDev1576UnknownVsDisallowed:
         # keep the existing 'not applicable to <TYPE> column' message.
         orders = _orders_with_status()
         customers = _customers_dataset()
-        with pytest.raises(ValueError, match=r"not applicable to TEXT column"):
+        with pytest.raises(ValueError, match=r"not applicable to TEXT field"):
             await _generate_sql(
                 orders=orders,
                 customers=customers,

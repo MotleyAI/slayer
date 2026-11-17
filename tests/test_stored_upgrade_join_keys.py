@@ -17,6 +17,7 @@ from slayer.core.models import DatasourceConfig
 from slayer.database import engine_factory
 from slayer.storage import migrations as mig
 from slayer.storage.base import _RAW_PASS
+from slayer.storage.document_keys import keys_for
 from tests._stored_upgrade_fixtures import (
     AMOUNT_BY_REGION,
     BACKENDS,
@@ -48,7 +49,8 @@ def shop_ds(request: pytest.FixtureRequest, tmp_path: Path) -> Generator[Datasou
 
 
 def _hidden(doc: dict, name: str) -> dict:
-    [col] = [c for c in doc["columns"] if c.get("name") == name]
+    """The raw field ``name`` of a stored dataset, spelled as its version stores it."""
+    [col] = [c for c in doc[keys_for(entity="SlayerModel", version=doc.get("version", 1)).fields] if c.get("name") == name]
     return col
 
 
@@ -78,7 +80,7 @@ class TestSourceSide:
         doc = await raw_doc(storage, "orders")
         assert doc["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
         assert _hidden(doc, "customer_id")["hidden"] is True
-        assert _hidden(doc, "customer_id")["type"] == "INT"
+        assert _hidden(doc, "customer_id")["datatype"] == "INT"
 
     @pytest.mark.parametrize("backend", BACKENDS)
     async def test_query_returns_the_0_10_2_rows_with_cast_free_on(self, tmp_path, shop_ds: DatasourceConfig, backend):
@@ -110,7 +112,7 @@ class TestSourceSide:
                                   models=[orders_v10(declare_fk=False), customers])
         await storage.get_dataset("orders", data_source=DS)
         doc = await raw_doc(storage, "orders")
-        assert _hidden(doc, "customer_id").get("type", "TEXT") == "TEXT"
+        assert _hidden(doc, "customer_id").get("datatype", "TEXT") == "TEXT"
 
 
 class TestTargetSide:
@@ -124,7 +126,7 @@ class TestTargetSide:
         assert customers is not None
         col = column_of(customers, "id")
         assert col.hidden is True
-        assert _hidden(await raw_doc(storage, "customers"), "id")["type"] == "INT"
+        assert _hidden(await raw_doc(storage, "customers"), "id")["datatype"] == "INT"
         resp = await run(storage, REGION_QUERY)
         assert by_dimension(resp, dim_suffix="region") == AMOUNT_BY_REGION
 
@@ -136,7 +138,7 @@ class TestTargetSide:
         resp = await run(storage, REGION_QUERY)
         assert by_dimension(resp, dim_suffix="region") == AMOUNT_BY_REGION
         orders = await raw_doc(storage, "orders")
-        assert [c["name"] for c in orders["columns"]].count("id") == 0
+        assert [c["name"] for c in orders["fields"]].count("id") == 0
 
     async def test_query_backed_target_is_untouched(self, tmp_path, shop_ds: DatasourceConfig):
         qb = {"version": 10, "name": "customers", "data_source": DS,

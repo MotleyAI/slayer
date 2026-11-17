@@ -9,6 +9,8 @@ if ANY occurrence of $N targets a non-text column, $N is in the result set.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from slayer.core.enums import DataType
@@ -544,8 +546,6 @@ def test_case_distinct_collision_keeps_first_and_warns(caplog):
     case-folded indexing — last-writer-wins would silently swap the type and
     let the empty-string rewrite mis-fire. _record_column_type keeps the
     first entry and warns once."""
-    import logging
-
     model = SlayerDataset(
         name="case_distinct",
         data_source="jaffle",

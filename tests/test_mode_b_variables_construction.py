@@ -47,8 +47,8 @@ def test_literal_bound_beside_placeholder_still_checked() -> None:
 @pytest.mark.parametrize(("time_dimension", "what"), [
     ({"field": "ordered_at", "granularity": "{g}"}, "granularity"),
     ("{g}(ordered_at)", "granularity"),
-    ({"field": "{col}", "granularity": "month"}, "column"),
-    ("date_trunc('month', {col})", "column"),
+    ({"field": "{col}", "granularity": "month"}, "field"),
+    ("date_trunc('month', {col})", "field"),
 ])
 def test_granularity_or_column_placeholder_rejected(time_dimension, what: str) -> None:
     with pytest.raises(ValueError) as info:

@@ -151,7 +151,7 @@ class TestConstructionRejects:
             )
         msg = str(exc.value)
         assert "distinct_dimension_values=False" in msg
-        assert "measures" in msg.lower()
+        assert "metrics" in msg.lower()
 
     def test_dimensions_and_time_dimensions_both_empty_rejected(self) -> None:
         """Case 2: both empty → nothing to project → reject."""
@@ -522,7 +522,7 @@ class TestErrorMessage:
                 metrics=[count_measure],
                 distinct_dimension_values=False,
             )
-        assert "measures" in str(exc.value).lower()
+        assert "metrics" in str(exc.value).lower()
 
 
 # ---------------------------------------------------------------------------

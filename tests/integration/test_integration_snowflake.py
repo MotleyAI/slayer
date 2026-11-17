@@ -44,6 +44,7 @@ from slayer.database import client, engine_factory
 from slayer.database.client import ResultColumnType
 from slayer.sql.dialects import SnowflakeDialect
 from slayer.sql.dialects.reflection import TableLocation
+from slayer.storage.base import StorageBackend
 from slayer.storage.yaml_storage import YAMLStorage
 from tests._cast_fixtures import check_try_cast_targets
 from tests._dev2120_fixtures import (
@@ -74,7 +75,6 @@ pytest.importorskip("snowflake.sqlalchemy")
 import snowflake.connector  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 import snowflake.connector.errors as sf_errors  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
 from snowflake.connector.errors import ProgrammingError  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
-from slayer.storage.base import StorageBackend
 
 _TOML_PATH = pathlib.Path("~/.snowflake/connections.toml").expanduser()
 _CONNECTION_NAME = os.environ.get("SLAYER_SNOWFLAKE_CONNECTION", "slayer_test")

@@ -10,6 +10,7 @@ new ``--id`` flag and the ``forget`` type flip.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import tempfile
@@ -19,6 +20,9 @@ from collections.abc import Generator, Iterator
 import pytest
 
 from slayer.cli import main as cli_main
+from slayer.core.enums import DataType
+from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
+from slayer.storage.yaml_storage import YAMLStorage
 
 
 @contextmanager
@@ -42,12 +46,6 @@ def _exit_code(*argv: str) -> int:
 
 
 def _seed(storage_dir: str) -> None:
-    import asyncio
-
-    from slayer.core.enums import DataType
-    from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
-    from slayer.storage.yaml_storage import YAMLStorage
-
     storage = YAMLStorage(base_dir=storage_dir)
     loop = asyncio.new_event_loop()
     try:

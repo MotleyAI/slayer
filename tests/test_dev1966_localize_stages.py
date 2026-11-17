@@ -70,5 +70,5 @@ class TestModelScope:
     def test_labels_name_the_stage_and_its_model(self) -> None:
         _, displays = localize_stages(
             [_x(), query(population="x", metrics=[m("sum(a)", "t")])], dataset="cust_rev")
-        assert displays["__slayer_qb__cust_rev__x"].label == "stage 'x' of model 'cust_rev'"
-        assert displays["cust_rev"].label == "model 'cust_rev'"
+        assert displays["__slayer_qb__cust_rev__x"].label == "stage 'x' of dataset 'cust_rev'"
+        assert displays["cust_rev"].label == "dataset 'cust_rev'"

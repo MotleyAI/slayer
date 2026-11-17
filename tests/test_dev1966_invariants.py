@@ -69,7 +69,7 @@ class TestStageBundleCollision:
         assert sorted(names) == ["c", "customers", "orders"]
 
     def test_an_extended_host_replaces_its_base(self) -> None:
-        extended = orders_dataset().model_copy(update={"columns": [
+        extended = orders_dataset().model_copy(update={"fields": [
             *orders_dataset().fields, DatasetField(name="double_amount", sql="amount * 2", datatype=DataType.DOUBLE)]})
         out = stage_bundle_with_siblings(
             bundle=_bundle(), source_dataset=extended, sibling_schemas={}, data_source="test")
@@ -135,9 +135,9 @@ class TestEmissionLaw:
         seen: List[tuple] = []
         real = SQLGenerator._emit_relation
 
-        def spy(self, *, model, alias, bundle):
-            seen.append((model.sql_table, frozenset(self._gen_stage_reads)))
-            return real(self, dataset=model, alias=alias, bundle=bundle)
+        def spy(self, *, dataset, alias, bundle):
+            seen.append((dataset.sql_table, frozenset(self._gen_stage_reads)))
+            return real(self, dataset=dataset, alias=alias, bundle=bundle)
 
         monkeypatch.setattr(SQLGenerator, "_emit_relation", spy)
         queries = {

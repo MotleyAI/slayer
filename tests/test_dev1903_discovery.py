@@ -340,7 +340,7 @@ class TestReaggregationInComputedDimension:
 
     @pytest.mark.parametrize(("kw", "location"), [
         pytest.param({"metrics": [DatasetMetric(expression=_R, name="r")]},
-                     "measure 'r'", id="dual-role-measure"),
+                     "metric 'r'", id="dual-role-measure"),
         pytest.param({"metrics": [DatasetMetric(expression="sum(amount)", name="s")],
                       "order": [{"field": _R, "direction": "asc"}]},
                      "order item", id="dual-role-order"),
@@ -350,7 +350,7 @@ class TestReaggregationInComputedDimension:
         bundle = _bundle(dev1847_datasets())
         with pytest.raises(PartitionKeyError) as ei:
             plan_query(query=query, bundle=bundle)
-        assert "partition_by column 'region' is not a query dimension" in ei.value.summary
+        assert "partition_by field 'region' is not a query dimension" in ei.value.summary
         assert ei.value.location is not None
         assert ei.value.location.startswith(location)
 

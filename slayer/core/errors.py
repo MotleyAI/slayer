@@ -6,6 +6,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING, Any, List, Sequence, Tuple
 
+from typing_extensions import deprecated
+
 from slayer.core.enums import TimeGranularity
 
 if TYPE_CHECKING:
@@ -1338,3 +1340,116 @@ class QueryBackedCycleError(SlayerError, ValueError):
             summary=f"Query-backed datasets reference each other in a cycle: {' -> '.join(self.path)}.",
             suggestion="Break the cycle so no query-backed dataset reads itself.",
         ))
+
+_RENAMED_CLASSES = {
+    "AmbiguousJoinPathError": "AmbiguousRelationshipPathError",
+    "AmbiguousModelError": "AmbiguousDatasetError",
+    "CanonicalAliasShadowsColumnError": "CanonicalAliasShadowsFieldError",
+    "CircularJoinPathError": "CircularRelationshipPathError",
+    "ColumnCycleError": "DatasetFieldCycleError",
+    "ColumnSqlStatementError": "FieldSqlStatementError",
+    "DerivedColumnAmbiguousError": "DerivedFieldAmbiguousError",
+    "DerivedColumnCircularError": "DerivedFieldCircularError",
+    "DerivedColumnFanningError": "DerivedFieldFanningError",
+    "DuplicateMeasureNameError": "DuplicateMetricNameError",
+    "JoinKeyError": "RelationshipKeyError",
+    "JoinTargetCaseError": "RelationshipTargetCaseError",
+    "MeasureCycleError": "MetricCycleError",
+    "MeasureNameCollidesWithColumnError": "MetricNameCollidesWithFieldError",
+    "MeasureRecursionLimitError": "MetricRecursionLimitError",
+    "ModelFilterCycleError": "DatasetFilterCycleError",
+    "ModelFilterError": "DatasetFilterError",
+    "ModelNotFoundError": "DatasetNotFoundError",
+    "ModelSqlValidationError": "DatasetSqlValidationError",
+    "ReservedModelNameError": "ReservedDatasetNameError",
+    "TimeDimensionColumnError": "TimeDimensionFieldError",
+    "UnknownJoinTargetError": "UnknownRelationshipTargetError",
+    "UnresolvableDimensionJoinError": "UnresolvableDimensionRelationshipError",
+    "UnresolvableOrderColumnError": "UnresolvableOrderFieldError",
+    "UnsafeJoinInputError": "UnsafeRelationshipInputError",
+}
+
+if TYPE_CHECKING:
+    @deprecated("AmbiguousJoinPathError is deprecated; use AmbiguousRelationshipPathError", category=None)
+    class AmbiguousJoinPathError(AmbiguousRelationshipPathError): ...
+
+    @deprecated("AmbiguousModelError is deprecated; use AmbiguousDatasetError", category=None)
+    class AmbiguousModelError(AmbiguousDatasetError): ...
+
+    @deprecated("CanonicalAliasShadowsColumnError is deprecated; use CanonicalAliasShadowsFieldError", category=None)
+    class CanonicalAliasShadowsColumnError(CanonicalAliasShadowsFieldError): ...
+
+    @deprecated("CircularJoinPathError is deprecated; use CircularRelationshipPathError", category=None)
+    class CircularJoinPathError(CircularRelationshipPathError): ...
+
+    @deprecated("ColumnCycleError is deprecated; use DatasetFieldCycleError", category=None)
+    class ColumnCycleError(DatasetFieldCycleError): ...
+
+    @deprecated("ColumnSqlStatementError is deprecated; use FieldSqlStatementError", category=None)
+    class ColumnSqlStatementError(FieldSqlStatementError): ...
+
+    @deprecated("DerivedColumnAmbiguousError is deprecated; use DerivedFieldAmbiguousError", category=None)
+    class DerivedColumnAmbiguousError(DerivedFieldAmbiguousError): ...
+
+    @deprecated("DerivedColumnCircularError is deprecated; use DerivedFieldCircularError", category=None)
+    class DerivedColumnCircularError(DerivedFieldCircularError): ...
+
+    @deprecated("DerivedColumnFanningError is deprecated; use DerivedFieldFanningError", category=None)
+    class DerivedColumnFanningError(DerivedFieldFanningError): ...
+
+    @deprecated("DuplicateMeasureNameError is deprecated; use DuplicateMetricNameError", category=None)
+    class DuplicateMeasureNameError(DuplicateMetricNameError): ...
+
+    @deprecated("JoinKeyError is deprecated; use RelationshipKeyError", category=None)
+    class JoinKeyError(RelationshipKeyError): ...
+
+    @deprecated("JoinTargetCaseError is deprecated; use RelationshipTargetCaseError", category=None)
+    class JoinTargetCaseError(RelationshipTargetCaseError): ...
+
+    @deprecated("MeasureCycleError is deprecated; use MetricCycleError", category=None)
+    class MeasureCycleError(MetricCycleError): ...
+
+    @deprecated("MeasureNameCollidesWithColumnError is deprecated; use MetricNameCollidesWithFieldError", category=None)
+    class MeasureNameCollidesWithColumnError(MetricNameCollidesWithFieldError): ...
+
+    @deprecated("MeasureRecursionLimitError is deprecated; use MetricRecursionLimitError", category=None)
+    class MeasureRecursionLimitError(MetricRecursionLimitError): ...
+
+    @deprecated("ModelFilterCycleError is deprecated; use DatasetFilterCycleError", category=None)
+    class ModelFilterCycleError(DatasetFilterCycleError): ...
+
+    @deprecated("ModelFilterError is deprecated; use DatasetFilterError", category=None)
+    class ModelFilterError(DatasetFilterError): ...
+
+    @deprecated("ModelNotFoundError is deprecated; use DatasetNotFoundError", category=None)
+    class ModelNotFoundError(DatasetNotFoundError): ...
+
+    @deprecated("ModelSqlValidationError is deprecated; use DatasetSqlValidationError", category=None)
+    class ModelSqlValidationError(DatasetSqlValidationError): ...
+
+    @deprecated("ReservedModelNameError is deprecated; use ReservedDatasetNameError", category=None)
+    class ReservedModelNameError(ReservedDatasetNameError): ...
+
+    @deprecated("TimeDimensionColumnError is deprecated; use TimeDimensionFieldError", category=None)
+    class TimeDimensionColumnError(TimeDimensionFieldError): ...
+
+    @deprecated("UnknownJoinTargetError is deprecated; use UnknownRelationshipTargetError", category=None)
+    class UnknownJoinTargetError(UnknownRelationshipTargetError): ...
+
+    @deprecated(
+        "UnresolvableDimensionJoinError is deprecated; use UnresolvableDimensionRelationshipError", category=None,
+    )
+    class UnresolvableDimensionJoinError(UnresolvableDimensionRelationshipError): ...
+
+    @deprecated("UnresolvableOrderColumnError is deprecated; use UnresolvableOrderFieldError", category=None)
+    class UnresolvableOrderColumnError(UnresolvableOrderFieldError): ...
+
+    @deprecated("UnsafeJoinInputError is deprecated; use UnsafeRelationshipInputError", category=None)
+    class UnsafeJoinInputError(UnsafeRelationshipInputError): ...
+
+
+from slayer.core import vocabulary  # noqa: E402  # ALLOW(import-not-top): circular — vocabulary imports errors
+
+
+def __getattr__(name: str) -> Any:
+    return vocabulary.renamed_name(name, namespace=globals(), renames=_RENAMED_CLASSES)

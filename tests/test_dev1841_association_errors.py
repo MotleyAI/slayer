@@ -110,10 +110,10 @@ class TestUnsafeInputInAssociate:
         error_query = error_q(dimensions=["status"], metrics=[self.VIP])
         assoc_query = assoc_q(dimensions=["status"], metrics=[self.VIP])
         # Reference: the broadcast/error path already rejects the unsafe input.
-        with pytest.raises(ValueError, match="unproven join hop"):
+        with pytest.raises(ValueError, match="unproven relationship hop"):
             await engine.execute(error_query)
         # The associate path must inherit the identical rejection.
-        with pytest.raises(ValueError, match="unproven join hop"):
+        with pytest.raises(ValueError, match="unproven relationship hop"):
             await engine.execute(assoc_query)
 
 

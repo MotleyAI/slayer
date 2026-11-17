@@ -99,7 +99,7 @@ class TestCanonicalisedOnLoad:
         assert orders.relationships[0].join_pairs == [["customer_id", "id"]]
         stored = await _stored(storage, "orders")
         assert stored["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert stored["joins"][0]["join_pairs"] == [["customer_id", "id"]]
+        assert stored["relationships"][0]["join_pairs"] == [["customer_id", "id"]]
 
     async def test_target_side_physical_spelling_rewritten(self, seed: Seeder):
         storage = await seed([
@@ -155,7 +155,7 @@ class TestLeftAlone:
         assert orders is not None
         stored = await _stored(storage, "orders")
         assert stored["version"] == mig.CURRENT_VERSIONS["SlayerModel"]
-        assert stored["joins"][0]["join_pairs"] == [["customer_id", "id"]]
+        assert stored["relationships"][0]["join_pairs"] == [["customer_id", "id"]]
 
     async def test_declared_name_wins_over_a_rename(self, seed: Seeder):
         # ``cust_fk`` is both a declared name and another column's rename.

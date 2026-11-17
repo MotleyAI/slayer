@@ -68,7 +68,7 @@ class TestSpineListedWithItsWiredModels:
         server = create_mcp_server(storage=storage)
         summary = await _call(server, name="datasets_summary", arguments={"datasource_name": "test"})
         spine_block = summary[summary.index("## `time_spine`"):]
-        assert "Built-in virtual model" in spine_block
+        assert "Built-in virtual dataset" in spine_block
         assert "inspect(reference='test.time_spine', entity_type='dataset')" in spine_block
         assert "order_date" not in spine_block
         detail = await _call(server, name="inspect", arguments={

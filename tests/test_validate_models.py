@@ -119,7 +119,7 @@ def _delete_for(dataset_name: str, entries: Sequence[DriftReportEntry]) -> objec
 
 def _retype_for(entries: Sequence[DriftReportEntry], column: str) -> dict:
     (finding,) = [d for e in entries if (d := e.model_dump(mode="json")).get("finding") == "retype"
-                  and d.get("column") == column]
+                  and d.get("field") == column]
     return finding
 
 
@@ -182,7 +182,7 @@ class TestDiffSqlTableModel:
         assert entry.dataset_name == "orders"
         assert entry.remove.fields == ["status"]
         assert dropped == {"status"}
-        assert any(r.target == "column:status" for r in entry.reasons)
+        assert any(r.target == "field:status" for r in entry.reasons)
 
     def test_live_table_missing(self) -> None:
         model = _orders_dataset()

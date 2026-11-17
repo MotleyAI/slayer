@@ -391,7 +391,7 @@ class TestHttpBodyShape:
         # Each measure landed as a dict, not a bare string.
         for m in body["metrics"]:
             assert isinstance(m, dict)
-            assert m.get("formula") == "sum(amount)"
+            assert m.get("expression") == "sum(amount)"
 
     # --- SlayerQuery --------------------------------------------------- #
 

@@ -122,7 +122,7 @@ class TestStructuredDeprecation:
         [payload] = q.deprecated_inputs
         assert payload is payload_of(w)
         assert (payload.kind, payload.removal) == ("deprecated_input", "3.0")
-        assert "source_model" in payload.old
+        assert "population" in payload.old
         assert "extensions" in payload.new
 
     def test_a_stored_document_carries_none(self, recorded) -> None:

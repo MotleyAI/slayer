@@ -159,9 +159,9 @@ class TestShortFormRouting:
 
     def test_routes_never_cross_the_spine(self) -> None:
         ts = DatasetField(name="at", datatype=DataType.TIMESTAMP)
-        orders = _m("orders").model_copy(update={"columns": [*_m("orders").fields, ts],
+        orders = _m("orders").model_copy(update={"fields": [*_m("orders").fields, ts],
                                                   "default_time_dimension": "at"})
-        returns = _m("returns").model_copy(update={"columns": [*_m("returns").fields, ts],
+        returns = _m("returns").model_copy(update={"fields": [*_m("returns").fields, ts],
                                                     "default_time_dimension": "at"})
         models = _by(orders, returns, spine_dataset(data_source=DS))
         with pytest.raises(UnresolvableDimensionRelationshipError) as ei:
@@ -179,10 +179,10 @@ class TestFacadeCatalog:
 
     def test_paths_never_cross_the_spine(self) -> None:
         ts = DatasetField(name="at", datatype=DataType.TIMESTAMP)
-        orders = _m("orders").model_copy(update={"columns": [*_m("orders").fields, ts],
+        orders = _m("orders").model_copy(update={"fields": [*_m("orders").fields, ts],
                                                   "default_time_dimension": "at"})
         returns = _m("returns", cols=("kind",)).model_copy(update={
-            "columns": [*_m("returns", cols=("kind",)).fields, ts], "default_time_dimension": "at"})
+            "fields": [*_m("returns", cols=("kind",)).fields, ts], "default_time_dimension": "at"})
         catalog = build_catalog(datasets_by_datasource={DS: [orders, returns, spine_dataset(data_source=DS)]})
         table = next(t for s in catalog.schemas for t in s.tables if t.name == "orders")
         assert not any("returns" in d.name for d in table.dimensions)

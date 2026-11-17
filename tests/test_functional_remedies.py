@@ -33,17 +33,17 @@ def test_derived_column_fanning_remedy() -> None:
 
 def test_unproven_arity_remedy() -> None:
     msg = _unproven_arity_message(field="li_qty", dataset="orders", hop="line_items")
-    assert "(<aggregation>(line_items.<column>))" in msg
+    assert "(<aggregation>(line_items.<field>))" in msg
     _assert_no_colon_agg(msg)
 
 
 async def test_cross_hop_source_remedy() -> None:
     query = orders_q(metrics=[
         DatasetMetric(expression="sum(amount - customers.regions.bad_pop)", name="m")])
-    with pytest.raises(ValueError, match="Aggregate the target column directly") as ei:
+    with pytest.raises(ValueError, match="Aggregate the target field directly") as ei:
         await gen(query)
     msg = str(ei.value)
-    assert re.search(r"\(<aggregation>\([\w.]+\.<column>\)\)", msg), msg
+    assert re.search(r"\(<aggregation>\([\w.]+\.<field>\)\)", msg), msg
     _assert_no_colon_agg(msg)
 
 
@@ -51,7 +51,7 @@ async def test_missing_parameter_remedy_at_bind() -> None:
     with pytest.raises(ValueError, match="requires parameter 'p'") as ei:
         await orders_agg_sql("percentile(amount)")
     msg = str(ei.value)
-    assert "'percentile(measure, p=column)'" in msg
+    assert "'percentile(metric, p=field)'" in msg
     _assert_no_colon_agg(msg)
 
 
@@ -64,7 +64,7 @@ def test_missing_parameter_remedy_in_generator() -> None:
     with pytest.raises(ValueError, match="requires parameter 'p'") as ei:
         generator._build_percentile(spec)
     msg = str(ei.value)
-    assert "'percentile(measure, p=column)'" in msg
+    assert "'percentile(metric, p=field)'" in msg
     _assert_no_colon_agg(msg)
 
 
@@ -72,8 +72,8 @@ def test_entity_ref_expression_remedy() -> None:
     with pytest.raises(ValueError) as ei:
         split_entity_agg_ref("sum(a - b)")
     msg = str(ei.value)
-    assert "`agg(column)`" in msg
-    assert "column:agg" not in msg
+    assert "`agg(field)`" in msg
+    assert "field:agg" not in msg
 
 
 def test_colon_in_name_reason() -> None:

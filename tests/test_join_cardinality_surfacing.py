@@ -134,7 +134,7 @@ class TestSearchGraphEdge:
             )
             search_graph.clear_cache()
             ids = await search_graph.get_filtered_ids(
-                "MATCH (m:Model {id: 'ds.orders'})-[r:JOINS]->(t:Model) "
+                "MATCH (m:Dataset {id: 'ds.orders'})-[r:RELATIONSHIPS]->(t:Dataset) "
                 "WHERE r.cardinality = 'many_to_one' RETURN t.id AS id",
                 storage,
             )
@@ -195,9 +195,9 @@ class TestNoEmbeddingChurn:
         assert render_dataset_text(dataset=carded) == render_dataset_text(dataset=plain)
 
     def test_unique_not_in_column_embedding_text(self) -> None:
-        model = _orders_dataset(cardinality=None, email_unique=False)
+        dataset = _orders_dataset(cardinality=None, email_unique=False)
         plain_col = DatasetField(name="email", sql="email", datatype=DataType.TEXT, unique=False)
         uniq_col = DatasetField(name="email", sql="email", datatype=DataType.TEXT, unique=True)
-        assert render_field_text(dataset=model, field=uniq_col) == render_field_text(
-            dataset=model, field=plain_col
+        assert render_field_text(dataset=dataset, field=uniq_col) == render_field_text(
+            dataset=dataset, field=plain_col
         )

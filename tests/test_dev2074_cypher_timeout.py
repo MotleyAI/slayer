@@ -19,9 +19,9 @@ from slayer.storage.yaml_storage import YAMLStorage
 
 pytestmark = pytest.mark.skipif(not is_available(), reason="ladybug not installed")
 
-# Walks every JOINS path of up to 30 hops: several seconds over the cycles below.
-RUNAWAY = "MATCH (a)-[:JOINS*]->(b) RETURN DISTINCT b.id AS id"
-MODELS = "MATCH (m:Model) RETURN m.id AS id"
+# Walks every RELATIONSHIPS path of up to 30 hops: several seconds over the cycles below.
+RUNAWAY = "MATCH (a)-[:RELATIONSHIPS*]->(b) RETURN DISTINCT b.id AS id"
+MODELS = "MATCH (m:Dataset) RETURN m.id AS id"
 DATASOURCES = "MATCH (d:Datasource) RETURN d.id AS id"
 
 #: m0 ⇄ m1 ⇄ m2 plus m2 → m0: dense enough that RUNAWAY takes seconds untimed.

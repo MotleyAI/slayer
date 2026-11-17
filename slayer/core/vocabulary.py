@@ -1,22 +1,30 @@
 """The pre-2.0 vocabulary: its rename tables, the per-document conversion of fresh input (one deprecation per old
-spelling per document), and the silent conversion of stored documents."""
+spelling per document), the silent conversion of stored documents, and the deprecated Python twins of old names."""
 
 from __future__ import annotations
 
+import functools
+import inspect
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-from slayer.core.deprecation import deprecated_input
+from pydantic import BaseModel
+
+from slayer.core import deprecation
 from slayer.core.errors import SpellingConflictError
-from slayer.core.warnings import DeprecatedInputWarning
+
+if TYPE_CHECKING:
+    from slayer.core.warnings import DeprecatedInputWarning
 
 __all__ = [
-    "AGGREGATION_KEYS", "DATASET_KEYS", "EXTENSION_KEYS", "FIELD_KEYS", "FIELD_REF_KEYS", "METRIC_KEYS",
-    "ORDER_ITEM_KEYS", "QUERY_KEYS", "REFINEMENT_KEYS", "RELATIONSHIP_KEYS", "TIME_DIMENSION_KEYS",
-    "SpellingConflictError", "Spellings", "converted_document", "current_spellings", "one_document",
-    "renamed_input", "stored_dataset", "stored_query",
+    "AGGREGATION_KEYS", "COVERAGE_KEYS", "DATASET_KEYS", "EXTENSION_KEYS", "FIELD_KEYS", "FIELD_REF_KEYS",
+    "METRIC_KEYS", "ORDER_ITEM_KEYS", "QUERY_KEYS", "RECOMMENDATION_KEYS", "REFINEMENT_KEYS", "RELATIONSHIP_KEYS",
+    "RESPONSE_ATTRIBUTE_KEYS", "SOURCE_ORIGIN_KEYS", "TIME_DIMENSION_KEYS", "WARNING_KEYS",
+    "SpellingConflictError", "Spellings", "attribute_used", "bridge_renamed_hooks", "converted_document",
+    "current_spellings", "deprecated_spelling", "method_twin", "name_twins", "one_document", "renamed_arguments",
+    "renamed_input", "renamed_name", "same_ignoring_deprecations", "stored_dataset", "stored_query",
 ]
 
 DATASET_KEYS = {"columns": "fields", "measures": "metrics", "joins": "relationships"}
@@ -30,8 +38,132 @@ REFINEMENT_KEYS = {"measures": "metrics", "filters": "filter"}
 TIME_DIMENSION_KEYS = {"dimension": "field", "column": "field"}
 ORDER_ITEM_KEYS = {"column": "field", "raw_formula": "raw_expression"}
 FIELD_REF_KEYS = {"model": "dataset"}
+SOURCE_ORIGIN_KEYS = {"agg_column_names": "agg_field_names"}
+RESPONSE_ATTRIBUTE_KEYS = {"measures": "metrics"}
+RECOMMENDATION_KEYS = {"root_model": "population"}
+COVERAGE_KEYS = {"model_name": "dataset_name"}
+#: A warning payload's pre-2.0 keys, by its ``kind``.
+WARNING_KEYS: dict[str, dict[str, str]] = {
+    "associated": {"measure": "metric"},
+    "broadcast": {"measure": "metric"},
+    "broken_dependent": {"model": "dataset", "column": "field"},
+    "degenerate_reaggregation": {"measure": "metric"},
+    "extension_field_inlined": {"column": "field"},
+    "library_name_shadow": {"model": "dataset"},
+    "name_collision": {"model": "dataset"},
+    "narrowed_access": {"model": "dataset"},
+    "semi_join_pushed": {"measure": "metric"},
+    "spine_relationship_dropped": {"model": "dataset", "join": "relationship"},
+    "unrelated_dataset": {"measures": "metrics"},
+    "whole_periods_non_nesting": {"column": "field"},
+}
 
 _T = TypeVar("_T")
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _deprecation(old: str, new: str) -> DeprecatedInputWarning:
+    """The one tagged site of every pre-2.0 vocabulary spelling and name."""
+    return deprecation.deprecated_input(old, new, removal="3.0")
+
+
+def same_ignoring_deprecations(a: BaseModel, b: BaseModel) -> bool:
+    """``a == b`` (same type) disregarding the pre-2.0 spellings each was read from."""
+    def private(model: BaseModel) -> dict[str, Any]:
+        return {k: v for k, v in (model.__pydantic_private__ or {}).items() if k != "_deprecated_inputs"}
+
+    return a.__dict__ == b.__dict__ and private(a) == private(b) and a.__pydantic_extra__ == b.__pydantic_extra__
+
+
+def deprecated_spelling(old: str, new: str) -> DeprecatedInputWarning:
+    """Report reading the pre-2.0 spelling ``old`` as ``new`` (a surface token, label or reference)."""
+    return _deprecation(old, new)
+
+
+def renamed_arguments(kwargs: Mapping[str, Any], *, renames: Mapping[str, str]) -> dict[str, Any]:
+    """``kwargs`` with each keyword of ``renames`` spelled its replacement; both spellings at once are refused."""
+    out = dict(kwargs)
+    for old, new in renames.items():
+        if old in out:
+            if new in out:
+                raise SpellingConflictError(old=old, new=new)
+            out[new] = out.pop(old)
+    return out
+
+
+def _with_keywords(fn: _F, renames: Mapping[str, str]) -> _F:
+    """``fn`` (sync or async) called with its keywords of ``renames`` respelled."""
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            return await fn(*args, **renamed_arguments(kwargs, renames=renames))
+
+        return cast(_F, async_wrapper)
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return fn(*args, **renamed_arguments(kwargs, renames=renames))
+
+    return cast(_F, wrapper)
+
+
+def method_twin(new: str, *, arguments: Mapping[str, str] | None = None) -> Callable[[_F], _F]:
+    """A declared pre-2.0 method stub as one deprecation, then ``self.<new>`` with its old keywords respelled."""
+    renames = dict(arguments or {})
+
+    def decorate(stub: _F) -> _F:
+        @functools.wraps(stub)
+        def twin(self: Any, *args: Any, **kwargs: Any) -> Any:
+            kwargs = renamed_arguments(kwargs, renames=renames)
+            _deprecation(f"{stub.__name__}()", f"{new}()")
+            return getattr(self, new)(*args, **kwargs)
+
+        return cast(_F, twin)
+
+    return decorate
+
+
+def attribute_used(owner: object, *, old: str, new: str) -> None:
+    """Report a read or write of the pre-2.0 attribute ``old`` of ``owner``."""
+    _deprecation(f"{type(owner).__name__}.{old}", f"{type(owner).__name__}.{new}")
+
+
+def renamed_name(
+    name: str, *, namespace: Mapping[str, Any], renames: Mapping[str, str],
+    arguments: Mapping[str, Mapping[str, str]] | None = None,
+) -> Any:
+    """A module's replacement of its pre-2.0 class or function ``name``, with one deprecation; a function's old
+    keywords of ``arguments[name]`` are respelled."""
+    module = namespace["__name__"]
+    if name not in renames:
+        raise AttributeError(f"module {module!r} has no attribute {name!r}")
+    _deprecation(f"{module}.{name}", f"{module}.{renames[name]}")
+    target = namespace[renames[name]]
+    keywords = (arguments or {}).get(name)
+    return _with_keywords(target, keywords) if keywords else target
+
+
+def name_twins(
+    namespace: Mapping[str, Any], renames: Mapping[str, str], *,
+    arguments: Mapping[str, Mapping[str, str]] | None = None,
+) -> Callable[[str], Any]:
+    """A module ``__getattr__`` resolving each pre-2.0 name of ``renames`` (``renamed_name``)."""
+    return functools.partial(renamed_name, namespace=namespace, renames=renames, arguments=arguments)
+
+
+def bridge_renamed_hooks(
+    cls: type, renames: Mapping[str, str], *, arguments: Mapping[str, Mapping[str, str]] | None = None,
+) -> None:
+    """Route each new hook name to ``cls``'s own override of its pre-2.0 name, with one deprecation per class;
+    ``arguments`` maps a new hook's keywords to the override's (new → old)."""
+    bridged = [(old, new) for old, new in renames.items() if old in cls.__dict__ and new not in cls.__dict__]
+    for old, new in bridged:
+        hook = cls.__dict__[old]
+        keywords = (arguments or {}).get(new)
+        setattr(cls, new, _with_keywords(hook, keywords) if keywords else hook)
+    if bridged:
+        _deprecation(f"{cls.__name__} overriding {', '.join(old for old, _ in bridged)}",
+                     ", ".join(new for _, new in bridged))
 
 
 class Spellings:
@@ -58,7 +190,7 @@ class Spellings:
         """One deprecation per spelling seen so far, each emitted once however often this is called."""
         for old, new in self._seen:
             if (old, new) not in self._reported:
-                self._reported[(old, new)] = deprecated_input(old, new, removal="3.0")
+                self._reported[(old, new)] = _deprecation(old, new)
         return tuple(self._reported.values())
 
 
@@ -149,7 +281,9 @@ def _query(data: dict[str, Any], spellings: Spellings) -> dict[str, Any]:
     data = _members(data, "order", lambda o: _order_item(o, spellings))
     data = _members(data, "extensions", lambda e: _extension(e, spellings))
     population = data.get("population")
-    if isinstance(population, dict) and "source_name" not in population:
+    if isinstance(population, dict) and "version" in population:
+        pass  # a versioned inline dataset converts through its own migration
+    elif isinstance(population, dict) and "source_name" not in population:
         data = {**data, "population": _dataset(population, spellings)}
     elif isinstance(population, dict):
         data = {**data, "population": _extension(population, spellings)}

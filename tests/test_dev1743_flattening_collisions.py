@@ -149,7 +149,7 @@ class TestSameNameCollisionGuardLive:
             ],
         )
         model = self._orders()
-        with pytest.raises(ValueError, match=r"Stage column name collision on 'dup'"):
+        with pytest.raises(ValueError, match=r"Stage field name collision on 'dup'"):
             await _engine_generate(query=query, dataset=model, validate=False)
 
 

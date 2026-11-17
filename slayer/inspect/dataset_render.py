@@ -893,7 +893,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 })
             payload["fields"] = col_payloads
         elif visible_fields:
-            payload["columns_names"] = [c.name for c in visible_fields]
+            payload["fields_names"] = [c.name for c in visible_fields]
 
         # Metrics
         if "metrics" in included_set:
@@ -910,7 +910,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 for mm in dataset.metrics
             ]
         elif dataset.metrics:
-            payload["measures_names"] = [mm.name for mm in dataset.metrics]
+            payload["metrics_names"] = [mm.name for mm in dataset.metrics]
 
         # Aggregations
         if "aggregations" in included_set:
@@ -944,7 +944,7 @@ async def render_dataset_inspection(  # NOSONAR(S3776) — the section-gating + 
                 for h in hops
             ]
         elif hops:
-            payload["joins_names"] = [canonical_token(h) for h in hops]
+            payload["relationships_names"] = [canonical_token(h) for h in hops]
 
         # Samples
         if "samples" in included_set:

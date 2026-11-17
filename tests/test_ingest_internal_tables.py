@@ -797,7 +797,7 @@ class TestRenderer:
             )
         )
         out = capsys.readouterr().out
-        assert "  - _dlt_loads__x (model: _dlt_loads_x): dlt" in out
+        assert "  - _dlt_loads__x (dataset: _dlt_loads_x): dlt" in out
 
     def test_line_stays_bare_when_names_match(self, capsys) -> None:
         """The common case must not grow a redundant parenthetical."""
@@ -819,14 +819,14 @@ class TestRenderer:
         _print_ingest_drift_and_errors(_result_with_hidden(), data_source="warehouse")
         out = capsys.readouterr().out
 
-        assert 'edit_model("<model>", data_source="warehouse", hidden=false)' in out
+        assert 'edit_dataset("<dataset>", data_source="warehouse", hidden=false)' in out
 
     def test_hint_degrades_when_the_datasource_is_unknown(self, capsys) -> None:
         """When the caller omits the datasource, the hint degrades gracefully rather than printing `data_source="None"`."""
         _print_ingest_drift_and_errors(_result_with_hidden())
         out = capsys.readouterr().out
 
-        assert 'edit_model("<model>", hidden=false)' in out
+        assert 'edit_dataset("<dataset>", hidden=false)' in out
         assert "data_source=" not in out
 
     def test_nothing_printed_when_no_internals(self, capsys) -> None:
@@ -1311,7 +1311,7 @@ class TestDriftScope:
             for n in names
             if (m := await storage.get_dataset(n, data_source="ds")) is not None
         ]
-        to_delete = await _with_client(validate_datasource, datasource=ds, models=models)
+        to_delete = await _with_client(validate_datasource, datasource=ds, datasets=models)
 
         entry = next(e for e in to_delete if e.dataset_name == "_dlt_version")
         assert entry.tool == "delete_dataset"
@@ -1400,7 +1400,7 @@ class TestMcpIngestReporting:
 
         out = await self._ingest_via_mcp(storage)
 
-        assert 'edit_model("<model>", data_source="ds", hidden=false)' in out
+        assert 'edit_dataset("<dataset>", data_source="ds", hidden=false)' in out
 
     async def test_two_datasources_share_internal_names(
         self, workspace: Path
@@ -1498,5 +1498,5 @@ class TestMcpIngestReporting:
         ])
 
         assert "Hidden (1) — recognised ELT/migration internals " \
-               "(excluded from models_summary; still queryable by name):" in lines
+               "(excluded from datasets_summary; still queryable by name):" in lines
         assert "- _dlt_loads: dlt" in lines

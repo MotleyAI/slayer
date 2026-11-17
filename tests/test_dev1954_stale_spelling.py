@@ -317,7 +317,8 @@ class TestQueryBackedConsumer:
         assert model is not None
         assert model.source_queries
         dimensions = model.source_queries[0].dimensions
-        assert dimensions is not None and all(isinstance(d, FieldRef) for d in dimensions)
+        assert dimensions is not None
+        assert all(isinstance(d, FieldRef) for d in dimensions)
         dims = [d.full_name for d in dimensions if isinstance(d, FieldRef)]
         assert dims == ["customers.region_id", "customers.regions.rname"]
 

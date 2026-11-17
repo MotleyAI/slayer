@@ -494,7 +494,7 @@ class TestAttributesMachineSafe:
         lines = result.splitlines()
         comment_lines = [ln for ln in lines if ln.startswith("#")]
         assert any("Dimension attributes:" in ln for ln in comment_lines)
-        assert any("Measure attributes:" in ln for ln in comment_lines)
+        assert any("Metric attributes:" in ln for ln in comment_lines)
         data_lines = [ln for ln in lines if not ln.startswith("#")]
         rows = list(csv.reader(io.StringIO("\n".join(data_lines))))
         assert len(rows) == 1 + 3  # header + rows, uniform column count
@@ -531,7 +531,7 @@ class TestAttributesMachineSafe:
         assert sql == "SELECT 1"
         assert all(ln.startswith("#") for ln in comments)
         assert "# population: nums (inferred)" in comments
-        assert "# Measure attributes:" in comments
+        assert "# Metric attributes:" in comments
 
     async def test_dry_run_markdown_carries_attributes_and_population_after_the_sql(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -539,7 +539,7 @@ class TestAttributesMachineSafe:
         text = await self._dry_run(tmp_path, monkeypatch, "markdown")
         assert text.startswith("SQL:\nSELECT 1\n\n")
         body, _, warnings_block = text.partition("\n\nWarnings:\n")
-        assert "Measure attributes:" in body
+        assert "Metric attributes:" in body
         assert "Population: nums (inferred)" in body
         assert NOTICE in warnings_block
 

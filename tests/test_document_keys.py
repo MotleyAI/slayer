@@ -76,3 +76,13 @@ def test_memory_root_follows_the_memory_version(version: int, population: str) -
 def test_unversioned_memory_reads_legacy_keys() -> None:
     assert memory_source_dataset({"query": {"source_model": "orders"}}) == (None, "orders")
     assert memory_source_dataset({"query": {"population": "orders"}}) == (None, None)
+
+
+def test_a_versioned_query_reads_its_own_version_keys() -> None:
+    memory = {"version": VOCABULARY_VERSIONS["Memory"],
+              "query": {"version": VOCABULARY_VERSIONS["SlayerQuery"] - 1, "source_model": "orders",
+                        "measures": [{"formula": "sum(x)"}], "time_dimensions": [{"granularity": "fy"}]}}
+    assert memory_source_dataset(memory) == (None, "orders")
+    assert rewrite_memory_doc(memory, _upper, keys=CURRENT_KEYS)["query"]["measures"][0]["formula"] == "SUM(X)"
+    assert rename_in_memory(memory, renames={"fy": "fiscal_year"})["query"]["time_dimensions"][0]["granularity"] == (
+        "fiscal_year")

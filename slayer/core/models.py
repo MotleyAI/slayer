@@ -19,11 +19,12 @@ from sqlalchemy.engine import URL as _SA_URL
 from sqlglot.errors import SqlglotError
 from sqlglot.tokenizer_core import TokenType
 from sqlglot.tokens import Tokenizer
+from typing_extensions import deprecated
 
 from slayer.core.enums import BUILTIN_AGGREGATION_EXPRESSIONS, BUILTIN_AGGREGATIONS, DEFAULT_AGGREGATIONS_BY_TYPE, GRANULARITY_NAMES, LIST_AGGREGATIONS, DataType, type_display, RelationshipCardinality, JoinType, ObjectKind, PRIMARY_KEY_AGGREGATIONS, RANKED_AGGREGATIONS, RESERVED_DATE_SYNTAX_NAMES, RESERVED_NAMES, _coerce_legacy_datatype, builtin_empty_value, ALL_TRANSFORMS
 from slayer.core.errors import AmbiguousAggregationError, AmbiguousReferenceError, FieldSqlStatementError, GranularityDefinitionError, RelationshipKeyError
 from slayer.core.names import folded_collisions, match_name
-from slayer.core.vocabulary import AGGREGATION_KEYS, DATASET_KEYS, FIELD_KEYS, METRIC_KEYS, RELATIONSHIP_KEYS, converted_document, renamed_input
+from slayer.core.vocabulary import AGGREGATION_KEYS, DATASET_KEYS, FIELD_KEYS, METRIC_KEYS, RELATIONSHIP_KEYS, SOURCE_ORIGIN_KEYS, attribute_used, converted_document, method_twin, name_twins, renamed_input, same_ignoring_deprecations
 from slayer.core.warnings import DeprecatedInputWarning, NameCollisionWarning
 from slayer.core.format import NumberFormat
 from slayer.core.granularity import CustomGranularity, GranularitySpec, definition_error, granularity_key
@@ -349,6 +350,18 @@ class DatasetField(BaseModel):
         out._respellings = tuple(respellings)
         return out
 
+    @property
+    @deprecated("type is deprecated; use datatype", category=None)
+    def type(self) -> DataType:
+        attribute_used(self, old="type", new="datatype")
+        return self.datatype
+
+    @type.setter
+    @deprecated("type is deprecated; use datatype", category=None)
+    def type(self, value: DataType) -> None:
+        attribute_used(self, old="type", new="datatype")
+        self.datatype = value
+
 
 def list_operations_hint(field: DatasetField) -> str:
     """One line naming what a list field takes."""
@@ -480,6 +493,30 @@ class DatasetMetric(BaseModel):
     # Expressions may contain ``__`` (flattened virtual-dataset relationship paths); typos are
     # caught by strict resolution at binding time.
 
+    @property
+    @deprecated("type is deprecated; use datatype", category=None)
+    def type(self) -> DataType | None:
+        attribute_used(self, old="type", new="datatype")
+        return self.datatype
+
+    @type.setter
+    @deprecated("type is deprecated; use datatype", category=None)
+    def type(self, value: DataType | None) -> None:
+        attribute_used(self, old="type", new="datatype")
+        self.datatype = value
+
+    @property
+    @deprecated("formula is deprecated; use expression", category=None)
+    def formula(self) -> str:
+        attribute_used(self, old="formula", new="expression")
+        return self.expression
+
+    @formula.setter
+    @deprecated("formula is deprecated; use expression", category=None)
+    def formula(self, value: str) -> None:
+        attribute_used(self, old="formula", new="expression")
+        self.expression = value
+
 
 VALUE_PLACEHOLDER = "value"
 
@@ -577,6 +614,18 @@ class Aggregation(BaseModel):
             )
         return self
 
+    @property
+    @deprecated("formula is deprecated; use expression", category=None)
+    def formula(self) -> str | None:
+        attribute_used(self, old="formula", new="expression")
+        return self.expression
+
+    @formula.setter
+    @deprecated("formula is deprecated; use expression", category=None)
+    def formula(self, value: str | None) -> None:
+        attribute_used(self, old="formula", new="expression")
+        self.expression = value
+
 
 def aggregation_definition(*, owner: "SlayerDataset | None", agg: str) -> Aggregation | None:
     """``owner``'s declaration of ``agg``: an exact-case match, else the unique case-insensitive one (a built-in name
@@ -666,6 +715,23 @@ class SourceDatasetOrigin(BaseModel):
     parent: Optional["SourceDatasetOrigin"] = None
     agg_field_names: frozenset[str] = Field(default_factory=frozenset)
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _old_spellings(cls, data: Any, handler: ModelWrapValidatorHandler["SourceDatasetOrigin"]) -> "SourceDatasetOrigin":
+        return renamed_input(data, handler, SOURCE_ORIGIN_KEYS, stored=in_stored_document())
+
+    @property
+    @deprecated("agg_column_names is deprecated; use agg_field_names", category=None)
+    def agg_column_names(self) -> frozenset[str]:
+        attribute_used(self, old="agg_column_names", new="agg_field_names")
+        return self.agg_field_names
+
+    @agg_column_names.setter
+    @deprecated("agg_column_names is deprecated; use agg_field_names", category=None)
+    def agg_column_names(self, value: frozenset[str]) -> None:
+        attribute_used(self, old="agg_column_names", new="agg_field_names")
+        self.agg_field_names = value
+
 
 class DatasetRelationship(BaseModel):
     """A relationship to another dataset."""
@@ -731,6 +797,18 @@ class DatasetRelationship(BaseModel):
             for key in pair:
                 _validate_field_name(key, "join_pairs key")
         return v
+
+    @property
+    @deprecated("target_model is deprecated; use to", category=None)
+    def target_model(self) -> str:
+        attribute_used(self, old="target_model", new="to")
+        return self.to
+
+    @target_model.setter
+    @deprecated("target_model is deprecated; use to", category=None)
+    def target_model(self, value: str) -> None:
+        attribute_used(self, old="target_model", new="to")
+        self.to = value
 
 
 def relationship_key_error(
@@ -819,6 +897,12 @@ class SlayerDataset(BaseModel):
     aggregations: list[Aggregation] = Field(default_factory=list)
 
     _deprecated_inputs: tuple[DeprecatedInputWarning, ...] = PrivateAttr(default=())
+
+    def __eq__(self, other: object) -> bool:
+        """Equal whatever pre-2.0 spellings either was read from."""
+        if not isinstance(other, BaseModel) or type(other) is not type(self):
+            return NotImplemented
+        return same_ignoring_deprecations(self, other)
 
     @model_validator(mode="wrap")
     @classmethod
@@ -1153,6 +1237,72 @@ class SlayerDataset(BaseModel):
         found = match_name(name=name, declared=[a.name for a in self.aggregations], quoted=quoted)
         return None if found is None else next(a for a in self.aggregations if a.name == found)
 
+    @method_twin("get_field")
+    @deprecated("get_column is deprecated; use get_field", category=None)
+    def get_column(self, name: str, *, quoted: bool = False) -> DatasetField | None: ...
+
+    @method_twin("get_metric")
+    @deprecated("get_measure is deprecated; use get_metric", category=None)
+    def get_measure(self, name: str, *, quoted: bool = False) -> DatasetMetric | None: ...
+
+    @method_twin("list_fields")
+    @deprecated("list_columns is deprecated; use list_fields", category=None)
+    def list_columns(self) -> list[DatasetField]: ...
+
+    @property
+    @deprecated("columns is deprecated; use fields", category=None)
+    def columns(self) -> list[DatasetField]:
+        attribute_used(self, old="columns", new="fields")
+        return self.fields
+
+    @columns.setter
+    @deprecated("columns is deprecated; use fields", category=None)
+    def columns(self, value: list[DatasetField]) -> None:
+        attribute_used(self, old="columns", new="fields")
+        self.fields = value
+
+    @property
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self) -> list[DatasetMetric]:
+        attribute_used(self, old="measures", new="metrics")
+        return self.metrics
+
+    @measures.setter
+    @deprecated("measures is deprecated; use metrics", category=None)
+    def measures(self, value: list[DatasetMetric]) -> None:
+        attribute_used(self, old="measures", new="metrics")
+        self.metrics = value
+
+    @property
+    @deprecated("joins is deprecated; use relationships", category=None)
+    def joins(self) -> list[DatasetRelationship]:
+        attribute_used(self, old="joins", new="relationships")
+        return self.relationships
+
+    @joins.setter
+    @deprecated("joins is deprecated; use relationships", category=None)
+    def joins(self, value: list[DatasetRelationship]) -> None:
+        attribute_used(self, old="joins", new="relationships")
+        self.relationships = value
+
+    @property
+    @deprecated("source_model_origin is deprecated; use source_dataset_origin", category=None)
+    def source_model_origin(self) -> SourceDatasetOrigin | None:
+        attribute_used(self, old="source_model_origin", new="source_dataset_origin")
+        return self.source_dataset_origin
+
+    @source_model_origin.setter
+    @deprecated("source_model_origin is deprecated; use source_dataset_origin", category=None)
+    def source_model_origin(self, value: SourceDatasetOrigin | None) -> None:
+        attribute_used(self, old="source_model_origin", new="source_dataset_origin")
+        self.source_dataset_origin = value
+
+    @property
+    @deprecated("awaits_columns is deprecated; use awaits_fields", category=None)
+    def awaits_columns(self) -> bool:
+        attribute_used(self, old="awaits_columns", new="awaits_fields")
+        return self.awaits_fields
+
 
 class DatasourceConfig(BaseModel):
     version: int = CURRENT_VERSIONS["DatasourceConfig"]
@@ -1372,3 +1522,36 @@ def _item_name(item: Any) -> str | None:
 def name_collision_warnings(dataset: SlayerDataset) -> list[NameCollisionWarning]:
     """The ``NameCollisionWarning`` per case collision ``dataset`` holds."""
     return [NameCollisionWarning(dataset=dataset.name, namespace=where, names=names) for where, names in case_collisions(dataset)]
+
+
+if TYPE_CHECKING:
+    @deprecated("SlayerModel is deprecated; use SlayerDataset", category=None)
+    class SlayerModel(SlayerDataset): ...
+
+    @deprecated("Column is deprecated; use DatasetField", category=None)
+    class Column(DatasetField): ...
+
+    @deprecated("ModelMeasure is deprecated; use DatasetMetric", category=None)
+    class ModelMeasure(DatasetMetric): ...
+
+    @deprecated("ModelJoin is deprecated; use DatasetRelationship", category=None)
+    class ModelJoin(DatasetRelationship): ...
+
+    @deprecated("SourceModelOrigin is deprecated; use SourceDatasetOrigin", category=None)
+    class SourceModelOrigin(SourceDatasetOrigin): ...
+
+    @deprecated("join_key_error is deprecated; use relationship_key_error", category=None)
+    def join_key_error(
+        *, dataset: str, target: str, key: str, side: str, fields: list[DatasetField],
+    ) -> RelationshipKeyError | None: ...
+
+
+__getattr__ = name_twins(
+    namespace=globals(),
+    renames={
+        "SlayerModel": "SlayerDataset", "Column": "DatasetField", "ModelMeasure": "DatasetMetric",
+        "ModelJoin": "DatasetRelationship", "SourceModelOrigin": "SourceDatasetOrigin",
+        "join_key_error": "relationship_key_error",
+    },
+    arguments={"join_key_error": {"model": "dataset", "columns": "fields"}},
+)

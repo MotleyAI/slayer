@@ -29,7 +29,7 @@ def _datasets() -> list[SlayerDataset]:
     """The shop, with ``customers → regions → countries`` for short-form routes and a query-backed ``cust_spend``."""
     home = DatasetRelationship(to="regions", join_pairs=_REGION_PAIRS)
     country = DatasetRelationship(to="countries", join_pairs=[["country_id", "id"]])
-    replaced = {"customers": customers(home), "regions": regions().model_copy(update={"joins": [country]})}
+    replaced = {"customers": customers(home), "regions": regions().model_copy(update={"relationships": [country]})}
     cust_spend = SlayerDataset(name="cust_spend", data_source=DS,
                              source_queries=[SlayerQuery.model_validate(_SPENT_BY_CUSTOMER)])
     return [replaced.get(m.name, m) for m in base_datasets()] + [cust_spend, _cities()]
@@ -250,7 +250,7 @@ async def test_a_stage_source_is_local_to_its_own_stage(stages: list[SlayerQuery
     assert {row[column] for row in resp.data} - {None} <= {"Ann", "Bob", "Cid", "Dee", "Eve"}
 
 
-_LABELS = _cities({"name": "label", "sql": "city", "type": "TEXT"}, name="labels_src")
+_LABELS = _cities({"name": "label", "sql": "city", "datatype": "TEXT"}, name="labels_src")
 _STORED_LABEL_READ = {"population": "orders", "dimensions": ["customers.label"],
                       "metrics": [{"expression": "count(*)", "name": "n"}]}
 
@@ -262,7 +262,7 @@ _STORED_LABEL_READ = {"population": "orders", "dimensions": ["customers.label"],
 async def test_a_stored_derived_column_closes_over_its_own_definition_beside_another_source(
     stages: list[SlayerQuery | dict],
 ) -> None:
-    labelled = customers(DatasetRelationship(to="regions", join_pairs=_REGION_PAIRS)).model_copy(update={"columns": [
+    labelled = customers(DatasetRelationship(to="regions", join_pairs=_REGION_PAIRS)).model_copy(update={"fields": [
         *customers().fields, DatasetField(name="label", sql="upper(name)", datatype=DataType.TEXT)]})
     async with shop("sqlite", [labelled if m.name == "customers" else m for m in _datasets()] + [_LABELS]) as engine:
         _, reads = await _planned(engine, stages)

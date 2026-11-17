@@ -64,11 +64,11 @@ def with_fields(base: Dict[str, Any], **fields: Any) -> Dict[str, Any]:
 PARITY = {
     "extra_dimension": ({"dimensions": ["region"]}, with_fields(MONTHLY_REVENUE, dimensions=["region"])),
     "extra_measure": (
-        {"metrics": ["count(*)"]}, with_fields(MONTHLY_REVENUE, measures=[REVENUE, "count(*)"]),
+        {"metrics": ["count(*)"]}, with_fields(MONTHLY_REVENUE, metrics=[REVENUE, "count(*)"]),
     ),
     "extra_filter": (
         {"filter": ["amount >= 50"]},
-        with_fields(MONTHLY_REVENUE, filters=["status = 'paid'", "amount >= 50"]),
+        with_fields(MONTHLY_REVENUE, filter=["status = 'paid'", "amount >= 50"]),
     ),
     "window": (
         {"time_dimensions": [{**MONTH_TD, "date_range": ["2025-02-01", "2025-03-31"]}]},
@@ -165,7 +165,7 @@ class TestSingleStage:
         calls = executed_sql(monkeypatch)
         with pytest.raises(RefinementConflictError) as info:
             await engine.execute("monthly_revenue", refine={"metrics": [{"expression": "count(*)", "name": "revenue"}]})
-        for part in ("measures", "revenue", "sum(amount)", "count(*)"):
+        for part in ("metrics", "revenue", "sum(amount)", "count(*)"):
             assert part in str(info.value)
         assert calls == []
 

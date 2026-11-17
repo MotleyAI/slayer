@@ -35,15 +35,15 @@ def meas(name: str, agg: str, expr: str | None = None) -> dict[str, Any]:
     return {"name": name, "agg": agg, **({"expr": expr} if expr is not None else {})}
 
 
-def sm(*, dimensions: list[dict[str, Any]] | None = None, metrics: list[dict[str, Any]] | None = None,
+def sm(*, dimensions: list[dict[str, Any]] | None = None, measures: list[dict[str, Any]] | None = None,
        entities: list[dict[str, Any]] | None = None, name: str = "orders") -> dict[str, Any]:
     return {"name": name, "model": "orders", "entities": entities or [ORDER],
-            "dimensions": dimensions or [], "metrics": metrics or []}
+            "dimensions": dimensions or [], "measures": measures or []}
 
 
 def typed(*columns: tuple[str, str]) -> list[dict[str, Any]]:
     """The ``orders`` regular model declaring ``(column, data_type)`` pairs."""
-    return [{"name": "orders", "fields": [{"name": c, "data_type": t} for c, t in columns]}]
+    return [{"name": "orders", "columns": [{"name": c, "data_type": t} for c, t in columns]}]
 
 
 @pytest.fixture
@@ -54,13 +54,13 @@ def db(tmp_path: Path) -> Path:
 class TestPhysicalReferences:
     @MASKED
     async def test_collision_in_a_measure_expr(self, db: Path) -> None:
-        result = import_dbt([sm(dimensions=[RENAMED_STATUS], metrics=[
+        result = import_dbt([sm(dimensions=[RENAMED_STATUS], measures=[
             meas("paid_cnt", "sum", "CASE WHEN status = 'paid' THEN 1 ELSE 0 END")])], db=db)
         assert await value(datasets=result.datasets, db=db, dataset="orders", expression="paid_cnt") == 2
 
     @MASKED
     async def test_collision_in_sum_boolean(self, db: Path) -> None:
-        result = import_dbt([sm(dimensions=[RENAMED_STATUS], metrics=[
+        result = import_dbt([sm(dimensions=[RENAMED_STATUS], measures=[
             meas("paid_cnt", "sum_boolean", "status = 'paid'")])], db=db)
         assert await value(datasets=result.datasets, db=db, dataset="orders", expression="paid_cnt") == 2
 
@@ -116,7 +116,7 @@ class TestDeclaredDataType:
         assert column(datasets_of(result)["orders"], "created_at").datatype == DataType.DATE
 
     def test_declared_types_reach_keys_and_measure_sources(self) -> None:
-        result = import_dbt([sm(metrics=[meas("total", "sum", "amount"), meas("tag_cnt", "count", "tags")])],
+        result = import_dbt([sm(measures=[meas("total", "sum", "amount"), meas("tag_cnt", "count", "tags")])],
                             regular_datasets=typed(("id", "bigint"), ("amount", "numeric(10,2)"), ("tags", "text[]")))
         model = datasets_of(result)["orders"]
         assert column(model, "id").datatype == DataType.INT
@@ -125,7 +125,7 @@ class TestDeclaredDataType:
         assert (tags.datatype, tags.element_type) == (DataType.ARRAY, DataType.TEXT)
 
     def test_unrecognised_data_type(self) -> None:
-        result = import_dbt([sm(metrics=[meas("geo_sum", "sum", "geo")])], regular_datasets=typed(("geo", "geography")))
+        result = import_dbt([sm(measures=[meas("geo_sum", "sum", "geo")])], regular_datasets=typed(("geo", "geography")))
         assert source_column(datasets_of(result)["orders"], "geo_sum").datatype == DataType.DOUBLE
         assert entries(result, "geography", severity="info"), result.warnings
 
@@ -142,7 +142,7 @@ class TestDeclaredDataType:
 
     def test_read_from_schema_yml_without_hidden_models(self, tmp_path: Path) -> None:
         write_yaml(tmp_path / "models" / "schema.yml", {
-            "models": [{"name": "orders", "fields": [{"name": "tags", "data_type": "array<string>"}]}],
+            "models": [{"name": "orders", "columns": [{"name": "tags", "data_type": "array<string>"}]}],
             "semantic_models": [{**sm(dimensions=[dim("tags")]), "model": "ref('orders')"}],
         })
         project = parse_dbt_project(str(tmp_path))
@@ -158,7 +158,7 @@ class TestDeclaredDataType:
 
 class TestTypingOrder:
     def test_offline_implied_types(self) -> None:
-        result = import_dbt([sm(metrics=[meas("total", "sum", "amount"), meas("n_notes", "count", "note"),
+        result = import_dbt([sm(measures=[meas("total", "sum", "amount"), meas("n_notes", "count", "note"),
                                           meas("paid", "sum_boolean", "status = 'paid'")])])
         model = datasets_of(result)["orders"]
         assert source_column(model, "total").datatype == DataType.DOUBLE
@@ -167,7 +167,7 @@ class TestTypingOrder:
 
     @pytest.mark.parametrize("target", ["mysql", "mssql"])
     def test_median_refused_by_the_target_is_dropped(self, target: str) -> None:
-        result = import_dbt([sm(metrics=[meas("mid", "median", "amount")])], target_dialect=target)
+        result = import_dbt([sm(measures=[meas("mid", "median", "amount")])], target_dialect=target)
         assert not has_metric(result, "orders", "mid")
         assert [e for e in entries(result, "mid") if "not supported" in e.message], result.warnings
 
@@ -182,7 +182,7 @@ class TestTypingOrder:
         assert "could not be reached" in note
 
     def test_offline_max_over_an_untyped_source_is_dropped(self) -> None:
-        result = import_dbt([sm(metrics=[meas("latest", "max", "created_at")])])
+        result = import_dbt([sm(measures=[meas("latest", "max", "created_at")])])
         assert not has_metric(result, "orders", "latest")
         found = entries(result, "latest")
         assert [e for e in found if "datasource" in e.message.lower() and "type" in e.message.lower()], found
@@ -190,7 +190,7 @@ class TestTypingOrder:
     def test_filtered_metric_over_a_dropped_measure_is_dropped(self) -> None:
         metric = {"name": "late_paid", "type": "simple", "type_params": {"measure": "latest"},
                   "filter": "{{ Dimension('order__status') }} = 'paid'"}
-        result = import_dbt([sm(dimensions=[dim("status")], metrics=[meas("latest", "max", "created_at")])],
+        result = import_dbt([sm(dimensions=[dim("status")], measures=[meas("latest", "max", "created_at")])],
                             metrics=[metric])
         assert not has_metric(result, "orders", "late_paid")
         assert [e for e in entries(result, "late_paid") if "was dropped" in e.message], result.unconverted_metrics
@@ -198,32 +198,32 @@ class TestTypingOrder:
     def test_filtered_metric_column_keeps_the_declared_type(self) -> None:
         metric = {"name": "late_paid", "type": "simple", "type_params": {"measure": "latest"},
                   "filter": "{{ Dimension('order__status') }} = 'paid'"}
-        result = import_dbt([sm(dimensions=[dim("status")], metrics=[meas("latest", "max", "created_at")])],
+        result = import_dbt([sm(dimensions=[dim("status")], measures=[meas("latest", "max", "created_at")])],
                             regular_datasets=typed(("created_at", "timestamp")), metrics=[metric])
         assert source_column(datasets_of(result)["orders"], "late_paid").datatype is DataType.TIMESTAMP
 
     def test_model_sql_with_a_trailing_semicolon_is_typed_live(self, db: Path) -> None:
-        orders_q = {**sm(metrics=[meas("tag_cnt", "count", "tags")]), "model": "orders_q"}
+        orders_q = {**sm(measures=[meas("tag_cnt", "count", "tags")]), "model": "orders_q"}
         result = import_dbt([orders_q], regular_datasets=[{"name": "orders_q", "raw_code": "SELECT * FROM orders;"}],
                             db=db)
         col = source_column(datasets_of(result)["orders"], "tag_cnt")
         assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
 
     async def test_list_measure_source_typed_from_the_database(self, db: Path) -> None:
-        result = import_dbt([sm(metrics=[meas("tag_cnt", "count", "tags")])], db=db)
+        result = import_dbt([sm(measures=[meas("tag_cnt", "count", "tags")])], db=db)
         col = source_column(datasets_of(result)["orders"], "tag_cnt")
         assert (col.datatype, col.element_type) == (DataType.ARRAY, DataType.TEXT)
         assert await value(datasets=result.datasets, db=db, dataset="orders", expression="tag_cnt") == 2
 
     @pytest.mark.parametrize("agg", ["count_distinct", "min", "max", "sum", "average"])
     def test_aggregation_refused_over_a_list_is_dropped(self, db: Path, agg: str) -> None:
-        result = import_dbt([sm(metrics=[meas("tag_agg", agg, "tags")])], db=db)
+        result = import_dbt([sm(measures=[meas("tag_agg", agg, "tags")])], db=db)
         assert not has_metric(result, "orders", "tag_agg")
         found = entries(result, "tag_agg")
         assert [e for e in found if "list" in e.message.lower() or "ARRAY" in e.message], found
 
     async def test_validate_models_proposes_no_deletion(self, db: Path, tmp_path: Path) -> None:
-        result = import_dbt([sm(dimensions=[dim("tags")], metrics=[meas("tag_cnt", "count", "tags")])], db=db)
+        result = import_dbt([sm(dimensions=[dim("tags")], measures=[meas("tag_cnt", "count", "tags")])], db=db)
         found = await drift_entries(datasets=result.datasets, db=db, base_dir=tmp_path / "store")
         assert deletes(found, dataset="orders") == [], found
 
@@ -231,7 +231,7 @@ class TestTypingOrder:
 def test_cli_types_without_hidden_models(db: Path, tmp_path: Path) -> None:
     project = tmp_path / "dbt_project"
     write_yaml(project / "models" / "schema.yml", {
-        "semantic_models": [{**sm(metrics=[meas("tag_cnt", "count", "tags")]), "model": "ref('orders')"}]})
+        "semantic_models": [{**sm(measures=[meas("tag_cnt", "count", "tags")]), "model": "ref('orders')"}]})
     store = tmp_path / "store"
     save_datasource(store, database=db)
     try:

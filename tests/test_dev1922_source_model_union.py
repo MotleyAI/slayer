@@ -95,8 +95,8 @@ class TestSchema:
         prop = schema["properties"]["population"]
         assert "$ref" not in str(prop)
         assert {a.get("type") for a in prop["anyOf"]} == {"string", "null"}
-        assert "ModelExtension" in schema["$defs"]
-        assert "SlayerModel" not in schema["$defs"]
+        assert "DatasetExtension" in schema["$defs"]
+        assert "SlayerDataset" not in schema["$defs"]
         assert "filters" not in prop["description"]
 
     def test_extension_definition_is_closed_and_typed(self) -> None:
@@ -104,7 +104,7 @@ class TestSchema:
         assert ext["additionalProperties"] is False
         assert ext["required"] == ["source_name"]
         assert ext["properties"]["metrics"]["anyOf"][0]["items"] == {"$ref": "#/$defs/DatasetMetric"}
-        assert ext["properties"]["joins"]["anyOf"][0]["items"] == {"$ref": "#/$defs/ModelJoin"}
+        assert ext["properties"]["relationships"]["anyOf"][0]["items"] == {"$ref": "#/$defs/DatasetRelationship"}
 
     def test_source_spec_is_defined_in_core_and_reused_by_ir(self) -> None:
         spec = core_query.SourceSpec
@@ -115,14 +115,14 @@ class TestSchema:
     async def test_mcp_query_tool_carries_the_definitions(self, mcp_server) -> None:
         tools = {t.name: t for t in await mcp_server.list_tools()}
         defs = tools["query"].inputSchema.get("$defs", {})
-        assert "ModelExtension" in defs
-        assert "SlayerModel" not in defs
+        assert "DatasetExtension" in defs
+        assert "SlayerDataset" not in defs
 
     def test_openapi_embeds_the_forms_for_the_rest_body(self, rest_client) -> None:
         spec = rest_client.get("/openapi.json").json()
         props = spec["components"]["schemas"]["QueryRequest"]["properties"]
         assert "#/components/schemas/DatasetExtension" not in str(props["population"])
-        assert "#/components/schemas/SlayerModel" not in str(props["source_model"])
+        assert "#/components/schemas/SlayerDataset" not in str(props["population"])
         assert "#/components/schemas/DatasetExtension" in str(props["extensions"])
 
 
@@ -345,5 +345,5 @@ class TestTimeDimensionColumnAlias:
 
     def test_schema_advertises_dimension_only(self) -> None:
         props = SlayerQuery.model_json_schema()["$defs"]["TimeDimension"]["properties"]
-        assert "dimension" in props
+        assert "field" in props
         assert "column" not in props

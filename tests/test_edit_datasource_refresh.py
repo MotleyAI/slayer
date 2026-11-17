@@ -14,6 +14,7 @@ import pytest
 from slayer.core.enums import DataType
 from slayer.core.models import DatasetField, DatasourceConfig, SlayerDataset
 from slayer.mcp.server import create_mcp_server
+from slayer.search import service as svc_mod
 from slayer.storage.yaml_storage import YAMLStorage
 
 
@@ -51,18 +52,16 @@ async def test_edit_datasource_calls_refresh_datasource_with_new_description(
 
     refresh_calls: list = []
 
-    from slayer.search import service as svc_mod
-
     original = svc_mod.SearchService.refresh_datasource
 
-    async def recording_refresh(self, *, name, models, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine (`await SearchService.refresh_datasource(...)`)
+    async def recording_refresh(self, *, name, datasets, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine (`await SearchService.refresh_datasource(...)`)
         refresh_calls.append({
             "name": name,
             "description": description,
-            "model_count": len(models),
+            "model_count": len(datasets),
         })
         return await original(
-            self, name=name, datasets=models, description=description,
+            self, name=name, datasets=datasets, description=description,
         )
 
     monkeypatch.setattr(
@@ -99,9 +98,7 @@ async def test_edit_datasource_refresh_failure_is_best_effort(
         description="old",
     ))
 
-    from slayer.search import service as svc_mod
-
-    async def raising_refresh(self, *, name, models, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine
+    async def raising_refresh(self, *, name, datasets, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine
         raise RuntimeError("simulated embedding outage")
 
     monkeypatch.setattr(
@@ -135,9 +132,8 @@ async def test_edit_datasource_no_refresh_when_description_unchanged(
     ))
 
     refresh_calls: list = []
-    from slayer.search import service as svc_mod
 
-    async def recording_refresh(self, *, name, models, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine
+    async def recording_refresh(self, *, name, datasets, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine
         refresh_calls.append(name)
         return []
 
@@ -165,9 +161,7 @@ async def test_edit_datasource_unknown_no_refresh(
     the unknown name)."""
     refresh_calls: list = []
 
-    from slayer.search import service as svc_mod
-
-    async def recording_refresh(self, *, name, models, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine (`await SearchService.refresh_datasource(...)`)
+    async def recording_refresh(self, *, name, datasets, description=None):  # NOSONAR(S7503) — async required to match the monkeypatched coroutine (`await SearchService.refresh_datasource(...)`)
         refresh_calls.append(name)
         return []
 

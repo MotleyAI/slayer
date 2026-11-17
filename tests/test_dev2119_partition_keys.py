@@ -86,7 +86,7 @@ class TestAttributability:
         assert "regions.manager" in msg
         assert "unproven" in msg
         assert "attributable" in msg
-        assert "Declare join cardinality" in msg
+        assert "Declare relationship cardinality" in msg
 
 
 class TestAggregateBearingKey:

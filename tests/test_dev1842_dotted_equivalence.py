@@ -160,7 +160,7 @@ class TestUnsafeInputParity:
         dotted_query = _metric_query(dotted)
         with pytest.raises(ValueError) as hand_err:
             await gen(hand_query)
-        assert "unproven join hop" in str(hand_err.value)
+        assert "unproven relationship hop" in str(hand_err.value)
         with pytest.raises(ValueError) as dotted_err:
             await gen(dotted_query)
-        assert "unproven join hop" in str(dotted_err.value)
+        assert "unproven relationship hop" in str(dotted_err.value)

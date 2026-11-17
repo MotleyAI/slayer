@@ -207,7 +207,7 @@ class TestUnreferencedParams:
         model = _with(agg)
         with pytest.raises(
             AggregationArgumentError,
-            match=rf"Model 'orders', aggregation '{agg.name}': parameter '{param}' is never referenced",
+            match=rf"Dataset 'orders', aggregation '{agg.name}': parameter '{param}' is never referenced",
         ):
             await engine.save_dataset(model)
         assert await store.get_dataset("orders", data_source=_DS) is None
@@ -242,7 +242,7 @@ class TestUnreferencedParams:
     async def test_ranked_formula_override_blocks_the_save(self, seeded: tuple[SlayerQueryEngine, YAMLStorage], name: str) -> None:
         engine, _store = seeded
         model = _with(Aggregation(name=name, expression="MAX({value})"))
-        with pytest.raises(AggregationArgumentError, match=rf"aggregation '{name}': a ranked aggregation cannot take a formula"):
+        with pytest.raises(AggregationArgumentError, match=rf"aggregation '{name}': a ranked aggregation cannot take an expression"):
             await engine.save_dataset(model)
 
 
@@ -328,8 +328,8 @@ async def _call(*, server: Any, name: str, arguments: dict[str, Any]) -> str:
 
 
 _COLUMNS = [
-    {"name": "id", "sql": "id", "type": "number", "primary_key": True},
-    {"name": "amount", "sql": "amount", "type": "number"},
+    {"name": "id", "sql": "id", "datatype": "number", "primary_key": True},
+    {"name": "amount", "sql": "amount", "datatype": "number"},
 ]
 
 
@@ -405,7 +405,7 @@ class TestBlankAggregationFieldsMigration:
         assert len(raw["aggregations"][0]["params"]) == 2
 
     def test_blank_custom_formula_still_fails_to_load(self) -> None:
-        raw = _v11([{"name": "custom_agg", "expression": ""}])
+        raw = _v11([{"name": "custom_agg", "formula": ""}])
         with pytest.raises(ValidationError, match="'custom_agg' is not a built-in"):
             SlayerDataset.model_validate(raw)
 
@@ -447,6 +447,6 @@ async def test_ranked_formula_rejected_before_backing_query_expansion(
         source_queries=[SlayerQuery(population="orders", metrics=[DatasetMetric(expression="sum(amount)")])],
         aggregations=[Aggregation(name="last", expression="MAX({value})")],
     )
-    with pytest.raises(AggregationArgumentError, match="ranked aggregation cannot take a formula"):
+    with pytest.raises(AggregationArgumentError, match="ranked aggregation cannot take an expression"):
         await engine.save_dataset(model)
     assert expanded == []

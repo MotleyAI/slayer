@@ -76,7 +76,7 @@ POSITIONS = {
                                    "time_dimensions": [td("time_spine")], **sum_orders()}, "TimeSpineError"),
     "extension-join": (lambda s: {"population": {"source_name": "returns", "relationships": [
         {"to": s, "join_pairs": [["return_date", "timestamp"]]}]},
-        "time_dimensions": [td("time_spine")], "metrics": [m("sum(amount)", "r")]}, "AmbiguousJoinPathError"),
+        "time_dimensions": [td("time_spine")], "metrics": [m("sum(amount)", "r")]}, "AmbiguousRelationshipPathError"),
 }
 
 

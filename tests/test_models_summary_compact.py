@@ -110,7 +110,7 @@ async def test_compact_markdown_drops_per_column_table(
         "datasource_name": "mydb", "compact": True,
     })
     # Today's verbose markdown shape — must NOT appear in compact mode.
-    assert "**Columns (3):**" not in result
+    assert "**Fields (3):**" not in result
     assert "| status |" not in result
     assert "USD amount." not in result
 
@@ -124,7 +124,7 @@ async def test_compact_markdown_emits_column_count_line(
     result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True,
     })
-    assert "Columns: 3" in result
+    assert "Fields: 3" in result
 
 
 @pytest.mark.asyncio
@@ -136,7 +136,7 @@ async def test_compact_markdown_emits_measure_names_only(
     result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True,
     })
-    assert "Measures: revenue, orders_count" in result
+    assert "Metrics: revenue, orders_count" in result
     # The formula must NOT leak into compact output.
     assert "sum(amount)" not in result
     assert "count(*)" not in result
@@ -153,8 +153,8 @@ async def test_compact_markdown_default_is_true(
     result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb",
     })
-    assert "Columns: 3" in result
-    assert "**Columns (3):**" not in result
+    assert "Fields: 3" in result
+    assert "**Fields (3):**" not in result
 
 
 @pytest.mark.asyncio
@@ -166,7 +166,7 @@ async def test_compact_markdown_joins_to_rendered(
     result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True,
     })
-    assert "Joins to: `customers`" in result
+    assert "Relationships to: `customers`" in result
 
 
 @pytest.mark.asyncio
@@ -184,7 +184,7 @@ async def test_compact_markdown_no_joins_marker(
     result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "ds", "compact": True,
     })
-    assert "Joins to: _(none)_" in result
+    assert "Relationships to: _(none)_" in result
 
 
 # ---------------------------------------------------------------------------
@@ -204,12 +204,12 @@ async def test_compact_json_shape(yaml_storage: YAMLStorage) -> None:
     assert data["dataset_count"] == 3
     orders = next(m for m in data["datasets"] if m["name"] == "orders")
     assert set(orders.keys()) == {
-        "name", "description", "column_count", "measure_names", "joins_to",
+        "name", "description", "field_count", "metric_names", "relationships_to",
     }
     assert orders["description"] == "Orders fact."
-    assert orders["column_count"] == 3
-    assert orders["measure_names"] == ["revenue", "orders_count"]
-    assert orders["joins_to"] == ["customers"]
+    assert orders["field_count"] == 3
+    assert orders["metric_names"] == ["revenue", "orders_count"]
+    assert orders["relationships_to"] == ["customers"]
 
 
 @pytest.mark.asyncio
@@ -223,8 +223,8 @@ async def test_compact_json_no_columns_or_formulas(
     })
     data = json.loads(result)
     orders = next(m for m in data["datasets"] if m["name"] == "orders")
-    assert "columns" not in orders
-    assert "measures" not in orders
+    assert "fields" not in orders
+    assert "metrics" not in orders
 
 
 # ---------------------------------------------------------------------------
@@ -241,10 +241,10 @@ async def test_verbose_markdown_preserves_per_column_table(
     result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": False,
     })
-    assert "**Columns (3):**" in result
+    assert "**Fields (3):**" in result
     assert "| status |" in result
     assert "USD amount." in result
-    assert "**Measures (2):**" in result
+    assert "**Metrics (2):**" in result
     assert "sum(amount)" in result
     assert "count(*)" in result
 
@@ -260,12 +260,12 @@ async def test_verbose_json_keeps_full_column_and_measure_payloads(
     })
     data = json.loads(result)
     orders = next(m for m in data["datasets"] if m["name"] == "orders")
-    assert "columns" in orders
-    assert orders["columns"][0]["name"] == "id"
-    assert "type" in orders["columns"][0]
-    assert "measures" in orders
-    revenue = next(mm for mm in orders["measures"] if mm["name"] == "revenue")
-    assert revenue["formula"] == "sum(amount)"
+    assert "fields" in orders
+    assert orders["fields"][0]["name"] == "id"
+    assert "datatype" in orders["fields"][0]
+    assert "metrics" in orders
+    revenue = next(mm for mm in orders["metrics"] if mm["name"] == "revenue")
+    assert revenue["expression"] == "sum(amount)"
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +288,7 @@ async def test_empty_datasource_lists_only_the_spine_in_both_modes(
         "datasource_name": "emptyds", "compact": False,
     })
     for out in (compact, verbose):
-        assert out.startswith("# Datasource: `emptyds` — 1 model(s)")
+        assert out.startswith("# Datasource: `emptyds` — 1 dataset(s)")
         assert "## `time_spine`" in out
 
 

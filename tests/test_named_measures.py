@@ -149,7 +149,7 @@ class TestNamedMeasureSQL:
         })
 
         with pytest.raises(
-            ValueError, match=r"Cyclic reference in named-measure expansion"
+            ValueError, match=r"Cyclic reference in named-metric expansion"
         ):
             await _generate(query, model)
 
@@ -192,7 +192,7 @@ class TestNamedMeasureSQL:
         })
 
         with pytest.raises(
-            ValueError, match="is a saved measure.*takes no aggregation"
+            ValueError, match="is a saved metric.*takes no aggregation"
         ):
             await _generate(query, model)
 
@@ -248,7 +248,7 @@ class TestNamedMeasureSQL:
             "metrics": [{"expression": "aov", "name": "result"}],
         })
 
-        with pytest.raises(ValueError, match=r"duplicate measure names"):
+        with pytest.raises(ValueError, match=r"duplicate metric names"):
             await _generate(query, model)
 
 

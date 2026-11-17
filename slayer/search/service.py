@@ -29,6 +29,7 @@ from slayer.memories.resolver import (
     resolve_entity,
 )
 from slayer.search import graph as _search_graph
+from slayer.search.cypher_labels import renamed_labels
 from slayer.search.cypher_naive import parse_naive_label_filter as _parse_naive_cypher
 from slayer.search.index import Corpus, build_in_memory_corpus
 from slayer.search.render import (
@@ -839,6 +840,8 @@ class SearchService:
         """
         if cypher_filter is None:
             return None, None, None
+        cypher_filter, renamed = renamed_labels(cypher_filter)
+        warnings.extend(w.human_message() for w in renamed)
         if _search_graph.is_available():
             candidate_ids = await _search_graph.get_filtered_ids(
                 cypher=cypher_filter, storage=self._storage, failures=failures,

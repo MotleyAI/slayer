@@ -55,5 +55,5 @@ class TestReverseHopDefaultFailsClosed:
         q = SlayerQuery(
             population="regions",
             metrics=[DatasetMetric(expression="wsum_cust_spend(pop)", name="w")])
-        with pytest.raises(ValueError, match="unproven join hop"):
+        with pytest.raises(ValueError, match="unproven relationship hop"):
             await engine.execute(q)

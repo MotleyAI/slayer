@@ -154,23 +154,23 @@ class TestMeasures:
 
     def test_same_name_different_formula_conflicts(self) -> None:
         message = conflict(saved(metrics=[REVENUE]), metrics=[{"expression": "count(*)", "name": "revenue"}])
-        for part in ("measures", "revenue", "sum(amount)", "count(*)"):
+        for part in ("metrics", "revenue", "sum(amount)", "count(*)"):
             assert part in message
 
     @pytest.mark.parametrize("field, value", [
         ("label", "Revenue"),
         ("description", "Paid revenue"),
-        ("type", "DOUBLE"),
+        ("datatype", "DOUBLE"),
         ("meta", {"unit": "usd"}),
     ])
     def test_named_measure_metadata_mismatch_conflicts(self, field: str, value: Any) -> None:
         message = conflict(saved(metrics=[REVENUE]), metrics=[{**REVENUE, field: value}])
-        assert "measures" in message
+        assert "metrics" in message
         assert "revenue" in message
 
     def test_unnamed_measure_metadata_mismatch_conflicts(self) -> None:
         message = conflict(saved(metrics=["count(*)"]), metrics=[{"expression": "count(*)", "label": "Orders"}])
-        assert "measures" in message
+        assert "metrics" in message
         assert "count(*)" in message
         assert "Orders" in message
 

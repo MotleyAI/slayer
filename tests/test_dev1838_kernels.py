@@ -246,10 +246,10 @@ class TestRankingKeyPrecedence:
         with pytest.raises(ValueError) as excinfo:
             plan.plan_query(query=query, bundle=bundle)
         assert str(excinfo.value) == (
-            "first/last aggregation requires a ranking time column "
+            "first/last aggregation requires a ranking time field "
             "(a time_dimension, a DATE/TIMESTAMP dimension, or the "
-            "model's default_time_dimension); none is resolvable for "
-            "model 'untimed'."
+            "dataset's default_time_dimension); none is resolvable for "
+            "dataset 'untimed'."
         )
 
     def test_a_target_rooted_kernel_ignores_the_host_time_dimension(self) -> None:

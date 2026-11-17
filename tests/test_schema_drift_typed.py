@@ -113,7 +113,7 @@ class TestStageGraphBidirectional:
     def test_extension_repeating_a_stored_join_is_that_stored_edge(self) -> None:
         join = DatasetRelationship(to="customers", join_pairs=[["customer_id", "id"]])
         models = _ext_datasets()
-        models["orders"] = models["orders"].model_copy(update={"joins": [join]})
+        models["orders"] = models["orders"].model_copy(update={"relationships": [join]})
         graph = _stage_scope(SlayerQuery(population="orders", extensions=[DatasetExtension(source_name="orders", relationships=[join])]), models)
         assert _attribute_ref_to_base(
             ref="customers.name", base_name="customers", scope=graph,

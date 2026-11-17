@@ -481,7 +481,7 @@ class TestMemories:
 
 class TestFreshInputIsNeverConverted:
     def test_a_versioned_payload_outside_storage_is_refused(self) -> None:
-        with pytest.raises(ValueError, match="columns"):
+        with pytest.raises(ValueError, match="fields"):
             SlayerQuery.model_validate(_TIER)
 
     def test_a_versioned_model_document_outside_storage_is_refused(self) -> None:

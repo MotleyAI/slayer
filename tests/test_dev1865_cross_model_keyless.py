@@ -73,6 +73,6 @@ class TestKeylessDualRoleRejected:
         )
         with pytest.raises(
             ValueError,
-            match="partition_by column 'customers.tier' is not a query dimension",
+            match="partition_by field 'customers.tier' is not a query dimension",
         ):
             await exec_engine.execute(query)

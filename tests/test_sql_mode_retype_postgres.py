@@ -1,8 +1,11 @@
 """An ``sql``-mode model's stale non-list column over a live Postgres list (spec: models/schema-drift)."""
 
+from typing import Any
+
 import pytest
 
 from slayer.core.enums import DataType
+from slayer.engine.query_engine import SlayerQueryEngine
 from tests._dev2120_fixtures import contractors_statements
 from tests._pg_helpers import client_datasource, pg_query_engine
 from tests._sql_mode_retype_fixtures import (
@@ -16,8 +19,6 @@ from tests._sql_mode_retype_fixtures import (
 pytest.importorskip("pytest_postgresql")
 
 from pytest_postgresql import factories  # ALLOW(import-not-top): optional DB driver, gated by pytest.importorskip above
-from slayer.engine.query_engine import SlayerQueryEngine
-from typing import Any
 
 postgresql_proc = factories.postgresql_proc(port=None)
 postgresql = factories.postgresql("postgresql_proc")

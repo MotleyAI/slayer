@@ -33,7 +33,7 @@ from tests._model_access_fixtures import (
 )
 from tests._stored_upgrade_fixtures import customers_v10, orders_v10, raw_doc, raw_store
 
-MODELS = "MATCH (m:Model) RETURN m.id AS id"
+MODELS = "MATCH (m:Dataset) RETURN m.id AS id"
 VISIBLE_TO_HR = ALL_LOADABLE - {"fin", "fin_hop", "fin_ordered", "fin_report"}
 
 

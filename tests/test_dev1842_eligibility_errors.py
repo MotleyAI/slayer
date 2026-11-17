@@ -27,7 +27,7 @@ async def exec_backend(request):
 
 def _assert_names_saved_metric(message: str) -> None:
     low = message.lower()
-    assert "saved measure" in low, message
+    assert "saved metric" in low, message
     assert "aov" in message, message
 
 
@@ -84,7 +84,7 @@ class TestIneligiblePositions:
         with pytest.raises(ValueError) as ei:
             await gen(query)
         low = str(ei.value).lower()
-        assert "measure formula" in low or "computed dimension" in low, ei.value
+        assert "metric expression" in low or "computed dimension" in low, ei.value
 
 
 class TestRawRowQueries:
@@ -99,7 +99,7 @@ class TestRawRowQueries:
             await gen(query)
         message = str(ei.value)
         assert "customers.aov" in message
-        assert "measure" in message.lower()
+        assert "metric" in message.lower()
 
     async def test_raw_row_order_dotted_measure_targeted_error(self) -> None:
         query = q(distinct_dimension_values=False,
@@ -121,9 +121,9 @@ class TestUnresolvableDottedLeaf:
         message = str(ei.value)
         low = message.lower()
         assert "customers" in message
-        assert "measure" in low, "must mention the saved-measure namespace"
+        assert "metric" in low, "must mention the saved-measure namespace"
         # The column namespace is present too — either the word or a real column.
-        assert "column" in low or "spend" in message or "tier" in message
+        assert "field" in low or "spend" in message or "tier" in message
         assert ":sum" not in message, "must not suggest an aggregation suffix"
 
     async def test_close_measure_name_is_suggested(self) -> None:

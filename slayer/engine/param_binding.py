@@ -131,7 +131,7 @@ def bind_aggregation_params(
             raise SqlTemplateError(
                 f"Aggregation '{agg}' requires parameter '{name}'. "
                 f"Set it in the dataset's aggregation definition or at query time "
-                f"(e.g., '{agg}(amount, {name}=field)')."
+                f"(e.g., '{agg}(metric, {name}=field)')."
             )
         out.append((name, _bind_text(
             text=defaults[name], name=name, ctx=ctx, resolve=ctx.resolve_default)))

@@ -64,8 +64,8 @@ class TestTypingEnvironment:
         elab = elaborate_query(query=query, bundle=_bundle())
         assert isinstance(elab, ElaboratedQuery)
         assert [e.verdict for e in elab.dimensions] == ["field"]
-        assert [e.verdict for e in elab.metrics] == ["measure"]
-        assert [e.verdict for e in elab.filters] == ["field", "measure"]
+        assert [e.verdict for e in elab.metrics] == ["metric"]
+        assert [e.verdict for e in elab.filters] == ["field", "metric"]
         assert [e.verdict for e in elab.order] == ["field"]
 
     def test_measure_entry_home_and_resolved_grain(self) -> None:

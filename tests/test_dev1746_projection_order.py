@@ -512,7 +512,7 @@ class TestB8InnerStagePlanOrder:
         "factory_name",
         [
             "_transform_query",
-            "_cross_model_transform_query",
+            "_cross_dataset_transform_query",
             "_time_shift_query",
             "_consecutive_periods_query",
         ],
@@ -534,7 +534,7 @@ class TestB8InnerStagePlanOrder:
         "factory_name",
         [
             "_transform_query",
-            "_cross_model_transform_query",
+            "_cross_dataset_transform_query",
             "_time_shift_query",
             "_consecutive_periods_query",
         ],
@@ -542,7 +542,7 @@ class TestB8InnerStagePlanOrder:
     async def test_no_carried_alias_is_dropped(self, factory_name: str) -> None:
         """Fail closed at both ends: every public alias survives to the projection, and no stage omits an alias the next stage reads."""
         query = getattr(self, factory_name)()
-        if factory_name == "_cross_model_transform_query":
+        if factory_name == "_cross_dataset_transform_query":
             query = query.model_copy(update={"to_many_handling": "broadcast"})
         sql = await _gen(query, dialect="postgres")
         expected = set(_alias_suffixes(_expected_projection_aliases(query)))

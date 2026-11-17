@@ -114,7 +114,7 @@ class TestAllowedAggregationsValidator:
     @pytest.mark.parametrize("backend", ["yaml", "sqlite"])
     async def test_sole_primary_key_may_declare_collect(self, tmp_path, backend: str) -> None:
         doc = {"version": CURRENT_VERSIONS["SlayerModel"], "name": "stored", "sql_table": "t", "data_source": DS,
-               "columns": [{"name": "id", "type": "INT", "primary_key": True,
+               "fields": [{"name": "id", "datatype": "INT", "primary_key": True,
                             "allowed_aggregations": ["count", "collect"]}]}
         storage = await raw_store(backend=backend, base=str(tmp_path), models=[doc],
                                   datasource=DatasourceConfig(name=DS, type="duckdb", database=":memory:"))

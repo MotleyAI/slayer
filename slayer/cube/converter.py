@@ -912,7 +912,7 @@ class CubeToSlayerConverter:
             return reader.name
         if (problem := index.problem(node.this)) is not None:
             raise Unconvertible(problem)
-        name = self._add_physical(build, node.this, type=DataType.DOUBLE, format=fmt)
+        name = self._add_physical(build, node.this, datatype=DataType.DOUBLE, format=fmt)
         build.field_aggs[name].append(agg)
         return name
 
