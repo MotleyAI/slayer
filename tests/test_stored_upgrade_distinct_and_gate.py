@@ -15,6 +15,7 @@ from slayer.core.models import DatasourceConfig, SlayerDataset
 from slayer.core.query import SlayerQuery
 from slayer.memories.models import Memory
 from slayer.database import engine_factory
+from slayer.storage.document_keys import dataset_in, keys_for
 from slayer.storage.migrations import CURRENT_VERSIONS
 from tests._stored_upgrade_fixtures import BACKENDS, DS, memory_v2, measure_total, raw_store, run
 
@@ -30,8 +31,10 @@ DISTINCT_TOTAL = 8.0
 
 
 def _model_doc(*, version: int, measures: list[dict], name: str = "orders", **extra: Any) -> dict:
-    return {"version": version, "name": name, "sql_table": "orders", "data_source": DS, "columns": _COLUMNS,
-            "measures": measures, **extra}
+    """``orders`` stored at ``version``, spelled as that version stores it."""
+    doc = {"version": version, "name": name, "sql_table": "orders", "data_source": DS, "columns": _COLUMNS,
+           "measures": measures, **extra}
+    return dataset_in(doc, keys_for(entity="SlayerModel", version=version))
 
 
 def _formulas(doc: dict) -> list[str]:
@@ -69,7 +72,7 @@ class TestDistinctRewrite:
 
     @pytest.mark.parametrize(("stored", "loaded"), DISTINCT_CASES)
     def test_query_fields(self, stored: str, loaded: str) -> None:
-        query = _query(version=8, metrics=[stored], filter=[f"{stored} > 1"])
+        query = _query(version=8, measures=[stored], filters=[f"{stored} > 1"])
         assert [m.expression for m in query.metrics or []] == [loaded]
         assert query.filter == [f"{loaded} > 1"]
 
@@ -191,7 +194,7 @@ class TestOldGrammarGate:
 
     def test_the_warning_names_each_field(self, caplog: pytest.LogCaptureFixture) -> None:
         with _messages(caplog) as messages:
-            _query(version=6, name="gate_q", filter=[BETWEEN, "y > 0", BETWEEN])
+            _query(version=6, name="gate_q", filters=[BETWEEN, "y > 0", BETWEEN])
         assert [m for m in messages if "filters[0]" in m], messages
         assert [m for m in messages if "filters[2]" in m], messages
 
@@ -206,12 +209,12 @@ class TestOldGrammarGate:
 
     @pytest.mark.parametrize("pad", [" ", "\n  "], ids=["space", "newline"])
     def test_old_text_with_leading_whitespace_is_upgraded(self, pad: str) -> None:
-        query = _query(version=6, filter=[f'{pad}status == "paid"'])
+        query = _query(version=6, filters=[f'{pad}status == "paid"'])
         assert query.filter == [f"{pad}status = 'paid'"]
 
     def test_saved_query(self, caplog: pytest.LogCaptureFixture) -> None:
         with _messages(caplog) as messages:
-            query = _query(version=6, name="gate_q", filter=[BETWEEN, 'status == "paid"'],
+            query = _query(version=6, name="gate_q", filters=[BETWEEN, 'status == "paid"'],
                            dimensions=[{"expression": "status | region", "name": "tag"}])
         assert query.filter == [BETWEEN, "status = 'paid'"]
         assert [getattr(d, "expression") for d in query.dimensions or []] == ["status || region"]
