@@ -118,6 +118,7 @@ async def trip(request: pytest.FixtureRequest, tmp_path: Path) -> tuple[Env, Env
     return env, imported
 
 
+@pytest.mark.timeout(360)  # ~35 s locally, up to ~120 s on slow CI runners
 async def test_same_results_after_round_trip(trip: tuple[Env, Env]) -> None:
     env, imported = trip
     payloads: list[dict[str, Any]] = []
