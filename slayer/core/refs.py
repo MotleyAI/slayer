@@ -156,6 +156,12 @@ def _legacy_key_fields(key: Any) -> tuple[str, list[tuple[str, str]]]:
     ]
 
 
+def legacy_class_name(cls: type) -> str:
+    """The pinned class spelling of a key kind; any other class its own name."""
+    spelled = _LEGACY_KEY_SPELLINGS.get(cls)
+    return spelled[0] if spelled is not None else cls.__name__
+
+
 def legacy_key_repr(key: Any) -> str:
     """``repr``-position spelling: ``ClassName(field=..., ...)``."""
     spelled_cls, fields = _legacy_key_fields(key)

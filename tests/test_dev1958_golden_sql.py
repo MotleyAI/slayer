@@ -66,13 +66,13 @@ def _cases() -> dict:
         "frame/non_time_partition": _monthly(f"time_shift({_REGION_SHARE}, -1)", dr=True),
         "frame/mixed_conjunction": _monthly(
             "time_shift(sum(amount) + sum(amount, partition_by=[ordered_at]), -1)",
-            filters=["ordered_at >= '2024-02-01' and region = 'North'"]),
+            filter=["ordered_at >= '2024-02-01' and region = 'North'"]),
         "join/two_offsets": {**_monthly(""), "metrics": [
             {"expression": f"time_shift({_SHARE}, -1)", "name": "t1"},
             {"expression": f"time_shift({_SHARE}, -2)", "name": "t2"}]},
         "join/unaligned_day": _monthly("time_shift(sum(amount), -1, 'day')"),
         "population/association_filter": _orders(
-            f"time_shift({_SHARE}, -1)", dims=["status"], filters=[f"{_EVENT} > 40"]),
+            f"time_shift({_SHARE}, -1)", dims=["status"], filter=[f"{_EVENT} > 40"]),
         "population/associate_dimension": _orders(
             "time_shift(sum(amount), -1)", dims=[_EVENT], to_many_handling="associate"),
         "population/tier_partition": _orders(
@@ -103,13 +103,13 @@ def _query(case) -> SlayerQuery | list[SlayerQuery | dict]:
 
 
 async def _generate_one(case, dialect: str):
-    models = dev1832_datasets()
-    root_name = case[0]["source_model"] if isinstance(case, list) else case["source_model"]
-    root = next(m for m in models if m.name == root_name)
+    datasets = dev1832_datasets()
+    root_name = case[0]["population"] if isinstance(case, list) else case["population"]
+    root = next(d for d in datasets if d.name == root_name)
     try:
         return await _engine_generate(
             query=_query(case), dataset=root,
-            extra_datasets=[m for m in models if m is not root],
+            extra_datasets=[d for d in datasets if d is not root],
             dialect=dialect, validate=False)
     except Exception as exc:  # noqa: BLE001 — the raise itself is the contract
         return record_raise(exc)
