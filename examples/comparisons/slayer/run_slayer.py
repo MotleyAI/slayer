@@ -73,6 +73,12 @@ class SlayerExpect(BaseModel):
     # osi_roundtrip only: every probe model equals its re-imported twin.
     same_models: bool = False
 
+    @model_validator(mode="after")
+    def _same_models_alone(self) -> "SlayerExpect":
+        if self.same_models and self.model_fields_set - {"same_models"}:
+            raise ValueError("same_models takes no other expectation")
+        return self
+
 
 class OsiRoundtrip(BaseModel):
     """Export the probe models with `slayer export-osi`, then `import-osi` them into a fresh store."""
@@ -133,6 +139,10 @@ class SlayerBlock(BaseModel):
             raise ValueError("refine applies only to run_by_name")
         if self.steps and self.steps[-1].tool is None:
             raise ValueError("the last step must be a tool call")
+        if isinstance(self.expect, SlayerExpect) and self.expect.same_models and (
+            self.osi_roundtrip is None or self.query is not None
+        ):
+            raise ValueError("same_models needs osi_roundtrip without query")
         return self
 
 
@@ -439,15 +449,19 @@ def run_roundtrip(block: SlayerBlock, base_db: Path, workdir: Path) -> SessionRe
             run_sync(engine.aclose())
 
 
+def _same_models_outcome(res: SessionResult) -> Outcome:
+    if res.err is not None:
+        return Outcome(status=FAIL, detail=f"unexpected error: {first_line(res.err)}")
+    if res.model_diffs:
+        return Outcome(status=FAIL, detail=f"models differ after the round trip: {res.model_diffs}")
+    return Outcome(status=PASS, detail="re-imported models equal the originals")
+
+
 def evaluate_session(p: Probe, res: SessionResult, truth: Dict) -> Outcome:
     assert p.slayer is not None
     ex = p.slayer.expect if isinstance(p.slayer.expect, SlayerExpect) else SlayerExpect()
     if ex.same_models:
-        if res.err is not None:
-            return Outcome(status=FAIL, detail=f"unexpected error: {first_line(res.err)}")
-        if res.model_diffs:
-            return Outcome(status=FAIL, detail=f"models differ after the round trip: {res.model_diffs}")
-        return Outcome(status=PASS, detail="re-imported models equal the originals")
+        return _same_models_outcome(res)
     if res.err is None and ex.error:
         return Outcome(status=FAIL, detail=f"expected error {ex.error!r}, got: {res.text[:120]!r}")
     if res.err is None and (ex.contains or ex.lacks):

@@ -9,15 +9,23 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "examples" / "comparisons" / "export_matrix.py"
 
-_spec = importlib.util.spec_from_file_location("export_matrix", SCRIPT)
-assert _spec is not None
-assert _spec.loader is not None
-export_matrix = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(export_matrix)
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+export_matrix = _load("export_matrix", SCRIPT)
+run_slayer = _load("run_slayer", ROOT / "examples" / "comparisons" / "slayer" / "run_slayer.py")
 
 
 def test_matrix_json_is_up_to_date():
@@ -74,3 +82,21 @@ def test_probe_on_unknown_row_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setattr(export_matrix, "PROBES", probes)
     with pytest.raises(SystemExit, match="row Q999 is not in matrix.yaml"):
         export_matrix.load_probes({"Q1"})
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"osi_roundtrip": {}, "expect": {"same_models": True, "contains": ["## extension_only"]}},
+        {"osi_roundtrip": {}, "expect": {"same_models": True, "warning": "w"}},
+        {"osi_roundtrip": {}, "query": {"source_model": "orders"}, "expect": {"same_models": True}},
+        {"query": {"source_model": "orders"}, "expect": {"same_models": True}},
+    ],
+)
+def test_same_models_rejects_checks_it_would_skip(block):
+    with pytest.raises(ValidationError, match="same_models"):
+        run_slayer.SlayerBlock.model_validate(block)
+
+
+def test_same_models_alone_on_a_roundtrip_is_accepted():
+    run_slayer.SlayerBlock.model_validate({"osi_roundtrip": {}, "expect": {"same_models": True}})
