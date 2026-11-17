@@ -88,12 +88,12 @@ class DeleteReason(BaseModel):
 
 
 class RemoveSpec(BaseModel):
-    """Per-entity removal spec, mirroring the MCP ``edit_model`` ``remove=`` shape."""
+    """Per-entity removal spec, mirroring the MCP ``edit_dataset`` ``remove=`` shape."""
 
     fields: list[str] = Field(default_factory=list)
     metrics: list[str] = Field(default_factory=list)
     aggregations: list[str] = Field(default_factory=list)
-    # Edge references of the dropped joins that have one; ``relationship_edges`` addresses each exactly.
+    # Edge references of the dropped relationships that have one; ``relationship_edges`` addresses each exactly.
     relationships: list[str] = Field(default_factory=list)
     relationship_edges: list[RelationshipEdgeRef] = Field(default_factory=list)
 

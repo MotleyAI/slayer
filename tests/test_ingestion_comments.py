@@ -353,7 +353,7 @@ class TestSqliteProbePreservesComments:
         cols = [IntrospectedColumn(name="a", type=DataType.INT, comment="kept")]
         async with _client(DatasourceConfig(name="mem", type="duckdb", database=":memory:")) as client:
             with patch("slayer.database.sqlite_introspect.probe_sqlite_integer_column") as probe:
-                out = await _sqlite_probe_integer_columns(client=client, sql_table="t", fields=cols)
+                out = await _sqlite_probe_integer_columns(client=client, sql_table="t", columns=cols)
         probe.assert_not_called()
         assert out[0].comment == "kept"
 
@@ -362,7 +362,7 @@ class TestSqliteProbePreservesComments:
             await client.execute("CREATE TABLE t (a INTEGER)")
             await client.execute("INSERT INTO t VALUES (1.5)")
             cols = [IntrospectedColumn(name="a", type=DataType.INT, comment="probed")]
-            out = await _sqlite_probe_integer_columns(client=client, sql_table="t", fields=cols)
+            out = await _sqlite_probe_integer_columns(client=client, sql_table="t", columns=cols)
             assert out[0].type is DataType.DOUBLE
             assert out[0].comment == "probed"
 
@@ -845,7 +845,7 @@ class TestReportShape:
         _print_ingest_addition(addition, file=buf)
         out = buf.getvalue()
         assert "+descriptions: amount, status" in out
-        assert "+model description" in out
+        assert "+dataset description" in out
 
     def test_print_created_with_descriptions(self) -> None:
         addition = DatasetAddition(
@@ -857,7 +857,7 @@ class TestReportShape:
         )
         buf = io.StringIO()
         _print_ingest_addition(addition, file=buf)
-        assert "Created: orders (3 columns, 2 described)" in buf.getvalue()
+        assert "Created: orders (3 fields, 2 described)" in buf.getvalue()
 
     def test_print_created_without_descriptions_unchanged(self) -> None:
         addition = DatasetAddition(
@@ -865,7 +865,7 @@ class TestReportShape:
         )
         buf = io.StringIO()
         _print_ingest_addition(addition, file=buf)
-        assert "Created: orders (1 columns)" in buf.getvalue()
+        assert "Created: orders (1 fields)" in buf.getvalue()
 
     def test_description_only_update_is_printed(self) -> None:
         addition = DatasetAddition(
@@ -888,7 +888,7 @@ class TestMcpIngestRender:
         async with _client(ds) as client:
             out = await _render_ingest_result(result, schema_name="", ds=ds, client=client)
         assert "+descriptions: amount" in out
-        assert "+model description" in out
+        assert "+dataset description" in out
 
     async def test_datasource_only_description_not_swallowed(self) -> None:
         result = IdempotentIngestResult(datasource_described=True)

@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from slayer.core.enums import RelationshipCardinality, JoinType, invert_cardinality
 from slayer.core.errors import QueryExtensionError
 from slayer.core.relationship_walker import OrientedRelationship, canonical_token, orient_relationship
-from slayer.core.models import DatasetRelationship, SlayerDataset, _check_join_keys, _validate_dataset_name
+from slayer.core.models import DatasetRelationship, SlayerDataset, _check_relationship_keys, _validate_dataset_name
 
 __all__ = [
     "EdgeMerge",
@@ -190,7 +190,7 @@ class EdgeMerge:
             self._check_new_name(name, label=label)
         new = relationship.model_copy(update={"name": name, "join_type": JoinType.LEFT}).as_query_local()
         if not source.awaits_fields:
-            _check_join_keys(dataset_name=source.name, fields=source.fields, joins=[new])
+            _check_relationship_keys(dataset_name=source.name, fields=source.fields, relationships=[new])
         self.datasets[source.name] = source.model_copy(update={"relationships": [*source.relationships, new]})
         edge = orient_relationship(relationship=new, declaring=self.datasets[source.name], other=target, from_dataset=source.name)
         return ExtensionEdge(edge=edge, token=canonical_token(edge))

@@ -956,7 +956,7 @@ class TestSqliteIngestionProbe:
                 await _sqlite_probe_integer_columns(
                     client=client,
                     sql_table="t",
-                    fields=columns,
+                    columns=columns,
                 )
 
             # The dotted alias must never be passed to the probe.

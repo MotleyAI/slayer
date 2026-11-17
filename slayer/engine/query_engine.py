@@ -59,7 +59,7 @@ from slayer.core.models import (
     DatasetMetric,
     SlayerDataset,
     is_identifier,
-    _check_join_keys,
+    _check_relationship_keys,
     relationship_key_error,
 )
 from slayer.core.query import (
@@ -667,9 +667,9 @@ class SlayerResponse(BaseModel):
     def row_count(self) -> int:
         return len(self.data)
 
-    def _format_value(self, field: str, value: Any) -> str:
+    def _format_value(self, column: str, value: Any) -> str:
         """Format a single cell value using column format metadata if available."""
-        fm = self.attributes.get(field)
+        fm = self.attributes.get(column)
         if fm and fm.format and isinstance(value, (int, float, decimal.Decimal)):
             return format_number(value=value, format_spec=fm.format)
         return encode_text(value)
@@ -682,7 +682,7 @@ class SlayerResponse(BaseModel):
         separator = "| " + " | ".join("---" for _ in self.columns) + " |"
         body_lines = []
         for row in self.data:
-            cells = [self._format_value(field=c, value=row.get(c, "")) for c in self.columns]
+            cells = [self._format_value(column=c, value=row.get(c, "")) for c in self.columns]
             body_lines.append("| " + " | ".join(cells) + " |")
         return "\n".join([header, separator] + body_lines)
 
@@ -3378,7 +3378,7 @@ def _validate_join_keys(
     *, dataset: SlayerDataset, loaded: Dict[str, Optional[SlayerDataset]],
 ) -> None:
     """Every join's keys name declared base columns on both sides (source re-checked for a populated query-backed model)."""
-    _check_join_keys(dataset_name=dataset.name, fields=dataset.fields, joins=dataset.relationships)
+    _check_relationship_keys(dataset_name=dataset.name, fields=dataset.fields, relationships=dataset.relationships)
     for join in dataset.relationships:
         target = loaded.get(join.to)
         if target is None:

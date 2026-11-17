@@ -738,9 +738,9 @@ def relationship_key_error(
     return None
 
 
-def _check_join_keys(*, dataset_name: str, fields: list[DatasetField], joins: list[DatasetRelationship]) -> None:
+def _check_relationship_keys(*, dataset_name: str, fields: list[DatasetField], relationships: list[DatasetRelationship]) -> None:
     """Every relationship's source-side key names a declared, unfiltered base field."""
-    for relationship in joins:
+    for relationship in relationships:
         for src, _ in relationship.join_pairs:
             err = relationship_key_error(dataset=dataset_name, target=relationship.to, key=src,
                                  side=dataset_name, fields=fields)
@@ -889,7 +889,7 @@ class SlayerDataset(BaseModel):
     def _validate_join_keys(self) -> "SlayerDataset":
         # An unexpanded query-backed dataset has no fields yet; checked once populated.
         if not self.awaits_fields:
-            _check_join_keys(dataset_name=self.name, fields=self.fields, joins=self.relationships)
+            _check_relationship_keys(dataset_name=self.name, fields=self.fields, relationships=self.relationships)
         return self
 
     @model_validator(mode="after")

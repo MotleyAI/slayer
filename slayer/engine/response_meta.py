@@ -39,8 +39,8 @@ class ResponseAttributes(BaseModel):
     dimensions: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
     metrics: Dict[str, FieldMetadata] = PydanticField(default_factory=dict)
 
-    def get(self, field: str) -> Optional[FieldMetadata]:
-        return self.dimensions.get(field) or self.metrics.get(field)
+    def get(self, column: str) -> Optional[FieldMetadata]:
+        return self.dimensions.get(column) or self.metrics.get(column)
 
 
 def _infer_aggregated_format(

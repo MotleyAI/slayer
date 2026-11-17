@@ -535,7 +535,7 @@ def iif_case_chain(
     return exp.Case(ifs=ifs, default=value(node))
 
 
-def render_in_predicate(*, key: InKey, field: Expression, dialect: SqlDialect) -> Expression:
+def render_in_predicate(*, key: InKey, column: Expression, dialect: SqlDialect) -> Expression:
     """``column [NOT] IN (…)`` over ``key``'s literals."""
     # Backstop for the bind-time rule: a NULL member breaks IN, and ``NOT IN`` with one matches no rows.
     if any(v.value is None for v in key.values):
@@ -544,7 +544,7 @@ def render_in_predicate(*, key: InKey, field: Expression, dialect: SqlDialect) -
             "matches no rows. Test for null separately with IS NULL / "
             "IS NOT NULL.",
         )
-    node = exp.In(this=field, expressions=[_literal(v.value, dialect=dialect) for v in key.values])
+    node = exp.In(this=column, expressions=[_literal(v.value, dialect=dialect) for v in key.values])
     return exp.Not(this=node) if key.negated else node
 
 
@@ -586,7 +586,7 @@ def render_row_expression(
                                 field_element=field_element)
     if isinstance(key, InKey):
         (column,) = numeric_parts(key=key, parts=[_part(key.field)], field_type=field_type)
-        return render_in_predicate(key=key, field=column, dialect=dialect)
+        return render_in_predicate(key=key, column=column, dialect=dialect)
     if isinstance(key, CastKey):
         return render_cast(key=key, part=_part, dialect=dialect)
     if isinstance(key, ArrayLiteralKey):

@@ -17,7 +17,7 @@ from slayer.core.models import (
     DatasetField,
     SlayerDataset,
     _check_field_metric_namespace,
-    _check_join_keys,
+    _check_relationship_keys,
 )
 from slayer.core.query import DatasetExtension, SlayerQuery, SourceSpec
 from slayer.core.scope import DatasetScope, StageDisplay, StageSchema
@@ -223,7 +223,7 @@ def dataset_from_stage_schema(
     )
     joins = list(saved.relationships) if saved is not None else []
     # Joins attach after the rename (validators skip model_copy), so check their keys here.
-    _check_join_keys(dataset_name=name, fields=model.fields, joins=joins)
+    _check_relationship_keys(dataset_name=name, fields=model.fields, relationships=joins)
     # A minted stage identity carries the reserved prefix the name validator rejects.
     return model.model_copy(update={
         "name": name, "sql_table": name if sql is None else None,

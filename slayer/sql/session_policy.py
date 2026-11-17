@@ -77,10 +77,10 @@ def _scoped_table(table: exp.Table) -> ScopedTable:
 
 
 def _build_predicate(
-    field: str, value, *, table: Optional[str] = None
+    column: str, value, *, table: Optional[str] = None
 ) -> Expression:
     """``column = value`` / ``column IN (...)``, optionally qualified by ``table``."""
-    col = exp.column(field, table=table) if table else exp.column(field)
+    col = exp.column(column, table=table) if table else exp.column(column)
     if isinstance(value, tuple):
         return exp.In(this=col, expressions=[exp.convert(v) for v in value])
     return exp.EQ(this=col, expression=exp.convert(value))

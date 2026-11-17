@@ -456,7 +456,7 @@ def render_value_key(  # NOSONAR(S3776) — sequential dispatch over the closed 
         (column,) = numeric_parts(
             key=key, parts=[render_value_key(key=key.field, ctx=ctx)], field_type=_known_field_types(ctx),
         )
-        return render_in_predicate(key=key, field=column, dialect=ctx.dialect)
+        return render_in_predicate(key=key, column=column, dialect=ctx.dialect)
 
     if isinstance(key, CastKey):
         return render_cast(

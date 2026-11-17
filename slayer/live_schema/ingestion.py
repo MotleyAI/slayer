@@ -549,19 +549,19 @@ async def _sqlite_probe_integer_columns(
     *,
     client: SqlClient,
     sql_table: str,
-    fields: list[IntrospectedColumn],
+    columns: list[IntrospectedColumn],
 ) -> list[IntrospectedColumn]:
     """Widen declared-INT base columns whose stored values aren't integers (integer-affinity dialects).
 
     A ``None`` probe verdict keeps the declared INT.
     """
     if not dialect_of(client).probes_integer_affinity:
-        return fields
+        return columns
 
     location = sql_table_location(sql_table, dialect=dialect_of(client))
     schema, table = location.schema_name, location.name
     out: list[IntrospectedColumn] = []
-    for col in fields:
+    for col in columns:
         if col.type is not DataType.INT or "." in col.name:
             out.append(col)
             continue
@@ -599,7 +599,7 @@ async def introspect_table_columns(
     ref = ref or await default_schema_ref(client)
     columns = await _introspect_table_columns(client=client, table_name=table_name, ref=ref)
     return await _sqlite_probe_integer_columns(
-        client=client, sql_table=ref.qualify(table_name, dialect=dialect_of(client)), fields=columns)
+        client=client, sql_table=ref.qualify(table_name, dialect=dialect_of(client)), columns=columns)
 
 
 async def introspect_table_to_dataset(
@@ -622,7 +622,7 @@ async def introspect_table_to_dataset(
         client=client, table_name=table_name, ref=ref, primary_key=keys.primary_key,
     )
     sql_table = ref.qualify(table_name, dialect=dialect_of(client))
-    columns = await _sqlite_probe_integer_columns(client=client, sql_table=sql_table, fields=columns)
+    columns = await _sqlite_probe_integer_columns(client=client, sql_table=sql_table, columns=columns)
     return _fields_to_dataset(
         name=dataset_name or table_name,
         fields=columns,
@@ -844,7 +844,7 @@ async def _build_one_dataset(
     columns = await _introspect_table_columns(
         client=client, table_name=table, ref=ref, primary_key=keys.primary_key,
     )
-    columns = await _sqlite_probe_integer_columns(client=client, sql_table=sql_table, fields=columns)
+    columns = await _sqlite_probe_integer_columns(client=client, sql_table=sql_table, columns=columns)
     meta = {"internal_table": internal_tool} if internal_tool else None
     return _fields_to_dataset(
         name=dataset_name,
@@ -1808,7 +1808,7 @@ def _merge_fresh_tables(
 
 
 def _addition_fields(*, merge: _TableMerge, final: SlayerDataset, plan: FkEdgePlan) -> dict[str, Any]:
-    """``ModelAddition`` fields for one merged table."""
+    """``DatasetAddition`` fields for one merged table."""
     added = final.relationships if merge.created else plan.added.get(final.name, [])
     fields: dict[str, Any] = {
         "dataset_name": merge.table_name,
@@ -1819,17 +1819,17 @@ def _addition_fields(*, merge: _TableMerge, final: SlayerDataset, plan: FkEdgePl
     if merge.created:
         return fields | {
             "created": True,
-            "new_columns": [c.name for c in final.fields],
-            "described_columns": [c.name for c in final.fields if c.description],
-            "model_described": bool(final.description),
+            "new_fields": [c.name for c in final.fields],
+            "described_fields": [c.name for c in final.fields if c.description],
+            "dataset_described": bool(final.description),
         }
     assert merge.merge is not None
     return fields | {
-        "new_columns": merge.merge.new_fields,
-        "widened_columns": merge.merge.widened_fields,
+        "new_fields": merge.merge.new_fields,
+        "widened_fields": merge.merge.widened_fields,
         "kind_change": merge.kind_change,
-        "described_columns": merge.merge.described_fields,
-        "model_described": merge.merge.dataset_described,
+        "described_fields": merge.merge.described_fields,
+        "dataset_described": merge.merge.dataset_described,
         "sql_table_change": merge.sql_table_change,
     }
 
@@ -2091,23 +2091,23 @@ _KIND_LABELS = {"view": " [view]", "materialized_view": " [materialized view]"}
 
 
 def _updated_detail_lines(addition: "schema_drift.DatasetAddition") -> list[str]:
-    """The ``Updated: <model> (...)`` detail fragments, in display order."""
+    """The ``Updated: <dataset> (...)`` detail fragments, in display order."""
     described = getattr(addition, "described_fields", []) or []
     widened = getattr(addition, "widened_fields", []) or []
     named = getattr(addition, "named_relationships", []) or []
     entries = [
         f"sql_table: {addition.sql_table_change}"
         if getattr(addition, "sql_table_change", None) else None,
-        f"+columns: {', '.join(addition.new_fields)}"
+        f"+fields: {', '.join(addition.new_fields)}"
         if addition.new_fields else None,
-        f"+joins: {', '.join(addition.new_relationships)}"
+        f"+relationships: {', '.join(addition.new_relationships)}"
         if addition.new_relationships else None,
-        f"named joins: {', '.join(named)}" if named else None,
+        f"named relationships: {', '.join(named)}" if named else None,
         f"widened: {', '.join(widened)}" if widened else None,
         f"source_kind: {addition.kind_change}"
         if getattr(addition, "kind_change", None) else None,
         f"+descriptions: {', '.join(described)}" if described else None,
-        "+model description" if getattr(addition, "dataset_described", False) else None,
+        "+dataset description" if getattr(addition, "dataset_described", False) else None,
     ]
     return [e for e in entries if e]
 
@@ -2116,14 +2116,14 @@ def _print_ingest_addition(
     addition: "schema_drift.DatasetAddition", *, file: TextIO | None = None
 ) -> None:
     out = file if file is not None else sys.stdout
-    # Label non-table objects — a view-backed model has no PK and no joins.
+    # Label non-table objects — a view-backed dataset has no PK and no relationships.
     label = _KIND_LABELS.get(getattr(addition, "source_kind", None) or "", "")
     if addition.created:
         described = getattr(addition, "described_fields", []) or []
         suffix = f", {len(described)} described" if described else ""
         print(
             f"Created: {addition.dataset_name} "
-            f"({len(addition.new_fields)} columns{suffix}){label}",
+            f"({len(addition.new_fields)} fields{suffix}){label}",
             file=out,
         )
         return

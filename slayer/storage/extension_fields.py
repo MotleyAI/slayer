@@ -41,10 +41,10 @@ Key = Tuple[str, str]
 
 
 def holds_removed_forms(query: Any) -> bool:
-    """Whether a raw stored query carries an inline ``source_model`` or extension ``fields``."""
+    """Whether a migrated stored query carries an inline ``population`` or extension ``columns``."""
     if not isinstance(query, dict):
         return False
-    source, extensions = query.get("source_model"), query.get("extensions")
+    source, extensions = query.get("population"), query.get("extensions")
     return isinstance(source, dict) or (
         isinstance(extensions, list) and any(isinstance(e, dict) and "columns" in e for e in extensions))
 
@@ -67,8 +67,8 @@ def inline_extension_fields(
 ) -> List[SlayerQuery]:
     """The raw stored ``stages`` (migrated, one query list) with every extension column inlined where it is used."""
     for stage in stages:
-        if isinstance(stage.get("source_model"), dict):
-            raise UnconvertibleStoredQueryError("an inline source_model")
+        if isinstance(stage.get("population"), dict):
+            raise UnconvertibleStoredQueryError("an inline population")
     raw_columns = [_extension_fields(stage) for stage in stages]
     with migrating_document(document, stored=True):
         queries = [SlayerQuery.model_validate(_without_fields(stage)) for stage in stages]
@@ -172,14 +172,14 @@ class _Stage:
             raise UnconvertibleStoredQueryError(f"{what}, named like a column of {owner!r}")
         return _ExtensionField(owner=owner, name=name, tree=parse_expr(text), derived=True, label=raw.get("label"))
 
-    def _check_join_keys(self, extension: dict) -> None:
+    def _check_relationship_keys(self, extension: dict) -> None:
         owner = self._owner(extension.get("source_name"))
-        for join in (j for j in extension.get("joins") or [] if isinstance(j, dict)):
-            target = join.get("target_model")
+        for join in (j for j in extension.get("relationships") or [] if isinstance(j, dict)):
+            target = join.get("to")
             target_owner = (self._dataset_named(target, quoted=False) or target) if isinstance(target, str) else target
             if any((owner, pair[0]) in self.fields or (target_owner, pair[1]) in self.fields
                    for pair in join.get("join_pairs") or []):
-                raise UnconvertibleStoredQueryError(f"an extension join of {owner!r} keyed on an extension column")
+                raise UnconvertibleStoredQueryError(f"an extension relationship of {owner!r} keyed on an extension column")
 
     # -- resolution ----------------------------------------------------------
     def _hit(self, ref: Any, *, root: Optional[SlayerDataset]) -> Optional[Tuple[Tuple[str, ...], Key]]:
@@ -264,14 +264,14 @@ class _Stage:
     # -- positions -----------------------------------------------------------
     def converted(self, *, extensions: List[dict]) -> SlayerQuery:
         for extension in extensions:
-            self._check_join_keys(extension)
+            self._check_relationship_keys(extension)
         q, host = self.query, self.scope.host
         update: Dict[str, Any] = {
             "dimensions": [self._dimension(d, root=host) for d in q.dimensions] if q.dimensions else q.dimensions,
             "time_dimensions": [self._time_dimension(td, root=host) for td in q.time_dimensions]
             if q.time_dimensions else q.time_dimensions,
-            "measures": [self._metric(m, root=host) for m in q.metrics] if q.metrics else q.metrics,
-            "filters": [self._text(f, root=host) or f for f in q.filter] if q.filter else q.filter,
+            "metrics": [self._metric(m, root=host) for m in q.metrics] if q.metrics else q.metrics,
+            "filter": [self._text(f, root=host) or f for f in q.filter] if q.filter else q.filter,
             "order": [self._order(o, root=host) for o in q.order] if q.order else q.order,
             "extensions": [self._extension(e) for e in q.extensions] if q.extensions else q.extensions,
         }
