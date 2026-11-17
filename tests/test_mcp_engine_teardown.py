@@ -174,7 +174,7 @@ class TestToolsReuseClosureEngine:
                 raise AssertionError("validate_models constructed a new engine")
 
         monkeypatch.setattr(srv, "SlayerQueryEngine", _Boom)
-        out = await _call(server, name="validate_models", arguments={"data_source": "lite"})
+        out = await _call(server, name="validate_datasets", arguments={"data_source": "lite"})
         # Sane output: a JSON list of pending deletes (empty when no drift).
         assert isinstance(json.loads(out), list)
 
@@ -190,7 +190,7 @@ class TestToolsReuseClosureEngine:
 
         monkeypatch.setattr(srv, "SlayerQueryEngine", _Boom)
         out = await _call(
-            server, name="recommend_root_model",
+            server, name="recommend_population",
             arguments={"items": ["t.v"], "data_source": "lite"},
         )
         assert "t" in out
@@ -270,7 +270,7 @@ class TestSqlModeDriftClientReachable:
         engine = server._slayer_engine
         assert len(engine._sql_clients) == 0
 
-        await _call(server, name="validate_models", arguments={"data_source": "lite"})
+        await _call(server, name="validate_datasets", arguments={"data_source": "lite"})
 
         key = client_cache_key(_lite_datasource(workspace / "live.db"))
         assert key in engine._sql_clients, (
@@ -303,6 +303,6 @@ class TestSqlModeDriftClientReachable:
         # validate_models reuses that cached client object; no second one is
         # built (a new client under the same key would still leak on teardown
         # of the original — assert object identity, not just key equality).
-        await _call(server, name="validate_models", arguments={"data_source": "lite"})
+        await _call(server, name="validate_datasets", arguments={"data_source": "lite"})
         assert set(engine._sql_clients.keys()) == {key}
         assert engine._sql_clients[key] is client_before

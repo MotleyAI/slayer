@@ -254,7 +254,7 @@ async def drift_entries(*, datasets: Iterable[SlayerDataset], db: Path, base_dir
 def deletes(found: Iterable[dict[str, Any]], *, dataset: str) -> list[dict[str, Any]]:
     """Findings that delete ``model`` or remove any of its columns or measures."""
     return [e for e in found if e.get("model_name") == dataset
-            and (e.get("tool") == "delete_model" or (e.get("remove") or {}))]
+            and (e.get("tool") == "delete_dataset" or (e.get("remove") or {}))]
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────

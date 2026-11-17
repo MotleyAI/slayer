@@ -255,7 +255,7 @@ def rest(seeded) -> tuple[TestClient, YAMLStorage]:
 class TestRest:
     async def test_create_rejected(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, store = rest
-        resp = client.post("/models", json=_dataset(_BROKEN).model_dump(mode="json"))
+        resp = client.post("/datasets", json=_dataset(_BROKEN).model_dump(mode="json"))
         assert resp.status_code == 400
         assert "orders" in resp.json()["detail"]
         assert "custom_agg" in resp.json()["detail"]
@@ -263,9 +263,9 @@ class TestRest:
 
     async def test_update_rejected_leaves_original(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, store = rest
-        ok = client.post("/models", json=_dataset("SUM({value})").model_dump(mode="json"))
+        ok = client.post("/datasets", json=_dataset("SUM({value})").model_dump(mode="json"))
         assert ok.status_code == 200
-        resp = client.put("/models/orders", json=_dataset(_BROKEN).model_dump(mode="json"))
+        resp = client.put("/datasets/orders", json=_dataset(_BROKEN).model_dump(mode="json"))
         assert resp.status_code == 400
         kept = await store.get_dataset("orders", data_source=_DS)
         assert kept is not None
@@ -275,14 +275,14 @@ class TestRest:
     async def test_unreferenced_param_rejected(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, store = rest
         agg = Aggregation(name="custom_agg", expression="SUM({value})", params=_p("unused"))
-        resp = client.post("/models", json=_with(agg).model_dump(mode="json"))
+        resp = client.post("/datasets", json=_with(agg).model_dump(mode="json"))
         assert resp.status_code == 400
         assert "parameter 'unused'" in resp.json()["detail"]
         assert await store.get_dataset("orders", data_source=_DS) is None
 
     async def test_non_parameter_query_argument_is_a_comparison_and_400(self, rest) -> None:
         client, _store = rest
-        assert client.post("/models", json=_dataset("SUM({value})").model_dump(mode="json")).status_code == 200
+        assert client.post("/datasets", json=_dataset("SUM({value})").model_dump(mode="json")).status_code == 200
 
         def detail(formula: str) -> str:
             resp = client.post("/query", json={"population": "orders", "metrics": [{"expression": formula, "name": "m"}]})
@@ -305,7 +305,7 @@ class TestCli:
         path = tmp_path / "m.yaml"
         path.write_text(yaml.safe_dump(_dataset(_BROKEN).model_dump(mode="json", exclude_none=True)))
         monkeypatch.setattr(
-            sys, "argv", ["slayer", "models", "--storage", store.base_dir, "create", str(path)],
+            sys, "argv", ["slayer", "datasets", "--storage", store.base_dir, "create", str(path)],
         )
         with pytest.raises(SystemExit) as ei:
             cli_main()
@@ -336,7 +336,7 @@ _COLUMNS = [
 class TestMcp:
     async def test_create_model_rejects_broken_formula(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, _engine, store = mcp
-        out = await _call(server=server, name="create_model", arguments={
+        out = await _call(server=server, name="create_dataset", arguments={
             "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _COLUMNS,
             "aggregations": [{"name": "custom_agg", "expression": _BROKEN}],
         })
@@ -347,7 +347,7 @@ class TestMcp:
 
     async def test_create_model_with_aggregation_is_queryable(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, engine, store = mcp
-        out = await _call(server=server, name="create_model", arguments={
+        out = await _call(server=server, name="create_dataset", arguments={
             "name": "orders", "sql_table": "orders", "data_source": _DS, "fields": _COLUMNS,
             "aggregations": [{"name": "sum_sq", "expression": "SUM({value} * {value})"}],
         })
@@ -362,7 +362,7 @@ class TestMcp:
 
     async def test_create_model_aggregations_with_query_rejected(self, mcp) -> None:
         server, _engine, _store = mcp
-        out = await _call(server=server, name="create_model", arguments={
+        out = await _call(server=server, name="create_dataset", arguments={
             "name": "qb", "query": {"population": "orders", "metrics": ["count(*)"]},
             "aggregations": [{"name": "sum_sq", "expression": "SUM({value} * {value})"}],
         })
@@ -372,8 +372,8 @@ class TestMcp:
     async def test_edit_model_broken_formula_leaves_original(self, mcp: tuple[Any, SlayerQueryEngine, StorageBackend]) -> None:
         server, engine, store = mcp
         await engine.save_dataset(_dataset("SUM({value})"))
-        out = await _call(server=server, name="edit_model", arguments={
-            "model_name": "orders", "data_source": _DS,
+        out = await _call(server=server, name="edit_dataset", arguments={
+            "dataset_name": "orders", "data_source": _DS,
             "aggregations": [{"name": "custom_agg", "expression": _BROKEN}],
         })
         assert "Error" in out or "error" in out

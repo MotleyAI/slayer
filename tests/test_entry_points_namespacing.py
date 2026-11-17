@@ -130,9 +130,9 @@ class TestMCPModelToolsDataSourceArg:
 
         await _call_mcp(
             mcp_server,
-            name="edit_model",
+            name="edit_dataset",
             arguments={
-                "model_name": "users",
+                "dataset_name": "users",
                 "data_source": "db_a",
                 "description": "edited a",
             },
@@ -154,8 +154,8 @@ class TestMCPModelToolsDataSourceArg:
 
         result = await _call_mcp(
             mcp_server,
-            name="edit_model",
-            arguments={"model_name": "users", "description": "edited"},
+            name="edit_dataset",
+            arguments={"dataset_name": "users", "description": "edited"},
         )
         # Error surfaces both remediations + lists the candidates.
         assert "data_source" in result
@@ -235,7 +235,7 @@ class TestMCPModelToolsDataSourceArg:
 
         await _call_mcp(
             mcp_server,
-            name="delete_model",
+            name="delete_dataset",
             arguments={"name": "users", "data_source": "db_a"},
         )
         assert await storage.get_dataset("users", data_source="db_a") is None
@@ -254,7 +254,7 @@ class TestAPINamespacedModels:
         await storage.save_dataset(_dataset("users", data_source="db_a"))
         await storage.save_dataset(_dataset("users", data_source="db_b"))
 
-        resp = http_client.get("/models/users", params={"data_source": "db_a"})
+        resp = http_client.get("/datasets/users", params={"data_source": "db_a"})
         assert resp.status_code == 200
         body = resp.json()
         assert body["name"] == "users"
@@ -266,7 +266,7 @@ class TestAPINamespacedModels:
         await storage.save_dataset(_dataset("users", data_source="db_a"))
         await storage.save_dataset(_dataset("users", data_source="db_b"))
 
-        resp = http_client.get("/models/users")
+        resp = http_client.get("/datasets/users")
         assert resp.status_code == 409
         detail = resp.json()["detail"]
         # Body cites both candidates.
@@ -279,7 +279,7 @@ class TestAPINamespacedModels:
         await storage.save_dataset(_dataset("users", data_source="db_a"))
         await storage.save_dataset(_dataset("users", data_source="db_b"))
 
-        resp = http_client.delete("/models/users", params={"data_source": "db_a"})
+        resp = http_client.delete("/datasets/users", params={"data_source": "db_a"})
         assert resp.status_code == 200
         # Only db_a's copy is gone.
         assert await storage.get_dataset("users", data_source="db_a") is None
@@ -292,7 +292,7 @@ class TestAPINamespacedModels:
         await storage.save_dataset(_dataset("orders", data_source="db_a"))
         await storage.save_dataset(_dataset("users", data_source="db_b"))
 
-        resp = http_client.get("/models", params={"data_source": "db_a"})
+        resp = http_client.get("/datasets", params={"data_source": "db_a"})
         assert resp.status_code == 200
         names = sorted(m["name"] for m in resp.json())
         assert names == ["orders", "time_spine", "users"]

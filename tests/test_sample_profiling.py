@@ -257,7 +257,7 @@ async def test_inspect_model_profiles_numeric_columns_with_one_query(env, monkey
     model = await _save(storage, _orders())
     log = _record(engine=engine, monkeypatch=monkeypatch)
     out = await render_dataset_inspection(
-        dataset=model, storage=storage, engine=engine, format="json", sections=["columns"],
+        dataset=model, storage=storage, engine=engine, format="json", sections=["fields"],
     )
     assert len(_numeric_batches(log)) == 1
     rendered = {c["name"]: c["sampled"] for c in json.loads(out)["columns"]}
@@ -282,7 +282,7 @@ async def test_healthy_model_parity_across_read_paths(env) -> None:
         DatasetField(name="empty_num", datatype=DataType.DOUBLE),
     ]))
 
-    await render_dataset_inspection(dataset=model, storage=storage, engine=engine, sections=["columns"])
+    await render_dataset_inspection(dataset=model, storage=storage, engine=engine, sections=["fields"])
     via_inspect_model = {n: _triple(await _stored(storage, column=n)) for n in names}
 
     await _reset_samples(storage, names=names)
@@ -414,7 +414,7 @@ async def test_inspect_model_on_failing_model_is_bounded(env, monkeypatch: pytes
     engine, storage = env
     model = await _save(storage, _ghost())
     log = _record(engine=engine, monkeypatch=monkeypatch)
-    await render_dataset_inspection(dataset=model, storage=storage, engine=engine, sections=["columns"])
+    await render_dataset_inspection(dataset=model, storage=storage, engine=engine, sections=["fields"])
     assert len(log) == 3  # row count + first profiling query + probe
 
 
@@ -945,7 +945,7 @@ async def test_inspect_model_under_policy_renders_scoped_samples(env: tuple[Any,
     model = await storage.get_dataset("orders", data_source=DS)
     assert model is not None
     out = await render_dataset_inspection(
-        dataset=model, storage=storage, engine=_policy_engine(storage), format="json", sections=["columns"],
+        dataset=model, storage=storage, engine=_policy_engine(storage), format="json", sections=["fields"],
     )
     rendered = {c["name"]: c["sampled"] for c in json.loads(out)["columns"]}
     assert rendered["status"] == "paid"

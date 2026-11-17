@@ -340,7 +340,7 @@ class TestTimeDimensionColumnAlias:
         assert via_kw.field == "created_at"
 
     def test_dimension_wins_when_both_keys_are_present(self) -> None:
-        td = TimeDimension.model_validate({"dimension": "a", "column": "b", "granularity": "month"})
+        td = TimeDimension.model_validate({"field": "a", "column": "b", "granularity": "month"})
         assert td.field == "a"
 
     def test_schema_advertises_dimension_only(self) -> None:

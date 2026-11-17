@@ -63,7 +63,7 @@ async def test_v14_model_loads_without_backing_sql(storage: StorageBackend) -> N
 @pytest.mark.parametrize("fmt", ["markdown", "json"])
 async def test_inspect_shows_no_backing_sql(storage: StorageBackend, fmt: str) -> None:
     out = await InspectService(storage=storage).inspect(
-        reference=f"{DS}.rev", entity_type="model", compact=False, show_sql=True, format=fmt,
+        reference=f"{DS}.rev", entity_type="dataset", compact=False, show_sql=True, format=fmt,
     )
     assert "Backing Query SQL" not in out
     assert "backing_query_sql" not in out
@@ -83,7 +83,7 @@ def test_rest_returns_no_backing_sql() -> None:
             datasource=DatasourceConfig(name=DS, type="sqlite", database=db),
             models=[orders_v10(version=14), customers_v10(version=14), stored_rev],
         ))
-        response = TestClient(create_app(storage=storage)).get("/models/rev", params={"data_source": DS})
+        response = TestClient(create_app(storage=storage)).get("/datasets/rev", params={"data_source": DS})
         assert response.status_code == 200, response.text
         assert "backing_query_sql" not in response.json()
         assert "stale_marker" not in response.text

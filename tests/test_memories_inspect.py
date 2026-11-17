@@ -236,7 +236,7 @@ class TestInspectModelLearningsSection:
             name="inspect",
             arguments={
                 "entity_type": "dataset", "reference": "mydb.orders", "compact": False,
-                "sections": ["columns"],
+                "sections": ["fields"],
             },
         )
         assert "amount is in cents" not in result

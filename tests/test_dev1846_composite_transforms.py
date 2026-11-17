@@ -42,7 +42,7 @@ async def exec_engine(request):
 
 
 def _q(*, metrics, dimensions=None) -> SlayerQuery:
-    kw = dict(source_model="sales", time_dimensions=month_td(), measures=metrics)
+    kw = dict(population="sales", time_dimensions=month_td(), metrics=metrics)
     if dimensions is not None:
         kw["dimensions"] = dimensions
     return SlayerQuery.model_validate(kw)

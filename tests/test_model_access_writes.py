@@ -361,7 +361,7 @@ class TestEmbeddingWrites:
 
 class TestMcpEdits:
     async def call(self, storage: AccessFilteredStorage, **arguments) -> str:
-        return await mcp_text(storage, "edit_model", **arguments)
+        return await mcp_text(storage, "edit_dataset", **arguments)
 
     async def test_editing_hidden_model_reads_like_missing(self, store: AccessStore) -> None:
         fin = view(store, "fin")

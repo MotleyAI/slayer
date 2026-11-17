@@ -372,7 +372,7 @@ class TestEngineOwnsItsClients:
         with no_direct_access(backends=[backend_of(shop.datasource)]) as guard:
             http = TestClient(app)
             queried = http.post("/query", json=COUNT_ORDERS)
-            validated = http.post("/validate-models", json={"data_source": DS_NAME})
+            validated = http.post("/validate-datasets", json={"data_source": DS_NAME})
             ingested = http.post("/ingest", json={"datasource": DS_NAME})
         assert guard.attempts == []
         assert queried.status_code == 200, queried.text
@@ -390,7 +390,7 @@ class TestEngineOwnsItsClients:
 
         monkeypatch.setattr(api_server, "SlayerQueryEngine", _Counting)
         http = TestClient(create_app(storage=shop.storage, client_factory=GatewayFactory()))
-        recommended = http.post("/recommend-root-model", json={"items": ["orders.amount", "customers.id"]})
+        recommended = http.post("/recommend-population", json={"items": ["orders.amount", "customers.id"]})
         assert recommended.status_code == 200, recommended.text
         assert len(built) == 1
 

@@ -261,9 +261,9 @@ def test_json_serialises_drift_entries(workspace: Path, capsys) -> None:
     _run_validate_datasets(_args(store, format="json"))
     data = json.loads(capsys.readouterr().out)
     tools = {e["tool"] for e in data["drift"]}
-    assert "edit_model" in tools
-    assert "delete_model" in tools
-    edit = next(e for e in data["drift"] if e["tool"] == "edit_model")
+    assert "edit_dataset" in tools
+    assert "delete_dataset" in tools
+    edit = next(e for e in data["drift"] if e["tool"] == "edit_dataset")
     assert "ghost_o" in edit["remove"]["columns"] or "ghost_c" in edit["remove"]["columns"]
     assert isinstance(edit["reasons"], list)
 
@@ -526,7 +526,7 @@ def test_profiling_runs_after_the_force_clean_apply(
 def test_json_with_force_clean_is_a_usage_error(workspace: Path) -> None:
     store = _setup(workspace)
     assert _exit_code(
-        "validate-models", "--storage", store, "--format", "json", "--force-clean"
+        "validate-datasets", "--storage", store, "--format", "json", "--force-clean"
     ) == 2
 
 

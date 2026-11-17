@@ -116,7 +116,7 @@ class TestInspect:
         assert await outcome(inspect(pair.fin)) == await outcome(inspect(pair.reference.storage))
 
     async def test_models_summary_never_names_hr(self, pair: Pair) -> None:
-        text = await mcp_text(pair.fin, "models_summary", datasource_name=DS)
+        text = await mcp_text(pair.fin, "datasets_summary", datasource_name=DS)
         assert "fin_report" in text
         assert leaks(text) == []
 

@@ -60,14 +60,14 @@ async def test_mcp_edit_reports_newly_narrowed_readers(store: AccessStore, engin
     await engine.create_dataset_from_query(
         query={"population": "pub", "metrics": [{"expression": "count(*)", "name": "n"}]}, name="pub_count",
     )
-    reply = json.loads(await mcp_text(store.storage, "edit_model", model_name="pub", access_tags=["ops"]))
+    reply = json.loads(await mcp_text(store.storage, "edit_dataset", dataset_name="pub", access_tags=["ops"]))
     assert any("narrowed" in w and "pub_count" in w for w in reply["warnings"])
 
 
 async def test_mcp_edit_under_warnings_as_errors_reports_the_save(store: AccessStore) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error", SlayerNarrowedAccessWarning)
-        reply = json.loads(await mcp_text(store.storage, "edit_model", model_name="pay_col", access_tags=["ops"]))
+        reply = json.loads(await mcp_text(store.storage, "edit_dataset", dataset_name="pay_col", access_tags=["ops"]))
     assert any("narrowed" in w for w in reply["warnings"])
     saved = await store.storage.get_dataset("pay_col", data_source=DS)
     assert saved is not None

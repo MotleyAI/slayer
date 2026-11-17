@@ -103,7 +103,7 @@ async def pg_env(_pg_datasource, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
             DatasetField(name="status", sql="status", datatype=DataType.TEXT),
         ],
     )
-    async with pg_query_engine(_pg_datasource, base_dir=str(tmp_path), models=[model]) as engine:
+    async with pg_query_engine(_pg_datasource, base_dir=str(tmp_path), datasets=[model]) as engine:
         yield engine
 
 

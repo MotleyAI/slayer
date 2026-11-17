@@ -53,7 +53,7 @@ def test_repeated_exports_are_byte_identical(shop: Env, tmp_path: Path) -> None:
 
 def test_models_subset(shop: Env, tmp_path: Path) -> None:
     out = tmp_path / "orders.osi.yaml"
-    assert _export(shop, out, "--models", "orders").returncode == 0
+    assert _export(shop, out, "--datasets", "orders").returncode == 0
     assert dataset_names(yaml.safe_load(out.read_text(encoding="utf-8"))) == ["orders"]
 
 
@@ -73,7 +73,7 @@ def _one_error_line(result: CliResult) -> str:
 
 def test_unknown_model(shop: Env, tmp_path: Path) -> None:
     out = tmp_path / "shop.osi.yaml"
-    result = _export(shop, out, "--models", "nope")
+    result = _export(shop, out, "--datasets", "nope")
     assert result.returncode == 1
     assert "nope" in _one_error_line(result)
     assert not out.exists()

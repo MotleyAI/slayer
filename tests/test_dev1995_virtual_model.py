@@ -174,7 +174,7 @@ class TestSpellingInvariantAssociation:
             self, null_engine, formula):
         """NULL-status cell = c1 (owner) + c7 (no orders) = 155 in every measure spelling."""
         resp = await null_engine.execute(q(_orders_assoc(
-            measures=[{"expression": formula, "name": "c"}])))
+            metrics=[{"expression": formula, "name": "c"}])))
         _assert_cells(cells(resp, "orders.status", "orders.c"), SPEND_BY_STATUS)
 
     async def test_customers_rooted_twin_agrees(self, null_engine):
@@ -188,15 +188,15 @@ class TestSpellingInvariantAssociation:
     async def test_filter_only_reads_the_same_null_cell(self, null_engine):
         """Only the NULL cell (155) lies in (120, 200)."""
         resp = await null_engine.execute(q(_orders_assoc(
-            measures=[AMOUNT],
-            filters=["sum(customers.spend) > 120", "sum(customers.spend) < 200"])))
+            metrics=[AMOUNT],
+            filter=["sum(customers.spend) > 120", "sum(customers.spend) < 200"])))
         assert [r["orders.status"] for r in resp.data] == [None]
 
     async def test_order_only_reads_the_same_null_cell(self, null_engine):
         """|spend − 200|: NULL 45, new 90, ok 220."""
         resp = await null_engine.execute(q(_orders_assoc(
-            measures=[AMOUNT],
-            order=[{"column": "abs(sum(customers.spend) - 200)", "direction": "asc"}])))
+            metrics=[AMOUNT],
+            order=[{"field": "abs(sum(customers.spend) - 200)", "direction": "asc"}])))
         assert [r["orders.status"] for r in resp.data] == ORDER_KEY_STATUS_ORDER
 
 
@@ -204,7 +204,7 @@ class TestRowFilterNarrowsTheVirtualModel:
     async def test_orderless_customer_fails_the_row_filter(self, app_null_engine):
         """channel='app': NULL-status cell = c5 only (80), never c7's null-extended row (135)."""
         resp = await app_null_engine.execute(q(_orders_assoc(
-            measures=[SPEND], filters=["channel = 'app'"])))
+            metrics=[SPEND], filter=["channel = 'app'"])))
         _assert_cells(cells(resp, "orders.status", "orders.c"), APP_SPEND_BY_STATUS)
 
 
@@ -212,6 +212,6 @@ class TestCompositeGrainNullCell:
     async def test_home_side_and_back_hop_dimensions(self, app_null_engine):
         """(South, NULL) holds c5's NULL-status order and the orderless c7: 80 + 55."""
         resp = await app_null_engine.execute(q(_orders_assoc(
-            dimensions=["customers.regions.name", "status"], measures=[SPEND])))
+            dimensions=["customers.regions.name", "status"], metrics=[SPEND])))
         by = rows_by(resp, "orders.customers.regions.name", "orders.status")
         _assert_cells({k: v["orders.c"] for k, v in by.items()}, SPEND_BY_REGION_STATUS)

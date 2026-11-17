@@ -52,7 +52,7 @@ class TestSpineListedWithItsWiredModels:
     async def test_mcp_listing_and_inspection(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
         server = create_mcp_server(storage=storage)
-        summary = await _call(server, name="models_summary", arguments={"datasource_name": "test"})
+        summary = await _call(server, name="datasets_summary", arguments={"datasource_name": "test"})
         assert "time_spine" in summary
         text = await _call(server, name="inspect", arguments={
             "entity_type": "dataset", "reference": "time_spine", "compact": False,
@@ -66,7 +66,7 @@ class TestSpineListedWithItsWiredModels:
     async def test_listing_marks_it_built_in_and_points_at_inspect(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
         server = create_mcp_server(storage=storage)
-        summary = await _call(server, name="models_summary", arguments={"datasource_name": "test"})
+        summary = await _call(server, name="datasets_summary", arguments={"datasource_name": "test"})
         spine_block = summary[summary.index("## `time_spine`"):]
         assert "Built-in virtual model" in spine_block
         assert "inspect(reference='test.time_spine', entity_type='dataset')" in spine_block
@@ -84,29 +84,29 @@ class TestSpineListedWithItsWiredModels:
     def test_rest_listing(self) -> None:
         storage = asyncio.run(_spine_storage(tempfile.mkdtemp()))
         client = TestClient(create_app(storage=storage))
-        names = {m["name"] for m in client.get("/models", params={"data_source": "test"}).json()}
+        names = {m["name"] for m in client.get("/datasets", params={"data_source": "test"}).json()}
         assert "time_spine" in names
-        model = client.get("/models/time_spine", params={"data_source": "test"})
+        model = client.get("/datasets/time_spine", params={"data_source": "test"})
         assert model.status_code == 200
         assert [c["name"] for c in model.json()["columns"]] == ["timestamp"]
 
     def test_rest_unknown_datasource_has_no_spine(self) -> None:
         storage = asyncio.run(_spine_storage(tempfile.mkdtemp()))
         client = TestClient(create_app(storage=storage))
-        assert client.get("/models", params={"data_source": "missing"}).json() == []
-        assert client.get("/models/time_spine", params={"data_source": "missing"}).status_code == 404
+        assert client.get("/datasets", params={"data_source": "missing"}).json() == []
+        assert client.get("/datasets/time_spine", params={"data_source": "missing"}).status_code == 404
 
     def test_cli_listing(self) -> None:
         base = tempfile.mkdtemp()
         asyncio.run(_spine_storage(base))
-        result = run_cli_in_process(["models", "--storage", base, "list"])
+        result = run_cli_in_process(["datasets", "--storage", base, "list"])
         assert result.returncode == 0, result.stderr
         assert "time_spine" in result.stdout
 
     def test_cli_show(self) -> None:
         base = tempfile.mkdtemp()
         asyncio.run(_spine_storage(base))
-        result = run_cli_in_process(["models", "--storage", base, "show", "time_spine"])
+        result = run_cli_in_process(["datasets", "--storage", base, "show", "time_spine"])
         assert result.returncode == 0, result.stdout + result.stderr
         assert "timestamp" in result.stdout
 
@@ -152,8 +152,8 @@ class TestDeclaredDefaultTimeDimensionType:
     async def test_mcp_edit_model(self) -> None:
         storage = await _spine_storage(tempfile.mkdtemp())
         server = create_mcp_server(storage=storage)
-        text = await _call(server, name="edit_model", arguments={
-            "model_name": "returns", "default_time_dimension": "amount",
+        text = await _call(server, name="edit_dataset", arguments={
+            "dataset_name": "returns", "default_time_dimension": "amount",
         })
         assert "amount" in text
         stored = await storage.get_dataset("returns", data_source="test")
@@ -164,7 +164,7 @@ class TestDeclaredDefaultTimeDimensionType:
     def test_rest_create(self, name) -> None:
         storage = asyncio.run(_spine_storage(tempfile.mkdtemp()))
         resp = TestClient(create_app(storage=storage)).post(
-            "/models", json=_bad_default(name).model_dump(mode="json"),
+            "/datasets", json=_bad_default(name).model_dump(mode="json"),
         )
         assert resp.status_code == 400, resp.text
         assert name in resp.json()["detail"]
@@ -177,7 +177,7 @@ class TestDeclaredDefaultTimeDimensionType:
         storage = asyncio.run(_spine_storage(base))
         path = tmp_path / "model.yaml"
         path.write_text(yaml.safe_dump(_bad_default(name).model_dump(mode="json")))
-        result = run_cli_in_process(["models", "--storage", base, "create", str(path)])
+        result = run_cli_in_process(["datasets", "--storage", base, "create", str(path)])
         assert result.returncode == 1, result.stdout + result.stderr
         assert name in result.stderr
         if name != "time_spine":

@@ -329,10 +329,10 @@ class TestTheLoopStaysResponsive:
         assert statements
         assert threading.get_ident() not in checkouts + statements
 
-    @pytest.mark.parametrize("tool", ["create_datasource", "describe_datasource", "ingest_datasource_models"])
+    @pytest.mark.parametrize("tool", ["create_datasource", "describe_datasource", "ingest_datasource"])
     async def test_mcp_datasource_tools(self, tmp_path: Path, shop_db: str, tool: str) -> None:
         db = shop_db
-        if tool == "ingest_datasource_models":
+        if tool == "ingest_datasource":
             db = str(tmp_path / "empty.db")
             with transaction(db) as cur:
                 cur.execute("SELECT 1")
@@ -344,7 +344,7 @@ class TestTheLoopStaysResponsive:
         arguments = {
             "create_datasource": {"name": DS_NAME, "type": "sqlite", "database": db},
             "describe_datasource": {"name": DS_NAME},
-            "ingest_datasource_models": {"datasource_name": DS_NAME},
+            "ingest_datasource": {"datasource_name": DS_NAME},
         }[tool]
         checkouts, statements = _slow_driver(ds)
         try:

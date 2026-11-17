@@ -35,7 +35,7 @@ async def pg(postgresql, tmp_path) -> AsyncIterator[tuple[SlayerQueryEngine, int
     version_num = int(cur.fetchone()[0])
     postgresql.commit()
     async with pg_query_engine(client_datasource(postgresql.info), base_dir=str(tmp_path),
-                               models=dev2101_datasets(data_source="pg")) as engine:
+                               datasets=dev2101_datasets(data_source="pg")) as engine:
         yield engine, version_num
 
 

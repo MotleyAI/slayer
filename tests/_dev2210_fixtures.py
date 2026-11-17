@@ -124,7 +124,7 @@ async def filtered_engine(backend: str, request: pytest.FixtureRequest) -> Async
         info = request.getfixturevalue("postgresql_proc")
         base_dir = str(request.getfixturevalue("tmp_path") / "store")
         with pg_database(info, statements=DDL, name="test") as ds:
-            async with pg_query_engine(ds, base_dir=base_dir, models=table_datasets(), validate=False) as engine:
+            async with pg_query_engine(ds, base_dir=base_dir, datasets=table_datasets(), validate=False) as engine:
                 await engine.save_dataset(query_backed_dataset())
                 yield engine
         return

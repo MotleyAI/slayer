@@ -248,7 +248,7 @@ def test_sent_report_carries_no_function_shaped_sentinel(usage_reporting_env) ->
              "filter": [f"{SENT}_fn({SENT}_col) > 0", f"lower({SENT}_col) = '{SENT}'", f"x::{SENT}"]}
     cli(["query", json.dumps(query), "--storage", sentinel_store])
     make_due()
-    cli(["models", "--storage", sentinel_store, "list"])
+    cli(["datasets", "--storage", sentinel_store, "list"])
     (request,) = usage_reporting_env.capture.wait_for(count=1)
     assert_no_sentinel(request.body)
     assert set(request.json()["properties"]["features"].get("functions", {})) <= SCALAR_FUNCTIONS

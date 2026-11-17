@@ -145,7 +145,7 @@ def test_datasources_per_dialect_bucketed(store: str, usage_reporting_env, extra
 
 def test_model_count_is_bucketed(store: str) -> None:
     save_datasets(store, count=32)
-    cli(["models", "--storage", store, "list"])
+    cli(["datasets", "--storage", store, "list"])
     context = show()["context"]
     assert context["model_count"] == {"11-50": 1}
     assert context["storage"] == {"yaml": 1}
@@ -203,7 +203,7 @@ def _storage_and_connection_calls(args: list[str], monkeypatch: pytest.MonkeyPat
 
 @pytest.mark.parametrize("command", [
     ["query", json.dumps(_PLAIN)],
-    ["models", "list"],
+    ["datasets", "list"],
     ["datasources", "list"],
     ["serve"],
 ])

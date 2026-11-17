@@ -76,13 +76,13 @@ _COMBINED_CONSUMER_CASES = [
     pytest.param(
         [_dim(LOCAL_BAND, "cband")],
         [DatasetMetric(expression="sum(amount)", name="m")],
-        [{"column": LOCAL_AGG, "direction": "asc"}], None, "city",
+        [{"field": LOCAL_AGG, "direction": "asc"}], None, "city",
         id="raw_order_target-local",
     ),
     pytest.param(
         [_dim(SPEND_BAND, "sband")],
         [DatasetMetric(expression="sum(amount)", name="m")],
-        [{"column": CM_AGG, "direction": "asc"}], None, "customers.tier",
+        [{"field": CM_AGG, "direction": "asc"}], None, "customers.tier",
         id="raw_order_target-cross_model",
     ),
     pytest.param(

@@ -130,7 +130,7 @@ class TestApplyDriftDeletes:
         ]
         result = await engine.apply_drift_deletes(deletes)
         assert len(result.applied) == 1
-        assert result.applied[0].tool == "delete_model"
+        assert result.applied[0].tool == "delete_dataset"
         # Persisted model gone
         assert await engine.storage.get_dataset("orders", data_source="ds") is None
 
@@ -242,7 +242,7 @@ class TestForceCleanCLI:
 
         storage_arg = str(cli_workspace / "storage")
         result = run_cli_in_process(
-            ["validate-models", "--datasource", "ds", "--storage", storage_arg]
+            ["validate-datasets", "--datasource", "ds", "--storage", storage_arg]
         )
         assert result.returncode == 0
         assert "region" in result.stdout
@@ -254,13 +254,13 @@ class TestForceCleanCLI:
 
         storage_arg = str(cli_workspace / "storage")
         result = run_cli_in_process(
-            ["validate-models", "--datasource", "ds", "--force-clean", "--yes",
+            ["validate-datasets", "--datasource", "ds", "--force-clean", "--yes",
              "--storage", storage_arg]
         )
         assert result.returncode == 0
         # After apply, the diff is empty — re-run validate-models and confirm.
         follow_up = run_cli_in_process(
-            ["validate-models", "--datasource", "ds", "--storage", storage_arg]
+            ["validate-datasets", "--datasource", "ds", "--storage", storage_arg]
         )
         assert follow_up.returncode == 0
         assert "no drift detected" in follow_up.stdout.lower()
@@ -271,7 +271,7 @@ class TestForceCleanCLI:
             conn.execute("ALTER TABLE customers DROP COLUMN region")
 
         result = _run_cli(
-            ["validate-models", "--datasource", "ds", "--force-clean"],
+            ["validate-datasets", "--datasource", "ds", "--force-clean"],
             input_text="n\n",
             workspace=cli_workspace,
         )

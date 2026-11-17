@@ -67,7 +67,7 @@ def _players(scores: DatasetField) -> SlayerDataset:
 
 
 def _deletes_scores(entry: dict[str, Any]) -> bool:
-    if entry.get("tool") == "delete_model":
+    if entry.get("tool") == "delete_dataset":
         return entry.get("model_name") == "players"
     return "scores" in ((entry.get("remove") or {}).get("columns") or [])
 

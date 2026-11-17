@@ -34,7 +34,7 @@ async def pg_dates(postgresql, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
         cur.execute(stmt)
     postgresql.commit()
     async with pg_query_engine(client_datasource(postgresql.info, name="testpg"), base_dir=str(tmp_path),
-                               models=all_datasets(data_source="testpg")) as engine:
+                               datasets=all_datasets(data_source="testpg")) as engine:
         yield engine
 
 

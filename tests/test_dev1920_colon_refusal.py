@@ -228,7 +228,7 @@ async def _save_memory(storage: StorageBackend) -> Any:
 
 
 class TestEntityReferences:
-    @pytest.mark.parametrize("call", [_recommend, _save_memory], ids=["recommend-root-model", "memory"])
+    @pytest.mark.parametrize("call", [_recommend, _save_memory], ids=["recommend-population", "memory"])
     async def test_refused(self, make_store: StoreFactory, call: EntityCall) -> None:  # noqa: F811
         storage = await make_store()
         with pytest.raises(ValueError) as ei:

@@ -168,7 +168,7 @@ class TestDerivedColumnPreservesNativeType:
             "INSERT INTO t VALUES (1, 10000000000000000000)",
         ], name="wide_pg") as datasource:
             async with pg_query_engine(datasource, base_dir=str(tmp_path / "models"),
-                                       models=[_wide_dataset(data_source=datasource.name)]) as engine:
+                                       datasets=[_wide_dataset(data_source=datasource.name)]) as engine:
                 sql = (await engine.execute(query=_WIDE_QUERY, dry_run=True)).sql
                 result = await engine.execute(query=_WIDE_QUERY)
         assert sql is not None
@@ -186,7 +186,7 @@ class TestDerivedColumnPreservesNativeType:
             "INSERT INTO t VALUES (1, 10000000000000000000)",
         ], name="wide_filter_pg") as datasource:
             async with pg_query_engine(datasource, base_dir=str(tmp_path / "models"),
-                                       models=[_wide_dataset(data_source=datasource.name)]) as engine:
+                                       datasets=[_wide_dataset(data_source=datasource.name)]) as engine:
                 result = await engine.execute(query=query)
         assert result.data == [{"t.wide": Decimal("100000000000000000000")}]
 

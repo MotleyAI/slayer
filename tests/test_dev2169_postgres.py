@@ -49,7 +49,7 @@ async def pg(postgresql, tmp_path):
         cur.execute(stmt)
     postgresql.commit()
     async with pg_query_engine(client_datasource(postgresql.info), base_dir=str(tmp_path),
-                               models=[typed_dataset()]) as engine:
+                               datasets=[typed_dataset()]) as engine:
         yield engine
 
 

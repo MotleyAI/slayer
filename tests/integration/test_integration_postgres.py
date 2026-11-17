@@ -622,7 +622,7 @@ def pg_ingest_env(postgresql_proc) -> Iterator[PgIngestEnv]:
 async def pg_ingest_engine(pg_ingest_env: PgIngestEnv, tmp_path) -> AsyncIterator[SlayerQueryEngine]:
     """A per-test engine over the ingested models."""
     models, ds, _ = pg_ingest_env
-    async with pg_query_engine(ds, base_dir=str(tmp_path), models=models) as engine:
+    async with pg_query_engine(ds, base_dir=str(tmp_path), datasets=models) as engine:
         yield engine
 
 

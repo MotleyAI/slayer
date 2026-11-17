@@ -35,7 +35,7 @@ def _orders(**body: Any) -> dict[str, Any]:
 
 
 def _month(**extra: Any) -> dict[str, Any]:
-    return {"dimension": "created_at", "granularity": "month", **extra}
+    return {"field": "created_at", "granularity": "month", **extra}
 
 
 SPINE_MONTHS = [{"field": "time_spine.timestamp", "granularity": "month",
@@ -64,18 +64,18 @@ async def test_a_literal_naming_the_root_reaches_the_database_verbatim(engine: S
 
 
 async def test_a_literal_naming_the_root_filters_on_its_text(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(dimensions=["id"], filters=["note = 'see orders.x'"]))
+    resp = await engine.execute(_orders(dimensions=["id"], filter=["note = 'see orders.x'"]))
     assert [r["orders.id"] for r in resp.data] == [1]
 
 
 async def test_a_literal_naming_the_root_inside_a_measure(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(measures=[{"expression": "sum(iif(note = 'see orders.x', amount, 0))", "name": "m"}]))
+    resp = await engine.execute(_orders(metrics=[{"expression": "sum(iif(note = 'see orders.x', amount, 0))", "name": "m"}]))
     assert float(resp.data[0]["orders.m"]) == 10.0
 
 
 async def test_a_literal_naming_the_root_inside_an_order_expression(engine: SlayerQueryEngine) -> None:
     resp = await engine.execute(_orders(
-        dimensions=["note"], measures=["count(*)"], order=[{"column": "iif(note = 'see orders.x', 0, 1)"}],
+        dimensions=["note"], metrics=["count(*)"], order=[{"field": "iif(note = 'see orders.x', 0, 1)"}],
     ))
     assert resp.data[0]["orders.note"] == "see orders.x"
 
@@ -108,8 +108,8 @@ async def test_a_quoted_identifier_names_its_column(engine: SlayerQueryEngine, q
 
 
 async def test_a_quoted_time_dimension_names_its_column(engine: SlayerQueryEngine) -> None:
-    quoted = await engine.execute(_orders(time_dimensions=["date_trunc('month', \"created_at\")"], measures=["count(*)"]))
-    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', created_at)"], measures=["count(*)"]))
+    quoted = await engine.execute(_orders(time_dimensions=["date_trunc('month', \"created_at\")"], metrics=["count(*)"]))
+    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', created_at)"], metrics=["count(*)"]))
     assert quoted.columns == bare.columns
     assert canonical_rows(quoted) == canonical_rows(bare)
 
@@ -143,8 +143,8 @@ SPINE_LITERAL = {
 
 
 async def test_a_literal_naming_the_spine_is_not_a_spine_query(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(time_dimensions=[_month()], measures=["count(*)"],
-                                        filters=["note = 'time_spine.x'"]))
+    resp = await engine.execute(_orders(time_dimensions=[_month()], metrics=["count(*)"],
+                                        filter=["note = 'time_spine.x'"]))
     assert [(str(r["orders.created_at"])[:10], str(r["orders._count"])) for r in resp.data] == [("2025-02-01", "1")]
 
 
@@ -356,8 +356,8 @@ def test_an_order_literal_is_one_whole_expression(entry: str) -> None:
 async def test_an_order_literal_sorts_by_the_whole_expression(
     engine: SlayerQueryEngine, entry: str, expected: list[str],
 ) -> None:
-    resp = await engine.execute(_orders(dimensions=["status"], measures=["count(*)"],
-                                        order=[{"column": entry, "direction": "desc"}]))
+    resp = await engine.execute(_orders(dimensions=["status"], metrics=["count(*)"],
+                                        order=[{"field": entry, "direction": "desc"}]))
     assert [r["orders.status"] for r in resp.data] == expected
 
 
@@ -408,8 +408,8 @@ def test_a_non_granularity_call_stays_a_dimension() -> None:
 
 async def test_a_quoted_parenthesis_buckets_the_whole_expression(engine: SlayerQueryEngine) -> None:
     quoted = await engine.execute(_orders(time_dimensions=["date_trunc('month', iif(note = 'a)b', created_at, created_at))"],
-                                          measures=["count(*)"]))
-    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', created_at)"], measures=["count(*)"]))
+                                          metrics=["count(*)"]))
+    bare = await engine.execute(_orders(time_dimensions=["date_trunc('month', created_at)"], metrics=["count(*)"]))
     assert sorted(tuple(map(str, r.values())) for r in quoted.data) == sorted(
         tuple(map(str, r.values())) for r in bare.data)
 
@@ -422,11 +422,11 @@ def _misplaced(resp: Any) -> list[str]:
 
 
 async def test_a_bare_column_measure_moves_to_dimensions(engine: SlayerQueryEngine) -> None:
-    resp = await engine.execute(_orders(measures=["status", "count(*)"]))
+    resp = await engine.execute(_orders(metrics=["status", "count(*)"]))
     assert _misplaced(resp) == ["status"]
     assert "orders.status" in resp.columns
 
 
 @pytest.mark.parametrize("measures", [["revenue"], ["sum(amount)"]], ids=["saved", "call"])
 async def test_a_measure_stays_a_measure(engine: SlayerQueryEngine, measures: list[str]) -> None:
-    assert _misplaced(await engine.execute(_orders(measures=measures))) == []
+    assert _misplaced(await engine.execute(_orders(metrics=measures))) == []

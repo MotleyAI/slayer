@@ -64,7 +64,7 @@ def test_scalar_value_emits_equality():
     out = _apply(
         "SELECT * FROM orders",
         dialect="sqlite",
-        policy=_col_policy(column="org", value="7ef3"),
+        policy=_col_policy(field="org", value="7ef3"),
         has_column=ALWAYS,
     )
     assert out == _norm(
@@ -76,7 +76,7 @@ def test_list_value_emits_in():
     out = _apply(
         "SELECT * FROM orders",
         dialect="sqlite",
-        policy=_col_policy(column="org", value=["a", "b"]),
+        policy=_col_policy(field="org", value=["a", "b"]),
         has_column=ALWAYS,
     )
     assert out == _norm(
@@ -88,7 +88,7 @@ def test_bool_value_emits_boolean_literal():
     out = _apply(
         "SELECT * FROM orders",
         dialect="sqlite",
-        policy=_col_policy(column="is_active", value=True),
+        policy=_col_policy(field="is_active", value=True),
         has_column=ALWAYS,
     )
     assert out == _norm(
@@ -100,7 +100,7 @@ def test_joined_table_wrapped_alias_preserved():
     out = _apply(
         "SELECT * FROM customers c LEFT JOIN orders o ON c.id = o.customer_id",
         dialect="sqlite",
-        policy=_col_policy(column="org", value="x"),
+        policy=_col_policy(field="org", value="x"),
         has_column=ALWAYS,
     )
     assert out == _norm(
@@ -114,7 +114,7 @@ def test_self_join_each_occurrence_wrapped_once():
     out = _apply(
         "SELECT * FROM orders a JOIN orders b ON a.id = b.id",
         dialect="sqlite",
-        policy=_col_policy(column="org", value="x"),
+        policy=_col_policy(field="org", value="x"),
         has_column=ALWAYS,
     )
     assert out.count("WHERE org = 'x'") == 2
@@ -130,7 +130,7 @@ def test_schema_passed_to_has_column():
     _apply(
         "SELECT * FROM public.orders",
         dialect="postgres",
-        policy=_col_policy(column="org", value="x"),
+        policy=_col_policy(field="org", value="x"),
         has_column=has_column,
     )
     assert seen["scoped"].name == "orders"
@@ -142,7 +142,7 @@ def test_cte_reference_skipped_physical_wrapped():
         "WITH _cm_x AS (SELECT * FROM customers) "
         "SELECT * FROM orders LEFT JOIN _cm_x ON orders.id = _cm_x.id",
         dialect="sqlite",
-        policy=_col_policy(column="org", value="x"),
+        policy=_col_policy(field="org", value="x"),
         has_column=ALWAYS,
     )
     assert out.count("WHERE org = 'x'") == 2
@@ -153,7 +153,7 @@ def test_collision_physical_inside_cte_is_wrapped():
     out = _apply(
         "WITH orders AS (SELECT * FROM orders) SELECT * FROM orders",
         dialect="sqlite",
-        policy=_col_policy(column="org", value="x"),
+        policy=_col_policy(field="org", value="x"),
         has_column=ALWAYS,
     )
     assert out.count("WHERE org = 'x'") == 1
@@ -164,14 +164,14 @@ def test_set_operation_both_branches_wrapped(setop):
     out = _apply(
         f"SELECT id FROM orders {setop} SELECT id FROM archived_orders",
         dialect="sqlite",
-        policy=_col_policy(column="org", value="x"),
+        policy=_col_policy(field="org", value="x"),
         has_column=ALWAYS,
     )
     assert out.count("WHERE org = 'x'") == 2
 
 
 def test_block_raises_naming_table():
-    policy = _col_policy(column="org", value="x")
+    policy = _col_policy(field="org", value="x")
     has_column = has_column_factory({"exchange_rates": {"rate", "day"}})
     with pytest.raises(ForcedFilterError) as exc:
         _apply(
@@ -186,7 +186,7 @@ def test_block_raises_naming_table():
 
 
 def test_pass_leaves_table_unfiltered():
-    policy = _col_policy(column="org", value="x", on_unapplicable="pass")
+    policy = _col_policy(field="org", value="x", on_unapplicable="pass")
     has_column = has_column_factory({"exchange_rates": {"rate", "day"}})
     out = _apply(
         "SELECT * FROM exchange_rates",
@@ -199,7 +199,7 @@ def test_pass_leaves_table_unfiltered():
 
 
 def test_none_presence_fails_closed_even_with_pass():
-    policy = _col_policy(column="org", value="x", on_unapplicable="pass")
+    policy = _col_policy(field="org", value="x", on_unapplicable="pass")
     has_column = has_column_factory({"orders": None})
     with pytest.raises(ForcedFilterError) as exc:
         _apply(
@@ -212,7 +212,7 @@ def test_none_presence_fails_closed_even_with_pass():
 
 
 def test_unknown_table_fails_closed():
-    policy = _col_policy(column="org", value="x")
+    policy = _col_policy(field="org", value="x")
     has_column = has_column_factory({})  # nothing known -> None
     with pytest.raises(ForcedFilterError):
         _apply(
@@ -232,13 +232,13 @@ def test_unknown_table_fails_closed():
     ],
 )
 def test_non_select_root_fails_closed(sql):
-    policy = _col_policy(column="org", value="x")
+    policy = _col_policy(field="org", value="x")
     with pytest.raises(ForcedFilterError):
         _apply(sql, dialect="sqlite", policy=policy, has_column=ALWAYS)
 
 
 def test_value_literal_is_injection_safe():
-    policy = _col_policy(column="org", value="x' OR '1'='1")
+    policy = _col_policy(field="org", value="x' OR '1'='1")
     out = _apply(
         "SELECT * FROM orders", dialect="sqlite", policy=policy, has_column=ALWAYS
     )
@@ -255,9 +255,9 @@ def test_value_literal_is_injection_safe():
 def _join_ruleset(**kw):
     base = dict(
         table="customers",
-        column="organization_uuid",
+        field="organization_uuid",
         value="orgA",
-        joins=[
+        relationships=[
             RelationshipFilterRule(
                 target_table="orders",
                 relationship_path=["orders.customer_id = customers.id"],
@@ -327,7 +327,7 @@ def test_target_emits_correlated_exists():
 def test_both_path_orientations_emit_identical_sql():
     """A path written master-first produces the SAME SQL as target-first."""
     target_first = _jpolicy(
-        joins=[
+        relationships=[
             RelationshipFilterRule(
                 target_table="orders",
                 relationship_path=["orders.customer_id = customers.id"],
@@ -335,7 +335,7 @@ def test_both_path_orientations_emit_identical_sql():
         ]
     )
     master_first = _jpolicy(
-        joins=[
+        relationships=[
             RelationshipFilterRule(
                 target_table="orders",
                 relationship_path=["customers.id = orders.customer_id"],
@@ -362,7 +362,7 @@ def test_multihop_terminal_on_anchor():
     out = _apply(
         "SELECT * FROM line_items",
         dialect="sqlite",
-        policy=_jpolicy(joins=[rule]),
+        policy=_jpolicy(relationships=[rule]),
         has_column=_boom_probe,
     )
     body = _exists_nodes(out)[0].this
@@ -767,7 +767,7 @@ def test_clickhouse_single_hop_exact_shape():
 
 
 def test_clickhouse_multi_hop_exact_shape():
-    out = _ch("SELECT * FROM line_items", _jpolicy(joins=[_LINE_ITEMS_RULE]))
+    out = _ch("SELECT * FROM line_items", _jpolicy(relationships=[_LINE_ITEMS_RULE]))
     assert out == _norm(_CH_MULTI_HOP, "clickhouse")
 
 
@@ -776,7 +776,7 @@ class _GatedOnly(SqlDialect):
 
 
 def test_in_takes_set_key_and_globalness_from_the_dialect():
-    ruleset = _join_ruleset(joins=[_LINE_ITEMS_RULE])
+    ruleset = _join_ruleset(relationships=[_LINE_ITEMS_RULE])
     plain = _build_in(_LINE_ITEMS_RULE, ruleset=ruleset, sql_dialect=_GatedOnly())
     ch = _build_in(_LINE_ITEMS_RULE, ruleset=ruleset, sql_dialect=ClickhouseDialect())
     assert not plain.args.get("is_global")
@@ -791,7 +791,7 @@ def test_clickhouse_multi_rule_each_target_gets_its_in():
     rules = [_join_ruleset().relationships[0], _LINE_ITEMS_RULE]
     out = _ch(
         "SELECT * FROM orders o JOIN line_items li ON li.order_id = o.id",
-        _jpolicy(joins=rules),
+        _jpolicy(relationships=rules),
     )
     parsed = sqlglot.parse_one(out, dialect="clickhouse")
     semi = [node for node in parsed.find_all(exp.In) if node.args.get("query")]
@@ -818,7 +818,7 @@ def test_clickhouse_same_target_twice_each_gets_own_in():
 def test_clickhouse_output_is_scope_closed_without_rls_correlation():
     for sql, policy in [
         ("SELECT * FROM orders", _jpolicy()),
-        ("SELECT * FROM line_items", _jpolicy(joins=[_LINE_ITEMS_RULE])),
+        ("SELECT * FROM line_items", _jpolicy(relationships=[_LINE_ITEMS_RULE])),
     ]:
         assert_scope_closed(_ch(sql, policy), dialect="clickhouse", allow_rls_correlation=False)
 
@@ -858,7 +858,7 @@ _EXISTS_MULTI_HOP = (
 
 @pytest.mark.parametrize("dialect", ["postgres", "duckdb"])
 def test_other_dialects_keep_correlated_exists_byte_for_byte(dialect):
-    policy = _jpolicy(joins=[_join_ruleset().relationships[0], _LINE_ITEMS_RULE])
+    policy = _jpolicy(relationships=[_join_ruleset().relationships[0], _LINE_ITEMS_RULE])
     for sql, expected in [
         ("SELECT * FROM orders", _EXISTS_SINGLE_HOP),
         ("SELECT * FROM line_items", _EXISTS_MULTI_HOP),
@@ -892,7 +892,7 @@ def test_clickhouse_column_only_does_not_append_settings():
     out = _apply(
         "SELECT * FROM orders",
         dialect="clickhouse",
-        policy=_col_policy(column="organization_uuid", value="orgA"),
+        policy=_col_policy(field="organization_uuid", value="orgA"),
         has_column=ALWAYS,
     )
     assert "allow_experimental_correlated_subqueries" not in out

@@ -25,7 +25,7 @@ async def pg(postgresql, tmp_path):
     ds = client_datasource(postgresql.info)
     models = [contractors_dataset(data_source="pg"), assignments_dataset(data_source="pg"),
               mixed_numbers_dataset(data_source="pg")]
-    async with pg_query_engine(ds, base_dir=str(tmp_path), models=models) as engine:
+    async with pg_query_engine(ds, base_dir=str(tmp_path), datasets=models) as engine:
         yield engine, ds
 
 

@@ -316,7 +316,7 @@ class TestSurfaces:
         fail_key_read(monkeypatch, table="customers")
         server = create_mcp_server(storage=storage)
         blocks, _ = cast(Any, await server.call_tool(
-            name="ingest_datasource_models", arguments={"datasource_name": DS_NAME},
+            name="ingest_datasource", arguments={"datasource_name": DS_NAME},
         ))
         assert len(_naming_the_loss(blocks[0].text)) == 1, blocks[0].text
 

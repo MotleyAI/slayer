@@ -628,7 +628,7 @@ class TestModelOnlyArgs:
         # sections=["columns"] collapses other sections; "amount" still shows.
         out = await svc.inspect(
             reference="mydb.orders", entity_type="dataset", compact=False,
-            sections=["columns"],
+            sections=["fields"],
         )
         assert "amount" in out
 
@@ -658,7 +658,7 @@ class TestModelOnlyArgs:
         # All four args are valid for a model — none must produce a warning.
         out = await svc.inspect(
             reference="mydb.orders", entity_type="dataset", compact=False,
-            sections=["columns"], num_rows=10, show_sql=True,
+            sections=["fields"], num_rows=10, show_sql=True,
             descriptions_max_chars=200,
         )
         assert "ignored" not in out.lower()
@@ -677,7 +677,7 @@ class TestModelOnlyArgs:
     ) -> None:
         out = await svc.inspect(
             reference="mydb.orders.amount", entity_type="field", compact=False,
-            sections=["columns"],
+            sections=["fields"],
         )
         assert "sections" in out
         assert "ignored" in out.lower() or "warning" in out.lower()

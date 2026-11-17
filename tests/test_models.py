@@ -207,7 +207,7 @@ class TestOrderShorthandHealing:
         assert q.order[0].direction == "desc"
 
     def test_bare_canonical_dict_wrapped(self) -> None:
-        q = SlayerQuery(population="orders", order={"column": "status", "direction": "asc"})
+        q = SlayerQuery(population="orders", order={"field": "status", "direction": "asc"})
         assert q.order is not None
         assert len(q.order) == 1
         assert q.order[0].field.name == "status"

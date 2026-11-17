@@ -159,14 +159,14 @@ class TestEditModelRoundTrip:
             server = create_mcp_server(storage=storage)
 
             await server.call_tool(
-                name="edit_model",
+                name="edit_dataset",
                 arguments={
-                    "model_name": "orders",
+                    "dataset_name": "orders",
                     "data_source": "ds",
-                    "columns": [{"name": "email", "unique": True}],
-                    "joins": [
+                    "fields": [{"name": "email", "unique": True}],
+                    "relationships": [
                         {
-                            "target_model": "customers",
+                            "to": "customers",
                             "join_pairs": [["customer_id", "id"]],
                             "cardinality": "many_to_one",
                         }

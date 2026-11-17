@@ -169,7 +169,7 @@ async def postgres_engine(conn: Any, base: Path, *, statements: Iterable[str],
         cur.execute(stmt)
     conn.commit()
     async with pg_query_engine(client_datasource(conn.info, name="test"), base_dir=str(base / "store"),
-                               models=engine_datasets) as engine:
+                               datasets=engine_datasets) as engine:
         yield engine
 
 
@@ -863,7 +863,7 @@ class TestRendering:
         model = await duck.storage.get_dataset("contractors", data_source="test")
         assert model is not None
         out = await render_dataset_inspection(dataset=model, storage=duck.storage, engine=duck, format="markdown",
-                                            sections=["columns"])
+                                            sections=["fields"])
         assert _says_set_grouping(out), out
 
     def test_search_column_text(self) -> None:

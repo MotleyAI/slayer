@@ -92,8 +92,8 @@ class TestErrorModePasses:
         filter plus a fully attributable grain succeeds, values identical to
         the broadcast run."""
         _, engine = exec_backend
-        kw = dict(dimensions=["customers.tier"], measures=[M, CM],
-                  filters=["channel = 'app'"])
+        kw = dict(dimensions=["customers.tier"], metrics=[M, CM],
+                  filter=["channel = 'app'"])
         strict_resp = await engine.execute(error_q(**kw))
         lenient_resp = await engine.execute(bcast_q(**kw))
         strict_by = rows_by(strict_resp, "orders.customers.tier")

@@ -65,7 +65,7 @@ def _spool_one(token: str = "query") -> None:
 
 
 def test_normal_exit_spools_without_a_request(store: str, usage_reporting_env) -> None:
-    result = run_slayer(["models", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
+    result = run_slayer(["datasets", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
     assert result.returncode == 0, result.stderr
     assert len(spool_files()) == 1
     assert usage_reporting_env.capture.arrivals == 0
@@ -74,7 +74,7 @@ def test_normal_exit_spools_without_a_request(store: str, usage_reporting_env) -
 def test_concurrent_processes_each_write_their_own_spool_file(store: str, usage_reporting_env) -> None:
     procs = [
         subprocess.Popen(
-            [sys.executable, "-m", "slayer", "models", "--storage", store, "list"],
+            [sys.executable, "-m", "slayer", "datasets", "--storage", store, "list"],
             env=usage_reporting_env.subprocess_env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         for _ in range(5)
@@ -455,7 +455,7 @@ def test_no_wait_at_exit_without_send_in_flight(usage_reporting_env) -> None:
 
 def test_two_simultaneous_senders_send_one_report(store: str, usage_reporting_env) -> None:
     usage_reporting_env.capture.behaviour.delay = 0.5
-    run_slayer(["models", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
+    run_slayer(["datasets", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
     make_due()
     procs = [
         subprocess.Popen(
@@ -491,7 +491,7 @@ def test_stale_lease_taken_over_by_one_sender_only(tmp_path: Path, monkeypatch: 
 
 def test_sender_crash_recovered_by_a_later_send(store: str, usage_reporting_env) -> None:
     usage_reporting_env.capture.behaviour.stall_first = 60
-    result = run_slayer(["models", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
+    result = run_slayer(["datasets", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
     assert result.returncode == 0, result.stderr
     make_due()
     session = McpStdio(args=["--storage", store], env=usage_reporting_env.subprocess_env())
@@ -635,7 +635,7 @@ def test_disable_during_start_is_never_undone(usage_reporting_env, monkeypatch: 
 
 
 def test_install_id_stored_in_config_dir_not_model_storage(store: str, usage_reporting_env) -> None:
-    cli(["models", "--storage", store, "list"])
+    cli(["datasets", "--storage", store, "list"])
     install_id = str(config().install_id)
     for path in Path(store).rglob("*"):
         if path.is_file():

@@ -81,7 +81,7 @@ class TestSearchPositionalQuestion:
 class TestDatasourcesRefreshSamples:
     def test_refresh_one_model_text(self, default_shop: str) -> None:
         result = run_cli_in_process(
-            ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--model", "orders"],
+            ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--dataset", "orders"],
         )
         assert result.returncode == 0, result.stderr
         assert "Sample-value refresh completed successfully." in result.stdout
@@ -93,14 +93,14 @@ class TestDatasourcesRefreshSamples:
 
     def test_refresh_json_envelope(self, default_shop: str) -> None:
         result = run_cli_in_process(
-            ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--model", "orders", "--format", "json"],
+            ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--dataset", "orders", "--format", "json"],
         )
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == {"errors": [], "unresolved_models": []}
 
     def test_unknown_model_listed_and_exits_1(self, default_shop: str) -> None:
         result = run_cli_in_process(
-            ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--model", "nope", "--format", "json"],
+            ["datasources", "refresh-samples", "--data-source", SHOP_DS, "--dataset", "nope", "--format", "json"],
         )
         assert result.returncode == 1
         assert json.loads(result.stdout)["unresolved_models"] == [f"{SHOP_DS}.nope"]

@@ -93,7 +93,7 @@ async def test_compact_markdown_keeps_name_and_description(
     """The plan requires model name + description as the first two lines."""
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True,
     })
     assert "## `orders`" in result
@@ -106,7 +106,7 @@ async def test_compact_markdown_drops_per_column_table(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True,
     })
     # Today's verbose markdown shape — must NOT appear in compact mode.
@@ -121,7 +121,7 @@ async def test_compact_markdown_emits_column_count_line(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True,
     })
     assert "Columns: 3" in result
@@ -133,7 +133,7 @@ async def test_compact_markdown_emits_measure_names_only(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True,
     })
     assert "Measures: revenue, orders_count" in result
@@ -150,7 +150,7 @@ async def test_compact_markdown_default_is_true(
     the compact shape."""
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb",
     })
     assert "Columns: 3" in result
@@ -163,7 +163,7 @@ async def test_compact_markdown_joins_to_rendered(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True,
     })
     assert "Joins to: `customers`" in result
@@ -181,7 +181,7 @@ async def test_compact_markdown_no_joins_marker(
         fields=[DatasetField(name="id", datatype=DataType.INT, primary_key=True)],
     ))
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "ds", "compact": True,
     })
     assert "Joins to: _(none)_" in result
@@ -196,7 +196,7 @@ async def test_compact_markdown_no_joins_marker(
 async def test_compact_json_shape(yaml_storage: YAMLStorage) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True, "format": "json",
     })
     data = json.loads(result)
@@ -218,7 +218,7 @@ async def test_compact_json_no_columns_or_formulas(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": True, "format": "json",
     })
     data = json.loads(result)
@@ -238,7 +238,7 @@ async def test_verbose_markdown_preserves_per_column_table(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": False,
     })
     assert "**Columns (3):**" in result
@@ -255,7 +255,7 @@ async def test_verbose_json_keeps_full_column_and_measure_payloads(
 ) -> None:
     await _seed_orders(yaml_storage)
     mcp = create_mcp_server(storage=yaml_storage)
-    result = await _call(mcp, name="models_summary", arguments={
+    result = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "mydb", "compact": False, "format": "json",
     })
     data = json.loads(result)
@@ -281,10 +281,10 @@ async def test_empty_datasource_lists_only_the_spine_in_both_modes(
         DatasourceConfig(name="emptyds", type="postgres", host="h")
     )
     mcp = create_mcp_server(storage=yaml_storage)
-    compact = await _call(mcp, name="models_summary", arguments={
+    compact = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "emptyds", "compact": True,
     })
-    verbose = await _call(mcp, name="models_summary", arguments={
+    verbose = await _call(mcp, name="datasets_summary", arguments={
         "datasource_name": "emptyds", "compact": False,
     })
     for out in (compact, verbose):
@@ -303,6 +303,6 @@ async def test_tool_descriptor_lists_compact_arg(
 ) -> None:
     mcp = create_mcp_server(storage=yaml_storage)
     tools = await mcp.list_tools()
-    tool: Any = next(t for t in tools if t.name == "models_summary")
+    tool: Any = next(t for t in tools if t.name == "datasets_summary")
     schema = tool.inputSchema
     assert "compact" in schema["properties"]

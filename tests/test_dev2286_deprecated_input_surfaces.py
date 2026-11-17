@@ -187,14 +187,14 @@ class TestMcpModelSaveMessage:
     async def test_create_model(self) -> None:
         async with orders_engine() as engine:
             with recorded():
-                text = await mcp_text(engine.storage, "create_model", name="saved_strict", query=strict(CLEAN))
+                text = await mcp_text(engine.storage, "create_dataset", name="saved_strict", query=strict(CLEAN))
         assert text.count(_strict_message()) == 1
 
     async def test_edit_model(self) -> None:
         async with orders_engine() as engine:
             with recorded():
-                await mcp_text(engine.storage, "create_model", name="saved_strict", query=CLEAN)
+                await mcp_text(engine.storage, "create_dataset", name="saved_strict", query=CLEAN)
                 reply = json.loads(await mcp_text(
-                    engine.storage, "edit_model", model_name="saved_strict", source_queries=[strict(CLEAN)],
+                    engine.storage, "edit_dataset", dataset_name="saved_strict", source_queries=[strict(CLEAN)],
                 ))
         assert sum(w.count(_strict_message()) for w in reply["warnings"]) == 1

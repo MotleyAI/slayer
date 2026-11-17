@@ -76,7 +76,7 @@ PARITY = {
     ),
     "order_limit": (
         {"order": [{"field": "revenue", "direction": "desc"}], "limit": 1},
-        with_fields(MONTHLY_REVENUE, order=[{"column": "revenue", "direction": "desc"}], limit=1),
+        with_fields(MONTHLY_REVENUE, order=[{"field": "revenue", "direction": "desc"}], limit=1),
     ),
     "second_granularity": (
         {"time_dimensions": ["date_trunc('year', ordered_at)"]},

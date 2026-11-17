@@ -257,7 +257,7 @@ def m(expression: str, name: str = "v") -> DatasetMetric:
 
 
 def td(dimension: str, granularity: str = "month", **extra: Any) -> dict[str, Any]:
-    return {"dimension": dimension, "granularity": granularity, **extra}
+    return {"field": dimension, "granularity": granularity, **extra}
 
 
 def num(value: Any) -> Optional[float]:

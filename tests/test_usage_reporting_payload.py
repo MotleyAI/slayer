@@ -197,14 +197,14 @@ def test_cli_arguments_and_names_never_leave(sentinel_store: str, usage_reportin
         ["query", json.dumps(query), "--storage", sentinel_store],
         ["query", json.dumps({**query, "population": HOSTILE}), "--storage", sentinel_store],
         ["query", HOSTILE, "--storage", sentinel_store],
-        ["models", "--storage", sentinel_store, "show", HOSTILE],
-        ["models", "--storage", sentinel_store, "list"],
+        ["datasets", "--storage", sentinel_store, "show", HOSTILE],
+        ["datasets", "--storage", sentinel_store, "list"],
         ["datasources", "--storage", sentinel_store, "list"],
         ["datasources", "--storage", sentinel_store, "show", f"{SENT}_ds"],
         ["memory", "--storage", sentinel_store, "save", "--learning", HOSTILE, "--entities", f"{SENT}_ds.{SENT}_model"],
         ["inspect", f"{SENT}_model", "--type", "model", "--storage", sentinel_store],
         ["search", "--question", HOSTILE, "--storage", sentinel_store],
-        ["recommend-root-model", f"{SENT}_model.{SENT}_col", "--storage", sentinel_store],
+        ["recommend-population", f"{SENT}_model.{SENT}_col", "--storage", sentinel_store],
     ]
     for args in runs:
         cli(args)
@@ -221,7 +221,7 @@ async def test_mcp_arguments_errors_and_client_never_leave(sentinel_store: str) 
             "metrics": [f"{SENT}_agg({SENT}_col)"],
             "filter": [f"'{HOSTILE}' == '{HOSTILE}'"],
         }})
-        await session.call_tool("inspect", {"entity_type": "model", "reference": HOSTILE, "compact": False})
+        await session.call_tool("inspect", {"entity_type": "dataset", "reference": HOSTILE, "compact": False})
         await session.call_tool("save_memory", {"learning": HOSTILE, "linked_entities": [f"{SENT}_ds.{SENT}_model"]})
         await session.call_tool("search", {"question": HOSTILE})
         await session.call_tool("describe_datasource", {"name": HOSTILE})
@@ -233,8 +233,8 @@ async def test_mcp_arguments_errors_and_client_never_leave(sentinel_store: str) 
 def test_rest_paths_bodies_and_errors_never_leave(sentinel_store: str) -> None:
     usage_reporting.start()
     client = TestClient(create_app(storage=YAMLStorage(base_dir=sentinel_store)))
-    client.get(f"/models/{SENT}_model")
-    client.get(f"/models/{SENT}missing")
+    client.get(f"/datasets/{SENT}_model")
+    client.get(f"/datasets/{SENT}missing")
     client.get(f"/{SENT}/unmatched")
     client.post("/query", json={"population": f"{SENT}_model", "metrics": [f"{SENT}_agg({SENT}_col)"]})
     client.post("/query", json={"population": HOSTILE, "metrics": ["count(*)"]})
@@ -283,9 +283,9 @@ def test_flight_sql_never_leaves(usage_reporting_env) -> None:
 
 def test_sent_report_never_carries_a_sentinel(sentinel_store: str, usage_reporting_env) -> None:
     cli(["query", json.dumps({"population": HOSTILE, "metrics": ["count(*)"]}), "--storage", sentinel_store])
-    cli(["models", "--storage", sentinel_store, "show", HOSTILE])
+    cli(["datasets", "--storage", sentinel_store, "show", HOSTILE])
     make_due()
-    cli(["models", "--storage", sentinel_store, "list"])
+    cli(["datasets", "--storage", sentinel_store, "list"])
     requests = usage_reporting_env.capture.wait_for(count=1)
     assert len(requests) == 1
     assert_no_sentinel(requests[0].body)

@@ -1147,7 +1147,7 @@ class TestRest:
             h["table_name"] for h in resp.json()["hidden_internals"]
         }
         assert "_dlt_loads" not in {
-            m["name"] for m in client.get("/models").json()
+            m["name"] for m in client.get("/datasets").json()
         }
 
     def test_hidden_internals_absent_from_the_models_endpoint(
@@ -1157,7 +1157,7 @@ class TestRest:
         client = _api_client(workspace, db_path)
         client.post("/ingest", json={"datasource": "ds"})
 
-        listed = {m["name"] for m in client.get("/models").json()}
+        listed = {m["name"] for m in client.get("/datasets").json()}
         assert listed == {"orders", "time_spine"}
 
 
@@ -1194,7 +1194,7 @@ class TestVisibilitySurfaces:
 
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="models_summary", arguments={"datasource_name": "ds"}
+            name="datasets_summary", arguments={"datasource_name": "ds"}
         )
         summary = blocks[0].text
 
@@ -1314,7 +1314,7 @@ class TestDriftScope:
         to_delete = await _with_client(validate_datasource, datasource=ds, models=models)
 
         entry = next(e for e in to_delete if e.dataset_name == "_dlt_version")
-        assert entry.tool == "delete_model"
+        assert entry.tool == "delete_dataset"
         assert entry.data_source == "ds"
 
 
@@ -1329,7 +1329,7 @@ class TestMcpIngestReporting:
     async def _ingest_via_mcp(self, storage, *, schema_name: str = "") -> str:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="ingest_datasource_models",
+            name="ingest_datasource",
             arguments={"datasource_name": "ds", "schema_name": schema_name},
         )
         return blocks[0].text
@@ -1387,7 +1387,7 @@ class TestMcpIngestReporting:
 
         out = await self._ingest_via_mcp(storage)
 
-        assert "edit_model" in out
+        assert "edit_dataset" in out
         assert "hidden=false" in out
         assert "--surface-internals" not in out
 
@@ -1426,7 +1426,7 @@ class TestMcpIngestReporting:
 
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="ingest_datasource_models",
+            name="ingest_datasource",
             arguments={"datasource_name": "second", "schema_name": ""},
         )
         out = blocks[0].text

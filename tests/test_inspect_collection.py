@@ -265,7 +265,7 @@ class TestModelCollectionVerbose:
 
         server = create_mcp_server(storage=single_ds)
         blocks, _ = await server.call_tool(
-            name="models_summary",
+            name="datasets_summary",
             arguments={"datasource_name": "mydb", "compact": False},
         )
         summary = blocks[0].text
@@ -280,7 +280,7 @@ class TestModelCollectionVerbose:
 
         server = create_mcp_server(storage=single_ds)
         blocks, _ = await server.call_tool(
-            name="models_summary",
+            name="datasets_summary",
             arguments={
                 "datasource_name": "mydb", "compact": False, "format": "json",
             },
@@ -834,7 +834,7 @@ class TestModelOnlyArgsIgnored:
         plain = await _svc(two_ds).inspect(reference=None, entity_type="dataset")
         with_args = await _svc(two_ds).inspect(
             reference=None, entity_type="dataset",
-            num_rows=99, show_sql=True, sections=["columns"],
+            num_rows=99, show_sql=True, sections=["fields"],
         )
         assert with_args == plain
         assert "Warning" not in with_args
@@ -842,7 +842,7 @@ class TestModelOnlyArgsIgnored:
     async def test_json_warnings_empty(self, two_ds: YAMLStorage) -> None:
         out = await _svc(two_ds).inspect(
             reference=None, entity_type="dataset", format="json",
-            num_rows=99, show_sql=True, sections=["columns"],
+            num_rows=99, show_sql=True, sections=["fields"],
         )
         assert json.loads(out)["warnings"] == []
 

@@ -321,7 +321,7 @@ class TestEnumerationSurfaces:
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
     async def test_mcp_models_summary(self, bad_store: StorageBackend, recorded: list) -> None:
-        text = await _mcp_text(bad_store, tool="models_summary", arguments={"datasource_name": DS})
+        text = await _mcp_text(bad_store, tool="datasets_summary", arguments={"datasource_name": DS})
         assert all(name in text for name in GOOD_MODELS)
         _assert_one_warning(recorded, name=BAD, cause=CAUSE)
 
@@ -338,7 +338,7 @@ class TestEnumerationSurfaces:
         assert str(w.message) in response.warnings
 
     def test_rest_models_listing(self, bad_store: StorageBackend, recorded: list) -> None:
-        resp = TestClient(create_app(storage=bad_store)).get("/models", params={"data_source": DS})
+        resp = TestClient(create_app(storage=bad_store)).get("/datasets", params={"data_source": DS})
         assert resp.status_code == 200
         names = {m["name"] for m in resp.json()}
         assert set(GOOD_MODELS) <= names
@@ -414,7 +414,7 @@ class TestAnswerPickingFailsClosed:
 
     @pytest.mark.parametrize(("items", "data_source"), [
         pytest.param(["label"], DS, id="bare-name-scoping"),
-        pytest.param(["customers.name"], None, id="recommend-root-model"),
+        pytest.param(["customers.name"], None, id="recommend-population"),
     ])
     async def test_recommend_root_model(
         self, bad_store: StorageBackend, items: list[str], data_source: str | None,

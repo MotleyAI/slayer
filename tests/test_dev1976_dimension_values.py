@@ -453,7 +453,7 @@ class TestPositionParity:
         assert {r[key] for r in filtered.data} == kept
 
         ordered = await exec_engine.execute(make_q(
-            dimensions=dims, measures=[N], order=[{"column": expr, "direction": "desc"}]))
+            dimensions=dims, measures=[N], order=[{"field": expr, "direction": "desc"}]))
         assert [values[r[key]] for r in ordered.data] == _desc_nulls_last(list(values.values()))
 
 
@@ -484,7 +484,7 @@ class TestMeasureTypingErrors:
                                          position):
         if position == "order":
             query = make_q(dimensions=dims, measures=[TOT],
-                           order=[{"column": formula, "direction": "asc"}])
+                           order=[{"field": formula, "direction": "asc"}])
         else:
             query = make_q(dimensions=dims, measures=[_m(formula)])
         bundle = _bundle(source)

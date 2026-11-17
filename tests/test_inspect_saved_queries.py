@@ -128,7 +128,7 @@ class TestModelViews:
     async def test_inspect_model_tool(self, storage: YAMLStorage) -> None:
         server = create_mcp_server(storage=storage)
         payload = await call_tool_json(
-            server, name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "format": "json", "sections": ["columns"]},
+            server, name="inspect", arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "format": "json", "sections": ["fields"]},
         )
         assert "saved_queries" not in payload
         payload = await call_tool_json(
@@ -145,9 +145,9 @@ class TestSectionSelection:
         assert _resolve_inspect_sections(["saved_queries", "fish"]) == (["saved_queries"], ["fish"])
 
     async def test_excluded(self, storage: YAMLStorage) -> None:
-        text = await _inspect(storage, "orders", compact=False, sections=["columns"])
+        text = await _inspect(storage, "orders", compact=False, sections=["fields"])
         assert "## Saved queries" not in text
-        payload = json.loads(await _inspect(storage, "orders", compact=False, sections=["columns"], format="json"))
+        payload = json.loads(await _inspect(storage, "orders", compact=False, sections=["fields"], format="json"))
         assert "saved_queries" not in payload
 
     async def test_included_alone(self, storage: YAMLStorage) -> None:

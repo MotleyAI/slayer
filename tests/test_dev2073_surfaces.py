@@ -52,7 +52,7 @@ class TestInspectShowsEdgeNames:
         assert re.search(r"\| billing_address \|", md)
 
     async def test_names_only_view_lists_edge_references(self) -> None:
-        payload = json.loads(await _inspect(_orders(), format="json", sections=["columns"]))
+        payload = json.loads(await _inspect(_orders(), format="json", sections=["fields"]))
         assert sorted(payload["joins_names"]) == EDGE_NAMES
 
     def test_skeleton_lists_edge_references(self) -> None:

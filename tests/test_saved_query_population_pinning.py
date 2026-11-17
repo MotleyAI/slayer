@@ -110,7 +110,7 @@ class TestPinnedOnSave:
         )
         server = create_mcp_server(storage=engine.storage)
         payload = await call_tool_json(
-            server, name="edit_model", arguments={"model_name": "edited", "source_queries": [BY_CUSTOMER]},
+            server, name="edit_dataset", arguments={"dataset_name": "edited", "source_queries": [BY_CUSTOMER]},
         )
         assert payload["success"] is True
         (stage,) = await stored_stages(engine, "edited")

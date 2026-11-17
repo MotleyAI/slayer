@@ -84,7 +84,7 @@ def started(usage_reporting_env) -> None:
 
 def test_cli_leaf_tokens(store: str) -> None:
     cli(["query", json.dumps(_QUERY), "--storage", store])
-    cli(["models", "--storage", store, "list"])
+    cli(["datasets", "--storage", store, "list"])
     cli(["datasources", "--storage", store, "list"])
     cli(["datasources", "--storage", store, "list"])
     report = show()
@@ -97,7 +97,7 @@ def test_cli_leaf_tokens(store: str) -> None:
     ["query"],
     ["--help"],
     ["query", "--help"],
-    ["models", "--bogus"],
+    ["datasets", "--bogus"],
     ["inspect", "x", "--type", "not-a-kind"],
     [],
 ])
@@ -120,7 +120,7 @@ def test_parse_error_exits_before_any_usage_reporting(usage_reporting_env) -> No
 
 def test_cli_failure_counted_as_error(store: str) -> None:
     cli(["query", json.dumps({"population": "no_such_model", "metrics": ["count(*)"]}), "--storage", store])
-    cli(["models", "--storage", store, "show", "no_such_model"])
+    cli(["datasets", "--storage", store, "show", "no_such_model"])
     report = show()
     for key in ("cli:query", "cli:models.show"):
         entry = usage(report, key)
@@ -221,8 +221,8 @@ def test_mcp_tool_schemas_identical_with_usage_reporting_on_and_off(store: str) 
 def test_rest_counts_route_templates(store: str, started) -> None:
     client = TestClient(create_app(storage=YAMLStorage(base_dir=store)))
     assert client.get("/health").status_code == 200
-    client.get("/models/orders")
-    client.get("/models/no_such_model")
+    client.get("/datasets/orders")
+    client.get("/datasets/no_such_model")
     assert client.post("/query", json=_QUERY).status_code == 200
     end_process()
     report = show()
@@ -579,17 +579,17 @@ def _unavailable() -> Exception:
 
 _DB_FAILURE_CALLS = [
     ("query", (SlayerQueryEngine, "execute"), {"query": _QUERY}),
-    ("create_model", (SlayerQueryEngine, "save_model"),
+    ("create_dataset", (SlayerQueryEngine, "save_model"),
      {"name": "m", "sql_table": "orders", "data_source": "test", "fields": [{"name": "id", "sql": "id", "datatype": "number"}]}),
-    ("create_model", (SlayerQueryEngine, "create_model_from_query"), {"name": "m", "query": _QUERY}),
-    ("validate_models", (SlayerQueryEngine, "validate_models"), {}),
-    ("ingest_datasource_models", (engine_ingestion, "ingest_datasource_idempotent"), {"datasource_name": "test"}),
+    ("create_dataset", (SlayerQueryEngine, "create_model_from_query"), {"name": "m", "query": _QUERY}),
+    ("validate_datasets", (SlayerQueryEngine, "validate_datasets"), {}),
+    ("ingest_datasource", (engine_ingestion, "ingest_datasource_idempotent"), {"datasource_name": "test"}),
 ]
 
 
 @pytest.mark.parametrize("failure", [_operational, _unavailable], ids=["sqlalchemy", "client"])
 @pytest.mark.parametrize(("tool", "target", "arguments"), _DB_FAILURE_CALLS,
-                         ids=["query", "create_model_table", "create_model_query", "validate_models", "ingest"])
+                         ids=["query", "create_model_table", "create_model_query", "validate_datasets", "ingest"])
 async def test_mcp_database_failure_counted_with_a_database_token(
     store: str, started, monkeypatch: pytest.MonkeyPatch,
     tool: str, target: tuple[object, str], arguments: dict, failure,

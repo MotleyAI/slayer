@@ -153,7 +153,7 @@ class TestScope:
         assert (ref.name, ref.is_default) == (_URL_DATASET, True)
 
 
-@pytest.mark.parametrize("snapshot", [False, True], ids=["validate_models", "snapshot"])
+@pytest.mark.parametrize("snapshot", [False, True], ids=["validate_datasets", "snapshot"])
 class TestValidateModels:
     async def _validate(self, datasets: list[SlayerDataset], *, client: _LayoutClient, snapshot: bool) -> list[ToDeleteEntry]:
         return await validate_datasource(

@@ -332,7 +332,7 @@ class TestInspectModelSectionGatingIntegration:
         server = create_mcp_server(storage=env["storage"])
         result = await self._call(
             server, name="inspect",
-            arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "sections": ["columns"]},
+            arguments={"entity_type": "dataset", "reference": "orders", "compact": False, "sections": ["fields"]},
         )
         # Columns full table is rendered — `sampled` column populated by the
         # live profile query (proves columns-section is fully included).
@@ -357,7 +357,7 @@ class TestInspectModelSectionGatingIntegration:
             arguments={
                 "entity_type": "dataset", "reference": "orders", "compact": False,
                 "descriptions_max_chars": 5,
-                "sections": ["columns"],
+                "sections": ["fields"],
             },
         )
         # Long description "Revenue per order" (17 chars) → truncates to 5 + marker
@@ -545,7 +545,7 @@ class TestIngestDatasourceModelsTool:
 
         server = create_mcp_server(storage=storage)
         content, _ = await server.call_tool(
-            name="ingest_datasource_models",
+            name="ingest_datasource",
             arguments={"datasource_name": "ingest_ds"},
         )
         text = content[0].text

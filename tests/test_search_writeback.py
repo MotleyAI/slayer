@@ -205,7 +205,7 @@ async def test_inspect_model_writes_back_on_sampled_miss(
     mcp = create_mcp_server(storage=storage)
     # First call: sampled is None → live profile + writeback
     result = await mcp.call_tool("inspect", {
-        "entity_type": "dataset", "reference": "ds.orders", "compact": False, "sections": ["columns"],
+        "entity_type": "dataset", "reference": "ds.orders", "compact": False, "sections": ["fields"],
     })
     assert result is not None
     loaded = await storage.get_dataset("orders", data_source="ds")
@@ -243,6 +243,6 @@ async def test_inspect_model_reads_cached_sampled_without_recompute(
 
     mcp = create_mcp_server(storage=storage)
     await mcp.call_tool("inspect", {
-        "entity_type": "dataset", "reference": "ds.orders", "compact": False, "sections": ["columns"],
+        "entity_type": "dataset", "reference": "ds.orders", "compact": False, "sections": ["fields"],
     })
     assert profile_call_count["n"] == 0

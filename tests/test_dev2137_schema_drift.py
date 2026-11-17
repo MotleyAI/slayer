@@ -56,13 +56,13 @@ def _dumps(entries: list[Any]) -> list[dict[str, Any]]:
 
 
 def _deletes_skills(entry: dict[str, Any]) -> bool:
-    if entry.get("tool") == "delete_model":
+    if entry.get("tool") == "delete_dataset":
         return entry.get("model_name") == "contractors"
     return "skills" in ((entry.get("remove") or {}).get("columns") or [])
 
 
 def _retype_findings(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [e for e in entries if e.get("tool") not in ("edit_model", "delete_model")
+    return [e for e in entries if e.get("tool") not in ("edit_dataset", "delete_dataset")
             and "skills" in json.dumps(e) and "contractors" in json.dumps(e)]
 
 

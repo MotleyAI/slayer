@@ -115,7 +115,7 @@ def _hop(**kw):
 
 def _join_rule(**kw):
     """JoinFilterRule factory (no column/value — hoisted to the ruleset)."""
-    base = {"target_table": "orders", "join_path": [_hop()]}
+    base = {"target_table": "orders", "relationship_path": [_hop()]}
     base.update(kw)
     return RelationshipFilterRule(**base)
 
@@ -189,17 +189,17 @@ def test_join_rule_has_no_kind_field():
 
 
 def test_join_rule_join_path_list_coerced_to_tuple():
-    assert isinstance(_join_rule(join_path=[_hop()]).relationship_path, tuple)
+    assert isinstance(_join_rule(relationship_path=[_hop()]).relationship_path, tuple)
 
 
 def test_join_rule_empty_join_path_rejected():
     with pytest.raises(ValidationError):
-        _join_rule(join_path=[])
+        _join_rule(relationship_path=[])
 
 
 def test_bare_string_join_path_rejected():
     with pytest.raises(ValidationError):
-        _join_rule(join_path="orders.customer_id = customers.id")
+        _join_rule(relationship_path="orders.customer_id = customers.id")
 
 
 @pytest.mark.parametrize(
@@ -216,7 +216,7 @@ def test_bare_string_join_path_rejected():
 )
 def test_non_string_hop_element_rejected(bad_element):
     with pytest.raises(ValidationError):
-        _join_rule(join_path=[bad_element])
+        _join_rule(relationship_path=[bad_element])
 
 
 def test_joinhop_instance_hop_element_rejected():
@@ -225,7 +225,7 @@ def test_joinhop_instance_hop_element_rejected():
         to_table="customers", to_column="id",
     )
     with pytest.raises(ValidationError):
-        _join_rule(join_path=[hop])
+        _join_rule(relationship_path=[hop])
 
 
 @pytest.mark.parametrize(
@@ -245,11 +245,11 @@ def test_joinhop_instance_hop_element_rejected():
 )
 def test_malformed_hop_string_rejected(bad):
     with pytest.raises(ValidationError):
-        _join_rule(join_path=[bad])
+        _join_rule(relationship_path=[bad])
 
 
 def test_hop_whitespace_tolerant():
-    rule = _join_rule(join_path=["   orders.customer_id   =   customers.id   "])
+    rule = _join_rule(relationship_path=["   orders.customer_id   =   customers.id   "])
     assert rule.parsed_hops[0].from_table == "orders"
     assert rule.parsed_hops[0].to_column == "id"
     assert rule.relationship_path == ("   orders.customer_id   =   customers.id   ",)
@@ -261,7 +261,7 @@ def test_hop_whitespace_tolerant():
 def test_join_rule_target_first_accepted():
     """Path written target-first (orders -> customers)."""
     rule = _join_rule(
-        target_table="orders", join_path=["orders.customer_id = customers.id"]
+        target_table="orders", relationship_path=["orders.customer_id = customers.id"]
     )
     assert rule.parsed_hops[0].from_table == "orders"
 
@@ -269,7 +269,7 @@ def test_join_rule_target_first_accepted():
 def test_join_rule_master_first_accepted():
     """A path may be written anchor-first, putting the target at the end."""
     rule = _join_rule(
-        target_table="orders", join_path=["customers.id = orders.customer_id"]
+        target_table="orders", relationship_path=["customers.id = orders.customer_id"]
     )
     # endpoints are {customers, orders}; target=orders is an endpoint
     assert rule._endpoints == ("customers", "orders")
@@ -280,7 +280,7 @@ def test_join_rule_target_not_an_endpoint_rejected():
     with pytest.raises(ValidationError):
         _join_rule(
             target_table="line_items",  # not an endpoint of orders<->customers
-            join_path=["orders.customer_id = customers.id"],
+            relationship_path=["orders.customer_id = customers.id"],
         )
 
 
@@ -288,7 +288,7 @@ def test_join_rule_hops_must_chain():
     with pytest.raises(ValidationError):
         _join_rule(
             target_table="line_items",
-            join_path=[
+            relationship_path=[
                 "line_items.order_id = orders.id",
                 "customers.region_id = regions.id",  # broken chain
             ],
@@ -298,7 +298,7 @@ def test_join_rule_hops_must_chain():
 def test_join_rule_multihop_valid_chain():
     rule = _join_rule(
         target_table="line_items",
-        join_path=[
+        relationship_path=[
             "line_items.order_id = orders.id",
             "orders.customer_id = customers.id",
         ],
@@ -309,7 +309,7 @@ def test_join_rule_multihop_valid_chain():
 
 def test_endpoint_check_is_case_insensitive():
     rule = _join_rule(
-        target_table="ORDERS", join_path=["orders.customer_id = customers.id"]
+        target_table="ORDERS", relationship_path=["orders.customer_id = customers.id"]
     )
     assert rule.target_table == "ORDERS"
 
@@ -319,7 +319,7 @@ def test_endpoint_check_is_case_insensitive():
 
 def test_oriented_hops_target_first_unchanged():
     rule = _join_rule(
-        target_table="orders", join_path=["orders.customer_id = customers.id"]
+        target_table="orders", relationship_path=["orders.customer_id = customers.id"]
     )
     oriented = rule.oriented_hops()
     assert oriented[0].from_table == "orders"
@@ -329,7 +329,7 @@ def test_oriented_hops_target_first_unchanged():
 def test_oriented_hops_master_first_reversed():
     """An anchor-first path is reversed hop by hop so it ends up target-first."""
     rule = _join_rule(
-        target_table="orders", join_path=["customers.id = orders.customer_id"]
+        target_table="orders", relationship_path=["customers.id = orders.customer_id"]
     )
     oriented = rule.oriented_hops()
     assert oriented[0].from_table == "orders"
@@ -341,7 +341,7 @@ def test_oriented_hops_master_first_reversed():
 def test_oriented_hops_multihop_master_first_reversed():
     rule = _join_rule(
         target_table="line_items",
-        join_path=[
+        relationship_path=[
             "customers.id = orders.customer_id",
             "orders.id = line_items.order_id",
         ],
@@ -371,7 +371,7 @@ def test_join_rule_model_copy_rederives_parsed_hops():
 def test_join_rule_model_copy_breaking_chain_fails_closed():
     rule = _join_rule(
         target_table="line_items",
-        join_path=[
+        relationship_path=[
             "line_items.order_id = orders.id",
             "orders.customer_id = customers.id",
         ],
@@ -394,9 +394,9 @@ def test_join_rule_model_copy_breaking_chain_fails_closed():
 def _join_ruleset(**kw):
     base = {
         "table": "customers",
-        "column": "organization_uuid",
+        "field": "organization_uuid",
         "value": "7ef3",
-        "joins": [_join_rule()],  # orders -> customers
+        "relationships": [_join_rule()],  # orders -> customers
     }
     base.update(kw)
     return RelationshipFilterRuleset(**base)
@@ -428,7 +428,7 @@ def test_join_ruleset_empty_value_rejected():
         _join_ruleset(value=[])
 
 
-@pytest.mark.parametrize("field", ["table", "column"])
+@pytest.mark.parametrize("field", ["table", "field"])
 def test_join_ruleset_blank_field_rejected(field):
     with pytest.raises(ValidationError):
         _join_ruleset(**{field: "  "})
@@ -626,12 +626,12 @@ def test_policy_join_dict_with_kind():
         ruleset={
             "kind": "join",
             "table": "customers",
-            "column": "organization_uuid",
+            "field": "organization_uuid",
             "value": "7ef3",
-            "joins": [
+            "relationships": [
                 {
                     "target_table": "orders",
-                    "join_path": ["orders.customer_id = customers.id"],
+                    "relationship_path": ["orders.customer_id = customers.id"],
                 }
             ],
         }
@@ -643,7 +643,7 @@ def test_policy_join_dict_with_kind():
 def test_policy_kindless_dict_rejected():
     """kind is explicit — a kind-less dict ruleset cannot be discriminated."""
     with pytest.raises(ValidationError):
-        SessionPolicy(ruleset={"column": "org", "value": "x"})
+        SessionPolicy(ruleset={"field": "org", "value": "x"})
 
 
 def test_policy_kindless_join_dict_rejected():
@@ -651,7 +651,7 @@ def test_policy_kindless_join_dict_rejected():
         SessionPolicy(
             ruleset={
                 "table": "customers",
-                "column": "organization_uuid",
+                "field": "organization_uuid",
                 "value": "7ef3",
             }
         )
@@ -693,12 +693,12 @@ def test_policy_full_round_trip():
         ruleset={
             "kind": "join",
             "table": "customers",
-            "column": "organization_uuid",
+            "field": "organization_uuid",
             "value": "7ef3",
-            "joins": [
+            "relationships": [
                 {
                     "target_table": "line_items",
-                    "join_path": [
+                    "relationship_path": [
                         "line_items.order_id = orders.id",
                         "orders.customer_id = customers.id",
                     ],

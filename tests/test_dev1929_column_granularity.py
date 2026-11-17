@@ -558,7 +558,7 @@ class TestMCPSurfaces:
             await storage.save_datasource(
                 DatasourceConfig(name="ds", type="sqlite", database=os.path.join(tmp, "db.sqlite")))
             server = create_mcp_server(storage=storage, _seed_help=False)
-            await _call(server, name="create_model", arguments={
+            await _call(server, name="create_dataset", arguments={
                 "name": "events", "data_source": "ds", "sql_table": "events",
                 "fields": [{"name": "created_at", "datatype": "time", "granularity": "month"}]})
             assert _col(await storage.get_dataset("events"), "created_at").granularity == TG.MONTH
@@ -566,21 +566,21 @@ class TestMCPSurfaces:
     async def test_edit_model_sets_preserves_and_clears(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             server, storage = await self._server(tmp)
-            await _call(server, name="edit_model", arguments={
-                "model_name": "orders", "columns": [{"name": "created_at", "granularity": "month"}]})
+            await _call(server, name="edit_dataset", arguments={
+                "dataset_name": "orders", "fields": [{"name": "created_at", "granularity": "month"}]})
             assert _col(await storage.get_dataset("orders"), "created_at").granularity == TG.MONTH
-            await _call(server, name="edit_model", arguments={
-                "model_name": "orders", "columns": [{"name": "created_at", "description": "when"}]})
+            await _call(server, name="edit_dataset", arguments={
+                "dataset_name": "orders", "fields": [{"name": "created_at", "description": "when"}]})
             assert _col(await storage.get_dataset("orders"), "created_at").granularity == TG.MONTH
-            await _call(server, name="edit_model", arguments={
-                "model_name": "orders", "columns": [{"name": "created_at", "granularity": None}]})
+            await _call(server, name="edit_dataset", arguments={
+                "dataset_name": "orders", "fields": [{"name": "created_at", "granularity": None}]})
             assert _col(await storage.get_dataset("orders"), "created_at").granularity is None
 
     async def test_edit_model_rejects_granularity_on_non_temporal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             server, storage = await self._server(tmp)
-            result = await _call(server, name="edit_model", arguments={
-                "model_name": "orders", "columns": [{"name": "note", "granularity": "month"}]})
+            result = await _call(server, name="edit_dataset", arguments={
+                "dataset_name": "orders", "fields": [{"name": "note", "granularity": "month"}]})
             assert "note" in result
             assert "month" in result
             assert "TEXT" in result
@@ -589,8 +589,8 @@ class TestMCPSurfaces:
     async def test_inspect_model_shows_set_granularity(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             server, _storage = await self._server(tmp)
-            await _call(server, name="edit_model", arguments={
-                "model_name": "orders", "columns": [{"name": "created_at", "granularity": "month"}]})
+            await _call(server, name="edit_dataset", arguments={
+                "dataset_name": "orders", "fields": [{"name": "created_at", "granularity": "month"}]})
             out = await _call(server, name="inspect", arguments={
                 "entity_type": "dataset", "reference": "orders", "compact": False, "format": "json"})
             cols = {c["name"]: c for c in json.loads(out)["columns"]}

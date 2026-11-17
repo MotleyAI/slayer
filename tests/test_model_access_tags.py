@@ -79,27 +79,27 @@ class TestMcp:
         return await mcp_text(storage, tool, **arguments)
 
     async def test_create_model_sets_tags(self, storage: StorageBackend) -> None:
-        out = await self.call(storage, "create_model", name="items", sql_table="items", data_source=DS,
-                              columns=[{"name": "id", "type": "number", "primary_key": True}], access_tags=["hr"])
+        out = await self.call(storage, "create_dataset", name="items", sql_table="items", data_source=DS,
+                              fields=[{"name": "id", "datatype": "number", "primary_key": True}], access_tags=["hr"])
         assert "Error" not in out, out
         assert (await must_get(storage, "items", DS)).access_tags == ["hr"]
 
     async def test_create_query_backed_model_sets_tags(self, storage: StorageBackend) -> None:
         await storage.save_dataset(_dataset())
-        out = await self.call(storage, "create_model", name="item_count", access_tags=["hr"],
+        out = await self.call(storage, "create_dataset", name="item_count", access_tags=["hr"],
                               query={"population": "items", "metrics": [{"expression": "count(*)", "name": "n"}]})
         assert "Error" not in out, out
         assert (await must_get(storage, "item_count", DS)).access_tags == ["hr"]
 
     async def test_edit_model_changes_tags(self, storage: StorageBackend) -> None:
         await storage.save_dataset(_dataset(access_tags=["hr"]))
-        out = await self.call(storage, "edit_model", model_name="items", access_tags=["hr", "HR Team"])
+        out = await self.call(storage, "edit_dataset", dataset_name="items", access_tags=["hr", "HR Team"])
         assert "Error" not in out, out
         assert (await must_get(storage, "items", DS)).access_tags == ["hr", "HR Team"]
 
     async def test_edit_model_without_tags_keeps_them(self, storage: StorageBackend) -> None:
         await storage.save_dataset(_dataset(access_tags=["hr"]))
-        await self.call(storage, "edit_model", model_name="items", description="d")
+        await self.call(storage, "edit_dataset", dataset_name="items", description="d")
         assert (await must_get(storage, "items", DS)).access_tags == ["hr"]
 
 
@@ -129,17 +129,17 @@ class TestRestAndClient:
 
     def test_rest_create_and_get(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, storage = rest
-        resp = client.post("/models", json=_dataset(access_tags=["hr"]).model_dump(mode="json"))
+        resp = client.post("/datasets", json=_dataset(access_tags=["hr"]).model_dump(mode="json"))
         assert resp.status_code == 200, resp.text
         assert run_sync(must_get(storage, "items", DS)).access_tags == ["hr"]
-        got = client.get("/models/items", params={"data_source": DS})
+        got = client.get("/datasets/items", params={"data_source": DS})
         assert got.status_code == 200
         assert got.json()["access_tags"] == ["hr"]
 
     def test_rest_update_changes_tags(self, rest: tuple[TestClient, YAMLStorage]) -> None:
         client, storage = rest
         run_sync(storage.save_dataset(_dataset(access_tags=["hr"])))
-        resp = client.put("/models/items", json=_dataset(access_tags=["fin"]).model_dump(mode="json"))
+        resp = client.put("/datasets/items", json=_dataset(access_tags=["fin"]).model_dump(mode="json"))
         assert resp.status_code == 200, resp.text
         assert run_sync(must_get(storage, "items", DS)).access_tags == ["fin"]
 

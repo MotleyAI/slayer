@@ -188,9 +188,9 @@ def _removed(entries: list[dict[str, Any]], dataset: str) -> set[str]:
     for e in entries:
         if e.get("model_name") != dataset:
             continue
-        if e.get("tool") == "delete_model":
+        if e.get("tool") == "delete_dataset":
             out.add("<model>")
-        elif e.get("tool") == "edit_model":
+        elif e.get("tool") == "edit_dataset":
             out |= set(e["remove"]["columns"]) | set(e["remove"]["measures"])
     return out
 
@@ -314,7 +314,7 @@ class TestScalarAndList:
 
 class TestForceClean:
     async def test_force_clean_keeps_retyped_columns_and_their_measures(self, duck: Duck) -> None:
-        result = run_cli_in_process(["validate-models", "--datasource", "ds", "--force-clean", "--yes",
+        result = run_cli_in_process(["validate-datasets", "--datasource", "ds", "--force-clean", "--yes",
                                      "--storage", str(duck.root / "storage")])
         assert result.returncode == 0, result.stderr
         legacy, retyped, dropped = [await duck.dataset(n) for n in ("legacy", "retyped", "dropped")]
@@ -365,11 +365,11 @@ class TestQueryTime:
 class TestOneShape:
     async def test_rest_mcp_and_python_agree(self, duck: Duck) -> None:
         python = [e for e in await _validate(duck.engine(), "ds") if e.get("finding") == "retype"]
-        rest = TestClient(create_app(storage=duck.storage)).post("/validate-models", json={"data_source": "ds"})
+        rest = TestClient(create_app(storage=duck.storage)).post("/validate-datasets", json={"data_source": "ds"})
         assert rest.status_code == 200, rest.text
         server: Any = create_mcp_server(storage=duck.storage)
         try:
-            blocks, _ = await server.call_tool(name="validate_models", arguments={"data_source": "ds"})
+            blocks, _ = await server.call_tool(name="validate_datasets", arguments={"data_source": "ds"})
         finally:
             await server._slayer_engine.aclose()
         mcp = json.loads(blocks[0].text)

@@ -86,7 +86,7 @@ def test_cli_query_records(store: str, usage_reporting_env) -> None:
 
 def test_python_m_slayer_records(store: str, usage_reporting_env) -> None:
     quiet_config()
-    result = run_slayer(["models", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
+    result = run_slayer(["datasets", "--storage", store, "list"], env=usage_reporting_env.subprocess_env())
     assert result.returncode == 0, result.stderr
     assert usage(show(), "cli:models.list")["ok"] == 1
 

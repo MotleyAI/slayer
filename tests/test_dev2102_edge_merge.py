@@ -48,8 +48,8 @@ async def _error(engine: SlayerQueryEngine, query) -> str:
 
 
 def _tier_amounts(**fields) -> dict:
-    return dict(source_model="orders", dimensions=["customers.tier"],
-                measures=[{"expression": "sum(amount)", "name": "a"}], **fields)
+    return dict(population="orders", dimensions=["customers.tier"],
+                metrics=[{"expression": "sum(amount)", "name": "a"}], **fields)
 
 
 class TestStoredEdgeReuse:
@@ -67,8 +67,8 @@ class TestStoredEdgeReuse:
                 await engine.execute(query)
 
     async def test_a_reversed_declaration_is_the_stored_edge(self, dialect) -> None:
-        plain = dict(source_model="customers", dimensions=["name"],
-                     measures=[{"expression": "count(orders.id)", "name": "n"}])
+        plain = dict(population="customers", dimensions=["name"],
+                     metrics=[{"expression": "count(orders.id)", "name": "n"}])
         reversed_ = q(**plain, extensions=[ext("customers", relationships=[join("orders", REVERSE_CUSTOMER_PAIRS)])])
         async with shop(dialect) as engine:
             resp = await engine.execute(reversed_)

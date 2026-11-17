@@ -43,7 +43,7 @@ async def engine(storage: YAMLStorage) -> AsyncIterator[SlayerQueryEngine]:
 
 
 async def _edit(mcp_server, **arguments) -> str:
-    blocks, _ = await mcp_server.call_tool(name="edit_model", arguments={"model_name": "orders", **arguments})
+    blocks, _ = await mcp_server.call_tool(name="edit_dataset", arguments={"dataset_name": "orders", **arguments})
     return blocks[0].text
 
 

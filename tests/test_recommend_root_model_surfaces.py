@@ -71,7 +71,7 @@ class TestMcpTool:
     async def test_markdown_names_root(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model",
+            name="recommend_population",
             arguments={"items": ["customers.name", "products.category"]},
         )
         text = _text(blocks)
@@ -81,7 +81,7 @@ class TestMcpTool:
     async def test_json_format(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model",
+            name="recommend_population",
             arguments={"items": ["orders.status"], "data_source": "mydb", "format": "json"},
         )
         payload = json.loads(_text(blocks))
@@ -91,7 +91,7 @@ class TestMcpTool:
     async def test_no_root_renders_coverage(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model",
+            name="recommend_population",
             arguments={"items": ["customers.name", "tickets.subject"], "format": "json"},
         )
         payload = json.loads(_text(blocks))
@@ -102,7 +102,7 @@ class TestMcpTool:
     async def test_invalid_format_returns_friendly_error(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model",
+            name="recommend_population",
             arguments={"items": ["orders.status"], "data_source": "mydb", "format": "xml"},
         )
         assert "failed" in _text(blocks).lower()
@@ -123,7 +123,7 @@ class TestMcpTool:
                 ))
             mcp = create_mcp_server(storage=s)
             blocks, _ = await mcp.call_tool(
-                name="recommend_root_model", arguments={"items": ["orders.status"]},
+                name="recommend_population", arguments={"items": ["orders.status"]},
             )
             # Routed through the shared MCP ambiguity hint (mentions data_source /
             # multiple datasources), not a bare "failed" string.
@@ -136,7 +136,7 @@ class TestRestEndpoint:
     def test_post_ok(self, storage) -> None:
         client = TestClient(create_app(storage=storage))
         resp = client.post(
-            "/recommend-root-model",
+            "/recommend-population",
             json={"items": ["customers.name", "products.category"]},
         )
         assert resp.status_code == 200
@@ -149,7 +149,7 @@ class TestRestEndpoint:
     def test_returns_item_paths(self, storage) -> None:
         client = TestClient(create_app(storage=storage))
         resp = client.post(
-            "/recommend-root-model",
+            "/recommend-population",
             json={"items": ["customers.name", "products.category"]},
         )
         paths = {ip["input_item"]: ip["path"] for ip in resp.json()["item_paths"]}
@@ -162,7 +162,7 @@ class TestRestEndpoint:
     def test_post_unresolvable_item_400(self, storage) -> None:
         client = TestClient(create_app(storage=storage))
         resp = client.post(
-            "/recommend-root-model",
+            "/recommend-population",
             json={"items": ["orders.no_such_column"], "data_source": "mydb"},
         )
         assert resp.status_code == 400
@@ -171,7 +171,7 @@ class TestRestEndpoint:
         # Bare model reference (no leaf) → ValueError → HTTP 400.
         client = TestClient(create_app(storage=storage))
         resp = client.post(
-            "/recommend-root-model",
+            "/recommend-population",
             json={"items": ["customers"], "data_source": "mydb"},
         )
         assert resp.status_code == 400
@@ -206,7 +206,7 @@ class TestCliParserWiring:
 
 
         monkeypatch.setattr(sys, "argv", [
-            "slayer", "recommend-root-model",
+            "slayer", "recommend-population",
             "customers.name", "products.category",
             "--storage", storage.base_dir, "--format", "json",
         ])
@@ -262,7 +262,7 @@ class TestUnrelatedFlagSurfaces:
     async def test_mcp_json(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model", arguments={"items": UNRELATED_ITEMS, "format": "json"},
+            name="recommend_population", arguments={"items": UNRELATED_ITEMS, "format": "json"},
         )
         payload = json.loads(_text(blocks))
         assert payload["root_model"] == "customers"
@@ -270,11 +270,11 @@ class TestUnrelatedFlagSurfaces:
 
     async def test_mcp_markdown(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
-        blocks, _ = await mcp.call_tool(name="recommend_root_model", arguments={"items": UNRELATED_ITEMS})
+        blocks, _ = await mcp.call_tool(name="recommend_population", arguments={"items": UNRELATED_ITEMS})
         assert _flagged_in_text(_text(blocks))
 
     def test_rest(self, storage) -> None:
-        resp = TestClient(create_app(storage=storage)).post("/recommend-root-model", json={"items": UNRELATED_ITEMS})
+        resp = TestClient(create_app(storage=storage)).post("/recommend-population", json={"items": UNRELATED_ITEMS})
         assert resp.status_code == 200
         assert _flags(resp.json()) == UNRELATED_FLAGS
 
@@ -321,7 +321,7 @@ class TestRootHintSurfaces:
     async def test_mcp_feasible_hint_honored(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model",
+            name="recommend_population",
             arguments={"items": ["customers.name"], "root_hint": "orders", "format": "json"},
         )
         payload = json.loads(_text(blocks))
@@ -330,7 +330,7 @@ class TestRootHintSurfaces:
     async def test_mcp_bad_hint_friendly_error(self, storage) -> None:
         mcp = create_mcp_server(storage=storage)
         blocks, _ = await mcp.call_tool(
-            name="recommend_root_model",
+            name="recommend_population",
             arguments={"items": ["orders.status"], "data_source": "mydb", "root_hint": "nope"},
         )
         assert "failed" in _text(blocks).lower()
@@ -339,7 +339,7 @@ class TestRootHintSurfaces:
     def test_rest_feasible_hint_honored(self, storage) -> None:
         client = TestClient(create_app(storage=storage))
         resp = client.post(
-            "/recommend-root-model",
+            "/recommend-population",
             json={"items": ["customers.name"], "root_hint": "orders"},
         )
         assert resp.status_code == 200
@@ -348,7 +348,7 @@ class TestRootHintSurfaces:
     def test_rest_bad_hint_400(self, storage) -> None:
         client = TestClient(create_app(storage=storage))
         resp = client.post(
-            "/recommend-root-model",
+            "/recommend-population",
             json={"items": ["orders.status"], "data_source": "mydb", "root_hint": "nope"},
         )
         assert resp.status_code == 400
@@ -367,7 +367,7 @@ class TestRootHintSurfaces:
 
     def test_cli_bad_hint_nonzero_exit(self, storage, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
         monkeypatch.setattr(sys, "argv", [
-            "slayer", "recommend-root-model", "orders.status", "--data-source", "mydb",
+            "slayer", "recommend-population", "orders.status", "--data-source", "mydb",
             "--root-hint", "nope", "--storage", storage.base_dir,
         ])
         with pytest.raises(SystemExit) as exc:
@@ -382,7 +382,7 @@ class TestRootHintSurfaces:
 
 
         monkeypatch.setattr(sys, "argv", [
-            "slayer", "recommend-root-model", "customers.name",
+            "slayer", "recommend-population", "customers.name",
             "--root-hint", "orders", "--storage", storage.base_dir, "--format", "json",
         ])
         main()

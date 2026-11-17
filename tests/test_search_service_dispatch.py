@@ -282,7 +282,7 @@ async def test_search_service_does_not_expose_delete_methods(  # NOSONAR(S7503) 
     delete_* fan-out methods. (The ABC delete hooks exist for future
     use; the orchestrator does not call them.)"""
     service = SearchService(storage=storage)
-    for forbidden in ("delete_memory", "delete_model", "delete_datasource"):
+    for forbidden in ("delete_memory", "delete_dataset", "delete_datasource"):
         assert not hasattr(service, forbidden), (
             f"SearchService.{forbidden} should not exist this PR "
             f"(storage owns embedding cascade)."

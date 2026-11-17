@@ -324,7 +324,7 @@ class TestSurfaces:
     async def test_mcp_lists_each_broken_dependant(self) -> None:
         async with _env(contractors(), saved={"by_tag": BY_TAG}) as env:
             server = create_mcp_server(storage=env.storage)
-            blocks, _ = cast(Any, await server.call_tool(name="ingest_datasource_models",
+            blocks, _ = cast(Any, await server.call_tool(name="ingest_datasource",
                                                          arguments={"datasource_name": "ds"}))
         lines = blocks[0].text.splitlines()
         for model, name in (("contractors", "nt"), ("by_tag", "by_tag")):

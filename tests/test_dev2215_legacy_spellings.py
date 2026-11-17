@@ -205,7 +205,7 @@ async def test_a_rest_model_save_returns_the_spelling_warning(storage: StorageBa
     client = TestClient(create_app(storage=storage))
     body = orders_dataset().model_copy(update={"metrics": [DatasetMetric(name="paid", expression=PAID_SPELLINGS)]})
     with recorded_warnings():
-        resp = client.post("/models", json=body.model_dump(mode="json"))
+        resp = client.post("/datasets", json=body.model_dump(mode="json"))
     assert resp.status_code == 200, resp.text
     kinds = [(w["kind"], w.get("canonical")) for w in resp.json()["warnings"]]
     assert sorted(kinds) == [("deprecated_spelling", "="), ("deprecated_spelling", "IS NOT NULL")]
@@ -213,9 +213,9 @@ async def test_a_rest_model_save_returns_the_spelling_warning(storage: StorageBa
 
 async def test_an_mcp_model_save_lists_the_spelling_warning(storage: StorageBackend) -> None:
     with recorded_warnings():
-        text = await mcp_text(storage, "create_model", name="orders", sql_table="orders", data_source="test",
-                              columns=[{"name": "status", "type": "TEXT"}, {"name": "amount", "type": "DOUBLE"}],
-                              measures=[{"name": "paid", "formula": "sum(iif(status == 'paid', amount, 0))"}])
+        text = await mcp_text(storage, "create_dataset", name="orders", sql_table="orders", data_source="test",
+                              fields=[{"name": "status", "datatype": "TEXT"}, {"name": "amount", "datatype": "DOUBLE"}],
+                              metrics=[{"name": "paid", "expression": "sum(iif(status == 'paid', amount, 0))"}])
     assert "Warning:" in text
     assert "`=`" in text
 

@@ -99,7 +99,7 @@ class TestSaveWarning:
     async def test_mcp_create_surfaces_the_warning(self, store: AccessStore) -> None:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            text = await mcp_text(store.storage, "create_model", name="pay_report",
+            text = await mcp_text(store.storage, "create_dataset", name="pay_report",
                                   query={"population": "hr", "metrics": [{"expression": "sum(salary)", "name": "v"}]})
         assert "narrowed" in text.lower()
         assert mentions(text, "hr")

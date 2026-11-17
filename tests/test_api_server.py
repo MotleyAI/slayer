@@ -76,7 +76,7 @@ class TestHealth:
 
 class TestModels:
     def test_list_empty(self, client: TestClient) -> None:
-        resp = client.get("/models")
+        resp = client.get("/datasets")
         assert resp.status_code == 200
         assert resp.json() == []
 
@@ -90,55 +90,55 @@ class TestModels:
                 {"name": "revenue", "sql": "amount", "datatype": "number"},
             ],
         }
-        resp = client.post("/models", json=model)
+        resp = client.post("/datasets", json=model)
         assert resp.status_code == 200
         assert resp.json()["name"] == "orders"
 
-        resp = client.get("/models/orders")
+        resp = client.get("/datasets/orders")
         assert resp.status_code == 200
         body = resp.json()
         assert body["name"] == "orders"
         assert len(body["columns"]) == 2
 
     def test_list_after_create(self, client: TestClient) -> None:
-        client.post("/models", json={"name": "a", "sql_table": "t", "data_source": "test"})
-        client.post("/models", json={"name": "b", "sql_table": "t", "data_source": "test"})
-        resp = client.get("/models")
+        client.post("/datasets", json={"name": "a", "sql_table": "t", "data_source": "test"})
+        client.post("/datasets", json={"name": "b", "sql_table": "t", "data_source": "test"})
+        resp = client.get("/datasets")
         names = sorted(m["name"] for m in resp.json())
         assert names == ["a", "b"]
 
     def test_list_includes_description(self, client: TestClient) -> None:
-        client.post("/models", json={"name": "orders", "sql_table": "t", "data_source": "test", "description": "Order data"})
-        resp = client.get("/models")
+        client.post("/datasets", json={"name": "orders", "sql_table": "t", "data_source": "test", "description": "Order data"})
+        resp = client.get("/datasets")
         entry = resp.json()[0]
         assert entry["name"] == "orders"
         assert entry["description"] == "Order data"
 
     def test_update(self, client: TestClient) -> None:
-        client.post("/models", json={"name": "orders", "sql_table": "t", "data_source": "test"})
-        client.put("/models/orders", json={"name": "orders", "sql_table": "t", "data_source": "test", "description": "Updated"})
-        resp = client.get("/models/orders")
+        client.post("/datasets", json={"name": "orders", "sql_table": "t", "data_source": "test"})
+        client.put("/datasets/orders", json={"name": "orders", "sql_table": "t", "data_source": "test", "description": "Updated"})
+        resp = client.get("/datasets/orders")
         assert resp.json()["description"] == "Updated"
 
     def test_delete(self, client: TestClient) -> None:
-        client.post("/models", json={"name": "orders", "sql_table": "t", "data_source": "test"})
-        resp = client.delete("/models/orders")
+        client.post("/datasets", json={"name": "orders", "sql_table": "t", "data_source": "test"})
+        resp = client.delete("/datasets/orders")
         assert resp.status_code == 200
-        resp = client.get("/models/orders")
+        resp = client.get("/datasets/orders")
         assert resp.status_code == 404
 
     def test_delete_nonexistent(self, client: TestClient) -> None:
-        resp = client.delete("/models/nonexistent")
+        resp = client.delete("/datasets/nonexistent")
         assert resp.status_code == 404
 
     def test_get_nonexistent(self, client: TestClient) -> None:
-        resp = client.get("/models/nonexistent")
+        resp = client.get("/datasets/nonexistent")
         assert resp.status_code == 404
 
     def test_hidden_model_excluded_from_list(self, client: TestClient) -> None:
-        client.post("/models", json={"name": "visible", "sql_table": "t", "data_source": "test"})
-        client.post("/models", json={"name": "secret", "sql_table": "t", "data_source": "test", "hidden": True})
-        resp = client.get("/models")
+        client.post("/datasets", json={"name": "visible", "sql_table": "t", "data_source": "test"})
+        client.post("/datasets", json={"name": "secret", "sql_table": "t", "data_source": "test", "hidden": True})
+        resp = client.get("/datasets")
         names = [m["name"] for m in resp.json()]
         assert "visible" in names
         assert "secret" not in names
@@ -155,8 +155,8 @@ class TestModels:
                 {"name": "secret_sum", "sql": "x", "datatype": "number", "hidden": True},
             ],
         }
-        client.post("/models", json=model)
-        resp = client.get("/models/orders")
+        client.post("/datasets", json=model)
+        resp = client.get("/datasets/orders")
         data = resp.json()
         col_names = [c["name"] for c in data["columns"]]
         assert col_names == ["id", "revenue"]
@@ -175,8 +175,8 @@ class TestModels:
                 {"name": "revenue", "expression": "sum(amount)"},
             ],
         }
-        client.post("/models", json=model)
-        resp = client.get("/models/orders")
+        client.post("/datasets", json=model)
+        resp = client.get("/datasets/orders")
         data = resp.json()
         names = [m["name"] for m in data["measures"]]
         assert names == ["aov", "revenue"]
@@ -365,7 +365,7 @@ class TestQueryBackedModelsAPI:
                 fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
             ))
         )
-        resp = client.post("/models", json={
+        resp = client.post("/datasets", json={
             "name": "qb_via_api",
             "data_source": "ds",
             "source_queries": [{
@@ -377,7 +377,7 @@ class TestQueryBackedModelsAPI:
         })
         assert resp.status_code == 200, resp.text
         # GET returns the model with source_queries + query_variables
-        get_resp = client.get("/models/qb_via_api")
+        get_resp = client.get("/datasets/qb_via_api")
         assert get_resp.status_code == 200
         body = get_resp.json()
         assert "source_queries" in body
@@ -397,7 +397,7 @@ class TestQueryBackedModelsAPI:
                 fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
             ))
         )
-        resp = client.post("/models", json={
+        resp = client.post("/datasets", json={
             "name": "qb_bad",
             "data_source": "ds",
             "source_queries": [{
@@ -538,7 +538,7 @@ class TestQueryListBody:
             "name": "ds_list", "type": "sqlite", "database": ":memory:",
         })
         assert resp.status_code in (200, 201), resp.text
-        resp = client.post("/models", json={
+        resp = client.post("/datasets", json={
             "name": "orders",
             "data_source": "ds_list",
             "sql_table": "orders",
@@ -632,7 +632,7 @@ class TestQueryInlineSourceModel:
             "name": "ds_inline", "type": "sqlite", "database": ":memory:",
         })
         assert resp.status_code in (200, 201), resp.text
-        resp = client.post("/models", json={
+        resp = client.post("/datasets", json={
             "name": "orders",
             "data_source": "ds_inline",
             "sql_table": "orders",
@@ -690,23 +690,23 @@ class TestOpenAPI400Documentation:
 
     def test_post_models_documents_400(self, client: TestClient) -> None:
         spec = client.get("/openapi.json").json()
-        responses = spec["paths"]["/models"]["post"]["responses"]
+        responses = spec["paths"]["/datasets"]["post"]["responses"]
         assert "400" in responses
 
     def test_put_model_documents_400(self, client: TestClient) -> None:
         spec = client.get("/openapi.json").json()
-        responses = spec["paths"]["/models/{name}"]["put"]["responses"]
+        responses = spec["paths"]["/datasets/{name}"]["put"]["responses"]
         assert "400" in responses
 
     def test_get_model_documents_409(self, client: TestClient) -> None:
         """``GET /models/{name}`` raises 409 on AmbiguousModelError; declare it."""
         spec = client.get("/openapi.json").json()
-        responses = spec["paths"]["/models/{name}"]["get"]["responses"]
+        responses = spec["paths"]["/datasets/{name}"]["get"]["responses"]
         assert "409" in responses
 
     def test_delete_model_documents_409(self, client: TestClient) -> None:
         spec = client.get("/openapi.json").json()
-        responses = spec["paths"]["/models/{name}"]["delete"]["responses"]
+        responses = spec["paths"]["/datasets/{name}"]["delete"]["responses"]
         assert "409" in responses
 
     def test_put_datasource_priority_documents_400(self, client: TestClient) -> None:
@@ -717,8 +717,8 @@ class TestOpenAPI400Documentation:
     @pytest.mark.parametrize(
         ("path", "method"),
         [
-            ("/models/{name}", "get"),
-            ("/models/{name}", "delete"),
+            ("/datasets/{name}", "get"),
+            ("/datasets/{name}", "delete"),
             ("/datasources/{name}", "get"),
             ("/datasources/{name}", "delete"),
         ],
@@ -741,7 +741,7 @@ class TestOpenAPI400Documentation:
             fields=[DatasetField(name="amount", sql="amount", datatype=DataType.DOUBLE)],
         )))
         # Save a query-backed model whose stage does NOT have dry_run set.
-        setup_resp = client.post("/models", json={
+        setup_resp = client.post("/datasets", json={
             "name": "qb_dryrun",
             "data_source": "ds",
             "source_queries": [{
@@ -789,38 +789,38 @@ class TestSaveTimeSqlValidation:
         self, client: TestClient, tmp_path
     ) -> None:
         self._register_live_ds(client, tmp_path)
-        resp = client.post("/models", json={
+        resp = client.post("/datasets", json={
             "name": "good_model", "sql": "SELECT id FROM orders",
             "data_source": "livedb",
             "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         })
         assert resp.status_code == 200
         # Acknowledged AND retrievable — not a no-op 200.
-        assert client.get("/models/good_model").status_code == 200
+        assert client.get("/datasets/good_model").status_code == 200
 
     def test_invalid_sql_model_returns_400(self, client: TestClient, tmp_path) -> None:
         self._register_live_ds(client, tmp_path)
-        resp = client.post("/models", json={
+        resp = client.post("/datasets", json={
             "name": "bad_model", "sql": "SELECT nope FROM ghosts",
             "data_source": "livedb",
             "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         })
         assert resp.status_code == 400
-        assert client.get("/models/bad_model").status_code == 404
+        assert client.get("/datasets/bad_model").status_code == 404
 
     def test_invalid_sql_update_returns_400_and_original_intact(
         self, client: TestClient, tmp_path
     ) -> None:
         self._register_live_ds(client, tmp_path)
-        assert client.post("/models", json={
+        assert client.post("/datasets", json={
             "name": "upd", "sql": "SELECT id FROM orders",
             "data_source": "livedb",
             "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         }).status_code == 200
-        resp = client.put("/models/upd", json={
+        resp = client.put("/datasets/upd", json={
             "name": "upd", "sql": "SELECT nope FROM ghosts",
             "data_source": "livedb",
             "fields": [{"name": "id", "sql": "id", "datatype": "number"}],
         })
         assert resp.status_code == 400
-        assert client.get("/models/upd").json()["sql"] == "SELECT id FROM orders"
+        assert client.get("/datasets/upd").json()["sql"] == "SELECT id FROM orders"

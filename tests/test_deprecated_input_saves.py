@@ -120,16 +120,16 @@ class TestRestModelSave:
         stages, expected = SAVED_QUERIES[case]
         client = TestClient(create_app(storage=store.storage))
         with recorded():
-            resp = client.post("/models", json={"name": "saved", "source_queries": stages})
+            resp = client.post("/datasets", json={"name": "saved", "source_queries": stages})
         assert resp.status_code == 200, resp.text
         assert len(deprecated_in(resp.json()["warnings"])) == expected
         await assert_persisted_as_error_mode(store, "saved")
 
     async def test_put_returns_the_deprecation(self, store: AccessStore) -> None:
         client = TestClient(create_app(storage=store.storage))
-        assert client.post("/models", json={"name": "saved", "source_queries": [PUB_COUNT]}).status_code == 200
+        assert client.post("/datasets", json={"name": "saved", "source_queries": [PUB_COUNT]}).status_code == 200
         with recorded():
-            resp = client.put("/models/saved", json={"name": "saved", "source_queries": [strict(PUB_COUNT)]})
+            resp = client.put("/datasets/saved", json={"name": "saved", "source_queries": [strict(PUB_COUNT)]})
         assert resp.status_code == 200, resp.text
         [w] = deprecated_in(resp.json()["warnings"])
         assert "to_many_handling" in w["new"]
@@ -137,7 +137,7 @@ class TestRestModelSave:
 
     async def test_clean_save_returns_no_warnings(self, store: AccessStore) -> None:
         client = TestClient(create_app(storage=store.storage))
-        resp = client.post("/models", json={"name": "saved", "source_queries": [PUB_COUNT]})
+        resp = client.post("/datasets", json={"name": "saved", "source_queries": [PUB_COUNT]})
         assert resp.status_code == 200, resp.text
         assert resp.json()["warnings"] == []
 
@@ -147,7 +147,7 @@ class TestRestModelSave:
         client = TestClient(create_app(storage=store.storage))
         body = {"name": "pay_report", "source_queries": [HR_READER]}
         with recorded():
-            resp = client.post("/models", json=body) if method == "post" else client.put("/models/pay_report", json=body)
+            resp = client.post("/datasets", json=body) if method == "post" else client.put("/datasets/pay_report", json=body)
         assert resp.status_code == 200, resp.text
         [w] = [w for w in resp.json()["warnings"] if w.get("kind") == "narrowed_access"]
         assert w["narrowed_by"] == [f"{DS}.hr"]
@@ -156,21 +156,21 @@ class TestRestModelSave:
 class TestMcpModelSave:
     async def test_create_model_lists_the_deprecation(self, store: AccessStore) -> None:
         with recorded():
-            text = await mcp_text(store.storage, "create_model", name="saved", query=strict(PUB_COUNT))
+            text = await mcp_text(store.storage, "create_dataset", name="saved", query=strict(PUB_COUNT))
         assert mentions_strict_deprecation(text)
         await assert_persisted_as_error_mode(store, "saved")
 
     async def test_create_model_from_stages_lists_each_deprecation(self, store: AccessStore) -> None:
         with recorded():
-            text = await mcp_text(store.storage, "create_model", name="saved", query=[strict(STAGE), strict(ON_STAGE)])
+            text = await mcp_text(store.storage, "create_dataset", name="saved", query=[strict(STAGE), strict(ON_STAGE)])
         assert len(STRICT_WORD.findall(text)) >= 2
         await assert_persisted_as_error_mode(store, "saved")
 
     async def test_edit_model_lists_the_deprecation(self, store: AccessStore) -> None:
         with recorded():
-            await mcp_text(store.storage, "create_model", name="saved", query=PUB_COUNT)
+            await mcp_text(store.storage, "create_dataset", name="saved", query=PUB_COUNT)
             reply = json.loads(await mcp_text(
-                store.storage, "edit_model", model_name="saved", source_queries=[strict(PUB_COUNT)],
+                store.storage, "edit_dataset", dataset_name="saved", source_queries=[strict(PUB_COUNT)],
             ))
         assert any(mentions_strict_deprecation(w) for w in reply.get("warnings", []))
         await assert_persisted_as_error_mode(store, "saved")
@@ -231,7 +231,7 @@ async def test_reload_keeps_no_strict(store: AccessStore) -> None:
     """A saved model reloaded from storage carries only the replacement form."""
     client = TestClient(create_app(storage=store.storage))
     with recorded():
-        assert client.post("/models", json={"name": "saved", "source_queries": [strict(PUB_COUNT)]}).status_code == 200
+        assert client.post("/datasets", json={"name": "saved", "source_queries": [strict(PUB_COUNT)]}).status_code == 200
     with recorded() as caught:
         model = await must_get(store.storage, "saved", DS)
     assert model.source_queries is not None

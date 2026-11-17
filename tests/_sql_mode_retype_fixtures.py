@@ -47,7 +47,7 @@ def stale_sql_dataset(*, sql: str, column: str, data_source: str) -> SlayerDatas
 async def check_validation_finding(engine: SlayerQueryEngine, *, data_source: str, column: str) -> None:
     entries = [e.model_dump(mode="json") for e in await engine.validate_datasets(data_source=data_source)]
     mine = [e for e in entries if e.get("model_name") == MODEL]
-    deletes = [e for e in mine if e.get("tool") == "delete_model" or column in ((e.get("remove") or {}).get("columns") or [])]
+    deletes = [e for e in mine if e.get("tool") == "delete_dataset" or column in ((e.get("remove") or {}).get("columns") or [])]
     assert deletes == [], mine
     findings = [e for e in mine if e.get("finding") == "retype" and e.get("column") == column]
     assert len(findings) == 1, mine

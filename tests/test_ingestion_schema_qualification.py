@@ -970,7 +970,7 @@ class TestValidateModels:
             await storage.get_dataset("reports", data_source="ds"),
         ]
         to_delete = await self._validate(ds, models)
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_legacy_bare_model_survives_a_new_same_named_schema(
         self, legacy_db, tmp_path
@@ -987,7 +987,7 @@ class TestValidateModels:
         )
         await storage.save_dataset(model)
         to_delete = await self._validate(ds, [model])
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_missing_non_default_table_is_reported_deleted_not_masked(
         self, tmp_path
@@ -1008,7 +1008,7 @@ class TestValidateModels:
         )
         await storage.save_dataset(model)
         to_delete = await self._validate(ds, [model])
-        assert [e for e in to_delete if e.tool == "delete_model"]
+        assert [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_failed_schema_listing_does_not_mass_delete(
         self, basic_db, tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -1035,7 +1035,7 @@ class TestValidateModels:
 
         monkeypatch.setattr(mod, "list_ingestable_objects", _maybe_raise)
         to_delete = await self._validate(ds, [model])
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_qualified_model_diffs_against_the_correct_twin(
         self, same_name_db, tmp_path
@@ -1055,7 +1055,7 @@ class TestValidateModels:
         )
         await storage.save_dataset(model)
         to_delete = await self._validate(ds, [model])
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_pinned_schema_name_still_covers_other_own_schemas(
         self, legacy_db, tmp_path
@@ -1074,7 +1074,7 @@ class TestValidateModels:
         )
         await storage.save_dataset(model)
         to_delete = await self._validate(ds, [model])
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_validate_falls_back_when_enumeration_fails(
         self, legacy_db, tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -1103,7 +1103,7 @@ class TestValidateModels:
         monkeypatch.setattr(drift_mod, "resolve_ingest_scope", _no_enumerate)
         to_delete = await self._validate(ds, [model])
         assert to_delete                                              # verdict, not a skip
-        assert not [e for e in to_delete if e.tool == "delete_model"]  # table resolved
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]  # table resolved
 
     async def test_fallback_covers_a_non_pinned_model_schema(
         self, legacy_db, tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -1133,7 +1133,7 @@ class TestValidateModels:
 
         monkeypatch.setattr(drift_mod, "resolve_ingest_scope", _no_enumerate)
         to_delete = await self._validate(ds, [model])
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
     async def test_fallback_default_stays_bare_keyed_past_catalog_token(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -1172,7 +1172,7 @@ class TestValidateModels:
 
         monkeypatch.setattr(drift_mod, "resolve_ingest_scope", _no_enumerate)
         to_delete = await self._validate(ds, models)
-        assert not [e for e in to_delete if e.tool == "delete_model"]
+        assert not [e for e in to_delete if e.tool == "delete_dataset"]
 
 
 class TestLiveTableResolution:
@@ -1485,7 +1485,7 @@ class TestMcpParity:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         await storage.save_datasource(_ds(basic_db))
         server = await self._server(storage)
-        await self._text(server, "ingest_datasource_models",
+        await self._text(server, "ingest_datasource",
                          {"datasource_name": "ds", "schemas": "openfda_rest"})
         reports = await storage.get_dataset("reports", data_source="ds")
         assert reports is not None
@@ -1495,7 +1495,7 @@ class TestMcpParity:
         storage = YAMLStorage(base_dir=str(tmp_path / "store"))
         await storage.save_datasource(_ds(basic_db))
         server = await self._server(storage)
-        text = await self._text(server, "ingest_datasource_models",
+        text = await self._text(server, "ingest_datasource",
                                 {"datasource_name": "ds", "schemas": "a", "all_schemas": True})
         assert "all_schemas" in text                             # actionable error string
         assert "schema" in text

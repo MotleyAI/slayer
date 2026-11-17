@@ -450,7 +450,7 @@ class TestRendering:
         model = await engine.storage.get_dataset("contractors", data_source="test")
         assert model is not None
         out = await render_dataset_inspection(dataset=model, storage=engine.storage, engine=engine, format="markdown",
-                                            sections=["columns"])
+                                            sections=["fields"])
         for needle in ("ARRAY<TEXT>", "go", "sql", "contains", "contains_any", "contains_all", "skills.value"):
             assert needle in out, (needle, out)
 
@@ -458,7 +458,7 @@ class TestRendering:
         model = await engine.storage.get_dataset("contractors", data_source="test")
         assert model is not None
         out = await render_dataset_inspection(dataset=model, storage=engine.storage, engine=engine, format="json",
-                                            sections=["columns"])
+                                            sections=["fields"])
         skills = _find_column(json.loads(out), "skills")
         assert skills is not None
         assert (skills["type"], skills["element_type"]) == ("ARRAY", "TEXT")
@@ -617,14 +617,14 @@ class TestMCPSqlModeElementType:
 
     async def test_create_model_canonicalises_sql_mode(self) -> None:
         async with self._server() as (server, storage):
-            await _mcp(server, name="create_model", arguments={
+            await _mcp(server, name="create_dataset", arguments={
                 "name": "dev_skills", "data_source": "test", "sql": SKILLS_SQL,
                 "fields": [{"name": "id", "datatype": "INT"}, {"name": "skills", "datatype": "ARRAY"}]})
             assert _skills(await storage.get_dataset("dev_skills")).element_type is DataType.UNKNOWN
 
     async def test_create_model_refuses_a_table_backed_list(self) -> None:
         async with self._server() as (server, storage):
-            out = await _mcp(server, name="create_model", arguments={
+            out = await _mcp(server, name="create_dataset", arguments={
                 "name": "raw_skills", "data_source": "test", "sql_table": "contractors",
                 "fields": [{"name": "id", "datatype": "INT"}, {"name": "skills", "datatype": "ARRAY"}]})
             assert "skills" in out, out
@@ -635,14 +635,14 @@ class TestMCPSqlModeElementType:
         async with self._server() as (server, storage):
             await storage.save_dataset(_dev_skills(_array("TEXT")).model_copy(update={"columns": [
                 DatasetField(name="id", datatype=DataType.INT, primary_key=True)]}))
-            await _mcp(server, name="edit_model", arguments={
-                "model_name": "dev_skills", "columns": [{"name": "skills", "type": "ARRAY"}]})
+            await _mcp(server, name="edit_dataset", arguments={
+                "dataset_name": "dev_skills", "fields": [{"name": "skills", "datatype": "ARRAY"}]})
             assert _skills(await storage.get_dataset("dev_skills")).element_type is DataType.UNKNOWN
 
     async def test_edit_model_refuses_a_table_backed_list(self) -> None:
         async with self._server() as (server, storage):
-            out = await _mcp(server, name="edit_model", arguments={
-                "model_name": "contractors", "columns": [{"name": "skills", "type": "ARRAY"}]})
+            out = await _mcp(server, name="edit_dataset", arguments={
+                "dataset_name": "contractors", "fields": [{"name": "skills", "datatype": "ARRAY"}]})
             assert "skills" in out, out
             assert "element_type" in out, out
             stored = await storage.get_dataset("contractors")
