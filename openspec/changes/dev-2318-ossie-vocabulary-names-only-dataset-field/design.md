@@ -93,7 +93,7 @@ None is strained.
    ```
 7. **The usage report goes to schema 3,** with `dataset_count`, the new tool tokens and the new route templates. The disclosure notice prints once more, and the receiving endpoint must accept schema 3 when this ships. Alternative: keep schema 2 with `model_count` on the wire. Rejected: an old word would stay on the wire for good, and schema 2 would mix two token vocabularies. (user)
 8. **No `.c4` edit is needed,** because no LikeC4 element maps a renamed module by name. (default)
-9. **Renamed modules get `raise_moved` stubs,** following `main`'s moved-module convention, which the issue's "moved-module stub" refers to. `slayer/core/formula.py` is already a stub and keeps its path, so its entry in the rename list is dropped. (default)
+9. **Renamed modules get `raise_moved` stubs,** following `main`'s moved-module convention, which the issue's "moved-module stub" refers to. `slayer/core/formula.py` and `slayer/engine/join_safety.py` are already stubs and keep their paths, so their entries in the rename list are dropped; the `engine/join_safety.py` stub is repointed to `slayer.engine.cardinality.relationship_safety`. (default, user)
 10. **Query `filters` → `filter`** applies to `SlayerQuery`, `QueryRefinement` and REST `QueryRequest`. The IR's internal `filters` and a dataset's `filters` are unchanged. (default)
 11. **Old MCP tool arguments, `inspect` kinds and sections, and help references convert inside the new tools, with a warning.** Carried over from DEV-1607 decision 5. (default)
 12. **Both spellings of one concept in one object raise `SpellingConflictError`.** (default)
@@ -103,7 +103,8 @@ None is strained.
     - each method twin is a declared `def` with the new member's signature, and each attribute twin is a `@property` with a getter and a setter;
     - both are `@deprecated("…", category=None)` and warn through the one tagged site in `slayer/core/vocabulary.py`;
     - an old class name is a `TYPE_CHECKING`-only `@deprecated` subclass declaration, plus a runtime module `__getattr__`;
-    - a 1.x backend's overrides of old hook names stay runtime-only, because basedpyright does not report overriding a deprecated method.
+    - a 1.x backend's overrides of old hook names stay runtime-only, because basedpyright does not report overriding a deprecated method;
+    - a curated class also accepts its old field names as input keys (constructor keywords or dict keys), converted as fresh input with a deprecation, so Storyline's `JoinFilterRuleset(column=…, joins=…)`, `JoinFilterRule(join_path=…)` and `ColumnFilterRuleset(column=…)` keep working (user).
 
     (default, probe)
 16. **The `reportDeprecated` groundwork is in this PR** (DEV-2294, closed as a duplicate):

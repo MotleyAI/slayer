@@ -116,7 +116,7 @@ class TestHelpTopicsContent:
             assert phrase in workflow, phrase
 
     def test_reused_ids_are_no_longer_retired(self) -> None:
-        assert set(RETIRED_HELP_IDS) == {"help.formulas", "help.filters", "help.extending"}
+        assert set(RETIRED_HELP_IDS) == {"help.formulas", "help.filters", "help.extending", "help.models", "help.joins"}
 
 
 # --- seeding ---

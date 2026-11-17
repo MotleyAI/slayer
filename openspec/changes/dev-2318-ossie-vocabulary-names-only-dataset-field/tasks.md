@@ -1,8 +1,8 @@
 ## 1. Failing tests (pr-tests)
 
-- [ ] 1.1 Capture the no-result-change goldens on `main`'s code before any rename: rows, values, result keys and column order for single-stage, multi-stage, refinement, field-reference and order-item queries. Write them to `tests/fixtures/ossie_vocabulary/golden.json`; the golden test passes on the current code.
-- [ ] 1.2 Port the names-only parts of DEV-1607's `tests/test_ossie_vocabulary_*.py` (branch `egor/dev-1607-rename-columns-to-fields-to-be-consistent-with`). Drop every shape-change case: `join_pairs` split, `QueryMetric` / `QueryDimension`, `{metric, alias}`, `filter` as a string, unknown keys, datatype values. Verify each ported test maps to a scenario in `specs/compatibility/ossie-vocabulary/spec.md`.
-- [ ] 1.3 Write one test per scenario of `specs/compatibility/ossie-vocabulary/spec.md`, `specs/models/stored-upgrade/spec.md` and `specs/usage-reporting/collection/spec.md`, including:
+- [x] 1.1 Capture the no-result-change goldens on `main`'s code before any rename: rows, values, result keys and column order for single-stage, multi-stage, refinement, field-reference and order-item queries. Write them to `tests/fixtures/ossie_vocabulary/golden.json`; the golden test passes on the current code.
+- [x] 1.2 Port the names-only parts of DEV-1607's `tests/test_ossie_vocabulary_*.py` (branch `egor/dev-1607-rename-columns-to-fields-to-be-consistent-with`). Drop every shape-change case: `join_pairs` split, `QueryMetric` / `QueryDimension`, `{metric, alias}`, `filter` as a string, unknown keys, datatype values. Verify each ported test maps to a scenario in `specs/compatibility/ossie-vocabulary/spec.md`.
+- [x] 1.3 Write one test per scenario of `specs/compatibility/ossie-vocabulary/spec.md`, `specs/models/stored-upgrade/spec.md` and `specs/usage-reporting/collection/spec.md`, including:
   - the multi-form deprecation case;
   - a pre-rename embeddings sidecar in both backends, across a restart, with no re-embed and no content-hash change;
   - a warm pre-rename store's help topics through inspect, search, reseed and restart;
@@ -11,20 +11,20 @@
   - the HTTP client reading `attributes.metrics` against a new server and through an old route.
 
   Every new test fails on the current code for the stated reason.
-- [ ] 1.4 Add the twin tests, parametrized over the explicit curated list of old names (design decision 1): classes, methods, attributes read and write, `__all__`. Add the type-checker probe that runs `la-typecheck` on a module using an old class, attribute and method under `reportDeprecated = "error"`. Both fail now.
-- [ ] 1.5 Existing tests that contradict the plan: delete `TestPreviousReleaseFieldSets` and `tests/_v1_4_1_field_sets.py` (design decision 17). Align the usage-reporting tests that pin schema 2 to schema 3. Ask the owner about any further contradicting test before changing it.
+- [x] 1.4 Add the twin tests, parametrized over the explicit curated list of old names (design decision 1): classes, methods, attributes read and write, `__all__`. Add the type-checker probe that runs `la-typecheck` on a module using an old class, attribute and method under `reportDeprecated = "error"`. Both fail now.
+- [x] 1.5 Existing tests that contradict the plan: delete `TestPreviousReleaseFieldSets` and `tests/_v1_4_1_field_sets.py` (design decision 17). Align the usage-reporting tests that pin schema 2 to schema 3. Ask the owner about any further contradicting test before changing it.
 
 ## 2. Groundwork
 
 - [ ] 2.1 Move the `living-architecture` pin to 0.11.0 in `pyproject.toml` (and `CONTRIBUTING.md` if it names it), then `poetry lock`. Verify `la-doctor` passes.
 - [ ] 2.2 Make `typing-extensions` a direct dependency and set `reportDeprecated = "error"` in `[tool.basedpyright]`. Fix every site the rule flags today in code. Verify `la-typecheck` reports no new errors and the baseline is untouched.
 - [ ] 2.3 Type the rename's blast radius with `la:make-refactor-target-compliant`, reusing DEV-1607's typing commits where a fresh compliance pass asks for them, until `dr-refactor rename-map` dry-runs with no blindspot refusals.
-- [ ] 2.4 Regenerate the rename list from the current `main` with the issue's word table and carve-outs. Drop the `core/formula.py` module entry (design decision 9). Verify the list against the issue's attachment; differences come only from commits `main` gained since 73e8ebb5.
+- [ ] 2.4 Regenerate the rename list from the current `main` with the issue's word table and carve-outs. Drop the `core/formula.py` and `engine/join_safety.py` module entries (design decision 9). Verify the list against the issue's attachment; differences come only from commits `main` gained since 73e8ebb5.
 
 ## 3. Phase 1: rename (one commit)
 
 - [ ] 3.1 Write `rename-map.yaml` in this change folder from the regenerated list, with the flags it is run with in a header comment: `--docs`, `--with` for duck-typed stand-ins, `--keep` for upgrade fixtures and older-version stored documents. Dry-run it clean, batching it if memory runs out, then apply it once. Verify the gate in 3.6.
-- [ ] 3.2 Rename the modules listed in the issue, except `core/formula.py`, with `dr-refactor move-module`. Leave each old path as a `raise_moved(…, removal="3.0")` stub. Verify the moved-module tripwire test covers each one.
+- [ ] 3.2 Rename the modules listed in the issue, except `core/formula.py` and `engine/join_safety.py` (its stub is repointed), with `dr-refactor move-module`. Leave each old path as a `raise_moved(…, removal="3.0")` stub. Verify the moved-module tripwire test covers each one.
 - [ ] 3.3 Respell what the map cannot express with a throwaway pass that is not committed:
   - dict keys and YAML and JSON fixtures (excluding upgrade fixtures and older-version stored documents);
   - MCP tool names, REST routes and CLI commands and flags;

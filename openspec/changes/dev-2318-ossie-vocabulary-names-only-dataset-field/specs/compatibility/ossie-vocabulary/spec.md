@@ -223,8 +223,8 @@ Search results SHALL report the kinds `dataset`, `field` and `metric`, and the s
 Every structured warning's payload fields and `kind` value SHALL use the new words, among them the kinds `extension_field_inlined` and `spine_relationship_dropped`.
 
 #### Scenario: A warning kind is renamed
-- **WHEN** a query whose time spine's relationship is dropped is run
-- **THEN** its response carries a warning of kind `spine_relationship_dropped` naming the `dataset` and `relationship`
+- **WHEN** a stored dataset whose relationship into the time spine is dropped is loaded
+- **THEN** the warning emitted carries the kind `spine_relationship_dropped` and names the `dataset` and `relationship`
 
 ### Requirement: The Ossie export payload carries the vocabulary
 

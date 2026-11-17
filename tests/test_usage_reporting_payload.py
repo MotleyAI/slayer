@@ -357,13 +357,13 @@ def _batch(*rows: tuple[str, str, int]) -> Batch:
     })
 
 
-def test_schema_version_is_2(usage_reporting_env) -> None:
+def test_schema_version_is_3(usage_reporting_env) -> None:
     quiet_config()
     usage_reporting.start()
     usage_reporting.record(surface="mcp", token="query")
     end_process()
-    assert SCHEMA_VERSION == 2
-    assert show()["schema"] == 2
+    assert SCHEMA_VERSION == 3
+    assert show()["schema"] == 3
 
 
 def test_first_query_ok_is_a_date_or_null() -> None:

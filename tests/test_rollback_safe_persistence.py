@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-import typing
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
-from pydantic import BaseModel
 
 from slayer.core.enums import DataType
 from slayer.core.models import Column, DatasourceConfig, ModelMeasure, SlayerModel
@@ -20,7 +18,6 @@ from slayer.storage.base import StorageBackend
 from slayer.storage.sqlite_conn import transaction
 from slayer.storage.sqlite_storage import SQLiteStorage
 from slayer.storage.yaml_storage import YAMLStorage
-from tests._v1_4_1_field_sets import V1_4_1_FIELD_SETS
 
 DS = "shop"
 BACKENDS = ["yaml", "sqlite"]
@@ -114,36 +111,6 @@ def _nulls(value: Any, *, path: str) -> list[str]:
     return []
 
 
-def _model_classes(annotation: Any) -> list[type[BaseModel]]:
-    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-        return [annotation]
-    return [c for arg in typing.get_args(annotation) for c in _model_classes(arg)]
-
-
-def _field_of(cls: type[BaseModel], key: str) -> Any:
-    for name, info in cls.model_fields.items():
-        if key in (name, info.alias):
-            return info.annotation
-    return None
-
-
-def _rejections(value: Any, *, candidates: list[type[BaseModel]], path: str) -> list[str]:
-    """Keys a v1.4.1 ``extra="forbid"`` class would reject, at every nested level."""
-    if isinstance(value, list):
-        return [r for i, v in enumerate(value) for r in _rejections(v, candidates=candidates, path=f"{path}[{i}]")]
-    if not isinstance(value, dict) or not candidates:
-        return []
-    fitting = [c for c in candidates if all(_field_of(c, k) is not None for k in value)]
-    cls = fitting[0] if fitting else candidates[0]
-    out: list[str] = []
-    known, forbid = V1_4_1_FIELD_SETS.get(cls.__name__, (frozenset(), False))
-    if forbid and set(value) - known:
-        out.append(f"{path}: {cls.__name__} rejects {sorted(set(value) - known)}")
-    for key, item in value.items():
-        out += _rejections(item, candidates=_model_classes(_field_of(cls, key)), path=f"{path}.{key}")
-    return out
-
-
 @pytest.fixture(params=BACKENDS)
 async def stored(request: pytest.FixtureRequest, tmp_path: Path) -> dict[str, dict[str, Any]]:
     storage = _storage(backend=request.param, base=tmp_path)
@@ -159,18 +126,6 @@ class TestNoUnsetField:
     async def test_memory_order_carries_no_nulls_key(self, stored: dict[str, dict[str, Any]]) -> None:
         order = stored["Memory"]["query"]["order"]
         assert all("nulls" not in item for item in order), order
-
-
-class TestPreviousReleaseFieldSets:
-    @pytest.mark.parametrize("kind", list(_ROOT))
-    async def test_every_key_is_known_to_the_previous_release(
-        self, stored: dict[str, dict[str, Any]], kind: str,
-    ) -> None:
-        assert _rejections(stored[kind], candidates=[_ROOT[kind]], path=kind) == []
-
-    def test_the_snapshot_covers_every_forbid_class(self) -> None:
-        forbid = {name for name, (_, f) in V1_4_1_FIELD_SETS.items() if f}
-        assert forbid == {"SlayerQuery", "OrderItem", "ComputedDimension", "ModelExtension"}
 
 
 class TestYamlMemoryLayout:

@@ -675,7 +675,7 @@ def test_spool_file_names_carry_the_schema_version(usage_reporting_env) -> None:
     quiet_config()
     _spool_one()
     (path,) = spool_files()
-    assert path.name.startswith("v2-spool-")
+    assert path.name.startswith("v3-spool-")
 
 
 def test_legacy_spool_file_sent_and_deleted(usage_reporting_env) -> None:
@@ -699,7 +699,7 @@ def test_schema_1_sender_leaves_newer_spool_files(usage_reporting_env) -> None:
     _legacy_spool_file()
     _schema_1_send(settings.spool_dir())
     (survivor,) = spool_files()
-    assert survivor.name.startswith("v2-")
+    assert survivor.name.startswith("v3-")
     make_due()
     usage_reporting.start()
     (request,) = usage_reporting_env.capture.wait_for(count=1)
@@ -711,7 +711,7 @@ def test_schema_1_sender_leaves_newer_spool_files(usage_reporting_env) -> None:
 
 def test_sender_leaves_newer_schema_files_untouched(usage_reporting_env) -> None:
     quiet_config()
-    newer = [_legacy_spool_file(prefix="v3-spool-", body="{}"), _legacy_spool_file(prefix="v3-claim-", body="{}")]
+    newer = [_legacy_spool_file(prefix="v4-spool-", body="{}"), _legacy_spool_file(prefix="v4-claim-", body="{}")]
     _spool_one()
     make_due()
     usage_reporting.start()
@@ -741,7 +741,7 @@ def test_cap_covers_every_schema_version(usage_reporting_env) -> None:
         spool.write(settings.spool_dir(), batch)
     files = spool_files()
     assert len(files) <= 100
-    assert sum(name.startswith("v2-spool-") for name in (p.name for p in files)) == 60
+    assert sum(name.startswith("v3-spool-") for name in (p.name for p in files)) == 60
     report = show()
     assert usage(report, "mcp:query")["ok"] == 60
     assert usage(report, "mcp:search")["ok"] == len(files) - 60
@@ -750,7 +750,7 @@ def test_cap_covers_every_schema_version(usage_reporting_env) -> None:
 def test_disable_purges_every_schema_version(usage_reporting_env) -> None:
     quiet_config()
     _spool_one()
-    for prefix in ("spool-", "claim-", "v2-claim-", "v3-spool-", "v3-claim-"):
+    for prefix in ("spool-", "claim-", "v3-claim-", "v4-spool-", "v4-claim-"):
         _legacy_spool_file(prefix=prefix)
     assert cli(["usage-reporting", "disable"]).returncode == 0
     assert spool_files() == []

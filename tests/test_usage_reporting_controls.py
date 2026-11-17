@@ -300,16 +300,16 @@ def test_notice_again_for_a_schema_1_record(usage_reporting_env, store: str) -> 
     second = cli(["models", "--storage", store, "list"])
     _assert_notice(first.stderr)
     assert _NOTICE_URL not in second.stderr
-    assert config().notice_shown_schema == 2
+    assert config().notice_shown_schema == 3
 
 
 def test_no_notice_and_no_lowering_for_a_newer_record(usage_reporting_env, store: str) -> None:
     quiet_config()
-    write_config(notice_shown_schema=3)
+    write_config(notice_shown_schema=4)
     result = cli(["models", "--storage", store, "list"])
     assert result.returncode == 0, result.stderr
     assert _NOTICE_URL not in result.stderr
-    assert config().notice_shown_schema == 3
+    assert config().notice_shown_schema == 4
 
 
 def test_notice_names_the_new_fields(usage_reporting_env, store: str) -> None:
