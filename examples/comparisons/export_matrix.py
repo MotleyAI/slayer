@@ -10,6 +10,7 @@ import html
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
@@ -20,7 +21,16 @@ ROOT = HERE.parent.parent
 MATRIX = HERE / "matrix.yaml"
 PROBES = HERE / "probes.yaml"
 OUT = HERE / "matrix.json"
-PROBES_URL = "https://github.com/MotleyAI/slayer/blob/main/examples/comparisons/probes.yaml"
+REPO = "https://github.com/MotleyAI/slayer"
+
+
+def probe_ref(version: str) -> str:
+    """The branch matrix.json links into: `1.x` for 1.* releases, else `main`."""
+    return "1.x" if int(version.split(".")[0]) < 2 else "main"
+
+
+REF = probe_ref(tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"])
+PROBES_URL = f"{REPO}/blob/{REF}/examples/comparisons/probes.yaml"
 
 TOOLS = [("slayer", "SLayer"), ("malloy", "Malloy"), ("cube", "Cube Core"), ("metricflow", "MetricFlow")]
 ENGINES = {"slayer": "SLayer", "malloy": "Malloy", "cube": "Cube", "metricflow": "MetricFlow"}
@@ -106,7 +116,7 @@ def export() -> str:
             "probes": by_row.get(r["id"], []),
         })
     data = {
-        "source": "https://github.com/MotleyAI/slayer/tree/main/examples/comparisons",
+        "source": f"{REPO}/tree/{REF}/examples/comparisons",
         "tools": [{"key": key, "label": label} for key, label in TOOLS],
         "groups": matrix["groups"],
         "rows": rows,

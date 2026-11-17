@@ -451,8 +451,9 @@ rows:
   intent: Query arrays and repeated records with fan-out-safe aggregation.
   origin: Malloy
   slayer:
-    verdict: 'no'
-    text: Array and struct columns are opaque.
+    verdict: partial
+    how: "`count_distinct(tags.value)` · `contains(tags, 'vip')`"
+    caveat: "List columns aggregate fan-out-safe beside parent aggregates (Q27); struct columns are opaque."
   malloy:
     verdict: 'yes'
     how: "`tags.each.sum()`"
@@ -547,6 +548,28 @@ rows:
     text: "Metrics from unrelated models combine when grouped by `metric_time` or by nothing (verified)."
     caveat: "Grouping by a customer is refused, and an empty month reads NULL, not 0; a cross-model ratio is a model-declared derived metric (not counted)."
   comment: "Only SLayer combines unrelated models under the population's own dimensions without a written join; Cube and MetricFlow stop at totals (MetricFlow also at `metric_time`), and Malloy's `join_cross` is a capable workaround."
+- id: Q27
+  group: Query semantics
+  name: List columns
+  intent: "Customers tagged `vip`, tagged both `vip` and `eu`, counted per tag, and each region's tag set, over a `tags VARCHAR[]` column."
+  origin: SLayer
+  slayer:
+    verdict: 'yes'
+    how: "`contains(tags, 'vip')` · `contains_all(tags, ['vip', 'eu'])` · `tags.value` · `collect(tags.value)`"
+    caveat: "A repeated tag counts its customer once per tag under `associate`, element aggregates sit next to customer aggregates without fan-out, and NULL elements are ignored (verified)."
+  malloy:
+    verdict: 'yes'
+    how: "`tags.each` · `count(tags.each) { where: ... }` in `having:`"
+    caveat: "Symmetric aggregates keep customer counts exact (verified); both tags need a `having:` per tag, and a tag set is a `nest:`, not a list value."
+  cube:
+    verdict: 'no'
+    text: "A list dimension groups by whole lists, its `contains` filter is a database error, and the SQL API has no list functions (verified)."
+    caveat: "A model-declared one-row-per-tag cube with a synthetic key counts customers per tag; next to a customer count either planner's root selection drops customers (not counted)."
+  metricflow:
+    verdict: partial
+    text: "A raw-SQL `where` (`list_contains(...)`, `list_has_all(...)`) filters by tags (verified)."
+    caveat: "Grouping by the list dimension groups by whole lists; per-tag counts need a one-row-per-tag dbt model (not counted)."
+  comment: "SLayer and Malloy treat a list column as rows of its elements without double counting; Cube and MetricFlow see whole lists, MetricFlow filtering them only through raw SQL."
 - id: C1
   group: Beyond query semantics
   name: "Rendering & tooling"
@@ -610,7 +633,7 @@ rows:
   origin: all
   slayer:
     verdict: 'yes'
-    text: "8 engines tested live, 4 more by SQL generation."
+    text: "9 engines tested live, 4 more by SQL generation."
   malloy:
     verdict: 'yes'
     text: 8 engines plus files via DuckDB.
@@ -970,8 +993,10 @@ rows:
   intent: Import and export semantic definitions in a shared format.
   origin: MetricFlow
   slayer:
-    verdict: partial
-    text: "Imports OSI, dbt and Cube; no export."
+    verdict: 'yes'
+    how: "`slayer export-osi`"
+    text: "Writes an Ossie document that re-imports unedited to the same models (verified); imports Ossie, dbt and Cube."
+    caveat: "What Ossie can't express (transforms, windowed and multi-model measures) travels in a SLayer extension and is reported (verified)."
   malloy:
     verdict: 'no'
     text: None.
@@ -981,7 +1006,7 @@ rows:
   metricflow:
     verdict: 'yes'
     text: "Writes an Open Semantic Interchange document (verified); cumulative and conversion metrics can't be represented."
-  comment: OSI has been renamed Apache Ossie.
+  comment: "SLayer and MetricFlow write Ossie; OSI has been renamed Apache Ossie."
 - id: C24
   group: Beyond query semantics
   name: Built-in MCP server

@@ -93,6 +93,8 @@ semantic_models:
         type: categorical
       - name: discount
         type: categorical
+      - name: tags
+        type: categorical
       - name: customer_asof
         type: time
         expr: "DATE '2024-01-01'"
