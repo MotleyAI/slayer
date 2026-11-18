@@ -29,6 +29,7 @@ SHUTDOWN_WAIT_SECONDS = 1.0
 _listener: OtelProbeListener | None = None
 _owned: list[Any] = []
 _log_handlers: list[logging.Handler] = []
+_lingering: list[threading.Thread] = []  # shutdowns that outlived their bound
 
 
 def _silent(fn: Callable[P, R]) -> Callable[P, R | None]:
@@ -119,7 +120,7 @@ def reset() -> None:
 def close_providers(providers: list[Any]) -> bool:
     """Shut each provider down in its own thread, so a slow backend delays no other signal's final batch.
 
-    Returns whether every shutdown finished within the bound.
+    Returns whether no shutdown, of this call or an earlier one, is still running.
     """
     workers = [
         threading.Thread(target=_shutdown_one, kwargs={"provider": provider}, name="slayer-otel-shutdown", daemon=True)
@@ -130,7 +131,8 @@ def close_providers(providers: list[Any]) -> bool:
     deadline = time.monotonic() + SHUTDOWN_WAIT_SECONDS
     for worker in workers:
         worker.join(timeout=max(0.0, deadline - time.monotonic()))
-    return not any(worker.is_alive() for worker in workers)
+    _lingering[:] = [worker for worker in (*_lingering, *workers) if worker.is_alive()]
+    return not _lingering
 
 
 def _shutdown_one(*, provider: Any) -> None:

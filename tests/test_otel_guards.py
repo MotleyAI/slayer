@@ -172,6 +172,7 @@ def test_a_setup_rollback_waits_at_most_the_bound(monkeypatch: pytest.MonkeyPatc
 def test_exporter_log_text_is_hidden_while_slayer_owns_the_providers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_OTEL", "on")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9")
+    monkeypatch.setattr(recorder, "_lingering", [])  # slow shutdowns of earlier tests may still run
     exporter_logger = logging.getLogger(logs.EXPORTER_LOGGERS[1])
     otel.start()
     try:
@@ -187,6 +188,8 @@ def test_exporter_log_text_stays_hidden_while_a_shutdown_is_still_running(monkey
     exporter_logger = logging.getLogger(logs.EXPORTER_LOGGERS[1])
     logs.hide_export_text()
     try:
+        otel.reset()
+        monkeypatch.setattr(recorder, "_owned", [_FastProvider()])  # a later, quick cycle
         otel.reset()
         hidden = any(isinstance(f, logs._ExportTextFilter) for f in exporter_logger.filters)
     finally:
