@@ -3,6 +3,7 @@
 The one place where names gain the ``slayer.`` namespace. OTel standard keys (semantic
 conventions) pass through unchanged. Sensitive standard keys leave only on the operator's
 opt-in: ``db.query.text`` with ``SLAYER_OTEL_CAPTURE=sql``, exception text with ``exceptions``.
+Exception text leaves with its SQL statements replaced by ``<sql>`` unless ``sql`` is also set.
 The listener reads stages and never writes to them, except to copy a query's datasource up
 from its preparation stage.
 """
@@ -18,6 +19,7 @@ from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from slayer import __version__
 from slayer.core import stages
+from slayer.otel import redact
 
 PREFIX = "slayer."
 
@@ -123,18 +125,27 @@ class OtelStageListener:
         if opened is None:
             return
         span, token = opened
+        try:
+            attributes = self._finish_span(span, stage=stage, error=error)
+        finally:
+            # A span or context failure must not leave this stage current for the caller.
+            try:
+                span.end(end_time=stage.start_ns + int(stage.duration_s * 1e9))
+            finally:
+                otel_context.detach(token)
+        self._record_metrics(stage, attributes=attributes)
+
+    def _finish_span(self, span: trace.Span, *, stage: stages.Stage, error: BaseException | None) -> Attributes:
         if error is not None:
             span.set_status(Status(StatusCode.ERROR))
             if "exceptions" in self.capture:
-                span.record_exception(error)
+                span.add_event("exception", attributes=redact.exception_fields(error, sql="sql" in self.capture))
         _lift_datasource(stage)
         attributes = {**stage.attributes, **_derived(stage, error=error)}
         span.set_attributes(self._exported(attributes))
         for event in stage.events:
             span.add_event(PREFIX + event.name, attributes=self._exported(event.attributes), timestamp=event.time_ns)
-        span.end(end_time=stage.start_ns + int(stage.duration_s * 1e9))
-        otel_context.detach(token)
-        self._record_metrics(stage, attributes=attributes)
+        return attributes
 
     def _allowed(self, key: str) -> bool:
         """A sensitive key leaves only with its ``SLAYER_OTEL_CAPTURE`` value; every other key leaves."""

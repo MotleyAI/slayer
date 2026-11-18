@@ -95,7 +95,7 @@ def test_a_stalled_backend_adds_at_most_the_shutdown_bound(store: str, backend: 
     baseline = _query(store)[2]
     backend.behaviour.delay = 30
     _, code, elapsed = _query(store, SLAYER_OTEL="on", OTEL_EXPORTER_OTLP_ENDPOINT=_base(backend.url))
-    assert (code, elapsed - baseline < _SLACK_SECONDS) == (0, True)
+    assert (code, elapsed - baseline < _SLACK_SECONDS, backend.wait_for_arrival()) == (0, True, True)
 
 
 def test_a_rejecting_backend_leaves_stderr_clean(store: str, backend: CaptureServer) -> None:
@@ -104,4 +104,4 @@ def test_a_rejecting_backend_leaves_stderr_clean(store: str, backend: CaptureSer
         ["query", json.dumps(_QUERY), "--storage", store],
         env=_env(SLAYER_OTEL="on", OTEL_EXPORTER_OTLP_ENDPOINT=_base(backend.url)),
     )
-    assert (result.returncode, "Traceback" in result.stderr) == (0, False)
+    assert (result.returncode, "Traceback" in result.stderr, bool(backend.wait_for(count=1))) == (0, False, True)

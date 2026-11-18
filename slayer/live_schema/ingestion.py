@@ -818,11 +818,21 @@ def _ingest_outcome(result: "schema_drift.IdempotentIngestResult") -> dict[str, 
     return {
         "ingest.objects": len(result.objects),
         "ingest.models.added": added,
-        "ingest.models.updated": len(result.additions) - added,
+        # The pass also lists unchanged models; count only the ones with a reported change.
+        "ingest.models.updated": sum(1 for a in result.additions if not a.created and _reports_change(a)),
         "ingest.models.skipped": len(result.skipped),
         "ingest.drift.entries": len(result.to_delete),
         "ingest.errors": len(result.errors),
     }
+
+
+
+def _reports_change(addition: "schema_drift.ModelAddition") -> bool:
+    return bool(
+        addition.new_columns or addition.new_joins or addition.named_joins or addition.widened_columns
+        or addition.described_columns or addition.model_described or addition.kind_change
+        or addition.sql_table_change
+    )
 
 
 async def _build_one_model(

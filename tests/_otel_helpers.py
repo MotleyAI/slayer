@@ -9,6 +9,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 from pydantic import BaseModel, ConfigDict
 
 from slayer import otel
@@ -36,7 +37,8 @@ class OtelCapture(BaseModel):
     @classmethod
     def build(cls) -> OtelCapture:
         exporter = InMemorySpanExporter()
-        tracer_provider = TracerProvider(shutdown_on_exit=False)
+        # ALWAYS_ON: an inherited OTEL_TRACES_SAMPLER=always_off would leave nothing to check.
+        tracer_provider = TracerProvider(sampler=ALWAYS_ON, shutdown_on_exit=False)
         tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
         reader = InMemoryMetricReader()
         meter_provider = MeterProvider(metric_readers=[reader], shutdown_on_exit=False)

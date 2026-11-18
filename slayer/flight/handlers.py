@@ -372,6 +372,7 @@ class FlightHandlers:
         catalog = self._build_catalog()
         return translate(sql, catalog)
 
+    @otel.request(surface="flight", token="query")
     def _derive_query_schema(self, result: "QueryResult") -> pa.Schema:
         """Build the wire schema from catalog-declared projection types.
 

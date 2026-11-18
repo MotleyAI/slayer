@@ -7,6 +7,7 @@ import functools
 import inspect
 import logging
 import threading
+import time
 from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
@@ -59,10 +60,18 @@ def start() -> None:
         return
     capture = settings.capture()
     configured = exporters.configure()
+    try:
+        if configured.logger_provider is not None:
+            _log_handlers = logs.attach(logger_provider=configured.logger_provider, capture=capture)
+        # SLayer's own providers are private and passed here; with a host provider, both are None.
+        instrument(
+            tracer_provider=configured.tracer_provider, meter_provider=configured.meter_provider, capture=capture,
+        )
+    except Exception:
+        _detach_logs()
+        exporters.shutdown_all(configured.owned)
+        raise
     _owned = configured.owned
-    if configured.logger_provider is not None:
-        _log_handlers = logs.attach(logger_provider=configured.logger_provider, full="exceptions" in capture)
-    instrument(capture=capture)
 
 
 def instrument(*, tracer_provider: Any = None, meter_provider: Any = None, capture: Iterable[str] = ()) -> None:
@@ -88,29 +97,34 @@ def uninstrument() -> None:
 @_silent
 def shutdown() -> None:
     """Remove the listener and log handler; flush the providers :func:`start` created, waiting at most 1 s."""
+    reset()
+
+
+def reset() -> None:
+    """Like :func:`shutdown`, but errors propagate: remove the listener, then close the owned providers."""
     global _owned
     uninstrument()
     _detach_logs()
     providers, _owned = _owned, []
-    if providers:
-        worker = threading.Thread(
-            target=_shutdown_providers, kwargs={"providers": providers}, name="slayer-otel-shutdown", daemon=True,
-        )
+    _close(providers)
+
+
+def _close(providers: list[Any]) -> None:
+    """Shut each provider down in its own thread, so a slow backend delays no other signal's final batch."""
+    workers = [
+        threading.Thread(target=_shutdown_one, kwargs={"provider": provider}, name="slayer-otel-shutdown", daemon=True)
+        for provider in providers
+    ]
+    for worker in workers:
         worker.start()
-        worker.join(timeout=SHUTDOWN_WAIT_SECONDS)
+    deadline = time.monotonic() + SHUTDOWN_WAIT_SECONDS
+    for worker in workers:
+        worker.join(timeout=max(0.0, deadline - time.monotonic()))
 
 
-def reset() -> None:
-    global _owned
-    uninstrument()
-    _detach_logs()
-    _owned = []
-
-
-def _shutdown_providers(*, providers: list[Any]) -> None:
-    for provider in providers:
-        with contextlib.suppress(Exception):
-            provider.shutdown()
+def _shutdown_one(*, provider: Any) -> None:
+    with contextlib.suppress(Exception):
+        provider.shutdown()
 
 
 def _detach_logs() -> None:

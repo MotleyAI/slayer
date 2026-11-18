@@ -1,6 +1,6 @@
 # OpenTelemetry
 
-SLayer can send traces, metrics and logs to any OpenTelemetry (OTel) backend over OTLP, the OTel protocol. It is off by default, and it sends no SQL text, query values or row data unless you opt in.
+SLayer can send traces, metrics and logs to any OpenTelemetry (OTel) backend over OTLP, the OTel protocol. SLayer sends OTLP over HTTP/protobuf, not gRPC, so the backend must accept OTLP/HTTP. It is off by default, and it sends no SQL text, query values or row data unless you opt in.
 
 You configure it with the standard `OTEL_*` environment variables, plus two SLayer variables: `SLAYER_OTEL` to turn it on, and `SLAYER_OTEL_CAPTURE` to opt in to sensitive data.
 
@@ -127,7 +127,7 @@ The repository has a ready example in `examples/otel`: SLayer, a Postgres databa
 One REST query produces this trace:
 
 ```text
-POST /query                   FastAPI's own span
+POST /query                   FastAPI's own span, only with FastAPI instrumentation
 └─ slayer.request             surface=rest, operation=/query
    └─ slayer.query            slayer.datasource.name=demo
       ├─ slayer.query.normalize
@@ -146,7 +146,7 @@ POST /query                   FastAPI's own span
 | `slayer.db.execute`, `slayer.db.explain`, `slayer.db.metadata` | each database call, including catalog reads |
 | `slayer.ingest` | one ingest run, with `slayer.ingest.scan.schema`, `.merge`, `.drift` and `.embeddings` inside |
 
-Database spans have kind `CLIENT`. Request spans from Flight SQL and the Postgres facade have kind `SERVER`. All other spans are `INTERNAL`. A REST request also contains FastAPI's own spans, and SLayer's spans sit inside them.
+Database spans have kind `CLIENT`. Request spans from Flight SQL and the Postgres facade have kind `SERVER`. All other spans are `INTERNAL`. A REST request contains FastAPI's own spans only when FastAPI instrumentation is active, for example through `opentelemetry-instrument`. In that case, SLayer's spans sit inside them. When SLayer configures OTel itself, its providers stay private. A FastAPI version with native tracing then exports nothing through SLayer, so its URL paths and query values stay in the process.
 
 A failed operation has status `ERROR` and an `error.type` attribute with the exception class. A transient database error that SLayer retries adds a `slayer.db.retry` event to the database span.
 
@@ -181,7 +181,7 @@ The resource has `service.name` (default `slayer`) and `service.version` (the SL
 | `slayer.ingest.models` | counter | datasource, `slayer.ingest.change` (`added`, `updated`, `skipped`) |
 | `slayer.ingest.drift.entries` | counter | datasource |
 
-The duration histograms use buckets in seconds. `db.client.operation.duration` runs from 1 ms to 10 s, as the OTel database conventions recommend. The request and query histograms run from 1 ms to 2 minutes, and the ingest histogram from 0.1 s to 30 minutes. Metrics are cumulative, so a failed export loses no counts. For a backend that needs delta values, set `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=delta`.
+The duration histograms use buckets in seconds. `db.client.operation.duration` runs from 1 ms to 10 s, as the OTel database conventions recommend. The request and query histograms run from 1 ms to 2 minutes, and the ingest histogram from 0.1 s to 30 minutes. Metrics are cumulative, so a later successful export recovers the counts of a failed one. If the last export of a short command fails, its counts are lost, as Performance explains. For a backend that needs delta values, set `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=delta`.
 
 Some numbers are on both a metric and a span, for example retries and ingest results. The metric is never sampled and is cheap to keep and to alert on. The span shows the single request.
 
@@ -204,14 +204,15 @@ To debug with full detail on your own backend, opt in with `SLAYER_OTEL_CAPTURE`
 | Value | Adds |
 |---|---|
 | `sql` | `db.query.text`, the executed SQL, on database spans |
-| `exceptions` | `exception.message` and `exception.stacktrace` on failed spans, and full messages and tracebacks in exported logs |
+| `exceptions` | `exception.message` and `exception.stacktrace` on failed spans and in exported logs, with each SQL statement replaced by `<sql>`. Log bodies stay templates. |
+| `sql` and `exceptions` together | the exception text unchanged, and full log records: the formatted message and the `extra` fields |
 
 ```bash
 export SLAYER_OTEL_CAPTURE=sql,exceptions
 ```
 
 !!! warning
-    Executed SQL contains the literal values of filters and of row-level-security policies, for example tenant ids. Exception messages from database drivers often contain the SQL too. Turn on capture only for a backend that is allowed to store this data.
+    Executed SQL contains the literal values of filters and of row-level-security policies, for example tenant ids. With `exceptions` alone, SLayer removes the SQL statement from exception text, but a driver message can still repeat a literal value, for example `invalid input syntax for type integer: "abc"`. Turn on capture only for a backend that is allowed to store this data.
 
 Captured SQL and stack traces can be long. To cut long values, set the standard `OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT`, for example `4096`.
 
@@ -248,7 +249,7 @@ SLayer supports two values of the standard variables only partly:
 - Off: each stage costs about 0.1 µs, and a query has about 10 stages. This is far below the normal variation of a query's time.
 - On: each stage costs about 9 µs, measured with the OTel SDK. A query on a local database takes a few milliseconds, so this adds a few percent. For a query on a remote warehouse, the cost is too small to see.
 - No network call happens during a request. Three background threads, one per signal, send the data.
-- At exit, SLayer waits at most 1 second to send what remains, when SLayer configured OTel itself. If the backend does not answer in time, that last batch is lost, and the command still exits on time. Under `opentelemetry-instrument`, the export timeout decides this wait.
+- At exit, SLayer waits at most 1 second to send what remains, when SLayer configured OTel itself. Each signal flushes on its own thread, so a slow trace backend does not hold back metrics and logs. If the backend does not answer in time, that last batch is lost, and the command still exits on time. Under `opentelemetry-instrument`, the export timeout decides this wait.
 
 ## Troubleshooting
 

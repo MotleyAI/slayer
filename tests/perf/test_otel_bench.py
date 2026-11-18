@@ -8,9 +8,13 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 
 import pytest
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
 
+from slayer import otel
 from slayer.core import stages
-from tests._otel_helpers import OtelCapture
 
 
 def _plain(value: int, *, name: str) -> int:
@@ -22,14 +26,25 @@ def _decorated(value: int, *, name: str) -> int:
     return value
 
 
+class _Discard(SpanExporter):
+    """Keeps no span, so a long run measures the instrumentation and not a growing list."""
+
+    def export(self, spans) -> SpanExportResult:  # noqa: ANN001
+        return SpanExportResult.SUCCESS
+
+
 @pytest.fixture
 def listening() -> Iterator[None]:
-    capture = OtelCapture.build()
-    capture.instrument()
+    tracer_provider = TracerProvider(shutdown_on_exit=False)
+    tracer_provider.add_span_processor(SimpleSpanProcessor(_Discard()))
+    meter_provider = MeterProvider(metric_readers=[InMemoryMetricReader()], shutdown_on_exit=False)
+    otel.instrument(tracer_provider=tracer_provider, meter_provider=meter_provider)
     try:
         yield
     finally:
-        capture.close()
+        otel.reset()
+        tracer_provider.shutdown()
+        meter_provider.shutdown()
 
 
 _CALLS: dict[str, Callable[..., int]] = {"plain": _plain, "staged": _decorated}

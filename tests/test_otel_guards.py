@@ -37,19 +37,45 @@ _WITHOUT_EXTRA = (
     "            raise ImportError(name)\n"
     "sys.meta_path.insert(0, Block())\n"
     "from slayer import otel\n"
+    "from slayer.otel import control\n"
     "otel.start()\n"
-    "print(otel.is_active())\n"
+    "print(otel.is_active(), control._extra_installed())\n"
+    "otel.shutdown()\n"
+)
+
+# SLayer's providers are private: the global tracer provider stays the proxy, and a second start works.
+_PRIVATE_AND_RESTARTABLE = (
+    "from opentelemetry import trace\n"
+    "from slayer import otel\n"
+    "from slayer.otel import recorder\n"
+    "otel.start()\n"
+    "first = list(recorder._owned)\n"
+    "otel.shutdown()\n"
+    "otel.start()\n"
+    "second = list(recorder._owned)\n"
+    "print(isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider), otel.is_active(),\n"
+    "      len(second) == len(first) > 0, not set(map(id, first)) & set(map(id, second)))\n"
     "otel.shutdown()\n"
 )
 
 
 def _env(**overrides: str) -> dict[str, str]:
-    return {**os.environ, "SLAYER_USAGE_REPORTING": "off", **overrides}
+    # An inherited OTEL_SDK_DISABLED=true would stop start() before the code under test runs.
+    inherited = {key: value for key, value in os.environ.items() if key != "OTEL_SDK_DISABLED"}
+    return {**inherited, "SLAYER_USAGE_REPORTING": "off", **overrides}
 
 
 class _SlowProvider:
     def shutdown(self) -> None:
         time.sleep(3)
+
+
+class _FastProvider:
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+    def shutdown(self) -> None:
+        self.closed.set()
 
 
 # --- inert by default ----------------------------------------------------------------
@@ -78,18 +104,41 @@ def test_sdk_disabled_wins_over_slayer_otel(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_start_without_the_extra_stays_off_and_silent() -> None:
     result = run_python(_WITHOUT_EXTRA, env=_env(SLAYER_OTEL="on"))
-    assert (result.returncode, result.stdout.strip(), result.stderr) == (0, "False", "")
+    assert (result.returncode, result.stdout.strip(), result.stderr) == (0, "False False", "")
 
 
 def test_a_failing_configuration_stays_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLAYER_OTEL", "on")
+    monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
+    reached: list[bool] = []
 
     def broken() -> exporters.Configured:
+        reached.append(True)
         raise RuntimeError("exporter bug")
 
     monkeypatch.setattr(exporters, "configure", broken)
     otel.start()
-    assert otel.is_active() is False
+    assert (otel.is_active(), reached) == (False, [True])
+
+
+def test_a_late_setup_failure_closes_the_providers_created_so_far(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SLAYER_OTEL", "on")
+    monkeypatch.delenv("OTEL_SDK_DISABLED", raising=False)
+    closed: list[object] = []
+
+    def broken_log_exporter() -> None:
+        raise RuntimeError("log exporter bug")
+
+    monkeypatch.setattr(exporters, "OTLPLogExporter", broken_log_exporter)
+    monkeypatch.setattr(exporters, "shutdown_all", lambda providers: closed.extend(providers))
+    otel.start()
+    assert (otel.is_active(), recorder._owned, len(closed)) == (False, [], 3)
+
+
+def test_providers_stay_private_and_a_second_start_gets_new_ones() -> None:
+    env = _env(SLAYER_OTEL="on", OTEL_TRACES_EXPORTER="none", OTEL_METRICS_EXPORTER="none", OTEL_LOGS_EXPORTER="none")
+    result = run_python(_PRIVATE_AND_RESTARTABLE, env=env)
+    assert (result.returncode, result.stdout.strip()) == (0, "True True True True"), result.stderr
 
 
 def test_shutdown_waits_at_most_the_bound_in_a_daemon_thread(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -101,6 +150,35 @@ def test_shutdown_waits_at_most_the_bound_in_a_daemon_thread(monkeypatch: pytest
     assert (elapsed < recorder.SHUTDOWN_WAIT_SECONDS + 1, bool(workers), all(t.daemon for t in workers)) == (
         True, True, True,
     )
+
+
+def test_shutdown_joins_with_one_shared_one_second_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    timeouts: list[float] = []
+    original = threading.Thread.join
+
+    def spy(self: threading.Thread, timeout: float | None = None) -> None:
+        if self.name == "slayer-otel-shutdown":
+            timeouts.append(timeout if timeout is not None else float("inf"))
+        original(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", spy)
+    monkeypatch.setattr(recorder, "_owned", [_SlowProvider(), _SlowProvider()])
+    otel.shutdown()
+    assert (len(timeouts), max(timeouts) <= recorder.SHUTDOWN_WAIT_SECONDS, timeouts[-1] < 0.1) == (2, True, True)
+
+
+def test_a_slow_provider_does_not_hold_back_the_others(monkeypatch: pytest.MonkeyPatch) -> None:
+    fast = _FastProvider()
+    monkeypatch.setattr(recorder, "_owned", [_SlowProvider(), fast])
+    otel.shutdown()
+    assert fast.closed.is_set()
+
+
+def test_reset_closes_the_owned_providers(monkeypatch: pytest.MonkeyPatch) -> None:
+    fast = _FastProvider()
+    monkeypatch.setattr(recorder, "_owned", [fast])
+    otel.reset()
+    assert (fast.closed.is_set(), recorder._owned) == (True, [])
 
 
 @pytest.mark.parametrize("call", [otel.shutdown, otel.reset, otel.uninstrument])

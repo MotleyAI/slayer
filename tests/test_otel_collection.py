@@ -86,7 +86,8 @@ def test_the_database_span_follows_the_otel_database_conventions(otel_env: OtelC
 
 def test_a_dry_run_reaches_no_database(otel_env: OtelCapture) -> None:
     _run(_REVENUE, dry_run=True)
-    assert ("slayer.query" in otel_env.span_names(), "slayer.db.execute" in otel_env.span_names()) == (True, False)
+    names = otel_env.span_names()
+    assert ("slayer.query" in names, [name for name in names if name.startswith("slayer.db.")]) == (True, [])
 
 
 def test_a_failing_query_marks_its_span_as_an_error(otel_env: OtelCapture) -> None:

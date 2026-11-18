@@ -1,7 +1,9 @@
 """``slayer otel status`` and ``slayer otel test``: inspect and check the OTel setup.
 
 Both read the same settings that ``start()`` uses. ``status`` makes no network call and imports
-no OTel package. ``test`` sends one empty OTLP request per signal, then one test span.
+no OTel package. ``test`` sends one empty OTLP request per signal, then one test span. It runs
+while ``SLAYER_OTEL`` is off, so an operator can test a backend first, but not with
+``OTEL_SDK_DISABLED=true``. Both print endpoints with passwords and query values masked.
 There is no ``enable``, ``disable`` or ``show``: the standard environment variables are the only
 switch, so no saved setting can contradict them, and telemetry has no single report to show.
 """
@@ -10,8 +12,10 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import ssl
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit, urlunsplit
 
 from slayer import __version__
 from slayer.otel import settings
@@ -24,6 +28,10 @@ _HINTS = {
     403: "the backend rejected the credentials; check OTEL_EXPORTER_OTLP_HEADERS",
     404: "no OTLP receiver at this path; OTEL_EXPORTER_OTLP_ENDPOINT is a base URL, /v1/<signal> is added",
     405: "this URL does not accept OTLP; check the endpoint",
+    301: "the endpoint redirects; set the URL it redirects to",
+    302: "the endpoint redirects; set the URL it redirects to",
+    307: "the endpoint redirects; set the URL it redirects to",
+    308: "the endpoint redirects; set the URL it redirects to",
     413: "the backend refused the request size",
 }
 
@@ -37,7 +45,7 @@ def status() -> str:
     ]
     for signal in settings.SIGNALS:
         requested = settings.exporters_requested(signal)
-        target = settings.endpoint(signal) if settings.exports(signal) else "not exported"
+        target = _shown(settings.endpoint(signal)) if settings.exports(signal) else "not exported"
         lines.append(f"{signal + ':':<9}{','.join(sorted(requested))} -> {target}")
         unsupported = requested - settings.SUPPORTED_EXPORTERS
         if unsupported:
@@ -55,6 +63,8 @@ def status() -> str:
 
 def test() -> tuple[str, int]:
     """Probe each exported signal's endpoint, then send one test span; return the report and an exit code."""
+    if settings.resolve_state().rule is settings.DecidingRule.SDK_DISABLED:
+        return "Not tested: OTEL_SDK_DISABLED=true turns OTel off, so no request was sent.", 0
     lines: list[str] = []
     failures = 0
     for signal in settings.SIGNALS:
@@ -62,42 +72,78 @@ def test() -> tuple[str, int]:
             lines.append(f"{signal + ':':<9}skipped, not exported")
             continue
         url = settings.endpoint(signal)
-        ok, detail = _probe(url=url, headers=settings.headers(signal))
+        ok, detail = _probe(url=url, headers=settings.headers(signal), tls=settings.tls(signal))
         failures += 0 if ok else 1
-        lines.append(f"{signal + ':':<9}{detail}  {url}")
+        lines.append(f"{signal + ':':<9}{detail}  {_shown(url)}")
     if failures == 0 and settings.exports("traces"):
-        lines.append(_send_test_span())
-    lines.append("All endpoints accepted OTLP." if failures == 0 else f"{failures} endpoint(s) failed.")
+        sent, line = _send_test_span()
+        failures += 0 if sent is not False else 1
+        lines.append(line)
+    lines.append("All endpoints accepted OTLP." if failures == 0 else f"{failures} check(s) failed.")
     return "\n".join(lines), 0 if failures == 0 else 1
 
 
-def _probe(*, url: str, headers: dict[str, str]) -> tuple[bool, str]:
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would resend the credential headers to another URL, and turn the POST into a GET."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, PLR0913
+        return None
+
+
+def _probe(*, url: str, headers: dict[str, str], tls: settings.TlsFiles) -> tuple[bool, str]:
     """POST an empty OTLP request: valid protobuf, so it checks reachability, credentials and path only."""
     request = urllib.request.Request(
         url, data=b"", method="POST", headers={**headers, "Content-Type": "application/x-protobuf"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=TEST_TIMEOUT_SECONDS) as response:
+        opener = urllib.request.build_opener(
+            _NoRedirect(), urllib.request.HTTPSHandler(context=_tls_context(tls)),
+        )
+        with opener.open(request, timeout=TEST_TIMEOUT_SECONDS) as response:
             return True, f"ok, HTTP {response.status}"
     except urllib.error.HTTPError as error:
         return False, f"HTTP {error.code}: {_HINTS.get(error.code, error.reason)}"
-    except (urllib.error.URLError, OSError) as error:
+    except OSError as error:
         reason = getattr(error, "reason", error)
         return False, f"cannot connect: {reason}"
 
 
-def _send_test_span() -> str:
+def _tls_context(tls: settings.TlsFiles) -> ssl.SSLContext:
+    """The CA and client certificate files the OTLP exporter uses; the system defaults otherwise."""
+    context = ssl.create_default_context(cafile=tls.certificate)
+    if tls.client_certificate:
+        context.load_cert_chain(certfile=tls.client_certificate, keyfile=tls.client_key)
+    return context
+
+
+def _shown(url: str) -> str:
+    """The URL for display: a password in it and every query value become ``***``."""
+    parts = urlsplit(url)
+    netloc = parts.netloc
+    if parts.password is not None:
+        userinfo, _, host = netloc.rpartition("@")
+        netloc = f"{userinfo.partition(':')[0]}:***@{host}"
+    query = "&".join(
+        f"{item.partition('=')[0]}=***" if "=" in item else item for item in parts.query.split("&") if item
+    )
+    return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
+
+
+def _send_test_span() -> tuple[bool | None, str]:
+    """Send one span; the first value is ``None`` when the span was not sent on purpose."""
     if not _extra_installed():
-        return "Test span: not sent, the otel extra is not installed."
+        return None, "Test span: not sent, the otel extra is not installed."
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # ALLOW(import-not-top): optional extra
         OTLPSpanExporter,
     )
     from opentelemetry.sdk.trace import TracerProvider  # ALLOW(import-not-top): optional extra
     from opentelemetry.sdk.trace.export import SpanExportResult  # ALLOW(import-not-top): optional extra
+    from opentelemetry.sdk.trace.sampling import ALWAYS_ON  # ALLOW(import-not-top): optional extra
 
     from slayer.otel.exporters import build_resource  # ALLOW(import-not-top): optional extra
 
-    provider = TracerProvider(resource=build_resource(), shutdown_on_exit=False)
+    # ALWAYS_ON: an explicit test sends its span whatever OTEL_TRACES_SAMPLER says.
+    provider = TracerProvider(resource=build_resource(), sampler=ALWAYS_ON, shutdown_on_exit=False)
     span = provider.get_tracer("slayer", __version__).start_span(TEST_SPAN)
     span.end()
     exporter = OTLPSpanExporter(timeout=TEST_TIMEOUT_SECONDS)
@@ -106,25 +152,25 @@ def _send_test_span() -> str:
     finally:
         exporter.shutdown()
     if result is SpanExportResult.SUCCESS:
-        return f"Test span: sent; search your backend for the span {TEST_SPAN} from service {_service_name()}."
-    return "Test span: the exporter reported a failure; see the error above."
+        service = provider.resource.attributes.get("service.name", _service_name())
+        return True, f"Test span: sent; search your backend for the span {TEST_SPAN} from service {service}."
+    return False, "Test span: the backend rejected it; see the error above."
 
 
 def _extra_installed() -> bool:
-    return all(
-        importlib.util.find_spec(name) is not None
-        for name in ("opentelemetry.sdk", "opentelemetry.exporter.otlp.proto.http")
-    )
+    return all(_module_exists(name) for name in ("opentelemetry.sdk", "opentelemetry.exporter.otlp.proto.http"))
+
+
+def _module_exists(name: str) -> bool:
+    # find_spec imports the parent package, and raises if the parent is missing or broken.
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ImportError:
+        return False
 
 
 def _service_name() -> str:
-    if os.environ.get("OTEL_SERVICE_NAME"):
-        return os.environ["OTEL_SERVICE_NAME"]
-    for item in os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "").split(","):
-        key, _, value = item.partition("=")
-        if key.strip() == "service.name" and value.strip():
-            return value.strip()
-    return "slayer"
+    return settings.service_name() or settings.DEFAULT_SERVICE_NAME
 
 
 def _protocols() -> str:

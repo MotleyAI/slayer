@@ -8,23 +8,22 @@ services:
   # The OTLP backend. Any OTLP endpoint works: see "Use another backend" in README.md.
   openobserve:
     image: public.ecr.aws/zinclabs/openobserve:v1.1.2
+    env_file: example.env
     environment:
-      ZO_ROOT_USER_EMAIL: ${ZO_ROOT_USER_EMAIL}
-      ZO_ROOT_USER_PASSWORD: ${ZO_ROOT_USER_PASSWORD}
       ZO_DATA_DIR: /data
     ports:
-      - "5080:5080"
+      - "127.0.0.1:5080:5080"
     volumes:
       - openobserve-data:/data
 
   postgres:
     image: postgres:16-alpine
+    env_file: example.env
     environment:
       POSTGRES_DB: slayer_demo
       POSTGRES_USER: slayer
-      POSTGRES_PASSWORD: slayer
     ports:
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U slayer -d slayer_demo"]
       interval: 2s
@@ -33,8 +32,10 @@ services:
 
   seed:
     build: *slayer-build
-    command: python /examples/seed.py postgresql://slayer:slayer@postgres:5432/slayer_demo
-    volumes: 
+    env_file: example.env
+    # $$ leaves the variable to the container shell, which reads it from example.env.
+    command: sh -c 'python /examples/seed.py "postgresql+psycopg://slayer:$${POSTGRES_PASSWORD}@postgres:5432/slayer_demo"'
+    volumes:
       - ../seed.py:/examples/seed.py:ro
     depends_on:
       postgres:
@@ -43,9 +44,9 @@ services:
   slayer:
     build: *slayer-build
     command: sh /examples/start.sh
-    env_file: .env
+    env_file: example.env
     ports:
-      - "5143:5143"
+      - "127.0.0.1:5143:5143"
     volumes:
       - ./start.sh:/examples/start.sh:ro
       - ./prepare.py:/examples/prepare.py:ro

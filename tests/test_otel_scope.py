@@ -26,6 +26,7 @@ def storage(tmp_path: Path) -> YAMLStorage:
 
 
 def _request(otel_env: OtelCapture) -> tuple[str, str]:
+    assert otel_env.span_names().count("slayer.request") == 1, otel_env.span_names()
     attributes = otel_env.attributes("slayer.request")
     return attributes["slayer.surface"], attributes["slayer.operation"]
 

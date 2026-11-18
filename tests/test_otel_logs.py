@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from unittest import mock
 
 import pytest
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter, SimpleLogRecordProcessor
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.exc import OperationalError
 
 from slayer.otel import logs
 from tests._usage_reporting_helpers import SENT, assert_no_sentinel
@@ -32,16 +34,17 @@ class _Exported(BaseModel):
         return "\n".join(f"{body} {attributes}" for body, attributes in zip(self.bodies(), self.attributes(), strict=True))
 
 
-def _attach(*, full: bool) -> _Exported:
+def _attach(*, capture: Iterable[str] = ()) -> _Exported:
     exporter = InMemoryLogRecordExporter()
     provider = LoggerProvider(shutdown_on_exit=False)
     provider.add_log_record_processor(SimpleLogRecordProcessor(exporter))
-    return _Exported(exporter=exporter, handlers=logs.attach(logger_provider=provider, full=full))
+    return _Exported(exporter=exporter, handlers=logs.attach(logger_provider=provider, capture=capture))
 
 
-@pytest.fixture
-def templates() -> Iterator[_Exported]:
-    exported = _attach(full=False)
+def _attached(monkeypatch: pytest.MonkeyPatch, *, capture: Iterable[str]) -> Iterator[_Exported]:
+    # A developer's own OTEL_PYTHON_LOG_LEVEL must not filter out the test's warning.
+    monkeypatch.setenv("OTEL_PYTHON_LOG_LEVEL", "WARNING")
+    exported = _attach(capture=capture)
     try:
         yield exported
     finally:
@@ -49,12 +52,18 @@ def templates() -> Iterator[_Exported]:
 
 
 @pytest.fixture
-def full() -> Iterator[_Exported]:
-    exported = _attach(full=True)
-    try:
-        yield exported
-    finally:
-        logs.detach(exported.handlers)
+def templates(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Exported]:
+    yield from _attached(monkeypatch, capture=())
+
+
+@pytest.fixture
+def exceptions_only(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Exported]:
+    yield from _attached(monkeypatch, capture=("exceptions",))
+
+
+@pytest.fixture
+def full(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Exported]:
+    yield from _attached(monkeypatch, capture=("exceptions", "sql"))
 
 
 def _fail_and_log(logger: logging.Logger) -> None:
@@ -84,9 +93,30 @@ def test_no_argument_or_exception_text_leaves(templates: _Exported) -> None:
     assert_no_sentinel(templates.everything())
 
 
-def test_full_records_leave_with_capture_exceptions(full: _Exported) -> None:
+def test_full_records_leave_with_capture_exceptions_and_sql(full: _Exported) -> None:
     _fail_and_log(logging.getLogger("slayer.pg_facade"))
     assert (SENT in full.bodies()[0], "exception.stacktrace" in full.attributes()[0]) == (True, True)
+
+
+def test_exceptions_alone_keeps_the_template_and_adds_the_exception(exceptions_only: _Exported) -> None:
+    _fail_and_log(logging.getLogger("slayer.pg_facade"))
+    attributes = exceptions_only.attributes()[0]
+    assert (exceptions_only.bodies(), SENT in attributes["exception.message"], bool(attributes["exception.stacktrace"])) == (
+        [_TEMPLATE], True, True,
+    )
+
+
+def test_a_retry_warning_sends_no_sql_with_exceptions_alone(exceptions_only: _Exported) -> None:
+    sql = f"SELECT * FROM orders WHERE note = '{SENT}'"
+    try:
+        raise OperationalError(sql, {}, Exception("server closed the connection"))
+    except OperationalError as error:
+        logging.getLogger("slayer.database.client").warning(
+            "Transient DB error on attempt %d, retrying in %.1fs: %s | sql: %s", 1, 0.5, error, sql, exc_info=True,
+        )
+    assert ("exception.message" in exceptions_only.attributes()[0], SENT in exceptions_only.everything()) == (
+        True, False,
+    )
 
 
 # --- scope ---------------------------------------------------------------------------
@@ -100,14 +130,14 @@ def test_the_hosts_loggers_are_not_exported(templates: _Exported) -> None:
 
 def test_detach_removes_every_added_handler() -> None:
     before = list(logging.getLogger(logs.SLAYER_LOGGER).handlers)
-    exported = _attach(full=False)
+    exported = _attach()
     logs.detach(exported.handlers)
     assert logging.getLogger(logs.SLAYER_LOGGER).handlers == before
 
 
 def test_stderr_output_survives_when_slayer_had_no_handler(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(logging.getLogger(logs.SLAYER_LOGGER), "propagate", False)
-    exported = _attach(full=False)
+    exported = _attach()
     try:
         assert logging.lastResort in exported.handlers
     finally:
@@ -133,7 +163,7 @@ def test_otel_python_log_level_sets_the_slayer_logger_level(
     monkeypatch: pytest.MonkeyPatch, raw: str, level: int,
 ) -> None:
     monkeypatch.setenv("OTEL_PYTHON_LOG_LEVEL", raw)
-    exported = _attach(full=False)
+    exported = _attach()
     try:
         assert logging.getLogger(logs.SLAYER_LOGGER).level == level
     finally:
@@ -144,7 +174,7 @@ def test_detach_restores_the_previous_level(monkeypatch: pytest.MonkeyPatch) -> 
     logger = logging.getLogger(logs.SLAYER_LOGGER)
     before = logger.level
     monkeypatch.setenv("OTEL_PYTHON_LOG_LEVEL", "debug")
-    logs.detach(_attach(full=False).handlers)
+    logs.detach(_attach().handlers)
     assert logger.level == before
 
 
@@ -152,17 +182,16 @@ def test_an_unknown_level_leaves_the_level_alone(monkeypatch: pytest.MonkeyPatch
     logger = logging.getLogger(logs.SLAYER_LOGGER)
     before = logger.level
     monkeypatch.setenv("OTEL_PYTHON_LOG_LEVEL", "loud")
-    exported = _attach(full=False)
+    exported = _attach()
     try:
         assert logger.level == before
     finally:
         logs.detach(exported.handlers)
 
 
-def test_a_failing_export_never_reaches_the_caller(templates: _Exported, monkeypatch: pytest.MonkeyPatch) -> None:
-    def broken(*args: object, **kwargs: object) -> None:
-        raise RuntimeError("exporter bug")
-
-    monkeypatch.setattr(templates.exporter, "export", broken)
-    logging.getLogger("slayer.pg_facade").warning(_TEMPLATE, SENT, "detail")
-    assert templates.bodies() == []
+def test_a_failing_emit_never_reaches_the_caller(templates: _Exported) -> None:
+    handler = next(h for h in templates.handlers if isinstance(h, logs.TemplateLogHandler))
+    broken = mock.Mock(**{"emit.side_effect": RuntimeError("SDK bug")})
+    with mock.patch.object(handler.logger_provider, "get_logger", return_value=broken):
+        logging.getLogger("slayer.pg_facade").warning(_TEMPLATE, SENT, "detail")
+    assert broken.emit.called

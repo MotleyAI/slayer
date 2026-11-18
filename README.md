@@ -89,7 +89,7 @@ The `slayer` command sends anonymous, aggregated usage statistics (command, tool
 
 ## OpenTelemetry
 
-SLayer can send traces, metrics and logs to any OpenTelemetry backend over OTLP. It is off by default. Install `motley-slayer[otel]`, set `SLAYER_OTEL=on` and `OTEL_EXPORTER_OTLP_ENDPOINT`, and check the connection with `slayer otel test`. No SQL text or data leaves SLayer unless you opt in. See [OpenTelemetry](https://docs.motley.ai/slayer/reference/opentelemetry/) for every signal and setting.
+SLayer can send traces, metrics and logs to any OpenTelemetry backend over OTLP/HTTP. It is off by default. Install `motley-slayer[otel]`, set `SLAYER_OTEL=on` and `OTEL_EXPORTER_OTLP_ENDPOINT`, and check the connection with `slayer otel test`. No SQL text or data leaves SLayer unless you opt in. See [OpenTelemetry](https://docs.motley.ai/slayer/reference/opentelemetry/) for every signal and setting.
 
 ## License
 

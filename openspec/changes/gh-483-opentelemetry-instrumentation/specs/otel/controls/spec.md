@@ -6,7 +6,7 @@ OTel SHALL be off by default. In a process started by the `slayer` command, the 
 2. `SLAYER_OTEL` set to `on`, `1`, `true` or `yes` → on. Any other non-empty value → off.
 3. Default → off.
 
-When OTel is off, no SLayer module SHALL import an OpenTelemetry package. SLayer SHALL create no provider, attach no log handler and make no OTel request.
+When OTel is off, no SLayer module SHALL import an OpenTelemetry package. SLayer SHALL create no provider, attach no log handler and make no OTel request. `slayer otel test` is the one exception.
 
 #### Scenario: OTEL_SDK_DISABLED beats SLAYER_OTEL
 - **WHEN** `OTEL_SDK_DISABLED=true` and `SLAYER_OTEL=on` are both set
@@ -61,18 +61,28 @@ If OTel is on but the `otel` extra is not installed, or if the OTel setup raises
 - **THEN** the first line reads `OTel is off (decided by: OTEL_SDK_DISABLED).`
 
 ### Requirement: slayer otel status hides secrets and names ignored values
-`slayer otel status` SHALL print the names of the OTLP headers, never their values. It SHALL list every value of the standard variables that SLayer does not support and ignores.
+`slayer otel status` SHALL print the names of the OTLP headers, never their values. `slayer otel status` and `slayer otel test` SHALL print each endpoint with the password in its user information and every query value replaced by `***`. The probe and the export SHALL use the unmasked URL. `status` SHALL list every value of the standard variables that SLayer does not support and ignores. It SHALL work without the `otel` extra, and then report the extra as not installed.
 
 #### Scenario: Header values stay hidden
 - **WHEN** `OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic%20c2VjcmV0` is set and `slayer otel status` runs
 - **THEN** the output contains `Authorization (values hidden)` and does not contain `c2VjcmV0`
+
+#### Scenario: URL secrets stay hidden
+- **WHEN** `OTEL_EXPORTER_OTLP_ENDPOINT=http://user:s3cret@collector:4318` is set and `slayer otel status` runs
+- **THEN** the output contains `user:***@collector` and does not contain `s3cret`
+
+#### Scenario: Extra not installed
+- **WHEN** the OTel packages cannot be imported and `slayer otel status` runs
+- **THEN** the command exits 0 and reports `otel extra: not installed`
 
 #### Scenario: Unsupported values are named
 - **WHEN** `OTEL_TRACES_EXPORTER=console` and `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` are set
 - **THEN** the output names `console` as an ignored exporter value and `grpc` as an unsupported protocol
 
 ### Requirement: slayer otel test checks each endpoint
-`slayer otel test` SHALL send one empty OTLP request, as `application/x-protobuf`, to the endpoint of each exported signal. It SHALL send the configured headers. It SHALL print the result for each signal. For HTTP 401, 403, 404, 405 and 413 it SHALL print a hint about the cause. If every endpoint accepts, it SHALL send one span named `slayer.otel.test`. If any endpoint fails, it SHALL exit 1. Otherwise it SHALL exit 0. A signal whose exporter is `none` SHALL be reported as skipped.
+`slayer otel test` SHALL send one empty OTLP request, as `application/x-protobuf`, to the endpoint of each exported signal. It SHALL send the configured headers, and use the configured CA and client certificate files. It SHALL print the result for each signal. For HTTP 401, 403, 404, 405 and 413 it SHALL print a hint about the cause.
+
+If any endpoint fails, it SHALL exit 1. A signal whose exporter is `none` SHALL be reported as skipped.
 
 #### Scenario: All endpoints accept
 - **WHEN** the backend answers HTTP 200 on `/v1/traces`, `/v1/metrics` and `/v1/logs`
@@ -89,3 +99,32 @@ If OTel is on but the `otel` extra is not installed, or if the OTel setup raises
 #### Scenario: Skipped signal
 - **WHEN** `OTEL_LOGS_EXPORTER=none` is set
 - **THEN** the logs line reads `skipped, not exported`, and no request goes to `/v1/logs`
+
+### Requirement: slayer otel test follows no redirect
+`slayer otel test` SHALL NOT follow a redirect, because a redirect resends the headers to another URL. It SHALL report a redirect as a failure, with a hint to set the final URL.
+
+#### Scenario: Redirect
+- **WHEN** the endpoint answers HTTP 302
+- **THEN** the command sends no second request, prints a hint about the redirect, and exits 1
+
+### Requirement: slayer otel test sends one test span
+If every endpoint accepts and traces are exported, `slayer otel test` SHALL send one span named `slayer.otel.test`, whatever the configured sampler. If the backend rejects the span, it SHALL exit 1. Otherwise it SHALL exit 0.
+
+#### Scenario: Traces not exported
+- **WHEN** `OTEL_TRACES_EXPORTER=none` is set and the other endpoints accept
+- **THEN** the command sends no request to `/v1/traces`, sends no test span, and exits 0
+
+#### Scenario: Rejected test span
+- **WHEN** every endpoint accepts the empty request, but the backend rejects the test span
+- **THEN** the command exits 1
+
+### Requirement: slayer otel test runs while OTel is off
+`slayer otel test` SHALL run while `SLAYER_OTEL` is off, so an operator can test a backend before turning OTel on. With `OTEL_SDK_DISABLED=true`, it SHALL send nothing, say so, and exit 0.
+
+#### Scenario: SLAYER_OTEL off
+- **WHEN** `SLAYER_OTEL` is not set and `slayer otel test` runs
+- **THEN** the command probes each exported signal
+
+#### Scenario: SDK disabled
+- **WHEN** `OTEL_SDK_DISABLED=true` is set
+- **THEN** the command sends no request and exits 0

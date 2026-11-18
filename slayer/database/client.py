@@ -678,13 +678,17 @@ class SqlClient(Protocol):
 
 def _db_stage_attributes(bound: Any) -> dict[str, Any]:
     datasource = bound.arguments["self"].datasource
+    executed = bound.arguments.get("sql")
+    statements = bound.arguments.get("statements")
+    if executed is None and statements is not None:  # _explain passes the statement inside its plan
+        executed = statements.statement
     attributes: dict[str, Any] = {
         "datasource.name": datasource.name,
         "datasource.type": datasource.type or "",
         "db.namespace": datasource.database,
         "server.address": datasource.host,
         "server.port": datasource.port,
-        "db.query.text": bound.arguments.get("sql"),
+        "db.query.text": executed,
     }
     if not datasource.host and datasource.connection_string:
         with contextlib.suppress(Exception):

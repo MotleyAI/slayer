@@ -21,6 +21,7 @@ SIGNALS = ("traces", "metrics", "logs")
 DEFAULT_ENDPOINT = "http://localhost:4318"
 SUPPORTED_EXPORTERS = frozenset({"otlp", "none"})
 SUPPORTED_PROTOCOL = "http/protobuf"
+DEFAULT_SERVICE_NAME = "slayer"
 
 
 class DecidingRule(StrEnum):
@@ -92,3 +93,37 @@ def protocol(signal: str) -> str:
     return (os.environ.get(f"OTEL_EXPORTER_OTLP_{signal.upper()}_PROTOCOL")
             or os.environ.get("OTEL_EXPORTER_OTLP_PROTOCOL")
             or SUPPORTED_PROTOCOL).strip().lower()
+
+
+def service_name() -> str | None:
+    """The service name the operator set, decoded as the SDK decodes it; ``None`` if none is set."""
+    explicit = os.environ.get("OTEL_SERVICE_NAME", "").strip()
+    if explicit:
+        return explicit
+    for item in os.environ.get("OTEL_RESOURCE_ATTRIBUTES", "").split(","):
+        key, _, value = item.partition("=")
+        if key.strip() == "service.name" and value.strip():
+            return unquote(value.strip())
+    return None
+
+
+class TlsFiles(BaseModel):
+    """The certificate files the OTLP exporter uses for a signal; ``None`` means the default."""
+
+    certificate: str | None = None
+    client_certificate: str | None = None
+    client_key: str | None = None
+
+
+def tls(signal: str) -> TlsFiles:
+    """The per-signal ``*_CERTIFICATE``, ``*_CLIENT_CERTIFICATE`` and ``*_CLIENT_KEY``, else the general ones."""
+
+    def read(suffix: str) -> str | None:
+        return (os.environ.get(f"OTEL_EXPORTER_OTLP_{signal.upper()}_{suffix}")
+                or os.environ.get(f"OTEL_EXPORTER_OTLP_{suffix}") or None)
+
+    return TlsFiles(
+        certificate=read("CERTIFICATE"),
+        client_certificate=read("CLIENT_CERTIFICATE"),
+        client_key=read("CLIENT_KEY"),
+    )

@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import os
+import threading
 from collections.abc import Iterator
+from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 from slayer.otel import control, settings
 from slayer.otel.settings import DecidingRule
 from tests._usage_reporting_capture import CaptureServer, RefusedEndpoint
-from tests._usage_reporting_helpers import cli
+from tests._usage_reporting_helpers import cli, run_python
 
 _SECRET = "Basic%20c2VjcmV0dG9rZW4="
 
@@ -20,8 +24,10 @@ def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
         "SLAYER_OTEL", "SLAYER_OTEL_CAPTURE", "OTEL_SDK_DISABLED", "OTEL_SERVICE_NAME", "OTEL_RESOURCE_ATTRIBUTES",
         "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_PROTOCOL",
         "OTEL_TRACES_EXPORTER", "OTEL_METRICS_EXPORTER", "OTEL_LOGS_EXPORTER", "OTEL_PYTHON_LOG_LEVEL",
+        "OTEL_TRACES_SAMPLER", "OTEL_EXPORTER_OTLP_CERTIFICATE", "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE",
+        "OTEL_EXPORTER_OTLP_CLIENT_KEY",
         *(f"OTEL_EXPORTER_OTLP_{signal.upper()}_{part}" for signal in settings.SIGNALS
-          for part in ("ENDPOINT", "HEADERS", "PROTOCOL")),
+          for part in ("ENDPOINT", "HEADERS", "PROTOCOL", "CERTIFICATE", "CLIENT_CERTIFICATE", "CLIENT_KEY")),
     ):
         monkeypatch.delenv(var, raising=False)
     return monkeypatch
@@ -150,6 +156,8 @@ _SERVICE = [
     ({}, "slayer"),
     ({"OTEL_RESOURCE_ATTRIBUTES": "deployment.environment=prod,service.name=bi"}, "bi"),
     ({"OTEL_RESOURCE_ATTRIBUTES": "service.name=bi", "OTEL_SERVICE_NAME": "api"}, "api"),
+    ({"OTEL_RESOURCE_ATTRIBUTES": "service.name=Sales%20API"}, "Sales API"),
+    ({"OTEL_SERVICE_NAME": "unknown_service-canary"}, "unknown_service-canary"),
 ]
 
 
@@ -163,6 +171,42 @@ def test_status_names_the_service(clean_env: pytest.MonkeyPatch, env: dict[str, 
 def test_status_command_prints_the_report(clean_env: pytest.MonkeyPatch) -> None:
     result = cli(["otel", "status"])
     assert (result.returncode, result.stdout.startswith("OTel is off (decided by: default).")) == (0, True)
+
+
+_STATUS_WITHOUT_EXTRA = (
+    "import importlib.abc, sys\n"
+    "class Block(importlib.abc.MetaPathFinder):\n"
+    "    def find_spec(self, name, path=None, target=None):\n"
+    "        if name.split('.')[0] == 'opentelemetry':\n"
+    "            raise ModuleNotFoundError(name)\n"
+    "sys.meta_path.insert(0, Block())\n"
+    "for module in [name for name in sys.modules if name.split('.')[0] == 'opentelemetry']:\n"
+    "    del sys.modules[module]\n"
+    "from slayer.otel import control\n"
+    "print(control.status())\n"
+)
+
+
+def test_status_works_without_the_extra(clean_env: pytest.MonkeyPatch) -> None:
+    result = run_python(_STATUS_WITHOUT_EXTRA, env=dict(os.environ))
+    assert (result.returncode, "otel extra: not installed" in result.stdout) == (0, True), result.stderr
+
+
+_URLS = [
+    ("http://user:pw@collector:4318/v1/traces", "http://user:***@collector:4318/v1/traces"),
+    ("https://collector/v1/traces?api_key=s3cret&region=eu", "https://collector/v1/traces?api_key=***&region=***"),
+    ("http://collector:4318/v1/traces", "http://collector:4318/v1/traces"),
+]
+
+
+@pytest.mark.parametrize(("url", "shown"), _URLS)
+def test_endpoints_are_shown_without_secrets(url: str, shown: str) -> None:
+    assert control._shown(url) == shown
+
+
+def test_status_masks_a_password_in_the_endpoint(clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://user:s3cret@collector:4318")
+    assert ("s3cret" in control.status(), "user:***@collector" in control.status()) == (False, True)
 
 
 # --- test ----------------------------------------------------------------------------
@@ -179,8 +223,11 @@ def test_test_probes_every_signal_and_sends_one_span(backend: CaptureServer) -> 
 def test_test_sends_the_configured_headers(backend: CaptureServer, clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-token=abc")
     control.test()
-    sent = [{name.lower(): value for name, value in request.headers.items()} for request in backend.wait_for(count=4)]
-    assert {headers.get("x-token") for headers in sent} == {"abc"}
+    received = backend.wait_for(count=4)
+    sent = [{name.lower(): value for name, value in request.headers.items()} for request in received]
+    assert ([request.path for request in received].count("/v1/traces"), {headers.get("x-token") for headers in sent}) == (
+        2, {"abc"},
+    )
 
 
 _REJECTIONS = [
@@ -200,7 +247,7 @@ def test_test_explains_a_rejection(backend: CaptureServer, status: int, hint: st
 def test_test_reports_a_refused_connection(clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", RefusedEndpoint().url.removesuffix("/i/v0/e/"))
     report, code = control.test()
-    assert (code, report.count("cannot connect"), report.splitlines()[-1]) == (1, 3, "3 endpoint(s) failed.")
+    assert (code, report.count("cannot connect"), report.splitlines()[-1]) == (1, 3, "3 check(s) failed.")
 
 
 def test_test_skips_a_signal_that_is_not_exported(backend: CaptureServer, clean_env: pytest.MonkeyPatch) -> None:
@@ -209,7 +256,87 @@ def test_test_skips_a_signal_that_is_not_exported(backend: CaptureServer, clean_
     assert (code, "logs:    skipped, not exported" in report) == (0, True)
 
 
+def test_test_fails_when_the_backend_rejects_the_span(
+    backend: CaptureServer, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(control, "_send_test_span", lambda: (False, "Test span: the backend rejected it."))
+    report, code = control.test()
+    assert (code, report.splitlines()[-1]) == (1, "1 check(s) failed.")
+
+
+def test_test_sends_the_span_whatever_the_sampler(backend: CaptureServer, clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_TRACES_SAMPLER", "always_off")
+    report, code = control.test()
+    assert (code, "Test span: sent" in report) == (0, True), report
+
+
+def test_test_names_the_decoded_service(backend: CaptureServer, clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_RESOURCE_ATTRIBUTES", "service.name=Sales%20API")
+    report, _ = control.test()
+    assert "from service Sales API." in report
+
+
+def test_test_sends_nothing_with_the_sdk_disabled(backend: CaptureServer, clean_env: pytest.MonkeyPatch) -> None:
+    clean_env.setenv("OTEL_SDK_DISABLED", "true")
+    report, code = control.test()
+    assert (code, report.startswith("Not tested"), backend.wait_for(count=1, timeout=0.3)) == (0, True, [])
+
+
+def test_test_sends_no_span_when_traces_are_not_exported(
+    backend: CaptureServer, clean_env: pytest.MonkeyPatch,
+) -> None:
+    clean_env.setenv("OTEL_TRACES_EXPORTER", "none")
+    report, code = control.test()
+    paths = sorted(request.path for request in backend.wait_for(count=2))
+    assert (code, paths, control.TEST_SPAN in report) == (0, ["/v1/logs", "/v1/metrics"], False)
+
+
+class _Redirecting(BaseHTTPRequestHandler):
+    seen: list[tuple[str, str, str | None]] = []
+
+    def do_POST(self) -> None:  # noqa: N802 — http.server naming
+        self.seen.append(("POST", self.path, self.headers.get("x-token")))
+        self.send_response(302)
+        self.send_header("Location", "/elsewhere")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self) -> None:  # noqa: N802 — http.server naming
+        self.seen.append(("GET", self.path, self.headers.get("x-token")))
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:  # noqa: A002 — http.server signature
+        return None
+
+
+def test_test_does_not_follow_a_redirect(clean_env: pytest.MonkeyPatch) -> None:
+    _Redirecting.seen = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Redirecting)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        host, port = server.server_address[:2]
+        clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", f"http://{host}:{port}")
+        clean_env.setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-token=s3cret")
+        report, code = control.test()
+    finally:
+        server.shutdown()
+        server.server_close()
+    methods = {method for method, _, _ in _Redirecting.seen}
+    assert (code, methods, "redirects" in report) == (1, {"POST"}, True)
+
+
+def test_test_uses_the_configured_certificate(clean_env: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://127.0.0.1:9")
+    clean_env.setenv("OTEL_EXPORTER_OTLP_CERTIFICATE", str(tmp_path / "missing-ca.pem"))
+    report, code = control.test()
+    assert (code, report.count("cannot connect"), "missing-ca.pem" in report or "No such file" in report) == (
+        1, 3, True,
+    )
+
+
 def test_test_command_exits_with_one_on_failure(clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", RefusedEndpoint().url.removesuffix("/i/v0/e/"))
     result = cli(["otel", "test"])
-    assert (result.returncode, "endpoint(s) failed" in result.stdout) == (1, True)
+    assert (result.returncode, "check(s) failed" in result.stdout) == (1, True)
