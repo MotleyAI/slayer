@@ -198,6 +198,21 @@ def test_a_probe_ends_on_the_listeners_it_started_on() -> None:
     assert (first.calls, second.calls) == ([("start", "query", None), ("end", "query", None)], [])
 
 
+def test_a_scope_takes_its_listeners_when_entered() -> None:
+    first, second = _Recorder(), _Recorder()
+    probes.add_listener(first)
+    try:
+        later = probes.scope(name="query")
+        probes.remove_listener(first)
+        probes.add_listener(second)
+        with later:
+            pass
+    finally:
+        probes.remove_listener(first)
+        probes.remove_listener(second)
+    assert (first.calls, second.calls) == ([], [("start", "query", None), ("end", "query", None)])
+
+
 # --- concurrency ---------------------------------------------------------------------
 
 

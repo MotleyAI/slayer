@@ -260,7 +260,8 @@ def test_database_server_attributes_follow_the_connection_used(
         client, sql="SELECT 1", timeout_seconds=1, writes=False,
     )
     attributes = client_module._db_probe_attributes(bound)
-    assert (attributes["server.address"], attributes["server.port"], attributes["db.namespace"]) == expected
+    actual = (attributes["server.address"], attributes["server.port"], attributes["db.namespace"])
+    assert actual == expected
 
 
 def test_direct_synchronous_execution_is_a_database_span(

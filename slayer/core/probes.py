@@ -94,12 +94,13 @@ _INACTIVE_SCOPE = _InactiveScope()
 class _ProbeScope:
     __slots__ = ("_listeners", "_probe", "_token")
 
-    def __init__(self, opened: Probe, *, listeners: tuple[ProbeListener, ...]) -> None:
+    def __init__(self, opened: Probe) -> None:
         self._probe = opened
-        self._listeners = listeners  # the same listeners see the start and the end
+        self._listeners: tuple[ProbeListener, ...] = ()
         self._token: Token[Probe | None] | None = None
 
     def __enter__(self) -> Probe:
+        self._listeners = _listeners  # taken on entry; the same listeners see the start and the end
         self._probe.parent = _current.get()
         self._probe.start_ns, self._probe.started = time.time_ns(), time.perf_counter()
         self._token = _current.set(self._probe)
@@ -114,11 +115,10 @@ class _ProbeScope:
 
 
 def scope(*, name: str, attributes: Attributes | None = None) -> _ProbeScope | _InactiveScope:
-    """A context manager for one probe around a block."""
-    listeners = _listeners
-    if not listeners:
+    """A context manager for one probe around a block; with no listener when called, it stays inactive."""
+    if not _listeners:
         return _INACTIVE_SCOPE
-    return _ProbeScope(Probe(name=name, attributes=_clean(attributes or {})), listeners=listeners)
+    return _ProbeScope(Probe(name=name, attributes=_clean(attributes or {})))
 
 
 def probe(
